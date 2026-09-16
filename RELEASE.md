@@ -7,7 +7,7 @@ Record the exact source commit and artifact identity at each handoff.
 
 This guide describes the checked-in release contracts as of 2026-09-13. The
 linked workflows and manifests define executable behavior; it is not a list
-of currently deployed versions. See [GitHub Releases](https://github.com/agentsea/nautilo/releases),
+of currently deployed versions. See [GitHub Releases](https://github.com/agentsea/nautilo-public/releases),
 [`CHANGELOG.md`](CHANGELOG.md), and the [Mobile ledger](apps/mobile/releases/ledger.json)
 for dated records.
 
@@ -42,7 +42,7 @@ Official Desktop artifacts are produced through maintainer infrastructure outsid
 this source tree. An exact source commit and `desktop-vX.Y.Z` release identify the
 published application; source packages retain the development version.
 
-Use [GitHub Releases](https://github.com/agentsea/nautilo/releases) to obtain the
+Use [GitHub Releases](https://github.com/agentsea/nautilo-public/releases) to obtain the
 DMG, ZIP, blockmap, updater metadata and checksums. Verify the artifact's publisher
 identity and notarization. Read back the standard
 [macOS updater manifest](https://media.nautilo.ai/desktop/stable/mac/latest-mac.yml)

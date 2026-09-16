@@ -7,7 +7,7 @@ import {
 
 const createRule = ESLintUtils.RuleCreator(
   () =>
-    "https://github.com/agentsea/nautilo/blob/main/packages/db/README.md",
+    "https://github.com/agentsea/nautilo-public/blob/main/packages/db/README.md",
 );
 
 const MARKER = "m212-no-adhoc-pool-construction";

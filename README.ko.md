@@ -4,7 +4,7 @@
 
 코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: f451f454508b83a3a1b0c5747efcbb4cb09a5d810be0be1f7d116677482608b4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -128,7 +128,7 @@ Nautilo는 서버와 데이터베이스의 통제권을 당신에게 줍니다. 
 저장소는 **Bun 1.3.11**과 **Node 24.x**를 사용하도록 지정합니다. 로컬 PostgreSQL과 Logto 인프라를 위해 Docker를 설치하세요. Desktop 준비에는 네이티브 헬퍼용 Rust가 필요할 수도 있습니다.
 
 ```bash
-git clone https://github.com/agentsea/nautilo.git
+git clone https://github.com/agentsea/nautilo-public.git nautilo
 cd nautilo
 bun install --frozen-lockfile
 bun run dev-stack --instance my-nautilo-dev

@@ -171,7 +171,7 @@
       "sha256": "8e8ced5d8b8095ac0da811e248a206bd4a76d553d0c4778841d7571526943e9c",
       "format": "tar.gz",
       "license": "MIT",
-      "source": "https://github.com/agentsea/nautilo/tree/main/apps/desktop/security-scanners/rules",
+      "source": "https://github.com/agentsea/nautilo-public/tree/main/apps/desktop/security-scanners/rules",
       "notices": {
         "url": "https://media.nautilo.ai/security-scanners/v1/notices/semgrep-nautilo-rules-1.0.0.txt",
         "sha256": "0566d7f327d51d99b35535d45706c00701a06cd97b15b1af550132da534257f1",
@@ -188,7 +188,7 @@
       "sha256": "8e8ced5d8b8095ac0da811e248a206bd4a76d553d0c4778841d7571526943e9c",
       "format": "tar.gz",
       "license": "MIT",
-      "source": "https://github.com/agentsea/nautilo/tree/main/apps/desktop/security-scanners/rules",
+      "source": "https://github.com/agentsea/nautilo-public/tree/main/apps/desktop/security-scanners/rules",
       "notices": {
         "url": "https://media.nautilo.ai/security-scanners/v1/notices/semgrep-nautilo-rules-1.0.0.txt",
         "sha256": "0566d7f327d51d99b35535d45706c00701a06cd97b15b1af550132da534257f1",

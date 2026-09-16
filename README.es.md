@@ -4,7 +4,7 @@
 
 El código y la documentación están actualmente en inglés. Damos la bienvenida a los PR de traducción; consulta la [guía para contribuir traducciones](CONTRIBUTING.md#translations-and-localization) (en inglés). Esta página traduce el README; no implica que la interfaz ni la documentación enlazada estén disponibles en español.
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: f451f454508b83a3a1b0c5747efcbb4cb09a5d810be0be1f7d116677482608b4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -128,7 +128,7 @@ Para despliegue y mantenimiento, consulta [deploy](deploy/README.md), [el contro
 El repositorio fija **Bun 1.3.11** y **Node 24.x**. Instala Docker para la infraestructura local de PostgreSQL y Logto. La preparación de Desktop también puede necesitar Rust para su componente auxiliar nativo.
 
 ```bash
-git clone https://github.com/agentsea/nautilo.git
+git clone https://github.com/agentsea/nautilo-public.git nautilo
 cd nautilo
 bun install --frozen-lockfile
 bun run dev-stack --instance my-nautilo-dev

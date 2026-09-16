@@ -81,7 +81,7 @@ export function useDesktopMenu(): void {
         }
         case "report-issue": {
           window.open(
-            "https://github.com/agentsea/nautilo/issues/new",
+            "https://github.com/agentsea/nautilo-public/issues/new",
             "_blank",
             "noopener,noreferrer",
           );

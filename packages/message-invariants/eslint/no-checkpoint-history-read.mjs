@@ -3,7 +3,7 @@ import { ESLintUtils } from "@typescript-eslint/utils";
 
 const createRule = ESLintUtils.RuleCreator(
   () =>
-    "https://github.com/agentsea/nautilo/blob/main/packages/message-invariants/README.md",
+    "https://github.com/agentsea/nautilo-public/blob/main/packages/message-invariants/README.md",
 );
 
 /**

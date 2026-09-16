@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { desktopAPI, isDesktop } from "../../../lib/desktop";
 import { FieldRow, SectionCard } from "../ui";
 
-const REPO_URL = "https://github.com/agentsea/nautilo";
+const REPO_URL = "https://github.com/agentsea/nautilo-public";
 
 export function AboutSection() {
   const [desktopVersion, setDesktopVersion] = useState<string | null>(null);

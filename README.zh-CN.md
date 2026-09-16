@@ -4,7 +4,7 @@
 
 代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: f451f454508b83a3a1b0c5747efcbb4cb09a5d810be0be1f7d116677482608b4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -128,7 +128,7 @@ Nautilo 把服务器和数据库的控制权交给你。由你决定它在哪里
 仓库固定使用 **Bun 1.3.11** 和 **Node 24.x**。安装 Docker，以运行本地 PostgreSQL 和 Logto 基础设施。准备桌面端环境时，还可能需要 Rust 来构建原生辅助程序。
 
 ```bash
-git clone https://github.com/agentsea/nautilo.git
+git clone https://github.com/agentsea/nautilo-public.git nautilo
 cd nautilo
 bun install --frozen-lockfile
 bun run dev-stack --instance my-nautilo-dev

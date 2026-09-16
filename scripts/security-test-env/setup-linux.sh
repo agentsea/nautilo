@@ -260,7 +260,7 @@ rm -f /etc/systemd/system/nautilo-relay.service
 cat > /etc/systemd/system/nautilo-relay.service <<SERVICE
 [Unit]
 Description=Nautilo headless relay (D060 Sprint 2 G2 — SANDBOX-LINUX-* harness)
-Documentation=https://github.com/agentsea/nautilo/blob/main/scripts/security-test-env/README.md
+Documentation=https://github.com/agentsea/nautilo-public/blob/main/scripts/security-test-env/README.md
 After=network.target nautilo-test.service
 # Not 'Requires=' on purpose: if the server is restarting, we want
 # the relay to stay up + reconnect automatically (RelayClient has

@@ -165,7 +165,7 @@ PostgreSQL and Logto infrastructure. Desktop preparation may also need Rust
 for its native helper.
 
 ```bash
-git clone https://github.com/agentsea/nautilo.git
+git clone https://github.com/agentsea/nautilo-public.git nautilo
 cd nautilo
 bun install --frozen-lockfile
 bun run dev-stack --instance my-nautilo-dev

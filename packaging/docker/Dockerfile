@@ -740,7 +740,7 @@ COPY --from=auth-contract /out/auth-contract.json ./contracts/auth-contract.json
 ARG NAUTILO_SOURCE_SHA
 RUN printf '%s' "$NAUTILO_SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'
 LABEL org.opencontainers.image.revision="${NAUTILO_SOURCE_SHA}" \
-      org.opencontainers.image.source="https://github.com/agentsea/nautilo"
+      org.opencontainers.image.source="https://github.com/agentsea/nautilo-public"
 
 ARG NAUTILO_DEPLOYMENT_ID=""
 ENV NAUTILO_DEPLOYMENT_ID=${NAUTILO_DEPLOYMENT_ID}

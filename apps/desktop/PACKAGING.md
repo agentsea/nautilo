@@ -61,7 +61,7 @@ collisions and relocated paths. It does not replace live authentication, paired
 server or native permission acceptance. Use an isolated profile and instance;
 do not run a competing copy with the same installed production identity.
 
-Official downloads are listed in [GitHub Releases](https://github.com/agentsea/nautilo/releases).
+Official downloads are listed in [GitHub Releases](https://github.com/agentsea/nautilo-public/releases).
 Verify their checksums, publisher signature and notarization before installation.
 The standard [updater manifest](https://media.nautilo.ai/desktop/stable/mac/latest-mac.yml)
 is a consumer contract; its presence in a contributor build does not authorize

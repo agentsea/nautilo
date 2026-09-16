@@ -336,7 +336,7 @@ export function createApplicationMenu(
       {
         label: "Documentation",
         click: () => {
-          void shell.openExternal("https://github.com/agentsea/nautilo");
+          void shell.openExternal("https://github.com/agentsea/nautilo-public");
         },
       },
       {
