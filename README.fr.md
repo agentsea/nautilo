@@ -4,7 +4,7 @@
 
 Le code et la documentation sont actuellement en anglais. Les PR de traduction sont les bienvenues ; consultez le [guide de contribution aux traductions](CONTRIBUTING.md#translations-and-localization) (en anglais). Cette page traduit le README ; elle ne signifie pas que l’interface ou les documents liés sont disponibles en français.
 
-<!-- Translation source: README.md; SHA-256: 9b60bbbe2574e6ca26450ce9087884705ee319256bc1591e9a256f3db66971c4 -->
+<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -104,7 +104,7 @@ Ce monorepo contient les applications et les packages partagés qui font fonctio
 | [Desktop](apps/desktop/README.md) | Client Electron, intégration au poste de travail local et packaging. |
 | [Mobile](apps/mobile/README.md) | Le client mobile React Native / Expo. |
 | [CLI](apps/cli/README.md) | Déploiement et administration du serveur depuis le terminal. |
-| [Applications internes](packages/first-party-apps) | Applications créatives intégrées, dont [Writer](packages/first-party-apps/writer) et [Design](packages/first-party-apps/design). |
+| [Applications internes](packages/first-party-apps) | Applications créatives intégrées : [Writer](packages/first-party-apps/writer), [Sheets](packages/first-party-apps/spreadsheet), [Slides](packages/first-party-apps/presentation), [Board](packages/first-party-apps/board), [Design](packages/first-party-apps/design), [Video](packages/first-party-apps/video). |
 
 ### Packages principaux
 

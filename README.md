@@ -139,7 +139,7 @@ work. Follow the links straight to the part you want to understand or change.
 | [Desktop](apps/desktop/README.md) | Electron client, local workstation integration, and packaging. |
 | [Mobile](apps/mobile/README.md) | The React Native / Expo mobile client. |
 | [CLI](apps/cli/README.md) | Server deployment and administration from the terminal. |
-| [First-party apps](packages/first-party-apps) | Bundled creative applications, including [Writer](packages/first-party-apps/writer) and [Design](packages/first-party-apps/design). |
+| [First-party apps](packages/first-party-apps) | Bundled creative applications: [Writer](packages/first-party-apps/writer), [Sheets](packages/first-party-apps/spreadsheet), [Slides](packages/first-party-apps/presentation), [Board](packages/first-party-apps/board), [Design](packages/first-party-apps/design), [Video](packages/first-party-apps/video). |
 
 ### Core packages
 

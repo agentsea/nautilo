@@ -1,39 +1,32 @@
 # @nautilo/operator-secrets
 
-Shared parser / loader / atomic-appender for operator secrets files
-(`~/.config/nautilo/secrets.env` and friends). Consumed by both the
-operator-facing `@nautilo/cli` and the developer-facing
-`@nautilo/dev-tools` binaries.
+Shared parsing, loading and atomic updates for operator secrets files, used by
+the administrator CLI and developer tools.
 
-Conventions enforced (§13.2 / §13.3 of the security playbook):
+## Default location
 
-- **Mode 0600** on POSIX, refused otherwise.
-- **Refusal of paths inside any git work tree** (walks up looking for
-  `.git`).
-- **Symlink targets** must resolve inside `$HOME`.
-- **Key regex**: `/^[A-Z][A-Z0-9_]*$/`.
-- **Atomic write**: write to `tmp` → `chmod 0600` → `rename`. Never
-  any other order.
+`defaultOperatorSecretsPath()` returns `~/.config/nautilo/secrets.env`.
+This is the standard per-user default: `~` means the home directory of the
+user running the command. It is not a maintainer-specific path. Callers can
+pass an explicit path to the loader or appender.
 
-## Why this is its own package
+The file contains local credentials and must remain outside source control.
+This package documents its location and handling rules, not credential values.
 
-Before this package existed, the appender lived in `bin/nautilo-dev`
-and reached into `apps/cli/src/lib/` via four-deep relative imports
-(`../../../../apps/cli/src/lib/operator-secrets-shared.ts`). That
-made `bin/nautilo-dev` depend on `apps/cli`'s source-tree layout
-rather than its package contract, broke the workspace's
-`bin/*`-should-never-touch-`apps/*` rule, and was invisible to the
-TypeScript project-references graph. Extracting the logic here
-makes the dependency declared (`workspace:*`) and surface-only.
+## File handling
 
-See `tests/unit/loader.test.ts` and `tests/unit/appender.test.ts`
-for the spec; both consumers share the same fixture set via this
-package's own test suite.
+- On POSIX, existing files must have mode `0600`.
+- Paths inside a Git worktree are refused.
+- On POSIX, a file symlink's resolved target must be inside the user's home
+  directory and satisfy the same file-mode check.
+- Keys must match `^[A-Z][A-Z0-9_]*$`.
+- Parsing supports comments, quoted values and an optional `export` prefix,
+  without variable interpolation.
+- A missing file loads as an empty object. Appending creates it by default;
+  callers can disable creation with `createIfMissing: false`.
+- Updates write a sibling temporary file with mode `0600`, then rename it
+  into place.
 
-## Forward-compat
-
-`appendOperatorSecrets` is `async` even though its body is sync
-today — the `await Promise.resolve()` placeholder is intentional,
-satisfying `require-await` lint without changing the `Promise<void>`
-return shape. D115 plans to add atomic-rotation I/O behind the same
-signature. Do not "simplify" this to a sync function.
+The loader and appender return promises; consumers should await them.
+See the [public exports](src/index.ts), [loader tests](tests/unit/loader.test.ts)
+and [appender tests](tests/unit/appender.test.ts) for the API and edge cases.

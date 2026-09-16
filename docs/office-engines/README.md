@@ -24,12 +24,11 @@ original copyright and applicable license notices when porting code.
 
 Writer consumes the owned Docs browser and Node exports.
 The existing Markdown editor remains in place.
-Notes remains deferred. Board engine qualification is recorded in
-[BOARD-QUALIFICATION.md](BOARD-QUALIFICATION.md). Its native mini-app has completed
-[local packaged qualification](BOARD-PACKAGED-QUALIFICATION.md); source merge and
-publication remain separate. Slides has a packaged
-mini-app under active qualification; no upstream backend service is included.
-Its full native Genie authoring contract and responsibility boundaries are in
+Notes remains deferred. [Board](../../packages/first-party-apps/board/README.md)
+and [Slides](../../packages/first-party-apps/presentation/README.md) are bundled
+mini-apps; no upstream backend service is included.
+See [testing](TESTING.md) for engine, browser and packaged-image checks.
+The Slides native Genie authoring contract and responsibility boundaries are in
 [SLIDES-GENIE-AUTHORING.md](SLIDES-GENIE-AUTHORING.md).
 
 ## Build and qualification

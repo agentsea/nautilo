@@ -4,7 +4,7 @@
 
 代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
 
-<!-- Translation source: README.md; SHA-256: 9b60bbbe2574e6ca26450ce9087884705ee319256bc1591e9a256f3db66971c4 -->
+<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -104,7 +104,7 @@ Nautilo 把服务器和数据库的控制权交给你。由你决定它在哪里
 | [Desktop](apps/desktop/README.md) | Electron 客户端、本地工作站集成与打包。 |
 | [Mobile](apps/mobile/README.md) | React Native / Expo 移动客户端。 |
 | [CLI](apps/cli/README.md) | 通过终端部署和管理服务器。 |
-| [第一方应用](packages/first-party-apps) | 随附的创作应用，包括 [Writer](packages/first-party-apps/writer) 和 [Design](packages/first-party-apps/design)。 |
+| [第一方应用](packages/first-party-apps) | 随附的创作应用：[Writer](packages/first-party-apps/writer)、[Sheets](packages/first-party-apps/spreadsheet)、[Slides](packages/first-party-apps/presentation)、[Board](packages/first-party-apps/board)、[Design](packages/first-party-apps/design)、[Video](packages/first-party-apps/video)。 |
 
 ### 核心包
 

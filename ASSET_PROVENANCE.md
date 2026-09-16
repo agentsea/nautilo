@@ -51,7 +51,7 @@ from the five Office app previews described above:
 | Assets | Recorded context |
 | --- | --- |
 | Five PNGs under `docs/office-engines/board-design/` | The [Board interface study](docs/office-engines/board-interface.md) records the local interactive mock and example content. |
-| Eleven PNGs under `docs/office-engines/board-native/` | The [surface qualification](docs/office-engines/BOARD-SURFACE-QUALIFICATION.md) and [canonical qualification](docs/office-engines/BOARD-CANONICAL-QUALIFICATION.md) record editor fixtures and captures. |
+| Eleven PNGs under `docs/office-engines/board-native/` | Synthetic editor fixtures captured by the [surface browser harness](packages/first-party-apps/board/scripts/qualify-browser.ts) and [canonical browser harness](packages/first-party-apps/board/scripts/qualify-canonical-browser.ts); results and images are retained in [board-native](docs/office-engines/board-native/). |
 | `packages/server/tests/integration/fixtures/d391-roundtrip.docx` | Project test document with a round-trip heading and body paragraph, created with OfficeCLI; also listed in the [OOXML corpus manifest](apps/workbench/tests/fixtures/ooxml/manifest.json). |
 
 These records describe their test and capture context. They do not establish a

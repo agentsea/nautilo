@@ -2,9 +2,7 @@
 
 The owned Board model and Slides canvas editor power the native mini-app.
 Its production entry composes canonical document writes, recovery, Human edit
-leases and Genie tools. Authenticated development and packaged Desktop/Genie
-acceptance are complete for the recorded local candidate. PR synchronization and
-remote CI remain pending; no production release is claimed.
+leases and Genie tools.
 
 Run `bun run board:prepare` from the repository root to build self-contained
 browser and Node tool bundles with provenance and dependency notices. The
@@ -43,7 +41,7 @@ It writes real canvas screenshots and a result under `docs/office-engines/board-
 It exercises note typing, fonts, native movement/resize, attached connections,
 grouping, image bytes/pixels, undo, zoom, minimap, palettes, keyboard and read-only
 behavior. Those are surface checks; they are not canonical save or installed
-Workbench acceptance. See `docs/office-engines/BOARD-SURFACE-QUALIFICATION.md`.
+Workbench acceptance.
 
 `mountBoardSurface` exposes the complete native model, including in-flight text,
 view/selection state and pending images. `board-app.ts` commits editing before
@@ -63,8 +61,7 @@ so an unsupported image cannot trap the document in an unsavable state.
 `bun run --cwd packages/first-party-apps/board test:canonical-browser` tests the
 prepared production bundle against an HTTP canonical bridge fixture, including
 save/reopen, stable typing, concurrency/copy, image refusal and both palettes.
-This is distinct from live Nautilo account/Genie acceptance. See
-`docs/office-engines/BOARD-CANONICAL-QUALIFICATION.md` for exact evidence and gaps.
+This is distinct from live Nautilo account/Genie acceptance.
 
 Role-based text follows the view palette; authored colors are preserved. Notes
 use explicit dark text on pastel fills. The synthetic Slides theme is derived
@@ -77,11 +74,8 @@ PowerPoint feature, freehand authoring, hosted collaboration or authenticated Mi
 import. The server image builds and includes Board unconditionally. Fresh seeding is
 enabled; explicit Human disable preferences survive reseeding and upgrades.
 The sidebar and expanded app listing use distinct Office artwork and a real
-editor screenshot. See
-[packaged qualification](../../../docs/office-engines/BOARD-PACKAGED-QUALIFICATION.md)
-for the exact candidate, lifecycle, full restore and authenticated Human/Genie
-evidence, and `docs/office-engines/BOARD-LIVE-QUALIFICATION.md` for the broader
-development Desktop/storage integrity matrix.
+editor screenshot. See the [testing guide](../../../docs/office-engines/TESTING.md)
+for engine, browser and packaged-image checks.
 
 Capture the public editor image with `bun packages/first-party-apps/board/scripts/capture-preview.ts`.
 Verify a built image with `bun packaging/wafflebase/verify-board-image.mjs IMAGE SOURCE_SHA`.

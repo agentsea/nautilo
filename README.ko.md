@@ -4,7 +4,7 @@
 
 코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
 
-<!-- Translation source: README.md; SHA-256: 9b60bbbe2574e6ca26450ce9087884705ee319256bc1591e9a256f3db66971c4 -->
+<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -104,7 +104,7 @@ Nautilo는 서버와 데이터베이스의 통제권을 당신에게 줍니다. 
 | [Desktop](apps/desktop/README.md) | Electron 클라이언트, 로컬 워크스테이션 통합, 패키징. |
 | [Mobile](apps/mobile/README.md) | React Native / Expo 모바일 클라이언트. |
 | [CLI](apps/cli/README.md) | 터미널에서 서버 배포 및 관리. |
-| [자체 제공 앱](packages/first-party-apps) | [Writer](packages/first-party-apps/writer), [Design](packages/first-party-apps/design) 등 기본 제공 창작 앱. |
+| [자체 제공 앱](packages/first-party-apps) | 기본 제공 창작 앱: [Writer](packages/first-party-apps/writer), [Sheets](packages/first-party-apps/spreadsheet), [Slides](packages/first-party-apps/presentation), [Board](packages/first-party-apps/board), [Design](packages/first-party-apps/design), [Video](packages/first-party-apps/video). |
 
 ### 핵심 패키지
 

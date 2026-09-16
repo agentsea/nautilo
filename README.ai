@@ -132,10 +132,10 @@ means they are not npm publication targets. See the
 [owned-engine maintenance and qualification record](docs/office-engines/README.md).
 Writer uses the owned Docs browser and Node exports. Slides has a packaged
 mini-app enabled on fresh installs; upgrades preserve the Human's preference.
-Notes and Board remain separate work; upstream source alone does not establish
-a delivered Nautilo app.
+Board has its own bundled mini-app and reuses the owned Slides canvas engine.
+Notes remains deferred.
 
-Writer, Sheets, Design, and Video integrate with Nautilo's app/document
+Writer, Sheets, Slides, Board, Design, and Video integrate with Nautilo's app/document
 lifecycle. Preserve exact Artifact/Workspace identity, live document versions,
 draft recovery, and commit ownership when importing, exporting, or editing.
 A provider filesystem path is not a Nautilo Workspace path. Current Folder and

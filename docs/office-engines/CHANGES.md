@@ -17,8 +17,8 @@ the focused textarea previously lost focus and could restart type-to-edit at
 the beginning of a note. A native-input regression and real Board typing test
 cover this; Slides browser qualification and existing shared-editor tests pass.
 Original provenance hashes remain the intake record, not rewritten source hashes.
-See [surface qualification](BOARD-SURFACE-QUALIFICATION.md) for exact evidence
-and the remaining host/persistence/Genie/package gates.
+See the [Board app](../../packages/first-party-apps/board/README.md) for the
+current surface and test commands.
 
 ## Owned Board engine — 2026-09-13
 
@@ -29,8 +29,7 @@ no upstream backend/frontend is imported. Added pure Board-required Slides Node
 exports, portable parse5 HTML mapping, explicit caller zoom bounds without
 implicit cutoffs, duplicate-ID rejection and prototype-safe skip accounting.
 Inherited tests now use native type assertions and run without DOM/source aliases.
-Browser/Node/CommonJS consumer proofs and the full frontend dependency map are in
-[BOARD-QUALIFICATION.md](BOARD-QUALIFICATION.md). Native app delivery remains open.
+Browser/Node/CommonJS consumer checks are described in [testing](TESTING.md).
 
 ## Live Genie and PowerPoint qualification — 2026-09-11
 
@@ -91,8 +90,8 @@ local journal, separate from canonical document saves. It binds the authenticate
 Human, server fingerprint, app and document; uses revisioned CAS/tombstones,
 integrity checks and atomic writes; and rechecks authority around asynchronous
 I/O. Workspace remains server-canonical and Current Folder drafts stay local.
-Writer's external Docs consumer is unchanged. Real packaged crash acceptance and
-the documented unbound/cold-offline limits remain in SLIDES-QUALIFICATION.md.
+Current recovery behavior and limitations are described in the
+[Slides app](../../packages/first-party-apps/presentation/README.md#document-contract).
 
 ## Nautilo adapter qualification — 2026-09-11
 
@@ -100,7 +99,7 @@ The earlier adapter checkpoint made no engine edits. Nautilo's host wires Slides
 Save Copy through the existing lifecycle and routes app-tool Workspace edits
 through the canonical mutation coordinator, Human draft admission and immutable
 commit receipts. The shared Apps listing has an original Slides icon and a real
-editor screenshot. See SLIDES-QUALIFICATION.md for evidence and remaining gates.
+editor screenshot. See [testing](TESTING.md) for repeatable checks.
 
 ## Engine safety follow-up — 2026-09-10
 
@@ -120,7 +119,7 @@ editor screenshot. See SLIDES-QUALIFICATION.md for evidence and remaining gates.
   with 4,997 observations: 959 reviewed and 4,038 unchanged frozen legacy.
   The 21 named shape/IME findings are resolved: twelve live observations now
   derive from verified guide authority, and nine obsolete observations are removed.
-  No legacy admission was used; see SLIDES-QUALIFICATION.md.
+  No legacy admission was used.
 - Directional arrow callouts now use the checked-in DrawingML frame/sibling guide
   chain for both paint and drag. Circular, curved and U-turn arrow handle domains
   are likewise derived from the preset geometry. Raw imported
@@ -257,11 +256,8 @@ Additional owned-source corrections:
 - Peer labels derive their display width from the actual canvas. IME diagnostic
   failure reaches browser/server cleanup before exiting.
 
-Qualification remains open. Geometry candidate approvals were withheld where
-authority or consumer behavior was not proved. Dynamic shape ranges, imported
-adjustment semantics, recursive table consumers and native app/conversion gates
-remain tracked in [SLIDES-QUALIFICATION.md](SLIDES-QUALIFICATION.md).
-No new runtime app, Writer migration or shipping verdict is implied by this slice.
+Current app and conversion behavior is documented in the
+[Slides app](../../packages/first-party-apps/presentation/README.md).
 
 ## Slides native authoring contract — 2026-09-11
 
