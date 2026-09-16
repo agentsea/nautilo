@@ -38,8 +38,8 @@ describe("Debian 13 security update and exception retirement", () => {
       }
     }
     expect(fixed).toBe(27); // 28 old decisions: one advisory had two scanner severity identities.
-    expect(current.exceptions).toHaveLength(232);
-    expect(bootstrap.exceptions).toHaveLength(1);
+    expect(current.exceptions).toHaveLength(233);
+    expect(bootstrap.exceptions).toHaveLength(2);
     expect(bootstrap.exceptions[0]).toMatchObject({ advisoryId: "CVE-2026-5435", installedVersion: "2.41-12+deb13u4" });
   });
 

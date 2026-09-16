@@ -33,7 +33,10 @@ pre-push:
           bun install
         fi
     - group:
-        parallel: true
+        # lint-eslint and typecheck both prepare Board's shared generated dist.
+        # Keep this stage serial so one gate cannot clean that tree while the
+        # other gate is resolving its types. Remote CI uses isolated runners.
+        parallel: false
         jobs:
           - name: lint
             run: TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh lint-eslint
