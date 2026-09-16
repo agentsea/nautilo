@@ -4,12 +4,12 @@
 
 El código y la documentación están actualmente en inglés. Damos la bienvenida a los PR de traducción; consulta la [guía para contribuir traducciones](CONTRIBUTING.md#translations-and-localization) (en inglés). Esta página traduce el README; no implica que la interfaz ni la documentación enlazada estén disponibles en español.
 
-<!-- Translation source: README.md; SHA-256: 38ba2d4823ffa6b42ffd19c987a12db0cdc049b162ce618653a4b57366a3862f -->
+<!-- Translation source: README.md; SHA-256: 9b60bbbe2574e6ca26450ce9087884705ee319256bc1591e9a256f3db66971c4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
 
-https://github.com/user-attachments/assets/a48c97b4-6e75-4d17-9c7d-6b921514eb20
+https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **Tu propio superagente. Tu gente y sus Genies. La inteligencia es tuya.**
 

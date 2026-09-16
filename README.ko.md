@@ -4,12 +4,12 @@
 
 코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
 
-<!-- Translation source: README.md; SHA-256: 38ba2d4823ffa6b42ffd19c987a12db0cdc049b162ce618653a4b57366a3862f -->
+<!-- Translation source: README.md; SHA-256: 9b60bbbe2574e6ca26450ce9087884705ee319256bc1591e9a256f3db66971c4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
 
-https://github.com/user-attachments/assets/a48c97b4-6e75-4d17-9c7d-6b921514eb20
+https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **나만의 슈퍼 에이전트. 함께하는 사람들과 그들의 Genie. 지능의 주인은 당신입니다.**
 
