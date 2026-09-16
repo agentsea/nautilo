@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
 import { appendGenerationShot, createEmptyGenerationBrief, type GenerationBrief } from "./generation-brief";
-import { sharedGenerationReferences } from "./generator-composer";
+import { allGenerationReferences, generationReferenceScope, sceneGenerationReferences } from "./generation-reference-scope";
 import type { NautiloVideoGenerationTakeStatus } from "./bridge";
 import { createEmptyProject, type VideoProject } from "./edl";
 
@@ -95,7 +95,8 @@ test("unified reference imports keep audio and assign an Audio mention", async (
   ], failures: [] }));
   await act(async () => { button(h.host, "+ Add references").click(); await Promise.resolve(); });
   expect(h.host.textContent).toContain("@Audio1");
-  expect(sharedGenerationReferences(h.project().generationBrief!).find((reference) => reference.name === "Voice")?.mediaKind).toBe("audio");
+  expect(sceneGenerationReferences(h.project().generationBrief!, "scene-one").find((reference) => reference.name === "Voice")?.mediaKind).toBe("audio");
+  expect(sceneGenerationReferences(h.project().generationBrief!, "scene-two")).toEqual([]);
 });
 
 test("Media Bin audio can be attached as a reference before a visual is added", async () => {
@@ -104,20 +105,82 @@ test("Media Bin audio can be attached as a reference before a visual is added", 
   const h = await fixture(async () => ({ kind: "ready", assets: [], mediaIds: ["voice"], failures: [] }), false, false, media);
   await act(async () => { button(h.host, "+ Add references").click(); await Promise.resolve(); });
   expect(h.host.textContent).toContain("@Audio1");
-  const reference = sharedGenerationReferences(h.project().generationBrief!).find((entry) => entry.name === "Library voice");
+  const reference = sceneGenerationReferences(h.project().generationBrief!, "scene-one").find((entry) => entry.name === "Library voice");
   expect(reference?.mediaKind).toBe("audio");
   expect(reference?.source).toEqual({ kind: "project-media", mediaId: "voice" });
 });
 
-test("batch imports survive ordinary draft edits", async () => {
+test("batch imports survive draft edits and stay attached to the scene that opened the picker", async () => {
   let resolve!: (result: unknown) => void;
   const pending = new Promise<unknown>((done) => { resolve = done; });
   const h = await fixture(() => pending);
   await act(async () => button(h.host, "+ Add references").click());
   await act(async () => button(h.host, "+ Add scene").click());
   await act(async () => resolve({ kind: "ready", assets: [{ artifactId: "artifact-draft", path: "references/draft.png", label: "Draft survives", mediaKind: "image", mimeType: "image/png", sizeBytes: 42 }], failures: [] }));
+  expect(h.host.textContent).not.toContain("Draft survives");
+  await act(async () => button(h.host, "Arrival").click());
   expect(h.host.textContent).toContain("Draft survives");
 
+});
+
+test("reference scope controls retain the sidebar layout and follow scene selection and ordering", async () => {
+  const h = await fixture(async () => ({ kind: "ready", assets: [
+    { artifactId: "artifact-subject", path: "references/subject.png", label: "Subject", mediaKind: "image", mimeType: "image/png", sizeBytes: 42 },
+  ], failures: [] }));
+  await act(async () => button(h.host, "+ Add references").click());
+  const reference = allGenerationReferences(h.project().generationBrief!)[0]!;
+  expect(generationReferenceScope(h.project().generationBrief!, reference.id)).toEqual(["scene-one"]);
+  expect(h.host.querySelector(".generator-scene-rail .generator-reference__scope")).not.toBeNull();
+  expect(h.host.querySelector(".generator-writing-pane .generator-reference")).toBeNull();
+  const open = () => (h.host.querySelector('[aria-label="Change scenes for Subject"]') as unknown as HTMLButtonElement).click();
+  await act(async () => open());
+  let dialog = h.host.querySelector("dialog")!;
+  expect((dialog.querySelectorAll('input[type="radio"]')[1] as unknown as HTMLInputElement).checked).toBe(true);
+  await act(async () => (dialog.querySelector('input[type="radio"]') as unknown as HTMLInputElement).click());
+  await act(async () => button(h.host, "Save changes").click());
+  expect(generationReferenceScope(h.project().generationBrief!, reference.id)).toBe("all");
+  await act(async () => button(h.host, "Departure").click());
+  expect(h.host.querySelector(".generator-reference__scope")?.textContent).toContain("All scenes");
+  await act(async () => open());
+  dialog = h.host.querySelector("dialog")!;
+  await act(async () => (dialog.querySelectorAll('input[type="radio"]')[1] as unknown as HTMLInputElement).click());
+  // Default selection is the current scene; selecting both remains explicit, not All scenes.
+  await act(async () => (dialog.querySelectorAll('input[type="checkbox"]')[0] as unknown as HTMLInputElement).click());
+  await act(async () => button(h.host, "Save changes").click());
+  expect(generationReferenceScope(h.project().generationBrief!, reference.id)).toEqual(["scene-one", "scene-two"]);
+  await act(async () => button(h.host, "+ Add scene").click());
+  expect(h.host.querySelector(".generator-reference__scope")).toBeNull();
+  await act(async () => button(h.host, "Departure").click());
+  await act(async () => (h.host.querySelector('[aria-label="Move scene 2 up"]') as unknown as HTMLButtonElement).click());
+  expect(h.host.textContent).toContain("Scene 1 of 3");
+  expect(h.host.querySelector(".generator-reference strong")?.textContent).toBe("@Image1");
+  await act(async () => button(h.host, "Simple").click());
+  expect(h.host.querySelector(".generator-reference strong")?.textContent).toBe("@Image1");
+});
+
+test("scope dialog rejects empty selection and cancel never mutates the project", async () => {
+  const h = await fixture(async () => ({ kind: "ready", assets: [
+    { artifactId: "artifact-audio", path: "references/voice.wav", label: "Voice", mediaKind: "audio", mimeType: "audio/wav", sizeBytes: 42 },
+  ], failures: [] }));
+  await act(async () => button(h.host, "+ Add references").click());
+  const before = JSON.stringify(h.project());
+  await act(async () => (h.host.querySelector('[aria-label="Change scenes for Voice"]') as unknown as HTMLButtonElement).click());
+  await act(async () => (h.host.querySelector('dialog input[type="checkbox"]') as unknown as HTMLInputElement).click());
+  expect(button(h.host, "Save changes").disabled).toBe(true);
+  await act(async () => button(h.host, "Cancel").click());
+  expect(h.host.querySelector("dialog")).toBeNull();
+  expect(JSON.stringify(h.project())).toBe(before);
+});
+
+test("deleting the importing scene never attaches the late result to another scene or all scenes", async () => {
+  let resolve!: (result: unknown) => void;
+  const pending = new Promise<unknown>(done => { resolve = done; });
+  const h = await fixture(() => pending);
+  await act(async () => button(h.host, "+ Add references").click());
+  await act(async () => button(h.host, "Delete").click());
+  await act(async () => resolve({ kind: "ready", assets: [{ artifactId: "late", path: "references/late.png", label: "Late reference", mediaKind: "image", mimeType: "image/png", sizeBytes: 42 }], failures: [] }));
+  expect(allGenerationReferences(h.project().generationBrief!)).toEqual([]);
+  expect(h.host.textContent).toContain("The scene was removed while choosing references.");
 });
 
 test("batch imports are discarded after the document changes", async () => {

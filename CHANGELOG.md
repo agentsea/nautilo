@@ -13,6 +13,11 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Video generation references can apply to all scenes or selected scenes, with
+  previews and scope controls beside the scene list. Scene assignments and prompt
+  mentions persist across saves and scene reordering; review uses each scene's
+  own image, video, and audio references.
+
 - Video generation accepts MP3/WAV audio references from Artifacts, the Media Bin,
   and computer uploads. Audio references retain waveform/playback previews and
   prompt mentions, appear in paid review, and reach Seedance with validated

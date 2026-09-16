@@ -1501,6 +1501,16 @@ describe("MiniAppSurface", () => {
     content = serializeVideoHtml(createDefaultManifest(), project, { touchMetadata: false });
     await expect(bridge.onVideoWorkspaceMediaOpenPreview({ referenceId: reference.id, signal: new AbortController().signal })).resolves.toEqual({ kind: "unavailable", code: "unavailable" });
     expect(openWorkspaceMock).toHaveBeenCalledTimes(1);
+    brief.blocks = [];
+    brief.references = [];
+    brief.shots = ["first", "second"].map(id => ({ id, title: id, description: "A scene", framing: "", camera: "", motion: "", audio: "", continuity: "", exclusions: "", references: [{ ...reference }] }));
+    content = serializeVideoHtml(createDefaultManifest(), project, { touchMetadata: false });
+    await expect(bridge.onVideoWorkspaceMediaOpenPreview({ referenceId: reference.id, signal: new AbortController().signal })).resolves.toMatchObject({ kind: "ready", mimeType: "image/png" });
+    expect(openWorkspaceMock).toHaveBeenCalledTimes(2);
+    brief.shots[1]!.references[0]!.source = { ...reference.source, artifactId: "58a0266d-b1c2-4ffd-9c10-2865bea8fc53" };
+    content = serializeVideoHtml(createDefaultManifest(), project, { touchMetadata: false });
+    await expect(bridge.onVideoWorkspaceMediaOpenPreview({ referenceId: reference.id, signal: new AbortController().signal })).resolves.toEqual({ kind: "unavailable", code: "unavailable" });
+    expect(openWorkspaceMock).toHaveBeenCalledTimes(2);
     rendered.unmount();
   });
 

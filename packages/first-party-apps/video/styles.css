@@ -1297,6 +1297,20 @@ button:disabled {
 .generator-reference--compact { padding: 5px; }
 .generator-reference--compact .generator-reference__media { aspect-ratio: 1; }
 .generator-reference--compact > span { font-size: 11px; }
+.generator-composer .generator-reference__scope { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 5px 7px; font-size: 11px; }
+.generator-reference-scope-dialog { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow: auto; }
+.generator-reference-scope-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.generator-reference-scope-dialog > p { margin: 10px 0 16px; overflow-wrap: anywhere; }
+.generator-reference-scope-dialog .generator-reference-scope-choice { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; }
+.generator-reference-scope-choice > span { display: grid; gap: 3px; }
+.generator-reference-scope-dialog input { margin-top: 4px; }
+.generator-reference-scope-scenes { display: grid; gap: 12px; padding: 0 0 8px 24px; }
+.generator-reference-scope-scenes label { display: flex; align-items: flex-start; gap: 8px; margin: 0; }
+.generator-reference-scope-scenes span { overflow-wrap: anywhere; }
+.generator-reference-scope-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.generator-reference-scope-dialog button.video-button--primary { background: var(--video-accent); color: var(--video-bg); }
+.video-app[data-theme="light"] .generator-reference-scope-dialog button.video-button--primary { color: #fff; }
+.generator-reference-scope-dialog button.video-button--primary:disabled { opacity: .5; cursor: not-allowed; }
 .generator-scene-rail > .generator-rail-references:first-child { border-top: 0; padding-top: 0; }
 .generator-composer .generator-simple-title { font-size: clamp(22px, 3vw, 28px); }
 .generator-simple-note { color: var(--video-muted); font-size: 13px; }

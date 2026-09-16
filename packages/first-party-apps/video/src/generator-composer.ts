@@ -14,10 +14,18 @@ export function sharedGenerationReferences(brief: GenerationBrief): GenerationRe
 
 export function referenceMentions(references: readonly GenerationReference[]): Map<string, string> {
   const counts = { image: 0, video: 0, audio: 0 };
-  return new Map(references.map((reference) => {
+  const reserved = new Set(references.flatMap(reference => reference.mention ? [reference.mention] : []));
+  const mentions = new Map<string, string>();
+  for (const reference of references) {
+    if (mentions.has(reference.id)) continue;
     const kind = reference.mediaKind ?? "image";
-    return [reference.id, reference.mention ?? `@${kind[0]!.toUpperCase()}${kind.slice(1)}${++counts[kind]}`];
-  }));
+    const prefix = `@${kind[0]!.toUpperCase()}${kind.slice(1)}`;
+    if (reference.mention) { mentions.set(reference.id, reference.mention); continue; }
+    let mention: string;
+    do { mention = `${prefix}${++counts[kind]}`; } while (reserved.has(mention));
+    reserved.add(mention); mentions.set(reference.id, mention);
+  }
+  return mentions;
 }
 
 export function setSharedGenerationReferences(brief: GenerationBrief, references: GenerationReference[]): GenerationBrief {

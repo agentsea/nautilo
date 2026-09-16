@@ -134,7 +134,7 @@ test("Generate is a peer workspace over the saved brief with Simple and Advanced
   expect(app).toContain('<GeneratorWorkspace project={project}');
   expect(composer).toContain('inert={!enabled} hidden={!enabled}');
   expect(composer).toContain('aria-label="Generation mode"');
-  expect(composer).toContain('aria-label="Shared references"');
+  expect(composer).toContain('aria-label="Scene references"');
   expect(composer).toContain('aria-label="Scene design"');
   expect(composer).toContain("appendGenerationShot");
   expect(composer).toContain("moveGenerationShot");

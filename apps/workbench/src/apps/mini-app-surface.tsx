@@ -369,10 +369,12 @@ function workspaceVideoReferenceFromDocument(content: string, referenceId: strin
   if (!brief) return null;
   const shared = effectiveGenerationDirectionBlocks(brief).flatMap((block) => block.kind === "references" ? block.references ?? [] : []);
   const matches = [...shared, ...brief.shots.flatMap((shot) => shot.references)].filter((reference) => reference.id === referenceId);
-  // Duplicate identities are ambiguous even when their display names agree.
-  if (matches.length !== 1) return null;
   const reference = matches[0];
   if (!reference) return null;
+  // A reference may be assigned to several scenes. Repeated assignments must
+  // agree on the media kind and complete saved lineage; names are not authority.
+  if (shared.filter(item => item.id === referenceId).length > 1 || matches.some(item =>
+    (item.mediaKind ?? "image") !== (reference.mediaKind ?? "image") || JSON.stringify(item.source) !== JSON.stringify(reference.source))) return null;
   if (reference.source?.kind === "project-media") return durableWorkspaceVideoMediaFromDocument(content, reference.source.mediaId);
   const source = reference.source;
   if (source?.kind !== "workspace-artifact" || !WORKSPACE_ARTIFACT_ID.test(source.artifactId) || !validateWorkspaceLogicalPath(source.path).ok || source.path.includes("\\") || /(?:https?:|data:|blob:|file:)/iu.test(source.path)) return null;
