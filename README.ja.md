@@ -4,7 +4,7 @@
 
 コードとドキュメントは現在、英語で書かれています。翻訳の PR を歓迎します。[翻訳への貢献ガイド](CONTRIBUTING.md#translations-and-localization)（英語）をご覧ください。このページは README の日本語訳です。アプリの画面やリンク先のドキュメントが日本語に対応していることを示すものではありません。
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: 809b94c62982691a47a537080e0f1e30a7f939214d5d4376ccbe46f03536ae1b -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -21,6 +21,28 @@
 [ダウンロード](https://nautilo.ai/download) ·
 [パッケージ](#explore-the-code) ·
 [貢献する](CONTRIBUTING.md)
+
+<a id="get-started"></a>
+
+## はじめる
+
+どの Nautilo クライアントも Nautilo サーバーに接続します。自分に合う方法を選んでください。
+
+Mac で初めて Nautilo を試すなら、[ローカルデプロイのクイックスタート](https://nautilo.ai/docs/operator/deploy/local)から始めてください。これは1台のマシンで評価するための構成です。モバイルからアクセスしたい場合や、チームで使えるサーバーが必要な場合は、以下のホスティング方法を選んでください。
+
+| やりたいこと | ここから始める |
+| --- | --- |
+| 既存のサーバーに参加する | [Nautilo をダウンロード](https://nautilo.ai/download)し、サーバーのアドレスまたは招待を使って[インストールと接続](https://nautilo.ai/docs/use/install-and-connect)を進めます。 |
+| Mac で初めてのサーバーを動かす | Docker Desktop と署名済み Nautilo CLI を使い、[ローカルデプロイのクイックスタート](https://nautilo.ai/docs/operator/deploy/local)に従います。 |
+| チーム用のサーバーをクラウドに用意する | [Railway デプロイガイド](https://nautilo.ai/docs/operator/deploy/railway)を使います。 |
+| 自分の Docker 基盤で動かす | [Docker Compose ガイド](https://nautilo.ai/docs/operator/deploy/docker-compose)を読むか、[デプロイ方法を比較](https://nautilo.ai/docs/operator/choose-a-deployment)します。 |
+| コードを変更する | [ソースから開発する](#develop-from-source)へ進みます。 |
+
+ダウンロードページには、現在の Desktop、モバイル、CLI の選択肢が掲載されています。サーバーのウェブクライアントを開くこともできます。Desktop はサーバーに接続するクライアントです。インストールしてもサーバーやデータベースは導入されません。モバイルには HTTPS でアクセスできるサーバーが必要です。
+
+新しいサーバーでは、オーナー設定を完了し、[プロバイダーキーを追加](https://nautilo.ai/docs/operator/provider-keys)してください。それから Genie をカスタマイズし、Room を開き、本当に作りたいものを持ち込みましょう。[最初の1時間](https://nautilo.ai/docs/use/first-hour)では、一緒に文書を作成し、自分で編集して、成果を保存するところまで案内します。
+
+Nautilo は **alpha** 段階です。
 
 ## 仲間を連れてこよう。仲間の Genie も。
 
@@ -44,26 +66,6 @@ Genie に誰かの答えを聞きに行ってもらう。バックグラウン�
 
 [nautilo.ai](https://nautilo.ai) の紹介映像を見るか、[最初の1時間](https://nautilo.ai/docs/use/first-hour)を参考に自分で始めてみてください。
 
-<a id="get-started"></a>
-
-## はじめる
-
-どの Nautilo クライアントも Nautilo サーバーに接続します。自分に合う方法を選んでください。
-
-| やりたいこと | ここから始める |
-| --- | --- |
-| 既存のサーバーに参加する | [Nautilo をダウンロード](https://nautilo.ai/download)し、サーバーのアドレスまたは招待を使って[インストールと接続](https://nautilo.ai/docs/use/install-and-connect)を進めます。 |
-| Mac で初めてのサーバーを動かす | Docker Desktop と署名済み Nautilo CLI を使い、[ローカルデプロイのクイックスタート](https://nautilo.ai/docs/operator/deploy/local)に従います。 |
-| チーム用のサーバーをクラウドに用意する | [Railway デプロイガイド](https://nautilo.ai/docs/operator/deploy/railway)を使います。 |
-| 自分の Docker 基盤で動かす | [Docker Compose ガイド](https://nautilo.ai/docs/operator/deploy/docker-compose)を読むか、[デプロイ方法を比較](https://nautilo.ai/docs/operator/choose-a-deployment)します。 |
-| コードを変更する | [ソースから開発する](#develop-from-source)へ進みます。 |
-
-ダウンロードページには、現在の Desktop、モバイル、CLI の選択肢が掲載されています。サーバーのウェブクライアントを開くこともできます。Desktop はサーバーに接続するクライアントです。インストールしてもサーバーやデータベースは導入されません。モバイルには HTTPS でアクセスできるサーバーが必要です。
-
-新しいサーバーでは、オーナー設定を完了し、[プロバイダーキーを追加](https://nautilo.ai/docs/operator/provider-keys)してください。それから Genie を作り、Room を開き、本当に作りたいものを持ち込みましょう。[最初の1時間](https://nautilo.ai/docs/use/first-hour)では、一緒に文書を作成し、自分で編集して、成果を保存するところまで案内します。
-
-Nautilo は **alpha** 段階です。現在の配布物と提供状況は[リリース状況](https://nautilo.ai/product-release-status)で確認してください。
-
 ## 自分の家の鍵は、自分で持つ
 
 AI があなたを深く知るほど、その関係を誰が管理するかが重要になります。仕事の習慣、会話、一緒に作ってきたもの。それは、あなたの人生の一部として大きくなっていきます。
@@ -82,7 +84,6 @@ Nautilo では、サーバーとデータベースをあなたが管理します
 | [Nautilo を使う](https://nautilo.ai/docs/use) | Room、Genie、創作ツール、日々のワークフロー。 |
 | [Nautilo を運用する](https://nautilo.ai/docs/operator) | サーバーのデプロイ、設定、管理、保守。 |
 | [Nautilo を開発する](https://nautilo.ai/docs/build) | アーキテクチャとソースを使った開発。 |
-| [エンティティモデル](https://nautilo.ai/docs/build/concepts/entity-model) | Human、Agent、Room、Group と、それらの関係。 |
 | [スキルパック](https://nautilo.ai/skills) | AI アシスタント向けの Nautilo ガイダンス。 |
 | [設計原則](https://nautilo.ai/principles) | 製品の形を決める判断。 |
 | [バージョン管理されたドキュメントの索引](DOCS.md) | ソースの契約、パッケージング、リリース、運用手順書。 |
