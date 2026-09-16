@@ -41,6 +41,7 @@ export function parseGenerationReviewResult(input: unknown): typeof GENERATION_R
 export function inspectGenerationProject(project: VideoProject) {
   const brief = project.generationBrief ?? createEmptyGenerationBrief();
   return {
+    projectTitle: project.metadata?.title,
     quickBrief: brief.quickBrief,
     blocks: effectiveGenerationDirectionBlocks(brief).map(block => ({ ...block, ...(block.references ? { references: block.references.map(ref => ({ id: ref.id, name: ref.name, mediaKind: ref.mediaKind })) } : {}) })),
     scenes: brief.shots.map(shot => ({ ...shot, references: shot.references.map(ref => ({ id: ref.id, name: ref.name, mediaKind: ref.mediaKind })) })),

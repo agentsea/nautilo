@@ -139,7 +139,7 @@ function parseDirectMutationFailure(error: string): AppDirectMutationGateFailure
       parsed["status"] === "use_edit_open_writer" &&
       parsed["code"] === "use_edit_open_writer" &&
       parsed["message"] ===
-        "This document is open in Writer review. Use edit-open-writer."
+        "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file."
     ) {
       return parsed as AppDirectMutationGateFailure;
     }

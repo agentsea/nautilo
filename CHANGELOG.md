@@ -13,6 +13,19 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Mini-app editors release their live sessions across reloads and recover failed
+  cleanup before subsequent agent edits. Read-only previews now tell Genie to
+  use saved-document tools, and write guards no longer misidentify every editor
+  as Writer. Context updates preserve editor close guards and ongoing media
+  operations. Cleanup recovery also covers ordinary navigation without
+  cancelling editors in other live tabs. Native Video edits can rename the
+  project title durably.
+
+- Desktop content follows window resizing after server switching or changed-identity recovery.
+
+- Desktop can accept a changed server identity from a fresh development profile,
+  and recovery-screen actions remain available when its URL includes recovery state.
+
 - Browser Use can carry out requested website work, including creating and
   editing content, on public or connected sites. A task does not require a
   second approval or per-click confirmations. Genies pause for dangerous,

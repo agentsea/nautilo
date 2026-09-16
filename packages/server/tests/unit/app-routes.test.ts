@@ -1059,6 +1059,8 @@ describe("/api/apps routes", () => {
 });
 
 describe("/api/apps/:appId/live-session", () => {
+  const CLIENT_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+
   test("Video command HTTP delivery and acknowledgement require the exact authenticated session", async () => {
     await writeVideoApp(appsRoot);
     liveSessionNow = Date.now();
@@ -1138,6 +1140,154 @@ describe("/api/apps/:appId/live-session", () => {
       payload: issuePayload,
     });
     expect(scoped.statusCode).toBe(403);
+  });
+
+  test("validates client cancellation ids and fences issuance cancelled before completion", async () => {
+    const headers = { "x-test-user-id": USER_WITHOUT_MANAGE };
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/prepare",
+      headers,
+      payload: { clientSessionId: "not-a-uuid" },
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers,
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID },
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers,
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID, issuanceToken: "invalid" },
+    })).statusCode).toBe(400);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/revoke",
+      headers,
+      payload: { clientSessionId: "not-a-uuid" },
+    })).statusCode).toBe(400);
+
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/prepare",
+      headers,
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    });
+    expect(prepared.statusCode).toBe(200);
+    const { issuanceToken } = JSON.parse(prepared.body) as { issuanceToken: string };
+    expect(issuanceToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/revoke",
+      headers,
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(JSON.parse(cancelled.body)).toEqual({ ok: true });
+
+    const issueAfterCancel = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers,
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID, issuanceToken },
+    });
+    expect(issueAfterCancel.statusCode).toBe(409);
+    expect(JSON.parse(issueAfterCancel.body)).toEqual({ error: "session_closed" });
+  });
+
+  test("client cancellation is bound to the authenticated app owner", async () => {
+    const ownerHeaders = { "x-test-user-id": USER_WITHOUT_MANAGE };
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/prepare",
+      headers: ownerHeaders,
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    });
+    const { issuanceToken } = JSON.parse(prepared.body) as { issuanceToken: string };
+    const mismatchedUserIssue = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers: { "x-test-user-id": USER_WITH_MANAGE },
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID, issuanceToken },
+    });
+    expect(mismatchedUserIssue.statusCode).toBe(409);
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers: ownerHeaders,
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID, issuanceToken },
+    });
+    expect(issued.statusCode).toBe(200);
+    const capability = JSON.parse(issued.body) as { sessionToken: string };
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers: ownerHeaders,
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID, issuanceToken },
+    })).statusCode).toBe(409);
+
+    const otherUserCancel = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/revoke",
+      headers: { "x-test-user-id": USER_WITH_MANAGE },
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    });
+    expect(otherUserCancel.statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/refresh",
+      headers: ownerHeaders,
+      payload: { ...issuePayload, sessionToken: capability.sessionToken },
+    })).statusCode).toBe(200);
+
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/revoke",
+      headers: ownerHeaders,
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/refresh",
+      headers: ownerHeaders,
+      payload: { ...issuePayload, sessionToken: capability.sessionToken },
+    })).statusCode).toBe(409);
+  });
+
+  test("client cancellation remains available after the app is removed", async () => {
+    const headers = { "x-test-user-id": USER_WITHOUT_MANAGE };
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/prepare",
+      headers,
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    });
+    const { issuanceToken } = JSON.parse(prepared.body) as { issuanceToken: string };
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session",
+      headers,
+      payload: { ...issuePayload, clientSessionId: CLIENT_SESSION_ID, issuanceToken },
+    });
+    expect(issued.statusCode).toBe(200);
+    const capability = JSON.parse(issued.body) as { sessionToken: string };
+
+    await rm(join(appsRoot, "nautilo-writer"), { recursive: true, force: true });
+    resetInstalledAppRegistryForTests();
+    const cancelled = await app.inject({
+      method: "POST",
+      url: "/api/apps/nautilo-writer/live-session/revoke",
+      headers,
+      payload: { clientSessionId: CLIENT_SESSION_ID },
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(liveSessionRegistry.validateOpenForSubject(capability.sessionToken, {
+      appId: "nautilo-writer",
+      userId: USER_WITHOUT_MANAGE,
+    })).toEqual({ ok: false, code: "session_closed" });
   });
 
   test("rejects unreadable artifacts and stale revisions", async () => {

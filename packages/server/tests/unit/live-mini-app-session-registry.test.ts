@@ -258,6 +258,98 @@ describe("LiveMiniAppSessionRegistry", () => {
     ).toEqual({ ok: false, code: "session_closed" });
   });
 
+  test("cancellation removes a preparation before slow issuance, while unknown cancellation allocates no fence", () => {
+    const registry = new LiveMiniAppSessionRegistry(() => 100, 50);
+    const clientSessionId = "11111111-1111-4111-8111-111111111111";
+    const issuanceToken = registry.prepareForClient(clientSessionId, binding);
+
+    expect(registry.cancelForClient(clientSessionId, binding)).toEqual([]);
+    expect(registry.issueForClient(binding, clientSessionId, issuanceToken)).toBeNull();
+    expect(registry.hasOpenSessionForArtifact({
+      appId: binding.appId,
+      userId: binding.userId,
+      artifactId: binding.artifactId,
+    })).toBe(false);
+
+    const unknownClientSessionId = "22222222-2222-4222-8222-222222222222";
+    expect(registry.cancelForClient(unknownClientSessionId, binding)).toEqual([]);
+    const freshToken = registry.prepareForClient(unknownClientSessionId, binding);
+    expect(registry.issueForClient(binding, unknownClientSessionId, freshToken)).not.toBeNull();
+  });
+
+  test("requires a live matching one-shot preparation receipt", () => {
+    let now = 100;
+    const registry = new LiveMiniAppSessionRegistry(() => now, 10);
+    const clientSessionId = "11111111-1111-4111-8111-111111111111";
+    const otherClientSessionId = "22222222-2222-4222-8222-222222222222";
+    const issuanceToken = registry.prepareForClient(clientSessionId, binding);
+
+    expect(registry.issueForClient(binding, otherClientSessionId, issuanceToken)).toBeNull();
+    expect(registry.issueForClient({ ...binding, userId: "other-user" }, clientSessionId, issuanceToken)).toBeNull();
+    expect(registry.issueForClient({ ...binding, appId: "other-app" }, clientSessionId, issuanceToken)).toBeNull();
+    const issued = registry.issueForClient(binding, clientSessionId, issuanceToken);
+    expect(issued).not.toBeNull();
+    expect(registry.issueForClient(binding, clientSessionId, issuanceToken)).toBeNull();
+
+    const expiredToken = registry.prepareForClient(otherClientSessionId, binding);
+    now = 110;
+    expect(registry.issueForClient(binding, otherClientSessionId, expiredToken)).toBeNull();
+    const replacementToken = registry.prepareForClient(otherClientSessionId, binding);
+    expect(registry.issueForClient(binding, otherClientSessionId, replacementToken)).not.toBeNull();
+  });
+
+  test("cancels only the matching app, user, and client nonce and is idempotent", () => {
+    const registry = new LiveMiniAppSessionRegistry(() => 100, 50);
+    const clientSessionId = "11111111-1111-4111-8111-111111111111";
+    const otherClientSessionId = "22222222-2222-4222-8222-222222222222";
+    const otherUserBinding = { ...binding, userId: "user-2" };
+    const otherAppBinding = { ...binding, appId: "nautilo-spreadsheet" };
+    const matching = registry.issueForClient(
+      binding,
+      clientSessionId,
+      registry.prepareForClient(clientSessionId, binding),
+    )!;
+    const otherUser = registry.issueForClient(
+      otherUserBinding,
+      clientSessionId,
+      registry.prepareForClient(clientSessionId, otherUserBinding),
+    )!;
+    const otherApp = registry.issueForClient(
+      otherAppBinding,
+      clientSessionId,
+      registry.prepareForClient(clientSessionId, otherAppBinding),
+    )!;
+    const otherNonce = registry.issueForClient(
+      binding,
+      otherClientSessionId,
+      registry.prepareForClient(otherClientSessionId, binding),
+    )!;
+    const callbackSessionIds: string[] = [];
+
+    expect(registry.cancelForClient(clientSessionId, binding, (sessionId) => {
+      expect(registry.validateOpenForSubject(matching.token, binding).ok).toBe(true);
+      callbackSessionIds.push(sessionId);
+    })).toEqual([matching.token]);
+    expect(callbackSessionIds).toEqual([matching.sessionId]);
+    expect(registry.validateOpenForSubject(matching.token, binding)).toEqual({
+      ok: false,
+      code: "session_closed",
+    });
+    expect(registry.hasOpenSessionForArtifact({
+      appId: binding.appId,
+      userId: binding.userId,
+      artifactId: binding.artifactId,
+    })).toBe(true);
+    expect(registry.validateOpenForSubject(otherUser.token, otherUserBinding).ok).toBe(true);
+    expect(registry.validateOpenForSubject(otherApp.token, otherAppBinding).ok).toBe(true);
+    expect(registry.validateOpenForSubject(otherNonce.token, binding).ok).toBe(true);
+
+    expect(registry.cancelForClient(clientSessionId, binding, (sessionId) => {
+      callbackSessionIds.push(sessionId);
+    })).toEqual([]);
+    expect(callbackSessionIds).toEqual([matching.sessionId]);
+  });
+
   test("finds only a currently open session for the exact app, user, and internal artifact", () => {
     let now = 100;
     const registry = new LiveMiniAppSessionRegistry(() => now, 10);

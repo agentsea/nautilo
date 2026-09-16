@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const desktopRoot = join(import.meta.dir, "../..");
 const read = (...parts: string[]) => readFileSync(join(desktopRoot, ...parts), "utf8");
@@ -119,6 +120,102 @@ function sourceDevelopmentAuthorityHarness(
   };
 }
 
+type TestActiveAuthority = Readonly<{
+  scope: string | null;
+  revision: string | null;
+  connectionAttemptId: string | null;
+  serverFingerprint: string | null;
+}>;
+
+function desktopAuthorityCommitHarness(input: Readonly<{
+  persistedAuthority: TestActiveAuthority | null;
+  saveThrows?: boolean;
+}>) {
+  const main = read("electron", "main.ts");
+  const start = main.indexOf("let sourceDevelopmentAuthority:");
+  const end = main.indexOf("const desktopConnectionTupleBinding", start);
+  if (start < 0 || end < 0) throw new Error("expected Desktop authority commit seam");
+  const seam = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice(start, end));
+  let storedConfig: { authority: TestActiveAuthority } | null = input.persistedAuthority
+    ? { authority: input.persistedAuthority }
+    : null;
+  const saved: Array<{ authority: TestActiveAuthority }> = [];
+  const harness = new Function(
+    "randomUUID",
+    "loadConfig",
+    "projectActiveAuthority",
+    "serverSessions",
+    "getRecentServerFingerprint",
+    "configForCommittedActiveConnection",
+    "saveConfig",
+    `${seam}; return {
+      installSourceDevelopmentAuthority,
+      authoritativeConnectionSnapshot,
+      commitDesktopConnectionAuthority,
+    };`,
+  )(
+    (() => "fixed-uuid"),
+    () => storedConfig,
+    (config: { authority: TestActiveAuthority } | null) => config?.authority ?? null,
+    { active: null },
+    (serverUrl: string) => serverUrl === "http://127.0.0.1:3201" ? "fingerprint-a" : null,
+    (_current: unknown, next: Readonly<{
+      serverUrl: string;
+      connectionAttemptId: string;
+      serverFingerprint: string;
+    }>) => ({
+      authority: {
+        scope: new URL(next.serverUrl).origin,
+        revision: `revision-${next.connectionAttemptId}`,
+        connectionAttemptId: next.connectionAttemptId,
+        serverFingerprint: next.serverFingerprint,
+      },
+    }),
+    (config: { authority: TestActiveAuthority }) => {
+      if (input.saveThrows) throw new Error("disk write failed");
+      storedConfig = config;
+      saved.push(config);
+    },
+  ) as {
+    installSourceDevelopmentAuthority(serverUrl: string): void;
+    authoritativeConnectionSnapshot(): TestActiveAuthority;
+    commitDesktopConnectionAuthority(input: Readonly<{
+      routingServerUrl: string;
+      attemptId: string;
+      serverFingerprint: string;
+      priorAuthorityGuard: TestActiveAuthority;
+    }>): boolean;
+  };
+  return { ...harness, saved };
+}
+
+function activeLocalColdBootShellHarness(input: Readonly<{
+  rendererUrl: string;
+  rendererId?: number;
+  allowedPaths: readonly string[];
+}>) {
+  const main = read("electron", "main.ts");
+  const start = main.indexOf("function activeLocalColdBootShell(");
+  const end = main.indexOf("function assertColdBootActionSender", start);
+  if (start < 0 || end < 0) throw new Error("expected local cold-boot shell seam");
+  const seam = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice(start, end));
+  const renderer = {
+    id: input.rendererId ?? 41,
+    getURL: () => input.rendererUrl,
+  };
+  const activeLocalColdBootShell = new Function(
+    "activeRenderer",
+    "coldBootLocalShellPaths",
+    "pathToFileURL",
+    `${seam}; return activeLocalColdBootShell;`,
+  )(
+    () => renderer,
+    () => [...input.allowedPaths],
+    pathToFileURL,
+  ) as (event?: { sender: { id: number } }) => typeof renderer | null;
+  return { activeLocalColdBootShell, renderer };
+}
+
 function menuProjectionKey(
   state:
     | { scope: string; hasLogto: boolean; signedIn: boolean }
@@ -133,6 +230,40 @@ function menuProjectionKey(
 }
 
 describe("D514 — cold boot has one main-owned reachability authority", () => {
+  test("host resizing follows the active view after recovery replacement and server switching", () => {
+    const main = read("electron", "main.ts");
+    const start = main.indexOf("  const resizeActiveView = (): void => {");
+    const end = main.indexOf("  resizeActiveView();", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const seam = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice(start, end));
+    type Bounds = { x: number; y: number; width: number; height: number };
+    const originalBounds: Bounds[] = [];
+    const replacementBounds: Bounds[] = [];
+    const original = { setBounds: (bounds: Bounds) => originalBounds.push(bounds) };
+    const replacement = { setBounds: (bounds: Bounds) => replacementBounds.push(bounds) };
+    const sessions: { active: { view: typeof original } | null } = { active: { view: original } };
+    let size = { width: 1000, height: 700 };
+    const resize = new Function("mainWindow", "view", "serverSessions", `${seam}; return resizeActiveView;`)(
+      { isDestroyed: () => false, getContentBounds: () => size }, original, sessions,
+    ) as () => void;
+
+    resize();
+    expect(originalBounds).toEqual([{ x: 0, y: 0, width: 1000, height: 700 }]);
+    sessions.active = { view: replacement };
+    size = { width: 1400, height: 900 };
+    resize();
+    expect(replacementBounds).toEqual([{ x: 0, y: 0, width: 1400, height: 900 }]);
+    expect(originalBounds).toHaveLength(1);
+    sessions.active = { view: original };
+    size = { width: 800, height: 600 };
+    resize();
+    expect(originalBounds.at(-1)).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+    expect(replacementBounds).toHaveLength(1);
+    sessions.active = null;
+    expect(resize).not.toThrow();
+  });
+
   test("candidate onboarding adapter accepts only explicit B partition, bearer, and cancellation inputs", () => {
     const main = read("electron", "main.ts");
     const start = main.indexOf("function showOnboardingWizard(");
@@ -173,6 +304,36 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
     }
     expect(bootstrap).toContain("api.getBootstrapState()");
     expect(picker).toContain("api?.retry?.()");
+  });
+
+  test("cold-boot picker query state remains an exact local-shell authority", () => {
+    const pickerPath = join(desktopRoot, "electron", "cold-boot-picker.html");
+    const bootstrapPath = join(desktopRoot, "electron", "bootstrap.html");
+    const pickerHref = pathToFileURL(pickerPath).href;
+    const allowedPaths = [bootstrapPath, pickerPath];
+    const query = activeLocalColdBootShellHarness({
+      rendererUrl: `${pickerHref}?mode=wrong-server&server=http%3A%2F%2F127.0.0.1%3A3201`,
+      allowedPaths,
+    });
+    expect(query.activeLocalColdBootShell({ sender: { id: query.renderer.id } })).toBe(query.renderer);
+
+    const hash = activeLocalColdBootShellHarness({
+      rendererUrl: `${pickerHref}#recovery`,
+      allowedPaths,
+    });
+    expect(hash.activeLocalColdBootShell({ sender: { id: hash.renderer.id } })).toBe(hash.renderer);
+
+    const differentFile = activeLocalColdBootShellHarness({
+      rendererUrl: pathToFileURL(join(desktopRoot, "electron", "preload.ts")).href,
+      allowedPaths,
+    });
+    expect(differentFile.activeLocalColdBootShell()).toBeNull();
+    const remote = activeLocalColdBootShellHarness({
+      rendererUrl: "https://nautilo.test/cold-boot-picker.html?mode=wrong-server",
+      allowedPaths,
+    });
+    expect(remote.activeLocalColdBootShell()).toBeNull();
+    expect(query.activeLocalColdBootShell({ sender: { id: query.renderer.id + 1 } })).toBeNull();
   });
 
   test("main coalesces duplicate retries, generation-fences stale results, and keeps response bodies private", () => {
@@ -356,11 +517,14 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
     expect(authority.indexOf("if (sourceDevelopmentAuthority) return sourceDevelopmentAuthority")).toBeLessThan(
       authority.indexOf("const config = loadConfig()"),
     );
-    const commitStart = main.indexOf("commitActiveAuthority: ({ routingServerUrl");
-    const commitEnd = main.indexOf("persistMetadata: (candidate, health)", commitStart);
+    const commitStart = main.indexOf("function commitDesktopConnectionAuthority(");
+    const commitEnd = main.indexOf("const desktopConnectionTupleBinding", commitStart);
     const commit = main.slice(commitStart, commitEnd);
+    expect(commit).toContain("authoritativeConnectionSnapshot()");
     expect(commit).toContain("sourceDevelopmentAuthority = committedAuthority");
     expect(commit).toContain("projectActiveAuthority(committedConfig)");
+    expect(main).toContain("commitActiveAuthority: commitDesktopConnectionAuthority");
+    expect(main).toContain("commitAcceptedConfig: commitDesktopConnectionAuthority");
 
     const staleB = {
       scope: "https://stale-b.test", revision: "revision-b",
@@ -377,6 +541,84 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
     const restartedSourceRun = sourceDevelopmentAuthorityHarness(staleB);
     restartedSourceRun.installSourceDevelopmentAuthority("http://127.0.0.1:3201/");
     expect(restartedSourceRun.authoritativeConnectionSnapshot().scope).toBe("http://127.0.0.1:3201");
+  });
+
+  test("shared authority commit promotes a fresh source boot from A to B", () => {
+    const subject = desktopAuthorityCommitHarness({ persistedAuthority: null });
+    subject.installSourceDevelopmentAuthority("http://127.0.0.1:3201/");
+    const prior = subject.authoritativeConnectionSnapshot();
+
+    expect(subject.commitDesktopConnectionAuthority({
+      routingServerUrl: "http://127.0.0.1:3201/",
+      attemptId: "attempt-b",
+      serverFingerprint: "fingerprint-b",
+      priorAuthorityGuard: prior,
+    })).toBe(true);
+    expect(subject.saved).toHaveLength(1);
+    expect(subject.authoritativeConnectionSnapshot()).toEqual({
+      scope: "http://127.0.0.1:3201",
+      revision: "revision-attempt-b",
+      connectionAttemptId: "attempt-b",
+      serverFingerprint: "fingerprint-b",
+    });
+  });
+
+  test("shared authority commit rejects a stale guard without persisting", () => {
+    const authorityA: TestActiveAuthority = {
+      scope: "https://alpha.test",
+      revision: "revision-a",
+      connectionAttemptId: "attempt-a",
+      serverFingerprint: "fingerprint-a",
+    };
+    const subject = desktopAuthorityCommitHarness({ persistedAuthority: authorityA });
+
+    expect(subject.commitDesktopConnectionAuthority({
+      routingServerUrl: "https://alpha.test",
+      attemptId: "attempt-b",
+      serverFingerprint: "fingerprint-b",
+      priorAuthorityGuard: { ...authorityA, revision: "stale-revision" },
+    })).toBe(false);
+    expect(subject.saved).toEqual([]);
+    expect(subject.authoritativeConnectionSnapshot()).toEqual(authorityA);
+  });
+
+  test("failed source authority persistence leaves process-local A active", () => {
+    const subject = desktopAuthorityCommitHarness({ persistedAuthority: null, saveThrows: true });
+    subject.installSourceDevelopmentAuthority("http://127.0.0.1:3201/");
+    const prior = subject.authoritativeConnectionSnapshot();
+
+    expect(() => subject.commitDesktopConnectionAuthority({
+      routingServerUrl: "http://127.0.0.1:3201/",
+      attemptId: "attempt-b",
+      serverFingerprint: "fingerprint-b",
+      priorAuthorityGuard: prior,
+    })).toThrow("disk write failed");
+    expect(subject.saved).toEqual([]);
+    expect(subject.authoritativeConnectionSnapshot()).toEqual(prior);
+  });
+
+  test("shared authority commit preserves the packaged persisted-config path", () => {
+    const authorityA: TestActiveAuthority = {
+      scope: "https://alpha.test",
+      revision: "revision-a",
+      connectionAttemptId: "attempt-a",
+      serverFingerprint: "fingerprint-a",
+    };
+    const subject = desktopAuthorityCommitHarness({ persistedAuthority: authorityA });
+
+    expect(subject.commitDesktopConnectionAuthority({
+      routingServerUrl: "https://alpha.test/base",
+      attemptId: "attempt-b",
+      serverFingerprint: "fingerprint-b",
+      priorAuthorityGuard: authorityA,
+    })).toBe(true);
+    expect(subject.saved).toHaveLength(1);
+    expect(subject.authoritativeConnectionSnapshot()).toEqual({
+      scope: "https://alpha.test",
+      revision: "revision-attempt-b",
+      connectionAttemptId: "attempt-b",
+      serverFingerprint: "fingerprint-b",
+    });
   });
 
   test("only an explicit verified-release intent may consume either bootstrap ERR_ABORTED", async () => {

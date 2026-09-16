@@ -14,6 +14,7 @@ describe("sanitizeActiveMiniAppContextSafe", () => {
     const out = sanitizeActiveMiniAppContextSafe({
       appId: "test-canvas",
       appName: "Spread\nsheet",
+      mode: "preview",
       documentPath: "budget.spreadsheet.json",
       targetKind: "artifact",
       updatedAt: 1_700_000_000_000,
@@ -21,10 +22,24 @@ describe("sanitizeActiveMiniAppContextSafe", () => {
     expect(out).toEqual({
       appId: "test-canvas",
       appName: "Spreadsheet",
+      mode: "preview",
       documentPath: "budget.spreadsheet.json",
       targetKind: "artifact",
       updatedAt: 1_700_000_000_000,
     });
+  });
+
+  test("keeps only recognized host surface modes", () => {
+    expect(sanitizeActiveMiniAppContextSafe({
+      appId: "test-canvas",
+      mode: "edit",
+      updatedAt: 1,
+    })?.mode).toBe("edit");
+    expect(sanitizeActiveMiniAppContextSafe({
+      appId: "test-canvas",
+      mode: "iframe-chosen",
+      updatedAt: 1,
+    })).toEqual({ appId: "test-canvas", updatedAt: 1 });
   });
 
   test("strips forbidden ids and full cell payloads from JSON fields", () => {

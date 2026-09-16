@@ -138,7 +138,7 @@ import {
   prepareCommittedColdBootTerminal,
   type CommittedColdBootTerminal,
 } from "./committed-cold-boot-terminal";
-import { createColdBootTerminalRuntime } from "./cold-boot-terminal-runtime";
+import { createColdBootTerminalRuntime, type AcceptedIdentityConfigCas } from "./cold-boot-terminal-runtime";
 import {
   prepareActivePrecommitColdBootTerminal,
   type ActivePrecommitColdBootTerminal,
@@ -10522,10 +10522,18 @@ ipcMain.handle("auth:reprobe-server", async (e) => {
 function activeLocalColdBootShell(e?: Electron.IpcMainInvokeEvent): Electron.WebContents | null {
   const renderer = activeRenderer();
   if (!renderer || (e && renderer.id !== e.sender.id)) return null;
-  const url = renderer.getURL();
-  return coldBootLocalShellPaths().some((filePath) => pathToFileURL(filePath).href === url)
-    ? renderer
-    : null;
+  try {
+    const url = new URL(renderer.getURL());
+    // Recovery state is carried in the query; admission still requires the
+    // exact local shell file and the current renderer sender.
+    url.search = "";
+    url.hash = "";
+    return coldBootLocalShellPaths().some((filePath) => pathToFileURL(filePath).href === url.href)
+      ? renderer
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function assertColdBootActionSender(e: Electron.IpcMainInvokeEvent): void {
@@ -11151,6 +11159,31 @@ function authoritativeConnectionSnapshot(): ActiveAuthority {
   throw new Error("legacy active authority migration must complete before connection flow");
 }
 
+/** Commit the guarded connection through the same authority in source and packaged Desktop. */
+function commitDesktopConnectionAuthority(
+  { routingServerUrl, attemptId, serverFingerprint, priorAuthorityGuard }: Parameters<AcceptedIdentityConfigCas>[0],
+): boolean {
+  const current = authoritativeConnectionSnapshot();
+  if (current.scope !== priorAuthorityGuard.scope ||
+    current.revision !== priorAuthorityGuard.revision ||
+    current.connectionAttemptId !== priorAuthorityGuard.connectionAttemptId ||
+    current.serverFingerprint !== priorAuthorityGuard.serverFingerprint) {
+    return false;
+  }
+  const committedConfig = configForCommittedActiveConnection(loadConfig(), {
+    serverUrl: routingServerUrl,
+    connectionAttemptId: attemptId,
+    serverFingerprint,
+  });
+  saveConfig(committedConfig);
+  if (sourceDevelopmentAuthority) {
+    const committedAuthority = projectActiveAuthority(committedConfig);
+    if (!committedAuthority) throw new Error("committed source authority is invalid");
+    sourceDevelopmentAuthority = committedAuthority;
+  }
+  return true;
+}
+
 const desktopConnectionTupleBinding = createHash("sha256")
   .update(`${desktopInstance.instanceId}\0${desktopProfile}`)
   .digest("hex");
@@ -11413,27 +11446,7 @@ const desktopConnectionFlow = new DesktopConnectionFlow(
       retireRelayToken(serverUrl);
       await session.fromPartition(`persist:server-${serverUrlScope(serverUrl)}`).clearStorageData();
     },
-    commitActiveAuthority: ({ routingServerUrl, attemptId, serverFingerprint, priorAuthorityGuard }) => {
-      const current = authoritativeConnectionSnapshot();
-      if (current.scope !== priorAuthorityGuard.scope ||
-        current.revision !== priorAuthorityGuard.revision ||
-        current.connectionAttemptId !== priorAuthorityGuard.connectionAttemptId ||
-        current.serverFingerprint !== priorAuthorityGuard.serverFingerprint) {
-        return false;
-      }
-      const committedConfig = configForCommittedActiveConnection(loadConfig(), {
-        serverUrl: routingServerUrl,
-        connectionAttemptId: attemptId,
-        serverFingerprint,
-      });
-      saveConfig(committedConfig);
-      if (sourceDevelopmentAuthority) {
-        const committedAuthority = projectActiveAuthority(committedConfig);
-        if (!committedAuthority) throw new Error("committed source authority is invalid");
-        sourceDevelopmentAuthority = committedAuthority;
-      }
-      return true;
-    },
+    commitActiveAuthority: commitDesktopConnectionAuthority,
     persistMetadata: (candidate, health) => {
       writePersistedTuiServerTarget(candidate.serverUrl);
       pushRecentServer({ url: candidate.serverUrl });
@@ -11581,18 +11594,7 @@ function prepareProductionAcceptedIdentityColdBootTerminal(input: Readonly<{ dis
   let rendererReleased = false;
   return prepareAcceptedIdentityColdBootTerminal({
     ...runtime.acceptedPorts({
-      // One config snapshot is both the exact A compare and the sole B write.
-      commitAcceptedConfig: ({ routingServerUrl, attemptId, serverFingerprint, priorAuthorityGuard }) => {
-        const current = loadConfig();
-        const authority = current ? projectActiveAuthority(current) : null;
-        if (!authority || authority.scope !== priorAuthorityGuard.scope || authority.revision !== priorAuthorityGuard.revision ||
-            authority.connectionAttemptId !== priorAuthorityGuard.connectionAttemptId ||
-            authority.serverFingerprint !== priorAuthorityGuard.serverFingerprint) return false;
-        saveConfig(configForCommittedActiveConnection(current, {
-          serverUrl: routingServerUrl, connectionAttemptId: attemptId, serverFingerprint,
-        }));
-        return true;
-      },
+      commitAcceptedConfig: commitDesktopConnectionAuthority,
     }),
     releaseCandidate: ({ routingServerUrl, facts }) => {
       rendererReleased = true;
@@ -12121,8 +12123,10 @@ function createWindow(
   mainWindow.contentView.addChildView(view);
   const resizeActiveView = (): void => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    const activeView = serverSessions.active?.view;
+    if (!activeView) return;
     const bounds = mainWindow.getContentBounds();
-    view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
+    activeView.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
   };
   resizeActiveView();
   browserControlManager = new BrowserControlManager({

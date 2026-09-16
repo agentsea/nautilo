@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import manifest from "../app.json";
 import { createEmptyProject } from "./edl";
 import { editGenerationScene, inspectGenerationProject, organizeGenerationProject, parseGenerationReviewCommand, parseGenerationReviewResult, GENERATION_REVIEW_REQUESTED } from "./generation-agent";
 import { appendGenerationShot, createEmptyGenerationBrief, materializeGenerationDirectionBlocks, moveGenerationShot, deleteGenerationDirectionBlock } from "./generation-brief";
@@ -50,6 +51,45 @@ test("saved scene tools reject stale versions and return canonical saved IDs on 
   expect(await editGeneration({ target, expectedSha256: "current", scene: { title: "Next", prompt: "Continue" } }, ctx)).toMatchObject({ status: "saved" });
   expect(writes).toBe(1);
   expect(await inspectGeneration({ target }, ctx)).toMatchObject({ ok: true, scenes: [{ title: "Next", description: "Continue" }] });
+});
+
+test("native project title rename persists through a later native scene edit", async () => {
+  let content = serializeVideoHtml(createDefaultManifest(), createEmptyProject());
+  let sha256 = "sha-1";
+  let revision = 1;
+  const ctx: AgentToolContext = { nautiloApp: { document: {
+    createFromAction: async () => { throw new Error("Not used"); },
+    read: async () => ({ content, baseSha256: sha256, baseRevision: revision, displayPath: "test.video.html", mimeType: "text/html" }),
+    write: async (_target: unknown, next: { content: string }) => {
+      content = next.content;
+      revision += 1;
+      sha256 = `sha-${revision}`;
+      return { kind: "saved" as const, sha256, revision };
+    },
+  } } };
+  const target = { surface: "workspace" as const, path: "test.video.html" };
+
+  expect(await editGeneration({ target, expectedSha256: sha256, expectedRevision: revision, projectTitle: "Launch & Learn" }, ctx))
+    .toMatchObject({ status: "saved", sha256: "sha-2", revision: 2 });
+  expect(content).toContain("<title>Launch &amp; Learn</title>");
+  expect(content).toContain("<h1>Launch &amp; Learn</h1>");
+
+  expect(await editGeneration({ target, expectedSha256: sha256, expectedRevision: revision, scene: { title: "Opening", prompt: "A blue sphere" } }, ctx))
+    .toMatchObject({ status: "saved", sha256: "sha-3", revision: 3 });
+  const reopened = parseVideoHtml(content);
+  if (!reopened.ok) throw new Error(reopened.error);
+  expect(reopened.document.project.metadata?.title).toBe("Launch & Learn");
+  expect(reopened.document.project.generationBrief?.shots[0]).toMatchObject({ title: "Opening", description: "A blue sphere" });
+  expect(await inspectGeneration({ target }, ctx)).toMatchObject({ ok: true, projectTitle: "Launch & Learn" });
+});
+
+test("edit-generation advertises canonical project-title edits without requiring a scene", () => {
+  const tool = manifest.agent.tools.find(candidate => candidate.id === "edit-generation");
+  if (!tool) throw new Error("edit-generation tool missing");
+  expect(tool.title).toContain("project title");
+  expect(tool.description).toContain("never use raw file or HTML edits");
+  expect(tool.inputSchema.required).toEqual(["target", "expectedSha256"]);
+  expect(tool.inputSchema.properties).toHaveProperty("projectTitle");
 });
 
 test("scene/block organization uses shared commands, persists order and retains media and takes", () => {

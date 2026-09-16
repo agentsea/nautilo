@@ -1175,7 +1175,7 @@ describe("invokeAppTool runner", () => {
         ok: false as const,
         status: "use_edit_open_writer" as const,
         code: "use_edit_open_writer" as const,
-        message: "This document is open in Writer review. Use edit-open-writer." as const,
+        message: "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file." as const,
       };
       expect(result).toEqual({
         ok: false,

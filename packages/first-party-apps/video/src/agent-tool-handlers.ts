@@ -65,10 +65,25 @@ export async function inspectGeneration(args: InspectTimelineArgs, ctx: AgentToo
   return { ok: true, version: { sha256: parsed.baseSha256, revision: parsed.baseRevision }, ...inspectGenerationProject(parsed.document.project) };
 }
 
-export async function editGeneration(args: { target: AppDocumentTarget; expectedSha256: string; expectedRevision?: number; scene: unknown }, ctx: AgentToolContext) {
+export async function editGeneration(args: { target: AppDocumentTarget; expectedSha256: string; expectedRevision?: number; projectTitle?: string; scene?: unknown }, ctx: AgentToolContext) {
   const invalid = validateEditRequest({ ...args, operations: [] });
   if (invalid) return invalid;
-  const result = await mutateAndPersist(args.target, ctx, project => editGenerationScene(project, args.scene),
+  if (args.scene === undefined && args.projectTitle === undefined) return toolError("Provide a scene edit, a projectTitle, or both.");
+  if (args.projectTitle !== undefined && (typeof args.projectTitle !== "string" || args.projectTitle.trim().length === 0)) {
+    return toolError("projectTitle must be a non-empty string when provided.");
+  }
+  const result = await mutateAndPersist(args.target, ctx, project => {
+    const sceneEdit = args.scene === undefined ? { ok: true as const, project } : editGenerationScene(project, args.scene);
+    if (!sceneEdit.ok) return sceneEdit;
+    if (args.projectTitle === undefined) return sceneEdit;
+    return {
+      ok: true as const,
+      project: {
+        ...sceneEdit.project,
+        metadata: { ...sceneEdit.project.metadata, title: args.projectTitle.trim() },
+      },
+    };
+  },
     { sha256: args.expectedSha256, ...(args.expectedRevision === undefined ? {} : { revision: args.expectedRevision }) });
   return result;
 }

@@ -951,7 +951,7 @@ describe("createAppToolHost live-review document gate", () => {
         ok: false,
         status: "use_edit_open_writer",
         code: "use_edit_open_writer",
-        message: "This document is open in Writer review. Use edit-open-writer.",
+        message: "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file.",
       });
       expect(error.message).not.toContain("/tmp/project");
       expect(error.message).not.toContain("notes.html");

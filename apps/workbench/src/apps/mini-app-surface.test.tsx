@@ -1,6 +1,7 @@
 import { reapplyHappyDomGlobals } from "../../tests/bun-dom-preload";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { useCallback, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import { VideoHostAttestationRegistry, VIDEO_HOST_ATTESTATION_TTL_MS } from "../../../../packages/server/src/apps/video-host-attestation-registry";
 import {
@@ -20,6 +21,7 @@ import { setSimpleGenerationPrompt } from "../../../../packages/first-party-apps
 import { buildVideoGenerationPlanDraft, VIDEO_GENERATION_CATALOG_MODELS } from "../../../../packages/first-party-apps/video/src/generation-plan";
 import type { AppDraftRecoveryPort } from "./app-draft-recovery";
 import type { AppSlideTemplateLibrary } from "./app-slide-templates";
+import type { MiniAppCloseReason } from "./mini-app-lifecycle";
 import { dispatchAuthTransition } from "../lib/auth-transition";
 
 const loadMiniAppRuntime = mock(async (appId: string) => ({
@@ -3489,6 +3491,62 @@ describe("MiniAppSurface", () => {
       target: nextTarget,
       onContextUpdate: expect.any(Function),
     });
+  });
+
+  test("context updates preserve the installed bridge and lifecycle guard while reporting mode", async () => {
+    const target = {
+      kind: "artifact" as const,
+      id: "artifact-row-1",
+      path: "budget.document.json",
+      mimeType: "application/vnd.nautilo.document+json",
+    };
+    const observedModes: string[] = [];
+    let guard: ((reason: MiniAppCloseReason) => Promise<boolean>) | null = null;
+
+    installAppBridge.mockImplementationOnce((options) => () => {
+      options.onLifecycleRegistrationChange?.(false);
+      teardownBridge();
+    });
+
+    function ContextHost() {
+      const [, setContextUpdates] = useState(0);
+      const handleContextUpdate = useCallback((_: unknown, nextMode: "edit" | "preview") => {
+        observedModes.push(nextMode);
+        setContextUpdates((count) => count + 1);
+      }, []);
+      const registerGuard = useCallback((next: typeof guard) => {
+        guard = next;
+      }, []);
+      const close = useCallback(() => {}, []);
+      return (
+        <MiniAppSurface
+          appId="sample-app"
+          mode="edit"
+          target={target}
+          onContextUpdate={handleContextUpdate}
+          onRegisterTransitionGuard={registerGuard}
+          onClose={close}
+        />
+      );
+    }
+
+    render(<ContextHost />);
+    await waitFor(() => expect(installAppBridge).toHaveBeenCalledTimes(1));
+    const bridge = installAppBridge.mock.calls[0]?.[0];
+    act(() => bridge?.onLifecycleRegistrationChange?.(true));
+    expect(guard).toBeInstanceOf(Function);
+
+    act(() => bridge?.onContextUpdate?.({
+      appId: "sample-app",
+      target,
+      summary: { summary: "Budget" },
+      updatedAt: Date.now(),
+    }));
+
+    await waitFor(() => expect(observedModes).toEqual(["edit"]));
+    expect(installAppBridge).toHaveBeenCalledTimes(1);
+    expect(teardownBridge).not.toHaveBeenCalled();
+    expect(guard).toBeInstanceOf(Function);
   });
 
   test("matching changed event shows update banner and reloads only on user action", async () => {

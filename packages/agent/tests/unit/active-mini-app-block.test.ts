@@ -11,6 +11,7 @@ describe("buildActiveMiniAppBlock", () => {
     const out = buildActiveMiniAppBlock({
       appId: "sample-app",
       appName: "Sample App",
+      mode: "preview",
       documentPath: "budget.html",
       targetKind: "artifact",
       selection: { label: "Sheet1 A1:C12" },
@@ -23,6 +24,9 @@ describe("buildActiveMiniAppBlock", () => {
 
     expect(out).toContain("## Active mini-app");
     expect(out).toContain("App: Sample App (sample-app)");
+    expect(out).toContain("Surface mode: preview (read-only)");
+    expect(out).toContain("Use saved-document tools for this document");
+    expect(out).toContain("Do not call open/live-session tools unless separate trusted live-session context is present");
     expect(out).toContain('Document: artifact "budget.html"');
     expect(out).toContain("Target: artifact");
     expect(out).toContain("Selection: Sheet1 A1:C12");
@@ -30,6 +34,21 @@ describe("buildActiveMiniAppBlock", () => {
     expect(out).toContain("Summary: revenue/cost worksheet with 40 rows.");
     expect(out).not.toContain("Active sheet:");
     expect(out).not.toContain("Used range:");
+  });
+
+  test("requires trusted live-session context before routing edit surfaces to live tools", () => {
+    const out = buildActiveMiniAppBlock({
+      appId: "nautilo-presentation",
+      appName: "Slides",
+      mode: "edit",
+      documentPath: "deck.presentation.html",
+      targetKind: "artifact",
+      updatedAt: 1,
+    });
+
+    expect(out).toContain("Surface mode: edit");
+    expect(out).toContain("only when separate trusted live-session context is present");
+    expect(out).toContain("Otherwise use saved-document tools");
   });
 
   test("sanitizes prompt strings", () => {

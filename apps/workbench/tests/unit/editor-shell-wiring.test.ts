@@ -102,6 +102,8 @@ describe("editor shell wiring", () => {
     expect(shell).toContain("const handleMiniAppContextUpdate = useCallback");
     expect(shell).toContain("setActiveMiniAppContext(context)");
     expect(shell).toContain("onContextUpdate={handleMiniAppContextUpdate}");
+    expect(shell).not.toContain("onContextUpdate={(context) => handleMiniAppContextUpdate");
+    expect(shell).toContain("mapActiveMiniAppContext(context, resolveMiniAppName(context.appId), mode)");
     expect(shell).toContain('const mode = options?.mode ?? "edit"');
     expect(shell).toContain('mode === "edit" && (!canInvokeAgents || !canWriteArtifacts)');
     expect(shell).toContain("mode={workSurface.mode}");
@@ -131,7 +133,7 @@ describe("editor shell wiring", () => {
     expect(surface).toContain("installAppBridge({");
     expect(surface).toContain("iframe,");
     expect(surface).toContain("target,");
-    expect(surface).toContain("onContextUpdate,");
+    expect(surface).toContain("onContextUpdate?.(context, mode)");
     expect(surface).toContain('sandbox="allow-scripts"');
   });
 });

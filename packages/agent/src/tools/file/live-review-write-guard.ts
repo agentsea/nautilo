@@ -9,7 +9,7 @@
 
 export const USE_EDIT_OPEN_WRITER = "use_edit_open_writer" as const;
 export const USE_EDIT_OPEN_WRITER_MESSAGE =
-  "This document is open in Writer review. Use edit-open-writer.";
+  "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file.";
 
 export type LiveReviewWriteGateFailure = {
   ok: false;

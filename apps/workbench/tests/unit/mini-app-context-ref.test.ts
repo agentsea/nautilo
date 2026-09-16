@@ -36,10 +36,11 @@ const baseContext: ActiveMiniAppContext = {
 
 describe("mini-app-context-ref", () => {
   test("mapActiveMiniAppContext maps target to targetKind only", () => {
-    const mapped = mapActiveMiniAppContext(baseContext, "Sample App");
+    const mapped = mapActiveMiniAppContext(baseContext, "Sample App", "preview");
     expect(mapped).toEqual({
       appId: "sample-app",
       appName: "Sample App",
+      mode: "preview",
       documentPath: "budget.document.json",
       targetKind: "artifact",
       selection: { sheetName: "Sheet1", range: "A1:C12" },
