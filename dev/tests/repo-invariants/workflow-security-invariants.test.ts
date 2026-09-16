@@ -6,6 +6,7 @@ const repositoryRoot = join(import.meta.dir, "../../..");
 const workflowsRoot = join(repositoryRoot, ".github/workflows");
 
 type Workflow = {
+  concurrency?: { group: string; "cancel-in-progress": boolean };
   permissions?: Record<string, string>;
   jobs?: Record<
     string,
@@ -33,6 +34,23 @@ async function workflowSources(): Promise<
 }
 
 describe("GitHub Actions workflow security", () => {
+  test.each([
+    "ci",
+    "contributor-build",
+    "lattice-crypto-pr",
+    "supply-chain",
+    "vulnerability-exception-expiry",
+  ])("%s isolates PR cancellation by number, not a fork's branch name", async (name) => {
+    const source = await readFile(join(workflowsRoot, `${name}.yml`), "utf8");
+    const workflow = Bun.YAML.parse(source) as Workflow;
+    // PR numbers are repository-wide: same-named fork branches cannot collide.
+    // Updates to one PR still cancel its previous run; non-PR events keep their ref.
+    expect(workflow.concurrency).toEqual({
+      group: `${name}-` + "${{ github.event.pull_request.number || github.ref }}",
+      "cancel-in-progress": true,
+    });
+  });
+
   test("defaults every workflow token to at most source read access", async () => {
     for (const { name, source } of await workflowSources()) {
       const workflow = Bun.YAML.parse(source) as Workflow;
