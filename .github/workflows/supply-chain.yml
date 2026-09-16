@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: supply-chain-${{ github.head_ref || github.ref }}
+  group: supply-chain-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
