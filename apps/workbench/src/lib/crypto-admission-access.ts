@@ -89,12 +89,15 @@ export function subscribeCryptoAdmissionAccess(listener: () => void): () => void
 }
 
 /**
- * Invalidate protected operations before asking the single gate owner to
- * reconcile. Disconnect deliberately pauses without manufacturing a retry;
- * reconnect/online/resume will ask the owner again.
+ * Routine checks do not revoke current admission. Security/transport signals
+ * still invalidate synchronously before the single gate owner reconciles.
+ * Disconnect pauses without manufacturing a retry.
  */
 export function requestCryptoAdmissionRefresh(reason: string): void {
-  if (snapshot.status === "open") {
+  const routine = reason === "visibility_resume"
+    || reason === "online"
+    || reason === "credential_changed";
+  if (snapshot.status === "open" && !routine) {
     const identity = snapshot.identity;
     if (identity === null) return;
     const blocked = reason === "device_removed_or_stale";

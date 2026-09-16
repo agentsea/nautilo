@@ -26,6 +26,14 @@ store update, or Desktop/Host installation.
   prompt mentions, appear in paid review, and reach Seedance with validated
   source bytes and duration. Audio donors require an image or video reference.
 
+- Routine workspace checks and same-account credential renewal preserve valid
+  in-flight saves and editor access. Expiry, revocation and actual access
+  changes still invalidate protected requests.
+
+- Human-only chats correctly report no pending Agent approvals. Background
+  approval recovery no longer interrupts conversations with a retry banner;
+  actual approval requests remain available through their existing prompts.
+
 - Mini-app editors release their live sessions across reloads and recover failed
   cleanup before subsequent agent edits. Read-only previews now tell Genie to
   use saved-document tools, and write guards no longer misidentify every editor

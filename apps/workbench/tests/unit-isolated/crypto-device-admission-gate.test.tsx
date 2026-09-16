@@ -6,6 +6,7 @@ import { reapplyHappyDomGlobals } from "../bun-dom-preload";
 import { ConnectionSegment } from "../../src/components/footer/connection-segment";
 import { RuntimeShellStateContext, WsStateContext } from "../../src/adapters/runtime-contexts";
 import { createWorkbenchPortal } from "../../src/components/workbench-portals";
+import { createAdmissionFetch } from "../../src/lib/admission-fetch";
 
 let pathname = "/rooms/room-1";
 let requiresCryptoDevice = true;
@@ -156,6 +157,7 @@ function StatefulProduct() {
         Draft
         <input value={draft} onChange={(event) => setDraft(event.target.value)} />
       </label>
+      <button type="button" onClick={() => setDraft("writing continues")}>Edit draft</button>
     </div>
   );
 }
@@ -199,6 +201,186 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("M303 Browser/Desktop admission gate", () => {
+  for (const encrypted of [false, true]) {
+    for (const trigger of ["visibility", "online", "pageshow", "credential"] as const) {
+      for (const phase of ["headers", "body"] as const) {
+        test(`${encrypted ? "encrypted" : "plaintext"} save ${phase} survive a ${trigger} check`, async () => {
+          requiresCryptoDevice = encrypted;
+          serverStatus = "admitted";
+          const view = render(<Gate><StatefulProduct /></Gate>);
+          const draft = await view.findByRole("textbox", { name: "Draft" });
+          fireEvent.click(view.getByRole("button", { name: "Edit draft" }));
+          const generation = getCryptoAdmissionSnapshot().generation;
+          let finishSave!: () => void;
+          const network = mock(() => phase === "headers"
+            ? new Promise<Response>((resolve) => {
+                finishSave = () => resolve(new Response("saved"));
+              })
+            : Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+                start(controller) {
+                  finishSave = () => {
+                    controller.enqueue(new TextEncoder().encode("saved"));
+                    controller.close();
+                  };
+                },
+              }))));
+          const saving = createAdmissionFetch(network)("/api/workspace/artifacts/document/patch", {
+            method: "POST",
+          }).then((response) => response.text());
+          await Promise.resolve();
+          await Promise.resolve();
+          let finishCheck!: () => void;
+          getPolicy.mockImplementationOnce(() => new Promise((resolve) => {
+            finishCheck = () => resolve({
+              requiresCryptoDevice: encrypted,
+              policy: {
+                mode: encrypted ? "encrypted_only" : "plaintext_only",
+                shadowBehavior: "fallback",
+              },
+            });
+          }));
+
+          act(() => {
+            if (trigger === "credential") {
+              credentialGeneration += 1;
+              view.rerender(<Gate><StatefulProduct /></Gate>);
+            } else if (trigger === "visibility") {
+              Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+              document.dispatchEvent(new Event("visibilitychange"));
+            } else window.dispatchEvent(new Event(trigger));
+          });
+
+          expect(getCryptoAdmissionSnapshot().status).toBe("open");
+          expect(getCryptoAdmissionSnapshot().generation).toBe(generation);
+          expect(draft.closest("[inert], [hidden]")).toBeNull();
+          finishSave();
+          expect(await saving).toBe("saved");
+          await act(async () => finishCheck());
+          expect(getCryptoAdmissionSnapshot().generation).toBe(generation);
+          expect(network).toHaveBeenCalledTimes(1);
+          expect(childMounts).toBe(1);
+          expect(childUnmounts).toBe(0);
+          expect((draft as HTMLInputElement).value).toBe("writing continues");
+        });
+      }
+    }
+  }
+
+  test("a new credential can be proved without revoking the still-valid device admission", async () => {
+    serverStatus = "admitted";
+    const view = render(<Gate><StatefulProduct /></Gate>);
+    const draft = await view.findByRole("textbox", { name: "Draft" });
+    const generation = getCryptoAdmissionSnapshot().generation;
+    let finishPriorCheck!: (value: ReturnType<typeof successfulPolicy>) => void;
+    getPolicy.mockImplementationOnce(() => new Promise((resolve) => { finishPriorCheck = resolve; }));
+    act(() => requestCryptoAdmissionRefresh("visibility_resume"));
+    let finishProof!: () => void;
+    prove.mockImplementationOnce(() => new Promise((resolve) => {
+      finishProof = () => resolve({
+        status: "admitted", deviceId: "browser-device", expiresAt: Date.now() + 60_000,
+      });
+    }));
+    serverStatus = "required";
+    credentialGeneration += 1;
+    view.rerender(<Gate><StatefulProduct /></Gate>);
+    act(() => requestCryptoAdmissionRefresh("online"));
+    await act(async () => finishPriorCheck(successfulPolicy()));
+    await waitFor(() => expect(prove).toHaveBeenCalledTimes(1));
+    const policyCalls = getPolicy.mock.calls.length;
+    act(() => requestCryptoAdmissionRefresh("visibility_resume"));
+    expect(getPolicy).toHaveBeenCalledTimes(policyCalls);
+    expect(getCryptoAdmissionSnapshot().status).toBe("open");
+    expect(getCryptoAdmissionSnapshot().generation).toBe(generation);
+    expect(draft.closest("[inert], [hidden]")).toBeNull();
+    await act(async () => finishProof());
+    expect(getCryptoAdmissionSnapshot().generation).toBe(generation);
+  });
+
+  test("the original admission still expires while credential renewal is in flight", async () => {
+    serverStatus = "admitted";
+    const scheduled = spyOn(window, "setTimeout");
+    try {
+      const view = render(<Gate />);
+      await view.findByText("Protected product");
+      const generation = getCryptoAdmissionSnapshot().generation;
+      const expiry = scheduled.mock.calls.find(([, delay]) =>
+        typeof delay === "number" && delay > 1_000 && delay <= 60_000);
+      const expire = expiry?.[0];
+      if (typeof expire !== "function") throw new Error("Missing admission expiry callback");
+      let finishOldProof!: () => void;
+      prove.mockImplementationOnce(() => new Promise((resolve) => {
+        finishOldProof = () => resolve({
+          status: "admitted", deviceId: "browser-device", expiresAt: Date.now() + 60_000,
+        });
+      }));
+      serverStatus = "required";
+      credentialGeneration += 1;
+      view.rerender(<Gate />);
+      await waitFor(() => expect(prove).toHaveBeenCalledTimes(1));
+      expect(getCryptoAdmissionSnapshot().status).toBe("open");
+      let finishNewCheck!: (value: ReturnType<typeof successfulPolicy>) => void;
+      getPolicy.mockImplementationOnce(() => new Promise((resolve) => { finishNewCheck = resolve; }));
+      act(() => expire());
+      expect(getCryptoAdmissionSnapshot().status).toBe("paused");
+      expect(getCryptoAdmissionSnapshot().generation).toBe(generation + 1);
+      await act(async () => finishOldProof());
+      expect(getCryptoAdmissionSnapshot().status).toBe("paused");
+      await act(async () => finishNewCheck(successfulPolicy()));
+      await waitFor(() => expect(prove).toHaveBeenCalledTimes(2));
+      expect(getCryptoAdmissionSnapshot().status).toBe("open");
+      expect(getCryptoAdmissionSnapshot().generation).toBe(generation + 1);
+    } finally { scheduled.mockRestore(); }
+  });
+
+  test("a routine check discovering missing admission fences requests before reproof", async () => {
+    serverStatus = "admitted";
+    const view = render(<Gate />);
+    await view.findByText("Protected product");
+    const generation = getCryptoAdmissionSnapshot().generation;
+    let finishProof!: () => void;
+    prove.mockImplementationOnce(() => new Promise((resolve) => {
+      finishProof = () => resolve({
+        status: "admitted", deviceId: "browser-device", expiresAt: Date.now() + 60_000,
+      });
+    }));
+    serverStatus = "required";
+    act(() => requestCryptoAdmissionRefresh("visibility_resume"));
+    await waitFor(() => expect(prove).toHaveBeenCalledTimes(1));
+    expect(getCryptoAdmissionSnapshot().status).toBe("paused");
+    expect(getCryptoAdmissionSnapshot().generation).toBe(generation + 1);
+    await act(async () => finishProof());
+  });
+
+  test("a discovered policy change fences access before the next device check completes", async () => {
+    requiresCryptoDevice = false;
+    const view = render(<Gate />);
+    await view.findByText("Protected product");
+    const generation = getCryptoAdmissionSnapshot().generation;
+    requiresCryptoDevice = true;
+    let finishDevice!: () => void;
+    deviceAdmissionDeviceId.mockImplementationOnce(() => new Promise((resolve) => {
+      finishDevice = () => resolve("browser-device");
+    }));
+    act(() => requestCryptoAdmissionRefresh("online"));
+    await waitFor(() => expect(deviceAdmissionDeviceId).toHaveBeenCalledTimes(1));
+    expect(getCryptoAdmissionSnapshot().status).toBe("paused");
+    expect(getCryptoAdmissionSnapshot().generation).toBe(generation + 1);
+    await act(async () => finishDevice());
+  });
+
+  test("revocation during a routine check cannot be undone by its late response", async () => {
+    serverStatus = "admitted";
+    const view = render(<Gate />);
+    await view.findByText("Protected product");
+    let finish!: (value: ReturnType<typeof successfulPolicy>) => void;
+    getPolicy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    act(() => requestCryptoAdmissionRefresh("visibility_resume"));
+    act(() => requestCryptoAdmissionRefresh("device_removed_or_stale"));
+    await act(async () => finish(successfulPolicy()));
+    expect(getCryptoAdmissionSnapshot().status).toBe("blocked");
+    expect(view.getByText("Protected product").closest("[hidden]") !== null).toBe(true);
+  });
+
   test("product body portals retain state but inherit pause and explicit-denial hiding", async () => {
     serverStatus = "admitted";
     function ProductPopup() {
@@ -499,7 +681,7 @@ describe("M303 Browser/Desktop admission gate", () => {
     expect(childMounts).toBe(1);
   });
 
-  test("pauses synchronously without unmounting when the session credential changes", async () => {
+  test("keeps valid access usable while the same-account credential is checked", async () => {
     serverStatus = "admitted";
     const view = render(<Gate />);
     await waitFor(() => expect(view.getByText("Protected product")).toBeTruthy());
@@ -513,8 +695,8 @@ describe("M303 Browser/Desktop admission gate", () => {
     expect(view.queryByText("Reconnecting securely…")).toBeNull();
     expect(view.queryByRole("region", { name: "Connection recovery" })).toBeNull();
     expect(view.queryByRole("button", { name: "Retry" })).toBeNull();
-    expect(view.getByText("Protected product").parentElement?.hasAttribute("inert"))
-      .toBe(true);
+    expect(view.getByText("Protected product").closest("[inert]")).toBeNull();
+    expect(getCryptoAdmissionSnapshot().status).toBe("open");
 
     releasePolicy?.();
     await pendingPolicy;
@@ -607,7 +789,7 @@ describe("M303 Browser/Desktop admission gate", () => {
 
     act(() => document.dispatchEvent(new Event("visibilitychange")));
 
-    expect(getCryptoAdmissionSnapshot().status).toBe("paused");
+    expect(getCryptoAdmissionSnapshot().status).toBe("open");
     expect(view.queryByText("Reconnecting securely…")).toBeNull();
     expect(view.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(childMounts).toBe(1);
