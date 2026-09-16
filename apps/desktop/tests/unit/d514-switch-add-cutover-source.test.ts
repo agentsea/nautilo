@@ -319,7 +319,10 @@ describe("D514 switch/add production cutover source contract", () => {
     expect(useAnyway).toContain("prepareProductionAcceptedIdentityColdBootTerminal");
     expect(useAnyway).not.toContain("commitAcceptedWrongServer");
     expect(main).toContain("runtime.acceptedPorts({");
-    expect(main).toContain("configForCommittedActiveConnection(current");
+    expect(main).toContain("commitAcceptedConfig: commitDesktopConnectionAuthority");
+    const commit = main.slice(main.indexOf("function commitDesktopConnectionAuthority("), main.indexOf("const desktopConnectionTupleBinding"));
+    expect(commit).toContain("configForCommittedActiveConnection(loadConfig()");
+    expect(commit).toContain("saveConfig(committedConfig)");
     expect(acceptedTerminal).toContain("ACCEPTED_IDENTITY_REPLACEMENT_GATE_CONTEXT");
     expect(acceptedTerminal).toContain("acceptedIdentityReplacementReceipt: input.proof.receipt");
     expect(acceptedTerminal).toContain("ports.savePending(pendingAt(pending, \"metadata\"))");

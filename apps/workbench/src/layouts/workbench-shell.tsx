@@ -1314,10 +1314,10 @@ export function WorkbenchShell() {
   }, [panelSizes]);
 
   const handleMiniAppContextUpdate = useCallback(
-    (context: ActiveMiniAppContext) => {
+    (context: ActiveMiniAppContext, mode: OpenMiniAppMode) => {
       setActiveMiniAppContext(context);
       publishActiveMiniApp(
-        mapActiveMiniAppContext(context, resolveMiniAppName(context.appId)),
+        mapActiveMiniAppContext(context, resolveMiniAppName(context.appId), mode),
       );
     },
     [resolveMiniAppName],

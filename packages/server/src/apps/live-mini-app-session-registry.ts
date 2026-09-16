@@ -203,6 +203,7 @@ export type LiveReviewResolutionValidation =
 export type LiveMiniAppSessionExpiryObserver = (sessionId: string) => void;
 
 type LiveMiniAppSessionEntry = {
+  clientSessionId?: string;
   binding: LiveMiniAppSessionBinding;
   sessionId: string;
   expiresAt: number;
@@ -393,6 +394,7 @@ export class LiveMiniAppSessionRegistry {
   }>();
   private readonly proposals = new Map<string, LiveReviewProposalEntry>();
   private directMutationSequence = 0;
+  private readonly preparedClientSessions = new Map<string, { issuanceToken: string; expiresAt: number }>();
   /**
    * Server composition uses this to settle Task-owned reviews before a TTL
    * expiry discards the only process-local session/proposal identity.  The
@@ -425,6 +427,47 @@ export class LiveMiniAppSessionRegistry {
       directMutationLedger: new Map(),
     });
     return { token, sessionId, expiresAt };
+  }
+
+  /** Preparation carries no document lock. Only its one-shot receipt can issue. */
+  prepareForClient(clientSessionId: string, expected: Pick<LiveMiniAppSessionBinding, "appId" | "userId">): string {
+    this.expire();
+    const issuanceToken = randomBytes(32).toString("base64url");
+    this.preparedClientSessions.set(JSON.stringify([expected.userId, expected.appId, clientSessionId]), {
+      issuanceToken, expiresAt: this.now() + this.ttlMs,
+    });
+    return issuanceToken;
+  }
+
+  issueForClient(binding: LiveMiniAppSessionBinding, clientSessionId: string, issuanceToken: string) {
+    this.expire();
+    const key = JSON.stringify([binding.userId, binding.appId, clientSessionId]);
+    if (this.preparedClientSessions.get(key)?.issuanceToken !== issuanceToken) return null;
+    this.preparedClientSessions.delete(key);
+    const issued = this.issue(binding);
+    this.entries.get(issued.token)!.clientSessionId = clientSessionId;
+    return issued;
+  }
+
+  cancelForClient(
+    clientSessionId: string,
+    expected: Pick<LiveMiniAppSessionBinding, "appId" | "userId">,
+    beforeRevoke?: (sessionId: string) => void,
+  ): readonly string[] {
+    this.expire();
+    // Unknown cancellations allocate no state. Removing preparation also
+    // fences a slow in-flight document resolution, without a tombstone timeout.
+    this.preparedClientSessions.delete(JSON.stringify([expected.userId, expected.appId, clientSessionId]));
+    const tokens: string[] = [];
+    for (const [token, entry] of this.entries) {
+      if (entry.clientSessionId === clientSessionId && entry.binding.userId === expected.userId
+        && entry.binding.appId === expected.appId) {
+        beforeRevoke?.(entry.sessionId);
+        this.deleteEntry(token, entry);
+        tokens.push(token);
+      }
+    }
+    return tokens;
   }
 
   refresh(
@@ -1273,6 +1316,9 @@ export class LiveMiniAppSessionRegistry {
 
   expire(): void {
     const now = this.now();
+    for (const [key, preparation] of this.preparedClientSessions) {
+      if (preparation.expiresAt <= now) this.preparedClientSessions.delete(key);
+    }
     for (const [token, entry] of this.entries) {
       if (entry.expiresAt <= now) this.deleteEntry(token, entry, "expired");
     }

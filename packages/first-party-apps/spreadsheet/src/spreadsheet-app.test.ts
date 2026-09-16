@@ -210,6 +210,24 @@ describe("spreadsheet replacement mount failures", () => {
     dom.restore();
   });
 
+  test("does not claim that iframe context alone authorizes open-sheet tools", async () => {
+    const root = dom.document.createElement("div");
+    dom.document.body.append(root);
+    const fixture = bridgeFixture();
+    dispose = await mountSpreadsheet(root, fixture.bridge, {
+      createEditor(host) {
+        return new FakeEditor(host, "context", "none") as unknown as Spreadsheet;
+      },
+    });
+    await settle();
+
+    const latest = fixture.contexts.at(-1) as {
+      summary?: { workflow?: string };
+    } | undefined;
+    expect(latest?.summary?.workflow).toContain("only when the host supplies a separate trusted live mini-app session");
+    expect(latest?.summary?.workflow).toContain("otherwise inspect and edit the saved document target");
+  });
+
   test("surfaces an engine refusal without changing the document", async () => {
     const root = dom.document.createElement("div");
     dom.document.body.append(root);

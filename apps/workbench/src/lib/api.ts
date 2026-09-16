@@ -1,12 +1,13 @@
 import { NautiloApiClient } from "@nautilo/api-client/browser";
 import { workbenchFetch } from "./admission-fetch";
+import { withLiveSessionCleanup } from "./live-session-fetch";
 
 /**
  * Singleton API client for the workbench. Uses relative URLs — post-M167
  * the server always serves the SPA single-origin (UI + API + WS share one
  * origin) in every mode, so there is no separate API host.
  */
-export const apiClient = new NautiloApiClient("", { fetchImpl: workbenchFetch });
+export const apiClient = new NautiloApiClient("", { fetchImpl: withLiveSessionCleanup(workbenchFetch) });
 
 function websocketUrl(): string {
   if (typeof window === "undefined") return "";

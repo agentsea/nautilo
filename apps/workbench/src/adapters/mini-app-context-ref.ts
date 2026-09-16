@@ -5,6 +5,7 @@
  */
 
 import type {
+  ActiveMiniAppMode,
   ActiveMiniAppRequestContext,
   LiveMiniAppSessionCapability,
 } from "@nautilo/types";
@@ -19,6 +20,7 @@ let liveSessionRef: LiveMiniAppSessionCapability | null = null;
 export function mapActiveMiniAppContext(
   ctx: ActiveMiniAppContext,
   appName?: string,
+  mode?: ActiveMiniAppMode,
 ): ActiveMiniAppRequestContext {
   const documentPath =
     ctx.summary.documentPath ??
@@ -26,6 +28,7 @@ export function mapActiveMiniAppContext(
   return {
     appId: ctx.appId,
     ...(appName && appName.length > 0 ? { appName } : {}),
+    ...(mode ? { mode } : {}),
     ...(documentPath && documentPath.length > 0 ? { documentPath } : {}),
     ...(ctx.target?.kind ? { targetKind: ctx.target.kind } : {}),
     ...(ctx.summary.selection !== undefined ? { selection: ctx.summary.selection } : {}),

@@ -217,7 +217,7 @@ export async function mountSpreadsheet(
     bridge.context.set({
       selection: { sheetId: activeId, range: editor.getSelectionRangeOrActiveCell() },
       summary: { documentType: "spreadsheet", activeSheetId: activeId, activeSheetName: document.tabs[activeId]?.name, dirty: session.dirty,
-        workflow: "Use inspect-open-sheet with the activeSheetId and selected range before version-checked edit-open-sheet. Changes apply directly." },
+        workflow: "This selection is advisory. Use inspect-open-sheet and edit-open-sheet only when the host supplies a separate trusted live mini-app session; otherwise inspect and edit the saved document target." },
     });
   }
   async function mount(

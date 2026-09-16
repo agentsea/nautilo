@@ -567,6 +567,13 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
     body: unknown,
   ): IssueLiveMiniAppSessionRequest | null => {
     if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    const clientSessionId = (body as { clientSessionId?: unknown }).clientSessionId;
+    if (clientSessionId !== undefined && (typeof clientSessionId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientSessionId))) return null;
+    const issuanceToken = (body as { issuanceToken?: unknown }).issuanceToken;
+    if (clientSessionId !== undefined && (typeof issuanceToken !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(issuanceToken))) return null;
+    if (clientSessionId === undefined && issuanceToken !== undefined) return null;
+    const cleanup = typeof clientSessionId === "string" && typeof issuanceToken === "string" ? { clientSessionId, issuanceToken } : {};
     const targetKind = (body as { targetKind?: unknown }).targetKind;
     const documentVersion = parseLiveDocumentVersion(
       (body as { documentVersion?: unknown }).documentVersion,
@@ -578,7 +585,7 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
       if (typeof artifactId !== "string" || artifactId.length === 0 || !artifactVersion) {
         return null;
       }
-      return { targetKind: "artifact", artifactId, documentVersion: artifactVersion };
+      return { ...cleanup, targetKind: "artifact", artifactId, documentVersion: artifactVersion };
     }
     if (targetKind === "currentFile") {
       const relayIdHint = (body as { relayIdHint?: unknown }).relayIdHint;
@@ -597,6 +604,7 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
         return null;
       }
       return {
+        ...cleanup,
         targetKind: "currentFile",
         relayIdHint,
         currentFolder,
@@ -935,11 +943,30 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
   );
 
   app.post<{ Params: { appId: string } }>(
+    "/api/apps/:appId/live-session/prepare",
+    async (request, reply) => {
+      const route = await requireLiveReviewRouteContext(request, reply);
+      if (!route) return;
+      const clientSessionId = request.body && typeof request.body === "object"
+        ? (request.body as { clientSessionId?: unknown }).clientSessionId : undefined;
+      if (typeof clientSessionId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientSessionId)) {
+        return reply.code(400).send({ error: "invalid clientSessionId" });
+      }
+      return reply.send({ issuanceToken: sessionRegistry.prepareForClient(clientSessionId, route) });
+    },
+  );
+
+  app.post<{ Params: { appId: string } }>(
     "/api/apps/:appId/live-session",
     async (request, reply) => {
       const binding = await resolveLiveSessionIssueBinding(request, reply, request.body);
       if (!binding) return;
-      const issued = sessionRegistry.issue(binding);
+      const preparation = parseIssueLiveSessionRequest(request.body);
+      const issued = preparation?.clientSessionId && preparation.issuanceToken
+        ? sessionRegistry.issueForClient(binding, preparation.clientSessionId, preparation.issuanceToken)
+        : sessionRegistry.issue(binding);
+      if (!issued) return reply.code(409).send({ error: "session_closed" });
       sessionBindingByToken.set(issued.token, binding);
       return reply.send({
         sessionToken: issued.token,
@@ -1797,15 +1824,8 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
   app.post<{ Params: { appId: string } }>(
     "/api/apps/:appId/live-session/revoke",
     async (request, reply) => {
-      const installed = await getInstalledApps(resolveAppsRoot(deps));
-      const installedApp = installed.find((entry) => entry.id === request.params.appId);
-      if (
-        !installedApp?.enabled ||
-        !installedApp.manifest ||
-        !isLiveReviewEnabled(installedApp.manifest)
-      ) {
-        return reply.code(404).send({ error: "live session unavailable for app" });
-      }
+      // Cleanup must remain available after an app is disabled/uninstalled.
+      // Exact subject/session binding below grants no document access.
       const userId = requireSessionUserId(request);
       const env = request.memoryEnvelope;
       if (!userId || !env) {
@@ -1813,6 +1833,22 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
       }
       if (isScopeMemoryEnvelope(env) || env.ownerId !== userId) {
         return reply.code(403).send({ error: "Live review session requires authorized namespace context" });
+      }
+      const clientSessionId = request.body && typeof request.body === "object"
+        ? (request.body as { clientSessionId?: unknown }).clientSessionId : undefined;
+      if (clientSessionId !== undefined) {
+        if (typeof clientSessionId !== "string"
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientSessionId)) {
+          return reply.code(400).send({ error: "invalid clientSessionId" });
+        }
+        const finalize: Array<() => Promise<unknown>> = [];
+        const tokens = sessionRegistry.cancelForClient(clientSessionId, { appId: request.params.appId, userId }, (sessionId) => {
+          const failed = liveReviewLifecycle?.failReviewsForSession(sessionId, "LIVE_WRITER_REVIEW_SESSION_CLOSED") ?? [];
+          for (const binding of failed) finalize.push(() => liveReviewLifecycle!.finalizeReview(binding));
+        });
+        for (const token of tokens) sessionBindingByToken.delete(token);
+        for (const finish of finalize) await finish();
+        return reply.send({ ok: true });
       }
       const token =
         request.body && typeof request.body === "object"

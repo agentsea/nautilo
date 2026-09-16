@@ -207,6 +207,7 @@ describe("sendRoomMessage (D174 Phase 11.3)", () => {
       activeMiniApp: {
         appId: "sample-app",
         appName: "Sample App",
+        mode: "preview",
         documentPath: "budget.document.json",
         targetKind: "artifact",
         updatedAt: 1,
@@ -217,6 +218,7 @@ describe("sendRoomMessage (D174 Phase 11.3)", () => {
     expect(parsed["activeMiniApp"]).toEqual({
       appId: "sample-app",
       appName: "Sample App",
+      mode: "preview",
       documentPath: "budget.document.json",
       targetKind: "artifact",
       updatedAt: 1,

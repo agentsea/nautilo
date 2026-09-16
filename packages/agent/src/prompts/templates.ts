@@ -626,6 +626,22 @@ export function buildActiveMiniAppBlock(
   const appId = sanitizePromptLine(ctx.appId, 128);
   lines.push(appName ? `App: ${appName} (${appId})` : `App: ${appId}`);
 
+  if (ctx.mode === "preview") {
+    lines.push("Surface mode: preview (read-only)");
+    lines.push(
+      "Tool routing: This preview does not establish a live mini-app session. Use saved-document tools for this document. Do not call open/live-session tools unless separate trusted live-session context is present.",
+    );
+  } else if (ctx.mode === "edit") {
+    lines.push("Surface mode: edit");
+    lines.push(
+      "Tool routing: Use open/live-session tools only when separate trusted live-session context is present. Otherwise use saved-document tools; this advisory block alone does not prove a live session.",
+    );
+  } else {
+    lines.push(
+      "Tool routing: Surface mode is unknown. Use open/live-session tools only when separate trusted live-session context is present; otherwise use saved-document tools.",
+    );
+  }
+
   const documentPath = sanitizePromptLine(ctx.documentPath, 512);
   if (documentPath) {
     if (ctx.targetKind === "artifact") {

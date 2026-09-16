@@ -2,7 +2,11 @@
  * M187 — advisory sanitization for `activeMiniApp` chat ingress.
  * Malformed/oversized payloads drop to null without blocking the message.
  */
-import type { ActiveMiniAppRequestContext, ActiveMiniAppTargetKind } from "@nautilo/types";
+import type {
+  ActiveMiniAppMode,
+  ActiveMiniAppRequestContext,
+  ActiveMiniAppTargetKind,
+} from "@nautilo/types";
 
 const APP_ID_MAX_LEN = 128;
 const APP_NAME_MAX_LEN = 256;
@@ -96,6 +100,11 @@ function sanitizeTargetKind(raw: unknown): ActiveMiniAppTargetKind | undefined {
   return undefined;
 }
 
+function sanitizeMode(raw: unknown): ActiveMiniAppMode | undefined {
+  if (raw === "edit" || raw === "preview") return raw;
+  return undefined;
+}
+
 function sanitizeUpdatedAt(raw: unknown): number | null {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
   return raw;
@@ -120,6 +129,9 @@ export function sanitizeActiveMiniAppContextSafe(
   if (updatedAt == null) return null;
 
   const out: ActiveMiniAppRequestContext = { appId, updatedAt };
+
+  const mode = sanitizeMode(src["mode"]);
+  if (mode) out.mode = mode;
 
   const appNameRaw = src["appName"];
   if (typeof appNameRaw === "string") {

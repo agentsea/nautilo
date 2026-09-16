@@ -487,7 +487,7 @@ test("open Writer artifact keeps structural preparation gated while content uses
       ok: false,
       status: "use_edit_open_writer",
       code: "use_edit_open_writer",
-      message: "This document is open in Writer review. Use edit-open-writer.",
+      message: "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file.",
     });
     expect(prepared.reason).not.toContain(logicalPath);
 
@@ -519,7 +519,7 @@ test("open Writer artifact keeps structural preparation gated while content uses
       ok: false,
       status: "use_edit_open_writer",
       code: "use_edit_open_writer",
-      message: "This document is open in Writer review. Use edit-open-writer.",
+      message: "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file.",
     });
     expect(convertOutput).not.toContain(logicalPath);
     const afterBlockedConvert = await dispatchStageAndApply(

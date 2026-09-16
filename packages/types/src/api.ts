@@ -6,6 +6,7 @@ export * from "./push-notifications";
 export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 10;
 
 export type ActiveMiniAppTargetKind = "artifact" | "fs";
+export type ActiveMiniAppMode = "edit" | "preview";
 
 /**
  * M187 — compact active mini-app context forwarded on chat sends.
@@ -14,6 +15,8 @@ export type ActiveMiniAppTargetKind = "artifact" | "fs";
 export interface ActiveMiniAppRequestContext {
   appId: string;
   appName?: string;
+  /** Host-owned surface mode; iframe context cannot choose this value. */
+  mode?: ActiveMiniAppMode;
   documentPath?: string;
   targetKind?: ActiveMiniAppTargetKind;
   selection?: unknown;
@@ -150,7 +153,12 @@ export interface TrustedLiveMiniAppSessionContext extends LiveMiniAppSessionCapa
   instructions: string;
 }
 
-export type IssueLiveMiniAppSessionRequest =
+export type IssueLiveMiniAppSessionRequest = {
+  /** Host-created cleanup identity, scoped by authenticated user and app. */
+  clientSessionId?: string;
+  /** Host-only one-shot preparation receipt; never sent to the iframe/model. */
+  issuanceToken?: string;
+} & (
   | {
       targetKind: "artifact";
       artifactId: string;
@@ -163,7 +171,7 @@ export type IssueLiveMiniAppSessionRequest =
       currentFolder: string;
       relativePath: string;
       documentVersion: LocalShaDocumentVersion;
-    };
+    });
 
 export interface IssueLiveMiniAppSessionResponse extends LiveMiniAppSessionCapability {
   expiresAt: number;
@@ -173,9 +181,9 @@ export type RefreshLiveMiniAppSessionRequest = IssueLiveMiniAppSessionRequest & 
   sessionToken: string;
 };
 
-export interface RevokeLiveMiniAppSessionRequest {
-  sessionToken: string;
-}
+export type RevokeLiveMiniAppSessionRequest =
+  | { sessionToken: string }
+  | { clientSessionId: string };
 
 export interface ListPendingLiveProposalReviewsRequest {
   sessionToken: string;

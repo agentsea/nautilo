@@ -2,7 +2,7 @@ import { createVideoHostSessionManager, type VideoHostBinding, type VideoHostSes
 import { requestMiniAppExport } from "./mini-app-export";
 import { createAppImageAssets } from "./app-image-assets";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { WorkspaceMediaArtifact } from "@nautilo/types";
+import type { ActiveMiniAppMode, WorkspaceMediaArtifact } from "@nautilo/types";
 import { Maximize2, MessageSquare, X, Pencil } from "lucide-react";
 import { ApiError } from "@nautilo/api-client/browser";
 import { sendLiveAppCommand } from "./live-app-command";
@@ -223,7 +223,7 @@ function exportFailureMessage(result: ExportResult): string {
 export interface MiniAppSurfaceProps {
   appId: string;
   /** Preview retains canonical document reads and change notifications without edit authority. */
-  mode?: "edit" | "preview";
+  mode?: ActiveMiniAppMode;
   /** Optional shell-owned transition from the read-only preview into an editor route. */
   onEdit?: () => void;
   /** Resolved Workbench presentation mode; omitted mini-apps retain OS fallback. */
@@ -233,7 +233,7 @@ export interface MiniAppSurfaceProps {
    *  draft and only materializes a workspace artifact on first edit. */
   draft?: MiniAppDraftSeed;
   sourceHash?: string;
-  onContextUpdate?: (context: ActiveMiniAppContext) => void;
+  onContextUpdate?: (context: ActiveMiniAppContext, mode: ActiveMiniAppMode) => void;
   onLiveMiniAppSessionChange?: (session: {
     sessionToken: string;
     sessionId: string;
@@ -2305,7 +2305,7 @@ export function MiniAppSurface({
       } : {}),
       onContextUpdate: (context) => {
         activeContextRef.current = context;
-        onContextUpdate?.(context);
+        onContextUpdate?.(context, mode);
       },
       ...(runtime.hostCapabilities?.assetReadRaster === true ? { assetReadRaster: true } : {}),
       ...(runtime.hostCapabilities?.mediaProxy === true ? { mediaProxy: true } : {}),
