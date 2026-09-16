@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { appendGenerationDirectionBlock, createEmptyGenerationBrief, updateGenerationShot } from "./generation-brief";
-import { beginSceneDesign, setSimpleGenerationPrompt, simpleGenerationPrompt, sharedGenerationReferences, setSharedGenerationReferences, placeGeneratedMediaSequence } from "./generator-composer";
+import { beginSceneDesign, referenceExtraInstructions, setSimpleGenerationPrompt, simpleGenerationPrompt, sharedGenerationReferences, setSharedGenerationReferences, placeGeneratedMediaSequence } from "./generator-composer";
 import { createEmptyProject } from "./edl";
 import { createDefaultManifest, parseVideoHtml, serializeVideoHtml } from "./video-document";
 import { addClip } from "./commands";
@@ -70,4 +70,12 @@ test("switching modes never replaces references, clips or an existing scene", ()
   expect(beginSceneDesign(revised)).toBe(revised);
   expect(simpleGenerationPrompt(revised)).toBe("Scene one");
   expect(revised.shots[0]?.audio).toBe("Birds");
+});
+
+test("extra instructions preserve earlier role guidance without changing new instruction text", () => {
+  const reference = { id: "ref", name: "Character", role: "character appearance", instruction: "Ignore the background." };
+  expect(referenceExtraInstructions(reference)).toBe("Use for character appearance.\n\nIgnore the background.");
+  const edited = { ...reference, role: "", instruction: "Keep only the face." };
+  expect(referenceExtraInstructions(edited)).toBe("Keep only the face.");
+  expect(referenceExtraInstructions({ ...edited, instruction: "" })).toBe("");
 });

@@ -6,7 +6,11 @@ use **Add references** and **Replace reference**. Sources are **Artifacts** (med
 in the bound Workspace), **Media Bin** (the current project), and **Computer**.
 Both thumbnail and list views show readable names and previews, support search
 and media-type filters, and preserve multiple selections while browsing. A
-replacement chooses one item. Generation accepts images and videos only.
+replacement chooses one item. Generation accepts images, videos, and MP3/WAV
+audio references. Audio requires
+an image or video companion. References can apply to all scenes or selected
+scenes, and optional **Extra instructions** describe how to use each reference.
+Earlier role guidance remains visible in that single field.
 
 Cancel, Escape, and the visible close button return to the project silently.
 Opening a chooser does not create a global status banner. Errors remain actionable
@@ -28,8 +32,9 @@ after that decision. No selection starts paid generation or changes the timeline
 Qualification covers search/filter/view changes, batch selection, keyboard close
 and focus, cancellation without banners, errors and dismissal, document switching,
 preview disposal, mixed-media admission, existing Media Bin reuse, reference
-replacement, and save/reopen. No schema migration or production dependency is
-required. Older-machine adoption is a separate manual acceptance step after the
+replacement, and save/reopen. Audio reference admission adds nullable durable
+request columns through migration 0292. No new production dependency is required.
+Older-machine adoption is a separate manual acceptance step after the
 branch is ready; development does not restart or modify that machine.
 
 ## Local verification

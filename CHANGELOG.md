@@ -13,6 +13,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Video references use one optional **Extra instructions** field; existing role
+  guidance remains visible and editable alongside saved instructions.
+
 - Video generation references can apply to all scenes or selected scenes, with
   previews and scope controls beside the scene list. Scene assignments and prompt
   mentions persist across saves and scene reordering; review uses each scene's

@@ -12,6 +12,11 @@ export function sharedGenerationReferences(brief: GenerationBrief): GenerationRe
   return references.filter((reference, index) => references.findIndex((item) => item.id === reference.id) === index);
 }
 
+/** Keep earlier role guidance visible and editable in the single optional field. */
+export function referenceExtraInstructions(reference: GenerationReference): string {
+  return [reference.role ? `Use for ${reference.role}.` : "", reference.instruction ?? ""].filter(Boolean).join("\n\n");
+}
+
 export function referenceMentions(references: readonly GenerationReference[]): Map<string, string> {
   const counts = { image: 0, video: 0, audio: 0 };
   const reserved = new Set(references.flatMap(reference => reference.mention ? [reference.mention] : []));
