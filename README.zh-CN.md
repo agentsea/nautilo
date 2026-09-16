@@ -4,7 +4,7 @@
 
 代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: 809b94c62982691a47a537080e0f1e30a7f939214d5d4376ccbe46f03536ae1b -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -21,6 +21,28 @@
 [下载](https://nautilo.ai/download) ·
 [代码包](#explore-the-code) ·
 [参与贡献](CONTRIBUTING.md)
+
+<a id="get-started"></a>
+
+## 开始使用
+
+每个 Nautilo 客户端都连接到一个 Nautilo 服务器。选择适合你的方式：
+
+第一次在 Mac 上试用 Nautilo？建议从[本地部署快速入门](https://nautilo.ai/docs/operator/deploy/local)开始。这是一种用于单机试用的配置。如果需要从移动端访问，或让团队连接到同一台服务器，请选择下方的托管部署方案。
+
+| 你想要…… | 从这里开始 |
+| --- | --- |
+| 加入现有服务器 | [下载 Nautilo](https://nautilo.ai/download)，然后使用服务器地址或邀请，按[安装与连接指南](https://nautilo.ai/docs/use/install-and-connect)操作。 |
+| 在 Mac 上运行第一台服务器 | 按[本地部署快速入门](https://nautilo.ai/docs/operator/deploy/local)操作，使用 Docker Desktop 和经过签名的 Nautilo CLI。 |
+| 为团队搭建云端服务器 | 使用 [Railway 部署指南](https://nautilo.ai/docs/operator/deploy/railway)。 |
+| 在自己的 Docker 基础设施上运行 | 按 [Docker Compose 指南](https://nautilo.ai/docs/operator/deploy/docker-compose)操作，或[比较部署方案](https://nautilo.ai/docs/operator/choose-a-deployment)。 |
+| 修改代码 | 跳转到[从源码开发](#develop-from-source)。 |
+
+下载页面提供当前的桌面端、移动端和 CLI 选项。你也可以打开服务器的网页客户端。桌面端连接到服务器；安装桌面端不会安装服务器或数据库。移动端需要能通过 HTTPS 访问的服务器。
+
+对于新服务器，先完成所有者设置并[添加服务商密钥](https://nautilo.ai/docs/operator/provider-keys)。然后定制你的 Genie，打开一个 Room，带上一件你真正想做的事。[你的第一个小时](https://nautilo.ai/docs/use/first-hour)会带你们一起创建文档、亲手编辑并保存成果。
+
+Nautilo 目前处于 **alpha** 阶段。
 
 ## 带上你的伙伴，也带上他们的 Genie
 
@@ -44,26 +66,6 @@
 
 到 [nautilo.ai](https://nautilo.ai) 看看演示影片，或者跟着[你的第一个小时](https://nautilo.ai/docs/use/first-hour)亲手开始。
 
-<a id="get-started"></a>
-
-## 开始使用
-
-每个 Nautilo 客户端都连接到一个 Nautilo 服务器。选择适合你的方式：
-
-| 你想要…… | 从这里开始 |
-| --- | --- |
-| 加入现有服务器 | [下载 Nautilo](https://nautilo.ai/download)，然后使用服务器地址或邀请，按[安装与连接指南](https://nautilo.ai/docs/use/install-and-connect)操作。 |
-| 在 Mac 上运行第一台服务器 | 按[本地部署快速入门](https://nautilo.ai/docs/operator/deploy/local)操作，使用 Docker Desktop 和经过签名的 Nautilo CLI。 |
-| 为团队搭建云端服务器 | 使用 [Railway 部署指南](https://nautilo.ai/docs/operator/deploy/railway)。 |
-| 在自己的 Docker 基础设施上运行 | 按 [Docker Compose 指南](https://nautilo.ai/docs/operator/deploy/docker-compose)操作，或[比较部署方案](https://nautilo.ai/docs/operator/choose-a-deployment)。 |
-| 修改代码 | 跳转到[从源码开发](#develop-from-source)。 |
-
-下载页面提供当前的桌面端、移动端和 CLI 选项。你也可以打开服务器的网页客户端。桌面端连接到服务器；安装桌面端不会安装服务器或数据库。移动端需要能通过 HTTPS 访问的服务器。
-
-对于新服务器，先完成所有者设置并[添加服务商密钥](https://nautilo.ai/docs/operator/provider-keys)。然后创建你的 Genie，打开一个 Room，带上一件你真正想做的事。[你的第一个小时](https://nautilo.ai/docs/use/first-hour)会带你们一起创建文档、亲手编辑并保存成果。
-
-Nautilo 目前处于 **alpha** 阶段。请查看[发布状态](https://nautilo.ai/product-release-status)，了解当前发布产物及可用情况。
-
 ## 把自己家的钥匙留在自己手里
 
 AI 越了解你，谁掌控这段关系就越重要。你的工作习惯、对话、共同完成的作品：它们正在成为你生活中越来越大的一部分。
@@ -82,7 +84,6 @@ Nautilo 把服务器和数据库的控制权交给你。由你决定它在哪里
 | [使用 Nautilo](https://nautilo.ai/docs/use) | 了解 Room、Genie、创作工具和日常工作流程。 |
 | [运行 Nautilo](https://nautilo.ai/docs/operator) | 部署、配置、管理和维护服务器。 |
 | [基于 Nautilo 开发](https://nautilo.ai/docs/build) | 理解架构并基于源码开发。 |
-| [实体模型](https://nautilo.ai/docs/build/concepts/entity-model) | 理解 Human、Agent、Room、Group 及其相互关系。 |
 | [技能包](https://nautilo.ai/skills) | 查找供 AI 助手使用的 Nautilo 指南。 |
 | [设计原则](https://nautilo.ai/principles) | 理解塑造产品的判断与取舍。 |
 | [版本化文档索引](DOCS.md) | 查找源码契约、打包、发布和运维操作手册。 |

@@ -26,6 +26,37 @@ Open source. MIT licensed.
 [Packages](#explore-the-code) ·
 [Contribute](CONTRIBUTING.md)
 
+## Get started
+
+Every Nautilo client connects to a Nautilo server. Choose the path that fits
+where you are:
+
+Trying Nautilo for the first time on a Mac? Start with the
+[Local Deploy Quickstart](https://nautilo.ai/docs/operator/deploy/local).
+It is a single-machine evaluation setup. For mobile access or a server your
+team can reach, choose a hosted deployment below.
+
+| You want to… | Start here |
+| --- | --- |
+| Join an existing server | [Download Nautilo](https://nautilo.ai/download), then [install and connect](https://nautilo.ai/docs/use/install-and-connect) with your server address or invite. |
+| Run your first server on your Mac | Follow the [Local Deploy Quickstart](https://nautilo.ai/docs/operator/deploy/local), using Docker Desktop and the signed Nautilo CLI. |
+| Give your team a server in the cloud | Use the [Railway deployment guide](https://nautilo.ai/docs/operator/deploy/railway). |
+| Run on your own Docker infrastructure | Follow the [Docker Compose guide](https://nautilo.ai/docs/operator/deploy/docker-compose), or [compare deployment options](https://nautilo.ai/docs/operator/choose-a-deployment). |
+| Change the code | Jump to [Develop from source](#develop-from-source). |
+
+The download page carries the current Desktop, mobile, and CLI options.
+You can also open your server's web client. Desktop connects to your server;
+installing it does not install the server or its database. Mobile needs a
+server reachable over HTTPS.
+
+For a new server, finish the owner setup and
+[add your provider keys](https://nautilo.ai/docs/operator/provider-keys).
+Then customize your Genie, open a Room, and bring something you actually want to
+make. [Your first hour](https://nautilo.ai/docs/use/first-hour) walks you through
+creating a document together, editing it yourself, and saving the result.
+
+Nautilo is in **alpha**.
+
 ## Bring your people. Bring their Genies.
 
 People and their Genies, working in the same Room. Talk naturally. Smart
@@ -60,33 +91,6 @@ what each connection enables.
 See the films on [nautilo.ai](https://nautilo.ai), or start doing it yourself
 with [Your first hour](https://nautilo.ai/docs/use/first-hour).
 
-## Get started
-
-Every Nautilo client connects to a Nautilo server. Choose the path that fits
-where you are:
-
-| You want to… | Start here |
-| --- | --- |
-| Join an existing server | [Download Nautilo](https://nautilo.ai/download), then [install and connect](https://nautilo.ai/docs/use/install-and-connect) with your server address or invite. |
-| Run your first server on your Mac | Follow the [Local Deploy Quickstart](https://nautilo.ai/docs/operator/deploy/local), using Docker Desktop and the signed Nautilo CLI. |
-| Give your team a server in the cloud | Use the [Railway deployment guide](https://nautilo.ai/docs/operator/deploy/railway). |
-| Run on your own Docker infrastructure | Follow the [Docker Compose guide](https://nautilo.ai/docs/operator/deploy/docker-compose), or [compare deployment options](https://nautilo.ai/docs/operator/choose-a-deployment). |
-| Change the code | Jump to [Develop from source](#develop-from-source). |
-
-The download page carries the current Desktop, mobile, and CLI options.
-You can also open your server's web client. Desktop connects to your server;
-installing it does not install the server or its database. Mobile needs a
-server reachable over HTTPS.
-
-For a new server, finish the owner setup and
-[add your provider keys](https://nautilo.ai/docs/operator/provider-keys).
-Then make your Genie, open a Room, and bring something you actually want to
-make. [Your first hour](https://nautilo.ai/docs/use/first-hour) walks you through
-creating a document together, editing it yourself, and saving the result.
-
-Nautilo is in **alpha**. Check [release status](https://nautilo.ai/product-release-status)
-for the current artifacts and availability.
-
 ## Keep the keys to your own house
 
 The better your AI gets to know you, the more it matters who controls the
@@ -116,7 +120,6 @@ when choosing your setup.
 | [Use Nautilo](https://nautilo.ai/docs/use) | Learn Rooms, Genies, creative tools, and everyday workflows. |
 | [Run Nautilo](https://nautilo.ai/docs/operator) | Deploy, configure, administer, and maintain a server. |
 | [Build on Nautilo](https://nautilo.ai/docs/build) | Understand the architecture and develop against the source. |
-| [Entity model](https://nautilo.ai/docs/build/concepts/entity-model) | Understand Humans, Agents, Rooms, Groups, and the relationships between them. |
 | [Skill pack](https://nautilo.ai/skills) | Find Nautilo guidance for AI assistants. |
 | [Design principles](https://nautilo.ai/principles) | Understand the judgments that shape the product. |
 | [Versioned documentation index](DOCS.md) | Find source contracts, packaging, releases, and operational runbooks. |
