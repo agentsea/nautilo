@@ -1,0 +1,24 @@
+{
+  "name": "@nautilo/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./design-tokens": "./src/design-tokens.ts",
+    "./instance-id": "./src/instance-id.ts",
+    "./vendored-binary": "./src/vendored-binary.ts",
+    "./vendored-binary-fetch": "./src/vendored-binary-fetch.ts",
+    "./federated-id-pure": "./src/federated-id-pure.ts",
+    "./loopback-origin": "./src/loopback-origin.ts",
+    "./officecli": "./src/officecli/index.ts"
+  },
+  "dependencies": {
+    "@nautilo/types": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "fflate": "^0.8.3",
+    "ipaddr.js": "2.3.0",
+    "zod": "4.3.6"
+  }
+}

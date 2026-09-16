@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="8" y1="2" x2="58" y2="64" gradientUnits="userSpaceOnUse"><stop stop-color="#FFB34F"/><stop offset=".5" stop-color="#F2764E"/><stop offset="1" stop-color="#B93B65"/></linearGradient>
+    <linearGradient id="screen" x1="14" y1="14" x2="48" y2="46" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF9E8"/><stop offset="1" stop-color="#FFE0C5"/></linearGradient>
+    <linearGradient id="chart" x1="26" y1="25" x2="44" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#FFB348"/><stop offset="1" stop-color="#EF5F5C"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="16" fill="url(#tile)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="15.5" stroke="#FFF" stroke-opacity=".24"/>
+  <rect x="10" y="14" width="44" height="34" rx="6" fill="#7C294E" opacity=".28"/>
+  <rect x="10" y="11" width="44" height="34" rx="6" fill="url(#screen)"/>
+  <path d="M16 19h15M16 24h10" stroke="#C35A59" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="16" y="29" width="8" height="9" rx="2" fill="#FFD06F"/>
+  <path d="M29 38V31M36 38V27M43 38V23" stroke="url(#chart)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M32 45v6M24 53h16" stroke="#FFF1DE" stroke-width="3" stroke-linecap="round"/>
+</svg>

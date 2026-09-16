@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="7" y1="2" x2="57" y2="64" gradientUnits="userSpaceOnUse"><stop stop-color="#A88BFF"/><stop offset=".5" stop-color="#7056D9"/><stop offset="1" stop-color="#3F398F"/></linearGradient>
+    <linearGradient id="note" x1="15" y1="15" x2="48" y2="47" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFDF4"/><stop offset="1" stop-color="#E9E3FF"/></linearGradient>
+    <linearGradient id="pin" x1="39" y1="16" x2="51" y2="42" gradientUnits="userSpaceOnUse"><stop stop-color="#FFD77B"/><stop offset="1" stop-color="#F48D63"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="16" fill="url(#tile)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="15.5" stroke="#FFF" stroke-opacity=".24"/>
+  <rect x="11" y="18" width="38" height="31" rx="7" fill="#2E276F" opacity=".3"/>
+  <rect x="11" y="14" width="38" height="31" rx="7" fill="url(#note)"/>
+  <path d="M18 24h16M18 30h10M18 36h15" stroke="#796BBB" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M37 17h14l-4 8 4 8H37l4-8-4-8Z" fill="#42378D" opacity=".28"/>
+  <path d="M36 14h14l-4 8 4 8H36l4-8-4-8Z" fill="url(#pin)"/>
+  <path d="m43 30-2 11" stroke="#FFF4D6" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="43" cy="13" r="3" fill="#FFF3D6"/>
+</svg>

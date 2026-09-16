@@ -1,0 +1,12 @@
+ALTER TABLE "room_journal_state" ADD COLUMN "historical_backfill_status" text DEFAULT 'pending' NOT NULL;--> statement-breakpoint
+ALTER TABLE "room_journal_state" ADD COLUMN "historical_backfill_cursor_message_id" integer;--> statement-breakpoint
+ALTER TABLE "room_journal_state" ADD COLUMN "historical_backfill_target_message_id" integer;--> statement-breakpoint
+ALTER TABLE "room_journal_state" ADD COLUMN "historical_backfill_completed_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "server_context_config" ADD COLUMN "minimum_full_turns" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "server_context_config" ADD COLUMN "max_room_context_percent" integer DEFAULT 50 NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_room_journal_state_historical_backfill" ON "room_journal_state" USING btree ("historical_backfill_status","updated_at");--> statement-breakpoint
+ALTER TABLE "room_journal_state" ADD CONSTRAINT "room_journal_state_historical_cursor_nonnegative" CHECK ("room_journal_state"."historical_backfill_cursor_message_id" IS NULL OR "room_journal_state"."historical_backfill_cursor_message_id" >= 0);--> statement-breakpoint
+ALTER TABLE "room_journal_state" ADD CONSTRAINT "room_journal_state_historical_target_nonnegative" CHECK ("room_journal_state"."historical_backfill_target_message_id" IS NULL OR "room_journal_state"."historical_backfill_target_message_id" >= 0);--> statement-breakpoint
+ALTER TABLE "room_journal_state" ADD CONSTRAINT "room_journal_state_historical_range" CHECK ("room_journal_state"."historical_backfill_cursor_message_id" IS NULL OR "room_journal_state"."historical_backfill_target_message_id" IS NULL OR "room_journal_state"."historical_backfill_cursor_message_id" <= "room_journal_state"."historical_backfill_target_message_id");--> statement-breakpoint
+ALTER TABLE "server_context_config" ADD CONSTRAINT "server_context_config_minimum_full_turns_range" CHECK ("server_context_config"."minimum_full_turns" BETWEEN 0 AND 10);--> statement-breakpoint
+ALTER TABLE "server_context_config" ADD CONSTRAINT "server_context_config_max_room_context_percent_range" CHECK ("server_context_config"."max_room_context_percent" BETWEEN 30 AND 80);

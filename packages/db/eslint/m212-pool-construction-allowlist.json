@@ -1,0 +1,132 @@
+{
+  "$schema": "./m212-pool-construction-allowlist.schema.json",
+  "issue": "ISSUE-M212",
+  "phase": 5,
+  "description": "Repo-relative paths permitted to construct postgres-js pools or invoke direct DB factories at runtime. Every other production .ts/.tsx file is forbidden by @nautilo/db/m212-no-adhoc-pool-construction.",
+  "entries": [
+    {
+      "path": "packages/db/src/config/direct-database.ts",
+      "reason": "Canonical full-role direct postgres-js factory and shared-pool owner (createDirectDb / getSharedDirectDb)."
+    },
+    {
+      "path": "packages/db/src/config/agent-database.ts",
+      "reason": "Canonical restricted-role direct postgres-js factory and shared-pool owner (createDirectAgentDb / getSharedDirectAgentDb)."
+    },
+    {
+      "path": "packages/db/src/config/crypto-database.ts",
+      "reason": "Canonical nautilo_crypto restricted-role postgres-js factory and shared-pool owner (createCryptoDatabase / getSharedDirectCryptoDb)."
+    },
+    {
+      "path": "packages/db/src/config/database.ts",
+      "reason": "Runtime full-role drizzle/postgres-js singleton owner (db / getSharedDirectDb wiring)."
+    },
+    {
+      "path": "packages/db/src/index.ts",
+      "reason": "Public package barrel re-exporting direct DB factories; no ad-hoc pool construction beyond re-exports."
+    },
+    {
+      "path": "packages/db/src/utils/ensure-database.ts",
+      "reason": "Migration and bootstrap lifecycle helper; opens short-lived admin postgres-js connections for schema ensure."
+    },
+    {
+      "path": "packages/db/src/hosted-bootstrap/postgres-adapter.ts",
+      "reason": "Isolated transient one-shot hosted bootstrap process; owns bounded postgres-js pools and closes them on every path."
+    },
+    {
+      "path": "packages/db/src/utils/seed-trust-personal.ts",
+      "reason": "Operator/bootstrap seed utility; one-shot postgres-js admin connection for M128 trust-personal provisioning."
+    },
+    {
+      "path": "packages/db/src/utils/seed-default-owner.ts",
+      "reason": "Bootstrap seed utility; one-shot postgres-js admin connection for default owner provisioning."
+    },
+    {
+      "path": "packages/db/src/utils/seed-default-agent.ts",
+      "reason": "Bootstrap seed utility; one-shot postgres-js admin connection for default agent provisioning."
+    },
+    {
+      "path": "packages/db/src/utils/seed-default-room.ts",
+      "reason": "Bootstrap seed utility; one-shot postgres-js admin connection for default room provisioning."
+    },
+    {
+      "path": "packages/db/src/utils/db-identity-guard.ts",
+      "reason": "Instance identity guard; short-lived postgres-js probe connections for NAUTILO_INSTANCE_ID routing checks."
+    },
+    {
+      "path": "packages/db/src/utils/find-default-agent.ts",
+      "reason": "Bootstrap lookup helper; one-shot postgres-js read for default agent resolution during setup."
+    },
+    {
+      "path": "packages/db/src/utils/find-claimed-owner.ts",
+      "reason": "Bootstrap lookup helper; one-shot postgres-js read for claimed-owner resolution during setup."
+    },
+    {
+      "path": "packages/db/src/utils/update-owner-handle.ts",
+      "reason": "Bootstrap/migration utility; one-shot postgres-js write for owner handle updates outside runtime request paths."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/verify-pool-lifecycle.ts",
+      "reason": "Operator diagnostic CLI; constructs disposable postgres-js pools to verify M210 shutdown registry behavior."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/mcp.ts",
+      "reason": "Operator/dev CLI; short-lived createDirectDb(1) handles for MCP doctor subcommands."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/memory-promote.ts",
+      "reason": "Operator CLI; one-shot createDirectDb(1) for memory promotion maintenance."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/mark-all-messages-read.ts",
+      "reason": "Operator CLI; one-shot createDirectDb(1) for bulk read-state repair."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/cleanup-test-cruft.ts",
+      "reason": "Operator CLI; one-shot createDirectDb(1) for test-cruft instance cleanup."
+    },
+    {
+      "path": "bin/nautilo-dev/src/lib/bootstrap-claim-invite.ts",
+      "reason": "Operator bootstrap helper; optional injected db with createDirectDb(1) fallback for claim-invite wiring."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/repair-orphan-default-agent.ts",
+      "reason": "Operator repair CLI; one-shot createDirectDb(1) for orphan default-agent repair."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/mint-user.ts",
+      "reason": "Operator CLI; dynamic import + createDirectDb(1) for synthetic user minting."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/migrate-artifacts.ts",
+      "reason": "Operator migration CLI; one-shot createDirectDb(1) for artifact store migration."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/migrate-to-username-identity.ts",
+      "reason": "Operator migration CLI; one-shot postgres-js admin connection for username-identity cutover."
+    },
+    {
+      "path": "bin/nautilo-dev/src/lib/migration-db.ts",
+      "reason": "Operator migration helper; MigrationDb adapter backed by createDirectDb(1)."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/repair-logto-account-security.ts",
+      "reason": "Operator repair CLI; one-shot createDirectDb(1) for Logto account-security repair."
+    },
+    {
+      "path": "bin/nautilo-reset-pin/src/index.ts",
+      "reason": "Operator-only PIN reset CLI; superuser createDirectDb(1) by design."
+    },
+    {
+      "path": "bin/nautilo-local/src/bootstrap-logto.ts",
+      "reason": "Local deploy bootstrap; one-shot postgres-js connection for Logto database provisioning."
+    },
+    {
+      "path": "apps/cli/src/commands/doctor.ts",
+      "reason": "Deploy/operator CLI doctor command; short-lived postgres-js connectivity probe."
+    },
+    {
+      "path": "packages/reflection-bridge/scripts/run-postgres-integration.ts",
+      "reason": "Explicit disposable PostgreSQL integration runner for the dormant M257 Record repository; requires a test-looking URL and closes its bounded pool."
+    }
+  ]
+}

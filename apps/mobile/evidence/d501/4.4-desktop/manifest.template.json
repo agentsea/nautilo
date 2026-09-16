@@ -1,0 +1,54 @@
+{
+  "task": "D501-4.4",
+  "status": "not-run",
+  "runtime": {
+    "stackAlias": "stack302",
+    "serverAlias": "stack302-loopback",
+    "serverLoopbackPort": 6401,
+    "iosMetroAlias": "stack302-ios-metro",
+    "iosRuntimeProfileAlias": "stack302-ios-profile",
+    "androidMetroAlias": "stack302-android-metro",
+    "androidRuntimeProfileAlias": "stack302-android-profile",
+    "desktopProfileAlias": "stack302-desktop-profile",
+    "desktopDebugPortAlias": "stack302-desktop-debug",
+    "d468Isolation": "required"
+  },
+  "participants": {
+    "commitOrBuild": "not-recorded",
+    "desktopProfile": "not-recorded",
+    "desktopDebugPort": "not-recorded",
+    "iosSimulator": "not-recorded",
+    "androidAvd": "not-recorded"
+  },
+  "manualCheckpoints": {
+    "androidMarkdownToDesktopExactBytes": "not-run",
+    "iosMarkdownToDesktopExactBytes": "not-run",
+    "desktopMarkdownToAndroidExactBytes": "not-run",
+    "desktopMarkdownToIosExactBytes": "not-run",
+    "androidPlainTextToDesktopExactBytes": "not-run",
+    "iosPlainTextToDesktopExactBytes": "not-run",
+    "desktopPlainTextToAndroidExactBytes": "not-run",
+    "desktopPlainTextToIosExactBytes": "not-run",
+    "desktopEditRefreshesOpenMobileViews": "not-run",
+    "mobileEditRefreshesDesktop": "not-run",
+    "renameConvergesAcrossOpenClients": "not-run",
+    "deleteConvergesAcrossOpenClients": "not-run",
+    "discussContinuityAcrossRefresh": "not-run",
+    "concurrentSaveConflictNeverSilentlyOverwrites": "not-run",
+    "fixtureCleanup": "not-run"
+  },
+  "comparisonEvidence": {
+    "syntheticFixtureAliases": {
+      "writerViewer": "not-recorded",
+      "androidMarkdown": "not-recorded",
+      "iosMarkdown": "not-recorded",
+      "androidPlainText": "not-recorded",
+      "iosPlainText": "not-recorded"
+    },
+    "methodAndVersion": "not-recorded",
+    "secureComparisonRecordRef": "not-recorded",
+    "revisionAndByteCountMetadata": "not-recorded",
+    "redactedResultRefs": "not-recorded"
+  },
+  "notes": "Record only redacted measurements here; retain exact canonical comparisons in the approved secure operator record."
+}

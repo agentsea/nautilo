@@ -1,0 +1,1 @@
+ALTER TABLE "connected_web_operations" ALTER COLUMN "account_id" DROP NOT NULL;

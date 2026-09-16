@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["NautiloShareHandoffModule"]
+  },
+  "android": {
+    "modules": ["ai.nautilo.sharehandoff.NautiloShareHandoffModule"]
+  }
+}

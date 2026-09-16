@@ -1,0 +1,29 @@
+# M092 example profile — a NAMED LOCAL INSTANCE (a developer beta slot).
+#
+# Copy to ~/.nautilo/profiles/local-beta.toml, then:
+#   nautilo profile use local-beta
+#   nautilo deploy --profile local-beta
+#
+# instance_id="beta" maps to:
+#   - ~/.nautilo-beta/                       (root, scoped state)
+#   - compose project `nautilo-beta`         (volumes, network, container names)
+#   - stride-shifted port bundle from resolveInstance(), persisted on first
+#     deploy in ~/.nautilo-beta/instance.json (typically +100 stride per
+#     sibling: server 3101, logto core 3401, logto admin 3402, app-postgres
+#     5534, logto-postgres 5532). The exact bundle is whichever stride first
+#     whichever stride first survives sibling-collision + bind-probe.
+#
+# Coexists side-by-side with `local-default` and with `bun run server`
+# (which sticks to default ports).
+
+name        = "local-beta"
+transport   = "local"
+lifecycle   = "compose"
+instance_id = "beta"
+from_source = true
+tag         = "local-dev"
+# Password recovery mode:
+# - oss_relay: OSS/no-real-email path; Logto http-email posts to Nautilo relay.
+# - logto_native: real Logto email/passkey/social recovery; no Nautilo relay.
+# - disabled: operator reset only.
+password_recovery = "oss_relay"

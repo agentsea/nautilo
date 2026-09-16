@@ -1,0 +1,36 @@
+{
+  "name": "@nautilo/relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Relay protocol, client library, and types — shared between server and relay consumers",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./native-search": "./src/native-search.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun run test:unit",
+    "test:unit": "bun test --timeout 15000 tests/unit/",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules"
+  },
+  "dependencies": {
+    "@nautilo/config": "workspace:*",
+    "@nautilo/computer-use-host-protocol": "workspace:*",
+    "@nautilo/desktop-filesystem-grants": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "@nautilo/workstation-profiles": "workspace:*",
+    "linkedom": "0.18.13",
+    "ws": "8.21.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "@types/ws": "8.18.1",
+    "happy-dom": "20.11.6",
+    "typescript": "5.9.3"
+  }
+}

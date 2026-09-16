@@ -1,0 +1,922 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Narrow D448 inventory of production modules that can commit document bytes, artifact rows, revisions, or document-file structural changes. This is not a repository-wide writeFile ceiling.",
+  "dispositions": [
+    "planner",
+    "coordinator_adapter",
+    "compatibility_only",
+    "excluded"
+  ],
+  "owners": [
+    "workspace_backend",
+    "desktop_backend",
+    "coordinator",
+    "importer",
+    "filesystem_ui"
+  ],
+  "scanRoots": [
+    "packages/agent/src/tools/file",
+    "packages/agent/src/tools/apply-patch",
+    "packages/agent/src/tools/office",
+    "packages/agent/src/tools/convert",
+    "packages/agent/src/tools/media",
+    "packages/server/src/routes/workspace-artifacts.ts",
+    "packages/server/src/routes/wopi.ts",
+    "packages/server/src/apps",
+    "apps/desktop/electron",
+    "apps/workbench/src/editors",
+    "apps/workbench/src/apps",
+    "apps/workbench/src/components/browser-column"
+  ],
+  "exclusions": [
+    {
+      "path": "apps/desktop/electron/desktop-filesystem-grants",
+      "reason": "Desktop grant/authentication state, not document bytes."
+    },
+    {
+      "path": "apps/desktop/electron/workstation-profiles",
+      "reason": "Desktop profile/app state, not document bytes."
+    },
+    {
+      "path": "apps/desktop/electron/workstation-shell-consent-store.ts",
+      "reason": "Desktop workstation-consent receipt state, not document bytes."
+    },
+    {
+      "path": "apps/desktop/electron/local-file-history/storage.ts",
+      "reason": "Journal payload persistence internals; callers are classified, not the journal's storage implementation."
+    },
+    {
+      "path": "apps/desktop/electron/scratch",
+      "reason": "Private experimental staging, never production authority.",
+      "optional": true
+    },
+    {
+      "path": "apps/desktop/tests",
+      "reason": "Tests and fixtures are not production authority."
+    },
+    {
+      "path": "apps/desktop/electron/preload.ts",
+      "reason": "Renderer IPC bridge declares channels but cannot commit bytes itself."
+    },
+    {
+      "path": "packages/agent/src/tools/file/share-artifact.ts",
+      "reason": "Namespace-only sharing changes attachment visibility, not document bytes or document structure."
+    },
+    {
+      "path": "apps/workbench/src/components/browser-column/artifact-tree.ts",
+      "reason": "In-memory UI tree construction uses a coincidental insertArtifact name and has no storage authority."
+    },
+    {
+      "path": "node_modules",
+      "reason": "Third-party dependencies are outside repository production source."
+    },
+    {
+      "path": "dist",
+      "reason": "Built output is not source authority.",
+      "optional": true
+    },
+    {
+      "path": "release",
+      "reason": "Packaged output is not source authority.",
+      "optional": true
+    }
+  ],
+  "primitivePatterns": [
+    {
+      "id": "workspace_row_change",
+      "source": "\\bapplyWorkspaceArtifactRowChange\\s*\\("
+    },
+    {
+      "id": "workspace_structural_row",
+      "source": "\\b(?:insertArtifact|attachArtifactToNamespace|updateArtifactPath|markArtifactDeleted)\\s*\\("
+    },
+    {
+      "id": "workspace_revision",
+      "source": "\\brecordRevision\\s*\\("
+    },
+    {
+      "id": "workspace_text_save",
+      "source": "\\buserSaveWorkspaceArtifact\\s*\\("
+    },
+    {
+      "id": "workspace_text_patch",
+      "source": "\\bapplyWorkspaceArtifactTextPatch\\s*\\("
+    },
+    {
+      "id": "workspace_content_commit_execution",
+      "source": "\\bgetWorkspaceFileContentCommitExecution\\s*\\("
+    },
+    {
+      "id": "workspace_content_recovery_execution",
+      "source": "\\bgetWorkspaceFileContentRecoveryExecution\\s*\\("
+    },
+    {
+      "id": "workspace_binary_create",
+      "source": "\\bcreateWorkspaceBinaryArtifact\\s*\\("
+    },
+    {
+      "id": "workspace_staged_patch",
+      "source": "\\bapplyEphemeralPatch\\s*\\("
+    },
+    {
+      "id": "workspace_binary_patch",
+      "source": "\\bapplyBinaryContentPatch(?:\\s*|\\))\\("
+    },
+    {
+      "id": "workspace_atomic_bytes",
+      "source": "\\bwriteAtomic\\s*\\("
+    },
+    {
+      "id": "workspace_route_direct_bytes",
+      "source": "\\b(?:writeFile|createWriteStream)\\s*\\(",
+      "modules": [
+        "packages/server/src/routes/workspace-artifacts.ts"
+      ]
+    },
+    {
+      "id": "workspace_generated_direct_bytes",
+      "source": "\\bwriteFile\\s*\\(",
+      "modules": [
+        "packages/agent/src/tools/office/office.ts",
+        "packages/agent/src/tools/media/generate-image.ts"
+      ]
+    },
+    {
+      "id": "wopi_post_image",
+      "source": "\\bpersistArtifactBytes\\s*\\("
+    },
+    {
+      "id": "wopi_direct_bytes",
+      "source": "\\bfsWriteFile\\s*\\("
+    },
+    {
+      "id": "wopi_revision_bump",
+      "source": "\\bbumpArtifactRevision\\s*\\(",
+      "modules": [
+        "packages/server/src/routes/wopi.ts"
+      ]
+    },
+    {
+      "id": "desktop_guarded_bytes",
+      "source": "\\badapter\\.writeFile\\s*\\("
+    },
+    {
+      "id": "desktop_office_commit",
+      "source": "\\bwriteOutputWithJournal\\s*\\("
+    },
+    {
+      "id": "desktop_journal_commit",
+      "source": "\\brecordSuccessfulMutation\\s*\\("
+    },
+    {
+      "id": "desktop_journal_restore",
+      "source": "\\bjournal\\.(?:undo|redo|undoTurn)\\s*\\("
+    },
+    {
+      "id": "desktop_ipc_write",
+      "source": "\\\"fs:writeFile\\\""
+    },
+    {
+      "id": "desktop_ipc_rename",
+      "source": "\\\"fs:rename\\\""
+    },
+    {
+      "id": "desktop_ipc_trash",
+      "source": "\\\"fs:trash\\\""
+    },
+    {
+      "id": "desktop_ipc_atomic_write",
+      "source": "\\bwriteFileAtomically\\s*\\("
+    },
+    {
+      "id": "desktop_trash_effect",
+      "source": "\\bshell\\.trashItem\\s*\\("
+    },
+    {
+      "id": "renderer_local_write",
+      "source": "\\bdesktopAPI\\.fs\\.writeFile\\s*\\("
+    },
+    {
+      "id": "renderer_local_rename",
+      "source": "\\bdesktopAPI\\.fs\\.rename\\b"
+    },
+    {
+      "id": "renderer_local_trash",
+      "source": "\\bdesktopAPI\\.fs\\.trash\\b"
+    },
+    {
+      "id": "writer_accepted_commit",
+      "source": "\\bwriteAccepted\\s*\\("
+    }
+  ],
+  "entries": [
+    {
+      "id": "W-UI-TEXT",
+      "module": "apps/workbench/src/editors/editor-io.ts",
+      "symbols": [
+        "saveEditableText",
+        "desktopAPI.fs.writeFile"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "renderer_local_write",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "W-UI-CONFLICT",
+      "module": "apps/workbench/src/editors/editor-conflict-copy.ts",
+      "symbols": [
+        "saveConflictCopy"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "coordinator",
+      "hits": []
+    },
+    {
+      "id": "W-UI-SESSION",
+      "module": "apps/workbench/src/editors/use-patch-document-session.ts",
+      "symbols": [
+        "usePatchDocumentSession",
+        "runFsPatch",
+        "runArtifactPatch"
+      ],
+      "disposition": "planner",
+      "owner": "coordinator",
+      "hits": []
+    },
+    {
+      "id": "WRITER-UI",
+      "module": "apps/workbench/src/apps/app-bridge.ts",
+      "symbols": [
+        "writeBoundDocument",
+        "saveEditableText"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "coordinator",
+      "hits": []
+    },
+    {
+      "id": "LOCAL-CREATE",
+      "module": "apps/workbench/src/components/browser-column/files-tab.tsx",
+      "symbols": [
+        "desktopAPI.fs.writeFile"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "renderer_local_write",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "APP-CREATE-CURRENT-FOLDER",
+      "module": "apps/workbench/src/components/browser-column/apps-panel.tsx",
+      "symbols": [
+        "runCreateAction",
+        "desktopAPI.fs.writeFile"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "renderer_local_write",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "LOCAL-RENAME-TRASH-UI",
+      "module": "apps/workbench/src/components/browser-column/file-tree-view.tsx",
+      "symbols": [
+        "desktopAPI.fs.rename",
+        "desktopAPI.fs.trash"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "filesystem_ui",
+      "hits": [
+        {
+          "primitive": "renderer_local_rename",
+          "count": 1
+        },
+        {
+          "primitive": "renderer_local_trash",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "ARTIFACT-ROUTES",
+      "module": "packages/server/src/routes/workspace-artifacts.ts",
+      "symbols": [
+        "insertArtifact"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_structural_row",
+          "count": 6
+        },
+        {
+          "primitive": "workspace_route_direct_bytes",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "OFFICE-LIVE-WS",
+      "module": "packages/server/src/routes/wopi.ts",
+      "symbols": [
+        "persistArtifactBytes",
+        "bumpArtifactRevision"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "wopi_post_image",
+          "count": 2
+        },
+        {
+          "primitive": "wopi_direct_bytes",
+          "count": 1
+        },
+        {
+          "primitive": "wopi_revision_bump",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WRITER-AGENT-AND-OFFICE-RUN",
+      "module": "packages/server/src/apps/app-tool-host.ts",
+      "symbols": [
+        "document.write",
+        "getWorkspaceFileContentCommitExecution",
+        "getWorkspaceFileContentRecoveryExecution",
+        "createWorkspaceBinaryArtifact",
+        "createRasterFromSvg"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "workspace_content_commit_execution",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_content_recovery_execution",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_binary_create",
+          "count": 3
+        }
+      ]
+    },
+    {
+      "id": "WRITER-ACCEPT",
+      "module": "packages/server/src/apps/app-routes.ts",
+      "symbols": [
+        "writeAccepted"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "writer_accepted_commit",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WRITER-ACCEPT-AUTHORITY",
+      "module": "packages/server/src/apps/live-local-document-authority.ts",
+      "symbols": [
+        "writeAccepted"
+      ],
+      "disposition": "planner",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "writer_accepted_commit",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "FILE-WS-COMMANDS",
+      "module": "packages/agent/src/tools/file/workspace-commands.ts",
+      "symbols": [
+        "handleWorkspaceMutate",
+        "getWorkspaceFileContentRecoveryExecution"
+      ],
+      "disposition": "planner",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_content_recovery_execution",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "FILE-WS-STAGED-COMMITTER",
+      "module": "packages/agent/src/tools/file/commands/apply-core.ts",
+      "symbols": [
+        "applyEphemeralPatch",
+        "applyWorkspaceArtifactRowChange",
+        "recordRevision"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_revision",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_staged_patch",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "FILE-WS-STAGED-PLANNER",
+      "module": "packages/agent/src/tools/file/commands/_shared.ts",
+      "symbols": [
+        "applyBinaryContentPatch",
+        "applyEphemeralPatch",
+        "getWorkspaceFileContentCommitExecution"
+      ],
+      "disposition": "planner",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "workspace_staged_patch",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_binary_patch",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_content_commit_execution",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-CONTENT-EXECUTION-REGISTRY",
+      "module": "packages/agent/src/tools/file/workspace-runtime-adapter.ts",
+      "symbols": [
+        "getWorkspaceFileContentCommitExecution",
+        "getWorkspaceFileContentRecoveryExecution"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "workspace_content_commit_execution",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_content_recovery_execution",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-TEXT-PATCH",
+      "module": "packages/agent/src/tools/file/user-patch.ts",
+      "symbols": [
+        "applyWorkspaceArtifactTextPatch",
+        "writeAtomic",
+        "recordRevision"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_revision",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_text_patch",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-TEXT-SAVE",
+      "module": "packages/agent/src/tools/file/user-save.ts",
+      "symbols": [
+        "userSaveWorkspaceArtifact",
+        "writeAtomic",
+        "recordRevision"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_revision",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_text_save",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-BINARY-CREATE",
+      "module": "packages/agent/src/tools/file/workspace-binary-artifact.ts",
+      "symbols": [
+        "createWorkspaceBinaryArtifact",
+        "writeAtomic",
+        "applyWorkspaceArtifactRowChange"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_binary_create",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-ROW-CORE",
+      "module": "packages/agent/src/tools/file/artifact-store.ts",
+      "symbols": [
+        "applyWorkspaceArtifactRowChange"
+      ],
+      "disposition": "excluded",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_structural_row",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-BYTE-PRIMITIVE",
+      "module": "packages/agent/src/tools/file/atomic-write.ts",
+      "symbols": [
+        "writeAtomic"
+      ],
+      "disposition": "excluded",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-FS-ADAPTER",
+      "module": "packages/agent/src/tools/file/backend.ts",
+      "symbols": [
+        "writeFile",
+        "writeAtomic"
+      ],
+      "disposition": "excluded",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "WORKSPACE-REVISION-STORAGE",
+      "module": "packages/agent/src/tools/file/backups/record-revision.ts",
+      "symbols": [
+        "recordRevision"
+      ],
+      "disposition": "excluded",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_revision",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "PATCH-WS-COMMIT",
+      "module": "packages/agent/src/tools/apply-patch/workspace-production-adapter.ts",
+      "symbols": [
+        "createWorkspaceApplyPatchProductionAdapter"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": []
+    },
+    {
+      "id": "OFFICE-AGENT-WS",
+      "module": "packages/agent/src/tools/office/officecli.ts",
+      "symbols": [
+        "applyBinaryContentPatch"
+      ],
+      "disposition": "planner",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "workspace_binary_patch",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "OFFICE-CREATE-WS",
+      "module": "packages/agent/src/tools/office/office.ts",
+      "symbols": [
+        "applyWorkspaceArtifactRowChange"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_generated_direct_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "CONVERT",
+      "module": "packages/agent/src/tools/convert/convert-tool.ts",
+      "symbols": [
+        "applyBinaryContentPatch"
+      ],
+      "disposition": "planner",
+      "owner": "coordinator",
+      "hits": [
+        {
+          "primitive": "workspace_binary_patch",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "MEDIA-GENERATE-WS",
+      "module": "packages/agent/src/tools/media/generate-image.ts",
+      "symbols": [
+        "applyWorkspaceArtifactRowChange"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "workspace_backend",
+      "hits": [
+        {
+          "primitive": "workspace_row_change",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_generated_direct_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "FILE-LOCAL-COMMIT",
+      "module": "apps/desktop/electron/local-file-dispatch/commands.ts",
+      "symbols": [
+        "executeCoordinatedContentMutation"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": []
+    },
+    {
+      "id": "FILE-LOCAL-GUARDED-WRITE",
+      "module": "apps/desktop/electron/local-file-dispatch/guarded-write.ts",
+      "symbols": [
+        "writeGuardedAtomic",
+        "adapter.writeFile"
+      ],
+      "disposition": "excluded",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "desktop_guarded_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "OFFICE-AGENT-LOCAL",
+      "module": "apps/desktop/electron/local-file-dispatch/office.ts",
+      "symbols": [
+        "commitOfficeCliOutput"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": []
+    },
+    {
+      "id": "PATCH-LOCAL-RECONCILER",
+      "module": "apps/desktop/electron/local-file-history/journal.ts",
+      "symbols": [
+        "recordSuccessfulMutation"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "desktop_journal_commit",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "HISTORY-LOCAL",
+      "module": "apps/desktop/electron/local-file-dispatch/history.ts",
+      "symbols": [
+        "executeLocalHistoryCommand"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "desktop_backend",
+      "hits": []
+    },
+    {
+      "id": "STRUCTURED-SSH-CAPABILITY-STORE",
+      "module": "apps/desktop/electron/structured-ssh/capability-store.ts",
+      "symbols": [
+        "SshCapabilityStore",
+        "write"
+      ],
+      "disposition": "compatibility_only",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "STRUCTURED-SSH-CONTRACT-STORAGE",
+      "module": "apps/desktop/electron/structured-ssh/contracts.ts",
+      "symbols": [
+        "StructuredSshStorage",
+        "createStructuredSshStorage"
+      ],
+      "disposition": "compatibility_only",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "STRUCTURED-SSH-HOST-TRUST-STORE",
+      "module": "apps/desktop/electron/structured-ssh/host-trust-store.ts",
+      "symbols": [
+        "SshHostTrustStore",
+        "write"
+      ],
+      "disposition": "compatibility_only",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "COMPUTER-USE-CONTRACT-STORAGE",
+      "module": "apps/desktop/electron/computer-use/contracts.ts",
+      "symbols": [
+        "ComputerUseLocalStorage",
+        "createComputerUseLocalStorage"
+      ],
+      "disposition": "compatibility_only",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "COMPUTER-USE-LOCAL-STORE",
+      "module": "apps/desktop/electron/computer-use/local-store.ts",
+      "symbols": [
+        "ComputerUseLocalStore",
+        "write"
+      ],
+      "disposition": "compatibility_only",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "workspace_atomic_bytes",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "LOCAL-STRUCTURAL-IPC",
+      "module": "apps/desktop/electron/fs-structural-ipc.ts",
+      "symbols": [
+        "fs:writeFile",
+        "fs:rename",
+        "fs:trash"
+      ],
+      "disposition": "coordinator_adapter",
+      "owner": "filesystem_ui",
+      "hits": [
+        {
+          "primitive": "desktop_ipc_write",
+          "count": 1
+        },
+        {
+          "primitive": "desktop_ipc_rename",
+          "count": 1
+        },
+        {
+          "primitive": "desktop_ipc_trash",
+          "count": 1
+        },
+        {
+          "primitive": "desktop_trash_effect",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "LOCAL-IPC-ATOMIC-PRIMITIVE",
+      "module": "apps/desktop/electron/fs-write.ts",
+      "symbols": [
+        "writeFileAtomically"
+      ],
+      "disposition": "excluded",
+      "owner": "desktop_backend",
+      "hits": [
+        {
+          "primitive": "desktop_ipc_atomic_write",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "OFFICE-RUN-COMPATIBILITY",
+      "module": "packages/server/src/apps/app-tool-host.ts",
+      "symbols": [
+        "office.run",
+        "createWorkspaceBinaryArtifact"
+      ],
+      "disposition": "compatibility_only",
+      "owner": "importer",
+      "hits": []
+    }
+  ]
+}

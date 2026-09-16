@@ -1,0 +1,28 @@
+{
+  "name": "@nautilo/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "1.1.45",
+    "@nautilo/agent": "workspace:*",
+    "@nautilo/attachments": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/lattice-bridge": "workspace:*",
+    "@nautilo/lattice-crypto": "workspace:*",
+    "@nautilo/message-invariants": "workspace:*",
+    "@nautilo/relay": "workspace:*",
+    "@nautilo/reflection": "workspace:*",
+    "@nautilo/reflection-bridge": "workspace:*",
+    "@nautilo/trust": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "cron-parser": "^5.5.0",
+    "zod": "4.3.6"
+  }
+}

@@ -1,0 +1,3 @@
+ALTER TABLE "reflection_record_publications" ADD COLUMN "reserved_crypto_object_id" text;--> statement-breakpoint
+ALTER TABLE "reflection_record_publications" ADD CONSTRAINT "reflection_record_publications_reserved_crypto_object_portable" CHECK (octet_length("reflection_record_publications"."reserved_crypto_object_id") between 1 and 128
+      and "reflection_record_publications"."reserved_crypto_object_id" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$');

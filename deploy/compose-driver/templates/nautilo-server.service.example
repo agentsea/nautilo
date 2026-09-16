@@ -1,0 +1,22 @@
+# Example systemd unit for nautilo-server on Ubuntu/Debian.
+# Copy to /etc/systemd/system/nautilo-server.service, edit User= and paths,
+# then: systemctl daemon-reload && systemctl enable --now nautilo-server
+
+[Unit]
+Description=Nautilo server
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=nautilo
+Group=nautilo
+WorkingDirectory=/opt/nautilo
+ExecStart=/usr/bin/env bun run /opt/nautilo/bin/nautilo-server/dist/index.js
+EnvironmentFile=/opt/nautilo/.env
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

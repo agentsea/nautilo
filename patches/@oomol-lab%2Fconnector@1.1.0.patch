@@ -1,0 +1,65 @@
+diff --git a/README.md b/README.md
+index fb2462e66..926ee9106 100644
+--- a/README.md
++++ b/README.md
+@@ -95,7 +95,7 @@ new Connector({
+   baseUrl: "https://connector.oomol.com/v1", // default
+   team: "team-name",                         // → x-oo-team-name
+   connectionName: "work",                    // default connection (prefer per-call / using())
+-  timeoutMs: 30_000,                         // default
++  timeoutMs: 30_000,                         // default; 0 disables the client deadline
+   maxRetries: 2,                             // default; retries 429 / 5xx / network with backoff
+   fetch: customFetch,                        // inject for tests / custom agents
+ });
+diff --git a/dist/index.cjs b/dist/index.cjs
+index cb64b778d..52c6dbb2f 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -182,10 +182,10 @@ async function send(spec, transport = defaultTransport) {
+ 		const onAbort = () => controller.abort(spec.signal.reason);
+ 		if (spec.signal) spec.signal.addEventListener("abort", onAbort, { once: true });
+ 		let timedOut = false;
+-		const timer = setTimeout(() => {
++		const timer = spec.timeoutMs > 0 ? setTimeout(() => {
+ 			timedOut = true;
+ 			controller.abort(new DOMException("Request timed out", "TimeoutError"));
+-		}, spec.timeoutMs);
++		}, spec.timeoutMs) : void 0;
+ 		try {
+ 			const res = await transport.fetch(spec.url, {
+ 				method: spec.method,
+@@ -221,7 +221,7 @@ async function send(spec, transport = defaultTransport) {
+ 			}
+ 			throw netErr;
+ 		} finally {
+-			clearTimeout(timer);
++			if (timer !== void 0) clearTimeout(timer);
+ 			if (spec.signal) spec.signal.removeEventListener("abort", onAbort);
+ 		}
+ 	}
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 25d0946f5..3fbe1bebc 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -181,10 +181,10 @@ async function send(spec, transport = defaultTransport) {
+ 		const onAbort = () => controller.abort(spec.signal.reason);
+ 		if (spec.signal) spec.signal.addEventListener("abort", onAbort, { once: true });
+ 		let timedOut = false;
+-		const timer = setTimeout(() => {
++		const timer = spec.timeoutMs > 0 ? setTimeout(() => {
+ 			timedOut = true;
+ 			controller.abort(new DOMException("Request timed out", "TimeoutError"));
+-		}, spec.timeoutMs);
++		}, spec.timeoutMs) : void 0;
+ 		try {
+ 			const res = await transport.fetch(spec.url, {
+ 				method: spec.method,
+@@ -220,7 +220,7 @@ async function send(spec, transport = defaultTransport) {
+ 			}
+ 			throw netErr;
+ 		} finally {
+-			clearTimeout(timer);
++			if (timer !== void 0) clearTimeout(timer);
+ 			if (spec.signal) spec.signal.removeEventListener("abort", onAbort);
+ 		}
+ 	}

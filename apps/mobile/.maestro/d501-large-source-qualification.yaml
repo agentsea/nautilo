@@ -1,0 +1,20 @@
+appId: ai.nautilo.app
+---
+- tapOn: "${D501_SOURCE_SIZE_LABEL}"
+- extendedWaitUntil:
+    visible: ".*bytes ready in.*"
+    timeout: 30000
+- tapOn:
+    id: markdown-source-input
+- inputText: " Z"
+- assertVisible:
+    id: markdown-source-input
+- swipe:
+    start: 50%, 72%
+    end: 50%, 35%
+    duration: 900
+- tapOn: "Unmount input"
+- assertVisible: "Input unmounted; remount to verify controlled teardown."
+- tapOn: "Remount input"
+- assertVisible:
+    id: markdown-source-input

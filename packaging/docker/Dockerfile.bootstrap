@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1.7
+# D488: transient, one-shot hosted database reconciliation image.
+# Runtime contains only the compiled executable; secrets enter only through
+# named environment variables at service start and are never baked into layers.
+FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS runtime-security-update
+# Distroless has not yet rebuilt its Debian 13 base with the glibc fixes.
+# Download the official stable package through apt's signed indexes, extract its
+# runtime files, and preserve truthful Distroless package metadata for scanners.
+# Remove this overlay when the pinned upstream base contains this fix or newer.
+RUN apt-get update \
+ && mkdir -p /tmp/glibc /out/glibc/var/lib/dpkg/status.d \
+ && cd /tmp/glibc \
+ && apt-get download libc6=2.41-12+deb13u4 \
+ && dpkg-deb --extract libc6_*.deb /out/glibc \
+ && dpkg-deb --control libc6_*.deb /tmp/glibc/control \
+ && cp /tmp/glibc/control/control /out/glibc/var/lib/dpkg/status.d/libc6 \
+ && cp /tmp/glibc/control/md5sums /out/glibc/var/lib/dpkg/status.d/libc6.md5sums
+
+FROM runtime-security-update AS build
+WORKDIR /repo
+
+# BuildKit context is the repository root. `.dockerignore` excludes local
+# environment files, node_modules, test trees, and Git metadata.
+COPY . .
+RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
+    bun install --frozen-lockfile --production --ignore-scripts --linker=hoisted
+
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) target=bun-linux-x64 ;; \
+      arm64) target=bun-linux-arm64 ;; \
+      *) echo "unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && bun build --compile --target="$target" \
+      --outfile=/out/nautilo-hosted-bootstrap \
+      packaging/docker/bootstrap-entrypoint.ts
+
+# The compiled Bun executable owns its outbound TLS implementation. The
+# bootstrap exposes only a plain HTTP handoff endpoint and never creates an
+# OpenSSL TLS/QUIC listener, so the runtime intentionally omits system OpenSSL.
+FROM gcr.io/distroless/base-nossl-debian13:nonroot@sha256:5cab74e7f8a5e7c5f1c8a9e6268b1f352f053c36c656f493308340bcecbc636c
+ARG NAUTILO_SOURCE_SHA
+LABEL org.opencontainers.image.title="Nautilo hosted bootstrap" \
+      org.opencontainers.image.revision="$NAUTILO_SOURCE_SHA"
+COPY --from=runtime-security-update /out/glibc/ /
+COPY --from=build /out/nautilo-hosted-bootstrap /usr/local/bin/nautilo-hosted-bootstrap
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/nautilo-hosted-bootstrap"]

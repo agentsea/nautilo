@@ -1,0 +1,30 @@
+{
+  "agent-browser": {
+    "version": "0.35.2",
+    "source": "https://github.com/vercel-labs/agent-browser",
+    "license": "Apache-2.0",
+    "binaryName": "agent-browser",
+    "artifacts": {
+      "darwin-arm64": {
+        "sha256": "e1e08f3b0a1c711750209e6a25b6f3a9dab7ed6e6a24b55a2556050b991fcc97",
+        "sizeMin": 12247424,
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-darwin-arm64"
+      },
+      "darwin-x64": {
+        "sha256": "d76cfc76885d5007f3c119008a80a145b381ec4dfdd202f43e46cd0829751774",
+        "sizeMin": 13378880,
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-darwin-x64"
+      },
+      "linux-arm64": {
+        "sha256": "1599fec4f4e75dc26fc08eecc06ca4b729a0361932b32a6afb99885f0f829ecb",
+        "sizeMin": 12332896,
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-linux-arm64"
+      },
+      "linux-x64": {
+        "sha256": "b699f24eebdb7fde91a34a9d697a1b84c3145f54327b60694b46f06b2972ce4d",
+        "sizeMin": 14021032,
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-linux-x64"
+      }
+    }
+  }
+}

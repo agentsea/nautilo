@@ -1,0 +1,51 @@
+-- D168 P3 (Stack 11.5) — FORCE ROW LEVEL SECURITY on credentials + recovery_codes.
+--
+-- ============================================================
+-- IMPORTANT: the statement-breakpoint markers below are LOAD-BEARING.
+-- See migration #47's prologue for the full Drizzle-migrator
+-- silent-no-op story. Don't strip these markers.
+-- ============================================================
+--
+-- Postgres default: the table OWNER (and any BYPASSRLS role)
+-- bypasses RLS — policies fire only for non-owner roles. The
+-- nautilo_agent role from D129 P3 was already gated by:
+--   1. ZERO grant on credentials / recovery_codes (D129 P3
+--      postgres-init.sh REVOKE block) — agent role gets
+--      permission denied for table credentials before RLS even
+--      considers policy evaluation.
+--   2. Path C policies on credentials (credentials_self) and
+--      recovery_codes (recovery_codes_self) per D168 P2
+--      migration #47, gating on user_id = app_current_user_id().
+--
+-- D168 P2 deliberately did NOT call FORCE on credentials because
+-- the auth-route runtime code (packages/trust/src/challenge.ts,
+-- packages/agent/src/tools/trust/verify-identity.ts) used
+-- createDirectDb() (the nautilo superuser) to read credentials
+-- WITHOUT a trust-context GUC — they'd have broken with 0 rows
+-- and PIN login would have failed.
+--
+-- D168 P3 fixes that: the chokepoint refactor in
+-- packages/trust/src/challenge.ts now wraps every credentials
+-- read/write in withTrustContext({ userId }), and the agent tool
+-- calls PinChallengeProvider.isEnrolled() instead of a direct
+-- credentials query. The lint rule d168-credentials-chokepoint
+-- in eslint.config.mjs enforces the boundary structurally.
+--
+-- Now safe to FORCE: even the nautilo superuser is subject to
+-- the per-row user_id = app_current_user_id() policy. A
+-- compromised server process attempting SELECT * FROM credentials
+-- as the superuser without first calling set_config(
+-- 'app.current_user_id', ...) gets ZERO rows. Setting the GUC to
+-- some other user's id returns ONLY that user's credential row;
+-- iterating across all users requires looping (still possible from
+-- the superuser, but no longer a single naked SELECT).
+--
+-- This is the initial enforcement boundary. At-rest encryption (
+-- M048/M050) is what makes the rows opaque even with the right
+-- GUC; that's a different perimeter for a different threat model.
+
+ALTER TABLE credentials FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+
+ALTER TABLE recovery_codes FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint

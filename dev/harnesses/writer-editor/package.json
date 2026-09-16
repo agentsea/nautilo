@@ -1,0 +1,21 @@
+{
+  "name": "@nautilo/writer-dev-harness",
+  "private": true,
+  "type": "module",
+  "description": "P1.4 dev-harness: NautiloDocStore + Wafflebase editor wired to a stub nautiloApp bridge. Not shipped \u2014 proves the M193 store adapter end-to-end in a real browser.",
+  "scripts": {
+    "dev": "vite --port 5211 --strictPort",
+    "build": "vite build --target esnext"
+  },
+  "devDependencies": {
+    "vite": "6.4.3"
+  },
+  "dependencies": {
+    "@nautilo/office-core": "file:../../../packages/office-core",
+    "@nautilo/office-docs": "file:../../../packages/office-docs"
+  },
+  "overrides": {
+    "@nautilo/office-core": "file:../../../packages/office-core",
+    "@nautilo/office-docs": "file:../../../packages/office-docs"
+  }
+}

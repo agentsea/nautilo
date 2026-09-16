@@ -1,0 +1,40 @@
+{
+  "name": "@nautilo/reflection",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "src"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./authority": "./src/authority.ts",
+    "./durable": "./src/durable.ts",
+    "./evaluation": "./src/evaluation/model-benchmark.ts",
+    "./foreground": "./src/foreground.ts",
+    "./payload": "./src/payload.ts",
+    "./search": "./src/search.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun run test:unit",
+    "test:unit": "bun test tests/unit/",
+    "eval:reflection-candidates": "bun run tests/evals/reflection-candidate-policy.eval.ts",
+    "eval:reflection-authority": "bun run tests/evals/reflection-authority-algebra.eval.ts",
+    "eval:reflection-foreground": "bun run tests/evals/reflection-foreground-context.eval.ts",
+    "eval:reflection-hierarchy": "bun run tests/evals/reflection-hierarchy.eval.ts"
+  },
+  "dependencies": {
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

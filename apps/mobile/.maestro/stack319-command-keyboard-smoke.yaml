@@ -1,0 +1,28 @@
+appId: ai.nautilo.app
+name: Stack 319 Command editor keyboard smoke
+---
+- openLink: nautilo://settings/commands
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: Commands
+    timeout: 30000
+- tapOn: Create Command
+- assertVisible: New Command
+- tapOn: Command Name
+- inputText: keyboard-check
+- tapOn: Command Description
+- inputText: Harmless keyboard qualification draft
+- swipe:
+    start: "50%,65%"
+    end: "50%,25%"
+    duration: 500
+- tapOn:
+    point: "50%,55%"
+- inputText: Do not save this draft.
+- assertVisible: Create Command
+- takeScreenshot: stack319-command-keyboard-primary-visible
+- tapOn: Go back

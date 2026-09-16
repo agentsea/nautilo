@@ -1,0 +1,10 @@
+[test]
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "reports/coverage"
+coverageThreshold = { lines = 1.0, functions = 1.0, statements = 1.0 }
+coveragePathIgnorePatterns = [
+  "baseline/**",
+  "src/node/dto-inventory.ts",
+]

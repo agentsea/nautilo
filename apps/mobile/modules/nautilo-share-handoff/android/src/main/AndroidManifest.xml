@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <!-- Private, non-exported content bridge. `openInboundFileAsync` is the
+         only native escape hatch; receipt metadata never contains this URI. -->
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.nautilo.sharehandoff"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/nautilo_share_handoff_paths" />
+    </provider>
+  </application>
+</manifest>

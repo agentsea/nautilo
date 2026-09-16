@@ -1,0 +1,41 @@
+appId: ai.nautilo.app
+onFlowComplete:
+  - openLink: nautilo://settings/voice-picker?role=default
+  - extendedWaitUntil:
+      visible: Search voices
+      timeout: 30000
+  - tapOn: Search voices
+  - eraseText
+  - inputText: Carolyn
+  - tapOn: Language
+  - assertVisible: Select Carolyn
+  - tapOn: Select Carolyn
+  - tapOn: Use Carolyn
+  - extendedWaitUntil:
+      visible: Voice & playback
+      timeout: 30000
+  - assertVisible: "Carolyn.*"
+---
+# Populated-default acceptance fixture. Carolyn is the recorded baseline; the
+# completion hook restores it even when the mutation assertions fail.
+- openLink: nautilo://settings/voice
+- assertVisible: "Carolyn.*"
+- tapOn: Preview primary voice
+- assertNotVisible: undefined is not a function
+- tapOn: Preview primary voice
+
+- tapOn: Choose primary voice
+- extendedWaitUntil:
+    visible: Search voices
+    timeout: 30000
+- tapOn: Search voices
+- eraseText
+- inputText: Will - Conversational Narrator
+- tapOn: Language
+- assertVisible: Select Will - Conversational Narrator
+- tapOn: Select Will - Conversational Narrator
+- tapOn: Use Will - Conversational Narrator
+- extendedWaitUntil:
+    visible: Voice & playback
+    timeout: 30000
+- assertVisible: Will - Conversational Narrator

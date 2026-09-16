@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!--
+    D091 — no CSP <meta> here.
+
+    The Content Security Policy for this window is set at the
+    main-process layer via session.webRequest.onHeadersReceived in
+    showOnboardingWizard (apps/desktop/electron/main.ts). That
+    runtime-injected header allows connect-src + media-src +
+    img-src to reach `${serverUrl}` (resolved at window-open
+    time) for audio + API + avatar-image fetches.
+
+    A meta CSP here would intersect with the runtime header
+    (browser picks the most restrictive) and silently block every
+    server fetch — exactly the bug live-verify caught when
+    AvatarScreen's <img> + NarratorAudio's <audio> both 404'd
+    despite the routes returning 200 from curl.
+  -->
+  <title>Nautilo — Meet your Genie</title>
+  <style>
+    /*
+     * D233 — onboarding palette from @nautilo/config/design-tokens.
+     * Injected at build time by apps/desktop/scripts/build-electron.ts
+     * (formatOnboardingPaletteCssBlock). Source HTML keeps a marker only.
+     */
+    /* __NAUTILO_ONBOARDING_PALETTE__ */
+
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+    #root { flex: 1; min-height: 0; }
+  </style>
+</head>
+<body>
+  <!-- The shared renderer owns all wizard layout and animation styling. -->
+  <div id="root"></div>
+  <script src="./index.js"></script>
+</body>
+</html>

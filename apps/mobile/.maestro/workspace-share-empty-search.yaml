@@ -1,0 +1,12 @@
+# Start in a writable synthetic fixture's file viewer, already authenticated.
+# This flow does not share, rename, delete, or enter credentials.
+appId: ai.nautilo.app
+---
+- tapOn: "More options"
+- tapOn: "Add to workspace"
+- tapOn: "Search people by name or handle"
+- inputText: "no-such-person-parity-check"
+- assertVisible: "No people found."
+- assertVisible: "Cancel"
+- tapOn: "Cancel"
+- assertVisible: "More options"

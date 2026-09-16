@@ -1,0 +1,33 @@
+{
+  "name": "@nautilo/compose-driver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "M092 Step 4 — host-side ComposeDriver for `nautilo deploy/status/restart/logs/upgrade/backup/restore/destroy`. Wraps docker compose against the deploy/full-stack template and runs Logto bootstrap via the existing `bootstrap-logto.ts` algorithm.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test --timeout 15000 tests/unit/",
+    "test:unit": "bun test --timeout 15000 tests/unit/",
+    "test:integration:remote-fs-owner": "NAUTILO_REMOTE_FS_OWNER_INTEGRATION=1 bun test tests/integration/remote-fs-receiver-ownership.integration.test.ts"
+  },
+  "dependencies": {
+    "@nautilo/config": "workspace:*",
+    "@nautilo/config-guard": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/local": "workspace:*",
+    "@nautilo/operator-secrets": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

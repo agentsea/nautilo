@@ -1,0 +1,33 @@
+{
+  "name": "@nautilo/server-bin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless Nautilo server \u2014 Fastify + runtime",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit/",
+    "test:integration": "bun test tests/integration/"
+  },
+  "dependencies": {
+    "@nautilo/agent": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/server": "workspace:*",
+    "@nautilo/catalog": "workspace:*",
+    "@nautilo/runtime": "workspace:*",
+    "@nautilo/trust": "workspace:*",
+    "dotenv": "16.6.1",
+    "@nautilo/config-guard": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "context": {
+    "zone": "workspace",
+    "workspaceId": "workspace-complete",
+    "relayId": null,
+    "agentId": "agent-apply-patch",
+    "turnId": "turn-complete-1"
+  },
+  "redactionRoot": "/private/work/project",
+  "runtimeVersion": "nautilo-apply-patch@3389fa55",
+  "preflight": {
+    "operations": [
+      { "operation": "add", "path": "docs/new.md" },
+      { "operation": "update", "path": "src/main.ts" },
+      { "operation": "move", "fromPath": "src/old.ts", "path": "src/renamed.ts" },
+      { "operation": "delete", "path": "tmp/obsolete.txt" }
+    ]
+  },
+  "revisions": [
+    { "path": "docs/new.md", "revisionId": "revision-new" },
+    { "path": "src/main.ts", "revisionId": "revision-main" },
+    { "path": "src/renamed.ts", "revisionId": "revision-move" },
+    { "path": "tmp/obsolete.txt", "revisionId": "revision-delete" }
+  ]
+}

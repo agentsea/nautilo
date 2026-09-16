@@ -1,0 +1,8 @@
+{
+  "operations": [
+    { "operation": "add", "path": "docs/new.md" },
+    { "operation": "update", "path": "src/main.ts" },
+    { "operation": "move", "fromPath": "src/old.ts", "path": "src/renamed.ts" },
+    { "operation": "delete", "path": "tmp/obsolete.txt" }
+  ]
+}

@@ -1,0 +1,299 @@
+{
+  "version": 2,
+  "catalogVersion": "2026.07.28.1",
+  "publishedAt": "2026-07-28T12:00:00Z",
+  "entries": [
+    {
+      "id": "anthropic:claude-contract-test",
+      "displayName": "Claude Contract Test (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 1,
+      "defaultEnabled": true,
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "anthropic",
+            "verifiedAt": "2026-07-27T00:00:00Z"
+          }
+        }
+      },
+      "limits": {
+        "contextTokens": 131072,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "openrouter:contract/reasoning-test",
+      "displayName": "OpenRouter Contract Test",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 2,
+      "defaultEnabled": true,
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-07-27T00:00:00Z"
+          }
+        }
+      },
+      "limits": {
+        "contextTokens": 131072,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "venice:contract-reasoning-test",
+      "displayName": "Venice Contract Test",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 3,
+      "defaultEnabled": true,
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 5
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-07-28T00:00:00Z"
+          }
+        }
+      },
+      "limits": {
+        "contextTokens": 131072,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/gpt-oss-contract",
+      "displayName": "Fireworks Binary Reasoning Contract Test",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 4,
+      "defaultEnabled": true,
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "high"
+          ],
+          "defaultLevel": "off",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "reviewed-override",
+            "provider": "fireworks",
+            "verifiedAt": "2026-07-27T00:00:00Z"
+          }
+        }
+      },
+      "limits": {
+        "contextTokens": 131072,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/kimi-k3",
+      "displayName": "Kimi K3 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 5,
+      "defaultEnabled": true,
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": false
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "controls": {
+        "serving": {
+          "defaultProfile": "standard",
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "fireworks",
+            "verifiedAt": "2026-07-27T00:00:00Z"
+          },
+          "profiles": [
+            {
+              "id": "standard",
+              "label": "Standard",
+              "description": "Balanced default Fireworks route.",
+              "intent": "balanced",
+              "selector": {
+                "kind": "default"
+              },
+              "pricing": {
+                "inputPerMtok": 3,
+                "cachedInputPerMtok": 0.3,
+                "outputPerMtok": 15,
+                "provenance": {
+                  "kind": "provider-documentation",
+                  "provider": "fireworks",
+                  "verifiedAt": "2026-07-27T00:00:00Z"
+                }
+              }
+            },
+            {
+              "id": "priority",
+              "label": "Priority",
+              "description": "Higher reliability during peak traffic.",
+              "intent": "reliability",
+              "selector": {
+                "kind": "request-parameter",
+                "parameter": "service_tier",
+                "value": "priority"
+              },
+              "pricing": {
+                "inputPerMtok": 3.75,
+                "cachedInputPerMtok": 0.375,
+                "outputPerMtok": 18.75,
+                "provenance": {
+                  "kind": "provider-documentation",
+                  "provider": "fireworks",
+                  "verifiedAt": "2026-07-27T00:00:00Z"
+                }
+              }
+            },
+            {
+              "id": "fast",
+              "label": "Fast",
+              "description": "Higher generated-token throughput for interactive work.",
+              "intent": "throughput",
+              "selector": {
+                "kind": "model-override",
+                "modelId": "fireworks:accounts/fireworks/routers/kimi-k3-fast"
+              },
+              "pricing": {
+                "inputPerMtok": 4.5,
+                "cachedInputPerMtok": 0.45,
+                "outputPerMtok": 22.5,
+                "provenance": {
+                  "kind": "provider-documentation",
+                  "provider": "fireworks",
+                  "verifiedAt": "2026-07-27T00:00:00Z"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "limits": {
+        "contextTokens": 131072,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "openai:legacy-model-only-test",
+      "displayName": "Legacy Model Only Test (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 6,
+      "defaultEnabled": true,
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 131072,
+        "outputTokens": 8192
+      }
+    }
+  ]
+}

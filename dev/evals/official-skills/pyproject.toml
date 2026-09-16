@@ -1,0 +1,15 @@
+[project]
+name = "nautilo-official-skills-evaluation"
+version = "0.0.0"
+requires-python = "==3.13.7"
+dependencies = [
+  "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@799f9d61d3f22afaf6eb151f8a46236262ca797d",
+]
+
+[tool.uv]
+package = false
+required-version = "==0.7.3"
+build-constraint-dependencies = [
+  "setuptools==80.9.0",
+  "wheel==0.45.1",
+]

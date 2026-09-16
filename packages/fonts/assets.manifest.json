@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "evidence": "Version, copyright and declared license are recorded from the committed font name tables; SHA-256 covers the exact committed file bytes. Each font matches its immutable upstream Git blob ID and byte size through anonymous verified HTTPS metadata. The five smaller Arabic and core font files also match anonymously downloaded upstream bytes by SHA-256. This identifies byte-equivalent upstream sources, not the original ingestion date or operator.",
+  "fonts": [
+    {
+      "path": "assets/arabic/NotoNaskhArabic-Regular.ttf",
+      "sha256": "fcf25a277659d1f3283ff6df52c276ed94e2b9db14c852eab94ef18e61e1a656",
+      "bytes": 254712,
+      "version": "Version 1.05",
+      "copyright": "Copyright 2014 Google Inc. All Rights Reserved.",
+      "license": "Apache-2.0",
+      "embeddedLicense": "Licensed under the Apache License, Version 2.0",
+      "embeddedLicenseUrl": "http://www.apache.org/licenses/LICENSE-2.0",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-fonts",
+        "revision": "45c4c9d0e1e8f24c1c7928a8637ceed014deb704",
+        "path": "hinted/NotoNaskhArabic-Regular.ttf",
+        "gitBlob": "aa8d19b321377847f8d9330747ad95862efcc807",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/45c4c9d0e1e8f24c1c7928a8637ceed014deb704/hinted/NotoNaskhArabic-Regular.ttf",
+        "verification": "sha256-and-git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/cjk/jp/NotoSansCJKjp-Regular.otf",
+      "sha256": "68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5",
+      "bytes": 16467736,
+      "version": "Version 2.004;hotconv 1.0.118;makeotfexe 2.5.65603",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/).",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-cjk",
+        "revision": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+        "path": "Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf",
+        "gitBlob": "f56224957fb13a81b4c14bac34f2f058a017f9fb",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf",
+        "verification": "git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/cjk/sc/NotoSansCJKsc-Regular.otf",
+      "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+      "bytes": 16437364,
+      "version": "Version 2.004;hotconv 1.0.118;makeotfexe 2.5.65603",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/).",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-cjk",
+        "revision": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+        "path": "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+        "gitBlob": "dc15562470b4f842321894787a0d066879ccff8b",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+        "verification": "git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/cjk/tc/NotoSansCJKtc-Regular.otf",
+      "sha256": "dce08bd4fd91aa8aa76ed8fea4b694c2dfb8550f67871e326843212ddbeb88b4",
+      "bytes": 16435884,
+      "version": "Version 2.004;hotconv 1.0.118;makeotfexe 2.5.65603",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/).",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-cjk",
+        "revision": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+        "path": "Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf",
+        "gitBlob": "f9376bae1d421520f73a3c6c9d50b22f89548301",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf",
+        "verification": "git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/core/mono/NotoSansMono-Regular.ttf",
+      "sha256": "d9e2b23d19f8230be7146f409a52b1d23117e635e28f2e2892cf91b7382f325b",
+      "bytes": 512836,
+      "version": "Version 2.007; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+      "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-fonts",
+        "revision": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+        "path": "hinted/ttf/NotoSansMono/NotoSansMono-Regular.ttf",
+        "gitBlob": "541efd808dfb0b88972ab8390cb1328e4bbd9a06",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansMono/NotoSansMono-Regular.ttf",
+        "verification": "sha256-and-git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/core/sans/NotoSans-Bold.ttf",
+      "sha256": "c976e4b1b99edc88775377fcc21692ca4bfa46b6d6ca6522bfda505b28ff9d6a",
+      "bytes": 575740,
+      "version": "Version 2.008; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+      "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-fonts",
+        "revision": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+        "path": "hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+        "gitBlob": "27131f8f479947ef1b6c1d0bc9ad5ab3d30bd831",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+        "verification": "sha256-and-git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/core/sans/NotoSans-Regular.ttf",
+      "sha256": "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5",
+      "bytes": 569208,
+      "version": "Version 2.008; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+      "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-fonts",
+        "revision": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+        "path": "hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+        "gitBlob": "d55220958aa51eeeb85048d746eabe43d2cd9f14",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+        "verification": "sha256-and-git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/core/serif/NotoSerif-Regular.ttf",
+      "sha256": "c8f669ceb2c9c60ccf55198b305e08a997ffca79a38cc7eeb551e643cbe66505",
+      "bytes": 616196,
+      "version": "Version 2.007; ttfautohint (v1.8) -l 8 -r 50 -G 200 -x 14 -D latn -f none -a qsq -X \"\"",
+      "copyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/notofonts/noto-fonts",
+        "revision": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+        "path": "hinted/ttf/NotoSerif/NotoSerif-Regular.ttf",
+        "gitBlob": "8ef59c11cbdad66a73a9b4ea381ec3e5dcf45faf",
+        "downloadUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSerif/NotoSerif-Regular.ttf",
+        "verification": "sha256-and-git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    },
+    {
+      "path": "assets/emoji/NotoColorEmoji.ttf",
+      "sha256": "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
+      "bytes": 10673480,
+      "version": "Version 2.051;GOOG;noto-emoji:20250818:e92753bfa55fd449e427d4d325f9c8c40408c74e",
+      "copyright": "Copyright 2022 Google Inc.",
+      "license": "OFL-1.1",
+      "embeddedLicense": "This Font Software is licensed under the SIL Open Font License, Version 1.1. This Font Software is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the SIL Open Font License for the specific language, permissions and limitations governing your use of this Font Software.",
+      "embeddedLicenseUrl": "http://scripts.sil.org/OFL",
+      "upstream": {
+        "repository": "https://github.com/googlefonts/noto-emoji",
+        "revision": "8998f5dd683424a73e2314a8c1f1e359c19e8742",
+        "path": "fonts/NotoColorEmoji.ttf",
+        "gitBlob": "943741df1e37aa3ee3b5afc9129843fd8d81908c",
+        "downloadUrl": "https://raw.githubusercontent.com/googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742/fonts/NotoColorEmoji.ttf",
+        "verification": "git-blob-and-size",
+        "verifiedAt": "2026-09-15"
+      }
+    }
+  ]
+}

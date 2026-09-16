@@ -1,0 +1,21 @@
+{
+  "name": "@nautilo/lattice-crypto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wire": "./src/wire.ts",
+    "./background": "./src/background/client.ts",
+    "./wire-limits": "./src/wire-limits.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "dependencies": {
+    "@hpke/core": "1.9.0",
+    "@noble/ciphers": "2.2.0",
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
+    "ts-mls": "1.6.2"
+  }
+}

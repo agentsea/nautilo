@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="8" y1="2" x2="58" y2="64" gradientUnits="userSpaceOnUse"><stop stop-color="#5299FF"/><stop offset=".5" stop-color="#3867E8"/><stop offset="1" stop-color="#3933A5"/></linearGradient>
+    <linearGradient id="paper" x1="18" y1="12" x2="44" y2="51" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF"/><stop offset="1" stop-color="#DCE8FF"/></linearGradient>
+    <linearGradient id="pen" x1="41" y1="27" x2="55" y2="43" gradientUnits="userSpaceOnUse"><stop stop-color="#B6EEFF"/><stop offset="1" stop-color="#6DC7FB"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="16" fill="url(#tile)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="15.5" stroke="#FFF" stroke-opacity=".24"/>
+  <path d="M19 14h18l10 10v24a5 5 0 0 1-5 5H19a5 5 0 0 1-5-5V19a5 5 0 0 1 5-5Z" fill="#152F83" opacity=".3"/>
+  <path d="M21 11h16l10 10v24a5 5 0 0 1-5 5H21a5 5 0 0 1-5-5V16a5 5 0 0 1 5-5Z" fill="url(#paper)"/>
+  <path d="M37 11v7a3 3 0 0 0 3 3h7" fill="#B9D1FF"/>
+  <path d="M23 25h11M23 31h15M23 37h9" stroke="#557ACB" stroke-width="3" stroke-linecap="round"/>
+  <path d="m34 47 2-9 14-14a3 3 0 0 1 4 0l2 2a3 3 0 0 1 0 4L42 44l-8 3Z" fill="#294A9D" opacity=".25"/>
+  <path d="m33 45 2-8 14-14a3 3 0 0 1 4 0l2 2a3 3 0 0 1 0 4L41 43l-8 2Z" fill="url(#pen)"/>
+  <path d="m35 37 6 6-8 2 2-8Z" fill="#FFF"/>
+  <path d="m47 25 6 6" stroke="#3475C3" stroke-width="2"/>
+</svg>

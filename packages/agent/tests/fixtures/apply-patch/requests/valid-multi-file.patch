@@ -1,0 +1,16 @@
+*** Begin Patch
+*** Add File: docs/new.md
++# New
++
++A coherent multi-file change.
+*** Update File: src/main.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/old.ts
+*** Move to: src/renamed.ts
+@@
+-export const legacy = true;
++export const legacy = false;
+*** Delete File: tmp/obsolete.txt
+*** End Patch

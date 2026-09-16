@@ -1,0 +1,41 @@
+{
+  "name": "@nautilo/dev-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev sandbox — snapshot/restore local state (DB, .env, ~/.nautilo)",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun run test:unit && bun run test:integration",
+    "test:unit": "bun test --timeout 15000 tests/unit",
+    "test:integration": "bun test --timeout 60000 tests/integration",
+    "test:integration:d489-maintenance": "NAUTILO_D489_DISPOSABLE_PG=1 bun tests/integration/d489-checkpoint-maintenance-acceptance-runner.ts",
+    "test:integration:d475": "NAUTILO_D475_LIVE=1 bun test --timeout 240000 tests/integration/d475-persisted-role-drift.test.ts"
+  },
+  "dependencies": {
+    "@nautilo/api-client": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/config-guard": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/deploy-config": "workspace:*",
+    "@nautilo/instance-discovery": "workspace:*",
+    "@nautilo/local": "workspace:*",
+    "@nautilo/mcp-client": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "@nautilo/operator-secrets": "workspace:*",
+    "@nautilo/server": "workspace:*",
+    "@nautilo/trust": "workspace:*",
+    "postgres": "3.4.7",
+    "smol-toml": "1.8.0"
+  },
+  "devDependencies": {
+    "@logto/cli": "1.38.0",
+    "@types/node": "24.10.4",
+    "playwright": "1.62.1",
+    "typescript": "5.9.3"
+  }
+}

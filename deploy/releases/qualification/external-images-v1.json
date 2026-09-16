@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "resolvedAt": "2026-08-06T13:18:37Z",
+  "images": {
+    "app-postgres": {
+      "resolvedFrom": "pgvector/pgvector:pg17",
+      "reference": "pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38"
+    },
+    "logto-postgres": {
+      "resolvedFrom": "postgres:16",
+      "reference": "postgres@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b"
+    },
+    "logto": {
+      "resolvedFrom": "ghcr.io/logto-io/logto:1.38.0",
+      "reference": "ghcr.io/logto-io/logto@sha256:aa4c428b70d9dd8eac23b6eeb3826a02d5fe0283b5dd774589b9b9760e0c6e9f"
+    }
+  }
+}

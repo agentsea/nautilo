@@ -1,0 +1,3622 @@
+{
+  "upstreamRevision": "13b487d9b5fbb913d9b387c82d912322021cbce4",
+  "scope": "Prospective frontend source dependency inventory only; these files are not vendored or enabled. Includes Board production roots and Miro runner/applier; tests listed separately. Static literal imports, re-exports and literal dynamic imports are traversed; computed imports and runtime network/service behavior require semantic review.",
+  "roots": [
+    "packages/frontend/src/app/board/board-cursor-publish.ts",
+    "packages/frontend/src/app/board/board-detail.tsx",
+    "packages/frontend/src/app/board/board-grid.ts",
+    "packages/frontend/src/app/board/board-image.ts",
+    "packages/frontend/src/app/board/board-minimap.ts",
+    "packages/frontend/src/app/board/board-toolbar.tsx",
+    "packages/frontend/src/app/board/board-touch-gestures.ts",
+    "packages/frontend/src/app/board/board-view.tsx",
+    "packages/frontend/src/app/board/board-wheel.ts",
+    "packages/frontend/src/app/board/board-zoom.ts",
+    "packages/frontend/src/app/board/fit-to-content.ts",
+    "packages/frontend/src/app/board/is-editable-target.ts",
+    "packages/frontend/src/app/board/minimap-geometry.ts",
+    "packages/frontend/src/app/board/sticky.ts",
+    "packages/frontend/src/app/board/yorkie-board-store.ts",
+    "packages/frontend/src/app/documents/miro-import-runner.ts",
+    "packages/frontend/src/app/documents/apply-imported-content.ts"
+  ],
+  "boardTests": [
+    "packages/frontend/src/app/board/board-cursor-publish.test.ts",
+    "packages/frontend/src/app/board/board-grid.test.ts",
+    "packages/frontend/src/app/board/board-image.test.ts",
+    "packages/frontend/src/app/board/board-minimap.test.ts",
+    "packages/frontend/src/app/board/board-toolbar-state.test.ts",
+    "packages/frontend/src/app/board/board-touch-gestures.test.ts",
+    "packages/frontend/src/app/board/board-wheel.test.ts",
+    "packages/frontend/src/app/board/board-zoom.test.ts",
+    "packages/frontend/src/app/board/fit-to-content.test.ts",
+    "packages/frontend/src/app/board/is-editable-target.test.ts",
+    "packages/frontend/src/app/board/minimap-geometry.test.ts",
+    "packages/frontend/src/app/board/sticky.test.ts",
+    "packages/frontend/src/app/board/yorkie-board-store.test.ts"
+  ],
+  "files": [
+    {
+      "path": "packages/frontend/src/api/analytics.ts",
+      "sha256": "64d49803f27f72401e0d0193aa884c9d66727c0abe75809c3250fc3ca9947ab2",
+      "imports": [
+        {
+          "specifier": ", range.from);\n  if (range?.to) qs.set(",
+          "external": true
+        },
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "./url",
+          "path": "packages/frontend/src/api/url.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/auth.ts",
+      "sha256": "1f8ada1edcb6b626d46947e5bf89dd61e74b9a3b52bddc7288ccf47a505c7f50",
+      "imports": [
+        {
+          "specifier": "./single-flight",
+          "path": "packages/frontend/src/api/single-flight.ts"
+        },
+        {
+          "specifier": "@/types/users",
+          "path": "packages/frontend/src/types/users.ts"
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/documents.ts",
+      "sha256": "fad5e333876b2265f5e8d623702d8940cf75da1029917a2f513aaa1e20739f10",
+      "imports": [
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "./url",
+          "path": "packages/frontend/src/api/url.ts"
+        },
+        {
+          "specifier": "@/types/documents",
+          "path": "packages/frontend/src/types/documents.ts"
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/files.ts",
+      "sha256": "5044444a41b2ab050f21e8c29c72bbef0bf294447959884f59f8319af21b7d7b",
+      "imports": [
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "./url",
+          "path": "packages/frontend/src/api/url.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/http-error.ts",
+      "sha256": "89a75c1530af052b48a116f9e93b1f9be2f0f19cfe3a1c6d88398cf17fea6dde",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/api/images.ts",
+      "sha256": "93ba4ee3158d4a92a1709ea5d546fed921005ba469a09a11f560fa5eb570f8ff",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/url",
+          "path": "packages/frontend/src/api/url.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/miro.ts",
+      "sha256": "c93dc41a8ab94f3046b2e2a586945c9cfe39a283d234ac95c3be270b31635319",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "@/api/ndjson",
+          "path": "packages/frontend/src/api/ndjson.ts"
+        },
+        {
+          "specifier": "@/api/url",
+          "path": "packages/frontend/src/api/url.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/ndjson.ts",
+      "sha256": "5585015fc67b2bedebca1b2149fc4a1530a3bcf0d259a48036e087e9a194cf03",
+      "imports": [
+        {
+          "specifier": "s terminal\n  // `result` line carries the whole board as a SINGLE line \u2014 bounded by\n  // `MiroService.MAX_ITEMS`, so ~15 MiB at 10,000 items and connectors \u2014 which\n  // is why the scan below never touches this buffer.\n  let pending = ",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/notifications.ts",
+      "sha256": "854d5b579503cf557196baf1c36df9de4f1ce44d0d7844fb13f2f5ceedfa1ed8",
+      "imports": [
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "@/types/documents",
+          "path": "packages/frontend/src/types/documents.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/share-links.ts",
+      "sha256": "c1150154414482a1765fcd37ce0f8126ffedbca60888e908beea4621cf3cb25f",
+      "imports": [
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "./url",
+          "path": "packages/frontend/src/api/url.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/single-flight.ts",
+      "sha256": "ca1bb5fe87a86e1e75dec7ccb62a06ea0ef0741f1e8988a3c06983d18e8f94b6",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/api/templates.ts",
+      "sha256": "15056622c42583c374ebe349ab203dcef60ccbd94fd92951de4cfb0e66bbc165",
+      "imports": [
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "./url",
+          "path": "packages/frontend/src/api/url.ts"
+        },
+        {
+          "specifier": "@/types/documents",
+          "path": "packages/frontend/src/types/documents.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/url.ts",
+      "sha256": "78a62f53de73a577fd9f45729180647a094c5de747a25366ac47158952344bd1",
+      "imports": [
+        {
+          "specifier": "@wafflebase/core/url",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/api/workspaces.ts",
+      "sha256": "cf3242b32617922307f6521efceec112758ac9ba8637e36aadfefd26a06f9fc4",
+      "imports": [
+        {
+          "specifier": ", range.from);\n  if (range?.to) qs.set(",
+          "external": true
+        },
+        {
+          "specifier": "./analytics",
+          "path": "packages/frontend/src/api/analytics.ts"
+        },
+        {
+          "specifier": "./auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "./http-error",
+          "path": "packages/frontend/src/api/http-error.ts"
+        },
+        {
+          "specifier": "./url",
+          "path": "packages/frontend/src/api/url.ts"
+        },
+        {
+          "specifier": "@/types/datasource",
+          "path": "packages/frontend/src/types/datasource.ts"
+        },
+        {
+          "specifier": "@/types/documents",
+          "path": "packages/frontend/src/types/documents.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-cursor-publish.ts",
+      "sha256": "273bf9cbfcf6a8d3c7899a5ade68180fb8fae5246f5b9ce6a77859309c0ecd0b",
+      "imports": [
+        {
+          "specifier": "nothing scheduled",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-detail.tsx",
+      "sha256": "bdb1932240d403b9e18f259b36081c175b47d92e06bec6ad07608d58d77196e9",
+      "imports": [
+        {
+          "specifier": "./board-view",
+          "path": "packages/frontend/src/app/board/board-view.tsx"
+        },
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/documents",
+          "path": "packages/frontend/src/api/documents.ts"
+        },
+        {
+          "specifier": "@/api/workspaces",
+          "path": "packages/frontend/src/api/workspaces.ts"
+        },
+        {
+          "specifier": "@/components/app-sidebar",
+          "path": "packages/frontend/src/components/app-sidebar.tsx"
+        },
+        {
+          "specifier": "@/components/collab-document-provider",
+          "path": "packages/frontend/src/components/collab-document-provider.tsx"
+        },
+        {
+          "specifier": "@/components/history/history-panel-lazy",
+          "path": "packages/frontend/src/components/history/history-panel-lazy.tsx"
+        },
+        {
+          "specifier": "@/components/history/preview-surface",
+          "path": "packages/frontend/src/components/history/preview-surface.tsx"
+        },
+        {
+          "specifier": "@/components/history/revision-preview",
+          "path": "packages/frontend/src/components/history/revision-preview.tsx"
+        },
+        {
+          "specifier": "@/components/loader",
+          "path": "packages/frontend/src/components/loader.tsx"
+        },
+        {
+          "specifier": "@/components/share-dialog",
+          "path": "packages/frontend/src/components/share-dialog.tsx"
+        },
+        {
+          "specifier": "@/components/site-header",
+          "path": "packages/frontend/src/components/site-header.tsx"
+        },
+        {
+          "specifier": "@/components/ui/sidebar",
+          "path": "packages/frontend/src/components/ui/sidebar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toggle",
+          "path": "packages/frontend/src/components/ui/toggle.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@/components/user-presence",
+          "path": "packages/frontend/src/components/user-presence.tsx"
+        },
+        {
+          "specifier": "@/hooks/use-workspace-nav-items",
+          "path": "packages/frontend/src/hooks/use-workspace-nav-items.ts"
+        },
+        {
+          "specifier": "@/types/board-document",
+          "path": "packages/frontend/src/types/board-document.ts"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@tanstack/react-query",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "react-router-dom",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-grid.ts",
+      "sha256": "fe7f939102e50d9ca24ac4b254314bda4ab30181babc2d1d92dca67f4c236411",
+      "imports": [
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-image.ts",
+      "sha256": "9d1c09c82f522085566ab5fc73dd786fb6b08d266a1250c3218ea2a7b77349b3",
+      "imports": [
+        {
+          "specifier": "@/app/spreadsheet/image-upload",
+          "path": "packages/frontend/src/app/spreadsheet/image-upload.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-minimap.ts",
+      "sha256": "1e34452be9a6da99a99ee5af10e7719a944eea78ad3ac0c33e1a436fe4fd502b",
+      "imports": [
+        {
+          "specifier": "./minimap-geometry",
+          "path": "packages/frontend/src/app/board/minimap-geometry.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-toolbar.tsx",
+      "sha256": "1732d45da71a821916bc866f1b51f418b04502c06aad3d8193eac10d9196be8a",
+      "imports": [
+        {
+          "specifier": "../slides/line-picker",
+          "path": "packages/frontend/src/app/slides/line-picker.tsx"
+        },
+        {
+          "specifier": "../slides/line-picker-helpers",
+          "path": "packages/frontend/src/app/slides/line-picker-helpers.ts"
+        },
+        {
+          "specifier": "../slides/shape-picker",
+          "path": "packages/frontend/src/app/slides/shape-picker.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/arrange-menu",
+          "path": "packages/frontend/src/app/slides/toolbar/arrange-menu.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/can-ungroup",
+          "path": "packages/frontend/src/app/slides/toolbar/can-ungroup.ts"
+        },
+        {
+          "specifier": "../slides/toolbar/global-controls",
+          "path": "packages/frontend/src/app/slides/toolbar/global-controls.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/image-controls",
+          "path": "packages/frontend/src/app/slides/toolbar/image-controls.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/shape-controls",
+          "path": "packages/frontend/src/app/slides/toolbar/shape-controls.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/state",
+          "path": "packages/frontend/src/app/slides/toolbar/state.ts"
+        },
+        {
+          "specifier": "../slides/toolbar/text-edit-section",
+          "path": "packages/frontend/src/app/slides/toolbar/text-edit-section.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/text-element-controls",
+          "path": "packages/frontend/src/app/slides/toolbar/text-element-controls.tsx"
+        },
+        {
+          "specifier": "../slides/toolbar/zoom-control",
+          "path": "packages/frontend/src/app/slides/toolbar/zoom-control.tsx"
+        },
+        {
+          "specifier": "../slides/zoom-controller",
+          "path": "packages/frontend/src/app/slides/zoom-controller.ts"
+        },
+        {
+          "specifier": "./board-grid",
+          "path": "packages/frontend/src/app/board/board-grid.ts"
+        },
+        {
+          "specifier": "./sticky",
+          "path": "packages/frontend/src/app/board/sticky.ts"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toggle",
+          "path": "packages/frontend/src/components/ui/toggle.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-touch-gestures.ts",
+      "sha256": "c6c4200d8c50a2b10de3ba1553b553b8ab92ac5ca28e750e54b29f4171613c3e",
+      "imports": [
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-view.tsx",
+      "sha256": "2a57216f1255e0813ff638734c3003b16e0669670693b4c421f19fc3eea97875",
+      "imports": [
+        {
+          "specifier": "../slides/insert-image",
+          "path": "packages/frontend/src/app/slides/insert-image.ts"
+        },
+        {
+          "specifier": "../slides/slides-image-input",
+          "path": "packages/frontend/src/app/slides/slides-image-input.ts"
+        },
+        {
+          "specifier": "../slides/zoom-controller",
+          "path": "packages/frontend/src/app/slides/zoom-controller.ts"
+        },
+        {
+          "specifier": "./board-cursor-publish",
+          "path": "packages/frontend/src/app/board/board-cursor-publish.ts"
+        },
+        {
+          "specifier": "./board-grid",
+          "path": "packages/frontend/src/app/board/board-grid.ts"
+        },
+        {
+          "specifier": "./board-image",
+          "path": "packages/frontend/src/app/board/board-image.ts"
+        },
+        {
+          "specifier": "./board-minimap",
+          "path": "packages/frontend/src/app/board/board-minimap.ts"
+        },
+        {
+          "specifier": "./board-toolbar",
+          "path": "packages/frontend/src/app/board/board-toolbar.tsx"
+        },
+        {
+          "specifier": "./board-touch-gestures",
+          "path": "packages/frontend/src/app/board/board-touch-gestures.ts"
+        },
+        {
+          "specifier": "./board-wheel",
+          "path": "packages/frontend/src/app/board/board-wheel.ts"
+        },
+        {
+          "specifier": "./board-zoom",
+          "path": "packages/frontend/src/app/board/board-zoom.ts"
+        },
+        {
+          "specifier": "./fit-to-content",
+          "path": "packages/frontend/src/app/board/fit-to-content.ts"
+        },
+        {
+          "specifier": "./is-editable-target",
+          "path": "packages/frontend/src/app/board/is-editable-target.ts"
+        },
+        {
+          "specifier": "./minimap-geometry",
+          "path": "packages/frontend/src/app/board/minimap-geometry.ts"
+        },
+        {
+          "specifier": "./sticky",
+          "path": "packages/frontend/src/app/board/sticky.ts"
+        },
+        {
+          "specifier": "./yorkie-board-store",
+          "path": "packages/frontend/src/app/board/yorkie-board-store.ts"
+        },
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/components/loader",
+          "path": "packages/frontend/src/components/loader.tsx"
+        },
+        {
+          "specifier": "@/components/theme-provider",
+          "path": "packages/frontend/src/components/theme-provider.tsx"
+        },
+        {
+          "specifier": "@/hooks/use-coarse-pointer",
+          "path": "packages/frontend/src/hooks/use-coarse-pointer.ts"
+        },
+        {
+          "specifier": "@/lib/thumbnail-capture",
+          "path": "packages/frontend/src/lib/thumbnail-capture.ts"
+        },
+        {
+          "specifier": "@/types/board-document",
+          "path": "packages/frontend/src/types/board-document.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-wheel.ts",
+      "sha256": "f25c00c7cc9a4209cbf5a4ad403fc1c2ae42e86b2ed4e7683ba04f15b55bd5a6",
+      "imports": [
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/board-zoom.ts",
+      "sha256": "263f0395e66f5178e26192ba0278098c6b932dfb6222a87f4295b4391b5e58aa",
+      "imports": [
+        {
+          "specifier": "../slides/zoom-controller",
+          "path": "packages/frontend/src/app/slides/zoom-controller.ts"
+        },
+        {
+          "specifier": "./fit-to-content",
+          "path": "packages/frontend/src/app/board/fit-to-content.ts"
+        },
+        {
+          "specifier": "./minimap-geometry",
+          "path": "packages/frontend/src/app/board/minimap-geometry.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/fit-to-content.ts",
+      "sha256": "be7f823d611ee827cd305f6c9f9e28c91b7feada0f18f825c3278b5bfc1979b8",
+      "imports": [
+        {
+          "specifier": "./minimap-geometry",
+          "path": "packages/frontend/src/app/board/minimap-geometry.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/is-editable-target.ts",
+      "sha256": "5c4d84b81a48aad0defa2181db47fa8ff2796889c55333282d4ec6a96ccf2cd2",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/app/board/minimap-geometry.ts",
+      "sha256": "ced8371891592b341d81538ec958d85c7d13776d6be316e66ba5764657c52acc",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/sticky.ts",
+      "sha256": "5186cd5887e5c4982f2bbba8800e7f03c44cfa75701951948c636e999305d375",
+      "imports": [
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/board/yorkie-board-store.ts",
+      "sha256": "fff27e8304cf78d73a33f1df3469eaabd61394aea10bf48c3193f2daae653fdb",
+      "imports": [
+        {
+          "specifier": "@/types/board-document",
+          "path": "packages/frontend/src/types/board-document.ts"
+        },
+        {
+          "specifier": "@/types/slides-document",
+          "path": "packages/frontend/src/types/slides-document.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        },
+        {
+          "specifier": "remote-change",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/docs/docx-actions.ts",
+      "sha256": "4baaf5d42aa248856f49cec4a885c254d08a597f26ebe89be9e6f317b9587610",
+      "imports": [
+        {
+          "specifier": "./export-utils",
+          "path": "packages/frontend/src/app/docs/export-utils.ts"
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/docs/export-utils.ts",
+      "sha256": "a73528f0203c752f14c996d83337623774741998d377eb3f328e57ee520a1e9c",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/docs/yorkie-doc-store.ts",
+      "sha256": "4b96bebcda0f4330ac0abee78b8859c225192df621771f22c3d9381e8111c7eb",
+      "imports": [
+        {
+          "specifier": "@/types/docs-document",
+          "path": "packages/frontend/src/types/docs-document.ts"
+        },
+        {
+          "specifier": "@/types/users",
+          "path": "packages/frontend/src/types/users.ts"
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/apply-imported-content.ts",
+      "sha256": "83dd551b354904a22be2f38bea1ccd3b757e01d80a215129c8b67890f959e92c",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/app/board/yorkie-board-store",
+          "path": "packages/frontend/src/app/board/yorkie-board-store.ts"
+        },
+        {
+          "specifier": "@/app/docs/yorkie-doc-store",
+          "path": "packages/frontend/src/app/docs/yorkie-doc-store.ts"
+        },
+        {
+          "specifier": "@/app/slides/yorkie-slides-store",
+          "path": "packages/frontend/src/app/slides/yorkie-slides-store.ts"
+        },
+        {
+          "specifier": "@/types/board-document",
+          "path": "packages/frontend/src/types/board-document.ts"
+        },
+        {
+          "specifier": "@/types/docs-document",
+          "path": "packages/frontend/src/types/docs-document.ts"
+        },
+        {
+          "specifier": "@/types/slides-document",
+          "path": "packages/frontend/src/types/slides-document.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/document-list-utils.ts",
+      "sha256": "bbb378b98c17987325cbfc217bf2a5d88a956b44ebe6c6127724453c6c3e8234",
+      "imports": [
+        {
+          "specifier": "@/lib/date-format-preference",
+          "path": "packages/frontend/src/lib/date-format-preference.ts"
+        },
+        {
+          "specifier": "@/types/documents",
+          "path": "packages/frontend/src/types/documents.ts"
+        },
+        {
+          "specifier": "date-fns",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/file-meta.ts",
+      "sha256": "725ceeb051581973621c71bc61e695a9da05ef443f2231dc8fc865077d30ccdc",
+      "imports": [
+        {
+          "specifier": "./upload-kind",
+          "path": "packages/frontend/src/app/documents/upload-kind.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/miro-import-progress.ts",
+      "sha256": "4308f4a4c8304d6a16297e4eaade78513d6aff0ce08a91a3bffa2c2e2ccead4c",
+      "imports": [
+        {
+          "specifier": "@/api/miro",
+          "path": "packages/frontend/src/api/miro.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/miro-import-runner.ts",
+      "sha256": "b19b7b06f1f45e8095ee96882d4821eef48773d7afeaca27ab69bccf287ed025",
+      "imports": [
+        {
+          "specifier": "./apply-imported-content",
+          "path": "packages/frontend/src/app/documents/apply-imported-content.ts"
+        },
+        {
+          "specifier": "./document-list-utils",
+          "path": "packages/frontend/src/app/documents/document-list-utils.ts"
+        },
+        {
+          "specifier": "./miro-import-progress",
+          "path": "packages/frontend/src/app/documents/miro-import-progress.ts"
+        },
+        {
+          "specifier": "./miro-import-summary",
+          "path": "packages/frontend/src/app/documents/miro-import-summary.ts"
+        },
+        {
+          "specifier": "./upload-queue",
+          "path": "packages/frontend/src/app/documents/upload-queue.ts"
+        },
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/documents",
+          "path": "packages/frontend/src/api/documents.ts"
+        },
+        {
+          "specifier": "@/api/miro",
+          "path": "packages/frontend/src/api/miro.ts"
+        },
+        {
+          "specifier": "@/api/workspaces",
+          "path": "packages/frontend/src/api/workspaces.ts"
+        },
+        {
+          "specifier": "@/app/spreadsheet/image-upload",
+          "path": "packages/frontend/src/app/spreadsheet/image-upload.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "one request",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/miro-import-summary.ts",
+      "sha256": "c55e85b250a4446d307c7f68bd59e8ee1d502eb2dd229ba1cab7c20a04e21c2d",
+      "imports": [
+        {
+          "specifier": "@/api/miro",
+          "path": "packages/frontend/src/api/miro.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/tab-name.ts",
+      "sha256": "10135f85cc55e5f163dc4899fbd966cdd936d8542bdb14af28f98ebe759a1821",
+      "imports": [
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/documents/upload-kind.ts",
+      "sha256": "5117632b0008555f57d6d15bb2589019945e201d4c68b9327acb019165b38c61",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/app/documents/upload-queue.ts",
+      "sha256": "046e512e2fd7f2988e7a1dd6346e8b34d539d4cd6599063556c1c4cdcfb16f76",
+      "imports": [
+        {
+          "specifier": "./apply-imported-content",
+          "path": "packages/frontend/src/app/documents/apply-imported-content.ts"
+        },
+        {
+          "specifier": "./document-list-utils",
+          "path": "packages/frontend/src/app/documents/document-list-utils.ts"
+        },
+        {
+          "specifier": "./file-meta",
+          "path": "packages/frontend/src/app/documents/file-meta.ts"
+        },
+        {
+          "specifier": "./upload-kind",
+          "path": "packages/frontend/src/app/documents/upload-kind.ts"
+        },
+        {
+          "specifier": "@/api/documents",
+          "path": "packages/frontend/src/api/documents.ts"
+        },
+        {
+          "specifier": "@/api/files",
+          "path": "packages/frontend/src/api/files.ts"
+        },
+        {
+          "specifier": "@/api/workspaces",
+          "path": "packages/frontend/src/api/workspaces.ts"
+        },
+        {
+          "specifier": "@/app/docs/docx-actions",
+          "path": "packages/frontend/src/app/docs/docx-actions.ts"
+        },
+        {
+          "specifier": "@/app/slides/pptx-actions",
+          "path": "packages/frontend/src/app/slides/pptx-actions.ts"
+        },
+        {
+          "specifier": "@/app/spreadsheet/sheet-import-actions",
+          "path": "packages/frontend/src/app/spreadsheet/sheet-import-actions.ts"
+        },
+        {
+          "specifier": "@/types/documents",
+          "path": "packages/frontend/src/types/documents.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/home/primitives/waffle-logo.tsx",
+      "sha256": "d896be447ba0b983973bb804c10224742209c5b2b58b099b389e401f2bc2977a",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/app/slides/fill-picker/gradient-editor.tsx",
+      "sha256": "f17e589b968abf861c3987327f05ead24ea1df86e7facad59dc78fe64dc9bbbb",
+      "imports": [
+        {
+          "specifier": "../themed-color-picker",
+          "path": "packages/frontend/src/app/slides/themed-color-picker.tsx"
+        },
+        {
+          "specifier": "./gradient-helpers",
+          "path": "packages/frontend/src/app/slides/fill-picker/gradient-helpers.ts"
+        },
+        {
+          "specifier": "@/components/menu-focus",
+          "path": "packages/frontend/src/components/menu-focus.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/fill-picker/gradient-helpers.ts",
+      "sha256": "ce5a69788f21a3781527ff1db06bf0617a9302714800c8a75d6f1e35b350c7e0",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/fill-picker/index.tsx",
+      "sha256": "1c9eb094b8b9ce13f9453f5ec434dda206e3d8d7f4483b3789076bd6d5fdd21e",
+      "imports": [
+        {
+          "specifier": "../themed-color-picker",
+          "path": "packages/frontend/src/app/slides/themed-color-picker.tsx"
+        },
+        {
+          "specifier": "./gradient-editor",
+          "path": "packages/frontend/src/app/slides/fill-picker/gradient-editor.tsx"
+        },
+        {
+          "specifier": "./gradient-helpers",
+          "path": "packages/frontend/src/app/slides/fill-picker/gradient-helpers.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/insert-image.ts",
+      "sha256": "8c9ed511233d2bdd062c9c3fa4bef34995d93970672d373025bee249fe79d031",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/line-picker-helpers.ts",
+      "sha256": "c86f7e9bd169e82a2f1a4e09724c137dc0f251848b48da1313fa02f3e3d1f986",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/line-picker.tsx",
+      "sha256": "a514f311fdd7d6ba4fdd171cc38660205e7265a9d3cc35a1fae039d5977cdcea",
+      "imports": [
+        {
+          "specifier": "./line-picker-helpers",
+          "path": "packages/frontend/src/app/slides/line-picker-helpers.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/pptx-actions.ts",
+      "sha256": "c4279604e08b66ae34778ae59f8077c63984038a9703c39e6b745ea3a14e2bd4",
+      "imports": [
+        {
+          "specifier": "../docs/export-utils",
+          "path": "packages/frontend/src/app/docs/export-utils.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/replace-image.ts",
+      "sha256": "6c4b421f8e722160732e41298a321de09eec44e31e813cc92e6d78ef117a3515",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/shape-picker-helpers.ts",
+      "sha256": "dc5278207ceb4b627cc9f524b9d0909e2ab5a65f70eec92303acc31eae40b1a3",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/shape-picker.tsx",
+      "sha256": "46cb6b073850bbfec96e5e4dda36520b1f37896a7e8b321cdb3d1a3a8781a69f",
+      "imports": [
+        {
+          "specifier": "./shape-picker-helpers",
+          "path": "packages/frontend/src/app/slides/shape-picker-helpers.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/slides-image-input.ts",
+      "sha256": "6e0b8acd9776fff4d379b4232c93c4ef53de480ad55876ff2aec07874eec986f",
+      "imports": [
+        {
+          "specifier": "./insert-image",
+          "path": "packages/frontend/src/app/slides/insert-image.ts"
+        },
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/themed-color-picker-helpers.ts",
+      "sha256": "d8f6167fab6b5bc63c72967c90c6eeb8f657f5991a460465930d93c00dfbcfd3",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/themed-color-picker.tsx",
+      "sha256": "f0b674fbf5d41ac191d7e806fbfbb4cf34d93d373a7a9d3768ff95d6617aae3c",
+      "imports": [
+        {
+          "specifier": "./themed-color-picker-helpers",
+          "path": "packages/frontend/src/app/slides/themed-color-picker-helpers.ts"
+        },
+        {
+          "specifier": "@/components/color-swatch",
+          "path": "packages/frontend/src/components/color-swatch.tsx"
+        },
+        {
+          "specifier": "@/components/formatting-colors",
+          "path": "packages/frontend/src/components/formatting-colors.ts"
+        },
+        {
+          "specifier": "@/components/none-swatch",
+          "path": "packages/frontend/src/components/none-swatch.tsx"
+        },
+        {
+          "specifier": "@/components/ui/slider",
+          "path": "packages/frontend/src/components/ui/slider.tsx"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/apply-font-family.ts",
+      "sha256": "6bb03bbf6acbed0d48f631822c487bfd9151de1ccaf25f8438c9f148322afa19",
+      "imports": [
+        {
+          "specifier": "@/components/text-formatting",
+          "path": "packages/frontend/src/components/text-formatting/index.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/arrange-menu.tsx",
+      "sha256": "597eeb1a37d292c12616655f5e77fdab40ed752106186a5e1e087d1681dc53ea",
+      "imports": [
+        {
+          "specifier": "@/components/text-formatting/platform",
+          "path": "packages/frontend/src/components/text-formatting/platform.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/border-picker.tsx",
+      "sha256": "529946ffbaba867fa3a20a6a65cd1f9947787f740c19c84fd02dbec3dbd24b82",
+      "imports": [
+        {
+          "specifier": "../themed-color-picker",
+          "path": "packages/frontend/src/app/slides/themed-color-picker.tsx"
+        },
+        {
+          "specifier": "@/components/color-swatch-button",
+          "path": "packages/frontend/src/components/color-swatch-button.tsx"
+        },
+        {
+          "specifier": "@/components/menu-focus",
+          "path": "packages/frontend/src/components/menu-focus.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/popover",
+          "path": "packages/frontend/src/components/ui/popover.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/can-ungroup.ts",
+      "sha256": "9bc73cc3070f30d5790871bbdd7b48dd51fcc07513c8ce4d2e20775b6e8a2e31",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/global-controls.tsx",
+      "sha256": "4f4181c88f7a6d36a77c82f268e033ab4111610ac0180aef6412cc33c9ee4c1d",
+      "imports": [
+        {
+          "specifier": "@/components/ui/toggle",
+          "path": "packages/frontend/src/components/ui/toggle.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/image-controls.tsx",
+      "sha256": "57cb2bed859fe797f342bbb99e9761623d1369dbdc211ad2d411545ef1f0b700",
+      "imports": [
+        {
+          "specifier": "../replace-image",
+          "path": "packages/frontend/src/app/slides/replace-image.ts"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/shape-controls.tsx",
+      "sha256": "002959029dcfe0971c8fceb6c82483d87be01bd8cb41b9a2a5bc58358e9145ab",
+      "imports": [
+        {
+          "specifier": "../fill-picker",
+          "path": "packages/frontend/src/app/slides/fill-picker/index.tsx"
+        },
+        {
+          "specifier": "../themed-color-picker-helpers",
+          "path": "packages/frontend/src/app/slides/themed-color-picker-helpers.ts"
+        },
+        {
+          "specifier": "./border-picker",
+          "path": "packages/frontend/src/app/slides/toolbar/border-picker.tsx"
+        },
+        {
+          "specifier": "@/components/color-swatch-button",
+          "path": "packages/frontend/src/components/color-swatch-button.tsx"
+        },
+        {
+          "specifier": "@/components/menu-focus",
+          "path": "packages/frontend/src/components/menu-focus.ts"
+        },
+        {
+          "specifier": "@/components/ui/popover",
+          "path": "packages/frontend/src/components/ui/popover.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/state.ts",
+      "sha256": "1f21ee671e103aa9ab762a4473c54ff06bc5c8f3a366e03482012515e9caf6f3",
+      "imports": [
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/text-edit-section.tsx",
+      "sha256": "c0a1bc1e67f58bfd88d5eeb0f2198345272a53ec8b1b5251875b477c48701f73",
+      "imports": [
+        {
+          "specifier": "./apply-font-family",
+          "path": "packages/frontend/src/app/slides/toolbar/apply-font-family.ts"
+        },
+        {
+          "specifier": "./state",
+          "path": "packages/frontend/src/app/slides/toolbar/state.ts"
+        },
+        {
+          "specifier": "@/components/text-formatting",
+          "path": "packages/frontend/src/components/text-formatting/index.ts"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/text-element-controls.tsx",
+      "sha256": "c0a90602b60fc1c0903a5ec04dd8ac3cebf29cb14a8acc42fbd52a20a8bd7e97",
+      "imports": [
+        {
+          "specifier": "../themed-color-picker",
+          "path": "packages/frontend/src/app/slides/themed-color-picker.tsx"
+        },
+        {
+          "specifier": "./border-picker",
+          "path": "packages/frontend/src/app/slides/toolbar/border-picker.tsx"
+        },
+        {
+          "specifier": "@/components/color-swatch-button",
+          "path": "packages/frontend/src/components/color-swatch-button.tsx"
+        },
+        {
+          "specifier": "@/components/menu-focus",
+          "path": "packages/frontend/src/components/menu-focus.ts"
+        },
+        {
+          "specifier": "@/components/ui/popover",
+          "path": "packages/frontend/src/components/ui/popover.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/toolbar/zoom-control.tsx",
+      "sha256": "794dfb7407ce48797540bbe3b318a7d1dadeb53c0e60ff17d899cbb2deabc050",
+      "imports": [
+        {
+          "specifier": "../zoom-controller",
+          "path": "packages/frontend/src/app/slides/zoom-controller.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/yorkie-slides-store.ts",
+      "sha256": "64cc31f121c134e10a4cdd0112aa8ba13abfce5ebcf13c459f75228c83e7ea76",
+      "imports": [
+        {
+          "specifier": "@/types/slides-document",
+          "path": "packages/frontend/src/types/slides-document.ts"
+        },
+        {
+          "specifier": "@/types/users",
+          "path": "packages/frontend/src/types/users.ts"
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/slides/zoom-controller.ts",
+      "sha256": "60522c79809f17aadd07e9626e08f28c79806f8537a212fefded7c2a0f9f42d7",
+      "imports": [
+        {
+          "specifier": "100 %",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/spreadsheet/csv-actions.ts",
+      "sha256": "38c1f96ba8d0c5fdf20f76fc54c7b120c8cf2bea0fcddf5d6f753891bf329f9e",
+      "imports": [
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "papaparse",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/spreadsheet/image-downscale.ts",
+      "sha256": "5582b61bca225a8ba53f935c129c823563a13034f7c2b699f8237b02f3c6f003",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/app/spreadsheet/image-upload.ts",
+      "sha256": "ce05d2b16798a3bc463805dbf6d1919f6526af86706627107e51b4fc755352a9",
+      "imports": [
+        {
+          "specifier": "./image-downscale",
+          "path": "packages/frontend/src/app/spreadsheet/image-downscale.ts"
+        },
+        {
+          "specifier": "@/api/images",
+          "path": "packages/frontend/src/api/images.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/app/spreadsheet/sheet-import-actions.ts",
+      "sha256": "c9bfdae9a6c7a2cd03d891983a8b8e30164c8b9cb910a688c7e716cc9717c2a0",
+      "imports": [
+        {
+          "specifier": "./csv-actions",
+          "path": "packages/frontend/src/app/spreadsheet/csv-actions.ts"
+        },
+        {
+          "specifier": "@/app/documents/tab-name",
+          "path": "packages/frontend/src/app/documents/tab-name.ts"
+        },
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/app-sidebar.tsx",
+      "sha256": "1aedd45a4e9032c53ef22fb6cdcd54b144deda37ed28c0f6ae6a50518e4a2223",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/workspaces",
+          "path": "packages/frontend/src/api/workspaces.ts"
+        },
+        {
+          "specifier": "@/app/home/primitives/waffle-logo",
+          "path": "packages/frontend/src/app/home/primitives/waffle-logo.tsx"
+        },
+        {
+          "specifier": "@/components/nav-main",
+          "path": "packages/frontend/src/components/nav-main.tsx"
+        },
+        {
+          "specifier": "@/components/nav-secondary",
+          "path": "packages/frontend/src/components/nav-secondary.tsx"
+        },
+        {
+          "specifier": "@/components/nav-user",
+          "path": "packages/frontend/src/components/nav-user.tsx"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dialog",
+          "path": "packages/frontend/src/components/ui/dialog.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/input",
+          "path": "packages/frontend/src/components/ui/input.tsx"
+        },
+        {
+          "specifier": "@/components/ui/sidebar",
+          "path": "packages/frontend/src/components/ui/sidebar.tsx"
+        },
+        {
+          "specifier": "@/types/nav-items",
+          "path": "packages/frontend/src/types/nav-items.ts"
+        },
+        {
+          "specifier": "@tanstack/react-query",
+          "external": true
+        },
+        {
+          "specifier": "lucide-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "react-router-dom",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/avatar-size.ts",
+      "sha256": "82837ab1425b6e0fc252e8f0fe54949940adc6c46e8daa81b1487445ebc8e1bc",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/avatar-stack.tsx",
+      "sha256": "cdb969ad7482ef87aec2fd496fa3afce4c097d8c54199354f8c8368071ec5000",
+      "imports": [
+        {
+          "specifier": "@/components/avatar-size",
+          "path": "packages/frontend/src/components/avatar-size.ts"
+        },
+        {
+          "specifier": "@/components/ui/avatar",
+          "path": "packages/frontend/src/components/ui/avatar.tsx"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/collab-document-provider.tsx",
+      "sha256": "3987a1c01443fca9f973e0cb9aef108d3fb3f9b734eec85a0614d23564c228cf",
+      "imports": [
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/color-picker-grid.tsx",
+      "sha256": "2eb69ef064d11a7b18febb4ecc394cac9619dd290c25f41b494726c5fab2e33f",
+      "imports": [
+        {
+          "specifier": "./color-swatch",
+          "path": "packages/frontend/src/components/color-swatch.tsx"
+        },
+        {
+          "specifier": "./none-swatch",
+          "path": "packages/frontend/src/components/none-swatch.tsx"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/color-swatch-button.tsx",
+      "sha256": "fa33810a66a4232ac13c7d6a51b10b9b12da252cc1f996215e02ea666ae2ae64",
+      "imports": [
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/color-swatch.tsx",
+      "sha256": "0cc520462363987543664b5650defada140117dca58da896dd7e64d6a1d54062",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/formatting-colors.ts",
+      "sha256": "1f2cac6e9c2834d3b56c6247bae84203a8d8707a5d0c08110bb78bd65f7649bc",
+      "imports": [
+        {
+          "specifier": "@wafflebase/core/tokens",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/board-preview-viewport.ts",
+      "sha256": "544f6cd510173144651410701137ca6a36ea720f7464a29be568ef3ef6a7cd50",
+      "imports": [
+        {
+          "specifier": "@/app/board/fit-to-content",
+          "path": "packages/frontend/src/app/board/fit-to-content.ts"
+        },
+        {
+          "specifier": "@/app/board/minimap-geometry",
+          "path": "packages/frontend/src/app/board/minimap-geometry.ts"
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/first-worksheet-tab.ts",
+      "sha256": "284b8743ea75f2cf676f97fdb33ea3ea72b93c5592d9c94a5a6d4a8250f9276e",
+      "imports": [
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/group-revisions.ts",
+      "sha256": "8b9c410fc3b5ab3d4da4ac28cc8ee703ad6fa3d6710f99a948d2831ff3aec0a2",
+      "imports": [
+        {
+          "specifier": "./revision-meta",
+          "path": "packages/frontend/src/components/history/revision-meta.ts"
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/history-panel-lazy.tsx",
+      "sha256": "4c0464962bb23ee95ac109212f38b5bd49f8980d54876ccfba7e078690f7c25f",
+      "imports": [
+        {
+          "specifier": "./history-panel",
+          "path": "packages/frontend/src/components/history/history-panel.tsx"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/history-panel.tsx",
+      "sha256": "28e878b27a10c27c75be6d3e022fc766ebbf2c2c8ee4896c2eb1163281b574f1",
+      "imports": [
+        {
+          "specifier": "./group-revisions",
+          "path": "packages/frontend/src/components/history/group-revisions.ts"
+        },
+        {
+          "specifier": "./restore-lock",
+          "path": "packages/frontend/src/components/history/restore-lock.ts"
+        },
+        {
+          "specifier": "./use-revision-history",
+          "path": "packages/frontend/src/components/history/use-revision-history.ts"
+        },
+        {
+          "specifier": "@/components/loader",
+          "path": "packages/frontend/src/components/loader.tsx"
+        },
+        {
+          "specifier": "@/components/ui/alert-dialog",
+          "path": "packages/frontend/src/components/ui/alert-dialog.tsx"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/input",
+          "path": "packages/frontend/src/components/ui/input.tsx"
+        },
+        {
+          "specifier": "@/components/ui/scroll-area",
+          "path": "packages/frontend/src/components/ui/scroll-area.tsx"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/preview-surface.tsx",
+      "sha256": "6de6e1a8080e1e5ec52656684d43e051d798626e515ece1790d6470100fd0ec4",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/restore-lock.ts",
+      "sha256": "24fdeb9721b7f3717b31562aea55e5bcc7bafc8f399944a30c204287a474cce4",
+      "imports": [
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/revision-meta.ts",
+      "sha256": "447a3d7665bee844c7c24296827b620eedb3cf61a42f1e4c04656caad6bed225",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/history/revision-preview.tsx",
+      "sha256": "b6f61c077652464788e6d494d3ce699e285ad63642513625d117904528e26685",
+      "imports": [
+        {
+          "specifier": "./board-preview-viewport",
+          "path": "packages/frontend/src/components/history/board-preview-viewport.ts"
+        },
+        {
+          "specifier": "./first-worksheet-tab",
+          "path": "packages/frontend/src/components/history/first-worksheet-tab.ts"
+        },
+        {
+          "specifier": "./restore-lock",
+          "path": "packages/frontend/src/components/history/restore-lock.ts"
+        },
+        {
+          "specifier": "./revision-meta",
+          "path": "packages/frontend/src/components/history/revision-meta.ts"
+        },
+        {
+          "specifier": "./snapshot-adapters",
+          "path": "packages/frontend/src/components/history/snapshot-adapters.ts"
+        },
+        {
+          "specifier": "./use-revision-history",
+          "path": "packages/frontend/src/components/history/use-revision-history.ts"
+        },
+        {
+          "specifier": "@/components/theme-provider",
+          "path": "packages/frontend/src/components/theme-provider.tsx"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/notes",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/snapshot-adapters.ts",
+      "sha256": "f49623624aab9e04d330a6c7eedc3c9179cd721cc694da3d141a13bfd89c5bb0",
+      "imports": [
+        {
+          "specifier": "./unwrap-yson",
+          "path": "packages/frontend/src/components/history/unwrap-yson.ts"
+        },
+        {
+          "specifier": "@/types/board-document",
+          "path": "packages/frontend/src/types/board-document.ts"
+        },
+        {
+          "specifier": "@wafflebase/board",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/history/unwrap-yson.ts",
+      "sha256": "0e3eb4162cd7c63033938f534eb108066118bfcd6f5e3a1b0b2f4b8cd81317e4",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/history/use-revision-history.ts",
+      "sha256": "d9a5591610b3e38bf5f72a1691b70f8847a82c90d937102496bfd871b63567bd",
+      "imports": [
+        {
+          "specifier": "./group-revisions",
+          "path": "packages/frontend/src/components/history/group-revisions.ts"
+        },
+        {
+          "specifier": "./restore-lock",
+          "path": "packages/frontend/src/components/history/restore-lock.ts"
+        },
+        {
+          "specifier": "./revision-meta",
+          "path": "packages/frontend/src/components/history/revision-meta.ts"
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/loader.tsx",
+      "sha256": "758cedff611e8bc6974ea5257e88ec50ccd4dcd95de5e89b32b60b9e291db1d8",
+      "imports": [
+        {
+          "specifier": "lucide-react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/menu-focus.ts",
+      "sha256": "d86e784dae2d14f765e90e32532f6c45a619c1ea82822f94d6473c61ea0acbff",
+      "imports": [
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/nav-main.tsx",
+      "sha256": "0b7315cdf4e54111879e6bfb86714fe702a776ab47d95b7e6306f63d31122c83",
+      "imports": [
+        {
+          "specifier": "@/components/ui/sidebar",
+          "path": "packages/frontend/src/components/ui/sidebar.tsx"
+        },
+        {
+          "specifier": "@/types/nav-items",
+          "path": "packages/frontend/src/types/nav-items.ts"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "react-router-dom",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/nav-secondary.tsx",
+      "sha256": "a74b9c6fe77e203a1b1c60ff278a5bba4ceb5df5a1d6e882ded98df44325f68b",
+      "imports": [
+        {
+          "specifier": "@/components/ui/sidebar",
+          "path": "packages/frontend/src/components/ui/sidebar.tsx"
+        },
+        {
+          "specifier": "@/types/nav-items",
+          "path": "packages/frontend/src/types/nav-items.ts"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "react-router-dom",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/nav-user.tsx",
+      "sha256": "e11a22a6cd8b1224aba0be262339f5e32956884df1dc9c062de79ba4459e943e",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/components/theme-provider",
+          "path": "packages/frontend/src/components/theme-provider.tsx"
+        },
+        {
+          "specifier": "@/components/ui/avatar",
+          "path": "packages/frontend/src/components/ui/avatar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/sidebar",
+          "path": "packages/frontend/src/components/ui/sidebar.tsx"
+        },
+        {
+          "specifier": "@/types/users",
+          "path": "packages/frontend/src/types/users.ts"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/none-swatch.tsx",
+      "sha256": "138d5223057afe614ff41bb15abec82c57dd1081be299ea94f9512549f181b09",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/notification-bell.tsx",
+      "sha256": "543c3de82aab8a55e9336f1f461bd2c67358a047c4ac489325b37b2fadd5e4f3",
+      "imports": [
+        {
+          "specifier": "./notification-list",
+          "path": "packages/frontend/src/components/notifications/notification-list.tsx"
+        },
+        {
+          "specifier": "./use-notification-stream",
+          "path": "packages/frontend/src/components/notifications/use-notification-stream.ts"
+        },
+        {
+          "specifier": "./use-notifications",
+          "path": "packages/frontend/src/components/notifications/use-notifications.ts"
+        },
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/popover",
+          "path": "packages/frontend/src/components/ui/popover.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@tanstack/react-query",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/notification-item.tsx",
+      "sha256": "c8fb3243308d11c7d1eebe3649e8930a6c463de6c06820a96ea1a64be0c50f01",
+      "imports": [
+        {
+          "specifier": "./notification-text",
+          "path": "packages/frontend/src/components/notifications/notification-text.ts"
+        },
+        {
+          "specifier": "@/api/notifications",
+          "path": "packages/frontend/src/api/notifications.ts"
+        },
+        {
+          "specifier": "@/app/documents/document-list-utils",
+          "path": "packages/frontend/src/app/documents/document-list-utils.ts"
+        },
+        {
+          "specifier": "@/components/ui/avatar",
+          "path": "packages/frontend/src/components/ui/avatar.tsx"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/notification-list.tsx",
+      "sha256": "674cf4ce905ade669f712fa7499424a72a299eac8ff06a2467f6b6d71b87e780",
+      "imports": [
+        {
+          "specifier": "./notification-item",
+          "path": "packages/frontend/src/components/notifications/notification-item.tsx"
+        },
+        {
+          "specifier": "./notification-text",
+          "path": "packages/frontend/src/components/notifications/notification-text.ts"
+        },
+        {
+          "specifier": "./use-notifications",
+          "path": "packages/frontend/src/components/notifications/use-notifications.ts"
+        },
+        {
+          "specifier": "@/api/notifications",
+          "path": "packages/frontend/src/api/notifications.ts"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "react-router-dom",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/notification-stream.ts",
+      "sha256": "fc3b81b0479cf732c8f357258d648fef71e501986bff47b665c8b72fc0998549",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/notification-text.ts",
+      "sha256": "86a63f0b5ed903ac64063ffdc7fdb335b14b0e27924d20cc592021eae4a55ba7",
+      "imports": [
+        {
+          "specifier": "@/api/notifications",
+          "path": "packages/frontend/src/api/notifications.ts"
+        },
+        {
+          "specifier": "@/app/documents/document-list-utils",
+          "path": "packages/frontend/src/app/documents/document-list-utils.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/read-state.ts",
+      "sha256": "298e711981fff0d9b2c9144b66c0f4d808b6007b5d5e76bd5a1ddba226d9448e",
+      "imports": [
+        {
+          "specifier": "@/api/notifications",
+          "path": "packages/frontend/src/api/notifications.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/use-notification-stream.ts",
+      "sha256": "4b2cbb26d623f2a04e2b1f1613a3e6c5643eefc4b2ee55e10d936d193d29e5af",
+      "imports": [
+        {
+          "specifier": "./notification-stream",
+          "path": "packages/frontend/src/components/notifications/notification-stream.ts"
+        },
+        {
+          "specifier": "./use-notifications",
+          "path": "packages/frontend/src/components/notifications/use-notifications.ts"
+        },
+        {
+          "specifier": "@tanstack/react-query",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/notifications/use-notifications.ts",
+      "sha256": "1ab8d34057044327839749781f316327ab21c323ae6cf75cb6af1a93c096927d",
+      "imports": [
+        {
+          "specifier": "./read-state",
+          "path": "packages/frontend/src/components/notifications/read-state.ts"
+        },
+        {
+          "specifier": "@/api/notifications",
+          "path": "packages/frontend/src/api/notifications.ts"
+        },
+        {
+          "specifier": "@tanstack/react-query",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/share-dialog.tsx",
+      "sha256": "99153f86d3602a8138a6e8e28729d40e544040a76217d9117223f51f4411fe25",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/share-links",
+          "path": "packages/frontend/src/api/share-links.ts"
+        },
+        {
+          "specifier": "@/components/template-share-section",
+          "path": "packages/frontend/src/components/template-share-section.tsx"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dialog",
+          "path": "packages/frontend/src/components/ui/dialog.tsx"
+        },
+        {
+          "specifier": "@/components/ui/label",
+          "path": "packages/frontend/src/components/ui/label.tsx"
+        },
+        {
+          "specifier": "@/components/ui/select",
+          "path": "packages/frontend/src/components/ui/select.tsx"
+        },
+        {
+          "specifier": "@/components/ui/separator",
+          "path": "packages/frontend/src/components/ui/separator.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/site-header.tsx",
+      "sha256": "583a9a5bfd9bf6fe16175ff656cdf8c5948ef3af178cc1c90a70f38e4677e8ee",
+      "imports": [
+        {
+          "specifier": "@/components/notifications/notification-bell",
+          "path": "packages/frontend/src/components/notifications/notification-bell.tsx"
+        },
+        {
+          "specifier": "@/components/sync-status/sync-status-chip",
+          "path": "packages/frontend/src/components/sync-status/sync-status-chip.tsx"
+        },
+        {
+          "specifier": "@/components/ui/separator",
+          "path": "packages/frontend/src/components/ui/separator.tsx"
+        },
+        {
+          "specifier": "@/components/ui/sidebar",
+          "path": "packages/frontend/src/components/ui/sidebar.tsx"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/sync-status/sync-state.ts",
+      "sha256": "be93f30fc98ec5d20285253f10994715e36dafdb55055bbf9fcafb2bc4545ed1",
+      "imports": [
+        {
+          "specifier": "being rejected",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/sync-status/sync-status-chip.tsx",
+      "sha256": "682a38cf7f859dc0e642e6dd53c382eacc73ad9fdd33ae0c7453c7721d5bbc73",
+      "imports": [
+        {
+          "specifier": "./sync-state",
+          "path": "packages/frontend/src/components/sync-status/sync-state.ts"
+        },
+        {
+          "specifier": "./use-sync-status",
+          "path": "packages/frontend/src/components/sync-status/use-sync-status.ts"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/sync-status/use-sync-status.ts",
+      "sha256": "6db1e881fa8e8fcb4ea7d695b754eb2ed0cb8cd4666516b947bcdd4c47ea279c",
+      "imports": [
+        {
+          "specifier": "./sync-state",
+          "path": "packages/frontend/src/components/sync-status/sync-state.ts"
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/template-share-section.tsx",
+      "sha256": "fd244f40a551963c14578f097e5537f54b5aa6942d6091ac114c4071a62b9ac6",
+      "imports": [
+        {
+          "specifier": "@/api/auth",
+          "path": "packages/frontend/src/api/auth.ts"
+        },
+        {
+          "specifier": "@/api/images",
+          "path": "packages/frontend/src/api/images.ts"
+        },
+        {
+          "specifier": "@/api/templates",
+          "path": "packages/frontend/src/api/templates.ts"
+        },
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/input",
+          "path": "packages/frontend/src/components/ui/input.tsx"
+        },
+        {
+          "specifier": "@/components/ui/label",
+          "path": "packages/frontend/src/components/ui/label.tsx"
+        },
+        {
+          "specifier": "@/components/ui/select",
+          "path": "packages/frontend/src/components/ui/select.tsx"
+        },
+        {
+          "specifier": "@/components/ui/separator",
+          "path": "packages/frontend/src/components/ui/separator.tsx"
+        },
+        {
+          "specifier": "@/lib/thumbnail-capture",
+          "path": "packages/frontend/src/lib/thumbnail-capture.ts"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        },
+        {
+          "specifier": "sonner",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/clear-formatting-button.tsx",
+      "sha256": "15b5b6f5579b0a1e377cdd0835d1b02053a330d2e81cdd93ab4e0640cf91eeda",
+      "imports": [
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-catalog-full-loader.ts",
+      "sha256": "38b4b48f1dd2a36728b2c0c523eb09a1656b391f359eaf05964cda7e4532ff0b",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        },
+        {
+          "specifier": "./font-catalog.full",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.full.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-catalog.data.ts",
+      "sha256": "3c48e23884ed2da842c851f8a96f8cdc10053543c917e7dc24ed9edaaf52cee0",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-catalog.full.ts",
+      "sha256": "e0681c206a55053d13bdde970ee747bb152a5c1d42bdba25e500e93b2456d07c",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-catalog.ts",
+      "sha256": "fd85ba51db5c58030e81d7a9003a86bd9b4e3868f6e38e0061c5ae29308d2b42",
+      "imports": [
+        {
+          "specifier": "./font-catalog.data",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.data.ts"
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-family-picker.tsx",
+      "sha256": "8a6b5d00704277d895771fa36b598426f3296457fe887b0c4ae53383ed4472bf",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        },
+        {
+          "specifier": "./font-catalog-full-loader",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog-full-loader.ts"
+        },
+        {
+          "specifier": "./font-recents",
+          "path": "packages/frontend/src/components/text-formatting/font-recents.ts"
+        },
+        {
+          "specifier": "./more-fonts-dialog",
+          "path": "packages/frontend/src/components/text-formatting/more-fonts-dialog.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-recents.ts",
+      "sha256": "33f826e6a4cda7cee9cc31d431d52499dadc60de95ec4ea24e310055eb72614f",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/font-size-picker.tsx",
+      "sha256": "ac621bad570c31c05e8094e088bd65c7227b08f01f2a8827ff6c5757933cefda",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/index.ts",
+      "sha256": "9e9c5a9bcdbd0c2047c8eacfac2ab1b520aac8c0e14dd21912cadb1c0acaea7c",
+      "imports": [
+        {
+          "specifier": "./clear-formatting-button.tsx",
+          "path": "packages/frontend/src/components/text-formatting/clear-formatting-button.tsx"
+        },
+        {
+          "specifier": "./font-catalog.ts",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        },
+        {
+          "specifier": "./font-family-picker.tsx",
+          "path": "packages/frontend/src/components/text-formatting/font-family-picker.tsx"
+        },
+        {
+          "specifier": "./font-size-picker.tsx",
+          "path": "packages/frontend/src/components/text-formatting/font-size-picker.tsx"
+        },
+        {
+          "specifier": "./insert-link-button.tsx",
+          "path": "packages/frontend/src/components/text-formatting/insert-link-button.tsx"
+        },
+        {
+          "specifier": "./line-spacing-picker.tsx",
+          "path": "packages/frontend/src/components/text-formatting/line-spacing-picker.tsx"
+        },
+        {
+          "specifier": "./style-summary",
+          "path": "packages/frontend/src/components/text-formatting/style-summary.ts"
+        },
+        {
+          "specifier": "./text-format-group",
+          "path": "packages/frontend/src/components/text-formatting/text-format-group.tsx"
+        },
+        {
+          "specifier": "./text-paragraph-group",
+          "path": "packages/frontend/src/components/text-formatting/text-paragraph-group.tsx"
+        },
+        {
+          "specifier": "./text-style-group",
+          "path": "packages/frontend/src/components/text-formatting/text-style-group.tsx"
+        },
+        {
+          "specifier": "./types",
+          "path": "packages/frontend/src/components/text-formatting/types.ts"
+        },
+        {
+          "specifier": "./use-resolved-font-family",
+          "path": "packages/frontend/src/components/text-formatting/use-resolved-font-family.ts"
+        },
+        {
+          "specifier": "./use-resolved-font-size",
+          "path": "packages/frontend/src/components/text-formatting/use-resolved-font-size.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/insert-link-button.tsx",
+      "sha256": "f899d86fc3bdac410c541bf6967c42b0cd26c2ee8b5bc4f070092e4c210c96ea",
+      "imports": [
+        {
+          "specifier": "./platform",
+          "path": "packages/frontend/src/components/text-formatting/platform.ts"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/line-spacing-picker.tsx",
+      "sha256": "04f5f1f8c649bf57b0b7b09afb56e59c1ed4dbcdb757096d0bb92a4ff6d62349",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/more-fonts-dialog.tsx",
+      "sha256": "b6b21d98685f33098ecefbf6bfc1c6ad61f83bd066baa43534e1e4897244e1c0",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        },
+        {
+          "specifier": "./more-fonts-filter",
+          "path": "packages/frontend/src/components/text-formatting/more-fonts-filter.ts"
+        },
+        {
+          "specifier": "@/components/ui/dialog",
+          "path": "packages/frontend/src/components/ui/dialog.tsx"
+        },
+        {
+          "specifier": "@/components/ui/input",
+          "path": "packages/frontend/src/components/ui/input.tsx"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/more-fonts-filter.ts",
+      "sha256": "410be9a3708abfab6e9006081f4827fd6966de3bc8b0ad3510bedb429b1bbb85",
+      "imports": [
+        {
+          "specifier": "./font-catalog",
+          "path": "packages/frontend/src/components/text-formatting/font-catalog.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/platform.ts",
+      "sha256": "6fd0700b042aab762ede859d0c29e92300c5d55785da4676c04284f87c21ae56",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/style-summary.ts",
+      "sha256": "297a93e5a7cee2a7da877fb6d693a1845512eed947e17b39c15f470f89b0cde4",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/text-format-group.tsx",
+      "sha256": "4bde3b2ff825160e5a975778fab169bff4cf8110293cf7f1c3a447e721a36181",
+      "imports": [
+        {
+          "specifier": "./insert-link-button",
+          "path": "packages/frontend/src/components/text-formatting/insert-link-button.tsx"
+        },
+        {
+          "specifier": "./platform",
+          "path": "packages/frontend/src/components/text-formatting/platform.ts"
+        },
+        {
+          "specifier": "./style-summary",
+          "path": "packages/frontend/src/components/text-formatting/style-summary.ts"
+        },
+        {
+          "specifier": "./types",
+          "path": "packages/frontend/src/components/text-formatting/types.ts"
+        },
+        {
+          "specifier": "@/components/color-picker-grid",
+          "path": "packages/frontend/src/components/color-picker-grid.tsx"
+        },
+        {
+          "specifier": "@/components/color-swatch-button",
+          "path": "packages/frontend/src/components/color-swatch-button.tsx"
+        },
+        {
+          "specifier": "@/components/formatting-colors",
+          "path": "packages/frontend/src/components/formatting-colors.ts"
+        },
+        {
+          "specifier": "@/components/menu-focus",
+          "path": "packages/frontend/src/components/menu-focus.ts"
+        },
+        {
+          "specifier": "@/components/ui/popover",
+          "path": "packages/frontend/src/components/ui/popover.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toggle",
+          "path": "packages/frontend/src/components/ui/toggle.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/text-paragraph-group.tsx",
+      "sha256": "94eaea82451d7d9dd34f9922914f0667e098cae7cabc2de3c420e0fdfafb3aa6",
+      "imports": [
+        {
+          "specifier": "./platform",
+          "path": "packages/frontend/src/components/text-formatting/platform.ts"
+        },
+        {
+          "specifier": "./types",
+          "path": "packages/frontend/src/components/text-formatting/types.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/toolbar",
+          "path": "packages/frontend/src/components/ui/toolbar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/text-style-group.tsx",
+      "sha256": "5d950ec0c40eb3e93a0afb282dbdbb5e3ce5d5ef7c735ba88da7c6dca59f9f3d",
+      "imports": [
+        {
+          "specifier": "./platform",
+          "path": "packages/frontend/src/components/text-formatting/platform.ts"
+        },
+        {
+          "specifier": "./text-style-options",
+          "path": "packages/frontend/src/components/text-formatting/text-style-options.ts"
+        },
+        {
+          "specifier": "./types",
+          "path": "packages/frontend/src/components/text-formatting/types.ts"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/text-style-options.ts",
+      "sha256": "33666cc9b59de6158eb35f9a137e45585cf23e900a26d611acca17e7a03864ae",
+      "imports": [
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/types.ts",
+      "sha256": "5a29b2d4535c51440d0f8377ccd532a96c792f60cad69c6198cb433b41c7f5f2",
+      "imports": [
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/use-resolved-font-family.ts",
+      "sha256": "f1e90f8df7a39511dfc0450a176b0693a795ee67342a617ba479a24720b95024",
+      "imports": [
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/text-formatting/use-resolved-font-size.ts",
+      "sha256": "79da51f59cb1016dd004c484852ea98a4cb37b8ad0b7d52a13c21abab3c88377",
+      "imports": [
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/theme-provider.tsx",
+      "sha256": "2901a131eb502898bfe84fdbe788de353a54dd5e283d7aba37188557848826e1",
+      "imports": [
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/alert-dialog.tsx",
+      "sha256": "683cf8b6c3b0c29fb0e31f36e8c7794c63ab5b7ab431f7441ea2d478bbf9fe41",
+      "imports": [
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-alert-dialog",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/avatar.tsx",
+      "sha256": "e637ab3522c01631eac2e456588ef301314e2bb7940ebf7cd96e698a868d47bc",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-avatar",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/button.tsx",
+      "sha256": "9604e25367d14a4c84b474b589bb88fbc3dcc0dcb3f5af9fec2f012fdad1e46c",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-slot",
+          "external": true
+        },
+        {
+          "specifier": "class-variance-authority",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/dialog.tsx",
+      "sha256": "454cc3d42eb2de4f7e62affd28c7ede9afe049775a660010eeac3e6917ee04f7",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-dialog",
+          "external": true
+        },
+        {
+          "specifier": "lucide-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/dropdown-menu.tsx",
+      "sha256": "65826642a4e6368f71c0701748b1fbd2939723e13803dad50cbe9b92a28038d5",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-dropdown-menu",
+          "external": true
+        },
+        {
+          "specifier": "lucide-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/input.tsx",
+      "sha256": "6628e8fde207857b9ba08910d386eeea8213d7d745b4e0ae8b95332b52730db9",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/label.tsx",
+      "sha256": "70d2b90324e521926a48678ce5329446caaed155c6e5954a454499d5b67a014c",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-label",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/popover.tsx",
+      "sha256": "ac52b214abff4793b99429d7081ddb42de659565c84a60edc281cdfe14429171",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-popover",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/scroll-area.tsx",
+      "sha256": "32c0e7d287ee77722fd9149d9faeab670938b59e32fa6388064ae562a7c892ed",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-scroll-area",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/select.tsx",
+      "sha256": "550e7d09dda6d7d9f6740f60d95c178e9520fe63291533aa55c818e79b79660f",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-select",
+          "external": true
+        },
+        {
+          "specifier": "lucide-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/separator.tsx",
+      "sha256": "18e5bf93682eb91864d9a1b8c0a09e46ad15d6ef1ffe97b3ccf9e4697756b6e2",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-separator",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/sheet.tsx",
+      "sha256": "fbe9b257fd95b9865e1aba651489899c959ed5c16cb8493fe8c2733f83b92ee1",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-dialog",
+          "external": true
+        },
+        {
+          "specifier": "lucide-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/sidebar.tsx",
+      "sha256": "cd0bfaf36f2da53c59528279f62636f6a0b3a22a5d828ea359bee17f6b0cd535",
+      "imports": [
+        {
+          "specifier": "@/components/ui/button",
+          "path": "packages/frontend/src/components/ui/button.tsx"
+        },
+        {
+          "specifier": "@/components/ui/input",
+          "path": "packages/frontend/src/components/ui/input.tsx"
+        },
+        {
+          "specifier": "@/components/ui/separator",
+          "path": "packages/frontend/src/components/ui/separator.tsx"
+        },
+        {
+          "specifier": "@/components/ui/sheet",
+          "path": "packages/frontend/src/components/ui/sheet.tsx"
+        },
+        {
+          "specifier": "@/components/ui/skeleton",
+          "path": "packages/frontend/src/components/ui/skeleton.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@/hooks/use-mobile",
+          "path": "packages/frontend/src/hooks/use-mobile.ts"
+        },
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-slot",
+          "external": true
+        },
+        {
+          "specifier": "class-variance-authority",
+          "external": true
+        },
+        {
+          "specifier": "lucide-react",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/skeleton.tsx",
+      "sha256": "f2aea81d8baf2b621945382aabac150e3db40f20d19ac1abea7aff805f1dc33c",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/slider.tsx",
+      "sha256": "6b5126d3b00e2f9b9a94d12678e7511fcac2d419b2349700979b83be60ae5aa4",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-slider",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/toggle.tsx",
+      "sha256": "2d57f817f4c7d21e06891061661446035462696c33980de9eb06a471f2a69afc",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-toggle",
+          "external": true
+        },
+        {
+          "specifier": "class-variance-authority",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/toolbar.tsx",
+      "sha256": "7a734009cc025070332904744f96f2e160fd5562a25d6314c19b8d88ba5d3f18",
+      "imports": [
+        {
+          "specifier": "@/components/ui/separator",
+          "path": "packages/frontend/src/components/ui/separator.tsx"
+        },
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "class-variance-authority",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/ui/tooltip.tsx",
+      "sha256": "4012397af4b730e8c1e7e09d24ca64be3b33426d631b38784dc9f282592cbc6f",
+      "imports": [
+        {
+          "specifier": "@/lib/utils",
+          "path": "packages/frontend/src/lib/utils.ts"
+        },
+        {
+          "specifier": "@radix-ui/react-tooltip",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/components/user-presence.tsx",
+      "sha256": "1f31f8c423807fbc812c869260a3e91a7047c5b5c65749aba82d07ca0c7a6425",
+      "imports": [
+        {
+          "specifier": "@/components/avatar-size",
+          "path": "packages/frontend/src/components/avatar-size.ts"
+        },
+        {
+          "specifier": "@/components/avatar-stack",
+          "path": "packages/frontend/src/components/avatar-stack.tsx"
+        },
+        {
+          "specifier": "@/components/theme-provider",
+          "path": "packages/frontend/src/components/theme-provider.tsx"
+        },
+        {
+          "specifier": "@/components/ui/avatar",
+          "path": "packages/frontend/src/components/ui/avatar.tsx"
+        },
+        {
+          "specifier": "@/components/ui/dropdown-menu",
+          "path": "packages/frontend/src/components/ui/dropdown-menu.tsx"
+        },
+        {
+          "specifier": "@/components/ui/tooltip",
+          "path": "packages/frontend/src/components/ui/tooltip.tsx"
+        },
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/hooks/use-coarse-pointer.ts",
+      "sha256": "a6fc9fcfca2d156e39b739d835af8ebb2f2bf13d2418aee7af03fbb4d172457e",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/hooks/use-mobile.ts",
+      "sha256": "4f088f8e7a4f38dd12b589e05213a59292b34066fedd2416607520b2aa18d9de",
+      "imports": [
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/hooks/use-workspace-nav-items.ts",
+      "sha256": "d109586d3fbb92752139c4f6139214f8ea4acc1b35c39ed197ca3fbee693763b",
+      "imports": [
+        {
+          "specifier": "@/api/workspaces",
+          "path": "packages/frontend/src/api/workspaces.ts"
+        },
+        {
+          "specifier": "@/types/nav-items",
+          "path": "packages/frontend/src/types/nav-items.ts"
+        },
+        {
+          "specifier": "@tabler/icons-react",
+          "external": true
+        },
+        {
+          "specifier": "@tanstack/react-query",
+          "external": true
+        },
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/lib/date-format-preference.ts",
+      "sha256": "dfdadcd0e211cafce8caf8a2b4e45c5e28f4c99b04cd43bf4929cecd0328f02b",
+      "imports": [
+        {
+          "specifier": "react",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/lib/thumbnail-capture.ts",
+      "sha256": "1a305a9f18a57a13d1c17b9b746ed8a0148a3ad10c3a3d9aed130422e987e40d",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/lib/utils.ts",
+      "sha256": "851bf7f25a67dc49cac050aad6f403d3fe7a505579b5b0c19610ec42e6e67bb2",
+      "imports": [
+        {
+          "specifier": "clsx",
+          "external": true
+        },
+        {
+          "specifier": "tailwind-merge",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/types/board-document.ts",
+      "sha256": "abb9f1397d1c36069c026560e1ee930717fd460b3e3d7f1e31079e78968e4e17",
+      "imports": [
+        {
+          "specifier": "./slides-document",
+          "path": "packages/frontend/src/types/slides-document.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/types/comments.ts",
+      "sha256": "3d51ef736055eb339974b139f0d83aa572272e0d51b51ecde844456d0091d668",
+      "imports": [
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        },
+        {
+          "specifier": "@yorkie-js/sdk",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/types/datasource.ts",
+      "sha256": "4cc2ec386c39e3a8f17adcb3c60a8d4316a227898de3c17a6e1ddcb9960710c1",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/types/docs-document.ts",
+      "sha256": "8ef57893bf5bc0582f5e4b1b9f89ee2230049a8d4e0843b7ca5a9974b603be9c",
+      "imports": [
+        {
+          "specifier": "@/types/comments.ts",
+          "path": "packages/frontend/src/types/comments.ts"
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/types/documents.ts",
+      "sha256": "459ccf41246f348e2cec07faa442a25fe37f8d3fe2838d1ef2c32d1f0f0b9159",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/types/nav-items.ts",
+      "sha256": "8b418b779ff56a87b8d1e27c6932c59fd010ad435d9cb113f5e6ce9f96f1cb0d",
+      "imports": []
+    },
+    {
+      "path": "packages/frontend/src/types/slides-document.ts",
+      "sha256": "d1ad9bd2e916f09614d2cf0f69a519692a0c36557083cb02f27ccecfb02c5e43",
+      "imports": [
+        {
+          "specifier": "@wafflebase/docs",
+          "external": true
+        },
+        {
+          "specifier": "@wafflebase/slides",
+          "external": true
+        }
+      ]
+    },
+    {
+      "path": "packages/frontend/src/types/users.ts",
+      "sha256": "160f39a2d1da2a704124e4a74a9e7ea182a4279ca9e56be54c0bb21953309161",
+      "imports": [
+        {
+          "specifier": "@wafflebase/sheets",
+          "external": true
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}

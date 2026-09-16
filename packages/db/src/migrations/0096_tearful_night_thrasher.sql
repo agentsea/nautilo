@@ -1,0 +1,2 @@
+ALTER TABLE "message_attachments" ADD COLUMN "turn_id" text;--> statement-breakpoint
+CREATE INDEX "idx_message_attachments_turn" ON "message_attachments" USING btree ("turn_id") WHERE "message_attachments"."turn_id" IS NOT NULL;

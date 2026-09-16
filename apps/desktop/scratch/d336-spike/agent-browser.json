@@ -1,0 +1,14 @@
+{
+  "plugins": [
+    {
+      "name": "nautilo-spike",
+      "command": "node",
+      "args": [
+        "apps/desktop/scratch/d336-spike/provider.js"
+      ],
+      "capabilities": [
+        "browser.provider"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+ALTER TABLE "session_message_crypto_revisions" ADD COLUMN "representation_mode" text DEFAULT 'shadow_encryption' NOT NULL;--> statement-breakpoint
+ALTER TABLE "session_message_crypto_revisions" ADD COLUMN "publication_policy_revision" integer;--> statement-breakpoint
+ALTER TABLE "session_message_crypto_revisions" ADD CONSTRAINT "session_message_crypto_revisions_full_policy_revision_check" CHECK ("session_message_crypto_revisions"."representation_mode" <> 'full_encryption' or "session_message_crypto_revisions"."publication_policy_revision" is not null);--> statement-breakpoint
+ALTER TABLE "session_message_crypto_revisions" ADD CONSTRAINT "session_message_crypto_revisions_policy_revision_check" CHECK ("session_message_crypto_revisions"."publication_policy_revision" is null or "session_message_crypto_revisions"."publication_policy_revision" >= 0);

@@ -1,0 +1,12 @@
+{
+  "status": "partial",
+  "partial": true,
+  "operationCounts": { "add": 1, "update": 0, "move": 0, "delete": 0 },
+  "pathResults": [
+    { "operation": "add", "path": "docs/committed.md", "status": "applied", "bytesTouched": 5 },
+    { "operation": "update", "path": "src/config.ts", "status": "unknown", "bytesTouched": null, "diagnostic": "State unknown after writing /private/work/project/src/config.ts" },
+    { "operation": "delete", "path": "tmp/later.txt", "status": "not_applied", "bytesTouched": 0, "diagnostic": "Not attempted after the prior failure." }
+  ],
+  "unifiedDiff": "diff --git a//private/work/project/src/config.ts b//private/work/project/src/config.ts\n",
+  "diagnostic": "A committed prefix remains under /private/work/project."
+}

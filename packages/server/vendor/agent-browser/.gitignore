@@ -1,0 +1,3 @@
+# D568 — agent-browser is checksum-pinned and fetched for a named platform;
+# only its manifest belongs in source control.
+*/agent-browser

@@ -1,0 +1,20 @@
+{
+  "kind": "qualification-source-patch",
+  "productionPackaging": true,
+  "baseVersion": "0.23.2",
+  "baseRevision": "e88e9d899ac5effaeae38619527ebaa46b26ce72",
+  "effectiveTree": "b69ba1bf17a0f5e9eb833ab7fff8116bdaac7bfe",
+  "patchSha256": "cfc958d4dedb36f0a1546074512dbb128af36013f93ba82641ba8247a7c68c9d",
+  "upstreamLicense": {
+    "path": "LICENSE.md",
+    "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+    "source": "https://github.com/trycua/cua/blob/e88e9d899ac5effaeae38619527ebaa46b26ce72/LICENSE.md"
+  },
+  "rustToolchain": "1.97.1",
+  "upstreamContribution": {
+    "url": "https://github.com/trycua/cua/pull/3404",
+    "commit": "ad79aa13eb06a52c13cc21a0a87c8cc80d389dd1",
+    "author": "Zane Chee (injaneity)",
+    "adaptation": "Original checkbox reader preserved; numeric state comparison tightened to exact zero or one. Native control identity repair is additional work."
+  }
+}

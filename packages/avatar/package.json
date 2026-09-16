@@ -1,0 +1,12 @@
+{
+  "name": "@nautilo/avatar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rive state controller and emotion-to-animation mapping",
+  "scripts": {
+    "lint": "echo '@nautilo/avatar — placeholder, no source yet'",
+    "lint:fix": "echo '@nautilo/avatar — placeholder, no source yet'",
+    "typecheck": "echo '@nautilo/avatar — placeholder, no source yet'"
+  }
+}

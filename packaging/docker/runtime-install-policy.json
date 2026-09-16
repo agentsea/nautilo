@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "entryWorkspace": "@nautilo/server-bin",
+  "rootOverrides": [
+    "@hono/node-server",
+    "@langchain/langgraph-checkpoint",
+    "@langchain/openai",
+    "body-parser",
+    "hono",
+    "jose",
+    "qs"
+  ],
+  "reviewedExceptions": [
+    {
+      "kind": "root-override",
+      "name": "@hono/node-server",
+      "reason": "Keep the shipped MCP HTTP transport on the audited patched Node adapter release."
+    },
+    {
+      "kind": "root-override",
+      "name": "@langchain/langgraph-checkpoint",
+      "reason": "Keep the checkpoint protocol implementation on the repository-approved compatibility version."
+    },
+    {
+      "kind": "root-override",
+      "name": "@langchain/openai",
+      "reason": "Keep all OpenAI-compatible providers on the repository-approved adapter version."
+    },
+    {
+      "kind": "root-override",
+      "name": "body-parser",
+      "reason": "Keep the shipped Express request parser on the audited patched release."
+    },
+    {
+      "kind": "root-override",
+      "name": "hono",
+      "reason": "Keep the shipped MCP HTTP transport on the audited patched Hono release."
+    },
+    {
+      "kind": "root-override",
+      "name": "jose",
+      "reason": "Keep server authentication on the repository-approved JOSE version."
+    },
+    {
+      "kind": "root-override",
+      "name": "qs",
+      "reason": "Keep the shipped Express query parser on the audited patched release."
+    }
+  ]
+}

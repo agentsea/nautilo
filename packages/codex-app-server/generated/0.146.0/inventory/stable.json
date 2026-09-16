@@ -1,0 +1,1495 @@
+{
+  "codexVersion": "0.146.0",
+  "channel": "stable",
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "surface": "client_notification",
+      "name": "initialized",
+      "generatedFile": "ClientNotification.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/login/cancel",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/login/start",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/logout",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/rateLimitResetCredit/consume",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/rateLimits/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/sendAddCreditsNudgeEmail",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/usage/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "account/workspaceMessages/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "app/installed",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "app/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "app/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "command/exec",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "command/exec/resize",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "command/exec/terminate",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "command/exec/write",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "config/batchWrite",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "config/mcpServer/reload",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "config/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "config/value/write",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "configRequirements/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "experimentalFeature/enablement/set",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "experimentalFeature/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "externalAgentConfig/detect",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "externalAgentConfig/import",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "externalAgentConfig/import/readHistories",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "externalAgentConfig/import/recordHistory",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "feedback/upload",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/copy",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/createDirectory",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/getMetadata",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/readDirectory",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/readFile",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/remove",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/unwatch",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/watch",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fs/writeFile",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "fuzzyFileSearch",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "getAuthStatus",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "getConversationSummary",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "gitDiffToRemote",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "hooks/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "initialize",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "marketplace/add",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "marketplace/remove",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "marketplace/upgrade",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "mcpServer/oauth/login",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "mcpServer/resource/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "mcpServer/tool/call",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "mcpServerStatus/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "model/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "modelProvider/capabilities/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "permissionProfile/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/install",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/installed",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/share/checkout",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/share/delete",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/share/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/share/save",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/share/updateTargets",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/skill/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "plugin/uninstall",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "review/start",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "skills/config/write",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "skills/extraRoots/set",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "skills/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/approveGuardianDeniedAction",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/archive",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/compact/start",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/delete",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/fork",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/goal/clear",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/goal/get",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/goal/set",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/inject_items",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/loaded/list",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/metadata/update",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/name/set",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/read",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/resume",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/rollback",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/shellCommand",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/start",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/unarchive",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "thread/unsubscribe",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "turn/interrupt",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "turn/start",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "turn/steer",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "windowsSandbox/readiness",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "client_request",
+      "name": "windowsSandbox/setupStart",
+      "generatedFile": "ClientRequest.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ApplyPatchApprovalResponse",
+      "generatedFile": "ApplyPatchApprovalResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "AppsInstalledResponse",
+      "generatedFile": "v2/AppsInstalledResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "AppsListResponse",
+      "generatedFile": "v2/AppsListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "AppsReadResponse",
+      "generatedFile": "v2/AppsReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "AttestationGenerateResponse",
+      "generatedFile": "v2/AttestationGenerateResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "CancelLoginAccountResponse",
+      "generatedFile": "v2/CancelLoginAccountResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ChatgptAuthTokensRefreshResponse",
+      "generatedFile": "v2/ChatgptAuthTokensRefreshResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "CommandExecResizeResponse",
+      "generatedFile": "v2/CommandExecResizeResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "CommandExecResponse",
+      "generatedFile": "v2/CommandExecResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "CommandExecTerminateResponse",
+      "generatedFile": "v2/CommandExecTerminateResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "CommandExecutionRequestApprovalResponse",
+      "generatedFile": "v2/CommandExecutionRequestApprovalResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "CommandExecWriteResponse",
+      "generatedFile": "v2/CommandExecWriteResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ConfigReadResponse",
+      "generatedFile": "v2/ConfigReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ConfigRequirementsReadResponse",
+      "generatedFile": "v2/ConfigRequirementsReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ConfigWriteResponse",
+      "generatedFile": "v2/ConfigWriteResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ConsumeAccountRateLimitResetCreditResponse",
+      "generatedFile": "v2/ConsumeAccountRateLimitResetCreditResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "DynamicToolCallResponse",
+      "generatedFile": "v2/DynamicToolCallResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExecCommandApprovalResponse",
+      "generatedFile": "ExecCommandApprovalResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExperimentalFeatureEnablementSetResponse",
+      "generatedFile": "v2/ExperimentalFeatureEnablementSetResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExperimentalFeatureListResponse",
+      "generatedFile": "v2/ExperimentalFeatureListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExternalAgentConfigDetectResponse",
+      "generatedFile": "v2/ExternalAgentConfigDetectResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExternalAgentConfigImportHistoriesReadResponse",
+      "generatedFile": "v2/ExternalAgentConfigImportHistoriesReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExternalAgentConfigImportHistoryRecordResponse",
+      "generatedFile": "v2/ExternalAgentConfigImportHistoryRecordResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ExternalAgentConfigImportResponse",
+      "generatedFile": "v2/ExternalAgentConfigImportResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FeedbackUploadResponse",
+      "generatedFile": "v2/FeedbackUploadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FileChangeRequestApprovalResponse",
+      "generatedFile": "v2/FileChangeRequestApprovalResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsCopyResponse",
+      "generatedFile": "v2/FsCopyResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsCreateDirectoryResponse",
+      "generatedFile": "v2/FsCreateDirectoryResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsGetMetadataResponse",
+      "generatedFile": "v2/FsGetMetadataResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsReadDirectoryResponse",
+      "generatedFile": "v2/FsReadDirectoryResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsReadFileResponse",
+      "generatedFile": "v2/FsReadFileResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsRemoveResponse",
+      "generatedFile": "v2/FsRemoveResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsUnwatchResponse",
+      "generatedFile": "v2/FsUnwatchResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsWatchResponse",
+      "generatedFile": "v2/FsWatchResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FsWriteFileResponse",
+      "generatedFile": "v2/FsWriteFileResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "FuzzyFileSearchResponse",
+      "generatedFile": "FuzzyFileSearchResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GetAccountRateLimitsResponse",
+      "generatedFile": "v2/GetAccountRateLimitsResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GetAccountResponse",
+      "generatedFile": "v2/GetAccountResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GetAccountTokenUsageResponse",
+      "generatedFile": "v2/GetAccountTokenUsageResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GetAuthStatusResponse",
+      "generatedFile": "GetAuthStatusResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GetConversationSummaryResponse",
+      "generatedFile": "GetConversationSummaryResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GetWorkspaceMessagesResponse",
+      "generatedFile": "v2/GetWorkspaceMessagesResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "GitDiffToRemoteResponse",
+      "generatedFile": "GitDiffToRemoteResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "HooksListResponse",
+      "generatedFile": "v2/HooksListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "InitializeResponse",
+      "generatedFile": "InitializeResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ListMcpServerStatusResponse",
+      "generatedFile": "v2/ListMcpServerStatusResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "LoginAccountResponse",
+      "generatedFile": "v2/LoginAccountResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "LogoutAccountResponse",
+      "generatedFile": "v2/LogoutAccountResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "MarketplaceAddResponse",
+      "generatedFile": "v2/MarketplaceAddResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "MarketplaceRemoveResponse",
+      "generatedFile": "v2/MarketplaceRemoveResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "MarketplaceUpgradeResponse",
+      "generatedFile": "v2/MarketplaceUpgradeResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "McpResourceReadResponse",
+      "generatedFile": "v2/McpResourceReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "McpServerElicitationRequestResponse",
+      "generatedFile": "v2/McpServerElicitationRequestResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "McpServerOauthLoginResponse",
+      "generatedFile": "v2/McpServerOauthLoginResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "McpServerRefreshResponse",
+      "generatedFile": "v2/McpServerRefreshResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "McpServerToolCallResponse",
+      "generatedFile": "v2/McpServerToolCallResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ModelListResponse",
+      "generatedFile": "v2/ModelListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ModelProviderCapabilitiesReadResponse",
+      "generatedFile": "v2/ModelProviderCapabilitiesReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PermissionProfileListResponse",
+      "generatedFile": "v2/PermissionProfileListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PermissionsRequestApprovalResponse",
+      "generatedFile": "v2/PermissionsRequestApprovalResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginInstalledResponse",
+      "generatedFile": "v2/PluginInstalledResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginInstallResponse",
+      "generatedFile": "v2/PluginInstallResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginListResponse",
+      "generatedFile": "v2/PluginListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginReadResponse",
+      "generatedFile": "v2/PluginReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginShareCheckoutResponse",
+      "generatedFile": "v2/PluginShareCheckoutResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginShareDeleteResponse",
+      "generatedFile": "v2/PluginShareDeleteResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginShareListResponse",
+      "generatedFile": "v2/PluginShareListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginShareSaveResponse",
+      "generatedFile": "v2/PluginShareSaveResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginShareUpdateTargetsResponse",
+      "generatedFile": "v2/PluginShareUpdateTargetsResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginSkillReadResponse",
+      "generatedFile": "v2/PluginSkillReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "PluginUninstallResponse",
+      "generatedFile": "v2/PluginUninstallResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ReviewStartResponse",
+      "generatedFile": "v2/ReviewStartResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "SendAddCreditsNudgeEmailResponse",
+      "generatedFile": "v2/SendAddCreditsNudgeEmailResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "SkillsConfigWriteResponse",
+      "generatedFile": "v2/SkillsConfigWriteResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "SkillsExtraRootsSetResponse",
+      "generatedFile": "v2/SkillsExtraRootsSetResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "SkillsListResponse",
+      "generatedFile": "v2/SkillsListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadApproveGuardianDeniedActionResponse",
+      "generatedFile": "v2/ThreadApproveGuardianDeniedActionResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadArchiveResponse",
+      "generatedFile": "v2/ThreadArchiveResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadCompactStartResponse",
+      "generatedFile": "v2/ThreadCompactStartResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadDeleteResponse",
+      "generatedFile": "v2/ThreadDeleteResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadForkResponse",
+      "generatedFile": "v2/ThreadForkResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadGoalClearResponse",
+      "generatedFile": "v2/ThreadGoalClearResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadGoalGetResponse",
+      "generatedFile": "v2/ThreadGoalGetResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadGoalSetResponse",
+      "generatedFile": "v2/ThreadGoalSetResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadInjectItemsResponse",
+      "generatedFile": "v2/ThreadInjectItemsResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadListResponse",
+      "generatedFile": "v2/ThreadListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadLoadedListResponse",
+      "generatedFile": "v2/ThreadLoadedListResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadMetadataUpdateResponse",
+      "generatedFile": "v2/ThreadMetadataUpdateResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadReadResponse",
+      "generatedFile": "v2/ThreadReadResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadResumeResponse",
+      "generatedFile": "v2/ThreadResumeResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadRollbackResponse",
+      "generatedFile": "v2/ThreadRollbackResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadSetNameResponse",
+      "generatedFile": "v2/ThreadSetNameResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadShellCommandResponse",
+      "generatedFile": "v2/ThreadShellCommandResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadStartResponse",
+      "generatedFile": "v2/ThreadStartResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadUnarchiveResponse",
+      "generatedFile": "v2/ThreadUnarchiveResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ThreadUnsubscribeResponse",
+      "generatedFile": "v2/ThreadUnsubscribeResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "ToolRequestUserInputResponse",
+      "generatedFile": "v2/ToolRequestUserInputResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "TurnInterruptResponse",
+      "generatedFile": "v2/TurnInterruptResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "TurnStartResponse",
+      "generatedFile": "v2/TurnStartResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "TurnSteerResponse",
+      "generatedFile": "v2/TurnSteerResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "WindowsSandboxReadinessResponse",
+      "generatedFile": "v2/WindowsSandboxReadinessResponse.ts"
+    },
+    {
+      "surface": "response",
+      "name": "WindowsSandboxSetupStartResponse",
+      "generatedFile": "v2/WindowsSandboxSetupStartResponse.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "account/login/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "account/rateLimits/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "account/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "app/list/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "command/exec/outputDelta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "configWarning",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "deprecationNotice",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "error",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "externalAgentConfig/import/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "externalAgentConfig/import/progress",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "fs/changed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "fuzzyFileSearch/sessionCompleted",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "fuzzyFileSearch/sessionUpdated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "guardianWarning",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "hook/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "hook/started",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/agentMessage/delta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/autoApprovalReview/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/autoApprovalReview/started",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/commandExecution/outputDelta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/commandExecution/terminalInteraction",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/fileChange/outputDelta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/fileChange/patchUpdated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/mcpToolCall/progress",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/plan/delta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/reasoning/summaryPartAdded",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/reasoning/summaryTextDelta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/reasoning/textDelta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "item/started",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "mcpServer/oauthLogin/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "mcpServer/startupStatus/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "model/rerouted",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "model/safetyBuffering/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "model/verification",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "process/exited",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "process/outputDelta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "rawResponse/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "rawResponseItem/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "remoteControl/status/changed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "serverRequest/resolved",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "skills/changed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/archived",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/closed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/compacted",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/deleted",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/environment/connected",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/environment/disconnected",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/goal/cleared",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/goal/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/name/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/closed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/error",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/itemAdded",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/outputAudio/delta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/sdp",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/started",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/transcript/delta",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/realtime/transcript/done",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/settings/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/started",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/status/changed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/tokenUsage/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "thread/unarchived",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "turn/completed",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "turn/diff/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "turn/moderationMetadata",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "turn/plan/updated",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "turn/started",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "warning",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "windows/worldWritableWarning",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_notification",
+      "name": "windowsSandbox/setupCompleted",
+      "generatedFile": "ServerNotification.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "account/chatgptAuthTokens/refresh",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "applyPatchApproval",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "attestation/generate",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "execCommandApproval",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "item/commandExecution/requestApproval",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "item/fileChange/requestApproval",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "item/permissions/requestApproval",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "item/tool/call",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "item/tool/requestUserInput",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "server_request",
+      "name": "mcpServer/elicitation/request",
+      "generatedFile": "ServerRequest.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "agentMessage",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "collabAgentToolCall",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "commandExecution",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "contextCompaction",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "dynamicToolCall",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "enteredReviewMode",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "exitedReviewMode",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "fileChange",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "hookPrompt",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "imageGeneration",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "imageView",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "mcpToolCall",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "plan",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "reasoning",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "sleep",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "subAgentActivity",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "userMessage",
+      "generatedFile": "v2/ThreadItem.ts"
+    },
+    {
+      "surface": "thread_item",
+      "name": "webSearch",
+      "generatedFile": "v2/ThreadItem.ts"
+    }
+  ],
+  "counts": {
+    "client_request": 93,
+    "response": 102,
+    "client_notification": 1,
+    "server_request": 10,
+    "server_notification": 72,
+    "thread_item": 18
+  }
+}

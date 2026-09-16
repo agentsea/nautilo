@@ -1,0 +1,40 @@
+<!--
+  D121 smoke body: register <nw-*> by wrapping this fragment with
+  buildSrcdoc(fragment, csp, runtimeBundle) in the Workbench HTML viewer.
+  Opening this file alone will not load the Lit runtime.
+-->
+<nw-doc>
+  <h1>nw-doc</h1>
+  <p>Typography wrapper.</p>
+</nw-doc>
+
+<nw-card style="margin-top: 1rem">
+  <p><strong>nw-card</strong> — bordered section.</p>
+</nw-card>
+
+<nw-list style="margin-top: 1rem">
+  <ul>
+    <li id="li-a" data-checked="false" aria-checked="false">Checkable A</li>
+    <li id="li-b" data-checked="false" aria-checked="false">Checkable B</li>
+  </ul>
+</nw-list>
+
+<p style="margin-top: 1rem">
+  <nw-button data-action="demo-save" id="demo-btn">nw-button</nw-button>
+</p>
+
+<nw-input style="margin-top: 1rem" value="hello">
+  <span slot="label">nw-input</span>
+</nw-input>
+
+<nw-tabs style="margin-top: 1rem">
+  <button slot="tab" type="button" data-tab="one">Tab one</button>
+  <button slot="tab" type="button" data-tab="two">Tab two</button>
+  <section slot="panel" data-tab="one">Panel one (nw-tabs)</section>
+  <section slot="panel" data-tab="two">Panel two (nw-tabs)</section>
+</nw-tabs>
+
+<nw-collapsible style="margin-top: 1rem">
+  <span slot="summary">nw-collapsible</span>
+  <p>Hidden until expanded.</p>
+</nw-collapsible>

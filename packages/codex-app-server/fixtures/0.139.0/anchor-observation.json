@@ -1,0 +1,177 @@
+{
+  "anchorId": "codex-app-server@0.139.0",
+  "members": {
+    "client_request": [
+      "initialize",
+      "thread/start",
+      "thread/resume",
+      "thread/read",
+      "turn/start",
+      "turn/steer",
+      "turn/interrupt",
+      "account/login/start",
+      "account/read",
+      "account/rateLimits/read",
+      "account/usage/read"
+    ],
+    "server_request": [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/tool/requestUserInput",
+      "item/tool/call"
+    ],
+    "response": [
+      "DynamicToolCallResponse",
+      "ToolRequestUserInputResponse"
+    ],
+    "server_notification": [
+      "error",
+      "thread/started",
+      "turn/started",
+      "turn/completed",
+      "item/started",
+      "item/completed",
+      "item/agentMessage/delta"
+    ],
+    "thread_item": [
+      "agentMessage",
+      "commandExecution",
+      "fileChange",
+      "dynamicToolCall"
+    ]
+  },
+  "fields": {
+    "InitializeParams.clientInfo": {
+      "required": true,
+      "kinds": ["object"]
+    },
+    "InitializeCapabilities.experimentalApi": {
+      "required": true,
+      "kinds": ["boolean"]
+    },
+    "ThreadStartParams.cwd": {
+      "required": false,
+      "kinds": ["null", "string"]
+    },
+    "TurnStartParams.threadId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "TurnStartParams.input": {
+      "required": true,
+      "kinds": ["array"]
+    },
+    "TurnInterruptParams.threadId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "TurnInterruptParams.turnId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "TurnSteerParams.expectedTurnId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ThreadStartParams.dynamicTools": {
+      "required": false,
+      "kinds": ["array", "null"]
+    },
+    "DynamicToolSpec.inputSchema": {
+      "required": true,
+      "kinds": ["array", "boolean", "null", "number", "object", "string"]
+    },
+    "DynamicToolCallParams.threadId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "DynamicToolCallParams.turnId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "DynamicToolCallParams.callId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "DynamicToolCallParams.namespace": {
+      "required": true,
+      "kinds": ["null", "string"]
+    },
+    "DynamicToolCallParams.tool": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "DynamicToolCallParams.arguments": {
+      "required": true,
+      "kinds": ["array", "boolean", "null", "number", "object", "string"]
+    },
+    "DynamicToolCallResponse.contentItems": {
+      "required": true,
+      "kinds": ["array"]
+    },
+    "DynamicToolCallResponse.success": {
+      "required": true,
+      "kinds": ["boolean"]
+    },
+    "DynamicToolSpec.deferLoading": {
+      "required": false,
+      "kinds": ["boolean"]
+    },
+    "ToolRequestUserInputParams.threadId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputParams.turnId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputParams.itemId": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputParams.questions": {
+      "required": true,
+      "kinds": ["array"]
+    },
+    "ToolRequestUserInputQuestion.id": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputQuestion.header": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputQuestion.question": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputQuestion.isOther": {
+      "required": true,
+      "kinds": ["boolean"]
+    },
+    "ToolRequestUserInputQuestion.isSecret": {
+      "required": true,
+      "kinds": ["boolean"]
+    },
+    "ToolRequestUserInputQuestion.options": {
+      "required": true,
+      "kinds": ["array", "null"]
+    },
+    "ToolRequestUserInputOption.label": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputOption.description": {
+      "required": true,
+      "kinds": ["string"]
+    },
+    "ToolRequestUserInputResponse.answers": {
+      "required": true,
+      "kinds": ["object"]
+    },
+    "ToolRequestUserInputAnswer.answers": {
+      "required": true,
+      "kinds": ["array"]
+    }
+  }
+}

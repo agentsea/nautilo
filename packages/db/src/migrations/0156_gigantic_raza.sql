@@ -1,0 +1,1 @@
+ALTER TABLE "memories" DROP CONSTRAINT "memories_protected_mapping_clears_confidential_columns";

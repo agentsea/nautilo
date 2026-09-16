@@ -1,0 +1,102 @@
+diff --git a/dist/pregel/index.cjs b/dist/pregel/index.cjs
+index 2932f9ef6c261548e5906d48802bd36a0e88f92b..55fd79c35688e6cec7e0551a582350c443d2f11d 100644
+--- a/dist/pregel/index.cjs
++++ b/dist/pregel/index.cjs
+@@ -1055,15 +1055,14 @@ var Pregel = class extends PartialRunnable {
+ 			} catch (e) {
+ 				loopError = e;
+ 			} finally {
+-				try {
+-					if (loop) {
+-						await loop.store?.stop();
+-						await loop.cache?.stop();
+-					}
+-					await Promise.all(loop?.checkpointerPromises ?? []);
+-				} catch (e) {
+-					loopError = loopError ?? e;
+-				}
++				// A failed save or stop must not release the turn while sibling
++				// checkpoint work is still using its invocation authority.
++				const settled = await Promise.allSettled([
++					...loop?.checkpointerPromises ?? [],
++					Promise.resolve().then(() => loop?.store?.stop()),
++					Promise.resolve().then(() => loop?.cache?.stop())
++				]);
++				for (const result of settled) if (result.status === "rejected") loopError = loopError ?? result.reason;
+ 				if (loopError) stream.error(loopError);
+ 				else stream.close();
+ 			}
+diff --git a/dist/pregel/index.js b/dist/pregel/index.js
+index e9fed3d40006aa10d01e5c68c8f6b2be5aa41ba1..97f5053d8647240f92e46cf12e00a19a00ca9091 100644
+--- a/dist/pregel/index.js
++++ b/dist/pregel/index.js
+@@ -1054,15 +1054,14 @@ var Pregel = class extends PartialRunnable {
+ 			} catch (e) {
+ 				loopError = e;
+ 			} finally {
+-				try {
+-					if (loop) {
+-						await loop.store?.stop();
+-						await loop.cache?.stop();
+-					}
+-					await Promise.all(loop?.checkpointerPromises ?? []);
+-				} catch (e) {
+-					loopError = loopError ?? e;
+-				}
++				// A failed save or stop must not release the turn while sibling
++				// checkpoint work is still using its invocation authority.
++				const settled = await Promise.allSettled([
++					...loop?.checkpointerPromises ?? [],
++					Promise.resolve().then(() => loop?.store?.stop()),
++					Promise.resolve().then(() => loop?.cache?.stop())
++				]);
++				for (const result of settled) if (result.status === "rejected") loopError = loopError ?? result.reason;
+ 				if (loopError) stream.error(loopError);
+ 				else stream.close();
+ 			}
+diff --git a/dist/pregel/loop.cjs b/dist/pregel/loop.cjs
+index fef47bbde30d7cd0a693c47b855bfc248fa23653..51c1ce399c17c1034d4791c1d1970ee7399a9e8d 100644
+--- a/dist/pregel/loop.cjs
++++ b/dist/pregel/loop.cjs
+@@ -79,7 +79,7 @@ var PregelLoop = class PregelLoop {
+ 	_checkpointerChainedPromise = Promise.resolve();
+ 	/**
+ 	* Track a checkpointer promise, removing it from the set on success.
+-	* Failed promises are kept so that Promise.all() in the finally block
++	* Failed promises are kept so that the drain in the finally block
+ 	* of _streamIterator can surface the error.
+ 	*
+ 	* @internal
+@@ -92,6 +92,9 @@ var PregelLoop = class PregelLoop {
+ 			throw error;
+ 		});
+ 		this.checkpointerPromises.add(tracked);
++		// Observe this derived rejection immediately, while retaining the rejected
++		// promise above so the stream owner drains it and fails the turn.
++		void tracked.catch(() => {});
+ 	}
+ 	store;
+ 	cache;
+diff --git a/dist/pregel/loop.js b/dist/pregel/loop.js
+index 289bf138f25db544b11dd177cde6443b404b26a5..2ff421916471aa2cdd77214ff2ec6abc5f0d0e0b 100644
+--- a/dist/pregel/loop.js
++++ b/dist/pregel/loop.js
+@@ -79,7 +79,7 @@ var PregelLoop = class PregelLoop {
+ 	_checkpointerChainedPromise = Promise.resolve();
+ 	/**
+ 	* Track a checkpointer promise, removing it from the set on success.
+-	* Failed promises are kept so that Promise.all() in the finally block
++	* Failed promises are kept so that the drain in the finally block
+ 	* of _streamIterator can surface the error.
+ 	*
+ 	* @internal
+@@ -92,6 +92,9 @@ var PregelLoop = class PregelLoop {
+ 			throw error;
+ 		});
+ 		this.checkpointerPromises.add(tracked);
++		// Observe this derived rejection immediately, while retaining the rejected
++		// promise above so the stream owner drains it and fails the turn.
++		void tracked.catch(() => {});
+ 	}
+ 	store;
+ 	cache;

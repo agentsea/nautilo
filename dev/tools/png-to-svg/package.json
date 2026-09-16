@@ -1,0 +1,10 @@
+{
+  "name": "nautilo-png-to-svg",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev helper: PNG/JPEG raster to SVG via external vtracer binary (visioncortex/vtracer)",
+  "scripts": {
+    "convert": "bun run index.ts"
+  }
+}

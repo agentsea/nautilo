@@ -1,0 +1,2 @@
+ALTER TABLE "session_messages" ADD COLUMN "fingerprint" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_session_messages_session_fingerprint" ON "session_messages" USING btree ("session_id","fingerprint") WHERE "session_messages"."fingerprint" IS NOT NULL;

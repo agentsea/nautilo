@@ -1,0 +1,302 @@
+<!--
+  D154 / Stack 19 — Cold-boot recovery picker.
+
+  This is the PERMANENT cold-boot recovery surface (server unreachable,
+  can't load React workbench). Stack 11's React banner-pill picker
+  (D133) coexists — it handles live-server instance switching; this
+  handles dead-server recovery. They share data (paired-instances.json)
+  and brand vocabulary, NOT implementation. See ISSUE-D154 ADR
+  § "Stack 11 coexistence" for the contract.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nautilo</title>
+    <style>
+      body {
+        font: 13px system-ui, sans-serif;
+        margin: 0;
+        padding: 12px;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+      }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 6px 8px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 10px;
+      }
+      #err {
+        color: #b00020;
+        font-size: 12px;
+        margin: 8px 0 0;
+        min-height: 1em;
+      }
+    </style>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        font-family: Inter, system-ui, sans-serif;
+        background: #0f1420;
+        color: #f4f6fb;
+      }
+      .shell {
+        min-height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 20px;
+        box-sizing: border-box;
+      }
+      .card {
+        max-width: 440px;
+        width: 100%;
+        text-align: center;
+      }
+      .wordmark {
+        font-size: 1.5rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        margin-bottom: 28px;
+        color: #fff;
+      }
+      h1 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin: 0 0 10px;
+      }
+      .sub {
+        font-size: 0.95rem;
+        line-height: 1.45;
+        color: rgba(244, 246, 251, 0.72);
+        margin: 0 0 24px;
+      }
+      .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      button.cta {
+        cursor: pointer;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        font-family: inherit;
+        background: #ea580c;
+        color: #0f1420;
+      }
+      button.cta:hover {
+        filter: brightness(1.06);
+      }
+      button.secondary {
+        cursor: pointer;
+        border: 1px solid rgba(244, 246, 251, 0.22);
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-size: 0.95rem;
+        font-weight: 500;
+        font-family: inherit;
+        background: transparent;
+        color: #f4f6fb;
+      }
+      button.secondary:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.82rem;
+        word-break: break-all;
+        color: rgba(244, 246, 251, 0.88);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="card" id="root">
+        <div class="wordmark">Nautilo</div>
+        <div id="panel"></div>
+      </div>
+    </div>
+    <script>
+      // Stack 19 Phase 6.9.1 CRITICAL XSS hardening (2026-05-17).
+      // Pre-fix this script built recovery UI via `innerHTML` from
+      // unescaped URLSearchParams (`server`, `paired`, `found`). This
+      // page has the Electron preload bridge attached (`nautiloDesktop`
+      // / `desktopAPI`) — so a malicious or compromised paired-server
+      // identity could become arbitrary JS in a privileged renderer.
+      //
+      // Reviewer's BLOCK Critical-#1 finding on PR #188. Fixed by:
+      //   - Zero `innerHTML` for user-supplied data — text via
+      //     `el.textContent = value` (browser escapes); structure via
+      //     `document.createElement` / `appendChild`.
+      //   - Button handlers via `addEventListener` on the constructed
+      //     button references (NOT `onclick="..."` attributes from
+      //     template strings — which the sibling logto-unreachable
+      //     finding 6.9.2 also flagged).
+      //   - Any future URL-bearing action must parse `server` through the
+      //     http/https allowlist first. D514 keeps this shell display-only;
+      //     main owns retries and navigation decisions.
+      //
+      // Pinned by `apps/desktop/tests/unit/cold-boot-picker-xss.test.ts`.
+      const api = window.nautiloDesktop?.coldBoot;
+      const params = new URLSearchParams(window.location.search);
+      const mode = params.get("mode") || "disconnected";
+      const panel = document.getElementById("panel");
+
+      /**
+       * Return a safe https/http URL string if `raw` parses cleanly,
+       * else null. Rejects javascript:, data:, file:, and malformed
+       * inputs. The current recovery surface uses it only to normalize a
+       * benign display value; future network/navigation code must retain this
+       * guard rather than treating query parameters as authority.
+       */
+      function safeHttpUrl(raw) {
+        if (typeof raw !== "string" || raw.length === 0) return null;
+        try {
+          const u = new URL(raw);
+          if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+          return u.toString().replace(/\/+$/, "");
+        } catch {
+          return null;
+        }
+      }
+
+      /** Build <div class="actions">...</div> from {label, kind, onClick} rows. */
+      function buildActions(rows) {
+        const div = document.createElement("div");
+        div.className = "actions";
+        for (const row of rows) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = row.kind === "cta" ? "cta" : "secondary";
+          b.textContent = row.label;
+          b.addEventListener("click", row.onClick);
+          div.appendChild(b);
+        }
+        return div;
+      }
+
+      /** Clear `panel` and append the constructed children. */
+      function setPanel(...children) {
+        panel.textContent = "";
+        for (const c of children) panel.appendChild(c);
+      }
+
+      /** Build an <h1> with the given text. */
+      function h1(text) {
+        const el = document.createElement("h1");
+        el.textContent = text;
+        return el;
+      }
+
+      /**
+       * Build a <p class="sub"> from segments. Each segment is either
+       * a plain string (becomes a Text node — auto-escaped by the
+       * browser) or an object {mono: string} (becomes a <span
+       * class="mono"> with textContent — also auto-escaped). NEVER
+       * accepts raw HTML.
+       */
+      function subP(segments) {
+        const p = document.createElement("p");
+        p.className = "sub";
+        for (const seg of segments) {
+          if (typeof seg === "string") {
+            p.appendChild(document.createTextNode(seg));
+          } else if (seg && typeof seg === "object" && "mono" in seg) {
+            const span = document.createElement("span");
+            span.className = "mono";
+            span.textContent = String(seg.mono);
+            p.appendChild(span);
+          } else if (seg && typeof seg === "object" && "br" in seg) {
+            p.appendChild(document.createElement("br"));
+          }
+        }
+        return p;
+      }
+
+      function wireDisconnected(serverRaw) {
+        const serverUrl = safeHttpUrl(serverRaw);
+        // The supplied URL is display-only. Main owns every network
+        // observation and retry, while textContent keeps hostile values inert.
+        const displayServer = serverUrl ?? String(serverRaw ?? "(unknown server)");
+        setPanel(
+          h1("Can't reach server right now"),
+          subP(["Nautilo is waiting to reconnect to ", { mono: displayServer }, ". Choose Retry to try again."]),
+          buildActions([
+            { label: "Retry", kind: "cta", onClick: () => void api?.retry?.() },
+            { label: "Pair to a different server", kind: "secondary", onClick: () => void api?.pairToDifferentServer?.() },
+            { label: "Quit", kind: "secondary", onClick: () => void api?.quit?.() },
+          ]),
+        );
+      }
+
+      function wireMalformed(serverRaw) {
+        const displayServer = safeHttpUrl(serverRaw) ?? String(serverRaw ?? "(unknown server)");
+        setPanel(
+          h1("Server response not recognized"),
+          subP(["Nautilo could not verify the response from ", { mono: displayServer }, "."]),
+          buildActions([
+            { label: "Retry", kind: "cta", onClick: () => void api?.retry?.() },
+            { label: "Pair to a different server", kind: "secondary", onClick: () => void api?.pairToDifferentServer?.() },
+            { label: "Quit", kind: "secondary", onClick: () => void api?.quit?.() },
+          ]),
+        );
+      }
+
+      function wireWrongServer(server) {
+        // The address is display-only; identity receipts never cross IPC or
+        // become database-fields-as-UI.
+        const safeServer = String(server ?? "(unknown)");
+        setPanel(
+          h1("This address now answers as a different Nautilo"),
+          subP([
+            "Nautilo could not safely continue with ", { mono: safeServer },
+            ". Retry if the server is still changing, use it only if you recognize it, or pair elsewhere.",
+          ]),
+          buildActions([
+            { label: "Retry", kind: "cta", onClick: () => void api?.retry?.() },
+            { label: "Pair to a different server", kind: "secondary", onClick: () => void api?.pairToDifferentServer?.() },
+            { label: "Use this anyway", kind: "secondary", onClick: () => void api?.useThisServerAnyway?.() },
+            { label: "Quit", kind: "secondary", onClick: () => void api?.quit?.() },
+          ]),
+        );
+      }
+
+      function wireNoPairing() {
+        setPanel(
+          h1("Welcome to Nautilo"),
+          subP(["Pair with a server to get started."]),
+          buildActions([
+            { label: "Pair to a server", kind: "cta", onClick: () => void api?.pairToDifferentServer?.() },
+            { label: "Quit", kind: "secondary", onClick: () => void api?.quit?.() },
+          ]),
+        );
+      }
+
+      if (!api) {
+        setPanel(h1("Recovery unavailable"), subP(["Desktop bridge not loaded."]));
+      } else if (mode === "wrong-server") {
+        wireWrongServer(params.get("server"));
+      } else if (mode === "no-pairing") {
+        wireNoPairing();
+      } else if (mode === "malformed") {
+        wireMalformed(params.get("server"));
+      } else {
+        wireDisconnected(params.get("server"));
+      }
+    </script>
+  </body>
+</html>

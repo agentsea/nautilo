@@ -1,0 +1,52 @@
+appId: ai.nautilo.app
+---
+# Authenticated, non-destructive acceptance for both native development builds.
+# Native permission and Expo credentials legitimately vary by simulator/build.
+# The screen must therefore prove one honest journey without hard-coding an
+# enabled permission or claiming an accepted test became remote delivery.
+- openLink: nautilo://settings/notifications
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+# iOS can present the universal-link confirmation again after foregrounding a
+# development build. Accept that second native prompt without weakening any
+# app assertion below.
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- runFlow:
+    when:
+      visible: Open debugger to view warnings.
+    commands:
+      - tapOn:
+          point: "92%,92%"
+- assertVisible: Notifications
+# Permission, binding, and reconciliation collapse into one truthful summary.
+- assertVisible: "Notifications are off|Checking notifications|Connecting this phone|Notifications are on quietly|Notifications are on|Message notifications are off|Notifications need attention|Notifications aren't available|Sign in to set up notifications|Nautilo couldn't connect this phone|Notifications are paused"
+- assertNotVisible: THIS DEVICE
+- assertNotVisible: Delivery to this phone
+- assertNotVisible: Default Room level
+
+# Scope choices explain their enduring server policy in every journey state.
+- assertVisible: Notify me about
+- assertVisible: "Messages for me: When someone addresses you."
+- assertVisible: "All important messages: Important activity in your chats — not every message."
+- assertVisible: "Nothing: Do not send alerts from this server."
+- assertVisible: "Notifications are private: message text, names, and conversation details never appear on your lock screen."
+
+# A healthy binding is intentionally invisible. Scope copy appears only for a
+# genuinely multi-server registry, and the test control appears only when its
+# active binding can execute it.
+- assertNotVisible: "This server.*"
+- scrollUntilVisible:
+    element:
+      text: More options
+    direction: DOWN
+    timeout: 30000
+- assertVisible: More options
+- assertVisible: App badge
+- tapOn: Go back

@@ -1,0 +1,51 @@
+appId: ai.nautilo.app
+---
+# Direct links keep this regression independent of whichever tab/detail route a
+# prior manual test left open. Each assertion must reach the bottom control.
+- runFlow:
+    when:
+      visible: Cancel Soul instruction changes
+    commands:
+      - tapOn: Cancel Soul instruction changes
+- runFlow:
+    when:
+      visible: Close change Human photo
+    commands:
+      - tapOn: Close change Human photo
+- openLink: nautilo://settings/profile
+- assertVisible: Your Agent
+- scrollUntilVisible:
+    element:
+      text: Save Agent profile
+    direction: DOWN
+    timeout: 30000
+- tapOn: Edit Soul instructions
+- assertVisible: Apply Soul instruction changes
+- tapOn: Cancel Soul instruction changes
+
+- openLink: nautilo://settings/voice
+- assertVisible: Voice & playback
+- scrollUntilVisible:
+    element:
+      text: Add a language voice
+    direction: DOWN
+    timeout: 30000
+- tapOn: Add a language voice
+- assertVisible: Search voices
+- tapOn: Voice filters
+- assertVisible: Category
+- assertVisible: Gender
+- assertVisible: Age
+- assertVisible: Use case
+- assertVisible: Accent
+
+- openLink: nautilo://settings/human-profile
+- assertVisible: Your profile
+- scrollUntilVisible:
+    element:
+      text: This portrait appears next to your messages in shared conversations. It does not change your Agent's photo.
+    direction: DOWN
+    timeout: 30000
+- tapOn: Change your Human portrait
+- assertVisible: Change Human photo
+- tapOn: Close change Human photo

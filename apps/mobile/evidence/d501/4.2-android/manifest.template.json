@@ -1,0 +1,51 @@
+{
+  "task": "D501-4.2",
+  "status": "not-run",
+  "runtime": "isolated Android only",
+  "harness": "d501-android-source-actions.yaml",
+  "retainedEvidenceAudit": {
+    "auditedAt": "2026-08-07",
+    "conclusion": "No retained redacted per-row live evidence exists in this worktree; every live row remains not-run.",
+    "nonEvidenceSources": [
+      "D501 task and issue narrative",
+      "git commits and commit messages",
+      "harness source and static tests"
+    ],
+    "eligibleRows": []
+  },
+  "build": {
+    "commit": "not-recorded",
+    "apkSha256": "not-recorded",
+    "avd": "D501_Wave10",
+    "serial": "emulator-5560",
+    "metroPort": 8092
+  },
+  "provenance": {
+    "branchHead": "not-recorded",
+    "runStartedAt": "not-recorded",
+    "maestroCommand": "not-recorded",
+    "maestroOutputSha256": "not-recorded",
+    "apkBytes": "not-recorded",
+    "screenshotSha256": [],
+    "fixtureReceipts": []
+  },
+  "automatedRows": {
+    "sourceInputAndMarkdownActions": "not-run",
+    "previewEditContinuity": "not-run",
+    "saveTapAndEditorRetention": "not-run"
+  },
+  "manualCheckpoints": {
+    "selectionAndGboard": "not-run",
+    "longSourceKeyboardScrollScreenshots": "not-run",
+    "pasteCancelDiscard": "not-run",
+    "markdownSaveAndReopenExactBytes": "not-run",
+    "plainTextSaveAndReopenExactBytes": "not-run",
+    "staleConflictHandoff": "not-run",
+    "writerHtmlViewerOnly": "not-run",
+    "viewerAndDiscuss": "not-run",
+    "rename": "not-run",
+    "delete": "not-run",
+    "fixtureCleanup": "not-run"
+  },
+  "notes": "Do not store secrets, artifact identifiers, fixture content, or unredacted screenshots. For a checked row, record the exact branch/APK/harness output provenance and only redacted screenshot hashes plus before/after byte or parsed-value hashes as applicable."
+}

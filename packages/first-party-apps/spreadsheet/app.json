@@ -1,0 +1,547 @@
+{
+  "id": "nautilo-spreadsheet",
+  "name": "Sheets",
+  "description": "Create and edit native Wafflebase spreadsheets with formulas, formatting, merges, and row or column changes.",
+  "display": {
+    "groupId": "nautilo-office",
+    "groupName": "Nautilo Office",
+    "groupOrder": 10,
+    "appOrder": 20,
+    "defaultCollapsed": false
+  },
+  "version": "0.1.0",
+  "entry": "./main.ts",
+  "html": "./index.html",
+  "styles": ["./styles.css"],
+  "fileAssociations": {
+    "extensions": [],
+    "mimeTypes": []
+  },
+  "capabilities": {
+    "document": {
+      "artifact": "readwrite",
+      "currentFolder": "readwrite"
+    },
+    "office": "convert"
+  },
+  "agent": {
+    "contextProvider": "spreadsheet.activeContext",
+    "instructions": "Use inspect and edit tools only for native Wafflebase spreadsheet containers. Use import-xlsx to create an editable native copy of an .xlsx source, and export-xlsx to create an .xlsx copy of a saved native spreadsheet. For either conversion, review all returned warnings and retry with acknowledgedSourceSha256 only after accepting the differences for that exact source revision. For a closed native document, call inspect-document for the exact sheet and range, follow nextCursor while completeness is partial, then copy expectedSha256 into edit-document. For an open sheet, call inspect-open-sheet for the exact range, follow nextCursor on that version, then copy versionToken into edit-open-sheet expectedVersion. Add search to either inspection to find values or formulas across one sheet or the workbook; follow its query-bound continuation until complete. Inspection also reports persisted filters and hidden rows. The host supplies active-session and idempotency fields. A stale refusal means the prior read no longer authorizes the edit: inspect again and reconsider the requested change. Open-sheet tools accept no target or path. Cell input follows the same inference as the editor; use formula for formulas and value null to clear cell data while retaining formatting. Sorting moves entire worksheet rows within the selected row bounds, using a key column inside the requested range; set header explicitly. Supported edits are cell/formula writes, basic range formatting, merge/unmerge, row/column insert/delete, whole-row range sorting, and persisted filters. Charts, pivots, comments, and sheet creation/rename are not exposed as Genie edits in this release.",
+    "tools": [
+      {
+        "id": "create-file",
+        "title": "Create native spreadsheet",
+        "description": "Create a native Wafflebase spreadsheet from the app's canonical template. filename must be a basename ending in .spreadsheet.html.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createFile",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "targetSurface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+            "filename": { "type": "string" },
+            "openAfterCreate": { "type": "boolean" },
+            "initialContent": { "type": "string", "enum": ["empty"] }
+          },
+          "required": ["targetSurface", "filename"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-document",
+        "title": "Inspect spreadsheet range",
+        "description": "Inspect a caller-selected range or optionally search values and formulas in a closed native spreadsheet. Returns sparse cells or query matches, persisted filter and hidden-row state, sheet summaries, the exact expectedSha256 edit precondition, truthful completeness, and a query-bound same-version nextCursor when partial.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectDocument",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "sheetId": { "type": "string" },
+            "range": { "type": "string", "minLength": 2 },
+            "pageSize": { "type": "integer", "minimum": 1 },
+            "cursor": { "type": "string" },
+            "search": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "query": { "type": "string", "minLength": 1 },
+                "scope": { "type": "string", "enum": ["sheet", "workbook"] },
+                "caseSensitive": { "type": "boolean" },
+                "formulas": { "type": "boolean" }
+              },
+              "required": ["query", "scope"]
+            }
+          },
+          "required": ["target", "range", "pageSize"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "edit-document",
+        "title": "Edit closed spreadsheet",
+        "description": "Apply one atomic edit batch to a closed native spreadsheet, including whole-row range sorting and persisted filters. Requires the exact expectedSha256 returned by inspect-document and refuses stale content before mutation.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editDocument",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "expectedSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "minLength": 64, "maxLength": 64 },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": { "const": "set-cells" },
+                      "sheetId": { "type": "string" },
+                      "cells": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "ref": { "type": "string", "minLength": 2 },
+                            "value": { "type": ["string", "number", "boolean", "null"] },
+                            "formula": { "type": "string" }
+                          },
+                          "required": ["ref"]
+                        }
+                      }
+                    },
+                    "required": ["op", "sheetId", "cells"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": { "const": "format-range" },
+                      "sheetId": { "type": "string" },
+                      "range": { "type": "string", "minLength": 2 },
+                      "style": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "bold": { "type": "boolean" },
+                          "italic": { "type": "boolean" },
+                          "underline": { "type": "boolean" },
+                          "strikethrough": { "type": "boolean" },
+                          "textColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+                          "fillColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+                          "align": { "type": "string", "enum": ["left", "center", "right"] },
+                          "verticalAlign": { "type": "string", "enum": ["top", "middle", "bottom"] },
+                          "numberFormat": { "type": "string", "enum": ["plain", "number", "currency", "percent", "date"] },
+                          "currencyCode": { "type": "string", "pattern": "^[A-Z]{3}$" },
+                          "decimalPlaces": { "type": "integer", "minimum": 0 }
+                        }
+                      }
+                    },
+                    "required": ["op", "sheetId", "range", "style"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "merge-cells" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 } },
+                    "required": ["op", "sheetId", "range"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "unmerge-cells" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 } },
+                    "required": ["op", "sheetId", "range"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "insert-rows" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "delete-rows" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "insert-columns" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "delete-columns" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "description": "Sort complete worksheet rows within the range's row bounds by a column inside that range. Row metadata moves with each row; header must be explicit.",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "sort-range" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 }, "column": { "type": "integer", "minimum": 1 }, "direction": { "type": "string", "enum": ["asc", "desc"] }, "header": { "type": "boolean" } },
+                    "required": ["op", "sheetId", "range", "column", "direction", "header"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": { "const": "set-filter" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 },
+                      "columns": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": false, "properties": { "op": { "type": "string", "enum": ["contains", "notContains", "equals", "notEquals", "isEmpty", "isNotEmpty", "in"] }, "value": { "type": "string" }, "values": { "type": "array", "items": { "type": "string" } } }, "required": ["op"] } }
+                    },
+                    "required": ["op", "sheetId", "range", "columns"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "clear-filter" }, "sheetId": { "type": "string" } },
+                    "required": ["op", "sheetId"]
+                  }
+                ]
+              }
+            }
+          },
+          "required": ["target", "expectedSha256", "operations"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-open-sheet",
+        "title": "Inspect open sheet range",
+        "description": "Inspect a caller-selected range or optionally search values and formulas in host-injected canonical content for the active Sheets session. Returns sparse cells or query matches, persisted filter and hidden-row state, an exact versionToken, truthful completeness, and query-bound same-version continuation. Accepts no target or path.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectOpenSheet",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sheetId": { "type": "string" },
+            "range": { "type": "string", "minLength": 2 },
+            "pageSize": { "type": "integer", "minimum": 1 },
+            "cursor": { "type": "string" },
+            "search": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "query": { "type": "string", "minLength": 1 },
+                "scope": { "type": "string", "enum": ["sheet", "workbook"] },
+                "caseSensitive": { "type": "boolean" },
+                "formulas": { "type": "boolean" }
+              },
+              "required": ["query", "scope"]
+            }
+          },
+          "required": ["range", "pageSize"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "edit-open-sheet",
+        "title": "Edit open sheet",
+        "description": "Apply one atomic edit batch, including whole-row range sorting and persisted filters, to the exact active Sheets document through host-bound write authority. expectedVersion must exactly equal the versionToken returned by prior inspection. Accepts no target, path, session, or idempotency fields.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editOpenSheet",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "expectedVersion": { "type": "string" },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": { "const": "set-cells" },
+                      "sheetId": { "type": "string" },
+                      "cells": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "ref": { "type": "string", "minLength": 2 },
+                            "value": { "type": ["string", "number", "boolean", "null"] },
+                            "formula": { "type": "string" }
+                          },
+                          "required": ["ref"]
+                        }
+                      }
+                    },
+                    "required": ["op", "sheetId", "cells"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": { "const": "format-range" },
+                      "sheetId": { "type": "string" },
+                      "range": { "type": "string", "minLength": 2 },
+                      "style": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "bold": { "type": "boolean" },
+                          "italic": { "type": "boolean" },
+                          "underline": { "type": "boolean" },
+                          "strikethrough": { "type": "boolean" },
+                          "textColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+                          "fillColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+                          "align": { "type": "string", "enum": ["left", "center", "right"] },
+                          "verticalAlign": { "type": "string", "enum": ["top", "middle", "bottom"] },
+                          "numberFormat": { "type": "string", "enum": ["plain", "number", "currency", "percent", "date"] },
+                          "currencyCode": { "type": "string", "pattern": "^[A-Z]{3}$" },
+                          "decimalPlaces": { "type": "integer", "minimum": 0 }
+                        }
+                      }
+                    },
+                    "required": ["op", "sheetId", "range", "style"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "merge-cells" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 } },
+                    "required": ["op", "sheetId", "range"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "unmerge-cells" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 } },
+                    "required": ["op", "sheetId", "range"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "insert-rows" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "delete-rows" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "insert-columns" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "delete-columns" }, "sheetId": { "type": "string" }, "index": { "type": "integer", "minimum": 1 }, "count": { "type": "integer", "minimum": 1 } },
+                    "required": ["op", "sheetId", "index", "count"]
+                  },
+                  {
+                    "type": "object",
+                    "description": "Sort complete worksheet rows within the range's row bounds by a column inside that range. Row metadata moves with each row; header must be explicit.",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "sort-range" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 }, "column": { "type": "integer", "minimum": 1 }, "direction": { "type": "string", "enum": ["asc", "desc"] }, "header": { "type": "boolean" } },
+                    "required": ["op", "sheetId", "range", "column", "direction", "header"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": { "const": "set-filter" }, "sheetId": { "type": "string" }, "range": { "type": "string", "minLength": 2 },
+                      "columns": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": false, "properties": { "op": { "type": "string", "enum": ["contains", "notContains", "equals", "notEquals", "isEmpty", "isNotEmpty", "in"] }, "value": { "type": "string" }, "values": { "type": "array", "items": { "type": "string" } } }, "required": ["op"] } }
+                    },
+                    "required": ["op", "sheetId", "range", "columns"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "op": { "const": "clear-filter" }, "sheetId": { "type": "string" } },
+                    "required": ["op", "sheetId"]
+                  }
+                ]
+              }
+            }
+          },
+          "required": ["expectedVersion", "operations"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "import-xlsx",
+        "title": "Import Excel workbook",
+        "description": "Import a Workspace or Current Folder .xlsx workbook as a separate editable native .spreadsheet.html document beside the source. Review returned warnings and retry with acknowledgedSourceSha256 only after accepting conversion differences. The source workbook is preserved.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "importXlsx",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["currentFolder", "workspace"] },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "targetPath": { "type": "string", "description": "Adjacent native target path ending in .spreadsheet.html." },
+            "overwrite": { "type": "boolean", "description": "Overwrite an existing native target after explicit conflict confirmation. Defaults to false." },
+            "acknowledgedSourceSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Exact source revision returned by the conversion warning preview."
+            }
+          },
+          "required": ["source", "targetPath"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious",
+        "officeTransform": { "format": "xlsx", "operation": "import" }
+      },
+      {
+        "id": "export-xlsx",
+        "title": "Export Excel workbook",
+        "description": "Export a saved native .spreadsheet.html document as a separate .xlsx workbook in Workspace or Current Folder. Review returned warnings and retry with acknowledgedSourceSha256 only after accepting conversion differences. The native source is preserved.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "exportXlsx",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["currentFolder", "workspace"] },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["currentFolder", "workspace"] },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "overwrite": { "type": "boolean", "description": "Overwrite an existing export after explicit conflict confirmation. Defaults to false." },
+            "acknowledgedSourceSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$",
+              "description": "Exact source revision returned by the conversion warning preview."
+            }
+          },
+          "required": ["source", "target"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious",
+        "officeTransform": { "format": "xlsx", "operation": "export" }
+      }
+    ]
+  },
+  "liveReview": {
+    "enabled": true
+  },
+  "createActions": [
+    {
+      "id": "new-spreadsheet",
+      "label": "New spreadsheet",
+      "defaultFilename": "Untitled.spreadsheet.html",
+      "mimeType": "text/html",
+      "targetSurfaces": ["workspace", "currentFolder"],
+      "template": {
+        "kind": "file",
+        "path": "templates/empty-spreadsheet.html"
+      },
+      "openAfterCreate": true
+    }
+  ],
+  "conversions": {
+    "import": [
+      {
+        "id": "import-xlsx",
+        "label": "Import to Sheets",
+        "from": {
+          "extensions": [".xlsx"],
+          "mimeTypes": ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+        },
+        "sourceSurfaces": ["currentFolder", "workspace"],
+        "tool": "import-xlsx",
+        "target": { "surface": "workspace", "extension": ".spreadsheet.html" },
+        "openAfterImport": true
+      }
+    ],
+    "export": [
+      {
+        "id": "export-xlsx",
+        "label": "Excel workbook (.xlsx)",
+        "to": {
+          "extension": ".xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        "tool": "export-xlsx",
+        "targetSurfaces": ["currentFolder", "workspace"]
+      }
+    ]
+  },
+  "contentAssociations": [
+    {
+      "id": "wafflebase-spreadsheet",
+      "kind": "html-script-json",
+      "scriptId": "manifest",
+      "scriptType": "application/vnd.nautilo.document+json",
+      "match": {
+        "documentType": "spreadsheet",
+        "editor": "wafflebase",
+        "payloadFormat": "application/vnd.wafflebase.spreadsheet+json"
+      }
+    }
+  ]
+}

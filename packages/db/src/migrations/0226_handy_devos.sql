@@ -1,0 +1,3 @@
+ALTER TABLE "encryption_transition_policy" ADD COLUMN "shadow_behavior" text DEFAULT 'fallback' NOT NULL;--> statement-breakpoint
+ALTER TABLE "encryption_transition_policy" ADD CONSTRAINT "encryption_transition_policy_shadow_behavior_check" CHECK ("encryption_transition_policy"."shadow_behavior" in ('fallback', 'strict')
+        and ("encryption_transition_policy"."mode" <> 'plaintext_only' or "encryption_transition_policy"."shadow_behavior" = 'fallback'));

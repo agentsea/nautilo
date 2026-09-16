@@ -1,0 +1,1 @@
+ALTER TABLE "connected_web_operations" ADD CONSTRAINT "connected_web_operations_public_read" CHECK ("connected_web_operations"."account_id" is not null or ("connected_web_operations"."action_operation_id" is null and "connected_web_operations"."effect_idempotency_key" is null and "connected_web_operations"."driver" in ('hosted', 'checking')));

@@ -1,0 +1,1514 @@
+{
+  "version": 2,
+  "catalogVersion": "2026.08.14.1",
+  "publishedAt": "2026-08-14T00:00:00Z",
+  "entries": [
+    {
+      "id": "anthropic:claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 1,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "anthropic:claude-sonnet-5",
+      "displayName": "Claude Sonnet 5 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "anthropic:claude-fable-5",
+      "displayName": "Claude Fable 5 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 3.3
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "anthropic:claude-opus-5",
+      "displayName": "Claude Opus 5 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": ["text", "image", "file"],
+        "output": ["text"]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1.6
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "anthropic:claude-opus-4-8",
+      "displayName": "Claude Opus 4.8 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1.6
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "anthropic:claude-opus-4-7",
+      "displayName": "Claude Opus 4.7 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 13,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1.6
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openai:gpt-5.6-sol",
+      "displayName": "GPT-5.6 Sol (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 3,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 2
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openai:gpt-5.6-terra",
+      "displayName": "GPT-5.6 Terra (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 4,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openai:gpt-5.6-luna",
+      "displayName": "GPT-5.6 Luna (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 5,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 0.4
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openai:gpt-5.5-2026-04-23",
+      "displayName": "GPT-5.5 (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 3,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 2
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openai:gpt-5.4-2026-03-05",
+      "displayName": "GPT-5.4 (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 4,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "google:gemini-2.5-pro",
+      "displayName": "Gemini 2.5 Pro (Google)",
+      "provider": "google",
+      "routing": "first-party",
+      "priority": 5,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 65536
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "google:gemini-3.1-pro-preview",
+      "displayName": "Gemini 3.1 Pro Preview (Google)",
+      "provider": "google",
+      "routing": "first-party",
+      "priority": 6,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "cost": {
+        "coefficient": 1.1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 65536
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "google:gemini-3-flash-preview",
+      "displayName": "Gemini 3 Flash Preview (Google)",
+      "provider": "google",
+      "routing": "first-party",
+      "priority": 7,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "cost": {
+        "coefficient": 0.45
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 65536
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "google:gemini-3.1-flash-lite-preview",
+      "displayName": "Gemini 3.1 Flash-Lite Preview (Google)",
+      "provider": "google",
+      "routing": "first-party",
+      "priority": 8,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "cost": {
+        "coefficient": 0.25
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 65536
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/kimi-k2p6",
+      "displayName": "Kimi K2.6 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 9,
+      "defaultEnabled": true,
+      "limits": {
+        "contextTokens": 262144,
+        "outputTokens": 262144
+      },
+      "cost": {
+        "coefficient": 0.2
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      }
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/kimi-k3",
+      "displayName": "Kimi K3 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 9,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": null,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1048576,
+        "outputTokens": 1048576
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "serving": {
+          "defaultProfile": "standard",
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "fireworks",
+            "verifiedAt": "2026-07-27T00:00:00Z"
+          },
+          "profiles": [
+            {
+              "id": "standard",
+              "label": "Standard",
+              "description": "Balanced default Fireworks route.",
+              "intent": "balanced",
+              "selector": {
+                "kind": "default"
+              },
+              "pricing": {
+                "inputPerMtok": 3,
+                "cachedInputPerMtok": 0.3,
+                "outputPerMtok": 15,
+                "provenance": {
+                  "kind": "provider-documentation",
+                  "provider": "fireworks",
+                  "verifiedAt": "2026-07-27T00:00:00Z"
+                }
+              }
+            },
+            {
+              "id": "priority",
+              "label": "Priority",
+              "description": "Higher reliability during peak traffic.",
+              "intent": "reliability",
+              "selector": {
+                "kind": "request-parameter",
+                "parameter": "service_tier",
+                "value": "priority"
+              },
+              "pricing": {
+                "inputPerMtok": 3.75,
+                "cachedInputPerMtok": 0.375,
+                "outputPerMtok": 18.75,
+                "provenance": {
+                  "kind": "provider-documentation",
+                  "provider": "fireworks",
+                  "verifiedAt": "2026-07-27T00:00:00Z"
+                }
+              }
+            },
+            {
+              "id": "fast",
+              "label": "Fast",
+              "description": "Higher generated-token throughput for interactive work.",
+              "intent": "throughput",
+              "selector": {
+                "kind": "model-override",
+                "modelId": "fireworks:accounts/fireworks/routers/kimi-k3-fast"
+              },
+              "pricing": {
+                "inputPerMtok": 4.5,
+                "cachedInputPerMtok": 0.45,
+                "outputPerMtok": 22.5,
+                "provenance": {
+                  "kind": "provider-documentation",
+                  "provider": "fireworks",
+                  "verifiedAt": "2026-07-27T00:00:00Z"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "openrouter:moonshotai/kimi-k2.6",
+      "displayName": "Kimi K2.6 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 10,
+      "defaultEnabled": true,
+      "limits": {
+        "contextTokens": 262142,
+        "outputTokens": 262142
+      },
+      "cost": {
+        "coefficient": 0.22
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      }
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/glm-5p2",
+      "displayName": "GLM 5.2 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 11,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1040000,
+        "outputTokens": 1040000
+      },
+      "cost": {
+        "coefficient": 0.3
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/glm-5p1",
+      "displayName": "GLM 5.1 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 12,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 202752,
+        "outputTokens": 202752
+      },
+      "cost": {
+        "coefficient": 0.3
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:z-ai/glm-5.1",
+      "displayName": "GLM 5.1 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 13,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 202752,
+        "outputTokens": 65535
+      },
+      "cost": {
+        "coefficient": 0.32
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
+      "displayName": "DeepSeek V4 Flash 0731 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 15,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1040000,
+        "outputTokens": 1040000
+      },
+      "cost": {
+        "coefficient": 0.1
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+      "displayName": "DeepSeek V4 Pro Preview (Fireworks, deprecated)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 114,
+      "defaultEnabled": false,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1048576,
+        "outputTokens": 1048576
+      },
+      "cost": {
+        "coefficient": 2
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813",
+      "displayName": "DeepSeek V4 Pro 0813 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 14,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1040000,
+        "outputTokens": 1040000
+      },
+      "cost": {
+        "coefficient": 0.3
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:deepseek/deepseek-v4-pro",
+      "displayName": "DeepSeek V4 Pro Preview (OpenRouter, deprecated)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 115,
+      "defaultEnabled": false,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1048576,
+        "outputTokens": 384000
+      },
+      "cost": {
+        "coefficient": 2.2
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:deepseek/deepseek-v4-pro-0813",
+      "displayName": "DeepSeek V4 Pro 0813 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 15,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1048576,
+        "outputTokens": 384000
+      },
+      "cost": {
+        "coefficient": 0.08
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/minimax-m3",
+      "displayName": "MiniMax M3 (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 16,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 512000,
+        "outputTokens": 512000
+      },
+      "cost": {
+        "coefficient": 0.7
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:minimax/minimax-m2.7",
+      "displayName": "MiniMax M2.7 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 17,
+      "defaultEnabled": true,
+      "limits": {
+        "contextTokens": 196608,
+        "outputTokens": 196607
+      },
+      "cost": {
+        "coefficient": 0.35
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "mid"
+      }
+    },
+    {
+      "id": "openrouter:google/gemma-4-31b-it",
+      "displayName": "Gemma 4 31B IT (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 18,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limits": {
+        "contextTokens": 262144,
+        "outputTokens": 65536
+      },
+      "cost": {
+        "coefficient": 0.22
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "small"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:google/gemma-4-26b-a4b-it",
+      "displayName": "Gemma 4 26B A4B IT (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 20,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "limits": {
+        "contextTokens": 262144,
+        "outputTokens": 65536
+      },
+      "cost": {
+        "coefficient": 0.17
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "small"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:zai-org-glm-5-1",
+      "displayName": "GLM 5.1 Beta (Venice-hosted)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 21,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 0.55
+      },
+      "privacy": {
+        "grade": 8
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 200000,
+        "outputTokens": 16384
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:e2ee-deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash E2EE TEE (Venice-hosted, no vision)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 22,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 0.05
+      },
+      "privacy": {
+        "grade": 10
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 8192
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash (Venice → DeepSeek)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 23,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 32768
+      },
+      "cost": {
+        "coefficient": 0.1
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:google-gemma-3-27b-it",
+      "displayName": "Gemma 3 27B (Venice-hosted)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 23,
+      "defaultEnabled": true,
+      "cost": {
+        "coefficient": 0.02
+      },
+      "privacy": {
+        "grade": 8
+      },
+      "intelligence": {
+        "tier": "small"
+      },
+      "limits": {
+        "contextTokens": 200000,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "venice:google-gemma-4-26b-a4b-it",
+      "displayName": "Gemma 4 26B A4B (Venice-hosted)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 24,
+      "defaultEnabled": true,
+      "cost": {
+        "coefficient": 0.05
+      },
+      "privacy": {
+        "grade": 8
+      },
+      "intelligence": {
+        "tier": "small"
+      },
+      "limits": {
+        "contextTokens": 262144,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "venice:google-gemma-4-31b-it",
+      "displayName": "Gemma 4 31B (Venice-hosted)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 25,
+      "defaultEnabled": true,
+      "cost": {
+        "coefficient": 0.05
+      },
+      "privacy": {
+        "grade": 8
+      },
+      "intelligence": {
+        "tier": "small"
+      },
+      "limits": {
+        "contextTokens": 262144,
+        "outputTokens": 8192
+      }
+    },
+    {
+      "id": "venice:kimi-k3",
+      "displayName": "Kimi K3 Beta (Venice-hosted)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 26,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1.3
+      },
+      "privacy": {
+        "grade": 8
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 131072
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:deepseek-v4-pro",
+      "displayName": "DeepSeek V4 Pro (Venice → Fireworks)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 27,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 0.38
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 32768
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:minimax-m27",
+      "displayName": "MiniMax M2.7 (Venice → Fireworks)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 28,
+      "defaultEnabled": true,
+      "cost": {
+        "coefficient": 0.15
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "limits": {
+        "contextTokens": 200000,
+        "outputTokens": 16384
+      }
+    },
+    {
+      "id": "venice:claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6 (Venice → Anthropic)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 29,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1.8
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:claude-opus-4-7",
+      "displayName": "Claude Opus 4.7 (Venice → Anthropic)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 30,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 3
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:gemini-3-1-pro-preview",
+      "displayName": "Gemini 3.1 Pro Preview (Venice → Google)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 31,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 1.5
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 65536
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:openai-gpt-55-pro",
+      "displayName": "GPT-5.5 Pro (Venice → OpenAI)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 32,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 22.5
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:qwen-3-6-plus",
+      "displayName": "Qwen 3.6 Plus (Venice → Alibaba)",
+      "provider": "venice",
+      "routing": "china-anonymized",
+      "priority": 33,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": false,
+        "reasoning": true
+      },
+      "cost": {
+        "coefficient": 0.38
+      },
+      "privacy": {
+        "grade": 5
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 65536
+      },
+      "capabilityProvenance": "override"
+    }
+  ]
+}

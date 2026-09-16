@@ -1,0 +1,18 @@
+{
+  "name": "@nautilo/config-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@nautilo/config": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "dotenv": "16.6.1",
+    "smol-toml": "1.8.0",
+    "zod": "4.3.6"
+  }
+}

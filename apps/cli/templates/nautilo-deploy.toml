@@ -1,0 +1,78 @@
+# Nautilo local / Docker Compose setup. Fill in the quoted REPLACE values.
+# Save as ~/.config/nautilo/deploy.toml, OUTSIDE source control.
+# Before adding secrets: chmod 600 ~/.config/nautilo/deploy.toml
+# Keep a copy in your password manager. Never upload or share the filled file.
+#
+# Starter: OpenAI + ElevenLabs + Tavily + OpenRouter.
+# You can swap Tavily for Browser Use, and OpenRouter for Venice below.
+# For the fuller experience, add all eight services listed here.
+# Delete a provider's entire three-line block if you will not use it.
+# Do not leave empty values or REPLACE placeholders in enabled blocks.
+# Advanced: any { value = "..." } can be { fromEnv = "EXACT_KEY_NAME" }.
+
+schemaVersion = 1
+
+[admin]
+handle = "replace_with_owner_handle"
+displayName = "Replace with owner name"
+password = { value = "REPLACE_with_a_unique_password_at_least_8_characters" }
+pin = { value = "REPLACE_with_6_to_8_digits" }
+# This is your permanent password. Save it before deploying.
+
+[[providers]]
+key = "OPENAI_API_KEY"
+value = { value = "REPLACE_with_OpenAI_key" }
+
+[[providers]]
+key = "TAVILY_API_KEY"
+value = { value = "REPLACE_with_Tavily_key" }
+
+[[providers]]
+key = "ELEVENLABS_API_KEY"
+value = { value = "REPLACE_with_ElevenLabs_key" }
+
+[[providers]]
+key = "OPENROUTER_API_KEY"
+value = { value = "REPLACE_with_OpenRouter_key" }
+
+# More services: remove the leading # from all three lines to enable a block.
+# Anthropic: direct Claude model access.
+# [[providers]]
+# key = "ANTHROPIC_API_KEY"
+# value = { value = "REPLACE_with_Anthropic_key" }
+
+# Browser Use: cloud browser automation. Not the same as Tavily web search.
+# [[providers]]
+# key = "BROWSER_USE_API_KEY"
+# value = { value = "REPLACE_with_Browser_Use_key" }
+
+# Venice: another model provider; use alongside or instead of OpenRouter.
+# [[providers]]
+# key = "VENICE_API_KEY"
+# value = { value = "REPLACE_with_Venice_key" }
+
+# CloudConvert: additional document/file conversion formats.
+# [[providers]]
+# key = "CLOUDCONVERT_API_KEY"
+# value = { value = "REPLACE_with_CloudConvert_key" }
+
+# Other supported services. Remove # from all three lines to enable a block.
+# [[providers]]
+# key = "GOOGLE_API_KEY"
+# value = { value = "REPLACE_with_Google_key" }
+
+# [[providers]]
+# key = "FIREWORKS_API_KEY"
+# value = { value = "REPLACE_with_Fireworks_key" }
+
+# [[providers]]
+# key = "GROQ_API_KEY"
+# value = { value = "REPLACE_with_Groq_key" }
+
+# A custom gateway also needs its URL configured separately in Nautilo.
+# [[providers]]
+# key = "NAUTILO_GATEWAY_API_KEY"
+# value = { value = "REPLACE_with_gateway_key" }
+
+[genie]
+mode = "skip"

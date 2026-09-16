@@ -1,0 +1,1 @@
+{"name":"harbor-review-service","private":true,"type":"module","scripts":{"test":"node --test test/*.test.mjs"}}

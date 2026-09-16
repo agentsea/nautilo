@@ -1,0 +1,2016 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/BoardModel",
+  "definitions": {
+    "BoardModel": {
+      "type": "object",
+      "properties": {
+        "meta": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "in",
+                "cm"
+              ]
+            },
+            "recentColors": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "title"
+          ]
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Element"
+          }
+        }
+      },
+      "required": [
+        "meta",
+        "elements"
+      ],
+      "description": "Board's own data model. A board is one unbounded canvas of elements — there is no per-slide structure — so this is intentionally flatter than  {@link  SlidesDocument } : no slides/layouts/masters/themes, just the element array plus the handful of meta fields the board UI needs (title, display unit, recent colors)."
+    },
+    "Element": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TextElement"
+        },
+        {
+          "$ref": "#/definitions/ImageElement"
+        },
+        {
+          "$ref": "#/definitions/ShapeElement"
+        },
+        {
+          "$ref": "#/definitions/ConnectorElement"
+        },
+        {
+          "$ref": "#/definitions/GroupElement"
+        },
+        {
+          "$ref": "#/definitions/TableElement"
+        },
+        {
+          "$ref": "#/definitions/ChartElement"
+        }
+      ]
+    },
+    "TextElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "text"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "stroke": {
+              "$ref": "#/definitions/Stroke"
+            },
+            "fill": {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            "effects": {
+              "$ref": "#/definitions/Effects",
+              "description": "Paint-time effects (drop shadow / reflection). See  {@link  Effects } ."
+            },
+            "alt": {
+              "type": "string",
+              "description": "Screen-reader description ↔ `<p:cNvPr descr>`. Absent ⇒ none."
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Block"
+              },
+              "description": "Domain-level read view; the Yorkie store backs this with a Tree."
+            },
+            "autofit": {
+              "$ref": "#/definitions/AutofitMode",
+              "description": "Autofit behavior. **Absent ⇒ `'grow'`** (the pre-autofit auto-grow default established by the `slides-textbox-autogrow` feature) so existing decks keep growing. Set `'none'` explicitly to disable auto-grow; `'shrink'` to scale fonts to a fixed box. See `docs/design/slides/slides-text-autofit.md`."
+            },
+            "verticalAnchor": {
+              "$ref": "#/definitions/VerticalAnchorMode",
+              "description": "Vertical position of the laid-out content inside the text frame. Mirrors OOXML `<a:bodyPr anchor>`:\n- `'top'` ↔ `anchor=\"t\"` (and absent — preserves pre-feature behavior)\n- `'middle'` ↔ `anchor=\"ctr\"`\n- `'bottom'` ↔ `anchor=\"b\"`\n\nImported from PPTX; the renderer translates the paint origin by `(frame.h − layout.totalHeight) * factor` so content sits at the top / middle / bottom of the frame."
+            },
+            "inset": {
+              "$ref": "#/definitions/TextInset",
+              "description": "Per-side text insets in deck-canvas px, mirroring OOXML `<a:bodyPr lIns/tIns/rIns/bIns>`. When present the renderer uses these instead of its per-kind default padding — decks that set large symmetric insets (e.g. Google-Slides number-in-circle labels) rely on them to center a single glyph. **Absent ⇒ renderer default** (0 for text elements, `SHAPE_TEXT_PADDING` for shapes), preserving prior behavior."
+            }
+          },
+          "required": [
+            "blocks"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "data",
+        "frame",
+        "id",
+        "type"
+      ]
+    },
+    "Stroke": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "width": {
+          "type": "number"
+        },
+        "dash": {
+          "type": "string",
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted"
+          ]
+        }
+      },
+      "required": [
+        "color",
+        "width"
+      ],
+      "description": "Stroke descriptor shared by ShapeElement, TextElement, and ConnectorElement.\n\n`color` accepts either a resolved hex/CSS string (used by the toolbar redesign and all new editing paths) or a legacy ThemeColor discriminated union (stored in older Yorkie documents before the toolbar redesign). Renderers handle both via `resolveStrokeColor()` in render-context.ts."
+    },
+    "ThemeColor": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "role"
+            },
+            "role": {
+              "$ref": "#/definitions/ColorRole"
+            },
+            "lumMod": {
+              "type": "number"
+            },
+            "lumOff": {
+              "type": "number"
+            },
+            "tint": {
+              "type": "number"
+            },
+            "shade": {
+              "type": "number"
+            },
+            "alpha": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "role"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "srgb"
+            },
+            "value": {
+              "type": "string",
+              "description": "CSS color literal, such as #FFF2A8, rgb(255 242 168), or a CSS named color. Hexadecimal colors include the leading #; bare OOXML hex values render incorrectly."
+            },
+            "alpha": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ],
+      "description": "`lumMod` / `lumOff` modifiers shift the role color in HSL space — `L ← clamp(L * lumMod + lumOff, 0, 1)`. Both stored as 0..1 ratios (the importer normalizes from OOXML thousandths). PowerPoint applies them BEFORE tint/shade in the resolve order. Common pattern in real decks: `<a:schemeClr val=\"bg1\"><a:lumMod val=\"95000\"/>` for a light gray derived from white."
+    },
+    "ColorRole": {
+      "type": "string",
+      "enum": [
+        "text",
+        "background",
+        "textSecondary",
+        "backgroundAlt",
+        "accent1",
+        "accent2",
+        "accent3",
+        "accent4",
+        "accent5",
+        "accent6",
+        "hyperlink",
+        "visitedHyperlink"
+      ]
+    },
+    "Effects": {
+      "type": "object",
+      "properties": {
+        "shadow": {
+          "$ref": "#/definitions/DropShadow"
+        },
+        "reflection": {
+          "$ref": "#/definitions/Reflection"
+        }
+      },
+      "description": "Paint-time effects shared by shape / image / text / table / group elements. Each field optional; absent ⇒ that effect is off. Grouping them in one bag lets the renderer apply every effect from a single `element.data.effects` read and keeps the per-element `data` schema additive (no migration — older documents simply lack the key)."
+    },
+    "DropShadow": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Shadow color; resolved against the theme like fills/strokes."
+        },
+        "opacity": {
+          "type": "number",
+          "description": "Opacity `[0, 1]` ↔ `<a:outerShdw><a:srgbClr><a:alpha>`."
+        },
+        "angle": {
+          "type": "number",
+          "description": "Direction in radians ↔ `<a:outerShdw dir>` (OOXML 60000ths/deg)."
+        },
+        "distance": {
+          "type": "number",
+          "description": "Offset distance in slide-logical px ↔ `<a:outerShdw dist>` (EMU)."
+        },
+        "blur": {
+          "type": "number",
+          "description": "Gaussian blur radius in px ↔ `<a:outerShdw blurRad>` (EMU)."
+        }
+      },
+      "required": [
+        "color",
+        "opacity",
+        "angle",
+        "distance",
+        "blur"
+      ],
+      "description": "Outer drop shadow. Mirrors OOXML `<a:effectLst><a:outerShdw>`. Absent ⇒ no shadow. Applied at paint time via `ctx.shadow*` around the element's geometry pass."
+    },
+    "Reflection": {
+      "type": "object",
+      "properties": {
+        "opacity": {
+          "type": "number",
+          "description": "Start alpha `[0, 1]` at the top of the reflection ↔ `stA`."
+        },
+        "distance": {
+          "type": "number",
+          "description": "Gap between element bottom and reflection top, in px ↔ `dist`."
+        },
+        "size": {
+          "type": "number",
+          "description": "Reflection length as a fraction `[0, 1]` of frame height ↔ `endPos`."
+        }
+      },
+      "required": [
+        "opacity",
+        "distance",
+        "size"
+      ],
+      "description": "Mirror reflection below the element. Mirrors OOXML `<a:reflection>`. Absent ⇒ no reflection. Painted as a vertically-flipped copy with a top-down alpha gradient."
+    },
+    "Block": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/BlockType"
+        },
+        "inlines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Inline"
+          }
+        },
+        "style": {
+          "$ref": "#/definitions/BlockStyle"
+        },
+        "headingLevel": {
+          "$ref": "#/definitions/HeadingLevel",
+          "description": "Heading level of a `heading` block. A `list-item` also keeps the level of the heading it was made from — bulleting a heading applies the bullet *to* the heading (Google Docs / Word parity), so removing the list restores it (see `unlistedBlockType`). The level is inert while the block is a list item: every reader (export, `blockStyleId`, toolbar labels) gates on `type === 'heading'`."
+        },
+        "listKind": {
+          "type": "string",
+          "enum": [
+            "ordered",
+            "unordered"
+          ]
+        },
+        "listLevel": {
+          "type": "number"
+        },
+        "tableData": {
+          "$ref": "#/definitions/TableData"
+        },
+        "marker": {
+          "$ref": "#/definitions/BlockMarker",
+          "description": "Optional marker style overrides for list-item blocks. Set by callers that carry an authored marker font/size/color independent of the paragraph's first inline — e.g. the PPTX importer reading the paragraph-level `<a:buFont>`, `<a:buSzPts>`, `<a:buClr>` properties which PowerPoint applies to the bullet glyph regardless of run font. When omitted, `renderListMarker` falls back to `inlines[0].style`.\n\nPersistence: today only the slides path (which stores text-element blocks as plain JSON via `YorkieSlidesStore`) round-trips this field. `YorkieDocStore` (docs collaborative editor) does **not** serialize `marker` through its Yorkie Tree node attributes — there is no docs UX yet that authors marker style, so the gap is latent. Wire it up alongside the first docs feature that needs authored markers (or alongside a DOCX-import round-trip into the docs editor)."
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "inlines",
+        "style"
+      ],
+      "description": "A block-level element: paragraph, heading, list item, or horizontal rule."
+    },
+    "BlockType": {
+      "type": "string",
+      "enum": [
+        "paragraph",
+        "title",
+        "subtitle",
+        "heading",
+        "list-item",
+        "horizontal-rule",
+        "table",
+        "page-break"
+      ],
+      "description": "Block type discriminator."
+    },
+    "Inline": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "style": {
+          "$ref": "#/definitions/InlineStyle"
+        }
+      },
+      "required": [
+        "text",
+        "style"
+      ],
+      "description": "An inline text run with uniform formatting. When formatting changes mid-text, the inline is split."
+    },
+    "InlineStyle": {
+      "type": "object",
+      "properties": {
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "underline": {
+          "type": "boolean"
+        },
+        "underlineStyle": {
+          "type": "string",
+          "enum": [
+            "single",
+            "double",
+            "heavy",
+            "dotted",
+            "dashed",
+            "wavy"
+          ],
+          "description": "Underline line variant, meaningful only when `underline` is set. `undefined` renders as a single line (the default). Maps to OOXML `@u` (17 values collapsed to this representative set)."
+        },
+        "underlineColor": {
+          "$ref": "#/definitions/StoredColor",
+          "description": "Underline color, meaningful only when `underline` is set. OOXML `<a:uFill>`."
+        },
+        "strikethrough": {
+          "type": "boolean"
+        },
+        "strikeStyle": {
+          "type": "string",
+          "enum": [
+            "single",
+            "double"
+          ],
+          "description": "Strikethrough line variant, meaningful only when `strikethrough` is set. `undefined` renders as a single line (the default). Maps to OOXML `@strike` (`sngStrike` / `dblStrike`)."
+        },
+        "letterSpacing": {
+          "type": "number",
+          "description": "Extra spacing between characters, in points (negative = condensed). Maps to OOXML `@spc` (hundredths of a point). Applied additively at measure and paint time; `undefined` = normal spacing."
+        },
+        "fontSize": {
+          "type": "number"
+        },
+        "fontFamily": {
+          "type": "string"
+        },
+        "color": {
+          "$ref": "#/definitions/StoredColor",
+          "description": "Either a concrete hex string (legacy / sheets / docs-only callers) or a `StoredColor` object whose role is resolved at paint time by the caller's `ColorResolver`. See `model/color.ts`."
+        },
+        "backgroundColor": {
+          "$ref": "#/definitions/StoredColor",
+          "description": "See `color` above for the StoredColor rationale."
+        },
+        "superscript": {
+          "type": "boolean"
+        },
+        "subscript": {
+          "type": "boolean"
+        },
+        "href": {
+          "type": "string"
+        },
+        "pageNumber": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/definitions/ImageData"
+        }
+      },
+      "description": "Character-level formatting applied to an Inline. All properties are optional; undefined means \"inherit default\"."
+    },
+    "StoredColor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "role"
+            },
+            "role": {
+              "type": "string"
+            },
+            "tint": {
+              "type": "number"
+            },
+            "shade": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "role"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "srgb"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "ImageData": {
+      "type": "object",
+      "properties": {
+        "src": {
+          "type": "string",
+          "description": "Displayed width in px (post-scale, pre-crop viewport)."
+        },
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number",
+          "description": "Displayed height in px."
+        },
+        "alt": {
+          "type": "string"
+        },
+        "rotation": {
+          "type": "number",
+          "description": "Clockwise rotation in degrees, normalized to [0, 360). Default 0."
+        },
+        "cropLeft": {
+          "type": "number",
+          "description": "Fraction of natural width hidden on the left edge. 0..1. Default 0."
+        },
+        "cropRight": {
+          "type": "number",
+          "description": "Fraction of natural width hidden on the right edge. 0..1. Default 0."
+        },
+        "cropTop": {
+          "type": "number",
+          "description": "Fraction of natural height hidden on the top edge. 0..1. Default 0."
+        },
+        "cropBottom": {
+          "type": "number",
+          "description": "Fraction of natural height hidden on the bottom edge. 0..1. Default 0."
+        },
+        "originalWidth": {
+          "type": "number",
+          "description": "Intrinsic pixel size of the source image, captured at insert time."
+        },
+        "originalHeight": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "src",
+        "width",
+        "height"
+      ],
+      "description": "Image metadata for an inline image element. Used when an Inline has text '\\uFFFC' (Object Replacement Character).\n\nAll fields beyond `src/width/height/alt` are optional — older persisted documents that lack them keep working, and absence is treated as \"no rotation / no crop / reset-to-displayed-size\"."
+    },
+    "BlockStyle": {
+      "type": "object",
+      "properties": {
+        "alignment": {
+          "type": "string",
+          "enum": [
+            "left",
+            "center",
+            "right",
+            "justify"
+          ]
+        },
+        "lineHeight": {
+          "type": "number"
+        },
+        "marginTop": {
+          "type": "number"
+        },
+        "marginBottom": {
+          "type": "number"
+        },
+        "textIndent": {
+          "type": "number"
+        },
+        "marginLeft": {
+          "type": "number"
+        },
+        "authoredMarginTop": {
+          "type": "boolean"
+        },
+        "authoredMarginBottom": {
+          "type": "boolean"
+        },
+        "authoredLineHeight": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "alignment",
+        "lineHeight",
+        "marginTop",
+        "marginBottom",
+        "textIndent",
+        "marginLeft"
+      ],
+      "description": "Block-level (paragraph) formatting."
+    },
+    "HeadingLevel": {
+      "type": "number",
+      "enum": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "description": "Heading levels (1–6), matching HTML h1–h6."
+    },
+    "TableData": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TableRow"
+          }
+        },
+        "columnWidths": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "rowHeights": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "not": {}
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "columnWidths"
+      ]
+    },
+    "TableRow": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TableCell"
+          }
+        }
+      },
+      "required": [
+        "cells"
+      ]
+    },
+    "TableCell": {
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Block"
+          }
+        },
+        "style": {
+          "$ref": "#/definitions/CellStyle"
+        },
+        "colSpan": {
+          "type": "number"
+        },
+        "rowSpan": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "blocks",
+        "style"
+      ]
+    },
+    "CellStyle": {
+      "type": "object",
+      "properties": {
+        "backgroundColor": {
+          "type": "string"
+        },
+        "borderTop": {
+          "$ref": "#/definitions/BorderStyle"
+        },
+        "borderBottom": {
+          "$ref": "#/definitions/BorderStyle"
+        },
+        "borderLeft": {
+          "$ref": "#/definitions/BorderStyle"
+        },
+        "borderRight": {
+          "$ref": "#/definitions/BorderStyle"
+        },
+        "verticalAlign": {
+          "type": "string",
+          "enum": [
+            "top",
+            "middle",
+            "bottom"
+          ]
+        },
+        "padding": {
+          "type": "number"
+        }
+      }
+    },
+    "BorderStyle": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number"
+        },
+        "color": {
+          "type": "string"
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "solid",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "width",
+        "color",
+        "style"
+      ]
+    },
+    "BlockMarker": {
+      "type": "object",
+      "properties": {
+        "fontFamily": {
+          "type": "string"
+        },
+        "fontSize": {
+          "type": "number",
+          "description": "Marker glyph size in points (not pixels)."
+        },
+        "color": {
+          "$ref": "#/definitions/StoredColor"
+        }
+      },
+      "description": "Optional bullet/number marker style for `list-item` blocks. Each field is independent: a partially-populated marker (e.g. color only) still inherits the other axes from the first inline at render time."
+    },
+    "AutofitMode": {
+      "type": "string",
+      "enum": [
+        "none",
+        "shrink",
+        "grow"
+      ],
+      "description": "Text-box autofit behavior, mirroring OOXML `<a:bodyPr>` children:\n- 'none'   ↔ <a:noAutofit/>   — box fixed, text overflows\n- 'shrink' ↔ <a:normAutofit/> — box fixed, font auto-scales down to fit\n- 'grow'   ↔ <a:spAutoFit/>   — font fixed, box height tracks content\n\nThe shrink scale is derived live at render/edit time and never stored. The grow height is written to `frame.h` on edit commit."
+    },
+    "VerticalAnchorMode": {
+      "type": "string",
+      "enum": [
+        "top",
+        "middle",
+        "bottom"
+      ],
+      "description": "Vertical position of laid-out content inside a text frame. Mirrors OOXML `<a:bodyPr anchor>` (`t` / `ctr` / `b`)."
+    },
+    "TextInset": {
+      "type": "object",
+      "properties": {
+        "left": {
+          "type": "number"
+        },
+        "top": {
+          "type": "number"
+        },
+        "right": {
+          "type": "number"
+        },
+        "bottom": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "left",
+        "top",
+        "right",
+        "bottom"
+      ],
+      "description": "Per-side text insets, in deck-canvas px (left/top/right/bottom)."
+    },
+    "Frame": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number"
+        },
+        "h": {
+          "type": "number"
+        },
+        "rotation": {
+          "type": "number",
+          "description": "Rotation around the element center, in radians."
+        },
+        "flipH": {
+          "type": "boolean",
+          "description": "Horizontal/vertical mirroring around the frame centre, applied after `rotation`. Optional so older serialized state (and elements that never need a flip) keeps its current JSON shape; absent ⇒ no flip. Matches OOXML `<a:xfrm flipH/flipV>` semantics — the path is mirrored at paint time only, the frame rect is unchanged so hit-test and selection box stay the same."
+        },
+        "flipV": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h",
+        "rotation"
+      ]
+    },
+    "PlaceholderRef": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/PlaceholderType"
+        },
+        "index": {
+          "type": "number",
+          "description": "0-based among same-type slots in the source layout."
+        }
+      },
+      "required": [
+        "type",
+        "index"
+      ]
+    },
+    "PlaceholderType": {
+      "type": "string",
+      "enum": [
+        "title",
+        "subtitle",
+        "body",
+        "caption",
+        "big-number"
+      ]
+    },
+    "ImageElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "image"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "src": {
+              "type": "string"
+            },
+            "crop": {
+              "$ref": "#/definitions/Crop"
+            },
+            "alt": {
+              "type": "string"
+            },
+            "opacity": {
+              "type": "number",
+              "description": "Pre-multiplied alpha applied at paint time. Range `[0, 1]`. Imported from OOXML `<a:blip><a:alphaModFix amt=\"...\"/>` (PPTX). `undefined` / `1` paint at full opacity (no save/restore cost)."
+            },
+            "recolor": {
+              "$ref": "#/definitions/ImageRecolor",
+              "description": "Preset recolor filter ↔ `<a:duotone>` / `<a:grayscl>`."
+            },
+            "brightness": {
+              "type": "number",
+              "description": "Brightness adjustment, range `[-1, 1]` (0 = unchanged). Applied as `ctx.filter = brightness(1 + value)`. Mirrors OOXML `<a:lum bright>`."
+            },
+            "contrast": {
+              "type": "number",
+              "description": "Contrast adjustment, range `[-1, 1]` (0 = unchanged). Applied as `ctx.filter = contrast(1 + value)`. Mirrors OOXML `<a:lum contrast>`."
+            },
+            "effects": {
+              "$ref": "#/definitions/Effects",
+              "description": "Paint-time effects (drop shadow / reflection). See  {@link  Effects } ."
+            }
+          },
+          "required": [
+            "src"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "data",
+        "frame",
+        "id",
+        "type"
+      ]
+    },
+    "Crop": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number"
+        },
+        "h": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
+      "description": "Crop rectangle in image-relative coordinates (0..1 on each axis)."
+    },
+    "ImageRecolor": {
+      "type": "string",
+      "enum": [
+        "none",
+        "grayscale",
+        "sepia"
+      ],
+      "description": "Preset recolor applied to an image via `ctx.filter`. Mirrors the common Google Slides Recolor presets. `'duotone'` (theme-tinted) is a follow-up — it needs offscreen color compositing, not a CSS filter. Absent / `'none'` ⇒ original colors."
+    },
+    "ShapeElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "shape"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/ShapeKind"
+            },
+            "adjustments": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "OOXML-aligned per-shape adjustments (mirrors `<a:avLst><a:gd>`). Path builders read this with sensible defaults when missing or shorter than expected. Phase 1 has no editing UI; defaults are used in practice. Stored from day one so P2/P3/P4 add edit UX without data migration. Units are per-shape (typically OOXML thousandths of the relevant dimension)."
+            },
+            "path": {
+              "$ref": "#/definitions/FreeformPath",
+              "description": "Vector geometry for `kind === 'freeform'` shapes (OOXML `<a:custGeom>`). Absent for every parametric kind, which derives its path from `kind` + `adjustments` via a `PathBuilder`. Stored normalized to `[0, 1]` so it scales with the frame. See  {@link  FreeformPath } ."
+            },
+            "fill": {
+              "$ref": "#/definitions/Fill",
+              "description": "Shape body fill — a solid `ThemeColor` or a linear  {@link  GradientFill  } . Absent ⇒ the shape is not painted (no default). Gradient fills come from PPTX `<a:gradFill>`; the color picker collapses them to a representative solid via  {@link  representativeColor  } ."
+            },
+            "stroke": {
+              "$ref": "#/definitions/Stroke"
+            },
+            "arrowheads": {
+              "$ref": "#/definitions/ArrowheadPair",
+              "description": "Line-end arrowheads for an open `kind === 'freeform'` path, mirroring OOXML `<a:ln><a:headEnd>/<a:tailEnd>`. `start` decorates the path's first anchor, `end` the last. Only meaningful on stroked open freeforms (PowerPoint exports arrowed curves as `<p:sp>` custGeom, not `<p:cxnSp>`); parametric kinds ignore it. Shares the connector  {@link  ArrowheadPair }  model and renderer."
+            },
+            "text": {
+              "$ref": "#/definitions/TextBody",
+              "description": "Inline text body painted on top of the shape's fill/stroke. Absent on freshly-inserted shapes; lazily initialised when the user enters text-edit (double-click, Enter, or type-to-edit) and dropped again on commit when the body ends up empty. Mirrors OOXML `<p:sp>/<p:txBody>` for PPTX round-trip."
+            },
+            "effects": {
+              "$ref": "#/definitions/Effects",
+              "description": "Paint-time effects (drop shadow / reflection). See  {@link  Effects } ."
+            },
+            "alt": {
+              "type": "string",
+              "description": "Screen-reader description ↔ `<p:cNvPr descr>`. Absent ⇒ none."
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "data",
+        "frame",
+        "id",
+        "type"
+      ]
+    },
+    "ShapeKind": {
+      "type": "string",
+      "enum": [
+        "rect",
+        "roundRect",
+        "ellipse",
+        "triangle",
+        "rtTriangle",
+        "diamond",
+        "parallelogram",
+        "trapezoid",
+        "pentagon",
+        "hexagon",
+        "heptagon",
+        "octagon",
+        "decagon",
+        "dodecagon",
+        "plus",
+        "donut",
+        "can",
+        "cloud",
+        "pie",
+        "chord",
+        "arc",
+        "blockArc",
+        "frame",
+        "halfFrame",
+        "corner",
+        "diagStripe",
+        "plaque",
+        "bevel",
+        "foldedCorner",
+        "cube",
+        "teardrop",
+        "smileyFace",
+        "heart",
+        "lightningBolt",
+        "sun",
+        "moon",
+        "noSmoking",
+        "snip1Rect",
+        "snip2SameRect",
+        "snip2DiagRect",
+        "snipRoundRect",
+        "round1Rect",
+        "round2SameRect",
+        "round2DiagRect",
+        "rightArrow",
+        "leftArrow",
+        "upArrow",
+        "downArrow",
+        "leftRightArrow",
+        "quadArrow",
+        "chevron",
+        "pentagonArrow",
+        "upDownArrow",
+        "leftRightUpArrow",
+        "notchedRightArrow",
+        "stripedRightArrow",
+        "bentArrow",
+        "bentUpArrow",
+        "uturnArrow",
+        "swooshArrow",
+        "circularArrow",
+        "curvedRightArrow",
+        "curvedLeftArrow",
+        "curvedUpArrow",
+        "curvedDownArrow",
+        "ribbon",
+        "ribbon2",
+        "horizontalScroll",
+        "verticalScroll",
+        "leftRightRibbon",
+        "wave",
+        "doubleWave",
+        "ellipseRibbon",
+        "ellipseRibbon2",
+        "wedgeRectCallout",
+        "wedgeRoundRectCallout",
+        "wedgeEllipseCallout",
+        "cloudCallout",
+        "borderCallout1",
+        "borderCallout2",
+        "borderCallout3",
+        "rightArrowCallout",
+        "leftArrowCallout",
+        "upArrowCallout",
+        "downArrowCallout",
+        "leftRightArrowCallout",
+        "upDownArrowCallout",
+        "quadArrowCallout",
+        "leftBracket",
+        "rightBracket",
+        "leftBrace",
+        "rightBrace",
+        "bracketPair",
+        "bracePair",
+        "mathPlus",
+        "mathMinus",
+        "mathMultiply",
+        "mathDivide",
+        "mathEqual",
+        "mathNotEqual",
+        "star4",
+        "star5",
+        "star6",
+        "star7",
+        "star8",
+        "star10",
+        "star12",
+        "star16",
+        "star24",
+        "star32",
+        "irregularSeal1",
+        "irregularSeal2",
+        "flowChartTerminator",
+        "flowChartPredefinedProcess",
+        "flowChartInternalStorage",
+        "flowChartDocument",
+        "flowChartMultidocument",
+        "flowChartManualInput",
+        "flowChartManualOperation",
+        "flowChartOffpageConnector",
+        "flowChartPunchedCard",
+        "flowChartPunchedTape",
+        "flowChartSummingJunction",
+        "flowChartOr",
+        "flowChartDelay",
+        "flowChartDisplay",
+        "flowChartPreparation",
+        "flowChartConnector",
+        "flowChartCollate",
+        "flowChartSort",
+        "flowChartExtract",
+        "flowChartMerge",
+        "flowChartOnlineStorage",
+        "flowChartMagneticDisk",
+        "flowChartMagneticDrum",
+        "flowChartMagneticTape",
+        "actionButtonBlank",
+        "actionButtonBackPrevious",
+        "actionButtonForwardNext",
+        "actionButtonBeginning",
+        "actionButtonEnd",
+        "actionButtonHome",
+        "actionButtonInformation",
+        "actionButtonReturn",
+        "actionButtonMovie",
+        "actionButtonSound",
+        "actionButtonDocument",
+        "actionButtonHelp",
+        "freeform"
+      ]
+    },
+    "FreeformPath": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FreeformCommand"
+          }
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "description": "Normalized vector geometry backing a `'freeform'` ShapeElement."
+    },
+    "FreeformCommand": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "c": {
+              "type": "string",
+              "const": "M"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "c",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "c": {
+              "type": "string",
+              "const": "L"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "c",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "c": {
+              "type": "string",
+              "const": "Q"
+            },
+            "x1": {
+              "type": "number"
+            },
+            "y1": {
+              "type": "number"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "c",
+            "x1",
+            "y1",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "c": {
+              "type": "string",
+              "const": "C"
+            },
+            "x1": {
+              "type": "number"
+            },
+            "y1": {
+              "type": "number"
+            },
+            "x2": {
+              "type": "number"
+            },
+            "y2": {
+              "type": "number"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "c",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "c": {
+              "type": "string",
+              "const": "A"
+            },
+            "cx": {
+              "type": "number"
+            },
+            "cy": {
+              "type": "number"
+            },
+            "rx": {
+              "type": "number"
+            },
+            "ry": {
+              "type": "number"
+            },
+            "start": {
+              "type": "number"
+            },
+            "sweep": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "c",
+            "cx",
+            "cy",
+            "rx",
+            "ry",
+            "start",
+            "sweep"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "c": {
+              "type": "string",
+              "const": "Z"
+            }
+          },
+          "required": [
+            "c"
+          ]
+        }
+      ],
+      "description": "One command of a  {@link  FreeformPath } , mirroring an OOXML `<a:custGeom>/<a:path>` segment. All coordinates are **normalized to `[0, 1]`** of the path's own viewBox (the `<a:path w h>` extents) so the renderer can scale a single stored path to any frame size, exactly the way parametric builders scale to `FrameSize`.\n\n- `M` moveTo · `L` lineTo · `Q` quadratic Bézier · `C` cubic Bézier\n- `A` elliptical arc (`<a:arcTo>` reduced to a centre-parametrised arc:   centre `cx,cy`, radii `rx,ry`, `start`/`sweep` in radians)\n- `Z` closePath"
+    },
+    "Fill": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThemeColor"
+        },
+        {
+          "$ref": "#/definitions/GradientFill"
+        }
+      ],
+      "description": "A shape fill: a solid theme color or a linear gradient."
+    },
+    "GradientFill": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "gradient"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "linear",
+            "radial"
+          ]
+        },
+        "angle": {
+          "type": "number"
+        },
+        "center": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ]
+        },
+        "stops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GradientStop"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "type",
+        "angle",
+        "stops"
+      ],
+      "description": "Gradient fill. `type` selects the geometry:  - `linear`: `angle` (radians, cw from +x, `0` = left→right) sets the axis.  - `radial`: `center` (0..1 of the box, default `{0.5,0.5}`) sets the origin;    `angle` is ignored. Maps to OOXML `<a:lin>` (linear) / `<a:path path=\"circle\">` (radial)."
+    },
+    "GradientStop": {
+      "type": "object",
+      "properties": {
+        "pos": {
+          "type": "number"
+        },
+        "color": {
+          "$ref": "#/definitions/ThemeColor"
+        }
+      },
+      "required": [
+        "pos",
+        "color"
+      ],
+      "description": "One stop of a gradient. `pos` is `0..1` along the gradient axis."
+    },
+    "ArrowheadPair": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "$ref": "#/definitions/ArrowheadStyle"
+        },
+        "end": {
+          "$ref": "#/definitions/ArrowheadStyle"
+        }
+      },
+      "description": "Line-end arrowhead pair — `start` decorates the first anchor, `end` the last. Shared by  {@link  ConnectorElement }  and freeform `ShapeElement`s so the renderer and PPTX round-trip treat both identically."
+    },
+    "ArrowheadStyle": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ArrowheadKind"
+        },
+        "size": {
+          "type": "string",
+          "enum": [
+            "sm",
+            "md",
+            "lg"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "size"
+      ]
+    },
+    "ArrowheadKind": {
+      "type": "string",
+      "enum": [
+        "triangle",
+        "triangle-open",
+        "diamond",
+        "diamond-open",
+        "circle",
+        "circle-open",
+        "square",
+        "square-open"
+      ]
+    },
+    "TextBody": {
+      "type": "object",
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Block"
+          },
+          "description": "Domain-level read view; the Yorkie store backs this with a Tree."
+        },
+        "autofit": {
+          "$ref": "#/definitions/AutofitMode",
+          "description": "Autofit behavior. **Absent ⇒ `'grow'`** (the pre-autofit auto-grow default established by the `slides-textbox-autogrow` feature) so existing decks keep growing. Set `'none'` explicitly to disable auto-grow; `'shrink'` to scale fonts to a fixed box. See `docs/design/slides/slides-text-autofit.md`."
+        },
+        "verticalAnchor": {
+          "$ref": "#/definitions/VerticalAnchorMode",
+          "description": "Vertical position of the laid-out content inside the text frame. Mirrors OOXML `<a:bodyPr anchor>`:\n- `'top'` ↔ `anchor=\"t\"` (and absent — preserves pre-feature behavior)\n- `'middle'` ↔ `anchor=\"ctr\"`\n- `'bottom'` ↔ `anchor=\"b\"`\n\nImported from PPTX; the renderer translates the paint origin by `(frame.h − layout.totalHeight) * factor` so content sits at the top / middle / bottom of the frame."
+        },
+        "inset": {
+          "$ref": "#/definitions/TextInset",
+          "description": "Per-side text insets in deck-canvas px, mirroring OOXML `<a:bodyPr lIns/tIns/rIns/bIns>`. When present the renderer uses these instead of its per-kind default padding — decks that set large symmetric insets (e.g. Google-Slides number-in-circle labels) rely on them to center a single glyph. **Absent ⇒ renderer default** (0 for text elements, `SHAPE_TEXT_PADDING` for shapes), preserving prior behavior."
+        }
+      },
+      "required": [
+        "blocks"
+      ],
+      "description": "Shared shape of a text body — the inline content plus the OOXML `<a:bodyPr>`-equivalent props that govern its layout. Used as `TextElement.data` (via intersection) and as `ShapeElement.data.text` for shapes that carry inline text. Mirrors OOXML `<a:txBody>`."
+    },
+    "ConnectorElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "connector"
+        },
+        "routing": {
+          "$ref": "#/definitions/ConnectorRouting"
+        },
+        "start": {
+          "$ref": "#/definitions/Endpoint"
+        },
+        "end": {
+          "$ref": "#/definitions/Endpoint"
+        },
+        "arrowheads": {
+          "$ref": "#/definitions/ArrowheadPair"
+        },
+        "stroke": {
+          "$ref": "#/definitions/ShapeStroke"
+        },
+        "elbowBend": {
+          "type": "number",
+          "description": "Present only when the user manually dragged the elbow handle."
+        },
+        "curveBend": {
+          "type": "number",
+          "description": "Curve-bend multiplier on `routeCurved`'s control-point distance. Default (when undefined) is 1, matching the auto-routed look. Persists in [0.1, 3] only when the user manually dragged the curved-connector yellow-diamond handle."
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "arrowheads",
+        "end",
+        "frame",
+        "id",
+        "routing",
+        "start",
+        "type"
+      ]
+    },
+    "ConnectorRouting": {
+      "type": "string",
+      "enum": [
+        "straight",
+        "elbow",
+        "curved"
+      ]
+    },
+    "Endpoint": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "free"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "attached"
+            },
+            "elementId": {
+              "type": "string"
+            },
+            "siteIndex": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "elementId",
+            "siteIndex"
+          ]
+        }
+      ]
+    },
+    "ShapeStroke": {
+      "$ref": "#/definitions/Stroke",
+      "deprecated": "Use {@link Stroke } instead. Kept for type-level compatibility with ConnectorElement."
+    },
+    "GroupElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "group"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Element"
+              }
+            },
+            "refSize": {
+              "type": "object",
+              "properties": {
+                "w": {
+                  "type": "number"
+                },
+                "h": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "w",
+                "h"
+              ],
+              "description": "Reference dimensions of the group's local coordinate space. Children's frames are stored in (0..refSize.w × 0..refSize.h). The renderer scales (refSize → frame.w/h) so resizing the group's frame visibly scales children proportionally — same semantics as OOXML <a:chExt> vs <a:ext>.\n\nOptional for backward compatibility with documents created before this field existed. Readers that find it undefined treat it as { w: frame.w, h: frame.h } (scale = 1, identical to prior behavior)."
+            },
+            "effects": {
+              "$ref": "#/definitions/Effects",
+              "description": "Paint-time effects applied to the group as a whole (drop shadow). See  {@link  Effects } ."
+            }
+          },
+          "required": [
+            "children"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "data",
+        "frame",
+        "id",
+        "type"
+      ]
+    },
+    "TableElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "table"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "columnWidths": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "Column widths in slide-logical pixels. Authoritative — the rendered table width is `sum(columnWidths)`. Mirrors OOXML `<a:tblGrid>/<a:gridCol w=\"...\">`.\n\n**Frame-sync invariant:** `frame.w` always equals `sum(columnWidths)` and `frame.h` equals `sum(row.height for row in rows)` (after row auto-grow). The contract is enforced write-side by `MemSlidesStore.updateElementFrame`, which scales `columnWidths` / `rows[].height` proportionally on every w/h change. Any other code path that mutates `frame.w` / `frame.h` directly (PPTX import builder, future bake operations) MUST preserve the same invariant."
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SlidesTableRow"
+              }
+            },
+            "tableStyleId": {
+              "type": "string",
+              "description": "Optional table-wide style identifier. PPTX-only field; preserved verbatim on import for future PPTX round-trip. v1 does not resolve banded-row / header style rules from this id — per-cell fills/borders are baked at import time."
+            },
+            "effects": {
+              "$ref": "#/definitions/Effects",
+              "description": "Paint-time effects (drop shadow). See  {@link  Effects } ."
+            },
+            "alt": {
+              "type": "string",
+              "description": "Screen-reader description ↔ `<p:cNvPr descr>`. Absent ⇒ none."
+            }
+          },
+          "required": [
+            "columnWidths",
+            "rows"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "data",
+        "frame",
+        "id",
+        "type"
+      ]
+    },
+    "SlidesTableRow": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "description": "Declared row height in slide-logical pixels. The rendered row height is `max(height, max contentHeight across non-covered cells)` — matching PPTX, where `<a:tr h>` is a *minimum* that content can grow past."
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SlidesTableCell"
+          }
+        }
+      },
+      "required": [
+        "height",
+        "cells"
+      ]
+    },
+    "SlidesTableCell": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "$ref": "#/definitions/TextBody",
+          "description": "Rich-text body. Reuses the same `TextBody` engine used by `TextElement.data` and `ShapeElement.data.text` so cell editing goes through the existing text-bridge / IME / autofit paths."
+        },
+        "style": {
+          "$ref": "#/definitions/SlidesCellStyle"
+        },
+        "gridSpan": {
+          "type": "number",
+          "description": "1 = unmerged. `> 1` = anchor cell of a horizontal merge spanning `gridSpan` columns. `0` = covered cell (rendered as no-op). Absent ⇒ `1`. Mirrors OOXML `<a:tc gridSpan>` / `<a:tc hMerge>`.\n\n**Importer contract:** PPTX has two encodings for covered cells — `<a:tc hMerge='1'>` (used inside `<a:tblGrid>` regions) and `<a:tc>` with `gridSpan` only on the anchor. Importers MUST translate `hMerge` into `gridSpan: 0` on the covered cell; renderers / store ops rely on the `=== 0` marker to skip painting and exclude the cell from edge / span resolution."
+        },
+        "rowSpan": {
+          "type": "number",
+          "description": "1 = unmerged. `> 1` = anchor cell of a vertical merge spanning `rowSpan` rows. `0` = covered cell. Absent ⇒ `1`. Mirrors OOXML `<a:tc rowSpan>` / `<a:tc vMerge>`. The same importer contract applies — `vMerge='1'` translates to `rowSpan: 0` on the covered cell."
+        }
+      },
+      "required": [
+        "body",
+        "style"
+      ]
+    },
+    "SlidesCellStyle": {
+      "type": "object",
+      "properties": {
+        "fill": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "border": {
+          "type": "object",
+          "properties": {
+            "top": {
+              "$ref": "#/definitions/CellBorder"
+            },
+            "right": {
+              "$ref": "#/definitions/CellBorder"
+            },
+            "bottom": {
+              "$ref": "#/definitions/CellBorder"
+            },
+            "left": {
+              "$ref": "#/definitions/CellBorder"
+            }
+          }
+        },
+        "padding": {
+          "type": "object",
+          "properties": {
+            "top": {
+              "type": "number"
+            },
+            "right": {
+              "type": "number"
+            },
+            "bottom": {
+              "type": "number"
+            },
+            "left": {
+              "type": "number"
+            }
+          },
+          "description": "Cell padding in pixels. Mirrors OOXML `<a:tcPr marL/R/T/B>`. Absent keys fall back to `DEFAULT_CELL_PADDING`."
+        },
+        "verticalAlign": {
+          "$ref": "#/definitions/VerticalAnchorMode",
+          "description": "Defaults to `'top'`."
+        }
+      }
+    },
+    "CellBorder": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "width": {
+          "type": "number",
+          "description": "Pixels."
+        },
+        "dash": {
+          "type": "string",
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted"
+          ]
+        }
+      },
+      "required": [
+        "color",
+        "width"
+      ],
+      "description": "Border descriptor for one side of a table cell. Mirrors OOXML `<a:lnL/R/T/B>` — each side is independent, unlike the uniform stroke on shapes / connectors. Absent ⇒ no rendered border on that side."
+    },
+    "ChartElement": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chart"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/ChartKind"
+            },
+            "grouping": {
+              "$ref": "#/definitions/ChartGrouping",
+              "description": "Cartesian grouping; ignored for pie. Absent ⇒ family default."
+            },
+            "title": {
+              "type": "string"
+            },
+            "categories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Shared category-axis labels (x for column/line/area, y for bar)."
+            },
+            "categoryIndices": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "Original OOXML `<c:pt idx>` coordinates, parallel to `categories` and every `series.values` array. Present only when imported points are sparse; absent means dense coordinates `0..categories.length - 1`."
+            },
+            "series": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ChartSeries"
+              }
+            },
+            "legend": {
+              "$ref": "#/definitions/ChartLegendPos",
+              "description": "Absent ⇒ painter default ('bottom' when >1 series, else 'none')."
+            },
+            "showGridlines": {
+              "type": "boolean"
+            },
+            "valueAxis": {
+              "$ref": "#/definitions/ChartValueAxis"
+            },
+            "alt": {
+              "type": "string",
+              "description": "Screen-reader description ↔ `<p:cNvPr descr>`."
+            },
+            "effects": {
+              "$ref": "#/definitions/Effects",
+              "description": "Paint-time effects (drop shadow / reflection)."
+            }
+          },
+          "required": [
+            "kind",
+            "categories",
+            "series"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "frame": {
+          "$ref": "#/definitions/Frame"
+        },
+        "placeholderRef": {
+          "$ref": "#/definitions/PlaceholderRef"
+        }
+      },
+      "required": [
+        "data",
+        "frame",
+        "id",
+        "type"
+      ],
+      "description": "Data-driven chart imported from a PPTX `<p:graphicFrame>/<c:chart>`. Self-contained (values live on the element) because a slide has no backing workbook — the numbers are PowerPoint's last cached render. Phase 1 is import + paint + PDF only; not editable in-app."
+    },
+    "ChartKind": {
+      "type": "string",
+      "enum": [
+        "column",
+        "bar",
+        "line",
+        "area",
+        "pie"
+      ]
+    },
+    "ChartGrouping": {
+      "type": "string",
+      "enum": [
+        "clustered",
+        "stacked",
+        "percentStacked",
+        "standard"
+      ]
+    },
+    "ChartSeries": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "color": {
+          "$ref": "#/definitions/ThemeColor"
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "description": "One data series in a chart. `values` is a frozen snapshot from the PPTX `<c:numCache>` (null = a blank point). `color` comes from the series `<c:spPr>` solid fill; absent ⇒ painter uses the theme accent cycle by series index."
+    },
+    "ChartLegendPos": {
+      "type": "string",
+      "enum": [
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "none"
+      ]
+    },
+    "ChartValueAxis": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "number",
+          "description": "Explicit OOXML value-axis scale bounds. Absent means automatic."
+        },
+        "max": {
+          "type": "number"
+        },
+        "crosses": {
+          "type": "string",
+          "enum": [
+            "autoZero",
+            "min",
+            "max"
+          ],
+          "description": "Where the category axis crosses the value axis."
+        },
+        "crossAt": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

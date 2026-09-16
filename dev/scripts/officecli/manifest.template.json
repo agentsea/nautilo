@@ -1,0 +1,36 @@
+{
+  "officecli": {
+    "version": "REPLACE_WITH_PINNED_SEMVER",
+    "source": "https://github.com/OfficeCLI/OfficeCLI",
+    "license": "Apache-2.0",
+    "binaryName": "officecli",
+    "artifacts": {
+      "darwin-arm64": {
+        "sha256": "REPLACE_WITH_SHA256",
+        "sizeMin": 1000000,
+        "url": "OPTIONAL_UPSTREAM_URL_FOR_OPERATOR_VENDOR_SCRIPT"
+      },
+      "darwin-x64": {
+        "sha256": "REPLACE_WITH_SHA256",
+        "sizeMin": 1000000,
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/vREPLACE_WITH_PINNED_SEMVER/officecli-mac-x64"
+      },
+      "linux-arm64": {
+        "sha256": "REPLACE_WITH_SHA256",
+        "sizeMin": 1000000,
+        "url": "OPTIONAL_UPSTREAM_URL_FOR_OPERATOR_VENDOR_SCRIPT"
+      },
+      "linux-x64": {
+        "sha256": "REPLACE_WITH_SHA256",
+        "sizeMin": 1000000,
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/vREPLACE_WITH_PINNED_SEMVER/officecli-linux-x64"
+      },
+      "win-x64": {
+        "sha256": "REPLACE_WITH_SHA256",
+        "sizeMin": 1000000,
+        "binaryName": "officecli.exe",
+        "url": "OPTIONAL_UPSTREAM_URL_FOR_OPERATOR_VENDOR_SCRIPT"
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "@nautilo/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime coordinator — jobs, lanes, policy, observer, event bus",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun run test:unit && bun run test:integration",
+    "test:unit": "bash scripts/run-unit.sh",
+    "test:integration": "bun test --timeout 60000 tests/integration/",
+    "test:integration:quick": "bun test --timeout 30000 tests/integration/job-*.test.ts tests/integration/event-*.test.ts",
+    "eval:conductor-continuation": "bun run tests/evals/conductor-continuation.eval.ts",
+    "eval:reflection-foreground:model": "bun run tests/evals/reflection-foreground-model.eval.ts",
+    "eval:reflection-hierarchy:model": "bun run tests/evals/reflection-hierarchy-model.eval.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "1.1.45",
+    "@nautilo/agent": "workspace:*",
+    "@nautilo/attachments": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/lattice-bridge": "workspace:*",
+    "@nautilo/lattice-crypto": "workspace:*",
+    "@nautilo/message-invariants": "workspace:*",
+    "@nautilo/relay": "workspace:*",
+    "@nautilo/reflection": "workspace:*",
+    "@nautilo/reflection-bridge": "workspace:*",
+    "@nautilo/trust": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "cron-parser": "^5.5.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "dotenv": "16.6.1",
+    "typescript": "5.9.3"
+  }
+}

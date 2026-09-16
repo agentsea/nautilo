@@ -1,0 +1,351 @@
+{
+  "version": "9.0.1",
+  "ffmpegVersion": "9.0.1",
+  "buildRevision": "a5a641ad187daad6dde58b68becabbc77be1a612",
+  "sources": [
+    {
+      "path": "source/ffmpeg-9.0.1.tar.xz",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+      "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+    },
+    {
+      "path": "source/build-source.tar.gz",
+      "url": "https://codeload.github.com/ispysoftware/agentdvr-ffmpeg-build/tar.gz/a5a641ad187daad6dde58b68becabbc77be1a612",
+      "sha256": "e824d20f58a25a43a5196124d84721ac48f2877d3dd1d5e6ae4cd274aa461e51"
+    },
+    {
+      "path": "source/zlib-1.3.2.tar.gz",
+      "url": "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz",
+      "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+    },
+    {
+      "path": "source/bzip2-1.0.8.tar.gz",
+      "url": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+      "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+    },
+    {
+      "path": "source/xz-5.8.3.tar.gz",
+      "url": "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz",
+      "sha256": "3d3a1b973af218114f4f889bbaa2f4c037deaae0c8e815eec381c3d546b974a0"
+    },
+    {
+      "path": "source/openssl-3.5.7.tar.gz",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
+      "sha256": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+    },
+    {
+      "path": "source/libogg-1.3.6.tar.gz",
+      "url": "https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.gz",
+      "sha256": "83e6704730683d004d20e21b8f7f55dcb3383cdf84c0daedf30bde175f774638"
+    },
+    {
+      "path": "source/libvorbis-1.3.7.tar.gz",
+      "url": "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz",
+      "sha256": "0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab"
+    },
+    {
+      "path": "source/opus-1.6.1.tar.gz",
+      "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+      "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
+    },
+    {
+      "path": "source/lame-3.100.tar.gz",
+      "url": "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
+      "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+    },
+    {
+      "path": "source/libvpx-1.16.0.tar.gz",
+      "url": "https://github.com/webmproject/libvpx/archive/v1.16.0.tar.gz",
+      "sha256": "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c"
+    },
+    {
+      "path": "source/dav1d-1.5.4.tar.gz",
+      "url": "https://github.com/videolan/dav1d/archive/refs/tags/1.5.4.tar.gz",
+      "sha256": "a1d5b63d2d38ec9bd03acf643caa51fa22edd1e89c5a109c4807717216bbec07"
+    }
+  ],
+  "notices": [
+    {
+      "path": "arm64/licenses/COPYING.GPLv2",
+      "member": "licenses/COPYING.GPLv2",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "path": "arm64/licenses/COPYING.GPLv3",
+      "member": "licenses/COPYING.GPLv3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "path": "arm64/licenses/COPYING.LGPLv2.1",
+      "member": "licenses/COPYING.LGPLv2.1",
+      "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+    },
+    {
+      "path": "arm64/licenses/COPYING.LGPLv3",
+      "member": "licenses/COPYING.LGPLv3",
+      "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+    },
+    {
+      "path": "arm64/licenses/LICENSE.md",
+      "member": "licenses/LICENSE.md",
+      "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
+    },
+    {
+      "path": "arm64/licenses/LICENSE.txt",
+      "member": "licenses/LICENSE.txt",
+      "sha256": "012e617c4000f3cb6b3f3df240e9a0fd36214643a9143503643d95ca3548e596"
+    },
+    {
+      "path": "x64/licenses/COPYING.GPLv2",
+      "member": "licenses/COPYING.GPLv2",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "path": "x64/licenses/COPYING.GPLv3",
+      "member": "licenses/COPYING.GPLv3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "path": "x64/licenses/COPYING.LGPLv2.1",
+      "member": "licenses/COPYING.LGPLv2.1",
+      "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+    },
+    {
+      "path": "x64/licenses/COPYING.LGPLv3",
+      "member": "licenses/COPYING.LGPLv3",
+      "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+    },
+    {
+      "path": "x64/licenses/LICENSE.md",
+      "member": "licenses/LICENSE.md",
+      "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
+    },
+    {
+      "path": "x64/licenses/LICENSE.txt",
+      "member": "licenses/LICENSE.txt",
+      "sha256": "bfa2588afb6f7fb04eeacaad7d1ee80fa9c35575bb3d89261435bcf4923cb35d"
+    }
+  ],
+  "binaries": [
+    {
+      "path": "arm64/bin/ffmpeg",
+      "member": "bin/ffmpeg",
+      "sha256": "9450191627103eee12422d72ac22f0be91c37df3fc230f95eea9c554230b42aa"
+    },
+    {
+      "path": "arm64/lib/libavcodec.63.1.101.dylib",
+      "member": "lib/libavcodec.63.1.101.dylib",
+      "sha256": "f8587fce66d7bc5e86f1d31424306b1b75ddb13f9ae327bea0b49af595b5d81f"
+    },
+    {
+      "path": "arm64/lib/libavcodec.63.dylib",
+      "member": "lib/libavcodec.63.dylib",
+      "sha256": "f8587fce66d7bc5e86f1d31424306b1b75ddb13f9ae327bea0b49af595b5d81f"
+    },
+    {
+      "path": "arm64/lib/libavcodec.dylib",
+      "member": "lib/libavcodec.dylib",
+      "sha256": "f8587fce66d7bc5e86f1d31424306b1b75ddb13f9ae327bea0b49af595b5d81f"
+    },
+    {
+      "path": "arm64/lib/libavdevice.63.1.101.dylib",
+      "member": "lib/libavdevice.63.1.101.dylib",
+      "sha256": "2c5dea0469e549ff7b2eb545e96c5256a82c193dc997dc342f505fb5d54385b7"
+    },
+    {
+      "path": "arm64/lib/libavdevice.63.dylib",
+      "member": "lib/libavdevice.63.dylib",
+      "sha256": "2c5dea0469e549ff7b2eb545e96c5256a82c193dc997dc342f505fb5d54385b7"
+    },
+    {
+      "path": "arm64/lib/libavdevice.dylib",
+      "member": "lib/libavdevice.dylib",
+      "sha256": "2c5dea0469e549ff7b2eb545e96c5256a82c193dc997dc342f505fb5d54385b7"
+    },
+    {
+      "path": "arm64/lib/libavfilter.12.1.101.dylib",
+      "member": "lib/libavfilter.12.1.101.dylib",
+      "sha256": "982bbec7e230d40d664efe812ad82989e95fb0dda59a4133a19e80f5cff20d71"
+    },
+    {
+      "path": "arm64/lib/libavfilter.12.dylib",
+      "member": "lib/libavfilter.12.dylib",
+      "sha256": "982bbec7e230d40d664efe812ad82989e95fb0dda59a4133a19e80f5cff20d71"
+    },
+    {
+      "path": "arm64/lib/libavfilter.dylib",
+      "member": "lib/libavfilter.dylib",
+      "sha256": "982bbec7e230d40d664efe812ad82989e95fb0dda59a4133a19e80f5cff20d71"
+    },
+    {
+      "path": "arm64/lib/libavformat.63.1.101.dylib",
+      "member": "lib/libavformat.63.1.101.dylib",
+      "sha256": "c124bb93c6c4378bf369b2c368903d2ed70336fe6fc8b1a5cbe8bc75a4a951fc"
+    },
+    {
+      "path": "arm64/lib/libavformat.63.dylib",
+      "member": "lib/libavformat.63.dylib",
+      "sha256": "c124bb93c6c4378bf369b2c368903d2ed70336fe6fc8b1a5cbe8bc75a4a951fc"
+    },
+    {
+      "path": "arm64/lib/libavformat.dylib",
+      "member": "lib/libavformat.dylib",
+      "sha256": "c124bb93c6c4378bf369b2c368903d2ed70336fe6fc8b1a5cbe8bc75a4a951fc"
+    },
+    {
+      "path": "arm64/lib/libavutil.61.1.101.dylib",
+      "member": "lib/libavutil.61.1.101.dylib",
+      "sha256": "947a3967d756a734ca00bd557d24370de83a406eb34db4487b54944f209cd296"
+    },
+    {
+      "path": "arm64/lib/libavutil.61.dylib",
+      "member": "lib/libavutil.61.dylib",
+      "sha256": "947a3967d756a734ca00bd557d24370de83a406eb34db4487b54944f209cd296"
+    },
+    {
+      "path": "arm64/lib/libavutil.dylib",
+      "member": "lib/libavutil.dylib",
+      "sha256": "947a3967d756a734ca00bd557d24370de83a406eb34db4487b54944f209cd296"
+    },
+    {
+      "path": "arm64/lib/libswresample.7.1.101.dylib",
+      "member": "lib/libswresample.7.1.101.dylib",
+      "sha256": "89ebb9ba8dce68fd65baeeae6fda945182e37882d5775da2d9a503e8ee582692"
+    },
+    {
+      "path": "arm64/lib/libswresample.7.dylib",
+      "member": "lib/libswresample.7.dylib",
+      "sha256": "89ebb9ba8dce68fd65baeeae6fda945182e37882d5775da2d9a503e8ee582692"
+    },
+    {
+      "path": "arm64/lib/libswresample.dylib",
+      "member": "lib/libswresample.dylib",
+      "sha256": "89ebb9ba8dce68fd65baeeae6fda945182e37882d5775da2d9a503e8ee582692"
+    },
+    {
+      "path": "arm64/lib/libswscale.10.1.101.dylib",
+      "member": "lib/libswscale.10.1.101.dylib",
+      "sha256": "37fb6134f964f9d7a969896f739004508650da3844d825a5926e3ab1d873bcd1"
+    },
+    {
+      "path": "arm64/lib/libswscale.10.dylib",
+      "member": "lib/libswscale.10.dylib",
+      "sha256": "37fb6134f964f9d7a969896f739004508650da3844d825a5926e3ab1d873bcd1"
+    },
+    {
+      "path": "arm64/lib/libswscale.dylib",
+      "member": "lib/libswscale.dylib",
+      "sha256": "37fb6134f964f9d7a969896f739004508650da3844d825a5926e3ab1d873bcd1"
+    },
+    {
+      "path": "x64/bin/ffmpeg",
+      "member": "bin/ffmpeg",
+      "sha256": "b88651ac846c726e94f5b198bd7693beb42fc936d016b1795796355cf1b2785e"
+    },
+    {
+      "path": "x64/lib/libavcodec.63.1.101.dylib",
+      "member": "lib/libavcodec.63.1.101.dylib",
+      "sha256": "6ae7706a5b8cc28e7ea893a7921fad362e3f5baf133d49158b621279f8e6fbbd"
+    },
+    {
+      "path": "x64/lib/libavcodec.63.dylib",
+      "member": "lib/libavcodec.63.dylib",
+      "sha256": "6ae7706a5b8cc28e7ea893a7921fad362e3f5baf133d49158b621279f8e6fbbd"
+    },
+    {
+      "path": "x64/lib/libavcodec.dylib",
+      "member": "lib/libavcodec.dylib",
+      "sha256": "6ae7706a5b8cc28e7ea893a7921fad362e3f5baf133d49158b621279f8e6fbbd"
+    },
+    {
+      "path": "x64/lib/libavdevice.63.1.101.dylib",
+      "member": "lib/libavdevice.63.1.101.dylib",
+      "sha256": "63e6114bd944823b64ff9a0feeb4e39d023bbd2a1486acb4645f7af6b4cc3a41"
+    },
+    {
+      "path": "x64/lib/libavdevice.63.dylib",
+      "member": "lib/libavdevice.63.dylib",
+      "sha256": "63e6114bd944823b64ff9a0feeb4e39d023bbd2a1486acb4645f7af6b4cc3a41"
+    },
+    {
+      "path": "x64/lib/libavdevice.dylib",
+      "member": "lib/libavdevice.dylib",
+      "sha256": "63e6114bd944823b64ff9a0feeb4e39d023bbd2a1486acb4645f7af6b4cc3a41"
+    },
+    {
+      "path": "x64/lib/libavfilter.12.1.101.dylib",
+      "member": "lib/libavfilter.12.1.101.dylib",
+      "sha256": "4a8f528faf5970d74aad8eb2bb153545d2161dd4054e0ec24258669d9ec7f8f7"
+    },
+    {
+      "path": "x64/lib/libavfilter.12.dylib",
+      "member": "lib/libavfilter.12.dylib",
+      "sha256": "4a8f528faf5970d74aad8eb2bb153545d2161dd4054e0ec24258669d9ec7f8f7"
+    },
+    {
+      "path": "x64/lib/libavfilter.dylib",
+      "member": "lib/libavfilter.dylib",
+      "sha256": "4a8f528faf5970d74aad8eb2bb153545d2161dd4054e0ec24258669d9ec7f8f7"
+    },
+    {
+      "path": "x64/lib/libavformat.63.1.101.dylib",
+      "member": "lib/libavformat.63.1.101.dylib",
+      "sha256": "668a5c6dcdbc8343b3f824c02d022460d411f985dcdffb8e7cfe37c0a7d22af0"
+    },
+    {
+      "path": "x64/lib/libavformat.63.dylib",
+      "member": "lib/libavformat.63.dylib",
+      "sha256": "668a5c6dcdbc8343b3f824c02d022460d411f985dcdffb8e7cfe37c0a7d22af0"
+    },
+    {
+      "path": "x64/lib/libavformat.dylib",
+      "member": "lib/libavformat.dylib",
+      "sha256": "668a5c6dcdbc8343b3f824c02d022460d411f985dcdffb8e7cfe37c0a7d22af0"
+    },
+    {
+      "path": "x64/lib/libavutil.61.1.101.dylib",
+      "member": "lib/libavutil.61.1.101.dylib",
+      "sha256": "e70bacb8c04b1f7e7a24eb0c1ac4f106834056ac8e398c23768a1ea15ed9a1ef"
+    },
+    {
+      "path": "x64/lib/libavutil.61.dylib",
+      "member": "lib/libavutil.61.dylib",
+      "sha256": "e70bacb8c04b1f7e7a24eb0c1ac4f106834056ac8e398c23768a1ea15ed9a1ef"
+    },
+    {
+      "path": "x64/lib/libavutil.dylib",
+      "member": "lib/libavutil.dylib",
+      "sha256": "e70bacb8c04b1f7e7a24eb0c1ac4f106834056ac8e398c23768a1ea15ed9a1ef"
+    },
+    {
+      "path": "x64/lib/libswresample.7.1.101.dylib",
+      "member": "lib/libswresample.7.1.101.dylib",
+      "sha256": "46e500c5c753d246af7e03188671db9f18dc457ec6c102573032c1679e3e27dd"
+    },
+    {
+      "path": "x64/lib/libswresample.7.dylib",
+      "member": "lib/libswresample.7.dylib",
+      "sha256": "46e500c5c753d246af7e03188671db9f18dc457ec6c102573032c1679e3e27dd"
+    },
+    {
+      "path": "x64/lib/libswresample.dylib",
+      "member": "lib/libswresample.dylib",
+      "sha256": "46e500c5c753d246af7e03188671db9f18dc457ec6c102573032c1679e3e27dd"
+    },
+    {
+      "path": "x64/lib/libswscale.10.1.101.dylib",
+      "member": "lib/libswscale.10.1.101.dylib",
+      "sha256": "76ad57f1475ac13fb2dcaf686dfc5392b0a904399ca19ab77a42cc157136ccd2"
+    },
+    {
+      "path": "x64/lib/libswscale.10.dylib",
+      "member": "lib/libswscale.10.dylib",
+      "sha256": "76ad57f1475ac13fb2dcaf686dfc5392b0a904399ca19ab77a42cc157136ccd2"
+    },
+    {
+      "path": "x64/lib/libswscale.dylib",
+      "member": "lib/libswscale.dylib",
+      "sha256": "76ad57f1475ac13fb2dcaf686dfc5392b0a904399ca19ab77a42cc157136ccd2"
+    }
+  ]
+}

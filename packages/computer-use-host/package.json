@@ -1,0 +1,30 @@
+{
+  "name": "@nautilo/computer-use-host",
+  "version": "0.1.23",
+  "private": true,
+  "type": "module",
+  "description": "Headless signed local Host for Nautilo Computer Use",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "bun test tests/unit/",
+    "build:executable:arm64": "bun build --compile --target=bun-darwin-arm64 ./src/main.ts --outfile ./dist/nautilo-computer-use-host-arm64",
+    "build:executable:x64": "bun build --compile --target=bun-darwin-x64 ./src/main.ts --outfile ./dist/nautilo-computer-use-host-x64",
+    "build:executable": "bun run build:executable:arm64 && bun run build:executable:x64 && lipo -create ./dist/nautilo-computer-use-host-arm64 ./dist/nautilo-computer-use-host-x64 -output ./dist/nautilo-computer-use-host"
+  },
+  "dependencies": {
+    "@nautilo/computer-use-contracts": "workspace:*",
+    "@nautilo/computer-use-host-protocol": "workspace:*",
+    "jimp": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "electron": "41.10.3",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "schema": "nautilo/reflection-hierarchy-results/v1",
+  "corpusSchema": "nautilo/reflection-hierarchy-corpus/v1",
+  "corpusVersion": "2026-08-21.1",
+  "policyVersion": "candidate-policy-v1",
+  "promptVersion": "hierarchy-organizer-v1",
+  "structuralHardGatesPassed": true,
+  "scenarios": [
+    {
+      "id": "postgres-neon-decision",
+      "description": "PostgreSQL and Neon arguments retain their final decision.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "valuable-independent-leaf",
+      "description": "A useful leaf remains searchable without a forced parent.",
+      "passed": true,
+      "diagnostics": {
+        "remainsLeaf": true
+      }
+    },
+    {
+      "id": "emergent-depth",
+      "description": "Recursive synthesis creates useful depth without predefined levels.",
+      "passed": true,
+      "diagnostics": {
+        "height": 2
+      }
+    },
+    {
+      "id": "cross-room-exact-intersection",
+      "description": "Cross-Room publication uses the exact audience intersection.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "preserved-disagreement",
+      "description": "Conflicting evidence is retained without false consensus.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "single-current-parent",
+      "description": "A Record cannot acquire a second current semantic parent.",
+      "passed": true,
+      "diagnostics": {
+        "parentCount": 1
+      }
+    },
+    {
+      "id": "immutable-correction",
+      "description": "Corrected evidence creates immutable successor history.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "partial-dependency-loss",
+      "description": "Remaining evidence supports a truthful replacement.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "total-dependency-loss",
+      "description": "All-support loss sunsets without replacement.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "scheduled-old-record",
+      "description": "Scheduled paging considers unchanged retained Records.",
+      "passed": true,
+      "diagnostics": {
+        "considered": 18
+      }
+    },
+    {
+      "id": "no-change-convergence",
+      "description": "Repeated unchanged work creates no new graph state.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "search-redundancy",
+      "description": "One utility order suppresses redundant ancestor/descendant hits.",
+      "passed": true,
+      "diagnostics": {
+        "suppressed": 3
+      }
+    },
+    {
+      "id": "deep-evidence-retrieval",
+      "description": "Budgeted continuation traces a deep result to leaves.",
+      "passed": true,
+      "diagnostics": {
+        "tracedNodes": 8
+      }
+    },
+    {
+      "id": "multi-attached-memory",
+      "description": "An authored Memory leaf unions valid attachment audiences.",
+      "passed": true,
+      "diagnostics": {}
+    },
+    {
+      "id": "invocation-namespace-authority",
+      "description": "Requester-private access cannot enter shared-Room semantics.",
+      "passed": true,
+      "diagnostics": {}
+    }
+  ],
+  "semanticDiagnostics": {
+    "unsupportedClaimCount": 0,
+    "usefulParentRecall": 1,
+    "redundantParentCount": 0,
+    "preservedDisagreement": true,
+    "maxStructuralHeight": 2,
+    "maxFanOut": 3,
+    "noChangeRate": 1,
+    "successorChurn": 0.13333333333333333,
+    "searchUsefulness": 1,
+    "evidenceTraceCompleteness": 1
+  }
+}

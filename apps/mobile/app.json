@@ -1,0 +1,149 @@
+{
+  "expo": {
+    "name": "Nautilo",
+    "slug": "nautilo-mobile",
+    "owner": "kentauros-ai",
+    "version": "0.2.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "nautilo",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "ai.nautilo.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryAddUsageDescription": "Nautilo saves the photos and videos you choose to your photo library.",
+        "NSLocalNetworkUsageDescription": "Nautilo connects to servers you add on your local network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "package": "ai.nautilo.app",
+      "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        {
+          "action": "SEND",
+          "category": ["DEFAULT"],
+          "data": [
+            { "mimeType": "text/*" },
+            { "mimeType": "image/*" },
+            { "mimeType": "audio/*" },
+            { "mimeType": "application/json" },
+            { "mimeType": "application/x-ndjson" },
+            { "mimeType": "application/xml" },
+            { "mimeType": "application/yaml" },
+            { "mimeType": "application/toml" },
+            { "mimeType": "video/mp4" },
+            { "mimeType": "video/webm" },
+            { "mimeType": "application/pdf" },
+            { "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+            { "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+            { "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+            { "mimeType": "application/octet-stream" }
+          ]
+        }
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#ffffff",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24,
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36
+          }
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "important-messages",
+          "enableBackgroundRemoteNotifications": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Nautilo uses the camera to scan a server's QR code so you can connect quickly."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Nautilo needs access to your photos to attach images to a message.",
+          "cameraPermission": "Nautilo uses the camera to take a photo to attach to a message."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Nautilo uses the microphone for voice input.",
+          "enableBackgroundPlayback": false
+        }
+      ],
+      "expo-sharing",
+      "expo-font",
+      "expo-image",
+      "expo-status-bar",
+      "expo-web-browser",
+      "./plugins/with-nautilo-local-dev-network",
+      "./plugins/with-nautilo-stack309-debug-invite-harness",
+      "./plugins/with-nautilo-share-extension",
+      "./plugins/with-nautilo-share-handoff",
+      "./plugins/with-nautilo-media-export",
+      "./plugins/with-nautilo-ios-local-network"
+    ],
+    "experiments": {
+      "baseUrl": "/mobile",
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d3f1dfdb-e084-4ebf-a478-91e0c6e07b81",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "NautiloShare",
+                  "bundleIdentifier": "ai.nautilo.app.share",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.ai.nautilo.app.share"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

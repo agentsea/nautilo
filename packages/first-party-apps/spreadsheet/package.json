@@ -1,0 +1,11 @@
+{
+  "name": "@nautilo/first-party-spreadsheet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./main.ts --target=browser --outdir=dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test src"
+  }
+}

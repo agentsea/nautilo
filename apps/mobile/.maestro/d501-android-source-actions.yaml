@@ -1,0 +1,43 @@
+appId: ai.nautilo.app
+---
+# D501 Task 4.2 deterministic Android source-editor acceptance harness.
+# Run with D501_MARKDOWN_ID set to the disposable fixture's ID. The value is
+# supplied at runtime and must not be committed. Authentication, native
+# selection/Gboard inspection, and Desktop conflict creation remain explicit
+# operator checkpoints.
+- launchApp
+- extendedWaitUntil:
+    # launchApp returns to the authenticated default tab. Do not accept the
+    # editor itself here: a retained editor route would hide a failed deep-link
+    # admission below.
+    visible: ".*Chats.*"
+    timeout: 30000
+- openLink: "nautilo://files/artifact/${D501_MARKDOWN_ID}"
+- extendedWaitUntil:
+    visible: "Edit file"
+    timeout: 30000
+- assertNotVisible: "Edit on Desktop"
+- assertNotVisible: "coming soon"
+- tapOn: "Edit file"
+- extendedWaitUntil:
+    visible: "File source editor"
+    timeout: 30000
+- tapOn: "File source editor"
+- setClipboard: "D501"
+- pasteText
+- tapOn: "Bold"
+- tapOn: "Italic"
+- tapOn: "Add link"
+- assertVisible: "Link address"
+- tapOn: "Cancel link editing"
+- waitForAnimationToEnd
+- tapOn: "Preview"
+- assertVisible: "Edit"
+- tapOn: "Edit"
+- assertVisible: "File source editor"
+- tapOn: "Save file"
+- assertVisible: "File source editor"
+# Manual checkpoints (record in evidence manifest):
+# - Android native selection handles and Gboard paste/IME composition.
+# - Save, stale-write conflict handoff, and explicit recovery choice.
+# - Android Writer HTML remains viewer-only: no Edit file capability appears.

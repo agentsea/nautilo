@@ -1,0 +1,127 @@
+diff --git a/dist/LexicalComposerInput.d.ts b/dist/LexicalComposerInput.d.ts
+index 684cae56c7bd837a30c85ce6585208321e6b178a..f01ddd7626e4c2959adff41b92aaa9afc470850d 100644
+--- a/dist/LexicalComposerInput.d.ts
++++ b/dist/LexicalComposerInput.d.ts
+@@ -8,7 +8,8 @@ type LexicalComposerInputProps = Omit<ComponentPropsWithoutRef<"div">, "autoFocu
+   /** Controls how Enter submits. @default "enter" */submitMode?: "enter" | "ctrlEnter" | "none" | undefined; /** Whether Escape cancels editing. @default true */
+   cancelOnEscape?: boolean | undefined; /** Placeholder text shown when the editor is empty. */
+   placeholder?: string | undefined; /** Focus the editor on mount. @default false */
+-  autoFocus?: boolean | undefined; /** Props forwarded to the DirectivePlugin. */
++  autoFocus?: boolean | undefined; /** Whether to focus the editor when a new run starts. @default true */
++  unstable_focusOnRunStart?: boolean | undefined; /** Props forwarded to the DirectivePlugin. */
+   directivePluginProps?: DirectivePluginProps | undefined; /** Custom component for rendering directive chips inline. */
+   directiveChip?: FC<DirectiveChipProps> | undefined; /** Custom formatter for serializing/parsing directives. */
+   formatter?: Unstable_DirectiveFormatter | undefined;
+@@ -18,7 +19,8 @@ declare const LexicalComposerInput: import("react").ForwardRefExoticComponent<Om
+   /** Controls how Enter submits. @default "enter" */submitMode?: "enter" | "ctrlEnter" | "none" | undefined; /** Whether Escape cancels editing. @default true */
+   cancelOnEscape?: boolean | undefined; /** Placeholder text shown when the editor is empty. */
+   placeholder?: string | undefined; /** Focus the editor on mount. @default false */
+-  autoFocus?: boolean | undefined; /** Props forwarded to the DirectivePlugin. */
++  autoFocus?: boolean | undefined; /** Whether to focus the editor when a new run starts. @default true */
++  unstable_focusOnRunStart?: boolean | undefined; /** Props forwarded to the DirectivePlugin. */
+   directivePluginProps?: DirectivePluginProps | undefined; /** Custom component for rendering directive chips inline. */
+   directiveChip?: FC<DirectiveChipProps> | undefined; /** Custom formatter for serializing/parsing directives. */
+   formatter?: Unstable_DirectiveFormatter | undefined;
+diff --git a/dist/LexicalComposerInput.js b/dist/LexicalComposerInput.js
+index f7063b782e7febaedf01ff005ca75a03a8313df8..1436ca8bd6cfbff4ec3288d4970ca22930d3f3fb 100644
+--- a/dist/LexicalComposerInput.js
++++ b/dist/LexicalComposerInput.js
+@@ -124,21 +124,22 @@ function CursorPlugin() {
+ 	}, [editor, pluginRegistry]);
+ 	return null;
+ }
+-function FocusPlugin({ autoFocus }) {
++function FocusPlugin({ autoFocus, focusOnRunStart }) {
+ 	const [editor] = useLexicalComposerContext();
+ 	const aui = useAui();
+ 	useEffect(() => {
+ 		if (autoFocus) editor.focus();
+ 	}, [editor, autoFocus]);
+ 	useEffect(() => {
++		if (!focusOnRunStart) return void 0;
+ 		return aui.on("thread.runStart", () => {
+ 			editor.focus();
+ 		});
+-	}, [editor, aui]);
++	}, [editor, aui, focusOnRunStart]);
+ 	return null;
+ }
+ /** Lexical-based composer input with inline directive chips and runtime sync. */
+-const LexicalComposerInput = forwardRef(({ submitMode = "enter", cancelOnEscape = true, placeholder, autoFocus = false, directivePluginProps, directiveChip, formatter: formatterProp, className, ...rest }, ref) => {
++const LexicalComposerInput = forwardRef(({ submitMode = "enter", cancelOnEscape = true, placeholder, autoFocus = false, unstable_focusOnRunStart = true, directivePluginProps, directiveChip, formatter: formatterProp, className, ...rest }, ref) => {
+ 	const isDisabled = useAuiState((s) => s.thread.isDisabled || s.composer.dictation?.inputDisabled);
+ 	const resolvedFormatter = formatterProp ?? unstable_defaultDirectiveFormatter;
+ 	return /* @__PURE__ */ jsx(LexicalComposer, {
+@@ -176,7 +177,10 @@ const LexicalComposerInput = forwardRef(({ submitMode = "enter", cancelOnEscape
+ 						cancelOnEscape
+ 					}),
+ 					/* @__PURE__ */ jsx(CursorPlugin, {}),
+-					/* @__PURE__ */ jsx(FocusPlugin, { autoFocus }),
++					/* @__PURE__ */ jsx(FocusPlugin, {
++						autoFocus,
++						focusOnRunStart: unstable_focusOnRunStart
++					}),
+ 					/* @__PURE__ */ jsx(EditablePlugin, { isDisabled: !!isDisabled })
+ 				]
+ 			})
+diff --git a/src/LexicalComposerInput.tsx b/src/LexicalComposerInput.tsx
+index b16647ac89aa80748fcb27212fbeff4e13e83b28..f9d526a4b581c32b7d9d0b6f68cba0b096f02d5c 100644
+--- a/src/LexicalComposerInput.tsx
++++ b/src/LexicalComposerInput.tsx
+@@ -52,6 +52,8 @@ export type LexicalComposerInputProps = Omit<
+   placeholder?: string | undefined;
+   /** Focus the editor on mount. @default false */
+   autoFocus?: boolean | undefined;
++  /** Whether to focus the editor when a new run starts. @default true */
++  unstable_focusOnRunStart?: boolean | undefined;
+   /** Props forwarded to the DirectivePlugin. */
+   directivePluginProps?: DirectivePluginProps | undefined;
+   /** Custom component for rendering directive chips inline. */
+@@ -237,7 +239,13 @@ function CursorPlugin() {
+   return null;
+ }
+ 
+-function FocusPlugin({ autoFocus }: { autoFocus: boolean }) {
++function FocusPlugin({
++  autoFocus,
++  focusOnRunStart,
++}: {
++  autoFocus: boolean;
++  focusOnRunStart: boolean;
++}) {
+   const [editor] = useLexicalComposerContext();
+   const aui = useAui();
+ 
+@@ -246,10 +254,11 @@ function FocusPlugin({ autoFocus }: { autoFocus: boolean }) {
+   }, [editor, autoFocus]);
+ 
+   useEffect(() => {
++    if (!focusOnRunStart) return undefined;
+     return aui.on("thread.runStart", () => {
+       editor.focus();
+     });
+-  }, [editor, aui]);
++  }, [editor, aui, focusOnRunStart]);
+ 
+   return null;
+ }
+@@ -265,6 +274,7 @@ export const LexicalComposerInput = forwardRef<
+       cancelOnEscape = true,
+       placeholder,
+       autoFocus = false,
++      unstable_focusOnRunStart = true,
+       directivePluginProps,
+       directiveChip,
+       formatter: formatterProp,
+@@ -322,7 +332,10 @@ export const LexicalComposerInput = forwardRef<
+               cancelOnEscape={cancelOnEscape}
+             />
+             <CursorPlugin />
+-            <FocusPlugin autoFocus={autoFocus} />
++            <FocusPlugin
++              autoFocus={autoFocus}
++              focusOnRunStart={unstable_focusOnRunStart}
++            />
+             <EditablePlugin isDisabled={!!isDisabled} />
+           </div>
+         </DirectiveChipProvider>

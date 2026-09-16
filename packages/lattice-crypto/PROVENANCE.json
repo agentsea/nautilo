@@ -1,0 +1,981 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "agentsea/lattice-lab",
+    "commit": "a1fc280cd646fe147427b9feb8a41f121386a138",
+    "rootTree": "aeec95b24de2672346652c6a4ed312fc898d84f6",
+    "objectFormat": "sha1"
+  },
+  "sourceCommit": "a1fc280cd646fe147427b9feb8a41f121386a138",
+  "sourceRootTree": "aeec95b24de2672346652c6a4ed312fc898d84f6",
+  "mechanicalImportCommit": "593e64df8b9bb2f62281d65b239a587b132cd93b",
+  "manifestTrustBoundary": {
+    "excludedSelf": "packages/lattice-crypto/PROVENANCE.json",
+    "rule": "This manifest cannot hash itself; its reviewed Git blob authenticates it"
+  },
+  "files": [
+    {
+      "sourcePath": "LICENSE",
+      "destinationPath": "packages/lattice-crypto/LICENSE.lattice-lab",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "335da1cbc29f8c64f23227c8272530a0692d14b9",
+      "sourceSize": 1065,
+      "sourceSha256": "5e2ffdbd5768f20180097905b99031ef3cad7408a5733c63211eca0e57f3209c",
+      "destinationSha256BeforeAdaptation": "5e2ffdbd5768f20180097905b99031ef3cad7408a5733c63211eca0e57f3209c",
+      "destinationSha256AfterAdaptation": "5e2ffdbd5768f20180097905b99031ef3cad7408a5733c63211eca0e57f3209c",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/openmls-wasm/.gitignore",
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/.gitignore",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "be58cbe318b04864b149036296026564c5834f0a",
+      "sourceSize": 175,
+      "sourceSha256": "121c10aa69d7f3cce39aadd100cc93644eb5bb3b2cf352a2c64d60f3a44fcd72",
+      "destinationSha256BeforeAdaptation": "121c10aa69d7f3cce39aadd100cc93644eb5bb3b2cf352a2c64d60f3a44fcd72",
+      "destinationSha256AfterAdaptation": "49316c216ac7176c109fe5e4fc84e29503382b0e34498067a6368a18cc37da54",
+      "adaptations": [
+        "artifact-provenance"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/openmls-wasm/Cargo.toml",
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/Cargo.toml",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "31c663987022a55c36c42b265bd8f0b6cf428bd9",
+      "sourceSize": 1565,
+      "sourceSha256": "4feb42b836041bacc5f7ddb067caead7e4eb5e824442da6e81f7d4af12b8ba3f",
+      "destinationSha256BeforeAdaptation": "4feb42b836041bacc5f7ddb067caead7e4eb5e824442da6e81f7d4af12b8ba3f",
+      "destinationSha256AfterAdaptation": "a8a8e87ed1eac18cad479c93d321bedd92927bee69ad32c2be7c240348863519",
+      "adaptations": [
+        "artifact-provenance"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/openmls-wasm/README.md",
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/README.md",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "2344d4a6f585f5c8209a87651b9a755da2961586",
+      "sourceSize": 3305,
+      "sourceSha256": "490d91966e10a8ca8aebd8f5125a8b476b101cbffd25e021b3d1060d5dd22165",
+      "destinationSha256BeforeAdaptation": "490d91966e10a8ca8aebd8f5125a8b476b101cbffd25e021b3d1060d5dd22165",
+      "destinationSha256AfterAdaptation": "d722ee76c9b82bde55ac3db41ad4586d761229e5cd944cb670865eaf38e42efa",
+      "adaptations": [
+        "artifact-provenance"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/openmls-wasm/src/lib.rs",
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/src/lib.rs",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "3571d858ace9f1f582253ac42dfb35b1e428aea6",
+      "sourceSize": 16836,
+      "sourceSha256": "c15ed970a9ee35e969b8c2775b924b3a05997d4926dd46f69b1184be685f19cf",
+      "destinationSha256BeforeAdaptation": "c15ed970a9ee35e969b8c2775b924b3a05997d4926dd46f69b1184be685f19cf",
+      "destinationSha256AfterAdaptation": "408b940f23f2c1eab9b4ed35709c1f0a2d01af45cfa72ec1fd230ac144f30d71",
+      "adaptations": [
+        "artifact-provenance"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/openmls-wasm/src/utils.rs",
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/src/utils.rs",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "5b8c357e1bc0abc8cdd86f79c7b34897f63e6088",
+      "sourceSize": 295,
+      "sourceSha256": "f81d982e4e038889726771f8b6293df86bac1e88a724f50f72729dc0fe0a0f34",
+      "destinationSha256BeforeAdaptation": "f81d982e4e038889726771f8b6293df86bac1e88a724f50f72729dc0fe0a0f34",
+      "destinationSha256AfterAdaptation": "f81d982e4e038889726771f8b6293df86bac1e88a724f50f72729dc0fe0a0f34",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/package.json",
+      "destinationPath": "packages/lattice-crypto/package.json",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "a7cca948c6bab3112b7075e53b61bb6644d3c15e",
+      "sourceSize": 668,
+      "sourceSha256": "ec7976bd4bbb9aa9ac35467c32719ca91cbb564d6fe3a288fc6317cc3020feac",
+      "destinationSha256BeforeAdaptation": "ec7976bd4bbb9aa9ac35467c32719ca91cbb564d6fe3a288fc6317cc3020feac",
+      "destinationSha256AfterAdaptation": "9a851723f09aff26bd7e7d7dfa88dee5abef2f3337e032e73cbd4f3838095c64",
+      "adaptations": [
+        "package-name",
+        "workspace-config"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/playground/repl.ts",
+      "destinationPath": "packages/lattice-crypto/playground/repl.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "43f72d20abe9cf00528595c40477213ac3b4354b",
+      "sourceSize": 809,
+      "sourceSha256": "c53eeb490c77daf139f5735f37b772fff61e327baa8695666a204d49f35cfa29",
+      "destinationSha256BeforeAdaptation": "c53eeb490c77daf139f5735f37b772fff61e327baa8695666a204d49f35cfa29",
+      "destinationSha256AfterAdaptation": "c53eeb490c77daf139f5735f37b772fff61e327baa8695666a204d49f35cfa29",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/playground/runner.ts",
+      "destinationPath": "packages/lattice-crypto/playground/runner.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "c74188a3d5f6794056a56a01ed001b6583041507",
+      "sourceSize": 1883,
+      "sourceSha256": "719da6a82ead9c9c0a73f0e4a33d51edfd83abd1811d61dc55b158ab247a3a2a",
+      "destinationSha256BeforeAdaptation": "719da6a82ead9c9c0a73f0e4a33d51edfd83abd1811d61dc55b158ab247a3a2a",
+      "destinationSha256AfterAdaptation": "719da6a82ead9c9c0a73f0e4a33d51edfd83abd1811d61dc55b158ab247a3a2a",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/playground/scenarios.ts",
+      "destinationPath": "packages/lattice-crypto/playground/scenarios.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "9e7c244896997c42a1ec6f11870bbdf3256e2046",
+      "sourceSize": 28391,
+      "sourceSha256": "dfa07d6c09a26ca4cd10329d0a148d786d0f853bf8a94f824e981701a854491a",
+      "destinationSha256BeforeAdaptation": "dfa07d6c09a26ca4cd10329d0a148d786d0f853bf8a94f824e981701a854491a",
+      "destinationSha256AfterAdaptation": "dfa07d6c09a26ca4cd10329d0a148d786d0f853bf8a94f824e981701a854491a",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/conformance/suite.ts",
+      "destinationPath": "packages/lattice-crypto/src/conformance/suite.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "4f7bfe3127b2adad1babb24e83dd4dc13f647fa0",
+      "sourceSize": 13239,
+      "sourceSha256": "86d31fd255ca86ff3a7572b8489ac67f68b86200b9e0edd2704df334c3b2d0a8",
+      "destinationSha256BeforeAdaptation": "86d31fd255ca86ff3a7572b8489ac67f68b86200b9e0edd2704df334c3b2d0a8",
+      "destinationSha256AfterAdaptation": "86d31fd255ca86ff3a7572b8489ac67f68b86200b9e0edd2704df334c3b2d0a8",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/crypto/index.ts",
+      "destinationPath": "packages/lattice-crypto/src/crypto/index.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "0cf80322253529dca9a6b359140fe40367652772",
+      "sourceSize": 8736,
+      "sourceSha256": "547f92d3cf9fb521ce986fc64e9f26398e1dfd4f11356e6f995cb9821c2ddac5",
+      "destinationSha256BeforeAdaptation": "547f92d3cf9fb521ce986fc64e9f26398e1dfd4f11356e6f995cb9821c2ddac5",
+      "destinationSha256AfterAdaptation": "547f92d3cf9fb521ce986fc64e9f26398e1dfd4f11356e6f995cb9821c2ddac5",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/engine/engine.ts",
+      "destinationPath": "packages/lattice-crypto/src/engine/engine.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "6e8f478bb2cbf92ed0dd1d670e0bb1b8537ede9e",
+      "sourceSize": 59508,
+      "sourceSha256": "5e038cd02da1348e5550c0a392b447f7a85b2f80b616c37ddc0020d5253f4ab0",
+      "destinationSha256BeforeAdaptation": "5e038cd02da1348e5550c0a392b447f7a85b2f80b616c37ddc0020d5253f4ab0",
+      "destinationSha256AfterAdaptation": "4619adab1f107d93fe9087c1a0d6edd2a15c3aa3641b209fe1bbfe50d1ce0a94",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/format/grant-v1.ts",
+      "destinationPath": "packages/lattice-crypto/src/format/grant-v1.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "131bad8c49a932a418539f71edfe77cc0e3d6d7e",
+      "sourceSize": 11693,
+      "sourceSha256": "99eb37961b77fa9785105afd798354fed45dc10c49262d7e825dea05c7aab24a",
+      "destinationSha256BeforeAdaptation": "99eb37961b77fa9785105afd798354fed45dc10c49262d7e825dea05c7aab24a",
+      "destinationSha256AfterAdaptation": "dab6b68ae1d522471244df00c3248b5adfc141051d6f8c8acab3e7b80feea5e9",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/format/object-v1.ts",
+      "destinationPath": "packages/lattice-crypto/src/format/object-v1.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "4b64fe8baa00de12e03f56f57b2de9911f3e8f17",
+      "sourceSize": 3007,
+      "sourceSha256": "43c0cb986a9321e359fcce29859ff4a0223c959a4d1a61d386ff5e579543769a",
+      "destinationSha256BeforeAdaptation": "43c0cb986a9321e359fcce29859ff4a0223c959a4d1a61d386ff5e579543769a",
+      "destinationSha256AfterAdaptation": "becb33ca3d2a768b9268f1af271d188802c79bac2ef4096f8457f817a367dcc1",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/group/dummy.ts",
+      "destinationPath": "packages/lattice-crypto/src/group/dummy.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "66858157791ab7ae5475748a46da5864b53caa5f",
+      "sourceSize": 7053,
+      "sourceSha256": "16f701d862689bb092171bae28b3fc5243beaba5d5b42f56519c20da311e9516",
+      "destinationSha256BeforeAdaptation": "16f701d862689bb092171bae28b3fc5243beaba5d5b42f56519c20da311e9516",
+      "destinationSha256AfterAdaptation": "16f701d862689bb092171bae28b3fc5243beaba5d5b42f56519c20da311e9516",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/group/mls.ts",
+      "destinationPath": "packages/lattice-crypto/src/group/mls.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "41e65b1c7f40a096789c21879fa4c0ea4deaade8",
+      "sourceSize": 15241,
+      "sourceSha256": "bd5559d8c36ea1eb6c8b2ce2d5d632f73d585c0f6be72d03520a2ef87c87801e",
+      "destinationSha256BeforeAdaptation": "bd5559d8c36ea1eb6c8b2ce2d5d632f73d585c0f6be72d03520a2ef87c87801e",
+      "destinationSha256AfterAdaptation": "bd5559d8c36ea1eb6c8b2ce2d5d632f73d585c0f6be72d03520a2ef87c87801e",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/group/openmls.ts",
+      "destinationPath": "packages/lattice-crypto/src/group/openmls.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "7534ec51cceea9beed795c6558ed5f2c7feae54e",
+      "sourceSize": 24087,
+      "sourceSha256": "96a5127ca170e5f77ab23712a709f48429a65549fe0cc33246417a9b3da8bc1f",
+      "destinationSha256BeforeAdaptation": "96a5127ca170e5f77ab23712a709f48429a65549fe0cc33246417a9b3da8bc1f",
+      "destinationSha256AfterAdaptation": "a2a12eb92ab1a0163ea15d18bd6d55106d326569ffbcb1f905f78ee6630dc6df",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/group/provider.ts",
+      "destinationPath": "packages/lattice-crypto/src/group/provider.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "18e1022989f482a723ec4967e7ff1cdb64bbafd7",
+      "sourceSize": 3824,
+      "sourceSha256": "496d8db60f62219e1556b50b1f8fc05494efcbc0b76b837a1ef49b474b9db2ef",
+      "destinationSha256BeforeAdaptation": "496d8db60f62219e1556b50b1f8fc05494efcbc0b76b837a1ef49b474b9db2ef",
+      "destinationSha256AfterAdaptation": "496d8db60f62219e1556b50b1f8fc05494efcbc0b76b837a1ef49b474b9db2ef",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/index.ts",
+      "destinationPath": "packages/lattice-crypto/src/index.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "8ad7e8d5c17c0f81af55a9232f4777514264bc37",
+      "sourceSize": 2586,
+      "sourceSha256": "cbdec9201d974e99b38b994e9519a3e569feeb5cce511ad8574365f258e28c10",
+      "destinationSha256BeforeAdaptation": "cbdec9201d974e99b38b994e9519a3e569feeb5cce511ad8574365f258e28c10",
+      "destinationSha256AfterAdaptation": "72abc585504d8b5ffb79004cd70c561fc0c26459b2ac19048183a053b095cde5",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/lattice/enumeration.ts",
+      "destinationPath": "packages/lattice-crypto/src/lattice/enumeration.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "7961d31e5d45521e470d4b0a02206d2c1ba6c9d5",
+      "sourceSize": 6923,
+      "sourceSha256": "2e153af71c53bf7bd7ae6602529e2a3b1d5b4541aab9e1e48d72786e3818bc40",
+      "destinationSha256BeforeAdaptation": "2e153af71c53bf7bd7ae6602529e2a3b1d5b4541aab9e1e48d72786e3818bc40",
+      "destinationSha256AfterAdaptation": "2e153af71c53bf7bd7ae6602529e2a3b1d5b4541aab9e1e48d72786e3818bc40",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/lattice/scheme.ts",
+      "destinationPath": "packages/lattice-crypto/src/lattice/scheme.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "9fc900ae1dc94635eae5edc151c0c41573d55f79",
+      "sourceSize": 2975,
+      "sourceSha256": "d3185e7d1155ac7529a64266ac76ab60cb5b9bd245cdffd9f54ba1ff2f82acfe",
+      "destinationSha256BeforeAdaptation": "d3185e7d1155ac7529a64266ac76ab60cb5b9bd245cdffd9f54ba1ff2f82acfe",
+      "destinationSha256AfterAdaptation": "d3185e7d1155ac7529a64266ac76ab60cb5b9bd245cdffd9f54ba1ff2f82acfe",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/limits.ts",
+      "destinationPath": "packages/lattice-crypto/src/limits.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "c4016f2b76d24eedbbea2aecd8c918e18c13b718",
+      "sourceSize": 835,
+      "sourceSha256": "464524837c42c0ebc2046ef662759d63bd16d17f7e6d5531e80a43468aff125b",
+      "destinationSha256BeforeAdaptation": "464524837c42c0ebc2046ef662759d63bd16d17f7e6d5531e80a43468aff125b",
+      "destinationSha256AfterAdaptation": "464524837c42c0ebc2046ef662759d63bd16d17f7e6d5531e80a43468aff125b",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/recovery/device-vault.ts",
+      "destinationPath": "packages/lattice-crypto/src/recovery/device-vault.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "573338f37a2c40bd6d04ea5526743194be28876a",
+      "sourceSize": 3537,
+      "sourceSha256": "f4182c49e5465b58d840855d5584fb50e85b99732262d57297dd829b1c895f7b",
+      "destinationSha256BeforeAdaptation": "f4182c49e5465b58d840855d5584fb50e85b99732262d57297dd829b1c895f7b",
+      "destinationSha256AfterAdaptation": "7b663552a702c9dac280c5c4e36b35135ada557430d11b308814edaaba3181d2",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/recovery/kit-v1.ts",
+      "destinationPath": "packages/lattice-crypto/src/recovery/kit-v1.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "12655931286d8a5c4cc42156ad9f1e991f5251d6",
+      "sourceSize": 2113,
+      "sourceSha256": "9f0d4a05d1183af315b9f683098eeb4c3a33b11d5e51f2c522a8abd26cced330",
+      "destinationSha256BeforeAdaptation": "9f0d4a05d1183af315b9f683098eeb4c3a33b11d5e51f2c522a8abd26cced330",
+      "destinationSha256AfterAdaptation": "5007fb8517ebe753013ea58199f9ece1fcf5331dd76f99bd6ec2dc5948777c5b",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/recovery/protocol.ts",
+      "destinationPath": "packages/lattice-crypto/src/recovery/protocol.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "811dac1b29a65cde6520e5b8c618dd69fbfca564",
+      "sourceSize": 10239,
+      "sourceSha256": "9d16ea243494798749c41073fd33ddcd3b6653df81f206382089dd0954158c01",
+      "destinationSha256BeforeAdaptation": "9d16ea243494798749c41073fd33ddcd3b6653df81f206382089dd0954158c01",
+      "destinationSha256AfterAdaptation": "3b2a107f563c405ed51e566a682f847a9f5e99b90068a929d670d9f5ddf986a8",
+      "adaptations": [
+        "branding-domain"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/storage/in-memory-relational-store.ts",
+      "destinationPath": "packages/lattice-crypto/src/storage/in-memory-relational-store.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "cb0bf956687c219271d8bfe340cbc3fccfc7eeaf",
+      "sourceSize": 7519,
+      "sourceSha256": "4beda4827d9763122b160f012c648cfbd8898ef2e6222683cdf7facf30b21ed9",
+      "destinationSha256BeforeAdaptation": "4beda4827d9763122b160f012c648cfbd8898ef2e6222683cdf7facf30b21ed9",
+      "destinationSha256AfterAdaptation": "4beda4827d9763122b160f012c648cfbd8898ef2e6222683cdf7facf30b21ed9",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/storage/store.ts",
+      "destinationPath": "packages/lattice-crypto/src/storage/store.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "203bd8ff9eb1017f0f574c49e0b4ffc53ff7da11",
+      "sourceSize": 3416,
+      "sourceSha256": "ec01eaff945ce7457a319d7f3540692bc4162a5c991f4337bdd6044876363927",
+      "destinationSha256BeforeAdaptation": "ec01eaff945ce7457a319d7f3540692bc4162a5c991f4337bdd6044876363927",
+      "destinationSha256AfterAdaptation": "ec01eaff945ce7457a319d7f3540692bc4162a5c991f4337bdd6044876363927",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/testing/index.ts",
+      "destinationPath": "packages/lattice-crypto/src/testing/index.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "1c7aeef492a39e6474f0841ba79a71d51330ed2f",
+      "sourceSize": 146,
+      "sourceSha256": "1d7c3e0297e71e2a071a4e7e5ab856c5fc44aadb8977c108fc69198ab8aaddfd",
+      "destinationSha256BeforeAdaptation": "1d7c3e0297e71e2a071a4e7e5ab856c5fc44aadb8977c108fc69198ab8aaddfd",
+      "destinationSha256AfterAdaptation": "1d7c3e0297e71e2a071a4e7e5ab856c5fc44aadb8977c108fc69198ab8aaddfd",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/testing/matrix.ts",
+      "destinationPath": "packages/lattice-crypto/src/testing/matrix.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "c6ea6035b3b9652bbccdd26eef2c520cf44be561",
+      "sourceSize": 1278,
+      "sourceSha256": "acb796cd8ab03858ab3e32b2393811f7760cbae3af51c54104e7266110592d0f",
+      "destinationSha256BeforeAdaptation": "acb796cd8ab03858ab3e32b2393811f7760cbae3af51c54104e7266110592d0f",
+      "destinationSha256AfterAdaptation": "acb796cd8ab03858ab3e32b2393811f7760cbae3af51c54104e7266110592d0f",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/testing/world.ts",
+      "destinationPath": "packages/lattice-crypto/src/testing/world.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "c1fd8a7253b735c5cf569ccd74e304cb0b95c336",
+      "sourceSize": 7133,
+      "sourceSha256": "53fd3f085e5ef44d0f35c79b12a0934eccc17d952fce18e498e80fa4195a9c34",
+      "destinationSha256BeforeAdaptation": "53fd3f085e5ef44d0f35c79b12a0934eccc17d952fce18e498e80fa4195a9c34",
+      "destinationSha256AfterAdaptation": "53fd3f085e5ef44d0f35c79b12a0934eccc17d952fce18e498e80fa4195a9c34",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/types/index.ts",
+      "destinationPath": "packages/lattice-crypto/src/types/index.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "33abe774bc5903c7bbc1f4612d8e062a0aacabd6",
+      "sourceSize": 3151,
+      "sourceSha256": "c518396e2451ed6c3dbf7b3b9e8d62f067a6cb13917cef72d36c4dd8f40c8e86",
+      "destinationSha256BeforeAdaptation": "c518396e2451ed6c3dbf7b3b9e8d62f067a6cb13917cef72d36c4dd8f40c8e86",
+      "destinationSha256AfterAdaptation": "c518396e2451ed6c3dbf7b3b9e8d62f067a6cb13917cef72d36c4dd8f40c8e86",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/util/bytes.ts",
+      "destinationPath": "packages/lattice-crypto/src/util/bytes.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "96117b4b530bcfcd21aaf4dda7c895ea0f555a3d",
+      "sourceSize": 1494,
+      "sourceSha256": "06748cb46315ae212aca0204f64ba32d7c9a111dea5add6dc53c84c317fb6593",
+      "destinationSha256BeforeAdaptation": "06748cb46315ae212aca0204f64ba32d7c9a111dea5add6dc53c84c317fb6593",
+      "destinationSha256AfterAdaptation": "06748cb46315ae212aca0204f64ba32d7c9a111dea5add6dc53c84c317fb6593",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/util/sets.ts",
+      "destinationPath": "packages/lattice-crypto/src/util/sets.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "7b276537165f22400f7a6467cba7008436ede263",
+      "sourceSize": 995,
+      "sourceSha256": "f78fb1615b6840d0ed6e102c09f06147fbef1bcc06e73e3de26b0c3203933fd3",
+      "destinationSha256BeforeAdaptation": "f78fb1615b6840d0ed6e102c09f06147fbef1bcc06e73e3de26b0c3203933fd3",
+      "destinationSha256AfterAdaptation": "f78fb1615b6840d0ed6e102c09f06147fbef1bcc06e73e3de26b0c3203933fd3",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/src/validation.ts",
+      "destinationPath": "packages/lattice-crypto/src/validation.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "fb088efa1b55911858e804897e24258845878b56",
+      "sourceSize": 10285,
+      "sourceSha256": "4618a47fba516acd818814bc028e75f00f6ae74a423d7ed257b1b1347c33dec3",
+      "destinationSha256BeforeAdaptation": "4618a47fba516acd818814bc028e75f00f6ae74a423d7ed257b1b1347c33dec3",
+      "destinationSha256AfterAdaptation": "4618a47fba516acd818814bc028e75f00f6ae74a423d7ed257b1b1347c33dec3",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/adversary.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/adversary.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "96082cef701b7f59611b4d972b70b52e8d3a9b01",
+      "sourceSize": 9657,
+      "sourceSha256": "dd1a6e22a78425f17014187acb5b48e305545109a102874909fa86a2d7f65bb3",
+      "destinationSha256BeforeAdaptation": "dd1a6e22a78425f17014187acb5b48e305545109a102874909fa86a2d7f65bb3",
+      "destinationSha256AfterAdaptation": "88fc4605e65fc5e19902084a897e30c1a967d8826f5d232edd5e80f9b6648a75",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/async-storage.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/async-storage.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "7ff1ac4a796abd005b941c3edc2160d43cd757b8",
+      "sourceSize": 11147,
+      "sourceSha256": "e5c6b7e87e1a13885a7238f3241b1c4be427eebd477e86a587b8725c2e2096c8",
+      "destinationSha256BeforeAdaptation": "e5c6b7e87e1a13885a7238f3241b1c4be427eebd477e86a587b8725c2e2096c8",
+      "destinationSha256AfterAdaptation": "91f994136f25b9ac1d244c54ab11270a72d5396442eef88eb4242779dc1aac76",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/batch.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/batch.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "1d8ec3c5c36702cb0b6ad7c05e9f211c0f1eae43",
+      "sourceSize": 7011,
+      "sourceSha256": "0a7e3b85605ceb892950e0c74c73662ee2e605a99c0879c274ed2fcbe8ace339",
+      "destinationSha256BeforeAdaptation": "0a7e3b85605ceb892950e0c74c73662ee2e605a99c0879c274ed2fcbe8ace339",
+      "destinationSha256AfterAdaptation": "8f0442d951d8de3dd06830bc93f9877da2429e698635791a738f360fae774288",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/conformance.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/conformance.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "55f8fa7b5383d9250e1df8c24d4526b83df76a82",
+      "sourceSize": 332,
+      "sourceSha256": "a146018cd1946498fc4a33517fe4eb6a4622e2f8e013db142630d926b93102e9",
+      "destinationSha256BeforeAdaptation": "a146018cd1946498fc4a33517fe4eb6a4622e2f8e013db142630d926b93102e9",
+      "destinationSha256AfterAdaptation": "935061296c94117b0a725ce784fd5e53f22db5cebfe829743979a56cc3d16aba",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/device-membership.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/device-membership.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "39b3003d70563372206003c7ee96ca75335b2431",
+      "sourceSize": 4336,
+      "sourceSha256": "a3e158e6e4ff3dc114e78eabd3ea4357705aba9700a984ae390d053ab8bc1e77",
+      "destinationSha256BeforeAdaptation": "a3e158e6e4ff3dc114e78eabd3ea4357705aba9700a984ae390d053ab8bc1e77",
+      "destinationSha256AfterAdaptation": "ed2dbe78da6f8c6c9aeccabdf0a96766ee80345034178a19c41d17c4aca1fff1",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/engine.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/unit/engine.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "e0f40f69a689628751012f8101273b57a72871f3",
+      "sourceSize": 1919,
+      "sourceSha256": "e1fb59c2929b1a6f7034f4bcda000048edfe763da605572e166d374874c0de27",
+      "destinationSha256BeforeAdaptation": "e1fb59c2929b1a6f7034f4bcda000048edfe763da605572e166d374874c0de27",
+      "destinationSha256AfterAdaptation": "90a4f9b19104828d79d6fa81738dcc6955641634cbcca3b88bb682ab78d57e90",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/grant-cache.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/unit/grant-cache.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "572f1c5a2eb27a9e44be08d8039cabf233d6d0a3",
+      "sourceSize": 15676,
+      "sourceSha256": "3a67822c054b5017a32f1f32dda6b40df57f1b9898c2d254e1ac0ca5f16a42a6",
+      "destinationSha256BeforeAdaptation": "3a67822c054b5017a32f1f32dda6b40df57f1b9898c2d254e1ac0ca5f16a42a6",
+      "destinationSha256AfterAdaptation": "ebd9dc3960e980b75e51833aca780671f6e1dd993fc1cdbc0ec80d51ed80426a",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/grant-format.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/grant-format.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "cd39ae499d5b27f16b1b4a134b3cbfa0ccc54777",
+      "sourceSize": 3774,
+      "sourceSha256": "c0f7b3de281cee0c14886499376adb1b3e5636c449afd890466ab6c83d1420f2",
+      "destinationSha256BeforeAdaptation": "c0f7b3de281cee0c14886499376adb1b3e5636c449afd890466ab6c83d1420f2",
+      "destinationSha256AfterAdaptation": "8e4d730c4c9357a436c05c456ad82533e768faca11da68ae7b5ccbbaeb26c4d5",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/grant-mint-capability.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/grant-mint-capability.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "81fe3de36bd096e83b73cb24a40ce8cefac5bcf8",
+      "sourceSize": 4973,
+      "sourceSha256": "4405d2401c3cd03c3b56aa6a997b4f056920a3149aeb8e5112c7e7c8b7ecb02a",
+      "destinationSha256BeforeAdaptation": "4405d2401c3cd03c3b56aa6a997b4f056920a3149aeb8e5112c7e7c8b7ecb02a",
+      "destinationSha256AfterAdaptation": "4ab88e5c86c7811e6d0af0b63af77d88e6e3e6db603a9f9fb8f141cce7db81ab",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/history-recovery.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/history-recovery.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "224496f5ca869e7d8e361ecef0a3a90af3009563",
+      "sourceSize": 15781,
+      "sourceSha256": "b2189ebee6389f0f93c3cc921aa1316ba0259d9c6cb533f62c904ee5ecb44488",
+      "destinationSha256BeforeAdaptation": "b2189ebee6389f0f93c3cc921aa1316ba0259d9c6cb533f62c904ee5ecb44488",
+      "destinationSha256AfterAdaptation": "28a04f5bb172a84355c58b3fef48763a4bcf8813240404dd4b58d490358641f6",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/mls-roster-churn.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/mls-roster-churn.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "e3fa7a7b5f8ca312e6b4028c30f54aadb3713f88",
+      "sourceSize": 3628,
+      "sourceSha256": "ce8fe85893aa5755dea50cb534b199113ac8a9acb9511d3f96509c85bd67349e",
+      "destinationSha256BeforeAdaptation": "ce8fe85893aa5755dea50cb534b199113ac8a9acb9511d3f96509c85bd67349e",
+      "destinationSha256AfterAdaptation": "0d5962cf9fefec9a1616f68e44d5fe0d2ea0c3c5ee4ddb12a79e8e0bf6b4250d",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/object-format.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/object-format.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "f4b9d48f29cc78b79a0f8567c575f63727309f21",
+      "sourceSize": 10767,
+      "sourceSha256": "453bba70406efe167d07c1b37141f20445c7479e50bd5dafa676e3e2d08835f8",
+      "destinationSha256BeforeAdaptation": "453bba70406efe167d07c1b37141f20445c7479e50bd5dafa676e3e2d08835f8",
+      "destinationSha256AfterAdaptation": "ba42d9878cd64f40dd3577783fd7f87cb91fbc4888bb122303c17fc05de5d048",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/openmls-state.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/openmls-state.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "c9e6ce0e736df9ef58c2b021aa3a62aebd35ba25",
+      "sourceSize": 6845,
+      "sourceSha256": "3cf5402c758645710261bc33d232fc98365eaaf5f19d35547c75a2f3df69b766",
+      "destinationSha256BeforeAdaptation": "3cf5402c758645710261bc33d232fc98365eaaf5f19d35547c75a2f3df69b766",
+      "destinationSha256AfterAdaptation": "f0be89e6139ddf04e7909adac6d07023f86962084c26d20ccb1af99fa4b52543",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/read-write-battery.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/read-write-battery.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "a5b63d1ce384830c91955da8be7c5848afaf4e30",
+      "sourceSize": 10210,
+      "sourceSha256": "05df658c0bbac67270b4eec7ce357f26728c7ffe243f98581a6dc89fa99b403e",
+      "destinationSha256BeforeAdaptation": "05df658c0bbac67270b4eec7ce357f26728c7ffe243f98581a6dc89fa99b403e",
+      "destinationSha256AfterAdaptation": "fe9f6dbefe8a30cbe5d807db069063b1566f1aa1029d606287eac0775f99bbda",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/single-use-claim.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/integration/single-use-claim.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "d6d3aae641cb585b8e4a9e30fbf8125af1c1a800",
+      "sourceSize": 8571,
+      "sourceSha256": "b0022599aae656c366007f52d745c7e66a92c76dc3120dfc4a9544d272ec3fcc",
+      "destinationSha256BeforeAdaptation": "b0022599aae656c366007f52d745c7e66a92c76dc3120dfc4a9544d272ec3fcc",
+      "destinationSha256AfterAdaptation": "254cd9b99758cf7b730dd98c770dc10bc36070f896e0704009cfaeaa428b6949",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tests/validation.test.ts",
+      "destinationPath": "packages/lattice-crypto/tests/unit/validation.test.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "dc4044564b78d6f5edc3a3e8cc4481d0afdd6827",
+      "sourceSize": 8290,
+      "sourceSha256": "8a2bd69b5349eed0417529668c7a5a4e20c9874fb8f56f70a80810d1e9c0272b",
+      "destinationSha256BeforeAdaptation": "8a2bd69b5349eed0417529668c7a5a4e20c9874fb8f56f70a80810d1e9c0272b",
+      "destinationSha256AfterAdaptation": "44bb5a12f3492bc1a2e732dad1c02bc5b875133855f71e3355e8fada9c3e4420",
+      "adaptations": [
+        "branding-domain",
+        "test-boundary"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/tsconfig.json",
+      "destinationPath": "packages/lattice-crypto/tsconfig.json",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "3716879a262c293905f203255150716e09a067e0",
+      "sourceSize": 104,
+      "sourceSha256": "2dbcddcbfb887cb9213869964c97d13ca60315285fc0d59b2fddf638892a0e5d",
+      "destinationSha256BeforeAdaptation": "2dbcddcbfb887cb9213869964c97d13ca60315285fc0d59b2fddf638892a0e5d",
+      "destinationSha256AfterAdaptation": "b20286a4a6a9f1f61dc1f4177b5c81b4806ae4f781507f759297a3825bbf661a",
+      "adaptations": [
+        "workspace-config"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm",
+      "destinationPath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "bfaf25a489653dea980b2c28d3bfdccf06053a94",
+      "sourceSize": 1171271,
+      "sourceSha256": "73bc2d92d28d26fe4691dfabf1357814350de87f6dd6ba731149c5152a373611",
+      "destinationSha256BeforeAdaptation": "73bc2d92d28d26fe4691dfabf1357814350de87f6dd6ba731149c5152a373611",
+      "destinationSha256AfterAdaptation": "444a02f5b48dc86fa89355e987d0ebb2ac95622ff2262984fe18157082cdd72e",
+      "adaptations": [
+        "artifact-provenance"
+      ]
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm.d.ts",
+      "destinationPath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm.d.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "a5ee2abc1a9d23f160b3da26c4553cc0dbeba801",
+      "sourceSize": 3130,
+      "sourceSha256": "d5855bfc50b52cf2fae5c03050b6bcc5ce871558f582d91d5c6b5220541d67f5",
+      "destinationSha256BeforeAdaptation": "d5855bfc50b52cf2fae5c03050b6bcc5ce871558f582d91d5c6b5220541d67f5",
+      "destinationSha256AfterAdaptation": "d5855bfc50b52cf2fae5c03050b6bcc5ce871558f582d91d5c6b5220541d67f5",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm.d.ts",
+      "destinationPath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm.d.ts",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "d237e9d5fe82742eeb6199652f41eaed9d35d6f8",
+      "sourceSize": 8448,
+      "sourceSha256": "079775765b2b33daf777ea1fa08447ba42fe520e48e153a0fd4e930c11f408af",
+      "destinationSha256BeforeAdaptation": "079775765b2b33daf777ea1fa08447ba42fe520e48e153a0fd4e930c11f408af",
+      "destinationSha256AfterAdaptation": "079775765b2b33daf777ea1fa08447ba42fe520e48e153a0fd4e930c11f408af",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm.js",
+      "destinationPath": "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm.js",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "006603920b89ff4d7a05a16f4d1c842d59e02eda",
+      "sourceSize": 29026,
+      "sourceSha256": "51f07143a6edb87a8c0333534f50a5d65cef18839c04edb487c38c61d60c1ca4",
+      "destinationSha256BeforeAdaptation": "51f07143a6edb87a8c0333534f50a5d65cef18839c04edb487c38c61d60c1ca4",
+      "destinationSha256AfterAdaptation": "51f07143a6edb87a8c0333534f50a5d65cef18839c04edb487c38c61d60c1ca4",
+      "adaptations": []
+    },
+    {
+      "sourcePath": "scripts/build-openmls-wasm.sh",
+      "destinationPath": "packages/lattice-crypto/scripts/build-openmls-wasm.sh",
+      "sourceMode": "100755",
+      "sourceType": "blob",
+      "sourceBlobSha": "3884a74c1e655220747cba69fe85a2cddd55286d",
+      "sourceSize": 2292,
+      "sourceSha256": "9605a8e067b164ac2b98ef7027d47fa2a5ab11ee72e0e9ebbd97e9d6cbe89706",
+      "destinationSha256BeforeAdaptation": "9605a8e067b164ac2b98ef7027d47fa2a5ab11ee72e0e9ebbd97e9d6cbe89706",
+      "destinationSha256AfterAdaptation": "19efda5fc1c344e5c65e2ea353df973f27b63be7b8cdc73d80063018ffb7d4a2",
+      "adaptations": [
+        "script-path",
+        "artifact-provenance"
+      ]
+    }
+  ],
+  "sourceRootEvidence": [
+    {
+      "sourcePath": "bun.lock",
+      "destinationPath": "packages/lattice-crypto/provenance/lattice-lab-bun.lock",
+      "sourceMode": "100644",
+      "sourceType": "blob",
+      "sourceBlobSha": "9eacbe994927bc8155afc29f5b7d03ef42928a87",
+      "sourceSize": 40193,
+      "sourceSha256": "21404f3399ce3f5cf8132f0e495c6ed86df6620bd94922f4a22e2660c4d38cfe",
+      "purpose": "Preserves the audited Bun resolution, including @hpke/core 1.9.0 direct and 1.8.0 through ts-mls"
+    }
+  ],
+  "generatedFiles": [
+    {
+      "destinationPath": "packages/lattice-crypto/NOTICE",
+      "destinationSha256": "12d3ac269dca8736f9b71557c0284db6ad4515f85b5e8d8f1a0f4495d8324ad0",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/ADVISORIES.md",
+      "destinationSha256": "bea9afcd1fc27a786768a845b286647910bfcdfbf75b25f1ce661e24c56f73b5",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/Cargo.lock",
+      "destinationSha256": "9d02b24f94ad56fd385124672fc98b5a14781614de825ec72e5310d7aae2a806",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/openmls-wasm/LICENSE",
+      "destinationSha256": "da3bff247a4f6aadce684efe27ad35cf3d2fd3115eaf2ba9b158cc8e8305fe64",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/PROVENANCE.md",
+      "destinationSha256": "70bbdde00bca26a54a9099b0a42041978abf750838ae4408c4d8e57a9932e3ae",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/rust-toolchain.toml",
+      "destinationSha256": "3c7d2e40768bf96aeb31cdad1832fd3d629a64ecfd6f29cd2a21e040099167bc",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/audit-openmls-wasm.sh",
+      "destinationSha256": "8cc5b6d8df87c5123095d3ba94af81d58cee74713496340e1d6ce0117edf44ca",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/generate-import-provenance.ts",
+      "destinationSha256": "2942d266d306bacdbcf4343827242b06c80c4dda84cda998a6e0bcba7f31a012",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/openmls-wasm-common.sh",
+      "destinationSha256": "5573dab07ee4fe541b7493ebd022c8469d340367cf705f3b6dff5becfc964933",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/test-openmls-wasm-verifier.sh",
+      "destinationSha256": "72b366c825071488b1d0e97e2b23c7a18f062ce0d4672f98330781d0778d1e07",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/update-openmls-wasm.sh",
+      "destinationSha256": "f48dc2c4de50d4f9ca0f0ec40c0e833b5f933d8f2ea62c31e0d974a166e8d564",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/verify-import-provenance.ts",
+      "destinationSha256": "b9c7d0e6dc36bae82cba5f6105db8f3f90b5057f8efa38447845449bf6b8ef4d",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/verify-openmls-wasm-surface.ts",
+      "destinationSha256": "ab71a88764a7128986635c6fca13357a6ccd536275375ac0e4563349058b27bb",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/scripts/verify-openmls-wasm.sh",
+      "destinationSha256": "6e9041754603d37f0f378243f07aa2cb9507a36b9f753fd199599e17d1181d56",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/tests/unit/config.ts",
+      "destinationSha256": "ff04da1119ec111173a5abb37e8c7f61717c8f425357dcb0e9ef519804e70a24",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/THIRD_PARTY_NOTICES.cargo.md",
+      "destinationSha256": "258cdcb2e94d31cd9237a2ba2d69d6ac128927424797ad6bf0b974af3c83e494",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/THIRD_PARTY_NOTICES.md",
+      "destinationSha256": "6bca97f2453bec316504b2416f6262fa4f80b8800921a613c040671f76f1abad",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    },
+    {
+      "destinationPath": "packages/lattice-crypto/vendor/openmls-wasm/SHA256SUMS",
+      "destinationSha256": "6abb59c0bba1937e6aa5c7be1c4e9ef78da3b947639fd8fca28df35bbcea749d",
+      "reason": "M221 package provenance, verification, notice, or test evidence"
+    }
+  ],
+  "workspaceAdaptations": [
+    {
+      "destinationPath": ".github/workflows/lattice-crypto.yml",
+      "destinationSha256AfterAdaptation": "c44443817420c327cc3e6bee20a94f9b52ace18e7a69ff3f6976fd7555b1e303",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "bun.lock",
+      "destinationSha256AfterAdaptation": "e9a3953e8f9b1999dd0e434317c7170c1632ef645cd80671ad82a229c09cba4b",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "dev/tests/repo-invariants/lattice-crypto-import.test.ts",
+      "destinationSha256AfterAdaptation": "69f5073e9687653996965e537d36567b229bd115153b0b30c8a5d0492469a990",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "eslint.config.mjs",
+      "destinationSha256AfterAdaptation": "b446593535a2fa83c99fd6d9ac613c12a6764c8be282e9bbb26abb81b532e510",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "knip.json",
+      "destinationSha256AfterAdaptation": "53ac44dff7eae1961d44e354b006abd76da1b1047c7e623bffdf7b9c4b073d93",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/package.json",
+      "destinationSha256AfterAdaptation": "8783b9fe6a9ff0fed4e727ab004f1c66955c2786e85cb6a7ec88838844e1b927",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/stryker.config.mjs",
+      "destinationSha256AfterAdaptation": "53f8836df53334d963cf62b0ee01cfd4f1e40e6778cf1a8b59d42fc9dd51dc78",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/src/node/source-inventory.ts",
+      "destinationSha256AfterAdaptation": "33725f9e8c9bca958552b3ae50d230245e2ac6ab3f02d0f484b776015928aaf3",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/generated/encryption-coverage.md",
+      "destinationSha256AfterAdaptation": "62baa414a5b5da9c9b03b0506993525e9bc665f429839706de3aeae45a012ae8",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/tests/integration/dto-inventory-actual-source.test.ts",
+      "destinationSha256AfterAdaptation": "42da3980262737db16641c7297e97225bc011e0dca77abf042f61235772fb7b4",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/tests/integration/repository-inventory.test.ts",
+      "destinationSha256AfterAdaptation": "ed03ed5c747e6d0d6cf837867c46f0078e7d9d47b40a2bf2c1fd46d12f9a6358",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packages/encryption-invariants/tests/integration/source-inventory-declarations.test.ts",
+      "destinationSha256AfterAdaptation": "f89470c90b9c21381112dff6ffbc0ab3abeaf49b68813de80c4a61923c88c3e2",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    },
+    {
+      "destinationPath": "packaging/docker/Dockerfile",
+      "destinationSha256AfterAdaptation": "f2d3bf22e971f12aaa9ef4fe0f956a257b4a3de4e524144f440f1799bb9a5795",
+      "adaptations": [
+        "Register the dormant lattice-crypto workspace and enforce its M221 boundaries"
+      ]
+    }
+  ]
+}

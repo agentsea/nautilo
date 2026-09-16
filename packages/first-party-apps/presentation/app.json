@@ -1,0 +1,1524 @@
+{
+  "id": "nautilo-presentation",
+  "name": "Slides",
+  "description": "Create presentations with text, shapes, images, themes and speaker notes. Edit and present native Nautilo documents.",
+  "version": "0.1.0",
+  "entry": "./main.ts",
+  "html": "./index.html",
+  "styles": [
+    "./styles.css"
+  ],
+  "display": {
+    "groupId": "nautilo-office",
+    "groupName": "Nautilo Office",
+    "groupOrder": 10,
+    "appOrder": 30,
+    "defaultCollapsed": false
+  },
+  "fileAssociations": {
+    "extensions": [],
+    "mimeTypes": []
+  },
+  "capabilities": {
+    "document": {
+      "artifact": "readwrite",
+      "currentFolder": "readwrite"
+    }
+  },
+  "createActions": [
+    {
+      "id": "new-presentation",
+      "label": "New presentation",
+      "defaultFilename": "Untitled.presentation.html",
+      "mimeType": "text/html",
+      "targetSurfaces": [
+        "workspace",
+        "currentFolder"
+      ],
+      "template": {
+        "kind": "file",
+        "path": "templates/empty-presentation.html"
+      },
+      "openAfterCreate": true
+    }
+  ],
+  "contentAssociations": [
+    {
+      "id": "wafflebase-presentation",
+      "kind": "html-script-json",
+      "scriptId": "manifest",
+      "scriptType": "application/vnd.nautilo.document+json",
+      "match": {
+        "documentType": "presentation",
+        "editor": "wafflebase",
+        "payloadFormat": "application/vnd.wafflebase.presentation+json"
+      }
+    }
+  ],
+  "agent": {
+    "contextProvider": "presentation.activeContext",
+    "instructions": "For a new presentation, use create-file first; no blank document needs to be open. Inspect and populate its returned target using inspect-presentation and edit-presentation, then offer the creation result’s Open in Slides button. opened=false means the saved deck is ready to open, not that creation failed. Never ask the Human to create the blank file or copy a path. A destination_exists refusal preserves the existing file: choose another filename or inspect the existing document according to intent. Use native presentation tools to complete the Human's presentation, including design. Inspect the exact source first: view=summary measures scope, view=resources returns themes/layouts/masters, view=document returns the full native model, and view=slides returns selected slide data. Omitting pageSize returns full selected content; when paging, follow nextCursor until the intended selection is complete. describe-authoring returns generated native model definitions and an explicit full-schema option. Use the returned versionToken as expectedVersion for open edits, or expectedSha256 for closed edits. The host owns open-document targeting, session and idempotency. On stale refusal, inspect again and reconsider; never overwrite an unsaved Human draft.\nUse op=patch with JSON Pointer add/remove/replace/copy/move/test to edit any native model fields, including rich text runs, arbitrary supported fonts/colors/fills, images/crop, charts/data, tables, groups, connectors, transitions, themes, masters and layouts. This is data editing, not JavaScript. Use test preconditions for addressed IDs/values and preserve unrelated fields. A batch is validated completely and saved once, or writes nothing. The full native model schema, reference integrity and image authority are the boundaries; there is no creative property allowlist. Use deterministic helpers where bookkeeping matters: add-slide/add-element allocate identities; duplicate-slide and insert-template remap copied identities/resources; apply-theme and apply-layout execute engine cascades; group-elements/ungroup-element preserve transforms. Schema errors identify paths to repair.\nFor images, use insert-image with an authorized asset reference or Workspace/Current Folder target and the desired native element frame/data; host code resolves exact bytes. Omit element.id and element.data.src for insert-image: the helper generates the identity and supplies the source. add-element also requires element.id to be omitted. Do not generate or pass base64 yourself. Browse inspect-slide-templates before insert-template. Use save-open-template for a selected inspected open slide; manage-slide-template saves from an inspected saved source or removes an entry. Library deletion leaves inserted copies intact. Built-in themes are suggestions; custom themes and native fields remain editable via patch. Existing text/notes/title/shape shortcuts are conveniences only. set-text supports uniform text; for mixed formatting edit exact native runs. set-notes intentionally replaces with plain text.\nReview the visible resulting presentation, saved receipt and any warnings before claiming completion. PowerPoint conversion produces separate copies and reports fidelity limits; keep the source. PDF export requires actual bytes prepared by the open editor and is rasterized; never invent prepared output. A failed or uncertain write requires canonical reinspection before retrying. Choose content, typography, layout and narrative using the Human's intent; leave hashes, geometry bookkeeping, media bytes, validation and transactions to code.",
+    "tools": [
+      {
+        "id": "create-file",
+        "title": "Create presentation and open",
+        "description": "Create a saved native presentation without requiring an open blank deck. Never overwrites an existing filename. Returns its target for inspect-presentation/edit-presentation and an Open in Slides action for the Human. Use a basename ending in .presentation.html. The editor opens when the Human clicks the action; do not claim it is already open.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createFile",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "targetSurface": {
+              "type": "string",
+              "enum": [
+                "workspace",
+                "currentFolder"
+              ]
+            },
+            "filename": {
+              "type": "string"
+            },
+            "openAfterCreate": {
+              "type": "boolean",
+              "description": "Legacy flag accepted for compatibility. Creation never navigates automatically; the result always offers an Open in Slides action."
+            }
+          },
+          "required": [
+            "targetSurface",
+            "filename"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-presentation",
+        "title": "Inspect presentation",
+        "description": "Read exact slide contents from a closed native presentation. Choose pageSize and follow same-selection, same-version nextCursor until complete. Choose summary for measured scope, document for the full native model, resources for actual themes/layouts/masters, or slides for exact selected slides. Omitting pageSize returns all selected slides; supplying it requests version-bound pagination. No hidden truncation.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectDocument",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "slideId": {
+              "type": "string"
+            },
+            "pageSize": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "view": {
+              "enum": [
+                "summary",
+                "slides",
+                "document",
+                "resources"
+              ]
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "edit-presentation",
+        "title": "Edit presentation",
+        "description": "Apply one atomic batch to a closed presentation, using expectedSha256 from inspection. Stale content is refused. set-text preserves supported plain text formatting; set-notes replaces notes with plain text. update-shape patches geometry or solid fill of an inspected top-level shape; frames use native slide units and radians. General native patch edits support every model field, including rich text, fonts, images, charts, tables, groups, connectors, themes and layouts. Use describe-authoring for the generated model schema. All operations commit once or not at all. Helpers handle copied identities, resource bytes and derived geometry.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editDocument",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "expectedSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "add-slide"
+                      },
+                      "layoutId": {
+                        "type": "string"
+                      },
+                      "atIndex": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "layoutId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "delete-slide"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "move-slide"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "toIndex": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "toIndex"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "set-text"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "elementId",
+                      "text"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "set-notes"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "text"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "set-title"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "title"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "update-shape"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "frame": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Patch inspected top-level shape geometry in native slide units; rotation is radians. Omitted values are preserved.",
+                        "properties": {
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          },
+                          "w": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "h": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "rotation": {
+                            "type": "number"
+                          }
+                        },
+                        "minProperties": 1
+                      },
+                      "fill": {
+                        "type": "string",
+                        "pattern": "^#[a-fA-F0-9]{6}$",
+                        "description": "Explicitly replace the shape fill with this solid RGB color; other styling is preserved."
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "elementId"
+                    ],
+                    "minProperties": 4
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "patch"
+                      },
+                      "changes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "op": {
+                              "enum": [
+                                "add",
+                                "remove",
+                                "replace",
+                                "move",
+                                "copy",
+                                "test"
+                              ]
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "from": {
+                              "type": "string"
+                            },
+                            "value": {}
+                          },
+                          "required": [
+                            "op",
+                            "path"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "changes"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "add-element"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "parentGroupId": {
+                        "type": "string"
+                      },
+                      "element": {
+                        "type": "object",
+                        "description": "Native element frame/data. Omit id: the helper generates it. For insert-image also omit data.src: the host resolves exact image bytes.",
+                        "additionalProperties": true
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "element"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "insert-image"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "parentGroupId": {
+                        "type": "string"
+                      },
+                      "element": {
+                        "type": "object",
+                        "description": "Native element frame/data. Omit id: the helper generates it. For insert-image also omit data.src: the host resolves exact image bytes.",
+                        "additionalProperties": true
+                      },
+                      "asset": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "surface": {
+                            "enum": [
+                              "workspace",
+                              "currentFolder"
+                            ]
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "relativePath": {
+                            "type": "string"
+                          }
+                        },
+                        "description": "Exactly one source: pinned artifact ref, workspace surface+path, or currentFolder surface+relativePath. The host authorizes and reads the bytes."
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "element",
+                      "asset"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "duplicate-slide"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "insert-template"
+                      },
+                      "templateId": {
+                        "type": "string"
+                      },
+                      "afterSlideId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "templateId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "apply-theme"
+                      },
+                      "themeId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "themeId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "apply-layout"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "layoutId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "layoutId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "group-elements"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "elementIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "elementIds"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "ungroup-element"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "groupId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "groupId"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "target",
+            "expectedSha256",
+            "operations"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-open-presentation",
+        "title": "Inspect open presentation",
+        "description": "Inspect exact canonical slide contents of the active presentation. Follow same-selection, same-version nextCursor until complete. The host supplies session binding. Choose summary for measured scope, document for the full native model, resources for actual themes/layouts/masters, or slides for exact selected slides. Omitting pageSize returns all selected slides; supplying it requests version-bound pagination. No hidden truncation.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectOpenPresentation",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "slideId": {
+              "type": "string"
+            },
+            "pageSize": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "view": {
+              "enum": [
+                "summary",
+                "slides",
+                "document",
+                "resources"
+              ]
+            }
+          },
+          "required": []
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "edit-open-presentation",
+        "title": "Edit open presentation",
+        "description": "Apply one atomic batch to the active presentation. expectedVersion must equal the prior inspection versionToken. The host owns active document, approval and idempotency; no target or session parameters are accepted. set-text preserves supported plain text formatting; set-notes replaces notes with plain text. update-shape patches geometry or solid fill of an inspected top-level shape; frames use native slide units and radians. General native patch edits support every model field, including rich text, fonts, images, charts, tables, groups, connectors, themes and layouts. Use describe-authoring for the generated model schema. All operations commit once or not at all. Helpers handle copied identities, resource bytes and derived geometry.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editOpenPresentation",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "expectedVersion": {
+              "type": "string"
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "add-slide"
+                      },
+                      "layoutId": {
+                        "type": "string"
+                      },
+                      "atIndex": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "layoutId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "delete-slide"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "move-slide"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "toIndex": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "toIndex"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "set-text"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "elementId",
+                      "text"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "set-notes"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "text"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "set-title"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "title"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "update-shape"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "elementId": {
+                        "type": "string"
+                      },
+                      "frame": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Patch inspected top-level shape geometry in native slide units; rotation is radians. Omitted values are preserved.",
+                        "properties": {
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          },
+                          "w": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "h": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "rotation": {
+                            "type": "number"
+                          }
+                        },
+                        "minProperties": 1
+                      },
+                      "fill": {
+                        "type": "string",
+                        "pattern": "^#[a-fA-F0-9]{6}$",
+                        "description": "Explicitly replace the shape fill with this solid RGB color; other styling is preserved."
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "elementId"
+                    ],
+                    "minProperties": 4
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "patch"
+                      },
+                      "changes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "op": {
+                              "enum": [
+                                "add",
+                                "remove",
+                                "replace",
+                                "move",
+                                "copy",
+                                "test"
+                              ]
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "from": {
+                              "type": "string"
+                            },
+                            "value": {}
+                          },
+                          "required": [
+                            "op",
+                            "path"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "changes"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "add-element"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "parentGroupId": {
+                        "type": "string"
+                      },
+                      "element": {
+                        "type": "object",
+                        "description": "Native element frame/data. Omit id: the helper generates it. For insert-image also omit data.src: the host resolves exact image bytes.",
+                        "additionalProperties": true
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "element"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "insert-image"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "parentGroupId": {
+                        "type": "string"
+                      },
+                      "element": {
+                        "type": "object",
+                        "description": "Native element frame/data. Omit id: the helper generates it. For insert-image also omit data.src: the host resolves exact image bytes.",
+                        "additionalProperties": true
+                      },
+                      "asset": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "surface": {
+                            "enum": [
+                              "workspace",
+                              "currentFolder"
+                            ]
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "relativePath": {
+                            "type": "string"
+                          }
+                        },
+                        "description": "Exactly one source: pinned artifact ref, workspace surface+path, or currentFolder surface+relativePath. The host authorizes and reads the bytes."
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "element",
+                      "asset"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "duplicate-slide"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "insert-template"
+                      },
+                      "templateId": {
+                        "type": "string"
+                      },
+                      "afterSlideId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "templateId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "apply-theme"
+                      },
+                      "themeId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "themeId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "apply-layout"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "layoutId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "layoutId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "group-elements"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "elementIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "elementIds"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "ungroup-element"
+                      },
+                      "slideId": {
+                        "type": "string"
+                      },
+                      "groupId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "slideId",
+                      "groupId"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "expectedVersion",
+            "operations"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "import-pptx",
+        "title": "Import PowerPoint",
+        "description": "Import a Workspace or Current Folder PowerPoint file into Workspace as an editable native copy. Review returned warnings and retry with acknowledgedSourceSha256 only after accepting conversion differences. Original is preserved.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "importPowerPoint",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface",
+                "path"
+              ]
+            },
+            "targetPath": {
+              "type": "string"
+            },
+            "overwrite": {
+              "type": "boolean"
+            },
+            "acknowledgedSourceSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "source",
+            "targetPath"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "export-pptx",
+        "title": "Export PowerPoint",
+        "description": "Export a saved native presentation to a separate PowerPoint file. Review returned warnings and retry with acknowledgedSourceSha256 only after accepting conversion differences. Original is preserved.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "exportPowerPoint",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface",
+                "path"
+              ]
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface",
+                "path"
+              ]
+            },
+            "overwrite": {
+              "type": "boolean"
+            },
+            "acknowledgedSourceSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "workspaceDestination": {
+              "type": "string",
+              "enum": [
+                "current",
+                "source"
+              ],
+              "description": "Workspace exports only: current creates in the current chat workspace; source creates beside the original and requires create authority there. Omission preserves source placement."
+            }
+          },
+          "required": [
+            "source",
+            "target"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "export-pdf",
+        "title": "Save prepared PDF",
+        "description": "Save PDF bytes prepared by the open Slides editor after source-hash verification and explicit fidelity warning acknowledgment. Closed-document PDF rendering is unavailable.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "exportPdf",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface",
+                "path"
+              ]
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface",
+                "path"
+              ]
+            },
+            "overwrite": {
+              "type": "boolean"
+            },
+            "acknowledgedSourceSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "preparedExport": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "encoding": {
+                  "const": "base64"
+                },
+                "mimeType": {
+                  "const": "application/pdf"
+                },
+                "byteLength": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "sourceSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "warnings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "content",
+                "encoding",
+                "mimeType",
+                "byteLength",
+                "sourceSha256",
+                "warnings"
+              ]
+            },
+            "workspaceDestination": {
+              "type": "string",
+              "enum": [
+                "current",
+                "source"
+              ],
+              "description": "Workspace exports only: current creates in the current chat workspace; source creates beside the original and requires create authority there. Omission preserves source placement."
+            }
+          },
+          "required": [
+            "source",
+            "target",
+            "preparedExport"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "describe-authoring",
+        "title": "Discover native presentation schema and authoring capabilities",
+        "description": "Discover native presentation schema and authoring capabilities",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "describeAuthoring",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "definition": {
+              "type": "string"
+            },
+            "includeSchema": {
+              "type": "boolean"
+            }
+          },
+          "required": []
+        },
+        "impact": "low",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-slide-templates",
+        "title": "Browse or read the Human private slide templates; follow nextCursor until complete",
+        "description": "Browse or read the Human private slide templates; follow nextCursor until complete",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "presentationTemplates",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "list",
+                "read"
+              ]
+            },
+            "templateId": {
+              "type": "string"
+            },
+            "cursor": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        "impact": "low",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "manage-slide-template",
+        "title": "Save a slide from an inspected saved source, or delete a private library entry without affecting inserted copies",
+        "description": "Save a slide from an inspected saved source, or delete a private library entry without affecting inserted copies",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "presentationTemplates",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "save",
+                "remove"
+              ]
+            },
+            "templateId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "slideId": {
+              "type": "string"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "expectedSha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "save-open-template",
+        "title": "Save the inspected open slide as a private reusable template without changing its source",
+        "description": "Save the inspected open slide as a private reusable template without changing its source",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "saveOpenTemplate",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "slideId": {
+              "type": "string"
+            },
+            "expectedVersion": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "slideId",
+            "expectedVersion"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      }
+    ]
+  },
+  "liveReview": {
+    "enabled": true
+  },
+  "conversions": {
+    "import": [
+      {
+        "id": "import-pptx",
+        "label": "Import to Slides",
+        "from": {
+          "extensions": [
+            ".pptx"
+          ],
+          "mimeTypes": [
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+          ]
+        },
+        "sourceSurfaces": [
+          "workspace",
+          "currentFolder"
+        ],
+        "tool": "import-pptx",
+        "target": {
+          "surface": "workspace",
+          "extension": ".presentation.html"
+        },
+        "openAfterImport": true
+      }
+    ],
+    "export": [
+      {
+        "id": "export-pptx",
+        "label": "PowerPoint (.pptx)",
+        "to": {
+          "extension": ".pptx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        },
+        "tool": "export-pptx",
+        "targetSurfaces": [
+          "workspace",
+          "currentFolder"
+        ],
+        "selectWorkspaceDestination": true
+      },
+      {
+        "id": "export-pdf",
+        "label": "PDF (.pdf)",
+        "to": {
+          "extension": ".pdf",
+          "mimeType": "application/pdf"
+        },
+        "tool": "export-pdf",
+        "prepareInApp": true,
+        "targetSurfaces": [
+          "workspace",
+          "currentFolder"
+        ],
+        "selectWorkspaceDestination": true
+      }
+    ]
+  }
+}

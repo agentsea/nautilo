@@ -1,0 +1,24 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../node_modules/.cache/tsconfig/repo-invariants.tsbuildinfo"
+  },
+  "include": [
+    "./contribution-governance.test.ts",
+    "./d448-mutation-characterization-coverage.test.ts",
+    "./js-toolchain-security-pack.test.ts",
+    "./limit-invariants-wiring.test.ts",
+    "./official-skill-evaluation-wiring.test.ts",
+    "./public-documentation.test.ts",
+    "./query-inventory-wiring.test.ts",
+    "./reflection-package-boundary.test.ts",
+    "./root-test-db-preload.test.ts",
+    "./smol-toml-security-floor.test.ts",
+    "./test-d490-release-supply-chain.test.ts",
+    "./test-d563-mini-app-source-continuation.test.ts",
+    "./test-d563-model-attempt-single-owner.test.ts",
+    "./test-harness-guard.test.ts",
+    "./test-runtime-install-projection.test.ts",
+    "./xmldom-security-floor.test.ts"
+  ]
+}

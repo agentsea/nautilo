@@ -1,0 +1,9 @@
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /packaging/docker
+    schedule:
+      interval: monthly
+    allow:
+      - dependency-name: oven/bun
+    open-pull-requests-limit: 1

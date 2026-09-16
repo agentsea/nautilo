@@ -1,0 +1,1934 @@
+{
+  "id": "nautilo-design",
+  "name": "Nautilo Design",
+  "description": "Create and edit Nautilo-native vector designs — frames, text, shapes, ellipses, lines, polygons, and pen paths in .design.html. Generate SVG artwork for use outside the canvas.",
+  "version": "0.3.0",
+  "entry": "./main.ts",
+  "html": "./index.html",
+  "styles": ["./styles.css"],
+  "fileAssociations": {
+    "extensions": [],
+    "mimeTypes": []
+  },
+  "capabilities": {
+    "document": {
+      "artifact": "readwrite",
+      "currentFolder": "readwrite"
+    },
+    "state": "readwrite"
+  },
+  "agent": {
+    "contextProvider": "design.activeContext",
+    "instructions": "For an open Design document, inspect first, follow nextCursor until completeness is complete when the requested scope is larger than one response, and use only returned node:/page: handles or $refs created earlier in the same atomic batch. The host supplies the active-document binding and idempotency bookkeeping; do not invent or add those fields. Copy each referenced existing node/page semanticVersion into the exact preconditions array; create-only $refs need no precondition. Never invent or refresh a semanticVersion. Use one create operation for frames, text, rectangles, ellipses, common shapes, lines, and images. Image creation requires assetRef copied from inspect-image-asset or document inspection. Replace an image with op image, nodeId, and assetRef; include its semanticVersion precondition. Closed shapes use positive x, y, width, and height. Lines use explicit start and end points, including horizontal, vertical, and reverse directions. name is optional on every creation family. On creation, style.stroke null means no stroke while omission preserves the default. Every create/path-create/connector operation must set pageId to an inspected page: handle and include that page's semanticVersion precondition; top-level creation also sets parentId to null, while child creation sets parentId to an inspected node: handle or earlier node $ref. The implicit default page is not allowed for live semantic edits because it is not stale-safe. If the document version becomes stale, the trusted host automatically applies the exact approved batch only when all inspection-derived semantic preconditions still match. Disjoint stale recovery needs no second model call or approval. A changed target or dependency returns semantic_conflict with stateChanged false, retrySafe false, and recovery action ask_user; ask the human before forming a new edit. The host alone handles an exact lost-response replay. Pen paths use normalized node-local coordinates from 0 to 1 with M, L, C, and Z commands plus separate document-space bounds. To revise a Pen path, inspect with includeGeometry and send the returned normalized commands unchanged as expectedGeometry.",
+    "tools": [
+      {
+        "id": "inspect-open-design",
+        "title": "Inspect open Design",
+        "description": "Inspect the canonical scene bound to the active Design session. Returns bounded page/node handles with opaque semanticVersion preconditions, model-space bounds and appearance, connector endpoints, selection validation, and optionally normalized node-local M/L/C/Z Pen geometry. Copy semanticVersion only for the existing handles referenced by a later edit. Follow nextCursor until completeness is complete. Accepts no target, path, DOM selector, renderer ID, or pointer input.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectOpenDesign",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pageHandle": { "type": "string", "minLength": 6, "maxLength": 512 },
+            "parentHandle": { "type": ["string", "null"], "maxLength": 512 },
+            "nodeHandle": { "type": "string", "minLength": 6, "maxLength": 512 },
+            "selectedNodeHandles": { "type": "array", "maxItems": 256, "items": { "type": "string", "minLength": 6, "maxLength": 512 } },
+            "nodeTypes": { "type": "array", "maxItems": 6, "items": { "type": "string", "enum": ["frame", "text", "rectangle", "image", "group", "vector"] } },
+            "intersects": { "type": "object", "additionalProperties": false, "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "width": { "type": "number", "minimum": 0 }, "height": { "type": "number", "minimum": 0 } }, "required": ["x", "y", "width", "height"] },
+            "appearance": { "type": "object", "additionalProperties": false, "properties": { "hasFill": { "type": "boolean" }, "hasStroke": { "type": "boolean" }, "hasRadius": { "type": "boolean" }, "hasText": { "type": "boolean" } } },
+            "connector": { "type": "string", "enum": ["only", "exclude"] },
+            "includeGeometry": { "type": "boolean" },
+            "cursor": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "pageSize": { "type": "integer", "minimum": 1, "maximum": 2048 }
+          },
+          "required": []
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "edit-open-design",
+        "title": "Edit open Design",
+        "description": "Apply one atomic operation batch to the exact active Design document and return a handles-only receipt. The host supplies session and idempotency fields, automatically performs disjoint stale recovery from exact semantic preconditions, and owns exact lost-response replay. Inspect first and include exact preconditions copied from semanticVersion for every existing public handle referenced by the operations; $refs created in this batch are exempt. A changed dependency returns semantic_conflict with recovery action ask_user. Use create for frames, text, rectangles, ellipses, common shapes, and lines. Closed shapes require positive bounds; lines require explicit start and end. Every creation requires an inspected pageId and its precondition. Top-level creation sets parentId null. name is optional at creation, and style.stroke null creates without a stroke. Pen creation and revision use 2–2048 normalized node-local M/L/C/Z commands plus document-space bounds. Accepts no target, path, DOM selector, SVG, pointer event, or filesystem input.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editOpenDesign",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "preconditions": {
+              "type": "array",
+              "maxItems": 256,
+              "description": "Exact inspection-derived semantic preconditions for every existing public handle referenced by the operations. Object creation always includes its explicit inspected page precondition; only a new-page-only batch may use an empty array. Copy semanticVersion from inspection; never invent or refresh it after a stale refusal.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "handle": { "type": "string", "maxLength": 512 },
+                  "semanticVersion": { "type": "string", "pattern": "^s1:[a-f0-9]{64}$", "minLength": 67, "maxLength": 67 }
+                },
+                "required": ["handle", "semanticVersion"]
+              }
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 128,
+              "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Create a frame, text, rectangle, ellipse, common shape, or line. Closed shapes use positive x/y/width/height. Lines use start/end. name and style are applied in this same operation.",
+                      "properties": {
+                        "op": {
+                          "const": "create"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "maxLength": 65
+                        },
+                        "node": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "frame",
+                                "text",
+                                "rectangle",
+                                "image",
+                                "ellipse",
+                                "line",
+                                "polygon",
+                                "triangle",
+                                "diamond",
+                                "pentagon",
+                                "hexagon",
+                                "star",
+                                "arrow"
+                              ]
+                            },
+                            "assetRef": { "type": "string", "description": "Exact ref returned by inspect-image-asset or current document inspection; never a URL or inline image." },
+                            "name": {
+                              "type": "string",
+                              "maxLength": 256
+                            },
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "width": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            },
+                            "height": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            },
+                            "start": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                              "required": ["x", "y"]
+                            },
+                            "end": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                              "required": ["x", "y"]
+                            },
+                            "rotation": {
+                              "type": "number"
+                            },
+                            "style": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "fills": {
+                                  "type": "array",
+                                  "maxItems": 16,
+                                  "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "const": "solid"
+                                      },
+                                      "color": {
+                                        "type": "string",
+                                        "maxLength": 64
+                                      },
+                                      "opacity": {
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "color"
+                                    ]
+                                  }
+                                },
+                                "stroke": {
+                                  "type": [
+                                    "object",
+                                    "null"
+                                  ],
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "color": {
+                                      "type": "string",
+                                      "maxLength": 64
+                                    },
+                                    "width": {
+                                      "type": "number"
+                                    },
+                                    "cap": {
+                                      "type": "string",
+                                      "enum": [
+                                        "butt",
+                                        "round",
+                                        "square"
+                                      ]
+                                    },
+                                    "join": {
+                                      "type": "string",
+                                      "enum": [
+                                        "miter",
+                                        "round",
+                                        "bevel"
+                                      ]
+                                    },
+                                    "dash": {
+                                      "type": "array",
+                                      "maxItems": 64,
+                                      "items": {
+                                        "type": "number"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "color",
+                                    "width"
+                                  ]
+                                },
+                                "opacity": {
+                                  "type": "number"
+                                },
+                                "radius": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            "text": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "text": {
+                                  "type": "string",
+                                  "maxLength": 20000
+                                },
+                                "fontSize": {
+                                  "type": "number"
+                                },
+                                "fontFamily": {
+                                  "type": "string",
+                                  "maxLength": 200
+                                },
+                                "fontWeight": {
+                                  "type": [
+                                    "string",
+                                    "number"
+                                  ]
+                                },
+                                "lineHeight": {
+                                  "type": "number",
+                                  "exclusiveMinimum": 0
+                                },
+                                "textWrap": {
+                                  "type": "boolean"
+                                },
+                                "textAlign": {
+                                  "type": "string",
+                                  "enum": [
+                                    "left",
+                                    "center",
+                                    "right"
+                                  ]
+                                },
+                                "color": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                }
+                              }
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "pageId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "parentId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 512
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "node",
+                        "pageId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Create a Pen path when nodeId is omitted; creation requires an inspected pageId. Revise an inspected path when nodeId and expectedGeometry are supplied.",
+                      "properties": {
+                        "op": {
+                          "const": "path"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "maxLength": 65
+                        },
+                        "nodeId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "commands": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2048,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "M",
+                                  "L",
+                                  "C",
+                                  "Z"
+                                ]
+                              },
+                              "x": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "y": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c1x": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c1y": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c2x": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c2y": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ]
+                          }
+                        },
+                        "expectedGeometry": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 2048,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "M",
+                                  "L",
+                                  "C",
+                                  "Z"
+                                ]
+                              },
+                              "x": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "y": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c1x": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c1y": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c2x": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "c2y": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ]
+                          }
+                        },
+                        "bounds": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "width": {
+                              "type": "number"
+                            },
+                            "height": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y",
+                            "width",
+                            "height"
+                          ]
+                        },
+                        "name": {
+                          "type": "string",
+                          "maxLength": 256
+                        },
+                        "style": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "fills": {
+                              "type": "array",
+                              "maxItems": 16,
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "const": "solid"
+                                  },
+                                  "color": {
+                                    "type": "string",
+                                    "maxLength": 64
+                                  },
+                                  "opacity": {
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "color"
+                                ]
+                              }
+                            },
+                            "stroke": {
+                              "type": [
+                                "object",
+                                "null"
+                              ],
+                              "additionalProperties": false,
+                              "properties": {
+                                "color": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "width": {
+                                  "type": "number"
+                                },
+                                "cap": {
+                                  "type": "string",
+                                  "enum": [
+                                    "butt",
+                                    "round",
+                                    "square"
+                                  ]
+                                },
+                                "join": {
+                                  "type": "string",
+                                  "enum": [
+                                    "miter",
+                                    "round",
+                                    "bevel"
+                                  ]
+                                },
+                                "dash": {
+                                  "type": "array",
+                                  "maxItems": 64,
+                                  "items": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "color",
+                                "width"
+                              ]
+                            },
+                            "opacity": {
+                              "type": "number"
+                            },
+                            "radius": {
+                              "type": "number"
+                            }
+                          }
+                        },
+                        "pageId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "parentId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 512
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "commands",
+                        "bounds"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Move or resize nodes; each update nodeId is a node: handle or same-batch $ref.",
+                      "properties": {
+                        "op": {
+                          "const": "transform"
+                        },
+                        "updates": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "nodeId": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "x": {
+                                "type": "number"
+                              },
+                              "y": {
+                                "type": "number"
+                              },
+                              "width": {
+                                "type": "number"
+                              },
+                              "height": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "nodeId"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "updates"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Rotate one or more node: handles or same-batch $refs.",
+                      "properties": {
+                        "op": {
+                          "const": "rotate"
+                        },
+                        "nodeIds": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        },
+                        "rotation": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeIds",
+                        "rotation"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Rename one node: handle or same-batch $ref.",
+                      "properties": {
+                        "op": {
+                          "const": "rename"
+                        },
+                        "nodeId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "name": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeId",
+                        "name"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Edit text properties on one node: handle or same-batch $ref.",
+                      "properties": {
+                        "op": {
+                          "const": "text"
+                        },
+                        "nodeId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "patch": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "maxLength": 20000
+                            },
+                            "fontSize": {
+                              "type": "number"
+                            },
+                            "fontFamily": {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            "fontWeight": {
+                              "type": [
+                                "string",
+                                "number"
+                              ]
+                            },
+                            "lineHeight": {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            },
+                            "textWrap": {
+                              "type": "boolean"
+                            },
+                            "textAlign": {
+                              "type": "string",
+                              "enum": [
+                                "left",
+                                "center",
+                                "right"
+                              ]
+                            },
+                            "color": {
+                              "type": "string",
+                              "maxLength": 64
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeId",
+                        "patch"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Edit fill, border, opacity, or radius on node: handles or same-batch $refs.",
+                      "properties": {
+                        "op": {
+                          "const": "style"
+                        },
+                        "nodeIds": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        },
+                        "patch": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "fills": {
+                              "type": "array",
+                              "maxItems": 16,
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "const": "solid"
+                                  },
+                                  "color": {
+                                    "type": "string",
+                                    "maxLength": 64
+                                  },
+                                  "opacity": {
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "color"
+                                ]
+                              }
+                            },
+                            "stroke": {
+                              "type": [
+                                "object",
+                                "null"
+                              ],
+                              "additionalProperties": false,
+                              "properties": {
+                                "color": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "width": {
+                                  "type": "number"
+                                },
+                                "cap": {
+                                  "type": "string",
+                                  "enum": [
+                                    "butt",
+                                    "round",
+                                    "square"
+                                  ]
+                                },
+                                "join": {
+                                  "type": "string",
+                                  "enum": [
+                                    "miter",
+                                    "round",
+                                    "bevel"
+                                  ]
+                                },
+                                "dash": {
+                                  "type": "array",
+                                  "maxItems": 64,
+                                  "items": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "color",
+                                "width"
+                              ]
+                            },
+                            "opacity": {
+                              "type": "number"
+                            },
+                            "radius": {
+                              "type": "number"
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeIds",
+                        "patch"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Align at least two node: handles or same-batch $refs.",
+                      "properties": {
+                        "op": {
+                          "const": "align"
+                        },
+                        "nodeIds": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        },
+                        "axis": {
+                          "type": "string",
+                          "enum": [
+                            "horizontal",
+                            "vertical"
+                          ]
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "start",
+                            "center",
+                            "end"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeIds",
+                        "axis",
+                        "mode"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Distribute at least three node: handles or same-batch $refs.",
+                      "properties": {
+                        "op": {
+                          "const": "distribute"
+                        },
+                        "nodeIds": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        },
+                        "axis": {
+                          "type": "string",
+                          "enum": [
+                            "horizontal",
+                            "vertical"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeIds",
+                        "axis"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Set the complete child order. Use parentId null plus pageId for a page, or a parent handle/$ref.",
+                      "properties": {
+                        "op": {
+                          "const": "reorder"
+                        },
+                        "parentId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 512
+                        },
+                        "pageId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "orderedIds": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "parentId",
+                        "orderedIds"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Combine at least two nodes; ref may name the result for later same-batch edits.",
+                      "properties": {
+                        "op": {
+                          "const": "boolean"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "maxLength": 65
+                        },
+                        "nodeIds": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        },
+                        "opName": {
+                          "type": "string",
+                          "enum": [
+                            "union",
+                            "subtract",
+                            "intersect",
+                            "exclude"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeIds",
+                        "opName"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Create a page; ref labels the created page in the receipt. Placement operations use inspected page: handles.",
+                      "properties": {
+                        "op": {
+                          "const": "page"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "maxLength": 65
+                        },
+                        "name": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "required": [
+                        "op"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Create a connector on the required inspected pageId; endpoint targetHandle values may be node: handles or same-batch $refs.",
+                      "properties": {
+                        "op": {
+                          "const": "connector"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "maxLength": 65
+                        },
+                        "connector": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "route": {
+                              "type": "string",
+                              "enum": [
+                                "straight",
+                                "elbow"
+                              ]
+                            },
+                            "start": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "x": {
+                                  "type": "number"
+                                },
+                                "y": {
+                                  "type": "number"
+                                },
+                                "targetHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "anchor": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "x",
+                                    "y"
+                                  ]
+                                },
+                                "detachedFromHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "y"
+                              ]
+                            },
+                            "end": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "x": {
+                                  "type": "number"
+                                },
+                                "y": {
+                                  "type": "number"
+                                },
+                                "targetHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "anchor": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "x",
+                                    "y"
+                                  ]
+                                },
+                                "detachedFromHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "y"
+                              ]
+                            },
+                            "startArrow": {
+                              "type": "boolean"
+                            },
+                            "endArrow": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "route",
+                            "start",
+                            "end"
+                          ]
+                        },
+                        "stroke": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "color": {
+                              "type": "string",
+                              "maxLength": 64
+                            },
+                            "width": {
+                              "type": "number"
+                            },
+                            "cap": {
+                              "type": "string",
+                              "enum": [
+                                "butt",
+                                "round",
+                                "square"
+                              ]
+                            },
+                            "join": {
+                              "type": "string",
+                              "enum": [
+                                "miter",
+                                "round",
+                                "bevel"
+                              ]
+                            },
+                            "dash": {
+                              "type": "array",
+                              "maxItems": 64,
+                              "items": {
+                                "type": "number"
+                              }
+                            }
+                          },
+                          "required": [
+                            "color",
+                            "width"
+                          ]
+                        },
+                        "pageId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "parentId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 512
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "connector",
+                        "pageId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Update one connector by node: handle or same-batch $ref.",
+                      "properties": {
+                        "op": {
+                          "const": "connector-update"
+                        },
+                        "nodeId": {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        "patch": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "route": {
+                              "type": "string",
+                              "enum": [
+                                "straight",
+                                "elbow"
+                              ]
+                            },
+                            "start": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "x": {
+                                  "type": "number"
+                                },
+                                "y": {
+                                  "type": "number"
+                                },
+                                "targetHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "anchor": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "x",
+                                    "y"
+                                  ]
+                                },
+                                "detachedFromHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "y"
+                              ]
+                            },
+                            "end": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "x": {
+                                  "type": "number"
+                                },
+                                "y": {
+                                  "type": "number"
+                                },
+                                "targetHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "anchor": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "x",
+                                    "y"
+                                  ]
+                                },
+                                "detachedFromHandle": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "y"
+                              ]
+                            },
+                            "startArrow": {
+                              "type": "boolean"
+                            },
+                            "endArrow": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeId",
+                        "patch"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Delete node: handles or same-batch $refs.",
+                      "properties": {
+                        "op": {
+                          "const": "delete"
+                        },
+                        "nodeIds": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 256,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 512
+                          }
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "nodeIds"
+                      ]
+                    },
+                    {
+                      "type": "object", "additionalProperties": false,
+                      "properties": { "op": { "const": "image" }, "nodeId": { "type": "string" }, "assetRef": { "type": "string", "description": "Exact host-inspected asset reference." } },
+                      "required": ["op", "nodeId", "assetRef"]
+                    }
+                  ]
+                }
+            }
+          },
+          "required": ["preconditions", "operations"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-image-asset",
+        "description": "Read a known Workspace raster artifact and return its pinned assetRef, name, and dimensions. Use the internal artifact UUID from Workspace discovery. Bytes stay in host custody. Use the exact returned ref with create node type image or image replacement. PNG, JPEG, and WebP still images are supported; changed, missing, unauthorized, or animated images fail explicitly.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "inspectImageAsset",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "artifactId": { "type": "string", "format": "uuid" } }, "required": ["artifactId"] },
+        "impact": "low", "requiredCapability": "use_project_content", "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "create-file",
+        "description": "Create an empty Nautilo Design document from the trusted Design template. filename is a basename ending in .design.html, never a path. workspace creates in the authenticated conversation's authorized workspace (Personal in an ordinary private conversation); the caller cannot choose a Room or path. currentFolder creates beside the active Current Folder and fails when that host surface is unavailable. The returned target identifies the created document; this tool does not claim to open it.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createFile",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "targetSurface": {
+              "type": "string",
+              "enum": ["workspace", "currentFolder"]
+            },
+            "filename": { "type": "string", "minLength": 13, "maxLength": 255 },
+            "initialContent": {
+              "type": "string",
+              "enum": ["empty"]
+            }
+          },
+          "required": ["targetSurface", "filename"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-document",
+        "title": "Inspect design document",
+        "description": "Inspect a Nautilo Design document — pages, top-level frames, node count, and an optional per-node summary.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectDocument",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "pageId": { "type": "string" },
+            "nodeId": { "type": "string" },
+            "includeNodes": { "type": "boolean" }
+          },
+          "required": ["target"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "create-frame",
+        "description": "Create a frame node on a page (or as a child of another node) and persist the document.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createFrame",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "pageId": { "type": "string" },
+            "parentId": { "type": "string" },
+            "name": { "type": "string" },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" },
+            "rotation": { "type": "number" },
+            "opacity": { "type": "number" },
+            "radius": { "type": "number" },
+            "fills": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": { "type": "string", "enum": ["solid"] },
+                  "color": { "type": "string" },
+                  "opacity": { "type": "number" }
+                },
+                "required": ["kind", "color"]
+              }
+            },
+            "stroke": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "color": { "type": "string" },
+                "width": { "type": "number" }
+              },
+              "required": ["color", "width"]
+            }
+          },
+          "required": ["target"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "create-text",
+        "description": "Create a text node with the given text content and optional font styling.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createText",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "pageId": { "type": "string" },
+            "parentId": { "type": "string" },
+            "name": { "type": "string" },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" },
+            "rotation": { "type": "number" },
+            "opacity": { "type": "number" },
+            "text": { "type": "string" },
+            "fontSize": { "type": "number" },
+            "fontFamily": { "type": "string" },
+            "fontWeight": { "type": ["string", "number"] },
+            "lineHeight": { "type": "number", "exclusiveMinimum": 0 },
+            "textWrap": { "type": "boolean" },
+            "textAlign": {
+              "type": "string",
+              "enum": ["left", "center", "right"]
+            },
+            "color": { "type": "string" },
+            "fills": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": { "type": "string", "enum": ["solid"] },
+                  "color": { "type": "string" },
+                  "opacity": { "type": "number" }
+                },
+                "required": ["kind", "color"]
+              }
+            },
+            "stroke": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "color": { "type": "string" },
+                "width": { "type": "number" }
+              },
+              "required": ["color", "width"]
+            }
+          },
+          "required": ["target", "text"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "create-shape",
+        "description": "Create a rectangle shape node. Other shape kinds are not yet available through this tool.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createShape",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "pageId": { "type": "string" },
+            "parentId": { "type": "string" },
+            "name": { "type": "string" },
+            "shape": {
+              "type": "string",
+              "enum": ["rectangle"]
+            },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" },
+            "rotation": { "type": "number" },
+            "opacity": { "type": "number" },
+            "radius": { "type": "number" },
+            "fills": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": { "type": "string", "enum": ["solid"] },
+                  "color": { "type": "string" },
+                  "opacity": { "type": "number" }
+                },
+                "required": ["kind", "color"]
+              }
+            },
+            "stroke": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "color": { "type": "string" },
+                "width": { "type": "number" }
+              },
+              "required": ["color", "width"]
+            }
+          },
+          "required": ["target", "shape"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "set-node-props",
+        "description": "Update properties of an existing node (geometry, style, text fields). Only listed fields are accepted.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "setNodeProps",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "nodeId": { "type": "string" },
+            "props": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "x": { "type": "number" },
+                "y": { "type": "number" },
+                "width": { "type": "number" },
+                "height": { "type": "number" },
+                "rotation": { "type": "number" },
+                "opacity": { "type": "number" },
+                "radius": { "type": "number" },
+                "fills": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "type": "string", "enum": ["solid"] },
+                      "color": { "type": "string" },
+                      "opacity": { "type": "number" }
+                    },
+                    "required": ["kind", "color"]
+                  }
+                },
+                "stroke": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "color": { "type": "string" },
+                    "width": { "type": "number" }
+                  },
+                  "required": ["color", "width"]
+                },
+                "text": { "type": "string" },
+                "fontSize": { "type": "number" },
+                "fontFamily": { "type": "string" },
+                "fontWeight": { "type": ["string", "number"] },
+                "lineHeight": { "type": "number", "exclusiveMinimum": 0 },
+                "textWrap": { "type": "boolean" },
+                "textAlign": {
+                  "type": "string",
+                  "enum": ["left", "center", "right"]
+                },
+                "color": { "type": "string" }
+              }
+            }
+          },
+          "required": ["target", "nodeId", "props"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "replace-text",
+        "description": "Replace the text content of a text node.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "replaceText",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "nodeId": { "type": "string" },
+            "text": { "type": "string" }
+          },
+          "required": ["target", "nodeId", "text"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "layout-nodes",
+        "description": "Align or distribute existing sibling nodes by intent. The tool computes geometry from the canonical scene; do not supply coordinates.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "layoutNodes",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "nodeIds": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "operation": {
+              "type": "string",
+              "enum": ["align", "distribute"]
+            },
+            "axis": {
+              "type": "string",
+              "enum": ["horizontal", "vertical"]
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["start", "center", "end"]
+            }
+          },
+          "required": ["target", "nodeIds", "operation", "axis"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "arrange-nodes",
+        "description": "Reorder the children of a parent node (or the top-level children of a page when parentId is null). The provided nodeIds must exactly match the existing child set.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "arrangeNodes",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "parentId": { "type": "string" },
+            "pageId": { "type": "string" },
+            "nodeIds": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["target", "nodeIds"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "export-svg",
+        "description": "Export a canonical .design.html document as a persisted Workspace SVG file. The server renders the parsed Nautilo scene; it never writes arbitrary iframe SVG bytes.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "exportSvg",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace"]
+                },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "overwrite": { "type": "boolean" },
+            "scope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageHandle": { "type": "string" },
+                "nodeHandles": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["pageHandle"]
+            }
+          },
+          "required": ["source", "target"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "export-png",
+        "description": "Export a canonical .design.html page, frame or selection as a PNG artifact. Uses exact bundled-font outlines; ambient fonts and unresolved images fail explicitly. The server validates and rasterizes the canonical scene, preserving destination authority and collision recovery.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "exportPng",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace", "currentFolder"]
+                },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": ["workspace"]
+                },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "overwrite": { "type": "boolean" },
+            "scope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageHandle": { "type": "string" },
+                "nodeHandles": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["pageHandle"]
+            }
+          },
+          "required": ["source", "target"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      }
+    ]
+  },
+  "liveReview": {
+    "enabled": true
+  },
+  "createActions": [
+    {
+      "id": "new-design",
+      "label": "New design",
+      "defaultFilename": "Untitled.design.html",
+      "mimeType": "text/html",
+      "targetSurfaces": ["workspace", "currentFolder"],
+      "template": {
+        "kind": "file",
+        "path": "templates/empty-design.html"
+      },
+      "openAfterCreate": true
+    }
+  ],
+  "conversions": {
+    "export": [
+      {
+        "id": "export-svg",
+        "label": "SVG image (.svg)",
+        "to": {
+          "extension": ".svg",
+          "mimeType": "image/svg+xml"
+        },
+        "tool": "export-svg",
+        "targetSurfaces": ["workspace"]
+      },
+      {
+        "id": "export-png",
+        "label": "PNG image (.png)",
+        "to": {
+          "extension": ".png",
+          "mimeType": "image/png"
+        },
+        "tool": "export-png",
+        "targetSurfaces": ["workspace"]
+      }
+    ]
+  },
+  "contentAssociations": [
+    {
+      "id": "design-html",
+      "kind": "html-script-json",
+      "scriptId": "manifest",
+      "scriptType": "application/vnd.nautilo.design+json",
+      "match": {
+        "documentType": "design",
+        "editor": "nautilo-design",
+        "payloadFormat": "application/vnd.nautilo.design-scene+json"
+      }
+    }
+  ]
+}

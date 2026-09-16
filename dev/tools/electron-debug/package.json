@@ -1,0 +1,22 @@
+{
+  "name": "nautilo-electron-debug",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for debugging the Nautilo Electron desktop app via Chrome DevTools Protocol",
+  "main": "index.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "ws": "8.21.2"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1",
+    "@types/node": "24.10.4"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.15",
+    "body-parser": "2.3.0",
+    "hono": "4.12.34",
+    "qs": "6.15.3"
+  }
+}

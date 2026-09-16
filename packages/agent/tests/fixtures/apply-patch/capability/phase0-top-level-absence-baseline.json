@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "status": "frozen_phase0_baseline",
+  "topLevelApplyPatch": "apply_patch",
+  "historicalCatalogAbsence": {
+    "registered": false,
+    "coreManifest": false
+  },
+  "historicalInternalFileCommand": {
+    "tool": "file",
+    "command": "apply_patch",
+    "accepted": false,
+    "meaning": "This is not the model-callable top-level apply_patch tool."
+  }
+}

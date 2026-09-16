@@ -1,0 +1,1188 @@
+{
+  "id": "nautilo-writer",
+  "name": "Writer",
+  "description": "Documents with rich text, headings, lists, and tables — opens .doc.html documents in your workspace.",
+  "display": {
+    "groupId": "nautilo-office",
+    "groupName": "Nautilo Office",
+    "groupOrder": 10,
+    "appOrder": 10,
+    "defaultCollapsed": false
+  },
+  "version": "2.0.1",
+  "entry": "./main.ts",
+  "html": "./index.html",
+  "styles": ["./styles.css"],
+  "fileAssociations": {
+    "extensions": [],
+    "mimeTypes": []
+  },
+  "capabilities": {
+    "document": {
+      "artifact": "readwrite",
+      "currentFolder": "readwrite"
+    },
+    "office": "convert",
+    "state": "readwrite"
+  },
+  "agent": {
+    "contextProvider": "writer.activeContext",
+    "instructions": "To create a new Writer document, use create-file, populate its returned target with the closed-document tools, and direct the Human to the Open document card. For tables, pass cells to insert-table to write the table text in the same save. Do not ask the Human to create a blank document first. First inspect the callable tools. If the live Writer review tools are absent, call discover_tools with a concise Writer-review intent in the productivity category, activate the returned eligible Writer review tools, then continue on the next model loop when their schemas are callable. Deferred tools are not unavailable. For an open document, use the live-review tools and pass the supplied sessionToken and documentVersion only in tool arguments. Never expose or fabricate those values in natural-language output. Use review proposals rather than direct mutation tools. When edit-open-writer returns proposal_ready, stop calling tools and end the current run; the host presents Human review, performs any accepted canonical save, and resumes the same Task for verification. Never search for or call a separate apply/save tool. Read exactly 1–5 canonical blocks; for repeated, ambiguous, or micro edits, locate the text, then submit the locator handle; use match anchors only when unique. For insertions, locate adjacent text with collapseTo start or end and submit that collapsed locator; do not use block, match, or sentence scope for insert.",
+    "tools": [
+      {
+        "id": "create-file",
+        "title": "Create Writer document",
+        "description": "Create a new native Writer document, ready for Writer editing tools. Choose a document name; .doc.html is added automatically. Creates in Workspace. Existing files are never overwritten. Populate the returned target with Writer tools, then direct the Human to the Open document card. Creation does not claim the editor has opened.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createFile",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "filename": {
+              "type": "string",
+              "description": "Document name, optionally ending in .doc.html. No folders."
+            }
+          },
+          "required": [
+            "filename"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "edit-open-writer",
+        "title": "Propose edits to open Writer",
+        "description": "Required for open Writer edits. Creates reviewable suggestions before save. For text corrections, set operations[].kind to exact \"replace\"; never \"replace_text\" (that is the closed-document tool). For insertion, locate nearby text with collapseTo start (insert before it) or end (insert after it), then submit that locator handle; insert accepts locator scope only. For table text: use the outline's table blockId with read-open-writer-range, choose a returned editable nested cell blockId, then locate-open-writer-text and submit its locator. Structural table edits use tableBlockId plus cell coordinates. For repeated, ambiguous, or micro edits: read-open-writer-range, then locate-open-writer-text, then submit the returned locator handle as scope.kind locator. Independent same-block edits may be submitted together in any order; use a separate locator-first proposal only if the server returns a typed proposal conflict. Never invent or submit ranges, offsets, oldString, copied source, occurrence counts, patch grammar, targets, or paths. Use match anchors only when unique within their block; skip only when canonical location cannot be resolved.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editOpenWriter",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessionToken": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "documentVersion": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "artifact_revision" },
+                    "revision": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["kind", "revision"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "local_sha" },
+                    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  },
+                  "required": ["kind", "sha256"]
+                }
+              ]
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "kind": { "const": "insert-table-row" }, "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 }, "rowIndex": { "type": "integer", "minimum": 0 } },
+                    "required": ["kind", "tableBlockId", "rowIndex"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "kind": { "const": "delete-table-row" }, "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 }, "rowIndex": { "type": "integer", "minimum": 0 } },
+                    "required": ["kind", "tableBlockId", "rowIndex"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "kind": { "const": "insert-table-column" }, "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 }, "colIndex": { "type": "integer", "minimum": 0 } },
+                    "required": ["kind", "tableBlockId", "colIndex"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "kind": { "const": "delete-table-column" }, "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 }, "colIndex": { "type": "integer", "minimum": 0 } },
+                    "required": ["kind", "tableBlockId", "colIndex"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "merge-table-cells" },
+                      "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "start": { "type": "object", "additionalProperties": false, "properties": { "rowIndex": { "type": "integer", "minimum": 0 }, "colIndex": { "type": "integer", "minimum": 0 } }, "required": ["rowIndex", "colIndex"] },
+                      "end": { "type": "object", "additionalProperties": false, "properties": { "rowIndex": { "type": "integer", "minimum": 0 }, "colIndex": { "type": "integer", "minimum": 0 } }, "required": ["rowIndex", "colIndex"] }
+                    },
+                    "required": ["kind", "tableBlockId", "start", "end"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "split-table-cell" },
+                      "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "cell": { "type": "object", "additionalProperties": false, "properties": { "rowIndex": { "type": "integer", "minimum": 0 }, "colIndex": { "type": "integer", "minimum": 0 } }, "required": ["rowIndex", "colIndex"] }
+                    },
+                    "required": ["kind", "tableBlockId", "cell"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "set-table-cell-style" },
+                      "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "cell": { "type": "object", "additionalProperties": false, "properties": { "rowIndex": { "type": "integer", "minimum": 0 }, "colIndex": { "type": "integer", "minimum": 0 } }, "required": ["rowIndex", "colIndex"] },
+                      "style": { "type": "object", "additionalProperties": false, "properties": { "backgroundColor": { "type": "string", "maxLength": 16 }, "verticalAlign": { "type": "string", "enum": ["top", "middle", "bottom"] }, "padding": { "type": "number" } } }
+                    },
+                    "required": ["kind", "tableBlockId", "cell", "style"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "kind": { "const": "delete-table" }, "tableBlockId": { "type": "string", "minLength": 1, "maxLength": 200 } },
+                    "required": ["kind", "tableBlockId"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "insert" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "scope": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": { "const": "locator" },
+                          "handle": { "type": "string", "minLength": 32, "maxLength": 256 }
+                        },
+                        "required": ["kind", "handle"]
+                      },
+                      "text": { "type": "string", "maxLength": 20000 }
+                    },
+                    "required": ["kind", "blockId", "scope", "text"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "delete" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "scope": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": { "type": "string", "enum": ["match", "sentence", "block", "locator"] },
+                          "anchor": { "type": "string", "minLength": 1, "maxLength": 512 },
+                          "handle": { "type": "string", "minLength": 32, "maxLength": 256 }
+                        },
+                        "required": ["kind"]
+                      }
+                    },
+                    "required": ["kind", "blockId", "scope"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "replace" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "scope": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": { "type": "string", "enum": ["match", "sentence", "block", "locator"] },
+                          "anchor": { "type": "string", "minLength": 1, "maxLength": 512 },
+                          "handle": { "type": "string", "minLength": 32, "maxLength": 256 }
+                        },
+                        "required": ["kind"]
+                      },
+                      "text": { "type": "string", "maxLength": 20000 }
+                    },
+                    "required": ["kind", "blockId", "scope", "text"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "format-inline" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "scope": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": { "type": "string", "enum": ["match", "sentence", "block", "locator"] },
+                          "anchor": { "type": "string", "minLength": 1, "maxLength": 512 },
+                          "handle": { "type": "string", "minLength": 32, "maxLength": 256 }
+                        },
+                        "required": ["kind"]
+                      },
+                      "style": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "bold": { "type": "boolean" },
+                          "italic": { "type": "boolean" },
+                          "underline": { "type": "boolean" },
+                          "strikethrough": { "type": "boolean" },
+                          "fontSize": { "type": "number" },
+                          "fontFamily": { "type": "string", "maxLength": 100 },
+                          "color": { "type": "string", "maxLength": 16 },
+                          "backgroundColor": { "type": "string", "maxLength": 16 },
+                          "href": { "type": "string", "maxLength": 2000 }
+                        }
+                      }
+                    },
+                    "required": ["kind", "blockId", "scope", "style"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "format-block" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "scope": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": { "kind": { "const": "block" } },
+                        "required": ["kind"]
+                      },
+                      "style": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "alignment": { "type": "string", "enum": ["left", "center", "right", "justify"] },
+                          "lineHeight": { "type": "number" },
+                          "marginTop": { "type": "number" },
+                          "marginBottom": { "type": "number" },
+                          "textIndent": { "type": "number" },
+                          "marginLeft": { "type": "number" }
+                        }
+                      }
+                    },
+                    "required": ["kind", "blockId", "scope", "style"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "set-block-type" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "scope": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": { "kind": { "const": "block" } },
+                        "required": ["kind"]
+                      },
+                      "blockType": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "type": { "type": "string", "enum": ["paragraph", "heading", "list-item"] },
+                          "headingLevel": { "type": "integer", "enum": [1, 2, 3] },
+                          "listKind": { "type": "string", "enum": ["ordered", "unordered"] },
+                          "listLevel": { "type": "integer", "minimum": 0, "maximum": 8 }
+                        },
+                        "required": ["type"]
+                      }
+                    },
+                    "required": ["kind", "blockId", "scope", "blockType"]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "move-block" },
+                      "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                      "destination": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "position": { "type": "string", "enum": ["start", "end", "after"] },
+                          "afterBlockId": { "type": "string", "minLength": 1, "maxLength": 200 }
+                        },
+                        "required": ["position"]
+                      }
+                    },
+                    "required": ["kind", "blockId", "destination"]
+                  }
+                ]
+              }
+            }
+          },
+          "required": ["sessionToken", "documentVersion", "operations"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "read-open-writer-range",
+        "title": "Read canonical open Writer range",
+        "description": "Read exactly 1–5 canonical Writer text blocks from the validated open session. When blockId is a table from the outline, returns a UTF-8-byte-bounded coordinate-addressed table payload with editable nested cell block IDs and explicit text completeness. Follow returned nextCursor exactly to paginate; it is a validated logical table coordinate, not a document offset. Covered merged cells are non-editable and identify their anchor. Supply only sessionToken, documentVersion, blockId, optional tableCursor, and optional adjacent block counts; never supply a target or path.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "readOpenWriterRange",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessionToken": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "documentVersion": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "artifact_revision" },
+                    "revision": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["kind", "revision"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "local_sha" },
+                    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  },
+                  "required": ["kind", "sha256"]
+                }
+              ]
+            },
+            "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "beforeBlocks": { "type": "integer", "minimum": 0, "maximum": 4 },
+            "afterBlocks": { "type": "integer", "minimum": 0, "maximum": 4 },
+            "tableCursor": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "rowIndex": { "type": "integer", "minimum": 0 },
+                "colIndex": { "type": "integer", "minimum": 0 },
+                "blockIndex": { "type": "integer", "minimum": 0 },
+                "sliceIndex": { "type": "integer", "minimum": 0 }
+              },
+              "required": ["rowIndex", "colIndex", "blockIndex", "sliceIndex"]
+            }
+          },
+          "required": ["sessionToken", "documentVersion", "blockId"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "locate-open-writer-text",
+        "title": "Locate canonical open Writer text",
+        "description": "Resolve a 1–5-word target using optional 1–5-word immediately before/after anchors in one canonical block. For insertion, set collapseTo to start to insert before the target or end to insert after it; otherwise the locator selects the target text. Returns only an opaque locator handle; never submit source text, offsets, occurrence counts, paths, or patch grammar.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "locateOpenWriterText",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessionToken": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "documentVersion": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "artifact_revision" },
+                    "revision": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["kind", "revision"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "local_sha" },
+                    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  },
+                  "required": ["kind", "sha256"]
+                }
+              ]
+            },
+            "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "before": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "target": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "after": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "collapseTo": { "type": "string", "enum": ["start", "end"] }
+          },
+          "required": ["sessionToken", "documentVersion", "blockId", "target"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "inspect-document",
+        "title": "Inspect document",
+        "description": "Read a Writer document and return a compact block outline (types, heading levels, list info, and truncated text) for reasoning about its structure.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectDocument",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            }
+          },
+          "required": ["target"]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "insert-blocks",
+        "description": "Insert paragraph, heading, or list-item blocks into a closed Writer document, optionally after a given block id (appends when omitted). For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "insertBlocks",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "afterBlockId": { "type": "string" },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": { "type": "string", "enum": ["paragraph", "heading", "list-item"] },
+                  "text": { "type": "string" },
+                  "headingLevel": { "type": "number", "enum": [1, 2, 3] },
+                  "listKind": { "type": "string", "enum": ["ordered", "unordered"] },
+                  "listLevel": { "type": "number" }
+                },
+                "required": ["type", "text"]
+              }
+            }
+          },
+          "required": ["target", "blocks"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "replace-text",
+        "description": "Replace text within a closed Writer document's block content (first occurrence by default, or all occurrences when replaceAll is true). For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "replaceText",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "oldString": { "type": "string" },
+            "newString": { "type": "string" },
+            "replaceAll": { "type": "boolean" }
+          },
+          "required": ["target", "oldString", "newString"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "set-block-type",
+        "description": "Convert a block's type in a closed Writer document (paragraph / title / subtitle / heading / list-item). For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "setBlockType",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "toType": { "type": "string", "enum": ["paragraph", "title", "subtitle", "heading", "list-item"] },
+            "headingLevel": { "type": "number", "enum": [1, 2, 3] },
+            "listKind": { "type": "string", "enum": ["ordered", "unordered"] },
+            "listLevel": { "type": "number" }
+          },
+          "required": ["target", "blockId", "toType"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "apply-block-style",
+        "description": "Apply paragraph-level style to a single block in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "applyBlockStyle",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "style": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "alignment": { "type": "string", "enum": ["left", "center", "right", "justify"] },
+                "lineHeight": { "type": "number" },
+                "marginTop": { "type": "number" },
+                "marginBottom": { "type": "number" },
+                "textIndent": { "type": "number" },
+                "marginLeft": { "type": "number" }
+              }
+            }
+          },
+          "required": ["target", "blockId", "style"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "format-text",
+        "description": "Apply character-level formatting to a range within a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "formatText",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "from": { "type": "number" },
+            "to": { "type": "number" },
+            "style": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "bold": { "type": "boolean" },
+                "italic": { "type": "boolean" },
+                "underline": { "type": "boolean" },
+                "strikethrough": { "type": "boolean" },
+                "superscript": { "type": "boolean" },
+                "subscript": { "type": "boolean" },
+                "fontSize": { "type": "number" },
+                "fontFamily": { "type": "string" },
+                "color": { "type": "string" },
+                "backgroundColor": { "type": "string" },
+                "href": { "type": "string" },
+                "clear": { "type": "boolean" }
+              }
+            }
+          },
+          "required": ["target", "blockId", "from", "style"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "delete-blocks",
+        "description": "Delete one or more blocks by id from a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "deleteBlocks",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockIds": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["target", "blockIds"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "move-blocks",
+        "description": "Reorder blocks by id in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "moveBlocks",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockIds": { "type": "array", "items": { "type": "string" } },
+            "position": { "type": "string", "enum": ["start", "end", "after"] },
+            "afterBlockId": { "type": "string" }
+          },
+          "required": ["target", "blockIds", "position"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "insert-table",
+        "description": "Insert a table into a closed Writer document. Pass cells as row-major text to populate every cell in the same save; omit cells for an empty table. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "insertTable",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "afterBlockId": { "type": "string" },
+            "rows": { "type": "number" },
+            "cols": { "type": "number" },
+            "cells": {
+              "type": "array",
+              "description": "Optional row-major cell text, exactly rows arrays of cols strings.",
+              "items": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "required": ["target", "rows", "cols"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "insert-table-row",
+        "description": "Insert one row of empty cells into a closed Writer document table. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "insertTableRow",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "rowIndex": { "type": "number" }
+          },
+          "required": ["target", "blockId", "rowIndex"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "delete-table-row",
+        "description": "Delete a row from a table in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "deleteTableRow",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "rowIndex": { "type": "number" }
+          },
+          "required": ["target", "blockId", "rowIndex"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "insert-table-column",
+        "description": "Insert one column of empty cells into a closed Writer document table. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "insertTableColumn",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "colIndex": { "type": "number" }
+          },
+          "required": ["target", "blockId", "colIndex"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "delete-table-column",
+        "description": "Delete a column from a table in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "deleteTableColumn",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "colIndex": { "type": "number" }
+          },
+          "required": ["target", "blockId", "colIndex"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "merge-table-cells",
+        "description": "Merge a rectangular range of table cells in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "mergeTableCells",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "start": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "rowIndex": { "type": "number" },
+                "colIndex": { "type": "number" }
+              },
+              "required": ["rowIndex", "colIndex"]
+            },
+            "end": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "rowIndex": { "type": "number" },
+                "colIndex": { "type": "number" }
+              },
+              "required": ["rowIndex", "colIndex"]
+            }
+          },
+          "required": ["target", "blockId", "start", "end"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "split-table-cell",
+        "description": "Split a previously-merged table cell in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "splitTableCell",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "rowIndex": { "type": "number" },
+            "colIndex": { "type": "number" }
+          },
+          "required": ["target", "blockId", "rowIndex", "colIndex"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "set-table-cell-style",
+        "description": "Apply cell-level style to a closed Writer document table cell. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "setTableCellStyle",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" },
+            "rowIndex": { "type": "number" },
+            "colIndex": { "type": "number" },
+            "style": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "backgroundColor": { "type": "string" },
+                "verticalAlign": { "type": "string", "enum": ["top", "middle", "bottom"] },
+                "padding": { "type": "number" }
+              }
+            }
+          },
+          "required": ["target", "blockId", "rowIndex", "colIndex", "style"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "delete-table",
+        "description": "Delete an entire table block by id from a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "deleteTable",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockId": { "type": "string" }
+          },
+          "required": ["target", "blockId"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "indent-blocks",
+        "description": "Increase indent of listed blocks in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "indentBlocks",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockIds": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["target", "blockIds"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "outdent-blocks",
+        "description": "Decrease indent of listed blocks in a closed Writer document. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "outdentBlocks",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["workspace", "currentFolder"] },
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" }
+              },
+              "required": ["surface"]
+            },
+            "blockIds": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["target", "blockIds"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "import-docx",
+        "description": "Import a .docx file into a closed Writer HTML target. For an open Writer document, use edit-open-writer instead of overwriting targetPath.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "importDocx",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["currentFolder", "workspace"] },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "targetPath": { "type": "string", "description": "Logical workspace path for the imported HTML artifact, e.g. \"notes/report.html\"." },
+            "fileName": { "type": "string", "description": "Optional display filename for the source .docx; defaults to the basename of source.path." },
+            "overwrite": { "type": "boolean", "description": "Overwrite an existing target instead of returning a conflict. Defaults to false." }
+          },
+          "required": ["source", "targetPath"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious",
+        "officeTransform": { "format": "docx", "operation": "import" }
+      },
+      {
+        "id": "export-docx",
+        "description": "Export a Writer HTML document to a .docx. The export source may be open; any Writer document selected as the output target must be closed. For an open Writer document, use edit-open-writer.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "exportDocx",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["currentFolder", "workspace"] },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": { "type": "string", "enum": ["currentFolder", "workspace"] },
+                "path": { "type": "string" }
+              },
+              "required": ["surface", "path"]
+            },
+            "fileName": { "type": "string", "description": "Optional display filename for the .docx; defaults to a stem derived from the source workspace path." },
+            "overwrite": { "type": "boolean", "description": "Overwrite an existing target instead of returning a conflict. Defaults to false." }
+          },
+          "required": ["source", "target"]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious",
+        "officeTransform": { "format": "docx", "operation": "export" }
+      }
+    ]
+  },
+  "liveReview": {
+    "enabled": true
+  },
+  "createActions": [
+    {
+      "id": "new-document",
+      "label": "New document",
+      "defaultFilename": "Untitled document.html",
+      "mimeType": "text/html",
+      "targetSurfaces": ["workspace", "currentFolder"],
+      "template": {
+        "kind": "file",
+        "path": "templates/empty-document.html"
+      },
+      "openAfterCreate": true
+    }
+  ],
+  "conversions": {
+    "import": [
+      {
+        "id": "import-docx",
+        "label": "Import to Writer",
+        "from": {
+          "extensions": [".docx"],
+          "mimeTypes": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
+        },
+        "sourceSurfaces": ["currentFolder", "workspace"],
+        "tool": "import-docx",
+        "target": { "surface": "workspace", "extension": ".html" },
+        "openAfterImport": true
+      }
+    ],
+    "export": [
+      {
+        "id": "export-docx",
+        "label": "Word document (.docx)",
+        "to": {
+          "extension": ".docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+        "tool": "export-docx",
+        "targetSurfaces": ["currentFolder", "workspace"]
+      }
+    ]
+  },
+  "contentAssociations": [
+    {
+      "id": "writer-document",
+      "kind": "html-script-json",
+      "scriptId": "manifest",
+      "scriptType": "application/vnd.nautilo.document+json",
+      "match": {
+        "documentType": "document",
+        "editor": "wafflebase",
+        "payloadFormat": "application/vnd.wafflebase.document+json"
+      }
+    }
+  ]
+}

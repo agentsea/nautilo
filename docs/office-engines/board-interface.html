@@ -1,0 +1,1642 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nautilo Board · Interactive design study</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #faf8f5;
+        --panel: #f5f0eb;
+        --card: #fffdfa;
+        --element: #ece5dd;
+        --ink: #1c1917;
+        --muted: #57534e;
+        --border: #d6d3d1;
+        --primary: #2d2a26;
+        --on-primary: #faf8f5;
+        --grid: #d9d2c9;
+        --shadow: 0 6px 24px #33281a0d;
+        --accent: #785ac5;
+      }
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #1a1b26;
+        --panel: #1e2030;
+        --card: #222436;
+        --element: #292d43;
+        --ink: #c8d3f5;
+        --muted: #a3add4;
+        --border: #3b4261;
+        --primary: #82aaff;
+        --on-primary: #1a1b26;
+        --grid: #34394f;
+        --shadow: 0 6px 24px #0003;
+        --accent: #b5a0ef;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        font-size: 14px;
+      }
+      button,
+      input,
+      select {
+        font: inherit;
+        color: inherit;
+      }
+      button,
+      select {
+        border: 1px solid transparent;
+        background: transparent;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 36px;
+        padding: 8px 10px;
+        white-space: nowrap;
+      }
+      button:hover {
+        background: var(--element);
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible,
+      [contenteditable]:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+      svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.65;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+      .defs {
+        display: none;
+      }
+      .app {
+        height: 100dvh;
+        display: grid;
+        grid-template-columns: 60px 1fr;
+        grid-template-rows: 68px 1fr 32px;
+        overflow: hidden;
+      }
+      .rail {
+        grid-row: 1/-1;
+        border-right: 1px solid var(--border);
+        background: var(--panel);
+        display: flex;
+        align-items: center;
+        flex-direction: column;
+        gap: 19px;
+        padding: 19px 8px;
+      }
+      .brand {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border: 1.5px solid var(--ink);
+        border-radius: 50%;
+        font-family: Georgia, serif;
+        font-size: 22px;
+      }
+      .rail .selected {
+        background: var(--element);
+        color: var(--accent);
+      }
+      .rail .bottom {
+        margin-top: auto;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 26px;
+        gap: 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      .identity {
+        display: flex;
+        gap: 13px;
+        align-items: center;
+        min-width: 0;
+      }
+      .app-icon {
+        background: #eee5ff;
+        color: #7255ad;
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border: 1px solid #d3c2eb;
+        border-radius: 10px;
+      }
+      .identity small {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+      .identity h1 {
+        font-size: 16px;
+        letter-spacing: -0.3px;
+        margin: 3px 0 0;
+        font-weight: 650;
+      }
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .outline-button {
+        border: 1px solid var(--border);
+        background: var(--card);
+      }
+      .primary {
+        background: var(--primary);
+        color: var(--on-primary);
+      }
+      .primary:hover {
+        opacity: 0.9;
+        background: var(--primary);
+      }
+      .workspace {
+        display: flex;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .outline {
+        width: 214px;
+        flex-shrink: 0;
+        border-right: 1px solid var(--border);
+        padding: 25px 16px;
+        background: var(--bg);
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      .outline[hidden] {
+        display: none;
+      }
+      .section-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        color: var(--muted);
+        margin: 0 0 12px 10px;
+      }
+      .outline button {
+        justify-content: flex-start;
+        width: 100%;
+        font-size: 12px;
+        padding: 11px 12px;
+        gap: 12px;
+        margin-bottom: 4px;
+      }
+      .outline button.active {
+        background: var(--element);
+        font-weight: 600;
+      }
+      .tiny-dot {
+        height: 8px;
+        width: 8px;
+        border-radius: 3px;
+        background: #b7a2dc;
+        display: inline-block;
+      }
+      .outline p {
+        font-size: 12px;
+        line-height: 1.6;
+        color: var(--muted);
+        margin: 10px;
+      }
+      .outline .board-info {
+        margin-top: auto;
+        border-top: 1px solid var(--border);
+        padding-top: 15px;
+      }
+      .stage {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        background-color: var(--bg);
+        background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+        background-size: 24px 24px;
+        touch-action: none;
+      }
+      .stage.hand {
+        cursor: grab;
+      }
+      .stage.panning {
+        cursor: grabbing;
+      }
+      .world {
+        position: absolute;
+        left: 0;
+        top: 0;
+        transform-origin: 0 0;
+        width: 1600px;
+        height: 1100px;
+      }
+      .frame {
+        position: absolute;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--panel) 65%, transparent);
+      }
+      .frame-label {
+        position: absolute;
+        top: -28px;
+        left: 0;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+      .board-title {
+        position: absolute;
+        left: 115px;
+        top: 100px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .board-title h2 {
+        font-size: 38px;
+        letter-spacing: -1.4px;
+        font-weight: 650;
+        margin: 12px 0;
+      }
+      .board-title p {
+        color: var(--muted);
+        font-size: 15px;
+        margin: 0;
+      }
+      .node {
+        position: absolute;
+        padding: 22px;
+        border-radius: 3px;
+        box-shadow: 0 3px 9px #271b1712;
+        color: #302918;
+        touch-action: none;
+        cursor: move;
+      }
+      .node.selected {
+        outline: 2px solid var(--accent);
+        outline-offset: 5px;
+      }
+      .node.selected:after {
+        content: "";
+        position: absolute;
+        width: 7px;
+        height: 7px;
+        background: var(--card);
+        border: 1.5px solid var(--accent);
+        right: -9px;
+        bottom: -9px;
+      }
+      .node .label {
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        font-weight: 750;
+        opacity: 0.75;
+        margin-bottom: 16px;
+      }
+      .node .body {
+        font-size: 19px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        outline: 0;
+        min-height: 48px;
+      }
+      .node .body[contenteditable="true"] {
+        cursor: text;
+      }
+      .node.shape {
+        border-radius: 14px;
+        box-shadow: none;
+        border: 1.5px solid #9f8abf;
+      }
+      .node.text {
+        color: var(--ink);
+        background: transparent !important;
+        box-shadow: none;
+        padding: 8px;
+      }
+      .node.image {
+        padding: 0;
+        overflow: hidden;
+        border-radius: 10px;
+      }
+      .node img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .tools {
+        position: absolute;
+        top: 90px;
+        left: 18px;
+        display: flex;
+        flex-direction: column;
+        padding: 6px;
+        background: var(--card);
+        box-shadow: var(--shadow);
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        z-index: 5;
+        gap: 4px;
+      }
+      .tools button {
+        width: 40px;
+        height: 40px;
+        padding: 9px;
+        border-radius: 8px;
+      }
+      .tools button.active {
+        background: var(--primary);
+        color: var(--on-primary);
+      }
+      .separator {
+        height: 1px;
+        background: var(--border);
+        margin: 5px;
+      }
+      .format {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 8px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        box-shadow: var(--shadow);
+        z-index: 6;
+      }
+      .format[hidden] {
+        display: none;
+      }
+      .format select {
+        height: 32px;
+        font-size: 12px;
+        padding: 0 8px;
+        background: var(--card);
+        max-width: 125px;
+      }
+      .format .divider {
+        height: 20px;
+        width: 1px;
+        background: var(--border);
+        margin: 0 5px;
+      }
+      .format button {
+        min-height: 30px;
+        height: 32px;
+        padding: 5px 8px;
+      }
+      .swatch {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 1px solid #0003;
+      }
+      .navigation {
+        position: absolute;
+        bottom: 20px;
+        right: 20px;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+        padding: 5px;
+        z-index: 5;
+      }
+      .navigation button {
+        font-size: 12px;
+      }
+      .hint {
+        position: absolute;
+        bottom: 27px;
+        left: 24px;
+        color: var(--muted);
+        font-size: 11px;
+        pointer-events: none;
+      }
+      .hint kbd {
+        font: inherit;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 3px 5px;
+        margin-right: 3px;
+      }
+      .minimap {
+        position: absolute;
+        right: 20px;
+        bottom: 80px;
+        width: 154px;
+        height: 100px;
+        padding: 9px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+        z-index: 4;
+      }
+      .minimap svg {
+        width: 100%;
+        height: 100%;
+        stroke: none;
+      }
+      .minimap[hidden] {
+        display: none;
+      }
+      .overview-toggle {
+        position: absolute;
+        left: 18px;
+        top: 20px;
+        z-index: 5;
+        background: var(--card);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+      }
+      footer {
+        grid-column: 2;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        border-top: 1px solid var(--border);
+        font-size: 10px;
+        color: var(--muted);
+        background: var(--panel);
+      }
+      .review-tag {
+        font-weight: 650;
+        letter-spacing: 0.07em;
+      }
+      .toast {
+        position: absolute;
+        bottom: 75px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--primary);
+        color: var(--on-primary);
+        border-radius: 8px;
+        padding: 12px 17px;
+        font-size: 12px;
+        z-index: 10;
+        max-width: 80%;
+        text-align: center;
+      }
+      .toast[hidden] {
+        display: none;
+      }
+      .connector {
+        position: absolute;
+        inset: 0;
+        overflow: visible;
+        width: 1600px;
+        height: 1100px;
+        pointer-events: none;
+        stroke: var(--muted);
+        stroke-width: 1.4;
+      }
+      .palette-menu {
+        position: absolute;
+        top: 65px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 10px;
+        display: flex;
+        gap: 7px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        z-index: 7;
+      }
+      .palette-menu[hidden] {
+        display: none;
+      }
+      .palette-menu button {
+        padding: 4px;
+        min-height: 30px;
+      }
+      .blank-intro {
+        position: absolute;
+        top: 38%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        max-width: 380px;
+        color: var(--muted);
+      }
+      .blank-intro[hidden] {
+        display: none;
+      }
+      .blank-intro h2 {
+        color: var(--ink);
+        font-weight: 600;
+        letter-spacing: -0.6px;
+      }
+      .blank-intro p {
+        font-size: 14px;
+        line-height: 1.7;
+      }
+      .blank-intro button {
+        margin-top: 10px;
+      }
+      .view-label {
+        font-size: 12px;
+        min-width: 44px;
+        text-align: center;
+      }
+      .status-message {
+        max-width: 55%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .connections-label {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.65;
+      }
+      @media (max-width: 1100px) {
+        .outline {
+          width: 180px;
+        }
+        .topbar {
+          padding: 0 18px;
+        }
+        .hint {
+          max-width: 45%;
+          line-height: 1.8;
+        }
+        .format {
+          left: 86px;
+          transform: none;
+        }
+        .format select {
+          max-width: 110px;
+        }
+      }
+      @media (max-width: 760px) {
+        .app {
+          grid-template-columns: 48px 1fr;
+          grid-template-rows: 62px 1fr 36px;
+        }
+        .rail {
+          padding: 17px 4px;
+        }
+        .outline {
+          position: absolute;
+          left: 48px;
+          top: 62px;
+          bottom: 36px;
+          z-index: 8;
+          box-shadow: 10px 0 30px #0002;
+        }
+        .topbar {
+          padding: 0 12px;
+          gap: 8px;
+        }
+        .top-actions {
+          gap: 4px;
+        }
+        .top-actions button {
+          font-size: 11px;
+          padding: 7px;
+        }
+        .top-actions .reset-label {
+          display: none;
+        }
+        .identity h1 {
+          font-size: 13px;
+        }
+        .identity small {
+          font-size: 9px;
+        }
+        .identity {
+          gap: 8px;
+        }
+        .app-icon {
+          width: 30px;
+          height: 30px;
+        }
+        .tools {
+          top: 80px;
+          left: 10px;
+        }
+        .tools button {
+          width: 36px;
+          height: 36px;
+        }
+        .format {
+          left: 62px;
+          right: 8px;
+          overflow-x: auto;
+          max-width: calc(100% - 70px);
+        }
+        .format select {
+          max-width: 90px;
+        }
+        .format .optional {
+          display: none;
+        }
+        .hint {
+          display: none;
+        }
+        .navigation {
+          right: 12px;
+          bottom: 15px;
+        }
+        .minimap {
+          right: 12px;
+          width: 125px;
+          height: 85px;
+        }
+        .overview-toggle {
+          left: 10px;
+        }
+        footer {
+          padding: 0 10px;
+          font-size: 9px;
+        }
+        .blank-intro {
+          width: 70%;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <svg class="defs" aria-hidden="true">
+      <defs>
+        <symbol id="icon-grid" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </symbol>
+        <symbol id="icon-note" viewBox="0 0 24 24">
+          <path
+            d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"
+          />
+          <path d="M15 21v-6h6M7 8h10M7 12h6" />
+        </symbol>
+        <symbol id="icon-pointer" viewBox="0 0 24 24">
+          <path d="m5 3 15 10-7 1-4 7-4-18Z" />
+        </symbol>
+        <symbol id="icon-hand" viewBox="0 0 24 24">
+          <path
+            d="M7 12V6a2 2 0 0 1 4 0v5-7a2 2 0 0 1 4 0v7-5a2 2 0 0 1 4 0v6-3a2 2 0 0 1 3 0v7c0 4-3 6-7 6h-2c-3 0-5-2-6-4l-4-5a2 2 0 0 1 3-3Z"
+            transform="translate(-1,-1) scale(.95)"
+          />
+        </symbol>
+        <symbol id="icon-text" viewBox="0 0 24 24">
+          <path d="M4 6V3h16v3M12 3v18M8 21h8" />
+        </symbol>
+        <symbol id="icon-shape" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="12" height="12" rx="2" />
+          <circle cx="16" cy="16" r="6" />
+        </symbol>
+        <symbol id="icon-image" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8" cy="8" r="1.5" />
+          <path d="m3 17 6-6 5 5 3-3 4 4" />
+        </symbol>
+        <symbol id="icon-arrow" viewBox="0 0 24 24">
+          <path d="M4 20 20 4M9 4h11v11" />
+        </symbol>
+        <symbol id="icon-undo" viewBox="0 0 24 24">
+          <path
+            d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 0 14"
+            transform="translate(0,-2)"
+          />
+        </symbol>
+        <symbol id="icon-redo" viewBox="0 0 24 24">
+          <path
+            d="m16 4 5 5-5 5m5-5H11a7 7 0 0 0 0 14"
+            transform="translate(0,-2)"
+          />
+        </symbol>
+        <symbol id="icon-panel" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M9 4v16" />
+        </symbol>
+        <symbol id="icon-sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"
+          />
+        </symbol>
+        <symbol id="icon-chat" viewBox="0 0 24 24">
+          <path
+            d="M5 3h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H8l-5 3V5a2 2 0 0 1 2-2Z"
+          />
+        </symbol>
+        <symbol id="icon-spark" viewBox="0 0 24 24">
+          <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z" />
+        </symbol>
+        <symbol id="icon-map" viewBox="0 0 24 24">
+          <path d="m3 5 6-2 6 2 6-2v16l-6 2-6-2-6 2Zm6-2v16m6-14v16" />
+        </symbol>
+        <symbol id="icon-trash" viewBox="0 0 24 24">
+          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />
+        </symbol>
+      </defs>
+    </svg>
+    <main class="app">
+      <nav class="rail" aria-label="Nautilo navigation">
+        <div class="brand" title="Nautilo">n</div>
+        <span title="Conversations"
+          ><svg><use href="#icon-chat" /></svg></span
+        ><span
+          class="selected"
+          style="padding: 10px; border-radius: 9px"
+          title="Office"
+          ><svg><use href="#icon-grid" /></svg></span
+        ><span title="Genies"
+          ><svg><use href="#icon-spark" /></svg></span
+        ><button
+          class="bottom"
+          id="theme"
+          aria-label="Switch to Tokyo dark palette"
+          title="Change palette"
+        >
+          <svg><use href="#icon-sun" /></svg>
+        </button>
+      </nav>
+      <header class="topbar">
+        <div class="identity">
+          <div class="app-icon">
+            <svg><use href="#icon-note" /></svg>
+          </div>
+          <div>
+            <small>NAUTILO OFFICE / BOARD</small>
+            <h1 id="document-title">A launch worth talking about</h1>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="empty" class="outline-button">Blank board</button
+          ><button id="reset" class="outline-button">
+            <span class="reset-label">Reset </span>demo
+          </button>
+        </div>
+      </header>
+      <div class="workspace">
+        <aside class="outline" id="outline" aria-label="Board overview">
+          <div>
+            <p class="section-label">ON THIS BOARD</p>
+            <button data-frame="all" class="active">
+              <svg><use href="#icon-grid" /></svg>Overview</button
+            ><button data-frame="discover">
+              <span class="tiny-dot" style="background: #d9bd6e"></span>01
+              &nbsp; Find the story</button
+            ><button data-frame="make">
+              <span class="tiny-dot" style="background: #a89bcf"></span>02
+              &nbsp; Make it real</button
+            ><button data-frame="share">
+              <span class="tiny-dot" style="background: #8bb69e"></span>03
+              &nbsp; Put it out there
+            </button>
+          </div>
+          <div>
+            <p class="section-label">A LITTLE SPACE TO THINK</p>
+            <p>
+              Start with a thought.<br />Find the connections.<br />Make
+              something together.
+            </p>
+          </div>
+          <div class="board-info">
+            <p>Double-click any note to write.<br />Drag it anywhere.</p>
+          </div>
+        </aside>
+        <section class="stage" id="stage" aria-label="Board canvas">
+          <div class="world" id="world"></div>
+          <div class="blank-intro" id="blank" hidden>
+            <svg style="width: 40px; height: 40px; color: var(--accent)">
+              <use href="#icon-note" />
+            </svg>
+            <h2>Give your next idea some space.</h2>
+            <p>
+              Add a note, drop an image, or sketch the first connection. You can
+              move everything later.
+            </p>
+            <button class="primary" id="first-note">Add a sticky note</button>
+          </div>
+          <button
+            class="overview-toggle"
+            id="outline-toggle"
+            aria-label="Toggle board overview"
+            aria-expanded="true"
+            title="Board overview"
+          >
+            <svg><use href="#icon-panel" /></svg>
+          </button>
+          <div class="tools" role="toolbar" aria-label="Create and navigate">
+            <button
+              data-tool="select"
+              class="active"
+              aria-label="Select"
+              title="Select · V"
+            >
+              <svg><use href="#icon-pointer" /></svg></button
+            ><button
+              data-tool="pan"
+              aria-label="Pan"
+              title="Pan · H, or hold Space"
+            >
+              <svg><use href="#icon-hand" /></svg>
+            </button>
+            <div class="separator"></div>
+            <button
+              data-tool="sticky"
+              aria-label="Add sticky note"
+              title="Sticky note · N"
+            >
+              <svg><use href="#icon-note" /></svg></button
+            ><button data-tool="text" aria-label="Add text" title="Text · T">
+              <svg><use href="#icon-text" /></svg></button
+            ><button data-tool="shape" aria-label="Add shape" title="Shape · R">
+              <svg><use href="#icon-shape" /></svg></button
+            ><button
+              data-tool="connect"
+              aria-label="Connect two items"
+              title="Connect two items"
+            >
+              <svg><use href="#icon-arrow" /></svg></button
+            ><button
+              id="add-image"
+              aria-label="Insert image"
+              title="Insert image"
+            >
+              <svg><use href="#icon-image" /></svg></button
+            ><input type="file" id="image-input" accept="image/*" hidden />
+            <div class="separator"></div>
+            <button id="undo" aria-label="Undo" title="Undo · ⌘Z">
+              <svg><use href="#icon-undo" /></svg></button
+            ><button id="redo" aria-label="Redo" title="Redo · ⌘⇧Z">
+              <svg><use href="#icon-redo" /></svg>
+            </button>
+          </div>
+          <div
+            class="format"
+            id="format"
+            role="toolbar"
+            aria-label="Selected item formatting"
+            hidden
+          >
+            <select id="font" aria-label="Font family">
+              <option value="sans-serif">Sans serif</option>
+              <option value="Georgia, serif">Serif</option>
+              <option value="monospace">Monospace</option></select
+            ><select id="size" aria-label="Font size">
+              <option>16</option>
+              <option selected>19</option>
+              <option>24</option>
+              <option>32</option></select
+            ><span class="divider"></span
+            ><button id="bold" title="Bold" aria-label="Bold"><b>B</b></button
+            ><button id="italic" title="Italic" aria-label="Italic">
+              <i>I</i></button
+            ><span class="divider"></span
+            ><button id="colors" aria-label="Note color" title="Note color">
+              <span class="swatch" style="background: #f7dfa0"></span></button
+            ><button
+              id="delete"
+              aria-label="Delete selected item"
+              title="Delete"
+            >
+              <svg style="width: 16px"><use href="#icon-trash" /></svg></button
+            ><button id="done" class="optional" title="Finish editing">
+              Done
+            </button>
+          </div>
+          <div class="palette-menu" id="palette" hidden></div>
+          <div class="minimap" id="minimap">
+            <svg
+              id="map-content"
+              viewBox="0 0 1500 1000"
+              aria-label="Board minimap"
+            ></svg>
+          </div>
+          <div class="hint">
+            <kbd>Space</kbd> + drag to pan &nbsp; · &nbsp; Double-click to edit
+          </div>
+          <div class="navigation">
+            <button id="map-toggle" aria-label="Toggle minimap" title="Minimap">
+              <svg style="width: 17px"><use href="#icon-map" /></svg></button
+            ><span class="divider"></span
+            ><button id="zoom-out" aria-label="Zoom out">−</button
+            ><span class="view-label" id="zoom-label">100%</span
+            ><button id="zoom-in" aria-label="Zoom in">+</button
+            ><button id="fit">Fit board</button>
+          </div>
+          <div class="toast" id="toast" role="status" hidden></div>
+        </section>
+      </div>
+      <footer>
+        <span class="review-tag"
+          >INTERACTIVE DESIGN STUDY · <span id="palette-name">IVORY</span></span
+        ><span class="status-message" id="status" aria-live="polite"
+          >Example board · edits stay in this tab</span
+        >
+      </footer>
+    </main>
+    <script>
+      // Interaction study only. No server, canonical persistence, or Genie connection.
+      const $ = (id) => document.getElementById(id),
+        stage = $("stage"),
+        world = $("world");
+      const colors = [
+        "#f7dfa0",
+        "#e4d6f6",
+        "#cde8d7",
+        "#cce3f4",
+        "#f4d3c9",
+        "#eee4d5",
+      ];
+      const initial = [
+        {
+          id: "a",
+          x: 115,
+          y: 315,
+          w: 245,
+          h: 175,
+          color: colors[0],
+          label: "THE HUMAN PROBLEM",
+          text: "A great idea should never get lost between tools.",
+        },
+        {
+          id: "b",
+          x: 140,
+          y: 523,
+          w: 245,
+          h: 170,
+          color: colors[0],
+          label: "THE FEELING",
+          text: "Less setup.\nMore “look what we made.”",
+        },
+        {
+          id: "c",
+          x: 450,
+          y: 330,
+          w: 245,
+          h: 190,
+          color: colors[1],
+          label: "THE MOMENT THAT MATTERS",
+          text: "One thought becomes a plan we can actually use.",
+        },
+        {
+          id: "d",
+          x: 465,
+          y: 552,
+          w: 245,
+          h: 150,
+          color: colors[1],
+          label: "MAKE IT TANGIBLE",
+          text: "Show the work.\nLet people try it.",
+        },
+        {
+          id: "e",
+          x: 785,
+          y: 320,
+          w: 245,
+          h: 170,
+          color: colors[2],
+          label: "THE INVITATION",
+          text: "Bring your messy ideas. Leave with something real.",
+        },
+        {
+          id: "f",
+          x: 810,
+          y: 530,
+          w: 245,
+          h: 165,
+          color: colors[2],
+          label: "FIRST SMALL STEP",
+          text: "A short film.\nA useful example.\nAn open door.",
+        },
+      ];
+      let nodes = structuredClone(initial),
+        edges = [
+          ["a", "c"],
+          ["c", "e"],
+        ],
+        selected = null,
+        tool = "select",
+        zoom = 1,
+        pan = { x: 0, y: 0 },
+        drag = null,
+        space = false,
+        connectFrom = null,
+        history = [],
+        future = [],
+        showFrames = true;
+      const frames = {
+        discover: {
+          x: 96,
+          y: 280,
+          w: 310,
+          h: 451,
+          label: "01 / FIND THE STORY",
+        },
+        make: { x: 430, y: 280, w: 310, h: 451, label: "02 / MAKE IT REAL" },
+        share: {
+          x: 765,
+          y: 280,
+          w: 310,
+          h: 451,
+          label: "03 / PUT IT OUT THERE",
+        },
+      };
+      function checkpoint() {
+        history.push(JSON.stringify({ nodes, edges, showFrames }));
+        future = [];
+        syncUndo();
+      }
+      function syncUndo() {
+        $("undo").disabled = !history.length;
+        $("redo").disabled = !future.length;
+      }
+      function restore(s) {
+        ({ nodes, edges, showFrames } = JSON.parse(s));
+        selected = null;
+        render();
+        syncUndo();
+      }
+      function status(text) {
+        $("status").textContent = text;
+      }
+      function notice(text) {
+        $("toast").textContent = text;
+        $("toast").hidden = false;
+      }
+      function dismissNotice() {
+        $("toast").hidden = true;
+      }
+      function transform() {
+        world.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
+        $("zoom-label").textContent = Math.round(zoom * 100) + "%";
+        stage.style.backgroundSize = `${24 * zoom}px ${24 * zoom}px`;
+        stage.style.backgroundPosition = `${pan.x}px ${pan.y}px`;
+      }
+      function drawEdges() {
+        world.querySelector(".connector")?.remove();
+        const svg = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "svg",
+        );
+        svg.classList.add("connector");
+        svg.innerHTML =
+          '<defs><marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10" fill="none" stroke="currentColor"/></marker></defs>';
+        for (const [aid, bid] of edges) {
+          const a = nodes.find((n) => n.id === aid),
+            b = nodes.find((n) => n.id === bid);
+          if (!a || !b) continue;
+          const p = document.createElementNS(svg.namespaceURI, "path");
+          const ax = a.x + a.w + 8,
+            ay = a.y + a.h / 2,
+            bx = b.x - 8,
+            by = b.y + b.h / 2;
+          p.setAttribute(
+            "d",
+            `M${ax},${ay} C${ax + 45},${ay} ${bx - 45},${by} ${bx},${by}`,
+          );
+          p.setAttribute("fill", "none");
+          p.setAttribute("marker-end", "url(#arrowhead)");
+          svg.append(p);
+        }
+        world.prepend(svg);
+      }
+      function map() {
+        const svg = $("map-content");
+        svg.replaceChildren();
+        if (!nodes.length) return;
+        const minX = Math.min(...nodes.map((n) => n.x)) - 60,
+          minY = Math.min(...nodes.map((n) => n.y)) - 60,
+          maxX = Math.max(...nodes.map((n) => n.x + n.w)) + 60,
+          maxY = Math.max(...nodes.map((n) => n.y + n.h)) + 60;
+        svg.setAttribute(
+          "viewBox",
+          `${minX} ${minY} ${maxX - minX} ${maxY - minY}`,
+        );
+        for (const n of nodes) {
+          const r = document.createElementNS(svg.namespaceURI, "rect");
+          for (const [key, value] of Object.entries({
+            x: n.x,
+            y: n.y,
+            width: n.w,
+            height: n.h,
+            fill: n.color,
+            rx: 8,
+          }))
+            r.setAttribute(key, value);
+          svg.append(r);
+        }
+      }
+      function render() {
+        world.replaceChildren();
+        if (showFrames) {
+          const title = document.createElement("div");
+          title.className = "board-title";
+          title.innerHTML =
+            '<div class="eyebrow">THE NEXT CHAPTER</div><h2>Make something worth sharing.</h2><p>A few good thoughts. Room to see where they lead.</p>';
+          world.append(title);
+          for (const f of Object.values(frames)) {
+            const el = document.createElement("div");
+            el.className = "frame";
+            Object.assign(el.style, {
+              left: f.x + "px",
+              top: f.y + "px",
+              width: f.w + "px",
+              height: f.h + "px",
+            });
+            el.innerHTML = `<span class="frame-label">${f.label}</span>`;
+            world.append(el);
+          }
+        }
+        for (const n of nodes) {
+          const el = document.createElement("div");
+          el.className =
+            "node " +
+            (n.kind || "sticky") +
+            (selected === n.id ? " selected" : "");
+          el.dataset.id = n.id;
+          el.setAttribute("aria-label", n.kind === "image" ? "Image" : n.text);
+          el.tabIndex = 0;
+          Object.assign(el.style, {
+            left: n.x + "px",
+            top: n.y + "px",
+            width: n.w + "px",
+            minHeight: n.h + "px",
+            background: n.color,
+          });
+          if (n.kind === "image") {
+            const img = document.createElement("img");
+            img.src = n.src;
+            img.alt = "User-selected image in design study";
+            el.style.height = n.h + "px";
+            el.append(img);
+          } else {
+            if (n.label) {
+              const label = document.createElement("div");
+              label.className = "label";
+              label.textContent = n.label;
+              el.append(label);
+            }
+            const body = document.createElement("div");
+            body.className = "body";
+            body.textContent = n.text;
+            Object.assign(body.style, {
+              fontSize: (n.size || 19) + "px",
+              fontFamily: n.font || "sans-serif",
+              fontWeight: n.bold ? "700" : "400",
+              fontStyle: n.italic ? "italic" : "normal",
+            });
+            el.append(body);
+          }
+          world.append(el);
+        }
+        drawEdges();
+        map();
+        transform();
+        $("blank").hidden = nodes.length > 0;
+        format();
+        syncUndo();
+      }
+      function format() {
+        const n = nodes.find((n) => n.id === selected);
+        $("format").hidden = !n;
+        $("palette").hidden = true;
+        if (n) {
+          $("font").value = n.font || "sans-serif";
+          $("size").value = String(n.size || 19);
+          $("bold").setAttribute("aria-pressed", String(!!n.bold));
+          $("italic").setAttribute("aria-pressed", String(!!n.italic));
+          $("colors").querySelector(".swatch").style.background = n.color;
+          for (const id of ["font", "size", "bold", "italic", "colors"])
+            $(id).disabled = n.kind === "image";
+        }
+      }
+      function choose(id) {
+        selected = id;
+        for (const el of world.querySelectorAll(".node"))
+          el.classList.toggle("selected", el.dataset.id === id);
+        format();
+      }
+      function setTool(t) {
+        tool = t;
+        connectFrom = null;
+        stage.classList.toggle("hand", t === "pan");
+        for (const el of document.querySelectorAll("[data-tool]"))
+          el.classList.toggle("active", el.dataset.tool === t);
+        if (t === "connect")
+          notice("Choose the first item, then the item to connect it to.");
+        else dismissNotice();
+      }
+      function add(kind = "sticky", extra = {}) {
+        checkpoint();
+        const id = crypto.randomUUID();
+        nodes.push({
+          id,
+          x: (stage.clientWidth / 2 - pan.x) / zoom - 110,
+          y: (stage.clientHeight / 2 - pan.y) / zoom - 80,
+          w: 220,
+          h: 160,
+          color: kind === "shape" ? colors[1] : colors[0],
+          kind,
+          text: kind === "text" ? "Write something…" : "Your next good idea",
+          ...extra,
+        });
+        selected = id;
+        setTool("select");
+        render();
+        status("Added to the design study · this tab only");
+        return id;
+      }
+      function update(patch) {
+        const n = nodes.find((n) => n.id === selected);
+        if (!n) return;
+        checkpoint();
+        Object.assign(n, patch);
+        render();
+        status("Style updated · this tab only");
+      }
+      function fit(frame) {
+        const box =
+          frame ||
+          (!nodes.length
+            ? { x: 0, y: 0, w: 1100, h: 760 }
+            : showFrames
+              ? { x: 0, y: 50, w: 1170, h: 750 }
+              : {
+                  x: Math.min(...nodes.map((n) => n.x)) - 90,
+                  y: Math.min(...nodes.map((n) => n.y)) - 70,
+                  w:
+                    Math.max(...nodes.map((n) => n.x + n.w)) -
+                    Math.min(...nodes.map((n) => n.x)) +
+                    180,
+                  h:
+                    Math.max(...nodes.map((n) => n.y + n.h)) -
+                    Math.min(...nodes.map((n) => n.y)) +
+                    140,
+                });
+        zoom = Math.min(
+          (stage.clientWidth - 100) / box.w,
+          (stage.clientHeight - 120) / box.h,
+        );
+        pan = {
+          x: (stage.clientWidth - box.w * zoom) / 2 - box.x * zoom + 25,
+          y: (stage.clientHeight - box.h * zoom) / 2 - box.y * zoom,
+        };
+        transform();
+      }
+      function zoomBy(
+        factor,
+        anchor = { x: stage.clientWidth / 2, y: stage.clientHeight / 2 },
+      ) {
+        const next = zoom * factor;
+        if (!Number.isFinite(next) || next <= 0) return;
+        pan = {
+          x: anchor.x - (anchor.x - pan.x) * factor,
+          y: anchor.y - (anchor.y - pan.y) * factor,
+        };
+        zoom = next;
+        transform();
+      }
+      stage.addEventListener("pointerdown", (e) => {
+        if (
+          e.target.closest(
+            "button,select,input,[contenteditable=true],.format,.palette-menu,.navigation,.minimap",
+          )
+        )
+          return;
+        dismissNotice();
+        const el = e.target.closest(".node");
+        if (tool === "pan" || space || e.button === 1) {
+          drag = {
+            kind: "pan",
+            x: e.clientX,
+            y: e.clientY,
+            px: pan.x,
+            py: pan.y,
+          };
+          stage.classList.add("panning");
+          e.preventDefault();
+        } else if (el) {
+          if (tool === "connect") {
+            if (!connectFrom) {
+              connectFrom = el.dataset.id;
+              notice("Now choose the second item.");
+            } else if (connectFrom !== el.dataset.id) {
+              checkpoint();
+              edges.push([connectFrom, el.dataset.id]);
+              setTool("select");
+              drawEdges();
+              status("Connection added · this tab only");
+            }
+            return;
+          }
+          choose(el.dataset.id);
+          const n = nodes.find((n) => n.id === selected);
+          drag = {
+            kind: "node",
+            x: e.clientX,
+            y: e.clientY,
+            n,
+            nx: n.x,
+            ny: n.y,
+            moved: false,
+          };
+        } else choose(null);
+        if (drag)
+          (drag.kind === "pan" ? stage : el).setPointerCapture(e.pointerId);
+      });
+      stage.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        const dx = e.clientX - drag.x,
+          dy = e.clientY - drag.y;
+        if (drag.kind === "pan") {
+          pan = { x: drag.px + dx, y: drag.py + dy };
+          transform();
+        } else if (dx || dy) {
+          if (!drag.moved) {
+            checkpoint();
+            drag.moved = true;
+          }
+          drag.n.x = drag.nx + dx / zoom;
+          drag.n.y = drag.ny + dy / zoom;
+          const el = world.querySelector(`[data-id="${drag.n.id}"]`);
+          el.style.left = drag.n.x + "px";
+          el.style.top = drag.n.y + "px";
+          drawEdges();
+          map();
+        }
+      });
+      function endDrag() {
+        if (drag?.moved) status("Moved on the design study · this tab only");
+        drag = null;
+        stage.classList.remove("panning");
+      }
+      stage.addEventListener("pointerup", endDrag);
+      stage.addEventListener("pointercancel", endDrag);
+      world.addEventListener("dblclick", (e) => {
+        const body = e.target.closest(".node")?.querySelector(".body");
+        if (!body) return;
+        const id = body.closest(".node").dataset.id;
+        choose(id);
+        checkpoint();
+        body.contentEditable = "true";
+        body.focus();
+        const sel = getSelection(),
+          r = document.createRange();
+        r.selectNodeContents(body);
+        sel.removeAllRanges();
+        sel.addRange(r);
+        body.addEventListener(
+          "blur",
+          () => {
+            const n = nodes.find((n) => n.id === id);
+            if (n) n.text = body.innerText;
+            body.contentEditable = "false";
+            status("Text edited · this tab only");
+          },
+          { once: true },
+        );
+      });
+      world.addEventListener("focusin", (e) => {
+        const node = e.target.closest(".node");
+        if (node) choose(node.dataset.id);
+      });
+      stage.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          if (e.ctrlKey || e.metaKey) {
+            const r = stage.getBoundingClientRect();
+            zoomBy(Math.exp(-e.deltaY * 0.002), {
+              x: e.clientX - r.left,
+              y: e.clientY - r.top,
+            });
+          } else {
+            pan.x -= e.deltaX;
+            pan.y -= e.deltaY;
+            transform();
+          }
+        },
+        { passive: false },
+      );
+      document.querySelectorAll("[data-tool]").forEach(
+        (b) =>
+          (b.onclick = () => {
+            const t = b.dataset.tool;
+            if (["sticky", "text", "shape"].includes(t)) add(t);
+            else setTool(t);
+          }),
+      );
+      $("first-note").onclick = () => add();
+      $("font").onchange = (e) => update({ font: e.target.value });
+      $("size").onchange = (e) => update({ size: Number(e.target.value) });
+      $("bold").onclick = () =>
+        update({ bold: !nodes.find((n) => n.id === selected)?.bold });
+      $("italic").onclick = () =>
+        update({ italic: !nodes.find((n) => n.id === selected)?.italic });
+      $("done").onclick = () => choose(null);
+      $("colors").onclick = () => {
+        $("palette").hidden = !$("palette").hidden;
+      };
+      for (const c of colors) {
+        const b = document.createElement("button");
+        b.setAttribute("aria-label", "Set note color " + c);
+        b.innerHTML = `<span class="swatch" style="background:${c}"></span>`;
+        b.onclick = () => update({ color: c });
+        $("palette").append(b);
+      }
+      function remove() {
+        if (!selected) return;
+        checkpoint();
+        nodes = nodes.filter((n) => n.id !== selected);
+        edges = edges.filter((e) => !e.includes(selected));
+        selected = null;
+        render();
+        status("Item removed · Undo is available");
+      }
+      $("delete").onclick = remove;
+      $("undo").onclick = () => {
+        if (!history.length) return;
+        future.push(JSON.stringify({ nodes, edges, showFrames }));
+        restore(history.pop());
+        status("Undone · this tab only");
+      };
+      $("redo").onclick = () => {
+        if (!future.length) return;
+        history.push(JSON.stringify({ nodes, edges, showFrames }));
+        restore(future.pop());
+        status("Redone · this tab only");
+      };
+      $("fit").onclick = () => fit();
+      $("zoom-in").onclick = () => zoomBy(1.2);
+      $("zoom-out").onclick = () => zoomBy(1 / 1.2);
+      $("map-toggle").onclick = () => {
+        $("minimap").hidden = !$("minimap").hidden;
+      };
+      $("outline-toggle").onclick = () => {
+        $("outline").hidden = !$("outline").hidden;
+        $("outline-toggle").setAttribute(
+          "aria-expanded",
+          String(!$("outline").hidden),
+        );
+        fit();
+      };
+      document.querySelectorAll("[data-frame]").forEach(
+        (b) =>
+          (b.onclick = () => {
+            document
+              .querySelectorAll("[data-frame]")
+              .forEach((x) => x.classList.toggle("active", x === b));
+            fit(frames[b.dataset.frame]);
+          }),
+      );
+      $("theme").onclick = () => {
+        const dark = document.documentElement.dataset.theme !== "dark";
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        $("palette-name").textContent = dark ? "TOKYO" : "IVORY";
+        $("theme").setAttribute(
+          "aria-label",
+          dark
+            ? "Switch to Ivory light palette"
+            : "Switch to Tokyo dark palette",
+        );
+      };
+      $("empty").onclick = () => {
+        checkpoint();
+        nodes = [];
+        edges = [];
+        showFrames = false;
+        selected = null;
+        render();
+        fit();
+        status("Blank design study · Undo restores the example");
+      };
+      $("reset").onclick = () => {
+        checkpoint();
+        nodes = structuredClone(initial);
+        edges = [
+          ["a", "c"],
+          ["c", "e"],
+        ];
+        showFrames = true;
+        selected = null;
+        render();
+        fit();
+        status("Example restored · Undo is available");
+      };
+      $("add-image").onclick = () => $("image-input").click();
+      $("image-input").onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const src = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () =>
+          add("image", {
+            src,
+            w: 260,
+            h: (260 * img.naturalHeight) / img.naturalWidth,
+            text: "",
+          });
+        img.onerror = () => {
+          URL.revokeObjectURL(src);
+          notice("That image could not be read. Try a different image.");
+        };
+        img.src = src;
+        e.target.value = "";
+      };
+      document.addEventListener("keydown", (e) => {
+        if (e.target.closest("input,select,[contenteditable=true]")) {
+          if (e.key === "Escape") e.target.blur();
+          return;
+        }
+        if (e.code === "Space") {
+          space = true;
+          e.preventDefault();
+        }
+        if (e.key === "Escape") {
+          setTool("select");
+          choose(null);
+        }
+        if (e.key === "Delete" || e.key === "Backspace") remove();
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+          e.preventDefault();
+          (e.shiftKey ? $("redo") : $("undo")).click();
+          return;
+        }
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "n") add();
+        if (e.key === "t") add("text");
+        if (e.key === "r") add("shape");
+        if (e.key === "v") setTool("select");
+        if (e.key === "h") setTool("pan");
+      });
+      document.addEventListener("keyup", (e) => {
+        if (e.code === "Space") space = false;
+      });
+      window.addEventListener("blur", () => {
+        space = false;
+        endDrag();
+      });
+      if (innerWidth < 760) {
+        $("outline").hidden = true;
+        $("outline-toggle").setAttribute("aria-expanded", "false");
+      }
+      render();
+      fit();
+      new ResizeObserver(() => fit()).observe(stage);
+    </script>
+  </body>
+</html>

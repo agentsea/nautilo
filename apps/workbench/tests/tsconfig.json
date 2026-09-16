@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["bun-types"]
+  },
+  "include": [
+    "bun-dom-preload.ts",
+    "unit/**/*.ts",
+    "unit/**/*.tsx",
+    "unit-isolated/**/*.ts",
+    "unit-isolated/**/*.tsx",
+    "integration/**/*.ts",
+    "integration/**/*.tsx"
+  ],
+  "exclude": ["fixtures"]
+}

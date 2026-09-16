@@ -1,0 +1,30 @@
+appId: ai.nautilo.app
+---
+# D501 Task 4.3 deterministic iOS source-editor acceptance harness.
+# D501_MARKDOWN_ID is supplied only at runtime.
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Chats.*"
+    timeout: 30000
+- openLink: "nautilo://files/artifact/${D501_MARKDOWN_ID}"
+- extendedWaitUntil:
+    visible: "Edit file"
+    timeout: 30000
+- tapOn: "Edit file"
+- extendedWaitUntil:
+    visible: "File source editor"
+    timeout: 30000
+- tapOn: "File source editor"
+- inputText: " D501"
+- tapOn: "Bold"
+- tapOn: "Italic"
+- tapOn: "Add link"
+- assertVisible: "Link address"
+- tapOn: "Cancel link editing"
+- waitForAnimationToEnd
+- tapOn: "Preview"
+- assertVisible: "Edit"
+- tapOn: "Edit"
+- assertVisible: "File source editor"
+- tapOn: "Save file"
+- assertVisible: "File source editor"

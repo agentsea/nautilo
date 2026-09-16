@@ -1,0 +1,28 @@
+{
+  "name": "@nautilo/local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./bootstrap-logto": "./src/bootstrap-logto.ts"
+  },
+  "description": "Shared local Logto bootstrap and deployment support",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit/"
+  },
+  "dependencies": {
+    "@nautilo/config": "workspace:*",
+    "@nautilo/config-guard": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "postgres": "3.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

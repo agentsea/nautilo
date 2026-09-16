@@ -1,0 +1,29 @@
+{
+  "name": "@nautilo/smoke-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Security smoke runner library — drives destructive smoke tests inside Lima/Tart VMs with snapshot-restore safety",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test --timeout 60000",
+    "test:unit": "bun test --timeout 60000 tests/unit/",
+    "test:integration": "bun test --timeout 60000 tests/integration/"
+  },
+  "dependencies": {
+    "@nautilo/security": "workspace:*",
+    "@nautilo/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

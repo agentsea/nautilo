@@ -1,0 +1,1 @@
+ALTER TABLE "invites" ADD COLUMN "half_redeemed_at" timestamp;

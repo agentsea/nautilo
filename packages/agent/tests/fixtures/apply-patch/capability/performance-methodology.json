@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "status": "frozen_methodology_with_unmeasured_acceptance_target",
+  "purpose": "Record deterministic historical file-workflow call counts, apply_patch expected call shapes, and the observational protocol for later source-built and live performance measurements. This fixture does not report measured latency.",
+  "scenarios": [
+    {
+      "id": "one-file",
+      "fixture": "one-file.patch",
+      "changedFiles": 1,
+      "historicalFileWorkflow": {
+        "tool": "file",
+        "command": "str_replace",
+        "expectedCallCount": 1
+      },
+      "applyPatchExpectedCallShape": {
+        "tool": "apply_patch",
+        "expectedTopLevelCallCount": 1
+      }
+    },
+    {
+      "id": "twenty-file",
+      "fixture": "multi-file-20.patch",
+      "changedFiles": 20,
+      "historicalFileWorkflow": {
+        "tool": "file",
+        "command": "str_replace",
+        "expectedCallCount": 20
+      },
+      "applyPatchExpectedCallShape": {
+        "tool": "apply_patch",
+        "expectedTopLevelCallCount": 1
+      }
+    }
+  ],
+  "workstationAcceptanceTarget": {
+    "expectedRelayOperations": 1,
+    "claim": "unmeasured_acceptance_target"
+  },
+  "observationalFields": [
+    "wall_time",
+    "model_tool_round_trips",
+    "relay_operations",
+    "request_bytes",
+    "result_bytes",
+    "changed_files",
+    "revision_count",
+    "run_identifier",
+    "environment_identifier",
+    "warmup_policy",
+    "repetition_policy",
+    "raw_samples",
+    "median",
+    "p95",
+    "success_or_failure"
+  ],
+  "measurementPolicy": {
+    "timing": "observational_only",
+    "latencyAssertions": "forbidden_in_unit_tests",
+    "warmup": "Record whether warmup runs occurred and exclude or include them consistently.",
+    "repetitions": "Record raw samples for every repetition; summarize with median and p95 only when enough samples exist.",
+    "environment": "Identify the source build, run, workstation, relay, model, and relevant configuration for each measurement.",
+    "outcome": "Record success or failure for every attempted run."
+  },
+  "verificationOwnership": {
+    "deterministicUnitAssertions": [
+      "historical file-workflow and apply_patch expected call shapes",
+      "one unmeasured workstation relay-operation acceptance target",
+      "observational field completeness",
+      "absence of measured latency values and latency thresholds"
+    ],
+    "laterSourceBuiltAndLiveMeasurements": ["4.3.2", "4.3.3"]
+  }
+}

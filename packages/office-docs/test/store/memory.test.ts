@@ -1,0 +1,662 @@
+import { describe, it, expect } from 'vitest';
+import { MemDocStore } from '../../src/store/memory.js';
+import { generateBlockId, PAPER_SIZES, DEFAULT_PAGE_SETUP } from '../../src/model/types.js';
+import type { HeaderFooter } from '../../src/model/types.js';
+
+describe('MemDocStore', () => {
+  function makeBlock(text: string) {
+    return {
+      id: generateBlockId(),
+      type: 'paragraph' as const,
+      inlines: [{ text, style: {} }],
+      style: { alignment: 'left' as const, lineHeight: 1.5, marginTop: 0, marginBottom: 8, textIndent: 0, marginLeft: 0 },
+    };
+  }
+
+  describe('basic operations', () => {
+    it('should start with an empty document', () => {
+      const store = new MemDocStore();
+      expect(store.getDocument().blocks).toHaveLength(0);
+    });
+
+    it('should set and get a document', () => {
+      const store = new MemDocStore();
+      const block = makeBlock('Hello');
+      store.setDocument({ blocks: [block] });
+      expect(store.getDocument().blocks).toHaveLength(1);
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Hello');
+    });
+
+    it('should get a block by ID', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('Hello');
+    });
+
+    it('should return undefined for non-existent block', () => {
+      const store = new MemDocStore();
+      expect(store.getBlock('nonexistent')).toBeUndefined();
+    });
+
+    it('should update a block', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.updateBlock(block.id, { ...block, inlines: [{ text: 'World', style: {} }] });
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('World');
+    });
+
+    it('should insert a block at index', () => {
+      const block1 = makeBlock('First');
+      const store = new MemDocStore({ blocks: [block1] });
+      const block2 = makeBlock('Second');
+      store.insertBlock(0, block2);
+      expect(store.getDocument().blocks).toHaveLength(2);
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Second');
+      expect(store.getDocument().blocks[1].inlines[0].text).toBe('First');
+    });
+
+    it('should delete a block', () => {
+      const block1 = makeBlock('First');
+      const block2 = makeBlock('Second');
+      const store = new MemDocStore({ blocks: [block1, block2] });
+      store.deleteBlock(block1.id);
+      expect(store.getDocument().blocks).toHaveLength(1);
+      expect(store.getDocument().blocks[0].id).toBe(block2.id);
+    });
+
+    it('should delete a block by index', () => {
+      const block1 = makeBlock('First');
+      const block2 = makeBlock('Second');
+      const store = new MemDocStore({ blocks: [block1, block2] });
+      store.deleteBlockByIndex(0);
+      expect(store.getDocument().blocks).toHaveLength(1);
+      expect(store.getDocument().blocks[0].id).toBe(block2.id);
+    });
+
+    it('should throw for out-of-bounds index', () => {
+      const store = new MemDocStore({ blocks: [makeBlock('Only')] });
+      expect(() => store.deleteBlockByIndex(1)).toThrow('out of bounds');
+      expect(() => store.deleteBlockByIndex(-1)).toThrow('out of bounds');
+    });
+  });
+
+  describe('defensive cloning', () => {
+    it('getDocument returns a deep clone', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      const doc = store.getDocument();
+      doc.blocks[0].inlines[0].text = 'Mutated';
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Hello');
+    });
+
+    it('getBlock returns a deep clone', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      const got = store.getBlock(block.id)!;
+      got.inlines[0].text = 'Mutated';
+      expect(store.getBlock(block.id)!.inlines[0].text).toBe('Hello');
+    });
+
+    it('replaceDocument syncs without pushing undo', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      expect(store.canUndo()).toBe(false);
+
+      store.replaceDocument({ blocks: [makeBlock('Replaced')] });
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Replaced');
+      expect(store.canUndo()).toBe(false);
+    });
+
+    it('snapshot + replaceDocument enables correct undo', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+
+      store.snapshot();
+      store.replaceDocument({ blocks: [makeBlock('Edited')] });
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Edited');
+
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Hello');
+    });
+  });
+
+  describe('pageSetup', () => {
+    it('getPageSetup returns DEFAULT_PAGE_SETUP when not set', () => {
+      const store = new MemDocStore();
+      expect(store.getPageSetup()).toEqual(DEFAULT_PAGE_SETUP);
+    });
+
+    it('setPageSetup updates and supports undo', () => {
+      const store = new MemDocStore();
+      store.snapshot();
+      const a4Setup = { ...DEFAULT_PAGE_SETUP, paperSize: PAPER_SIZES.A4 };
+      store.setPageSetup(a4Setup);
+      expect(store.getPageSetup().paperSize).toEqual(PAPER_SIZES.A4);
+
+      store.undo();
+      expect(store.getPageSetup()).toEqual(DEFAULT_PAGE_SETUP);
+    });
+  });
+
+  describe('undo/redo', () => {
+    it('should undo a setDocument when preceded by snapshot', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.setDocument({ blocks: [] });
+      expect(store.getDocument().blocks).toHaveLength(0);
+
+      store.undo();
+      expect(store.getDocument().blocks).toHaveLength(1);
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Hello');
+    });
+
+    it('should redo after undo', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.setDocument({ blocks: [] });
+      store.undo();
+      store.redo();
+      expect(store.getDocument().blocks).toHaveLength(0);
+    });
+
+    it('should clear redo stack on new snapshot', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.setDocument({ blocks: [] });
+      store.undo();
+      expect(store.canRedo()).toBe(true);
+
+      store.snapshot();
+      const newBlock = makeBlock('New');
+      store.insertBlock(0, newBlock);
+      expect(store.canRedo()).toBe(false);
+    });
+
+    it('should report canUndo/canRedo correctly', () => {
+      const store = new MemDocStore();
+      expect(store.canUndo()).toBe(false);
+      expect(store.canRedo()).toBe(false);
+
+      store.snapshot();
+      store.setDocument({ blocks: [makeBlock('A')] });
+      expect(store.canUndo()).toBe(true);
+      expect(store.canRedo()).toBe(false);
+
+      store.undo();
+      expect(store.canUndo()).toBe(false);
+      expect(store.canRedo()).toBe(true);
+    });
+
+    it('should undo insertBlock when preceded by snapshot', () => {
+      const store = new MemDocStore();
+      store.snapshot();
+      store.insertBlock(0, makeBlock('Hello'));
+      expect(store.getDocument().blocks).toHaveLength(1);
+
+      store.undo();
+      expect(store.getDocument().blocks).toHaveLength(0);
+    });
+
+    it('should undo deleteBlock when preceded by snapshot', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.deleteBlock(block.id);
+      expect(store.getDocument().blocks).toHaveLength(0);
+
+      store.undo();
+      expect(store.getDocument().blocks).toHaveLength(1);
+    });
+
+    it('should undo updateBlock when preceded by snapshot', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.updateBlock(block.id, { ...block, inlines: [{ text: 'World', style: {} }] });
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('World');
+
+      store.undo();
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('Hello');
+    });
+
+    it('mutation without snapshot is not undoable', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.updateBlock(block.id, { ...block, inlines: [{ text: 'World', style: {} }] });
+      expect(store.canUndo()).toBe(false);
+    });
+  });
+
+  // `batch()` is the shared `DocStore` seam: one batch = one undo unit.
+  // Mem's undo unit is anchored to `snapshot()`, not to the write, so a
+  // batch collapses the snapshots taken inside it into one checkpoint.
+  // `YorkieDocStore` reaches the same contract by opening one `doc.update`.
+  describe('batch()', () => {
+    it('collapses the snapshots inside it into one undo unit', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.batch(() => {
+        store.snapshot();
+        store.insertText(block.id, 5, ' World');
+        store.snapshot();
+        store.applyStyle(block.id, 0, 5, { bold: true });
+      });
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello World');
+
+      store.undo();
+      const reverted = store.getDocument().blocks[0];
+      expect(reverted.inlines.map((i) => i.text).join('')).toBe('Hello');
+      expect(store.canUndo()).toBe(false);
+    });
+
+    it('a nested batch does not add a second undo unit', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.batch(() => {
+        store.snapshot();
+        store.insertText(block.id, 5, '!');
+        store.batch(() => {
+          store.snapshot();
+          store.insertText(block.id, 6, '?');
+        });
+      });
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello');
+      expect(store.canUndo()).toBe(false);
+    });
+
+    it('leaves unbatched snapshots as separate undo units', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.insertText(block.id, 5, ' a');
+      store.snapshot();
+      store.insertText(block.id, 7, ' b');
+
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello a');
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello');
+    });
+
+    it('covers a body that never snapshots', () => {
+      // `YorkieDocStore`'s single `doc.update` covers the whole body whether
+      // or not it snapshots, so this store checkpoints up front to match.
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.batch(() => {
+        store.insertText(block.id, 5, '!');
+      });
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello!');
+
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello');
+    });
+
+    it('covers writes made before the body snapshots', () => {
+      // Every editor operation snapshots partway through, so composing two of
+      // them puts a write ahead of the first `snapshot()`. Deferring the
+      // checkpoint to that call would strand the ' A' write permanently.
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.batch(() => {
+        store.insertText(block.id, 5, ' A');
+        store.snapshot();
+        store.insertText(block.id, 7, ' B');
+      });
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello A B');
+
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello');
+      expect(store.canUndo()).toBe(false);
+    });
+
+    it('a batch that writes nothing costs no undo unit', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.batch(() => {
+        store.snapshot();
+      });
+      expect(store.canUndo()).toBe(false);
+    });
+
+    it('a batch that writes nothing leaves redo history intact', () => {
+      // `YorkieDocStore` pushes no change for an empty batch, so its
+      // `doc.history` redo stack survives. This store must not clear redo
+      // for a batch that ends up costing no undo unit either — the two
+      // stores document one contract.
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.insertText(block.id, 5, '!');
+      store.undo();
+      expect(store.canRedo()).toBe(true);
+
+      store.batch(() => {});
+
+      expect(store.canRedo()).toBe(true);
+      expect(store.canUndo()).toBe(false);
+      store.redo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello!');
+    });
+
+    it('a self-reverting batch leaves redo history intact', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.snapshot();
+      store.insertText(block.id, 5, '!');
+      store.undo();
+      expect(store.canRedo()).toBe(true);
+
+      store.batch(() => {
+        store.insertText(block.id, 5, '?');
+        store.deleteText(block.id, 5, 1);
+      });
+
+      expect(store.canUndo()).toBe(false);
+      expect(store.canRedo()).toBe(true);
+      store.redo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello!');
+    });
+
+    it('a no-op batch costs nothing on a document the clone normalizes', () => {
+      // `updateBlock` stores the block verbatim, so the live document can
+      // hold a partial block style that `cloneDocument` fills in with
+      // defaults. Comparing the checkpoint (a clone) against the raw live
+      // document would then report a write for a batch that made none, and
+      // leave a dead undo checkpoint behind.
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.updateBlock(
+        block.id,
+        { ...block, style: { alignment: 'left' } } as unknown as typeof block,
+      );
+
+      store.batch(() => {});
+
+      expect(store.canUndo()).toBe(false);
+    });
+
+    it('setDocument() inside a batch throws', () => {
+      // `YorkieDocStore` refuses it because its undo floor is read after the
+      // write lands, which inside a batch is not until the batch's single
+      // `doc.update` closes. This store refuses it for parity, so code
+      // written against the in-package store cannot pass here and then throw
+      // under the collaborative one.
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      expect(() =>
+        store.batch(() => {
+          store.setDocument({ blocks: [makeBlock('Replaced')] });
+        }),
+      ).toThrow(/setDocument/);
+      // The refusal must not leave the store wedged: no dead checkpoint, and
+      // the call succeeds outside a batch.
+      expect(store.canUndo()).toBe(false);
+      store.setDocument({ blocks: [makeBlock('Replaced')] });
+      expect(store.getDocument().blocks[0].inlines[0].text).toBe('Replaced');
+    });
+
+    it('re-arms snapshotting after the batch ends, even on a throw', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      expect(() =>
+        store.batch(() => {
+          store.snapshot();
+          throw new Error('boom');
+        }),
+      ).toThrow('boom');
+      store.snapshot();
+      store.insertText(block.id, 5, '!');
+      store.undo();
+      expect(store.getDocument().blocks[0].inlines.map((i) => i.text).join('')).toBe('Hello');
+    });
+  });
+
+  describe('fine-grained text editing', () => {
+    it('insertText inserts at offset within block', () => {
+      const block = makeBlock('Hello');
+      const store = new MemDocStore({ blocks: [block] });
+      store.insertText(block.id, 5, ' World');
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('Hello World');
+    });
+
+    it('insertText at offset 0', () => {
+      const block = makeBlock('World');
+      const store = new MemDocStore({ blocks: [block] });
+      store.insertText(block.id, 0, 'Hello ');
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('Hello World');
+    });
+
+    it('deleteText removes characters at offset', () => {
+      const block = makeBlock('Hello World');
+      const store = new MemDocStore({ blocks: [block] });
+      store.deleteText(block.id, 5, 6);
+      expect(store.getBlock(block.id)?.inlines[0].text).toBe('Hello');
+    });
+
+    it('deleteText across inline boundaries', () => {
+      const block = {
+        id: 'b1',
+        type: 'paragraph' as const,
+        inlines: [
+          { text: 'Hello', style: {} },
+          { text: 'World', style: { bold: true } },
+        ],
+        style: { alignment: 'left' as const, lineHeight: 1.5, marginTop: 0, marginBottom: 8, textIndent: 0, marginLeft: 0 },
+      };
+      const store = new MemDocStore({ blocks: [block] });
+      store.deleteText('b1', 3, 4);
+      const updated = store.getBlock('b1')!;
+      // "Hel" (no style) + "rld" (bold) — different styles, not merged
+      expect(updated.inlines[0].text).toBe('Hel');
+      expect(updated.inlines[1].text).toBe('rld');
+    });
+
+    it('insertText throws for non-existent block', () => {
+      const store = new MemDocStore();
+      expect(() => store.insertText('no-such', 0, 'X')).toThrow();
+    });
+  });
+
+  describe('fine-grained styling', () => {
+    it('applyStyle applies bold to range', () => {
+      const block = makeBlock('Hello World');
+      const store = new MemDocStore({ blocks: [block] });
+      store.applyStyle(block.id, 6, 11, { bold: true });
+      const updated = store.getBlock(block.id)!;
+      expect(updated.inlines).toHaveLength(2);
+      expect(updated.inlines[0].text).toBe('Hello ');
+      expect(updated.inlines[1].text).toBe('World');
+      expect(updated.inlines[1].style).toEqual({ bold: true });
+    });
+
+    it('applyStyle throws for non-existent block', () => {
+      const store = new MemDocStore();
+      expect(() => store.applyStyle('no-such', 0, 5, { bold: true })).toThrow();
+    });
+  });
+
+  describe('structural editing', () => {
+    it('splitBlock splits at offset', () => {
+      const block = makeBlock('Hello World');
+      const store = new MemDocStore({ blocks: [block] });
+      store.splitBlock(block.id, 5, 'b2', 'paragraph');
+      const doc = store.getDocument();
+      expect(doc.blocks).toHaveLength(2);
+      expect(doc.blocks[0].inlines[0].text).toBe('Hello');
+      expect(doc.blocks[1].id).toBe('b2');
+      expect(doc.blocks[1].inlines[0].text).toBe(' World');
+    });
+
+    it('mergeBlock merges and removes next', () => {
+      const b1 = makeBlock('Hello');
+      const b2 = makeBlock(' World');
+      const store = new MemDocStore({ blocks: [b1, b2] });
+      store.mergeBlock(b1.id, b2.id);
+      const doc = store.getDocument();
+      expect(doc.blocks).toHaveLength(1);
+      expect(doc.blocks[0].inlines[0].text).toBe('Hello World');
+    });
+
+    it('insertBlocksAfter inserts every block in order after the sibling', () => {
+      const first = makeBlock('First');
+      const last = makeBlock('Last');
+      const store = new MemDocStore({ blocks: [first, last] });
+      store.insertBlocksAfter(first.id, [
+        makeBlock('A'),
+        makeBlock('B'),
+        makeBlock('C'),
+      ]);
+      expect(store.getDocument().blocks.map((b) => b.inlines[0].text)).toEqual([
+        'First', 'A', 'B', 'C', 'Last',
+      ]);
+    });
+
+    it('insertBlocksAfter is a no-op for an empty list', () => {
+      const first = makeBlock('First');
+      const store = new MemDocStore({ blocks: [first] });
+      store.insertBlocksAfter(first.id, []);
+      expect(store.getDocument().blocks).toHaveLength(1);
+    });
+
+    it('insertBlocksAfter deep-copies its input', () => {
+      const first = makeBlock('First');
+      const store = new MemDocStore({ blocks: [first] });
+      const pasted = makeBlock('Pasted');
+      store.insertBlocksAfter(first.id, [pasted]);
+      pasted.inlines[0].text = 'Mutated after the call';
+      expect(store.getDocument().blocks[1].inlines[0].text).toBe('Pasted');
+    });
+  });
+
+  describe('header/footer', () => {
+    function makeHeaderFooter(text: string): HeaderFooter {
+      return {
+        blocks: [makeBlock(text)],
+        marginFromEdge: 48,
+      };
+    }
+
+    it('getHeader returns undefined when not set', () => {
+      const store = new MemDocStore();
+      expect(store.getHeader()).toBeUndefined();
+    });
+
+    it('getFooter returns undefined when not set', () => {
+      const store = new MemDocStore();
+      expect(store.getFooter()).toBeUndefined();
+    });
+
+    it('setHeader/getHeader roundtrip', () => {
+      const store = new MemDocStore();
+      const header = makeHeaderFooter('Header text');
+      store.setHeader(header);
+      const got = store.getHeader();
+      expect(got).toBeDefined();
+      expect(got!.blocks[0].inlines[0].text).toBe('Header text');
+      expect(got!.marginFromEdge).toBe(48);
+    });
+
+    it('setFooter/getFooter roundtrip', () => {
+      const store = new MemDocStore();
+      const footer = makeHeaderFooter('Footer text');
+      store.setFooter(footer);
+      const got = store.getFooter();
+      expect(got).toBeDefined();
+      expect(got!.blocks[0].inlines[0].text).toBe('Footer text');
+    });
+
+    it('setHeader with undefined removes header', () => {
+      const store = new MemDocStore();
+      store.setHeader(makeHeaderFooter('Header'));
+      expect(store.getHeader()).toBeDefined();
+      store.setHeader(undefined);
+      expect(store.getHeader()).toBeUndefined();
+    });
+
+    it('setFooter with undefined removes footer', () => {
+      const store = new MemDocStore();
+      store.setFooter(makeHeaderFooter('Footer'));
+      expect(store.getFooter()).toBeDefined();
+      store.setFooter(undefined);
+      expect(store.getFooter()).toBeUndefined();
+    });
+
+    it('insertText works on header blocks', () => {
+      const hBlock = makeBlock('Head');
+      const store = new MemDocStore({
+        blocks: [],
+        header: { blocks: [hBlock], marginFromEdge: 48 },
+      });
+      store.insertText(hBlock.id, 4, 'er');
+      expect(store.getBlock(hBlock.id)?.inlines[0].text).toBe('Header');
+    });
+
+    it('splitBlock works on header blocks', () => {
+      const hBlock = makeBlock('Hello World');
+      const store = new MemDocStore({
+        blocks: [],
+        header: { blocks: [hBlock], marginFromEdge: 48 },
+      });
+      store.splitBlock(hBlock.id, 5, 'hb2', 'paragraph');
+      const header = store.getHeader()!;
+      expect(header.blocks).toHaveLength(2);
+      expect(header.blocks[0].inlines[0].text).toBe('Hello');
+      expect(header.blocks[1].id).toBe('hb2');
+      expect(header.blocks[1].inlines[0].text).toBe(' World');
+    });
+
+    it('mergeBlock works on header blocks', () => {
+      const hb1 = makeBlock('Hello');
+      const hb2 = makeBlock(' World');
+      const store = new MemDocStore({
+        blocks: [],
+        header: { blocks: [hb1, hb2], marginFromEdge: 48 },
+      });
+      store.mergeBlock(hb1.id, hb2.id);
+      const header = store.getHeader()!;
+      expect(header.blocks).toHaveLength(1);
+      expect(header.blocks[0].inlines[0].text).toBe('Hello World');
+    });
+
+    it('mergeBlock throws when blocks are in different regions', () => {
+      const bodyBlock = makeBlock('Body');
+      const hBlock = makeBlock('Header');
+      const store = new MemDocStore({
+        blocks: [bodyBlock],
+        header: { blocks: [hBlock], marginFromEdge: 48 },
+      });
+      expect(() => store.mergeBlock(bodyBlock.id, hBlock.id)).toThrow('different regions');
+    });
+
+    it('undo/redo preserves header/footer', () => {
+      const store = new MemDocStore();
+      store.snapshot();
+      store.setHeader(makeHeaderFooter('Original header'));
+      expect(store.getHeader()?.blocks[0].inlines[0].text).toBe('Original header');
+
+      store.undo();
+      expect(store.getHeader()).toBeUndefined();
+
+      store.redo();
+      expect(store.getHeader()?.blocks[0].inlines[0].text).toBe('Original header');
+    });
+
+    it('getDocument clones header/footer (mutation isolation)', () => {
+      const store = new MemDocStore({
+        blocks: [],
+        header: { blocks: [makeBlock('Header')], marginFromEdge: 48 },
+        footer: { blocks: [makeBlock('Footer')], marginFromEdge: 48 },
+      });
+      const doc = store.getDocument();
+      doc.header!.blocks[0].inlines[0].text = 'Mutated header';
+      doc.footer!.blocks[0].inlines[0].text = 'Mutated footer';
+      expect(store.getHeader()?.blocks[0].inlines[0].text).toBe('Header');
+      expect(store.getFooter()?.blocks[0].inlines[0].text).toBe('Footer');
+    });
+  });
+});

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "bun-types"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["generate-application-catalogue.ts", "vendor-agent-browser.ts", "prepare-sheets.ts", "prepare-slides.ts"]
+}

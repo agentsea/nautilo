@@ -1,0 +1,56 @@
+bring_to_front: Persistently activate an app and leave it in the foreground
+browser_click: Click a page element (by ref) or viewport coordinates in an exactly-bound tab
+browser_dialog: Inspect or resolve a page-owned JavaScript alert, confirm, prompt, or beforeunload dialog on one exactly-bound tab
+browser_download: Trigger one download through an exact live browser ref and save it inside an explicitly approved directory
+browser_navigate: Navigate one tab of an exactly-bound browser target to a new URL (http/https/about only)
+browser_pointer: Perform hover, right-click, double-click, scroll, or drag in an exactly-bound browser tab
+browser_prepare: Explicitly prepare an owned DevTools endpoint for a browser
+browser_set_input_files: Assign one or more explicit absolute local files to an exact live <input type=file> ref through CDP
+browser_type: Type text into an exactly-bound tab via the Input domain
+check_for_update: Check the saved stable/nightly Cua Driver channel for a release on GitHub
+check_permissions: Report TCC permission status for Accessibility and Screen Recording
+click: Click against a target pid
+clipboard_read: List available system clipboard types and optionally return privacy-sensitive plain text
+clipboard_write: Replace the system clipboard with exactly one value: plain text, an image from an absolute local path, or a file URL from an absolute local path
+double_click: Double-click at (x, y) or on an AX element identified by element_index + window_id
+drag: Press-drag-release gesture from (from_x, from_y) to (to_x, to_y) in window-local screenshot pixels — the same space get_window_state returns
+end_session: End one visible lifecycle session and run its cursor, recording, configuration, and other cleanup hooks exactly once
+escalate_session: Deprecated compatibility tool for legacy capture-scope sessions
+get_accessibility_tree: Return a lightweight snapshot of the desktop: running regular apps and on-screen visible windows with their bounds, z-order, and owner pid
+get_agent_cursor_state: Return the session cursor's theme, semantic playback, position, visibility, and motion
+get_browser_state: Read-only browser inspection
+get_config: Return the current cua-driver-rs configuration
+get_cursor_position: Return the current mouse cursor position in screen points (origin top-left)
+get_desktop_state: Capture the full display in true screen pixels with no downscale
+get_recording_state: Report the current trajectory recorder state: whether recording is enabled, the output directory (when enabled), and the 1-based counter for the next turn folder that will be written
+get_screen_size: Return the logical size of the main display in points plus its backing scale factor
+get_session: Read content-free lifecycle, cursor, recording, and idle status for one session visible to this authenticated transport
+get_session_state: Deprecated compatibility alias that reads a live legacy session's capture policy
+get_window_state: Walk a running app's AX tree and return BOTH a structured `elements` array (preferred) AND a Markdown rendering of the same tree (back-compat)
+health_report: Single-call end-to-end driver diagnostics
+hotkey: Press a key combination — e.g
+install_ffmpeg: Install the ffmpeg binary used by start_recording's video capture (Linux/Windows; macOS records natively and needs no ffmpeg)
+invoke_menu: Resolve an exact application-menu path one live native level at a time and invoke its final item through accessibility APIs
+kill_app: Force-terminate a process by pid (kill -9 equivalent on macOS / Linux; taskkill /F equivalent on Windows)
+launch_app: Launch a macOS app in the background — the target does NOT come to the foreground
+list_apps: List macOS apps — both currently running and installed-but-not-running — with per-app state flags:
+list_sessions: List content-free lifecycle summaries attached to this authenticated transport lease
+list_windows: List all layer-0 top-level windows currently known to WindowServer
+move_cursor: Move a cursor to (x, y)
+page: Legacy browser compatibility tool
+press_key: Press and release a single key
+replay_trajectory: Replay a recorded trajectory by re-invoking every turn's tool call in lexical order
+right_click: Right-click against a target pid
+scroll: Scroll the target pid
+set_agent_cursor_enabled: Show or hide the agent cursor owned by a session
+set_agent_cursor_motion: Configure only movement physics and visibility timing for a session cursor
+set_agent_cursor_theme: Select an already-installed cursor theme for a session
+set_config: Update cua-driver-rs configuration
+set_value: Set a value on a UI element
+set_window_frame: Set one exact top-level window's frame in the desktop-coordinate space reported by list_windows and verify the resulting geometry through an independent readback
+start_recording: Start trajectory recording
+start_session: Optionally create or return a lifecycle session before acting
+stop_recording: Stop trajectory recording
+type_text: Insert text into the target pid via `AXSetAttribute(kAXSelectedText)`
+verify_state: Deterministically verify bounded predicates against one exact window
+zoom: Capture a cropped JPEG of a window region (x1,y1)–(x2,y2) in screenshot pixel coordinates, with 20% padding added on each side

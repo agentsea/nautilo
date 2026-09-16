@@ -1,0 +1,161 @@
+import { describe, it, expect } from 'vitest';
+import {
+  solidFillXml,
+  gradFillXml,
+  fillXml,
+  colorChildXml,
+  ROLE_TO_SCHEME,
+  colorFromStringOrTheme,
+} from '../../../src/export/pptx/color';
+import { parseColorElement, SCHEME_TO_ROLE } from '../../../src/import/pptx/color';
+import { parseXml, descendant } from '../../../src/import/pptx/xml';
+
+describe('color', () => {
+  it('round-trips native tint, shade, luminance and alpha ratios through DrawingML units', () => {
+    const color = { kind: 'role' as const, role: 'accent1' as const, tint: 0.2, shade: 0.6, lumMod: 0.75, lumOff: -0.1, alpha: 0.5 };
+    const xml = parseXml(`<root xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">${colorChildXml(color)}</root>`);
+    expect(parseColorElement(descendant(xml, 'schemeClr')!)).toEqual(color);
+  });
+
+  it('maps every role to a scheme name', () => {
+    expect(ROLE_TO_SCHEME.text).toBe('tx1');
+    expect(ROLE_TO_SCHEME.background).toBe('bg1');
+    expect(ROLE_TO_SCHEME.accent1).toBe('accent1');
+    expect(ROLE_TO_SCHEME.hyperlink).toBe('hlink');
+  });
+
+  it('emits schemeClr with modifiers', () => {
+    const xml = colorChildXml({ kind: 'role', role: 'accent1', lumMod: 0.75, alpha: 0.5 });
+    expect(xml).toContain('<a:schemeClr val="accent1">');
+    expect(xml).toContain('<a:lumMod val="75000"/>');
+    expect(xml).toContain('<a:alpha val="50000"/>');
+  });
+
+  it('emits srgbClr', () => {
+    expect(colorChildXml({ kind: 'srgb', value: '#FF0000' })).toBe('<a:srgbClr val="FF0000"/>');
+  });
+
+  // `ThemeColor.role` is a closed 12-value union in TypeScript, but the model
+  // holds whatever the importer or the content PUT API stored. A bare object
+  // lookup reaches `Object.prototype` for keys like `constructor` and yields
+  // `undefined` for anything else, so the scheme name must come from a closed
+  // container with a fallback — not from `ROLE_TO_SCHEME[role]`.
+  it('falls back to black for a role outside the closed set', () => {
+    for (const role of ['constructor', 'toString', '__proto__', 'nope', '"/>']) {
+      const xml = colorChildXml({ kind: 'role', role } as never);
+      expect(xml).toBe('<a:srgbClr val="000000"/>');
+    }
+  });
+
+  it('keeps the modifiers when an unknown role falls back', () => {
+    const xml = colorChildXml({ kind: 'role', role: 'constructor', alpha: 0.5 } as never);
+    expect(xml).toBe('<a:srgbClr val="000000"><a:alpha val="50000"/></a:srgbClr>');
+  });
+
+  it('wraps in solidFill', () => {
+    expect(solidFillXml({ kind: 'srgb', value: '#00FF00' })).toBe('<a:solidFill><a:srgbClr val="00FF00"/></a:solidFill>');
+  });
+
+  it('emits a linear gradFill with stops + lin angle', () => {
+    const xml = gradFillXml({
+      kind: 'gradient',
+      type: 'linear',
+      angle: Math.PI / 4, // 45°
+      stops: [
+        { pos: 0, color: { kind: 'srgb', value: '#0093FF' } },
+        { pos: 1, color: { kind: 'srgb', value: '#006AFF' } },
+      ],
+    });
+    expect(xml).toBe(
+      '<a:gradFill><a:gsLst>' +
+        '<a:gs pos="0"><a:srgbClr val="0093FF"/></a:gs>' +
+        '<a:gs pos="100000"><a:srgbClr val="006AFF"/></a:gs>' +
+        '</a:gsLst><a:lin ang="2700000" scaled="1"/></a:gradFill>',
+    );
+  });
+
+  it('fillXml dispatches solid vs gradient by kind', () => {
+    expect(fillXml({ kind: 'srgb', value: '#00FF00' })).toBe(
+      '<a:solidFill><a:srgbClr val="00FF00"/></a:solidFill>',
+    );
+    expect(
+      fillXml({
+        kind: 'gradient',
+        type: 'linear',
+        angle: 0,
+        stops: [
+          { pos: 0, color: { kind: 'srgb', value: '#112233' } },
+          { pos: 1, color: { kind: 'srgb', value: '#445566' } },
+        ],
+      }),
+    ).toContain('<a:gradFill>');
+  });
+
+  it('fillXml degrades a <2-stop gradient to a solid (never emits invalid gradFill)', () => {
+    // CT_GradientStopList requires >=2 stops; a collapsed gradient must not
+    // export a lone <a:gs> or PowerPoint rejects the file.
+    const xml = fillXml({
+      kind: 'gradient',
+      type: 'linear',
+      angle: 0,
+      stops: [{ pos: 0, color: { kind: 'srgb', value: '#112233' } }],
+    });
+    expect(xml).toBe('<a:solidFill><a:srgbClr val="112233"/></a:solidFill>');
+    expect(xml).not.toContain('gradFill');
+  });
+
+  it('converts string to srgb ThemeColor', () => {
+    const result = colorFromStringOrTheme('#FF0000');
+    expect(result).toEqual({ kind: 'srgb', value: '#FF0000' });
+  });
+
+  it('passes through ThemeColor objects', () => {
+    const tc = { kind: 'role' as const, role: 'text' as const };
+    expect(colorFromStringOrTheme(tc)).toEqual(tc);
+  });
+
+  it('round-trips SCHEME_TO_ROLE through ROLE_TO_SCHEME', () => {
+    // Verify that every role in ROLE_TO_SCHEME maps back to itself through SCHEME_TO_ROLE
+    Object.entries(ROLE_TO_SCHEME).forEach(([role, scheme]) => {
+      const roundTripped = SCHEME_TO_ROLE[scheme];
+      expect(roundTripped).toBe(role);
+    });
+  });
+
+  it('normalizes the srgbClr val attribute instead of escaping it', () => {
+    // `ST_HexColorRGB` is six hex digits, so a malformed value is not
+    // escaped into the attribute — it is replaced by the black fallback.
+    // The attribute can therefore only ever hold [0-9A-F]{6}, which
+    // subsumes escaping.
+    expect(colorChildXml({ kind: 'srgb', value: 'FF00"00' }))
+      .toBe('<a:srgbClr val="000000"/>');
+    expect(colorChildXml({ kind: 'srgb', value: '' }))
+      .toBe('<a:srgbClr val="000000"/>');
+  });
+
+  it('coerces the modifier attributes instead of interpolating them raw', () => {
+    // `ST_Percentage` is a number. The model holds whatever import or the
+    // content PUT API stored, so a non-numeric modifier is dropped (the base
+    // color still renders) rather than smuggled into the attribute — the hex
+    // `val` is normalized, so these are the only other attributes here.
+    const xml = colorChildXml({
+      kind: 'role',
+      role: 'accent1',
+      lumMod: '50000"/><a:alpha val="0' as unknown as number,
+      alpha: 0.25,
+    });
+    expect(xml).not.toContain('lumMod');
+    expect(xml).toBe('<a:schemeClr val="accent1"><a:alpha val="25000"/></a:schemeClr>');
+    expect(colorChildXml({ kind: 'srgb', value: '#FF0000', alpha: NaN }))
+      .toBe('<a:srgbClr val="FF0000"/>');
+  });
+
+  it('normalizes the CSS forms the model can hold', () => {
+    // Slide text boxes are edited by the docs TextEditor, so HTML paste
+    // stores browser-normalized CSS; import/older schemas add shorthand.
+    expect(colorChildXml({ kind: 'srgb', value: 'rgb(255, 128, 0)' }))
+      .toBe('<a:srgbClr val="FF8000"/>');
+    expect(colorChildXml({ kind: 'srgb', value: '#f80' }))
+      .toBe('<a:srgbClr val="FF8800"/>');
+  });
+});

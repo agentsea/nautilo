@@ -1,0 +1,3 @@
+# Rust build artifacts — never committed. The RELEASE wasm output is vendored
+# separately into ../vendor/openmls-wasm/ by scripts/build-openmls-wasm.sh.
+/target

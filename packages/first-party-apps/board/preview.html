@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Nautilo Board — interface preview</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="preview-tools">
+      <span>Native editor preview · Changes stay in this tab</span
+      ><button id="example">Example board</button
+      ><button id="blank">Start blank</button
+      ><button id="download">Download a copy</button
+      ><label
+        >Palette
+        <select id="theme">
+          <option value="light">Ivory</option>
+          <option value="dark">Tokyo</option>
+        </select></label
+      >
+    </div>
+    <main id="app"></main>
+    <script type="module" src="/preview.js"></script>
+  </body>
+</html>

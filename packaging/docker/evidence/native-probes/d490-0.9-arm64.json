@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "sourceSha": "7cecc85652516a83eaaa4d588060faec3a92d20c",
+  "dockerfileSha256": "sha256:d4018a4629e9ce8a4baaa7c9c8fd8338ada7b4b941fd5a7bd710fb2aed993a95",
+  "capturedAt": "2026-08-05T10:01:45.856Z",
+  "host": {
+    "os": "darwin",
+    "architecture": "arm64",
+    "dockerEngineArchitecture": "aarch64"
+  },
+  "requestedPlatform": "linux/arm64",
+  "executionMode": "native",
+  "executionModeBasis": "requested platform compared with docker info .Architecture",
+  "image": {
+    "reference": "localhost:5001/nautilo-runtime@sha256:2778696383add155bcfc6f34611d6c9ec3dd4ab1b7b2a155e259cf7439bd7720",
+    "id": "sha256:524ef23fa80717839b63d5390ae848173a1367cf6d6919e23242c0df2a244ffe",
+    "repoDigests": [
+      "localhost:5001/nautilo-runtime@sha256:2778696383add155bcfc6f34611d6c9ec3dd4ab1b7b2a155e259cf7439bd7720"
+    ],
+    "sizeBytes": 850442662
+  },
+  "probe": {
+    "version": 1,
+    "platform": "linux/arm64",
+    "observedRuntime": {
+      "os": "linux",
+      "architecture": "arm64"
+    },
+    "inventory": {
+      "platform": "linux/arm64",
+      "sharpPackage": "/srv/repo/node_modules/sharp/package.json",
+      "sharpAddon": "/srv/repo/node_modules/@img/sharp-linux-arm64/lib/sharp-linux-arm64-0.35.3.node",
+      "sharpLibvipsPackage": "/srv/repo/node_modules/@img/sharp-libvips-linux-arm64/package.json",
+      "sharpLibvipsLibrary": "/srv/repo/node_modules/@img/sharp-libvips-linux-arm64/lib/libvips-cpp.so.8.18.3",
+      "argon2Package": "/srv/repo/node_modules/argon2/package.json",
+      "argon2Addon": "/srv/repo/node_modules/argon2/prebuilds/linux-arm64/argon2.armv8.glibc.node"
+    },
+    "sharp": {
+      "version": "0.35.3",
+      "libvipsVersion": "8.18.3",
+      "output": {
+        "format": "png",
+        "width": 2,
+        "height": 1,
+        "channels": 4,
+        "premultiplied": true,
+        "hasAlpha": true,
+        "size": 92
+      },
+      "sha256": "12129de123d06f94f9e52e74e6d15f34f8f228229d8b288b741405333bb9f24e"
+    },
+    "argon2": {
+      "algorithm": "argon2id",
+      "verified": true,
+      "rejectedWrongValue": true
+    }
+  }
+}

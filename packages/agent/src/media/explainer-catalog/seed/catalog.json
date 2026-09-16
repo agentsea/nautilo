@@ -1,0 +1,520 @@
+{
+  "version": 1,
+  "catalogVersion": "2026.09.07.1",
+  "publishedAt": "2026-09-07T19:46:43Z",
+  "entries": [
+    {
+      "id": "launch-hero",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-hero-landscape-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "4957994be5c8a6a6e2b8b0ea66df5706fe8b0cc92471d51a5f2331e2c089f713",
+        "byteLength": 45839568
+      },
+      "title": "Nautilo: The Co-Creative Revolution",
+      "summary": "A 70-second introduction to people and their Genies working together across chat, documents, apps, coding, and mobile.",
+      "description": "A 70-second introduction to people and their Genies working together across chat, documents, apps, coding, and mobile.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "overview",
+        "hero",
+        "introduction",
+        "collaboration"
+      ],
+      "toolReferences": [
+        {
+          "name": "find_explainer",
+          "tags": [
+            "overview",
+            "hero",
+            "introduction"
+          ]
+        }
+      ],
+      "durationSeconds": 70,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-01-chat",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-01-chat-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "8703e635a81d1d37ca4b5c9ae40d07e0b65b676638cd852d6394d4af9b131554",
+        "byteLength": 55686699
+      },
+      "title": "Multi-User, Multi-Genie Chat",
+      "summary": "Follow a shared conversation as people ask their Genies about earlier work and invite another Genie to contribute.",
+      "description": "Follow a shared conversation as people ask their Genies about earlier work and invite another Genie to contribute.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "multi-user",
+        "multi-agent",
+        "chat",
+        "smart-routing",
+        "shared-context"
+      ],
+      "toolReferences": [
+        {
+          "name": "get_room_members",
+          "tags": [
+            "multi-user",
+            "multi-agent",
+            "chat"
+          ]
+        }
+      ],
+      "durationSeconds": 103,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-02-writer",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-02-writer-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "86d46a24ab2f51453f20994a85ad84d238b5934dc83b6011e42f8beac6e85ff9",
+        "byteLength": 25590225
+      },
+      "title": "Co-Create in Writer with Genie",
+      "summary": "Ask Genie to check an article for typos and review the suggested corrections directly in Writer.",
+      "description": "Ask Genie to check an article for typos and review the suggested corrections directly in Writer.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "writer",
+        "proofreading",
+        "document-editing",
+        "reviewable-suggestions"
+      ],
+      "toolReferences": [
+        {
+          "name": "app_nautilo_writer__inspect_document",
+          "tags": [
+            "writer",
+            "proofreading",
+            "document-editing"
+          ]
+        },
+        {
+          "name": "app_nautilo_writer__replace_text",
+          "tags": [
+            "writer",
+            "proofreading",
+            "document-editing"
+          ]
+        }
+      ],
+      "durationSeconds": 49,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-03-sharing",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-03-sharing-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "5de73551ed3f3b26d262070da7f62a10938d85ce05ef3a060c2aa353d78a9381",
+        "byteLength": 50941521
+      },
+      "title": "Share a Document and Get Feedback",
+      "summary": "Ask Rook to share an article with Elias, request his feedback, and bring his preliminary response back into your conversation.",
+      "description": "Ask Rook to share an article with Elias, request his feedback, and bring his preliminary response back into your conversation.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "sharing",
+        "collaboration",
+        "documents",
+        "feedback",
+        "delegation"
+      ],
+      "toolReferences": [
+        {
+          "name": "share_artifact",
+          "tags": [
+            "sharing",
+            "collaboration",
+            "documents"
+          ]
+        },
+        {
+          "name": "ask_peer",
+          "tags": [
+            "sharing",
+            "collaboration",
+            "documents"
+          ]
+        }
+      ],
+      "durationSeconds": 82,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-04-customize",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-04-customize-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "91b9bf5f4da4655b158dff1a503ee895b520ba5dd84b83ce2f6ec9a72570c5fb",
+        "byteLength": 59310791
+      },
+      "title": "Make Your Genie Yours",
+      "summary": "Create your Genie through a conversation: choose privacy preferences, personality, avatar, name, and voice, then meet your new companion.",
+      "description": "Create your Genie through a conversation: choose privacy preferences, personality, avatar, name, and voice, then meet your new companion.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "customization",
+        "personality",
+        "avatar",
+        "voice",
+        "onboarding"
+      ],
+      "toolReferences": [
+        {
+          "name": "regenerate_soul",
+          "tags": [
+            "customization",
+            "personality",
+            "avatar"
+          ]
+        },
+        {
+          "name": "launch_customization",
+          "tags": [
+            "customization",
+            "personality",
+            "avatar"
+          ]
+        },
+        {
+          "name": "manage_avatar",
+          "tags": [
+            "customization",
+            "personality",
+            "avatar"
+          ]
+        },
+        {
+          "name": "manage_voices",
+          "tags": [
+            "customization",
+            "personality",
+            "avatar"
+          ]
+        }
+      ],
+      "durationSeconds": 241,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-05-orchestration",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-05-orchestration-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "e3dfb21778eacd95dd934861187bf9336bd778170ae9252afed640f1706668d5",
+        "byteLength": 145448694
+      },
+      "title": "Put Coding Agents to Work",
+      "summary": "Ask Rook to send Codex a focused code investigation, then receive ranked improvements with implementation and testing considerations.",
+      "description": "Ask Rook to send Codex a focused code investigation, then receive ranked improvements with implementation and testing considerations.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "orchestration",
+        "codex",
+        "coding",
+        "research",
+        "external-agents"
+      ],
+      "toolReferences": [
+        {
+          "name": "task",
+          "tags": [
+            "orchestration",
+            "codex",
+            "coding"
+          ]
+        }
+      ],
+      "durationSeconds": 149,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-06-google-suite",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-06-google-suite-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "0e8b308c73fd4ac313e7bb8714cf9e18fa17914cdc3249d10189763e2b25a0f3",
+        "byteLength": 80076017
+      },
+      "title": "Build a Google Sheets Executive Summary",
+      "summary": "Merge benchmark data, import it into Google Sheets, and ask Genie to create an executive summary with tables, charts, and highlighting.",
+      "description": "Merge benchmark data, import it into Google Sheets, and ask Genie to create an executive summary with tables, charts, and highlighting.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "google-sheets",
+        "google-workspace",
+        "charts",
+        "data-analysis",
+        "spreadsheets"
+      ],
+      "toolReferences": [
+        {
+          "name": "google_workspace",
+          "tags": [
+            "google-sheets",
+            "google-workspace",
+            "charts"
+          ]
+        }
+      ],
+      "durationSeconds": 88,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-07-browser",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-07-browser-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "0e3f80a293a64dd9c6383b07b123237709db6112a62c1158d24d71ab7ab05b6d",
+        "byteLength": 70255396
+      },
+      "title": "Browse the Web with Your Genie",
+      "summary": "Research Japanese teapots together: ask your Genie to search shops, compare a shortlist, and open the design that catches your eye.",
+      "description": "Research Japanese teapots together: ask your Genie to search shops, compare a shortlist, and open the design that catches your eye.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "browser",
+        "web",
+        "shopping",
+        "research",
+        "co-creative-control"
+      ],
+      "toolReferences": [
+        {
+          "name": "browser_snapshot",
+          "tags": [
+            "browser",
+            "web",
+            "shopping"
+          ]
+        }
+      ],
+      "durationSeconds": 153,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-08-making-of",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-08-making-of-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "cec1f7b89ec1b3393a3bbdcf91c20deeb73dea9f7f7573f9b85ba684883fc257",
+        "byteLength": 100548015
+      },
+      "title": "How These Films Were Made",
+      "summary": "Follow the production workflow: extract audio, transcribe it, edit the script, and turn the revised dialogue into character voice performances.",
+      "description": "Follow the production workflow: extract audio, transcribe it, edit the script, and turn the revised dialogue into character voice performances.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "transcription",
+        "audio",
+        "voice",
+        "filmmaking",
+        "documents"
+      ],
+      "toolReferences": [
+        {
+          "name": "transcribe_audio",
+          "tags": [
+            "transcription",
+            "audio",
+            "voice"
+          ]
+        }
+      ],
+      "durationSeconds": 203,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-09-terminal",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-09-terminal-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "0e709a93f49a67e1eb5c532e7d8c58802ae14b299692999ad2820403fa409a83",
+        "byteLength": 51783937
+      },
+      "title": "Let Your Genie Drive the Terminal",
+      "summary": "Hand your Genie terminal control to download the DeepSeek harness and explain its architecture, strengths, and stated limitations.",
+      "description": "Hand your Genie terminal control to download the DeepSeek harness and explain its architecture, strengths, and stated limitations.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "terminal",
+        "shell",
+        "code",
+        "research",
+        "deepseek"
+      ],
+      "toolReferences": [
+        {
+          "name": "run_shell",
+          "tags": [
+            "terminal",
+            "shell",
+            "code"
+          ]
+        }
+      ],
+      "durationSeconds": 96,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-10-pelican",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-10-pelican-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "20db3305306982063374148faa443f8cb12ae1591e396d1a0cc17c0f47e76ce0",
+        "byteLength": 38516319
+      },
+      "title": "The Pelican Benchmark: Co-Creative Design",
+      "summary": "Ask Genie for a pelican riding a bicycle, then take the controls in Nautilo Design to adjust the lettering and drawing yourself.",
+      "description": "Ask Genie for a pelican riding a bicycle, then take the controls in Nautilo Design to adjust the lettering and drawing yourself.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.\n\nInspired by Simon Willison’s pelican riding a bicycle benchmark: https://simonwillison.net/2024/Oct/25/pelicans-on-a-bicycle/. This demonstration includes human edits; it is not a measured benchmark score.",
+      "tags": [
+        "launch",
+        "design",
+        "pelican",
+        "drawing",
+        "co-creative-control"
+      ],
+      "toolReferences": [
+        {
+          "name": "app_nautilo_design__inspect_document",
+          "tags": [
+            "design",
+            "pelican",
+            "drawing"
+          ]
+        }
+      ],
+      "durationSeconds": 73,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-11-cyberdefense",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-11-cyberdefense-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "59d404aca9cdf02f1e40499437ac00b4540e181aead9de25cd70980cd6873fd2",
+        "byteLength": 37787521
+      },
+      "title": "Cyberdefense with Your Genie",
+      "summary": "Queue a background security investigation and inspect the report workflow, with attention to actual coverage and limitations.",
+      "description": "Queue a background security investigation and inspect the report workflow, with attention to actual coverage and limitations.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "cyberdefense",
+        "security",
+        "audit",
+        "research",
+        "background"
+      ],
+      "toolReferences": [
+        {
+          "name": "in_background",
+          "tags": [
+            "cyberdefense",
+            "security",
+            "audit"
+          ]
+        }
+      ],
+      "durationSeconds": 63,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-12-video-generation",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-12-video-generation-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "2abc2795fea0ccdd4d49a3e90b7e7c06aef9d6e5b445c38f3e78644837205191",
+        "byteLength": 54974939
+      },
+      "title": "Bring Your Vision to Life",
+      "summary": "Give Genie a brief using your avatar assets and wordmark, prepare a reference video generation request, and view the resulting animation.",
+      "description": "Give Genie a brief using your avatar assets and wordmark, prepare a reference video generation request, and view the resulting animation.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "video-generation",
+        "seedance",
+        "animation",
+        "creative",
+        "reference-video"
+      ],
+      "toolReferences": [
+        {
+          "name": "generate_video",
+          "tags": [
+            "video-generation",
+            "seedance",
+            "animation"
+          ]
+        }
+      ],
+      "durationSeconds": 83,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-13-android-mobile",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "explainers/2026.09.07.1/nautilo-13-android-mobile-captioned-neon-hq.mp4",
+        "format": "mp4",
+        "contentSha256": "a45c89045682ef98fbc330cc43f3d450b7a4f43c9cba969a61dd59e86fdc1e97",
+        "byteLength": 13606388
+      },
+      "title": "Your Whole Crew in Your Pocket",
+      "summary": "See Nautilo on Android: shared conversations, personal Genies, and a spoken document response in a portrait mobile walkthrough.",
+      "description": "See Nautilo on Android: shared conversations, personal Genies, and a spoken document response in a portrait mobile walkthrough.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "android",
+        "mobile",
+        "chat",
+        "documents",
+        "voice"
+      ],
+      "toolReferences": [
+        {
+          "name": "get_room_members",
+          "tags": [
+            "android",
+            "mobile",
+            "chat"
+          ]
+        }
+      ],
+      "durationSeconds": 104,
+      "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    }
+  ]
+}

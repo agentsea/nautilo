@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD COLUMN "requested_model_id" text;

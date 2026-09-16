@@ -1,0 +1,303 @@
+format_version = 1
+
+[upstream]
+name = "OpenAI Codex apply-patch"
+repository = "https://github.com/openai/codex.git"
+revision = "3389fa554e953d07a12a34f5681aae46f17958f8"
+revision_date = "2026-06-03T13:32:55+02:00"
+crate_path = "codex-rs/apply-patch"
+standalone_entrypoint = "codex-rs/apply-patch/src/standalone_executable.rs"
+license = "Apache-2.0"
+
+[hashes]
+license_sha256 = "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+notice_sha256 = "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+parser_full_sha256 = "9a3bc092dd27b4e040bc01b6b4e0b066ef78580db93b31924e47613bd8442e11"
+parser_selected_segment_sha256 = "434f409d2c4415ada839fbd045091eb0532c4a72c00310594a94672d45e03481"
+seek_sequence_full_sha256 = "65d8e699fc3b12a8c631c49d7bdd8e55c124c235695c7a0db02853bcdcd3715c"
+seek_sequence_selected_segment_sha256 = "92469c9e421be2c1a827c6cd4b8876a2a69db4ab36dbe101802df71772743038"
+lib_full_sha256 = "0831a445ccfb5846477ea6878e0b797e2fc85852d1e2f5335e0607df3821435d"
+lib_normalization_segment_sha256 = "9e1dadd7056c131b4e7b599077b88f0bbb59a8f1b6f6d48f1ab4e03d526c1805"
+lib_compute_replacements_segment_sha256 = "65f53f0c34b871762688ce443533fd60f0ac54222488e42d3f5ec06a9c06344b"
+lib_apply_replacements_segment_sha256 = "14df55cf27fbd058ebc54b0dafdf416ada1e8d61bf513936fedd6f48088b5ef9"
+scenarios_git_tree = "5ce1d30cb1ebbce5c7d001b56b8f8fdb78a2fba6"
+scenarios_git_archive_sha256 = "26d465b5e65864e488fa40decc8fc86b54c62104fe59bccc680b6ca99faecf4a"
+cargo_lock_sha256 = "4d1e7759fb6b28b8333dc1cb7cb3eae08b0863dae7dbec5bb6cdc41a3aaf2576"
+
+[[extracted_sources]]
+upstream_path = "codex-rs/apply-patch/src/parser.rs"
+upstream_blob = "b3b2337c392e16efb95aeae48b8855573ccbb498"
+source_lines = "1-465"
+source_sha256 = "434f409d2c4415ada839fbd045091eb0532c4a72c00310594a94672d45e03481"
+symbols = ["ParseError", "Hunk", "UpdateFileChunk", "parse_patch"]
+destination = "native/apply-patch/src/parser.rs"
+modifications = "Replace absolute-path/Codex argument types with Nautilo relative-path protocol types; retain the documented patch grammar and parser behaviour."
+
+[[extracted_sources]]
+upstream_path = "codex-rs/apply-patch/src/seek_sequence.rs"
+upstream_blob = "3555963120ec54191c2e0ad2513ca431639e89d2"
+source_lines = "1-110"
+source_sha256 = "92469c9e421be2c1a827c6cd4b8876a2a69db4ab36dbe101802df71772743038"
+symbols = ["seek_sequence"]
+destination = "native/apply-patch/src/seek_sequence.rs"
+modifications = "Preserve matching order while making the module independent of the Codex workspace."
+
+[[extracted_sources]]
+upstream_path = "codex-rs/apply-patch/src/lib.rs"
+upstream_blob = "29d42e1c072b95690750d85c6f32f326507bcf38"
+source_lines = "667-681"
+source_sha256 = "9e1dadd7056c131b4e7b599077b88f0bbb59a8f1b6f6d48f1ab4e03d526c1805"
+symbols = ["newline normalization after replacement planning"]
+destination = "native/apply-patch/src/engine.rs"
+modifications = "Make newline normalization synchronous and filesystem-neutral; Nautilo supplies structured plan/commit results. Patch containment and authorization remain with the enclosing Nautilo Sandbox/Namespace boundary."
+
+[[extracted_sources]]
+upstream_path = "codex-rs/apply-patch/src/lib.rs"
+upstream_blob = "29d42e1c072b95690750d85c6f32f326507bcf38"
+source_lines = "691-778"
+source_sha256 = "65f53f0c34b871762688ce443533fd60f0ac54222488e42d3f5ec06a9c06344b"
+symbols = ["compute_replacements"]
+destination = "native/apply-patch/src/engine.rs"
+modifications = "Make replacement planning synchronous and filesystem-neutral; Nautilo supplies two-phase plan/commit and structured partial results. Patch containment and authorization remain with the enclosing Nautilo Sandbox/Namespace boundary."
+
+[[extracted_sources]]
+upstream_path = "codex-rs/apply-patch/src/lib.rs"
+upstream_blob = "29d42e1c072b95690750d85c6f32f326507bcf38"
+source_lines = "783-806"
+source_sha256 = "14df55cf27fbd058ebc54b0dafdf416ada1e8d61bf513936fedd6f48088b5ef9"
+symbols = ["apply_replacements"]
+destination = "native/apply-patch/src/engine.rs"
+modifications = "Retain descending replacement application inside the Nautilo-owned planned engine; Nautilo owns filesystem commit and partial-result reporting."
+
+[portable_scenario_source]
+upstream_path = "codex-rs/apply-patch/tests/fixtures/scenarios"
+destination = "native/apply-patch/tests/upstream-scenarios"
+modifications = "Copy only portable fixtures with their upstream directory names; the Nautilo harness never invokes the upstream standalone."
+archive_sha256_method = "git archive --format=tar 3389fa554e953d07a12a34f5681aae46f17958f8 codex-rs/apply-patch/tests/fixtures/scenarios | shasum -a 256"
+
+[[portable_scenarios]]
+id = "001_add_file"
+classification = "accepted"
+[[portable_scenarios]]
+id = "002_multiple_operations"
+classification = "accepted"
+[[portable_scenarios]]
+id = "003_multiple_chunks"
+classification = "accepted"
+[[portable_scenarios]]
+id = "004_move_to_new_directory"
+classification = "accepted"
+[[portable_scenarios]]
+id = "005_rejects_empty_patch"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "006_rejects_missing_context"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "007_rejects_missing_file_delete"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "008_rejects_empty_update_hunk"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "009_requires_existing_file_for_update"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "010_move_overwrites_existing_destination"
+classification = "accepted"
+[[portable_scenarios]]
+id = "011_add_overwrites_existing_file"
+classification = "accepted"
+[[portable_scenarios]]
+id = "012_delete_directory_fails"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "013_rejects_invalid_hunk_header"
+classification = "accepted_rejection"
+[[portable_scenarios]]
+id = "014_update_file_appends_trailing_newline"
+classification = "accepted"
+[[portable_scenarios]]
+id = "015_failure_after_partial_success_leaves_changes"
+classification = "rejected_boundary"
+[[portable_scenarios]]
+id = "016_pure_addition_update_chunk"
+classification = "accepted"
+[[portable_scenarios]]
+id = "017_whitespace_padded_hunk_header"
+classification = "accepted"
+[[portable_scenarios]]
+id = "018_whitespace_padded_patch_markers"
+classification = "accepted"
+[[portable_scenarios]]
+id = "019_unicode_simple"
+classification = "accepted"
+[[portable_scenarios]]
+id = "020_delete_file_success"
+classification = "accepted"
+[[portable_scenarios]]
+id = "020_whitespace_padded_patch_marker_lines"
+classification = "accepted"
+[[portable_scenarios]]
+id = "021_update_file_deletion_only"
+classification = "accepted"
+[[portable_scenarios]]
+id = "022_update_file_end_of_file_marker"
+classification = "accepted"
+
+[standalone_rejection]
+upstream_cargo_toml_blob = "2584338618566b02c0ccd4b87fa67ae8e348edd5"
+upstream_cargo_toml_sha256 = "7066bb912976b17a2f75813411d0028ff853fb14e212ace99b7c8acc9bbfbe01"
+upstream_standalone_blob = "45ca0d0619c0b39030ed634690dde9f69c228a1c"
+upstream_standalone_sha256 = "f5d23525dbe3795f512e1c0f168fb154f6cae1515be1e391d5a948f9df4e6f52"
+measured_internal_codex_crates = 20
+measured_direct_external_dependency_names = 86
+measurement_method = "Declared non-dev build/target dependency traversal from codex-apply-patch; this is not a feature-resolved compiled graph."
+reasons = [
+  "The codex-apply-patch crate imports codex-exec-server and its execution-server closure.",
+  "The standalone has no machine-readable version handshake and is not Nautilo's stdin/stdout JSON protocol.",
+  "The standalone's local filesystem invocation is unsandboxed at this boundary.",
+  "The upstream error surface discards structured partial-delta detail and applies operations sequentially.",
+]
+
+forbidden_upstream_paths = [
+  "codex-rs/apply-patch/src/standalone_executable.rs",
+  "codex-rs/apply-patch/src/invocation.rs",
+  "codex-rs/apply-patch/src/streaming_parser.rs",
+  "codex-rs/exec-server",
+  "codex-rs/protocol",
+  "codex-rs/sandboxing",
+  "codex-rs/utils/pty",
+]
+forbidden_upstream_dependencies = [
+  "codex-exec-server",
+  "tokio",
+  "tree-sitter",
+  "tree-sitter-bash",
+]
+internal_packages = [
+  "codex-api",
+  "codex-app-server-protocol",
+  "codex-apply-patch",
+  "codex-async-utils",
+  "codex-client",
+  "codex-exec-server",
+  "codex-execpolicy",
+  "codex-experimental-api-macros",
+  "codex-file-system",
+  "codex-network-proxy",
+  "codex-protocol",
+  "codex-sandboxing",
+  "codex-shell-command",
+  "codex-utils-absolute-path",
+  "codex-utils-cache",
+  "codex-utils-home-dir",
+  "codex-utils-image",
+  "codex-utils-pty",
+  "codex-utils-rustls-provider",
+  "codex-utils-string",
+]
+external_dependencies = [
+  "anyhow", "arc-swap", "async-channel", "async-trait", "axum", "base64", "bytes", "chardetng", "chrono", "clap", "dirs", "dunce", "encoding_rs", "eventsource-stream", "filedescriptor", "futures", "globset", "http", "icu_decimal", "icu_locale_core", "icu_provider", "image", "inventory", "landlock", "lazy_static", "libc", "log", "lru", "mime_guess", "multimap", "once_cell", "opentelemetry", "portable-pty", "proc-macro2", "prost", "quick-xml", "quote", "rama-core", "rama-http", "rama-http-backend", "rama-net", "rama-socks5", "rama-tcp", "rama-tls-rustls", "rama-unix", "rand", "regex", "regex-lite", "reqwest", "rmcp", "rustls", "rustls-native-certs", "rustls-pki-types", "schemars", "seccompiler", "serde", "serde_json", "serde_with", "sha1", "sha2", "shared_library", "shlex", "similar", "starlark", "strum", "strum_macros", "syn", "sys-locale", "thiserror", "time", "tokio", "tokio-tungstenite", "tokio-util", "toml", "tracing", "tracing-opentelemetry", "tree-sitter", "tree-sitter-bash", "ts-rs", "tungstenite", "url", "uuid", "which", "wildmatch", "winapi", "zstd",
+]
+
+[[artifact_dependencies]]
+name = "OpenAI Codex apply-patch extracted source"
+version = "3389fa554e953d07a12a34f5681aae46f17958f8"
+license = "Apache-2.0"
+scope = "vendored source and portable fixture provenance; the locked independent Cargo closure is recorded separately in cargo_dependencies"
+notice_file = "native/apply-patch/NOTICE"
+
+[toolchain]
+rust_toolchain = "1.95.0"
+edition = "2024"
+build_policy = "The committed Cargo.lock and source hashes pin build inputs and dependency integrity. A clean designated builder may fetch the exact locked crate sources; verified --offline builds require that exact cache already be populated. Ordinary builds never fetch Codex, and production never invokes Cargo or dynamically fetches dependencies."
+
+[nautilo_extraction]
+crate = "nautilo-apply-patch"
+crate_version = "0.1.0"
+runtime_entrypoint = "src/main.rs"
+runtime_sources = ["src/parser.rs", "src/seek_sequence.rs", "src/engine.rs", "src/protocol.rs"]
+modification_notice = "Every extracted/adapted Rust module carries a prominent Nautilo modification notice. The filesystem engine, JSON protocol, and plan-before-commit semantics are Nautilo-owned modifications. Parsed patch paths retain pinned upstream relative-or-absolute behavior; the enclosing existing Nautilo Sandbox/Namespace boundary supplies containment and authorization."
+provenance_handshake = "nautilo.apply_patch.provenance/v1"
+provenance_handshake_guarantee = "build.rs validates this manifest's reviewed revision and byte-exact LICENSE/NOTICE hashes before embedding the same values in --version-json. It also computes, rather than stores, the Nautilo extraction revision used by the server artifact handshake."
+extraction_revision_method = "nautilo.apply_patch.extraction-revision/v1: SHA-256 of UTF-8 format tag plus NUL, then records sorted lexicographically by UTF-8 relative-path bytes: u64 big-endian path-byte length, UTF-8 relative path bytes, u64 big-endian content-byte length, and exact content bytes. Inputs are build.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, UPSTREAM.toml, LICENSE, NOTICE, and every regular top-level src/*.rs file."
+
+[[cargo_dependencies]]
+name = "itoa"
+version = "1.0.18"
+license = "MIT OR Apache-2.0"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+purpose = "serde_json integer serialization"
+[[cargo_dependencies]]
+name = "memchr"
+version = "2.8.3"
+license = "Unlicense OR MIT"
+checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+purpose = "serde_json parsing"
+[[cargo_dependencies]]
+name = "proc-macro2"
+version = "1.0.107"
+license = "MIT OR Apache-2.0"
+checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
+purpose = "serde derive macro build dependency"
+[[cargo_dependencies]]
+name = "quote"
+version = "1.0.47"
+license = "MIT OR Apache-2.0"
+checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
+purpose = "serde derive macro build dependency"
+[[cargo_dependencies]]
+name = "serde"
+version = "1.0.229"
+license = "MIT OR Apache-2.0"
+checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
+purpose = "fixed request/result serialization"
+[[cargo_dependencies]]
+name = "serde_core"
+version = "1.0.229"
+license = "MIT OR Apache-2.0"
+checksum = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
+purpose = "serde core"
+[[cargo_dependencies]]
+name = "serde_derive"
+version = "1.0.229"
+license = "MIT OR Apache-2.0"
+checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+purpose = "fixed request/result derive macros"
+[[cargo_dependencies]]
+name = "serde_json"
+version = "1.0.151"
+license = "MIT OR Apache-2.0"
+checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+purpose = "stdin/stdout JSON protocol"
+[[cargo_dependencies]]
+name = "syn"
+version = "3.0.3"
+license = "MIT OR Apache-2.0"
+checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+purpose = "serde derive macro build dependency"
+[[cargo_dependencies]]
+name = "unicode-ident"
+version = "1.0.24"
+license = "(MIT OR Apache-2.0) AND Unicode-3.0"
+checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+purpose = "proc-macro identifier support"
+[[cargo_dependencies]]
+name = "zmij"
+version = "1.0.23"
+license = "MIT"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+purpose = "serde_json numeric formatting"
+
+[protocol]
+name = "nautilo.apply_patch/v1"
+input = "one UTF-8 JSON request on stdin; patch grammar remains in request.patch"
+output = "0.1.2 lower-level engine JSON report on stdout: provenance, planned operations, per-operation applied/not_applied/unknown states, applied destination prefix, and partial state. Phase 1.3 and 3.1/3.2 translate it to the locked child/public contracts."
+cwd = "caller-supplied Nautilo execution cwd; the enclosing Sandbox/Namespace boundary supplies filesystem authority"
+
+[update_policy]
+ordinary_builds_immutable = true
+required_review = ["source revision", "all source and segment hashes", "scenario tree/archive hashes", "LICENSE and NOTICE hashes", "fixture compatibility", "dependency-license inventory", "protocol compatibility", "build guard and version provenance handshake"]
+forbid_ambient_path = true
+forbid_dynamic_codex_fetch = true

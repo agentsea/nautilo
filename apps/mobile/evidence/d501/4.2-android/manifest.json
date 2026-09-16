@@ -1,0 +1,49 @@
+{
+  "task": "D501-4.2",
+  "status": "passed",
+  "runtime": "isolated Android only",
+  "harness": "d501-android-source-actions.yaml",
+  "build": {
+    "commit": "d96e809419b06588bf2e887edb22b0a39022ba7e",
+    "apkSha256": "888400760624f07260c3d540e14daafe18628a58789b9278994d006cc70fdbc6",
+    "apkBytes": 95298107,
+    "avd": "D501_Wave10",
+    "serial": "emulator-5560",
+    "metroPort": 8092
+  },
+  "provenance": {
+    "runDate": "2026-08-08",
+    "maestroOutputSha256": "669c9922e730112673b9e030bdd883c78c81649ad38d8498de8b4f87eef1bcae",
+    "secureComparisonRecordRef": "secure-operator-record:d501-final-20260808",
+    "redactedScreenshotSha256": [
+      "4376a27eb117672aba8531bd100f3e6cfcd5b6c0a16c1e21324b817b08c9d417",
+      "304679e0be89139a4b3fc83f4a4a9d42413ee11c24c7294fc292038a244dc5d7",
+      "3dc9fc0a192b467efbf2ffd4e996348de30ad9d8e9f7a9a9b974a8f026c580d7",
+      "9216b67d24e35ab581d7110995daebf1851eb2a88e8f468bba96fa99675d7b24",
+      "f7a253b5a7d26943826ca9867267c71857d3c097ccaa88b013260b47e36edddd"
+    ],
+    "exactResultSha256": {
+      "markdown": "bb26ef645989d7f9e90b6bd83ab31d9bdb5d6d6762d068f351c2187e50ff5080",
+      "plainText": "f4f74017fcb2afbceea927bd5fd6fc1e3a78eee5bbd534a553672d006ab167b4"
+    }
+  },
+  "automatedRows": {
+    "sourceInputAndMarkdownActions": "passed",
+    "previewEditContinuity": "passed",
+    "saveTapAndEditorRetention": "passed"
+  },
+  "manualCheckpoints": {
+    "selectionAndGboard": "passed",
+    "longSourceKeyboardScrollScreenshots": "passed",
+    "pasteCancelDiscard": "passed",
+    "markdownSaveAndReopenExactBytes": "passed",
+    "plainTextSaveAndReopenExactBytes": "passed",
+    "staleConflictHandoff": "passed",
+    "writerHtmlViewerOnly": "passed",
+    "viewerAndDiscuss": "passed",
+    "rename": "passed",
+    "delete": "passed",
+    "fixtureCleanup": "passed"
+  },
+  "notes": "Android source editing, native selection, keyboard geometry, explicit conflict recovery, read-only Writer viewing, actions, and cleanup were observed on the isolated Stack 302 runtime. Exact content and identifiers remain only in the secure operator record."
+}

@@ -1,0 +1,3 @@
+ALTER TABLE "file_revisions" ADD COLUMN "restore_from_revision_id" uuid;--> statement-breakpoint
+ALTER TABLE "file_revisions" ADD CONSTRAINT "file_revisions_restore_from_revision_id_file_revisions_id_fk" FOREIGN KEY ("restore_from_revision_id") REFERENCES "public"."file_revisions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "idx_file_revisions_redo" ON "file_revisions" USING btree ("agent_id","absolute_path","restore_from_revision_id","created_at" DESC NULLS LAST);

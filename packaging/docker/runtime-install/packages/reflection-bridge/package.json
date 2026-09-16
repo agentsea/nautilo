@@ -1,0 +1,31 @@
+{
+  "name": "@nautilo/reflection-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./server": {
+      "types": "./src/server/index.ts",
+      "import": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "import": "./src/testing/index.ts",
+      "default": "./src/testing/index.ts"
+    }
+  },
+  "dependencies": {
+    "@nautilo/db": "workspace:*",
+    "@nautilo/lattice-bridge": "workspace:*",
+    "@nautilo/lattice-crypto": "workspace:*",
+    "@nautilo/reflection": "workspace:*",
+    "@noble/hashes": "2.2.0"
+  }
+}

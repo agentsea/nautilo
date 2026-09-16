@@ -1,0 +1,11 @@
+{
+  "InitializeCapabilities.experimentalApi": false,
+  "ToolRequestUserInputQuestion.isOther": false,
+  "ToolRequestUserInputQuestion.isSecret": false,
+  "ToolRequestUserInputQuestion.options": false,
+  "CommandExecutionRequestApprovalParams.startedAtMs": true,
+  "FileChangeRequestApprovalParams.startedAtMs": true,
+  "PermissionsRequestApprovalParams.startedAtMs": true,
+  "TurnSteerResponse.turnId": true,
+  "ChatgptDeviceCodev2::LoginAccountResponse.loginId": true
+}

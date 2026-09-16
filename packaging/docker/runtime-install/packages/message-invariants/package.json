@@ -1,0 +1,15 @@
+{
+  "name": "@nautilo/message-invariants",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./eslint": "./eslint/index.mjs"
+  },
+  "dependencies": {
+    "@langchain/core": "1.1.45",
+    "@nautilo/logger": "workspace:*"
+  }
+}

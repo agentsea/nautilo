@@ -1,0 +1,114 @@
+name: Problem proposal
+description: Shape a meaningful feature or direction before anyone writes substantial production code.
+title: "[Proposal]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the problem. Earn agreement on the shape. Then build. This issue opens a shaping discussion; it does not authorize an implementation PR. Do not disclose vulnerabilities or private data here.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Proposal contract
+      options:
+        - label: I read the public problem and contribution guidance.
+          required: true
+        - label: I have not opened a substantial implementation pull request for this proposal.
+          required: true
+        - label: I can explain and maintain every claim or artifact I submit, including AI-assisted work.
+          required: true
+        - label: This issue contains no secrets, private content, or vulnerability details.
+          required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Direction
+      options:
+        - Third-party integration
+        - Local or open-model execution
+        - Deployment, resilience, or recovery
+        - Federation
+        - Mobile
+        - UI or interaction design
+        - Security-sensitive product architecture
+        - Other shaped problem
+    validations:
+      required: true
+  - type: input
+    id: public_problem
+    attributes:
+      label: Published problem
+      description: Link the relevant brief from nautilo.ai/community/problems, or explain in the next field why a new brief is needed.
+      placeholder: https://nautilo.ai/community/problems#...
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Human or operator outcome
+      description: Who can do what after this change that they cannot do today? Why does it belong in Nautilo?
+    validations:
+      required: true
+  - type: textarea
+    id: why_now
+    attributes:
+      label: Why now
+      description: Explain why this is worth shaping now rather than remaining an external package, experiment, or later direction.
+    validations:
+      required: true
+  - type: textarea
+    id: current_state
+    attributes:
+      label: Verified current state
+      description: Cite current repository paths, lines, tests, or public docs. Separate facts from assumptions.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_shape
+    attributes:
+      label: Proposed shape
+      description: Describe the smallest coherent outcome. Mark unapproved requirements PROPOSED.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Constraints and non-goals
+      description: State what the proposal must preserve and what it deliberately will not do.
+    validations:
+      required: true
+  - type: textarea
+    id: trust_and_failure
+    attributes:
+      label: Trust, data, permissions, and failure
+      description: Trace ownership, data movement, authorization, denial, partial success, retry, recovery, and rollback that apply.
+    validations:
+      required: true
+  - type: textarea
+    id: interaction_evidence
+    attributes:
+      label: UI, UX, or mobile evidence
+      description: When applicable, include journeys, states, ASCII or visual wireframes, accessibility, keyboard/focus, reduced motion, and narrow behavior.
+    validations:
+      required: false
+  - type: textarea
+    id: integration_contract
+    attributes:
+      label: Third-party integration contract
+      description: When applicable, cover Connection ownership, auth and secret lifecycle, data boundary, approvals, action semantics, recovery, UX, tests, compatibility, and stewardship.
+    validations:
+      required: false
+  - type: textarea
+    id: completion_evidence
+    attributes:
+      label: Evidence that would prove completion
+      description: Name automated tests, manual proof, compatibility checks, docs, migration checks, and cleanup.
+    validations:
+      required: true
+  - type: textarea
+    id: stewardship
+    attributes:
+      label: Stewardship
+      description: Who intends to maintain the feature, external dependencies, tests, examples, docs, and release verification?
+    validations:
+      required: true

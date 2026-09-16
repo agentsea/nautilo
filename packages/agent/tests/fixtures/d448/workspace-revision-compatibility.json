@@ -1,0 +1,28 @@
+{
+  "format": "file_revisions@0108",
+  "description": "Committed pre-D448 Workspace artifact revision. The legacy row carries only workspace_path; all D448 Workspace provenance columns are intentionally absent.",
+  "artifact": {
+    "artifactId": "legacy-workspace-artifact",
+    "logicalPath": "compat/legacy-workspace.md",
+    "mimeType": "text/markdown",
+    "revision": 7
+  },
+  "revision": {
+    "turnId": "legacy-workspace-turn",
+    "workspacePath": "compat/legacy-workspace.md",
+    "preContent": "legacy workspace before\n",
+    "postContent": "legacy workspace after\n",
+    "preSha256": "ecad89cda12902f72642ad14207920e843891f6c387a7ab589743e469c71833c",
+    "preSize": 24,
+    "kind": "blob",
+    "blobRef": "backups/blobs/sha256/ec/ecad89cda12902f72642ad14207920e843891f6c387a7ab589743e469c71833c",
+    "blobSize": 24,
+    "operation": "write",
+    "pinned": false,
+    "authoredBy": "agent"
+  },
+  "expected": {
+    "undoSummary": "Applied undo",
+    "restoredContent": "legacy workspace before\n"
+  }
+}

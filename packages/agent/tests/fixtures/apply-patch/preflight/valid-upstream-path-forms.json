@@ -1,0 +1,8 @@
+{
+  "operations": [
+    { "operation": "add", "path": "/example/absolute-path.txt" },
+    { "operation": "update", "path": "src/../../outside.ts" },
+    { "operation": "add", "path": "src\\windows.ts" },
+    { "operation": "add", "path": "docs/café.md" }
+  ]
+}

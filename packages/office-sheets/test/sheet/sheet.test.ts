@@ -1,0 +1,695 @@
+import { describe, it, expect } from 'vitest';
+import { MemStore } from '../../src/store/memory';
+import { MaxAxisCoverage, Sheet } from '../../src/model/worksheet/sheet';
+
+describe('Sheet.Data', () => {
+  it('should correctly set and get data', async () => {
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 1, c: 1 }, '10');
+    await sheet.setData({ r: 1, c: 2 }, '20');
+    await sheet.setData({ r: 1, c: 3 }, '30');
+
+    expect(await sheet.toInputString({ r: 1, c: 1 })).toBe('10');
+    expect(await sheet.toInputString({ r: 1, c: 2 })).toBe('20');
+    expect(await sheet.toInputString({ r: 1, c: 3 })).toBe('30');
+  });
+});
+
+describe('Sheet.RemoveData', () => {
+  it('should remove data in selected range', async () => {
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 1, c: 1 }, '10');
+    await sheet.setData({ r: 1, c: 2 }, '20');
+    await sheet.setData({ r: 2, c: 1 }, '30');
+    await sheet.setData({ r: 3, c: 3 }, '40');
+
+    // Select range A1:B2
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 2 });
+
+    const removed = await sheet.removeData();
+    expect(removed).toBe(true);
+
+    // Cells inside range should be deleted
+    expect(await sheet.toDisplayString({ r: 1, c: 1 })).toBe('');
+    expect(await sheet.toDisplayString({ r: 1, c: 2 })).toBe('');
+    expect(await sheet.toDisplayString({ r: 2, c: 1 })).toBe('');
+
+    // Cell outside range should remain
+    expect(await sheet.toDisplayString({ r: 3, c: 3 })).toBe('40');
+  });
+
+  it('should remove active cell data when no range is selected', async () => {
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 1, c: 1 }, '10');
+    await sheet.setData({ r: 1, c: 2 }, '20');
+
+    sheet.selectStart({ r: 1, c: 1 });
+
+    const removed = await sheet.removeData();
+    expect(removed).toBe(true);
+
+    expect(await sheet.toDisplayString({ r: 1, c: 1 })).toBe('');
+    expect(await sheet.toDisplayString({ r: 1, c: 2 })).toBe('20');
+  });
+
+  it('should return false when no data to remove', async () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 5, c: 5 });
+
+    const removed = await sheet.removeData();
+    expect(removed).toBe(false);
+  });
+});
+
+describe('Sheet.Selection', () => {
+  it('should update selection', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    sheet.selectStart({ r: 2, c: 2 });
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 2 });
+  });
+
+  it('should move selection', () => {
+    const sheet = new Sheet(new MemStore());
+
+    sheet.move('down');
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 1 });
+
+    sheet.move('right');
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 2 });
+
+    sheet.move('up');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 2 });
+
+    sheet.move('left');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+  });
+
+  it('should not move selection beyond sheet dimensions', () => {
+    const sheet = new Sheet(new MemStore());
+
+    sheet.move('up');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    sheet.move('left');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    sheet.move('down');
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 1 });
+  });
+
+  it('should correctly move to content edge', async () => {
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 1, c: 1 }, '10');
+    await sheet.setData({ r: 1, c: 2 }, '20');
+
+    await sheet.setData({ r: 1, c: 4 }, '40');
+    await sheet.setData({ r: 1, c: 5 }, '50');
+    await sheet.setData({ r: 1, c: 6 }, '60');
+
+    await sheet.moveToEdge('right');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 2 });
+
+    await sheet.moveToEdge('right');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 4 });
+
+    await sheet.moveToEdge('right');
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 6 });
+  });
+
+  it('should not extend axis order to dimension boundary on Cmd+Arrow into empty space', async () => {
+    // Regression: moveToEdge into an empty row/column jumped activeCell to
+    // the dimension boundary (row 1M / col 18K). syncSelectionToPresence
+    // then called ensureAxisOrder(1M, 18K), causing a multi-second freeze
+    // as Yorkie generated and pushed ~1M axis IDs into rowOrder.
+    const calls: Array<{ minRows: number; minCols: number }> = [];
+    class TrackingStore extends MemStore {
+      override ensureAxisOrder(minRows: number, minCols: number): void {
+        calls.push({ minRows, minCols });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    await sheet.moveToEdge('down');
+    await sheet.moveToEdge('right');
+
+    for (const { minRows, minCols } of calls) {
+      expect(minRows).toBeLessThan(1000);
+      expect(minCols).toBeLessThan(1000);
+    }
+  });
+
+  it('should not extend axis order on Cmd+A (selectAll) on an empty sheet', async () => {
+    // Same regression class as Cmd+Arrow into empty space: selectAll()
+    // on an empty sheet hits the isSameRange branch and sets ranges to
+    // the full dimensionRange. Without a full-dimension guard,
+    // syncSelectionToPresence would call ensureAxisOrder(1M, 18K).
+    const calls: Array<{ minRows: number; minCols: number }> = [];
+    class TrackingStore extends MemStore {
+      override ensureAxisOrder(minRows: number, minCols: number): void {
+        calls.push({ minRows, minCols });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    await sheet.selectAll();
+
+    for (const { minRows, minCols } of calls) {
+      expect(minRows).toBeLessThan(1000);
+      expect(minCols).toBeLessThan(1000);
+    }
+  });
+
+  it('should emit legacy activeCell Sref even when anchor is null', async () => {
+    // Contract: when activeCell sits beyond axis-ID coverage (e.g. after
+    // Cmd+Down on an empty sheet), updateSelection is still invoked with a
+    // null anchor and a real activeCellRef so peer rendering can fall back
+    // to the legacy Sref via overlay.ts dual-format dispatch.
+    const calls: Array<{
+      activeCell: Parameters<MemStore['updateSelection']>[0];
+      activeCellRef: { r: number; c: number };
+    }> = [];
+    class TrackingStore extends MemStore {
+      override updateSelection(
+        activeCell: Parameters<MemStore['updateSelection']>[0],
+        _ranges: Parameters<MemStore['updateSelection']>[1],
+        activeCellRef: Parameters<MemStore['updateSelection']>[2],
+      ): void {
+        calls.push({ activeCell, activeCellRef });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    await sheet.moveToEdge('down');
+
+    const last = calls[calls.length - 1];
+    expect(last.activeCell).toBeNull();
+    expect(last.activeCellRef.r).toBeGreaterThan(1);
+  });
+
+  it('should still extend axis order for column/row range selection', () => {
+    // Preserves the fix from `923c5073`: selecting column E when only A-B
+    // have data must extend colOrder so the selection's colId is non-null
+    // (otherwise the range would be misinterpreted as select-all).
+    const calls: Array<{ minRows: number; minCols: number }> = [];
+    class TrackingStore extends MemStore {
+      override ensureAxisOrder(minRows: number, minCols: number): void {
+        calls.push({ minRows, minCols });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    sheet.selectColumn(5);
+
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall.minCols).toBeGreaterThanOrEqual(5);
+  });
+
+  /**
+   * `MaterializingStore` mirrors the Yorkie store: `ensureAxisOrder` really
+   * grows the axis arrays, one entry per row/column. `MemStore` no-ops it, so
+   * anchor behavior beyond coverage is only observable through this store.
+   */
+  class MaterializingStore extends MemStore {
+    rowOrder: string[] = [];
+    colOrder: string[] = [];
+
+    override getRowOrder(): string[] {
+      return [...this.rowOrder];
+    }
+
+    override getColOrder(): string[] {
+      return [...this.colOrder];
+    }
+
+    override getAxisCoverage(): { rows: number; cols: number } {
+      return { rows: this.rowOrder.length, cols: this.colOrder.length };
+    }
+
+    override ensureAxisOrder(minRows: number, minCols: number): void {
+      while (this.rowOrder.length < minRows) {
+        this.rowOrder.push(`r${this.rowOrder.length}`);
+      }
+      while (this.colOrder.length < minCols) {
+        this.colOrder.push(`c${this.colOrder.length}`);
+      }
+    }
+  }
+
+  it('should not extend axis order on Shift+Arrow far out in empty space', () => {
+    // Regression: #180 stopped `activeCell` from extending the axis, but
+    // ranges still did. Shift+Arrow at row 1,000,000 asked for 1M axis IDs,
+    // which the Yorkie store materializes one CRDT push at a time.
+    const calls: Array<{ minRows: number; minCols: number }> = [];
+    class TrackingStore extends MemStore {
+      override ensureAxisOrder(minRows: number, minCols: number): void {
+        calls.push({ minRows, minCols });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    sheet.setActiveCell({ r: 1_000_000, c: 1 });
+    sheet.resizeRange('up');
+    sheet.resizeRange('up');
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const { minRows } of calls) {
+      expect(minRows).toBeLessThanOrEqual(MaxAxisCoverage);
+    }
+  });
+
+  it('should not extend axis order when selecting a far-out row header', () => {
+    // Same path via selectRow(): the range spans the whole row at r=1M.
+    const calls: Array<{ minRows: number; minCols: number }> = [];
+    class TrackingStore extends MemStore {
+      override ensureAxisOrder(minRows: number, minCols: number): void {
+        calls.push({ minRows, minCols });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    sheet.selectRow(1_000_000);
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const { minRows } of calls) {
+      expect(minRows).toBeLessThanOrEqual(MaxAxisCoverage);
+    }
+  });
+
+  it('should anchor a large selection that needs no new coverage', () => {
+    // The cap bounds how far coverage may be *extended*, not how far it may
+    // reach. Cell writes grow the axis to reach their ref, so a 50,000-row
+    // import leaves 50,000 row IDs — a selection over that data must still be
+    // anchored, or peers lose the highlight and the selection stops surviving
+    // a peer's row insert over real content.
+    const calls: Array<Parameters<MemStore['updateSelection']>> = [];
+    class TrackingStore extends MaterializingStore {
+      override updateSelection(
+        ...args: Parameters<MemStore['updateSelection']>
+      ): void {
+        calls.push(args);
+      }
+    }
+
+    const store = new TrackingStore();
+    store.ensureAxisOrder(50_000, 10);
+
+    const sheet = new Sheet(store);
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 20_000, c: 2 });
+
+    const [activeCell, ranges] = calls[calls.length - 1];
+    expect(activeCell).not.toBeNull();
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].startRowId).not.toBeNull();
+    expect(ranges[0].endRowId).not.toBeNull();
+    // Extending was never needed, so nothing was materialized beyond the data.
+    expect(store.rowOrder).toHaveLength(50_000);
+  });
+
+  it('should anchor a selection reaching just past existing coverage', () => {
+    // The budget is relative to what exists: dragging 5,000 rows past a
+    // 50,000-row import costs 5,000 new IDs, well inside the cap, so the
+    // selection must still be anchored rather than degraded.
+    const calls: Array<Parameters<MemStore['updateSelection']>> = [];
+    class TrackingStore extends MaterializingStore {
+      override updateSelection(
+        ...args: Parameters<MemStore['updateSelection']>
+      ): void {
+        calls.push(args);
+      }
+    }
+
+    const store = new TrackingStore();
+    store.ensureAxisOrder(50_000, 10);
+
+    const sheet = new Sheet(store);
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 55_000, c: 2 });
+
+    const [activeCell, ranges] = calls[calls.length - 1];
+    expect(activeCell).not.toBeNull();
+    expect(ranges[0].endRowId).not.toBeNull();
+    expect(store.rowOrder).toHaveLength(55_000);
+  });
+
+  it('should publish no anchors for a selection beyond axis coverage', () => {
+    // A range endpoint beyond coverage cannot be anchored, and a null
+    // endpoint id already means "entire row/column" to peers. So publish no
+    // `selection` at all and let the legacy activeCell Sref carry the cursor.
+    const calls: Array<{
+      activeCell: Parameters<MemStore['updateSelection']>[0];
+      ranges: Parameters<MemStore['updateSelection']>[1];
+      activeCellRef: Parameters<MemStore['updateSelection']>[2];
+    }> = [];
+    class TrackingStore extends MaterializingStore {
+      override updateSelection(
+        activeCell: Parameters<MemStore['updateSelection']>[0],
+        ranges: Parameters<MemStore['updateSelection']>[1],
+        activeCellRef: Parameters<MemStore['updateSelection']>[2],
+      ): void {
+        calls.push({ activeCell, ranges, activeCellRef });
+      }
+    }
+
+    const sheet = new Sheet(new TrackingStore());
+    sheet.setActiveCell({ r: 1_000_000, c: 1 });
+    sheet.resizeRange('up');
+
+    const last = calls[calls.length - 1];
+    expect(last.activeCell).toBeNull();
+    expect(last.ranges).toEqual([]);
+    expect(last.activeCellRef).toEqual({ r: 1_000_000, c: 1 });
+  });
+
+  it('should keep a beyond-coverage selection when anchors are re-resolved', () => {
+    // With no anchors published, a remote sync must leave the visual
+    // selection alone rather than clearing it or snapping it back to the
+    // stale anchors of the last within-coverage selection.
+    const sheet = new Sheet(new MaterializingStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 3, c: 2 });
+
+    sheet.selectStart({ r: 999_998, c: 1 });
+    sheet.selectEnd({ r: 1_000_000, c: 2 });
+    const before = sheet.getRange();
+    expect(before).toEqual([
+      { r: 999_998, c: 1 },
+      { r: 1_000_000, c: 2 },
+    ]);
+
+    sheet.resolveAnchorsToRefs();
+
+    expect(sheet.getActiveCell()).toEqual({ r: 999_998, c: 1 });
+    expect(sheet.getRange()).toEqual(before);
+  });
+
+  it('should still repair ranges when only the active cell is unanchored', () => {
+    // The no-anchor sentinel must not swallow range repair: a range inside
+    // coverage still re-resolves when the cursor sits outside it.
+    const store = new MaterializingStore();
+    const sheet = new Sheet(store);
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 3, c: 2 });
+    sheet.setActiveCell({ r: 900_000, c: 1 });
+
+    // A peer deletes the first row, taking the range's start ID with it. Per
+    // "Deleted Axis ID Handling", a deleted endpoint snaps to the surviving
+    // one — which is repair, and it must still happen here.
+    store.rowOrder.shift();
+    sheet.resolveAnchorsToRefs();
+
+    expect(sheet.getActiveCell()).toEqual({ r: 900_000, c: 1 });
+    expect(sheet.getRange()).toEqual([
+      { r: 2, c: 1 },
+      { r: 2, c: 2 },
+    ]);
+  });
+});
+
+describe('Sheet.SelectAll', async () => {
+  const sheet = new Sheet(new MemStore());
+  await sheet.setData({ r: 2, c: 2 }, 'B2');
+  await sheet.setData({ r: 2, c: 3 }, 'C2');
+  await sheet.setData({ r: 3, c: 2 }, 'B3');
+  await sheet.setData({ r: 3, c: 3 }, 'C3');
+
+  const tests = [
+    {
+      msg: 'selection is outside of the content range',
+      start: { r: 1, c: 1 },
+      end: { r: 1, c: 1 },
+      expectedRange: sheet.dimensionRange,
+    },
+    {
+      msg: 'selection is on the top left corner of the content range',
+      start: { r: 2, c: 2 },
+      end: { r: 2, c: 2 },
+      expectedRange: [
+        { r: 2, c: 2 },
+        { r: 3, c: 3 },
+      ],
+    },
+  ];
+
+  for (const test of tests) {
+    it(test.msg, async () => {
+      sheet.selectStart(test.start);
+      sheet.selectEnd(test.end);
+      await sheet.selectAll();
+      expect(sheet.getRange()).toEqual(test.expectedRange);
+    });
+  }
+
+  it('ignores style-only cells when expanding content range', async () => {
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 2, c: 2 }, 'B2');
+    await sheet.setData({ r: 2, c: 3 }, 'C2');
+    await sheet.setData({ r: 3, c: 2 }, 'B3');
+    await sheet.setData({ r: 3, c: 3 }, 'C3');
+    await sheet.setStyle({ r: 4, c: 2 }, { bg: '#ff0000' });
+
+    sheet.selectStart({ r: 2, c: 2 });
+    await sheet.selectAll();
+
+    expect(sheet.getRange()).toEqual([
+      { r: 2, c: 2 },
+      { r: 3, c: 3 },
+    ]);
+  });
+});
+
+describe('Sheet.MultiSelection', () => {
+  it('should add a new selection range with addSelection', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 2 });
+
+    // Add a second selection
+    sheet.addSelection({ r: 5, c: 5 });
+
+    const ranges = sheet.getRanges();
+    expect(ranges).toHaveLength(2);
+    // First range: A1:B2
+    expect(ranges[0]).toEqual([{ r: 1, c: 1 }, { r: 2, c: 2 }]);
+    // Second range: collapsed at E5
+    expect(ranges[1]).toEqual([{ r: 5, c: 5 }, { r: 5, c: 5 }]);
+  });
+
+  it('should move activeCell to the start of the last added range', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.addSelection({ r: 3, c: 4 });
+
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 4 });
+  });
+
+  it('should extend the last range with addSelectionEnd', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 2 });
+    sheet.addSelection({ r: 5, c: 5 });
+    sheet.addSelectionEnd({ r: 7, c: 7 });
+
+    const ranges = sheet.getRanges();
+    expect(ranges).toHaveLength(2);
+    expect(ranges[1]).toEqual([{ r: 5, c: 5 }, { r: 7, c: 7 }]);
+  });
+
+  it('should preserve existing selection when starting addSelection with no range', () => {
+    const sheet = new Sheet(new MemStore());
+    // Only activeCell, no range
+    sheet.selectStart({ r: 1, c: 1 });
+    expect(sheet.hasRange()).toBe(false);
+
+    sheet.addSelection({ r: 3, c: 3 });
+    const ranges = sheet.getRanges();
+    // Should have two ranges: the frozen activeCell and the new one
+    expect(ranges).toHaveLength(2);
+    expect(ranges[0]).toEqual([{ r: 1, c: 1 }, { r: 1, c: 1 }]);
+    expect(ranges[1]).toEqual([{ r: 3, c: 3 }, { r: 3, c: 3 }]);
+  });
+
+  it('should clear all ranges on selectStart', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 2 });
+    sheet.addSelection({ r: 5, c: 5 });
+
+    // selectStart resets everything
+    sheet.selectStart({ r: 10, c: 10 });
+    expect(sheet.getRanges()).toHaveLength(0);
+    expect(sheet.hasRange()).toBe(false);
+  });
+
+  it('getRange returns the last range for backward compatibility', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 2 });
+    sheet.addSelection({ r: 5, c: 5 });
+    sheet.addSelectionEnd({ r: 6, c: 6 });
+
+    expect(sheet.getRange()).toEqual([{ r: 5, c: 5 }, { r: 6, c: 6 }]);
+  });
+
+  it('should navigate across multiple ranges with moveInRange (Tab)', () => {
+    const sheet = new Sheet(new MemStore());
+    // Range 1: A1:B1 (row 1, cols 1-2)
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 1, c: 2 });
+    // Range 2: A3:B3 (row 3, cols 1-2)
+    sheet.addSelection({ r: 3, c: 1 });
+    sheet.addSelectionEnd({ r: 3, c: 2 });
+
+    // Active cell starts at A3 (start of last added range)
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 1 });
+
+    // Tab forward: A3 -> B3
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 2 });
+
+    // Tab forward: B3 wraps -> should go to Range 1's start (A1)
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    // Tab forward: A1 -> B1
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 2 });
+
+    // Tab forward: B1 wraps -> back to Range 2's start (A3)
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 1 });
+  });
+
+  it('should navigate backwards across multiple ranges with Shift+Tab', () => {
+    const sheet = new Sheet(new MemStore());
+    // Range 1: A1:B1
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 1, c: 2 });
+    // Range 2: A3:B3
+    sheet.addSelection({ r: 3, c: 1 });
+    sheet.addSelectionEnd({ r: 3, c: 2 });
+
+    // Active cell at A3
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 1 });
+
+    // Shift+Tab backward: A3 wraps -> should go to Range 1's end (B1)
+    sheet.moveInRange(0, -1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 2 });
+
+    // Shift+Tab: B1 -> A1
+    sheet.moveInRange(0, -1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    // Shift+Tab: A1 wraps -> back to Range 2's end (B3)
+    sheet.moveInRange(0, -1);
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 2 });
+  });
+
+  it('should navigate with Enter across multiple ranges (row-major)', () => {
+    const sheet = new Sheet(new MemStore());
+    // Range 1: A1:A2 (2 rows, 1 col)
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 1 });
+    // Range 2: C1:C2
+    sheet.addSelection({ r: 1, c: 3 });
+    sheet.addSelectionEnd({ r: 2, c: 3 });
+
+    // Active cell at C1
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 3 });
+
+    // Enter: C1 -> C2
+    sheet.moveInRange(1, 0);
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 3 });
+
+    // Enter: C2 wraps -> Range 1 start (A1)
+    sheet.moveInRange(1, 0);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    // Enter: A1 -> A2
+    sheet.moveInRange(1, 0);
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 1 });
+
+    // Enter: A2 wraps -> Range 2 start (C1)
+    sheet.moveInRange(1, 0);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 3 });
+  });
+
+  it('should still navigate within single range normally', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 2, c: 2 });
+
+    // Tab forward through A1 -> B1 -> A2 -> B2 -> A1 (wrap)
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 2 });
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 1 });
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 2 });
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+  });
+
+  it('should cycle through 3+ ranges with Tab', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.addSelection({ r: 2, c: 2 });
+    sheet.addSelection({ r: 3, c: 3 });
+
+    // Active cell at C3 (last added)
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 3 });
+
+    // Tab: C3 is single-cell, wraps -> Range 1 start (A1)
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 1, c: 1 });
+
+    // Tab: A1 wraps -> Range 2 start (B2)
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 2, c: 2 });
+
+    // Tab: B2 wraps -> Range 3 start (C3)
+    sheet.moveInRange(0, 1);
+    expect(sheet.getActiveCell()).toEqual({ r: 3, c: 3 });
+  });
+
+  it('should not crash when active cell is outside all ranges', () => {
+    const sheet = new Sheet(new MemStore());
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.selectEnd({ r: 1, c: 2 });
+    sheet.addSelection({ r: 3, c: 1 });
+    sheet.addSelectionEnd({ r: 3, c: 2 });
+
+    // Move active cell outside all ranges
+    sheet.move('down');
+    // Should not throw
+    expect(() => sheet.moveInRange(0, 1)).not.toThrow();
+    expect(() => sheet.moveInRange(1, 0)).not.toThrow();
+    expect(() => sheet.moveInRange(0, -1)).not.toThrow();
+    expect(() => sheet.moveInRange(-1, 0)).not.toThrow();
+  });
+
+  it('should apply style to all ranges in multi-selection', async () => {
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 1, c: 1 }, 'hello');
+    await sheet.setData({ r: 3, c: 1 }, 'world');
+
+    // Select A1, then add A3
+    sheet.selectStart({ r: 1, c: 1 });
+    sheet.addSelection({ r: 3, c: 1 });
+
+    // Apply bold style
+    await sheet.setRangeStyle({ b: true });
+
+    // Both ranges should have range-level style patches
+    const patches = sheet.getRangeStyles();
+    expect(patches.length).toBe(2);
+    expect(patches[0].style.b).toBe(true);
+    expect(patches[0].range).toEqual([{ r: 1, c: 1 }, { r: 1, c: 1 }]);
+    expect(patches[1].style.b).toBe(true);
+    expect(patches[1].range).toEqual([{ r: 3, c: 1 }, { r: 3, c: 1 }]);
+  });
+});

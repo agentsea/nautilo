@@ -1,0 +1,49 @@
+pre-commit:
+  commands:
+    lint-fix:
+      # Autofix only code entering this commit. Pre-push and CI still run the
+      # affected package graph; scanning all 73 packages here took 2m15s.
+      glob: "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
+      run: |
+        if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+          bun run lint:fix
+        else
+          bash dev/scripts/lint-staged.sh {staged_files}
+        fi
+      stage_fixed: true
+    # Block hand-renumbered / edited-applied Drizzle migrations and surface
+    # destructive DDL before they ever reach a PR. Local-only (not a CI gate);
+    # see dev/tools/db-migration-safety/.
+    drizzle-migration-guard:
+      # The guard reads the index itself; Lefthook glob filtering skipped
+      # top-level SQL files while matching nested migration metadata.
+      run: bash dev/tools/db-migration-safety/guard-staged-migrations.sh
+
+pre-push:
+  # Stage 0: install serially before invariants inspect the pinned lockfile.
+  # Stage 1: affected checks in parallel. Root-wide Knip remains CI-enforced;
+  # keeping it off the local critical path makes repeat pushes cheaper.
+  # Stage 2: unit tests alone — avoids esbuild/Bun SIGKILL when test:unit
+  # builds workbench-components while typecheck/lint turbo are still running.
+  jobs:
+    - name: install-check
+      run: |
+        if [ ! -d node_modules ] || [ ! -e node_modules/.bin ] || [ bun.lock -nt node_modules/.bin ]; then
+          echo "[pre-push] bun.lock changed since last install (or node_modules missing) — running bun install to heal..."
+          bun install
+        fi
+    - group:
+        parallel: true
+        jobs:
+          - name: lint
+            run: TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh lint-eslint
+          - name: test-invariants
+            run: bash dev/scripts/ci-gates.sh test-invariants
+          - name: query-inventory
+            run: bash dev/scripts/ci-gates.sh query-inventory
+          - name: limit-invariants
+            run: bash dev/scripts/ci-gates.sh limit-invariants
+          - name: typecheck
+            run: TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh typecheck
+    - name: test-unit
+      run: TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-4}" TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh unit

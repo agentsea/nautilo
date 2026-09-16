@@ -1,0 +1,23 @@
+# M051 (Logto cluster): LAN reverse-proxy zones for Logto behind D048's
+# local CA. Loaded into the existing nautilo-cert-guard Caddy alongside
+# `server.nautilo.local`.
+#
+# These zones only matter for LAN deployments (D048). Dev mode hits
+# Logto on `http://localhost:3301` directly. Managed SaaS terminates
+# TLS at Cloud Run / Cloudflare and bypasses Caddy entirely.
+#
+# Hostname registration: the nautilo-cert-guard SAN list (D048 Phase 2)
+# must include `auth.nautilo.local` and `auth-admin.nautilo.local` for
+# the issued cert to cover these zones. If D048 hard-codes the SAN list,
+# add the two new hostnames there; if it generalizes hostname → cert
+# mapping (it does as of D048 Phase 3), no code change needed.
+
+auth.nautilo.local:443 {
+    tls /certs/local-ca.crt /certs/local-ca.key
+    reverse_proxy logto:3301
+}
+
+auth-admin.nautilo.local:443 {
+    tls /certs/local-ca.crt /certs/local-ca.key
+    reverse_proxy logto:3302
+}

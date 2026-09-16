@@ -1,0 +1,1 @@
+ALTER TABLE "room_journal_state" ADD CONSTRAINT "room_journal_state_historical_status" CHECK ("room_journal_state"."historical_backfill_status" IN ('pending', 'completed', 'not_needed'));

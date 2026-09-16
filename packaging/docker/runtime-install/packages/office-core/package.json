@@ -1,0 +1,33 @@
+{
+  "name": "@nautilo/office-core",
+  "version": "0.6.9",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./geometry": {
+      "types": "./dist/geometry/index.d.ts",
+      "import": "./dist/geometry/index.js",
+      "require": "./dist/cjs/geometry/index.js",
+      "default": "./dist/geometry/index.js"
+    },
+    "./image": {
+      "types": "./dist/image/index.d.ts",
+      "import": "./dist/image/index.js",
+      "require": "./dist/cjs/image/index.js",
+      "default": "./dist/image/index.js"
+    },
+    "./tokens": {
+      "types": "./dist/tokens/index.d.ts",
+      "import": "./dist/tokens/index.js",
+      "require": "./dist/cjs/tokens/index.js",
+      "default": "./dist/tokens/index.js"
+    },
+    "./tokens.css": "./dist/tokens.css",
+    "./url": {
+      "types": "./dist/url/index.d.ts",
+      "import": "./dist/url/index.js",
+      "require": "./dist/cjs/url/index.js",
+      "default": "./dist/url/index.js"
+    }
+  }
+}

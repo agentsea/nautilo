@@ -1,0 +1,5 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["./capture-preview.ts", "./qualify-browser.ts", "./qualify-recovery-browser.ts", "./qualify-templates-browser.ts"]
+}

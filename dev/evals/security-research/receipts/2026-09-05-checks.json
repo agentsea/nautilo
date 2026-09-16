@@ -1,0 +1,68 @@
+{
+  "agent-unit-all": {
+    "passed": 3717,
+    "failed": 0,
+    "groups": 31
+  },
+  "runtime-unit-all": {
+    "passed": 1790,
+    "failed": 0,
+    "groups": 8
+  },
+  "desktop-unit-all": {
+    "passed": 2572,
+    "failed": 0,
+    "groups": 90
+  },
+  "relay-unit-all": {
+    "passed": 334,
+    "failed": 0,
+    "groups": 1
+  },
+  "types-final": {
+    "passed": 190,
+    "failed": 0,
+    "groups": 1
+  },
+  "workbench-tests": {
+    "passed": 30,
+    "failed": 0,
+    "groups": 1
+  },
+  "resume-integration": {
+    "passed": 4,
+    "failed": 0,
+    "groups": 1
+  },
+  "resume-tests": {
+    "passed": 5,
+    "failed": 0,
+    "groups": 1
+  },
+  "byte-final": {
+    "passed": 27,
+    "failed": 0,
+    "groups": 1
+  },
+  "stream-probes": {
+    "passed": 11,
+    "failed": 0,
+    "groups": 1
+  },
+  "oracle": {
+    "passed": 3,
+    "failed": 0,
+    "groups": 1,
+    "runner": "node:test"
+  },
+  "workbench-final": {
+    "passed": 33,
+    "failed": 0,
+    "groups": 1
+  },
+  "workbench-isolated-final": {
+    "passed": 2,
+    "failed": 0,
+    "groups": 1
+  }
+}

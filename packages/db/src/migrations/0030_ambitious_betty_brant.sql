@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "uq_groups_agent_id_type" ON "groups" USING btree ("agent_id","type") WHERE "groups"."agent_id" IS NOT NULL;

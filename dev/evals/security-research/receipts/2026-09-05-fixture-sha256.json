@@ -1,0 +1,10 @@
+{
+  "fixture/.gitignore": "ed19d3c9c8a5e34d0179e0b1a9c2907d2e657738733e4a432a8cf81c76ce56f1",
+  "fixture/README.md": "d3606745ddae558231bed6b1e17c7976c1e2e3272645d45883f59574f74bf07a",
+  "fixture/api.mjs": "5d42bc35a2e158796b4d9bd04af734ac7e31c24b4febbc2e7bd99fc2771a85b0",
+  "fixture/behavior.test.mjs": "07d49edf7273017dc617c36894e280a9ae0f6e41542362f6ec8b922f783cd30c",
+  "fixture/package.json": "2ddac9016125ec7dc283bfee08c8df549d69526e9ab106653fb63741bcf0e3f4",
+  "fixture/policy.mjs": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+  "fixture/store.mjs": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+  "fixture/worker.mjs": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8"
+}

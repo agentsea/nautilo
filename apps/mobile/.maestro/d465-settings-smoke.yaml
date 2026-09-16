@@ -1,0 +1,91 @@
+appId: ai.nautilo.app
+---
+- launchApp
+- extendedWaitUntil:
+    visible: Open menu
+    timeout: 90000
+- runFlow:
+    when:
+      visible: Open debugger to view warnings.
+    commands:
+      - tapOn:
+          point: "92%,92%"
+- tapOn: Open menu
+- tapOn: Settings. Profile, account, and appearance
+- assertVisible: Agent capabilities
+- assertVisible: Your Account
+- assertVisible: App
+
+- assertVisible: Agent profile
+- assertVisible: "Your profile.*"
+- tapOn: Agent profile
+- assertVisible: Your Agent
+- assertVisible: Agent name
+- assertVisible: Agent handle
+- assertVisible: Manage Agent photos
+- tapOn: Manage Agent photos
+- assertVisible: Agent photos
+- assertVisible: Presets
+- tapOn: Go back
+- scrollUntilVisible:
+    element:
+      text: Save Agent profile
+    direction: DOWN
+    timeout: 30000
+- tapOn: Go back
+
+- tapOn: Voice & playback
+- assertVisible: Speak responses
+- assertVisible: Primary voice
+- scrollUntilVisible:
+    element:
+      text: Add a language voice
+    direction: DOWN
+    timeout: 30000
+- tapOn: Go back
+
+- tapOn: Models & defaults
+- assertVisible: DEFAULT FOR YOUR AGENT
+- assertVisible: Reset to server default model
+- tapOn: "Model, .*"
+- assertVisible: Choose default model
+- assertVisible: Search models
+- assertNotVisible: Use selected model as Agent default
+- tapOn: Go back
+- tapOn: Go back
+
+- tapOn: PIN, password & recovery
+- assertVisible: Approval PIN
+- assertVisible: PIN recovery codes
+- assertVisible: Password
+- tapOn: "(Change|Set) PIN"
+- assertVisible: Cancel
+- tapOn: Cancel
+- assertVisible: "(Change|Set) PIN"
+- scrollUntilVisible:
+    element:
+      text: Logto account recovery codes
+    direction: DOWN
+    timeout: 30000
+- tapOn: Change password
+- scrollUntilVisible:
+    element:
+      text: Save password
+    direction: DOWN
+    timeout: 30000
+- assertVisible: Save password
+- assertVisible: Cancel
+- tapOn: Cancel
+- assertNotVisible: Save password
+- tapOn: Go back
+
+- tapOn: Standing approvals
+- assertVisible: Review the standing rules that bypass a future approval prompt.
+- tapOn: Go back
+
+- tapOn: "Appearance, .*"
+- assertVisible: Stored on this phone. System follows your device.
+- tapOn: Go back
+
+- tapOn: About
+- assertVisible: Connected server

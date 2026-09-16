@@ -1,0 +1,1 @@
+ALTER TABLE "room_event_rollups" ALTER COLUMN "content" DROP NOT NULL;

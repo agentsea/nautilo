@@ -1,0 +1,62 @@
+name: Contributor build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/package.json"
+      - "**/bun.lock"
+      - "bunfig.toml"
+      - "turbo.json"
+      - "patches/**"
+      - "dev/scripts/install-first-party-apps.ts"
+      - ".github/scripts/contributor-build.sh"
+      - ".github/workflows/contributor-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contributor-build-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Cold Linux contributor build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.3.11"
+      - name: Build exact source without credentials or caches
+        run: |
+          set -euo pipefail
+          proof_dir="$RUNNER_TEMP/contributor-build"
+          mkdir "$proof_dir"
+          git rev-parse HEAD HEAD^{tree} > "$proof_dir/source.txt"
+          git archive HEAD > "$proof_dir/source.tar"
+          sha256sum "$proof_dir/source.tar" > "$proof_dir/source.sha256"
+          cp "$(command -v bun)" "$proof_dir/bun"
+          # Only these two read-only files cross into the fresh container.
+          # No host home, Git history, Docker socket, token or Actions env.
+          docker run --rm --cap-drop ALL --security-opt no-new-privileges \
+            --user node --workdir /home/node \
+            --mount "type=bind,src=$proof_dir/source.tar,dst=/source.tar,readonly" \
+            --mount "type=bind,src=$proof_dir/bun,dst=/usr/local/bin/bun,readonly" \
+            node:24-bookworm@sha256:6dac556d980b7f0e5498d08f08cee0ca67798b4ad6c23964a9214920e67758d0 \
+            bash -euo pipefail -c 'mkdir work; cd work; tar xf /source.tar; bash .github/scripts/contributor-build.sh' \
+            2>&1 | tee "$proof_dir/build.log"
+      - name: Retain build evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: contributor-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/contributor-build/source.txt
+            ${{ runner.temp }}/contributor-build/source.sha256
+            ${{ runner.temp }}/contributor-build/build.log
+          if-no-files-found: error

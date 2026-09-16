@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "cohort": "certified",
+  "codexVersion": "0.146.0",
+  "releaseTag": "rust-v0.146.0",
+  "sourceRepo": "openai/codex",
+  "artifacts": {
+    "darwin-arm64": {
+      "platform": "darwin-arm64",
+      "version": "0.146.0",
+      "releaseTag": "rust-v0.146.0",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-app-server-package-aarch64-apple-darwin.tar.gz",
+      "archiveName": "codex-app-server-package-aarch64-apple-darwin.tar.gz",
+      "archiveBytes": 104581332,
+      "sha256": "a511d6f91010b9bebc8ea06d13f9fdaff7bb300467fc7ba45ef1ff0e4083a24f",
+      "entrypointSha256": "edbb758391788ed8fcb526640ca43141d016031a9ea6f7990c534e5d27a670f7",
+      "package": {
+        "layoutVersion": 1,
+        "version": "0.146.0",
+        "target": "aarch64-apple-darwin",
+        "variant": "codex-app-server",
+        "entrypoint": "bin/codex-app-server",
+        "pathDir": "codex-path",
+        "resourcesDir": "codex-resources",
+        "requiredMembers": {
+          "codex-package.json": { "bytes": 222, "sha256": "31eff8bff05b66bea7bf5faa8df8130f9ced468551813d57cf262a2465ba1118" },
+          "bin/codex-app-server": { "bytes": 221381984, "sha256": "edbb758391788ed8fcb526640ca43141d016031a9ea6f7990c534e5d27a670f7" },
+          "bin/codex-code-mode-host": { "bytes": 48727808, "sha256": "0ebd0dfe555cf5a502dd1d241039db153ced34a522d921d26c558dfa634e5f10" },
+          "codex-path/rg": { "bytes": 4030432, "sha256": "882ee4837235e252ce5ffecc3c1707f6d5b7db0054b7922301b5dc0f466a0fed" },
+          "codex-resources/zsh/bin/zsh": { "bytes": 754208, "sha256": "3070e0b5a71b25930f78aeaecd23d6c1081b19b2b83975e5cd29a075d6c463b9" }
+        },
+        "executableMembers": ["bin/codex-app-server", "bin/codex-code-mode-host", "codex-path/rg", "codex-resources/zsh/bin/zsh"]
+      },
+      "signature": { "kind": "macos-codesign", "teamId": "2DC432GLL2", "publisherSubject": "Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)" }
+    },
+    "darwin-x64": {
+      "platform": "darwin-x64",
+      "version": "0.146.0",
+      "releaseTag": "rust-v0.146.0",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-app-server-package-x86_64-apple-darwin.tar.gz",
+      "archiveName": "codex-app-server-package-x86_64-apple-darwin.tar.gz",
+      "archiveBytes": 113100765,
+      "sha256": "0912dcb063c20e4138b66c70743048b68fb48b963e4491e2c6be9aa4beb3560d",
+      "entrypointSha256": "3db23252931b40ebbc77c1dcd61102d3a8bf90cb6ac5a649e192bacac3f81677",
+      "package": {
+        "layoutVersion": 1,
+        "version": "0.146.0",
+        "target": "x86_64-apple-darwin",
+        "variant": "codex-app-server",
+        "entrypoint": "bin/codex-app-server",
+        "pathDir": "codex-path",
+        "resourcesDir": "codex-resources",
+        "requiredMembers": {
+          "codex-package.json": { "bytes": 221, "sha256": "ff9c5dc83e4dc95bb0e06e01117a966577ccb1c81ed04fa51ea61dfcff940145" },
+          "bin/codex-app-server": { "bytes": 237601088, "sha256": "3db23252931b40ebbc77c1dcd61102d3a8bf90cb6ac5a649e192bacac3f81677" },
+          "bin/codex-code-mode-host": { "bytes": 51553504, "sha256": "bf833cd93175406449761798d0cb3183b352dc1b0c5a7c68b797668726d722b1" },
+          "codex-path/rg": { "bytes": 4437184, "sha256": "94525a6eae7913432c36bf93ba91b4f8b48529d2f3da18f856d14b1309efb7b5" },
+          "codex-resources/zsh/bin/zsh": { "bytes": 762544, "sha256": "7a5cf346fb8c4cd9b0594149b37329e1003856f3fee22a51be1048cbb83ba7f2" }
+        },
+        "executableMembers": ["bin/codex-app-server", "bin/codex-code-mode-host", "codex-path/rg", "codex-resources/zsh/bin/zsh"]
+      },
+      "signature": { "kind": "macos-codesign", "teamId": "2DC432GLL2", "publisherSubject": "Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)" }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@nautilo/trust",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "1.1.45",
+    "@nautilo/catalog": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "argon2": "0.44.0",
+    "jose": "6.2.3"
+  }
+}

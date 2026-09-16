@@ -1,0 +1,13 @@
+{
+  "name": "@nautilo/computer-use-host-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./host-wire": "./src/host-wire.ts"
+  },
+  "dependencies": {}
+}

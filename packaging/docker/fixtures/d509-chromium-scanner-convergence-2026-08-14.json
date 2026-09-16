@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "workflowRunId": 31783835613,
+  "sourceSha": "81676105f167756a48cefc233d07c3ad181368ec",
+  "architectures": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "installedVersion": "151.0.7922.137-1~deb13u1",
+  "fixedVersion": "151.0.7922.137-1~deb13u1",
+  "databaseIdentities": {
+    "grype": "sha256:5cda03620f5bc8012feb682198f3e48a984068c760bfbdce1284ff152e60ed89",
+    "trivy": "sha256:e02a86eb568a5141ae25e7669122dd32183359559cb1a41a10d255788c8fb00c"
+  },
+  "failures": []
+}

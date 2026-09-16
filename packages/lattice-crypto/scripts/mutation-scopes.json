@@ -1,0 +1,330 @@
+{
+  "formatVersion": 3,
+  "minimumKilledPercentage": 80,
+  "perScopeWorkerBudget": 4,
+  "hostedMaxParallelScopes": 4,
+  "scopes": [
+    {
+      "name": "foundation-codecs",
+      "tier": "critical",
+      "mutate": [
+        "src/v2-types/ids.ts",
+        "src/v2-types/limits.ts",
+        "src/format/v2-primitives.ts",
+        "src/format/agent-runtime-v2.ts",
+        "src/format/grant-v2.ts",
+        "src/format/namespace-binding-v2.ts",
+        "src/format/namespace-keyring-v2.ts",
+        "src/format/object-access-manifest-v2.ts",
+        "src/format/object-access-manifest-v5.ts",
+        "src/format/object-v2.ts",
+        "src/format/recovery-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/v2-foundation.test.ts tests/unit/v2-format-primitives.test.ts tests/unit/agent-runtime-domain-envelope-v2.test.ts tests/unit/grant-format-v2.test.ts tests/unit/namespace-v2-binding.test.ts tests/unit/namespace-v2-keyring.test.ts tests/unit/object-v2-manifest.test.ts tests/unit/object-access-manifest-v5.test.ts tests/unit/object-access-manifest-v5-adversarial.test.ts tests/unit/human-object-access-manifest-set-v1.test.ts tests/integration/agent-object-access-genesis-set-v3.test.ts tests/property/object-access-manifest-v5.property.test.ts tests/fuzz/object-access-manifest-v5.fuzz.test.ts tests/unit/object-v2-crypto.test.ts tests/unit/recovery-v2-codec.test.ts tests/unit/one-run-processor-transform-v2.test.ts"
+    },
+    {
+      "name": "opaque-storage-types",
+      "tier": "critical",
+      "mutate": [
+        "src/v2-types/opaque.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts"
+    },
+    {
+      "name": "artifact-wire",
+      "tier": "critical",
+      "mutate": [
+        "src/artifact/blob-v1.ts",
+        "src/artifact/control-v1.ts",
+        "src/artifact/publication-request-v1.ts",
+        "src/artifact/exact-access-request-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/artifact-blob-v1.test.ts tests/unit/artifact-control-v1.test.ts tests/unit/human-artifact-publication-request-v1.test.ts tests/unit/human-artifact-exact-access-request-v1.test.ts tests/property/artifact-blob-v1.property.test.ts tests/fuzz/artifact-wire-v1-fuzz.test.ts"
+    },
+    {
+      "name": "background-grant-response",
+      "tier": "critical",
+      "mutate": [
+        "src/background/agent-background-grant-response-v1.ts",
+        "src/background/agent-background-grant-response-v2.ts",
+        "src/background/background-authorization-response-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-background-grant-response-v1.test.ts tests/property/agent-background-grant-response-v1.property.test.ts tests/unit/agent-background-grant-response-v2.test.ts tests/property/background-agent-v2.property.test.ts tests/unit/background-authorization-response-v1.test.ts tests/unit/background-authorization-response-v1-adversarial.test.ts tests/property/background-authorization-response-v1.property.test.ts"
+    },
+    {
+      "name": "background-credential",
+      "tier": "critical",
+      "mutate": [
+        "src/background/processor-credential-secret-v1.ts",
+        "src/background/processor-credential-v1.ts",
+        "src/background/processor-signer-authorization-v1.ts",
+        "src/background/processor-authorization-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/processor-credential-v1.test.ts tests/unit/processor-credential-v1-adversarial.test.ts tests/property/processor-credential-v1.property.test.ts tests/unit/processor-signer-authorization-v1.test.ts tests/unit/processor-authorization-v2.test.ts tests/unit/processor-output-repair-v2.test.ts tests/unit/reflection-authority-v2.test.ts"
+    },
+    {
+      "name": "background-transform",
+      "tier": "critical",
+      "mutate": [
+        "src/background/one-run-processor-transform-v1.ts",
+        "src/background/processor-object-signer-v1.ts",
+        "src/background/one-run-processor-transform-v2.ts",
+        "src/background/publication-reconciliation-v2.ts",
+        "src/background/output-repair-v2.ts",
+        "src/background/reflection-authority-reprojection-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/one-run-processor-transform.test.ts tests/unit/processor-object-signer-v1.test.ts tests/unit/one-run-processor-transform-v2.test.ts tests/unit/processor-publication-reconciliation-v2.test.ts tests/unit/processor-output-repair-v2.test.ts tests/unit/reflection-authority-reprojection-v2.test.ts"
+    },
+    {
+      "name": "background-work-manifest",
+      "tier": "critical",
+      "mutate": [
+        "src/background/work-descriptor-v1.ts",
+        "src/background/work-descriptor-v2.ts",
+        "src/format/object-access-manifest-v4.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/background-work-descriptor-v1.test.ts tests/property/background-work-descriptor-v1.property.test.ts tests/unit/background-work-descriptor-v2.test.ts tests/property/background-agent-v2.property.test.ts tests/unit/object-access-manifest-v4.test.ts tests/unit/background-processor-work-v2.test.ts tests/unit/current-processor-manifest-history.test.ts tests/unit/processor-output-repair-v2.test.ts tests/unit/reflection-authority-v2.test.ts"
+    },
+    {
+      "name": "crypto-primitives",
+      "tier": "critical",
+      "mutate": [
+        "src/crypto/index.ts",
+        "src/util/bytes.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/crypto-primitives-v2.test.ts tests/unit/v2-foundation.test.ts tests/unit/v2-format-primitives.test.ts tests/unit/object-v2-crypto.test.ts tests/unit/grant-authorization-v2.test.ts tests/unit/recovery-v2-workflow.test.ts"
+    },
+    {
+      "name": "domain-namespace-transitions",
+      "tier": "critical",
+      "mutate": [
+        "src/domain/participants.ts",
+        "src/domain/registry.ts",
+        "src/domain/roots.ts",
+        "src/namespace/authorized-write.ts",
+        "src/namespace/bindings.ts",
+        "src/namespace/keyrings.ts",
+        "src/namespace/storage-coordinator.ts",
+        "src/namespace/types.ts",
+        "src/transition/domain-epoch-advance.ts",
+        "src/transition/namespace-rebind.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/v2-foundation.test.ts tests/unit/domain-registry-v2.test.ts tests/unit/namespace-v2-binding.test.ts tests/unit/namespace-v2-keyring.test.ts tests/unit/domain-epoch-advance-v2.test.ts tests/unit/namespace-rebind-v2.test.ts tests/integration/namespace-v2-storage-coordinator.test.ts"
+    },
+    {
+      "name": "object-grant",
+      "tier": "critical",
+      "mutate": [
+        "src/grant/authorization.ts",
+        "src/grant/enumeration.ts",
+        "src/grant/set-authorization.ts",
+        "src/grant/set-storage-coordinator.ts",
+        "src/grant/storage-coordinator.ts",
+        "src/object/access-manifest.ts",
+        "src/object/authorization.ts",
+        "src/object/authorized-write.ts",
+        "src/object/batch.ts",
+        "src/object/human-access-manifest-set-v1.ts",
+        "src/object/namespace-envelope.ts",
+        "src/object/payload.ts",
+        "src/object/storage-coordinator.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/grant-authorization-v2.test.ts tests/unit/grant-enumeration-v2.test.ts tests/unit/human-object-access-manifest-set-v1.test.ts tests/unit/object-v2-authorization.test.ts tests/unit/object-v2-batch.test.ts tests/unit/object-v2-crypto.test.ts tests/unit/object-v2-manifest.test.ts tests/integration/grant-v2-storage-coordinator.test.ts tests/integration/grant-v2-set-storage-coordinator.test.ts tests/integration/human-object-access-storage-coordinator.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/property/grant-authority-set-subset-evidence.property.test.ts tests/property/grant-enumeration-v2.property.test.ts"
+    },
+    {
+      "name": "provider-lifecycle",
+      "tier": "critical",
+      "mutate": [
+        "src/device/v2-state-vault.ts",
+        "src/group/v2-dummy.ts",
+        "src/group/v2-provider.ts",
+        "src/transition/provider-authorized-write.ts",
+        "src/transition/provider-candidate.ts",
+        "src/transition/provider-coordinator.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/provider-v2-candidate-state.test.ts tests/unit/provider-v2-dummy-membership.test.ts tests/integration/provider-v2-storage-coordinator.test.ts"
+    },
+    {
+      "name": "provider-ts-mls",
+      "tier": "provider",
+      "mutate": [
+        "src/group/v2-mls.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/integration/provider-v2-mls.test.ts tests/integration/provider-v2-storage-coordinator.test.ts"
+    },
+    {
+      "name": "provider-openmls",
+      "tier": "provider",
+      "mutate": [
+        "src/group/v2-openmls.ts",
+        "src/group/human-device-openmls-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/integration/provider-v2-openmls.test.ts tests/integration/provider-v2-storage-coordinator.test.ts tests/integration/human-device-openmls-v1.test.ts"
+    },
+    {
+      "name": "runtime-domain-envelope",
+      "tier": "critical",
+      "mutate": [
+        "src/agent-runtime/domain-envelope.ts",
+        "src/agent-runtime/types.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-runtime-domain-envelope-v2.test.ts"
+    },
+    {
+      "name": "agent-object-signing",
+      "tier": "critical",
+      "mutate": [
+        "src/agent-runtime/object-signer-v1.ts",
+        "src/agent-runtime/signer-publication.ts",
+        "src/agent-runtime/signer-publication-v1.ts",
+        "src/format/object-access-manifest.ts",
+        "src/format/object-access-manifest-v3.ts",
+        "src/object/agent-access-manifest-set.ts",
+        "src/object/agent-access-manifest.ts",
+        "src/object/agent-storage-coordinator.ts",
+        "src/object/device-wrapped-agent-access-manifest-set-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-runtime-object-signer-v1.test.ts tests/unit/agent-runtime-signer-publication-v1.test.ts tests/unit/object-access-manifest-v3.test.ts tests/unit/object-access-manifest-v5-adversarial.test.ts tests/unit/agent-runtime-rotation-v2.test.ts tests/unit/device-wrapped-agent-object-access.test.ts tests/unit/device-wrapped-agent-object-access-set.test.ts tests/integration/agent-runtime-v2-initialization.test.ts tests/integration/agent-object-access-genesis-set-v3.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts"
+    },
+    {
+      "name": "runtime-handoff",
+      "tier": "critical",
+      "mutate": [
+        "src/agent-runtime/runtime-handoff-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-runtime-handoff-v2.test.ts tests/unit/agent-runtime-rotation-v2.test.ts"
+    },
+    {
+      "name": "runtime-rotation",
+      "tier": "critical",
+      "mutate": [
+        "src/agent-runtime/authorization-transition-v2.ts",
+        "src/agent-runtime/runtime-rotation-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-runtime-authorization-transition-v2.test.ts tests/unit/agent-runtime-rotation-v2.test.ts"
+    },
+    {
+      "name": "runtime-storage-cas",
+      "tier": "critical",
+      "mutate": [
+        "src/agent-runtime/initialization-authorized-write.ts",
+        "src/agent-runtime/storage-opaque-fields.ts",
+        "src/agent-runtime/storage-authorized-write.ts",
+        "src/agent-runtime/storage-coordinator.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/integration/agent-runtime-v2-initialization.test.ts tests/integration/agent-runtime-v2-storage-coordinator.test.ts tests/unit/agent-runtime-authorization-transition-v2.test.ts"
+    },
+    {
+      "name": "storage-in-memory-cas",
+      "tier": "critical",
+      "mutate": [
+        "src/storage/in-memory-v2-store.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/human-object-access-storage-coordinator.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts"
+    },
+    {
+      "name": "storage-adapter-support",
+      "tier": "critical",
+      "mutate": [
+        "src/storage/v2-adapter-support.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts"
+    },
+    {
+      "name": "storage-record-policy",
+      "tier": "critical",
+      "mutate": [
+        "src/storage/v2-record-policy.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts"
+    },
+    {
+      "name": "existing-message-representation-publication",
+      "tier": "critical",
+      "mutate": [
+        "src/message/existing-representation-publication-request-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-existing-message-representation-publication-request-v1.test.ts tests/property/human-existing-message-representation-publication-request-v1.property.test.ts tests/fuzz/human-existing-message-representation-publication-request-v1.fuzz.test.ts"
+    },
+    {
+      "name": "live-shadow-message-contract",
+      "tier": "critical",
+      "mutate": [
+        "src/message/history-read-acknowledgement-v1.ts",
+        "src/message/human-message-edit-v1.ts",
+        "src/message/human-ai-readable-live-shadow-core.ts",
+        "src/message/human-ai-readable-live-shadow-v1.ts",
+        "src/message/human-ai-readable-live-shadow-v2.ts",
+        "src/message/human-peer-live-shadow-v1.ts",
+        "src/message/shared-agent-live-shadow-v1.ts",
+        "src/message/live-shadow-client-verification-v1.ts",
+        "src/message/live-shadow-message-request-v1.ts",
+        "src/message/live-shadow-message-request-v2.ts",
+        "src/message/live-shadow-message-request-v3.ts",
+        "src/message/live-shadow-message-request-v4.ts",
+        "src/message/live-shadow-stream-v1.ts",
+        "src/message/live-shadow-stream-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/history-read-acknowledgement-v1.test.ts tests/unit/human-message-edit-v1.test.ts tests/unit/human-ai-readable-live-shadow-v1.test.ts tests/unit/human-ai-readable-live-shadow-v2.test.ts tests/unit/human-peer-live-shadow-v1.test.ts tests/property/human-peer-live-shadow-v1.property.test.ts tests/fuzz/human-peer-live-shadow-v1.fuzz.test.ts tests/unit/shared-agent-live-shadow-v1.test.ts tests/unit/live-shadow-client-verification-v1.test.ts tests/unit/live-shadow-message-request-v1.test.ts tests/unit/live-shadow-message-request-v2.test.ts tests/unit/live-shadow-message-request-v3.test.ts tests/unit/live-shadow-message-request-v4.test.ts tests/unit/live-shadow-stream-v1.test.ts tests/unit/live-shadow-stream-v2.test.ts"
+    },
+    {
+      "name": "namespace-envelope-authority",
+      "tier": "critical",
+      "mutate": [
+        "src/format/device-wrapped-domain-agent-foreground-authorization-v1.ts",
+        "src/format/device-wrapped-domain-runtime-foreground-authorization-v1.ts",
+        "src/format/device-wrapped-domain-agent-grant-v1.ts",
+        "src/format/namespace-agent-grant-v1.ts",
+        "src/format/namespace-delivery-v1.ts",
+        "src/format/namespace-generation-v1.ts",
+        "src/format/namespace-recipient-authorization-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/device-wrapped-domain-agent-foreground-authorization-v1.test.ts tests/unit/device-wrapped-domain-runtime-foreground-authorization-v1.test.ts tests/unit/device-wrapped-domain-agent-grant-v1.test.ts tests/unit/namespace-agent-grant-v1.test.ts tests/unit/namespace-delivery-v1.test.ts tests/unit/namespace-generation-v1.test.ts tests/unit/namespace-recipient-authorization-v1.test.ts"
+    },
+    {
+      "name": "domain-authority-v2",
+      "tier": "critical",
+      "mutate": [
+        "src/domain/domain-keys-v2.ts",
+        "src/format/domain-foreground-authorization-v2.ts",
+        "src/format/domain-key-authority-v2.ts",
+        "src/format/domain-key-delivery-v2.ts",
+        "src/format/domain-namespace-bundle-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/domain-keys-v2.test.ts tests/unit/domain-foreground-authorization-v2.test.ts tests/unit/domain-key-authority-v2.test.ts tests/unit/domain-key-delivery-v2.test.ts tests/unit/domain-namespace-bundle-v2.test.ts"
+    },
+    {
+      "name": "human-memory-publication",
+      "tier": "critical",
+      "mutate": [
+        "src/memory/content-embedding-request-v1.ts",
+        "src/memory/deletion-v1.ts",
+        "src/memory/exact-access-request-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-memory-content-embedding-request-v1.test.ts tests/unit/human-memory-deletion-v1.test.ts tests/unit/human-memory-exact-access-request-v1.test.ts tests/property/human-memory-content-embedding-request-v1.property.test.ts"
+    },
+    {
+      "name": "human-recovery",
+      "tier": "critical",
+      "mutate": [
+        "src/recovery/human-archive-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/recovery-v2-workflow.test.ts tests/integration/recovery-v2-storage-coordinator.test.ts"
+    },
+    {
+      "name": "device-manager-recovery",
+      "tier": "critical",
+      "mutate": [
+        "src/recovery/agent-manager-v2.ts",
+        "src/recovery/device-transfer-common-v2.ts",
+        "src/recovery/device-transfer-size-v2.ts",
+        "src/recovery/device-transfer-workflow-v2.ts",
+        "src/recovery/recovery-device-activation-v2.ts",
+        "src/recovery/recovery-readiness-v2.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/recovery-agent-manager-v2.test.ts tests/unit/recovery-device-transfer-v2.test.ts"
+    }
+  ],
+  "reviewedDuplicateTargets": [],
+  "reviewedExclusions": []
+}

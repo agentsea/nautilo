@@ -1,0 +1,2419 @@
+{
+  "reviewedAt": "2026-09-13T11:55:25Z",
+  "trackerUrl": "https://security-tracker.debian.org/tracker/data/json",
+  "trackerSha256": "567df10061f6c47434671b894052866561a893a6600834795c5671b79c0cb0ca",
+  "indexes": [
+    {
+      "arch": "amd64",
+      "suite": "trixie",
+      "url": "https://deb.debian.org/debian/dists/trixie/main/binary-amd64/Packages.xz",
+      "sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498"
+    },
+    {
+      "arch": "amd64",
+      "suite": "trixie-updates",
+      "url": "https://deb.debian.org/debian/dists/trixie-updates/main/binary-amd64/Packages.xz",
+      "sha256": "10012cb384dc2613586d7b3d391d92a5637c9faa36017239739f2a6109a0d45f"
+    },
+    {
+      "arch": "amd64",
+      "suite": "trixie-security",
+      "url": "https://security.debian.org/debian-security/dists/trixie-security/main/binary-amd64/Packages.xz",
+      "sha256": "25da92e00350c049cc538a422fd7a6482735d7cf58c4b3450aaae33c3a8e2883"
+    },
+    {
+      "arch": "arm64",
+      "suite": "trixie",
+      "url": "https://deb.debian.org/debian/dists/trixie/main/binary-arm64/Packages.xz",
+      "sha256": "be16b37b2f740f066ea93d35d56f04f94d63693e5a3eb421b052bf86fae75bcd"
+    },
+    {
+      "arch": "arm64",
+      "suite": "trixie-updates",
+      "url": "https://deb.debian.org/debian/dists/trixie-updates/main/binary-arm64/Packages.xz",
+      "sha256": "fe771d58d4af39dbb94142d6f3ce578d340c6b1364c172d9e87f2287bdc4994b"
+    },
+    {
+      "arch": "arm64",
+      "suite": "trixie-security",
+      "url": "https://security.debian.org/debian-security/dists/trixie-security/main/binary-arm64/Packages.xz",
+      "sha256": "85b5b93737f5810a47173906d11942b339a75acb226f02827afcee654a013d38"
+    }
+  ],
+  "packages": [
+    {
+      "package": "bsdutils",
+      "sourcePackage": "util-linux",
+      "previousVersion": "1:2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1:2.41.5-0+deb13u1",
+            "sha256": "d935a5102752a1108bdf1e815c89a84ac88d1949bf049a784178f946a09b14da"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "1:2.41.5-0+deb13u1",
+            "sha256": "d935a5102752a1108bdf1e815c89a84ac88d1949bf049a784178f946a09b14da"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1:2.41.5-0+deb13u1",
+            "sha256": "9afcc3e049a66d7f703d092f845c800b767fb9afe9e681e1483eec163aadcb18"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "1:2.41.5-0+deb13u1",
+            "sha256": "9afcc3e049a66d7f703d092f845c800b767fb9afe9e681e1483eec163aadcb18"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "chromium-common",
+      "sourcePackage": "chromium",
+      "previousVersion": "152.0.7977.82-1~deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "150.0.7871.181-1~deb13u1",
+            "sha256": "af485fc598a556096df0f23d77d491a9f78307721d9b22aefd7d685c2c42c4ee"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "152.0.7977.82-1~deb13u1",
+            "sha256": "0aab94c6541b0fa4bdfc61cbc5b97e999a132e9723092a30bd1476f344d5d958"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "150.0.7871.181-1~deb13u1",
+            "sha256": "295771412ad06034a7b4ea2de24b5a49ab0642c1d12dd72f0855b8a1a06d7a4f"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "152.0.7977.82-1~deb13u1",
+            "sha256": "f0f4660cf17a226bec3c8b5bad487ad87545391536b89bfd7055ef42a3f71137"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-87430",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87431",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87433",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87438",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87440",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87444",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87448",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87450",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87455",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87457",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87460",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87464",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87467",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87468",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87470",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87471",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87474",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87479",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87480",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87481",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87487",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87488",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87489",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87491",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87492",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87494",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87498",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87499",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87500",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87504",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87505",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87506",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87509",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87510",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87512",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87514",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87520",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87524",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87526",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87527",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87528",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87529",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87530",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87533",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87534",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87536",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87537",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87542",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87544",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87547",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87553",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87554",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87558",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87569",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87570",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87572",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87578",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87579",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87581",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87582",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87585",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87587",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87588",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87601",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87604",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87606",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87607",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87609",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87612",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87613",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87616",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87617",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87618",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87621",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87625",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87628",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87633",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87634",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87636",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87637",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87638",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87639",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87643",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87644",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87646",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87648",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87650",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87654",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        }
+      ]
+    },
+    {
+      "package": "chromium-headless-shell",
+      "sourcePackage": "chromium",
+      "previousVersion": "152.0.7977.82-1~deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "150.0.7871.181-1~deb13u1",
+            "sha256": "868de3f3aa0d65b07d1f1dd828872f8f01ef65bf6fddc3de7b694a210945ba7e"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "152.0.7977.82-1~deb13u1",
+            "sha256": "9060a79f87238b9b94497414d1440e039f0cb6fb2ea861e5cbdfdcfa28439c61"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "150.0.7871.181-1~deb13u1",
+            "sha256": "edfcc8c366fdec50c71daf8d4e95ef7df4fc6d548ae4b081a041f044ce32b92c"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "152.0.7977.82-1~deb13u1",
+            "sha256": "3ad1820abb03aea5c618133e1c4c3ddf3172fdd17a329d146845bf73cf048be9"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-87430",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87431",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87433",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87438",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87440",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87444",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87448",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87450",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87455",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87457",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87460",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87464",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87467",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87468",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87470",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87471",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87474",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87479",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87480",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87481",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87487",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87488",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87489",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87491",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87492",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87494",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87498",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87499",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87500",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87504",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87505",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87506",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87509",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87510",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87512",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87514",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87520",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87524",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87526",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87527",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87528",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87529",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87530",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87533",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87534",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87536",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87537",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87542",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87544",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87547",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87553",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87554",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87558",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87569",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87570",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87572",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87578",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87579",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87581",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87582",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87585",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87587",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87588",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87601",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87604",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87606",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87607",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87609",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87612",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87613",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87616",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87617",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87618",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87621",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87625",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87628",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87633",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87634",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87636",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87637",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87638",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87639",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87643",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87644",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87646",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87648",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87650",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        },
+        {
+          "id": "CVE-2026-87654",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        }
+      ]
+    },
+    {
+      "package": "gzip",
+      "sourcePackage": "gzip",
+      "previousVersion": "1.13-1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1.13-1+deb13u1",
+            "sha256": "74cf12212beee4ab8d473bdc0107abf9e8cef737492198e2f4944a19f142b0ac"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1.13-1+deb13u1",
+            "sha256": "02f83e5b4351ab4caa54f0405a334943dcd4986fdce740072bbda7b3c844e1f6"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-41992",
+          "status": "resolved",
+          "fixedVersion": "1.13-1+deb13u1",
+          "developmentFixedVersion": "1.14-1"
+        }
+      ]
+    },
+    {
+      "package": "libacl1",
+      "sourcePackage": "acl",
+      "previousVersion": "2.3.2-2+b1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.3.2-2+b1",
+            "sha256": "08074f01e384bc07c0c2d79a58cf4a6523f71cf75d1808101c79617656c9a39d"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.3.2-2+b1",
+            "sha256": "10b2399169e42e6d8db55944116cb2ed61caab997cf700acb83de0b0668e5721"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-54369",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.4.0-1"
+        },
+        {
+          "id": "CVE-2026-54370",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.4.0-1"
+        }
+      ]
+    },
+    {
+      "package": "libblkid1",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "81535f3c2c0efc732965907c8749103a0a26377c761622c9ce39b4c92dcde52f"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "81535f3c2c0efc732965907c8749103a0a26377c761622c9ce39b4c92dcde52f"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "d7d122b4c7a0a8ae6135a1687c9c4ce80a88f9e498c01998f634dd32caab9016"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "d7d122b4c7a0a8ae6135a1687c9c4ce80a88f9e498c01998f634dd32caab9016"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "libc-bin",
+      "sourcePackage": "glibc",
+      "previousVersion": "2.41-12+deb13u3",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41-12+deb13u4",
+            "sha256": "dc8c79647fe3a5f37f72a400414f70263d0212f010ff2c09f990e30d91e38d1c"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41-12+deb13u4",
+            "sha256": "3aba9182d6989d7c512178defdcb9d02b6906816bc8b2778a82a6c39582c880c"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-5435",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.43-3"
+        },
+        {
+          "id": "CVE-2026-5450",
+          "status": "resolved",
+          "fixedVersion": "2.41-12+deb13u4",
+          "developmentFixedVersion": "2.42-17"
+        },
+        {
+          "id": "CVE-2026-5928",
+          "status": "resolved",
+          "fixedVersion": "2.41-12+deb13u4",
+          "developmentFixedVersion": "2.42-17"
+        }
+      ]
+    },
+    {
+      "package": "libc6",
+      "sourcePackage": "glibc",
+      "previousVersion": "2.41-12+deb13u3",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41-12+deb13u4",
+            "sha256": "967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41-12+deb13u4",
+            "sha256": "8784eda966b189c777a384dac5ce009e8fc9b52d006926c5a013e7fa8aa688cc"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-5435",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.43-3"
+        },
+        {
+          "id": "CVE-2026-5450",
+          "status": "resolved",
+          "fixedVersion": "2.41-12+deb13u4",
+          "developmentFixedVersion": "2.42-17"
+        },
+        {
+          "id": "CVE-2026-5928",
+          "status": "resolved",
+          "fixedVersion": "2.41-12+deb13u4",
+          "developmentFixedVersion": "2.42-17"
+        }
+      ]
+    },
+    {
+      "package": "libexpat1",
+      "sourcePackage": "expat",
+      "previousVersion": "2.8.3-1~deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.8.3-1~deb13u1",
+            "sha256": "38abe0e710a07688e9c149d74536e67cfee0364bdb64dd6d644c32a1cfad389f"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.8.3-1~deb13u1",
+            "sha256": "38abe0e710a07688e9c149d74536e67cfee0364bdb64dd6d644c32a1cfad389f"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.8.3-1~deb13u1",
+            "sha256": "c3248c4beb721c8290e6e34527ae56b1fc965aa6a14982ca602df4458ef0854e"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.8.3-1~deb13u1",
+            "sha256": "c3248c4beb721c8290e6e34527ae56b1fc965aa6a14982ca602df4458ef0854e"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-66046",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.8.4-1"
+        },
+        {
+          "id": "CVE-2026-76956",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.8.4-1"
+        },
+        {
+          "id": "CVE-2026-76957",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.8.4-1"
+        }
+      ]
+    },
+    {
+      "package": "libglib2.0-0t64",
+      "sourcePackage": "glib2.0",
+      "previousVersion": "2.84.4-3~deb13u3",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.84.4-3~deb13u5",
+            "sha256": "e2baf92c57d1db1753e5781a61450d9a01e7833c7bd2dfe87776a6811c11ecc2"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.84.4-3~deb13u5",
+            "sha256": "d446f0ea85fb9dc411219ce861e59e5eabe1981c796918771a7d2aa97cc72481"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-16118",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u5",
+          "developmentFixedVersion": "2.88.3-3"
+        },
+        {
+          "id": "CVE-2026-58010",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.1-2"
+        },
+        {
+          "id": "CVE-2026-58011",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.1-2"
+        },
+        {
+          "id": "CVE-2026-58012",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.1-2"
+        },
+        {
+          "id": "CVE-2026-58013",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.1-2"
+        },
+        {
+          "id": "CVE-2026-58014",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.1-2"
+        },
+        {
+          "id": "CVE-2026-58015",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.1-2"
+        },
+        {
+          "id": "CVE-2026-58016",
+          "status": "resolved",
+          "fixedVersion": "2.84.4-3~deb13u4",
+          "developmentFixedVersion": "2.88.3-2"
+        }
+      ]
+    },
+    {
+      "package": "liblastlog2-2",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "abb76aecbf51479e6e193873dfddaa1b88667dc0b1db82a11286a67550ba1557"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "abb76aecbf51479e6e193873dfddaa1b88667dc0b1db82a11286a67550ba1557"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "934e7f90814e014aa0ab8ffbadef4f31ce44228b7135db9b733f4b68cabfccfc"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "934e7f90814e014aa0ab8ffbadef4f31ce44228b7135db9b733f4b68cabfccfc"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "libminizip1t64",
+      "sourcePackage": "zlib",
+      "previousVersion": "1:1.3.dfsg+really1.3.1-1+b1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "sha256": "9682faa260b02c865790f02089a755cb19b4b9100d91d3adb11da090709ad5d2"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "sha256": "46f361d1deb90caa1760f230c9c119fa4ce255636b12e6d817a0f65d6de87aad"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-85091",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        }
+      ]
+    },
+    {
+      "package": "libmount1",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "6d00f45f2e80e078e906e3eedecd3ba6913e39fef49bff361ee583f17f00ec05"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "6d00f45f2e80e078e906e3eedecd3ba6913e39fef49bff361ee583f17f00ec05"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "14e2d555459f3c0b1442bb49dd2d266ea202a003198c86f65508a1dbfaa18732"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "14e2d555459f3c0b1442bb49dd2d266ea202a003198c86f65508a1dbfaa18732"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "libpcre2-8-0",
+      "sourcePackage": "pcre2",
+      "previousVersion": "10.46-1~deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "10.46-1~deb13u2",
+            "sha256": "1252b96a5bc44bb5db982bef8eb18e54f5047cede2aff641bce4f8e1edb91c3e"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "10.46-1~deb13u2",
+            "sha256": "e7d2c997dac145c16457be0fed3d084c98cd030bec7633eec7e5bde6dbb97712"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-86145",
+          "status": "resolved",
+          "fixedVersion": "10.46-1~deb13u2",
+          "developmentFixedVersion": "10.48-1"
+        }
+      ]
+    },
+    {
+      "package": "libsmartcols1",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "d96bac9c8805685f2734885098a214b82950da6ebb182c27a6b7a124a0323392"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "d96bac9c8805685f2734885098a214b82950da6ebb182c27a6b7a124a0323392"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "1881ac0bc2a58a52ecbf6e7690b17552233b71e94129db79e2302656b0d22f24"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "1881ac0bc2a58a52ecbf6e7690b17552233b71e94129db79e2302656b0d22f24"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "libsndfile1",
+      "sourcePackage": "libsndfile",
+      "previousVersion": "1.2.2-2+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1.2.2-2+deb13u1",
+            "sha256": "d92263a045554e6f39c6b1c2ee4cca44a3248d9b9339301ff195969bf84b75eb"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1.2.2-2+deb13u1",
+            "sha256": "6c94f17e1f02778f98b96bb9ae19ff30085662e96685898a018c26bfd4bfc3f2"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-37555",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        }
+      ]
+    },
+    {
+      "package": "libsqlite3-0",
+      "sourcePackage": "sqlite3",
+      "previousVersion": "3.46.1-7+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "3.46.1-7+deb13u2",
+            "sha256": "0a459adaffd901109f7811ab65f58e7a957b4907d05539cf3d1184efdcde0468"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "3.46.1-7+deb13u2",
+            "sha256": "5b09efca71cb7a16d67f5453af3989ae1a84fe6b68c6dd3913de527cb0ca23aa"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-11822",
+          "status": "resolved",
+          "fixedVersion": "3.46.1-7+deb13u2",
+          "developmentFixedVersion": "3.53.2-1"
+        },
+        {
+          "id": "CVE-2026-11824",
+          "status": "resolved",
+          "fixedVersion": "3.46.1-7+deb13u2",
+          "developmentFixedVersion": "3.53.2-1"
+        }
+      ]
+    },
+    {
+      "package": "libsystemd0",
+      "sourcePackage": "systemd",
+      "previousVersion": "257.13-1~deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "257.13-1~deb13u1",
+            "sha256": "ab0d4127b5e46e6f8c015a1db15a62ba9ae274cdefa150083adf90ada0600ea1"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "257.13-1~deb13u1",
+            "sha256": "d2f63c408549c29eaefb6f4c948393edce99f45ee8e43c991391bef63fb7d54b"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-16742",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "261.2-1"
+        }
+      ]
+    },
+    {
+      "package": "libtinfo6",
+      "sourcePackage": "ncurses",
+      "previousVersion": "6.5+20250216-2",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "6.5+20250216-2",
+            "sha256": "8b9f6a7983e9418564e48a627518de4c03917b56efe68d7f3e93bd8fffa1cc10"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "6.5+20250216-2",
+            "sha256": "2a747f7fff3c2347c357387a7133df997410f07ba1b1df1a1461a97bd7fbc2fc"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2025-69720",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "6.6+20251231-1"
+        }
+      ]
+    },
+    {
+      "package": "libudev1",
+      "sourcePackage": "systemd",
+      "previousVersion": "257.13-1~deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "257.13-1~deb13u1",
+            "sha256": "5d41c284f5a93b05bc7d648b61a02dd2bb9ff05b2261ad1a8b7d96044a0cfa88"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "257.13-1~deb13u1",
+            "sha256": "459b1c9c17cc3c586e90d13d2a991715d498c6eed6c046cabf321021167bc380"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-16742",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "261.2-1"
+        }
+      ]
+    },
+    {
+      "package": "libuuid1",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "c1bf4c4c3ff48c57fabf93307dfb56996b60cfa33927afc4158b5db36fb2721e"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "c1bf4c4c3ff48c57fabf93307dfb56996b60cfa33927afc4158b5db36fb2721e"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "448ad6b190184dbff24508ef2eda88bd737a5ffc0f9750eb779fcf9885292bea"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "448ad6b190184dbff24508ef2eda88bd737a5ffc0f9750eb779fcf9885292bea"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "libxml2",
+      "sourcePackage": "libxml2",
+      "previousVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "sha256": "e0c6b63ce4602a036a526f60fe5e6c1586710688058d98fc1001b9b3147b7efd"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+            "sha256": "b4743a0fd8e86379ec2bdfb6b97b99fb1c92a925e538920052316814470e99f8"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "sha256": "a66b9c960acef8ed9653223cbd00b155a92ebb758ea13a788c41609246c23bc7"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+            "sha256": "32baac0386190ff9d0a3994dcb6c18048dff90b69fb0c10861add5efc6c7c8f5"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-6653",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.14.5+dfsg-0.1"
+        },
+        {
+          "id": "CVE-2026-74860",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.15.3+dfsg-1"
+        },
+        {
+          "id": "CVE-2026-86140",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.15.4+dfsg-1"
+        }
+      ]
+    },
+    {
+      "package": "login",
+      "sourcePackage": "util-linux",
+      "previousVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "sha256": "8fc5869532a73d577c4abb5ed917e048bbd72148702ea1dcadd3817064f3e887"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "sha256": "8fc5869532a73d577c4abb5ed917e048bbd72148702ea1dcadd3817064f3e887"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "sha256": "c0bc34268bc1528b627f8c0cfe1e6d9ca7b4dd00428690a63f1d1b0adb5dc508"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "sha256": "c0bc34268bc1528b627f8c0cfe1e6d9ca7b4dd00428690a63f1d1b0adb5dc508"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "mount",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "eb70a615114ac40123768beb20e302554d5cb7edb33290be7e418ebe1075c878"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "eb70a615114ac40123768beb20e302554d5cb7edb33290be7e418ebe1075c878"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "8b40a9eb9f72647c8732e9264c7328233f8ef8e9d962e516edeb210caa6789b6"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "8b40a9eb9f72647c8732e9264c7328233f8ef8e9d962e516edeb210caa6789b6"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "ncurses-base",
+      "sourcePackage": "ncurses",
+      "previousVersion": "6.5+20250216-2",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "6.5+20250216-2",
+            "sha256": "190e775260a38973c415a36ae99f33ad1b37ea6ca99929d7c5d53843fc23e914"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "6.5+20250216-2",
+            "sha256": "190e775260a38973c415a36ae99f33ad1b37ea6ca99929d7c5d53843fc23e914"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2025-69720",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "6.6+20251231-1"
+        }
+      ]
+    },
+    {
+      "package": "ncurses-bin",
+      "sourcePackage": "ncurses",
+      "previousVersion": "6.5+20250216-2",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "6.5+20250216-2",
+            "sha256": "40a525f4761e9ed4b8adcd1783cb9a6467ff8008215ae99b3597825bdefc61e4"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "6.5+20250216-2",
+            "sha256": "7ac6919efb0effc9004caae758811bfe85bb486a057262822468e90d73d38458"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2025-69720",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "6.6+20251231-1"
+        }
+      ]
+    },
+    {
+      "package": "perl-base",
+      "sourcePackage": "perl",
+      "previousVersion": "5.40.1-6",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "5.40.1-6+deb13u1",
+            "sha256": "b795464137a0f4d443fc9284f4b93e883fb83883cb533adf300ac660807a352a"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "5.40.1-6+deb13u1",
+            "sha256": "4cee6f6b5b4b501d82118c56aa31bbefc2491415bc03a00e21bdacff2406b288"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-12087",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.42.3-1"
+        },
+        {
+          "id": "CVE-2026-13221",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.42.3-1"
+        },
+        {
+          "id": "CVE-2026-42496",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.42.3-1"
+        },
+        {
+          "id": "CVE-2026-42497",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.42.3-1"
+        },
+        {
+          "id": "CVE-2026-48959",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.40.1-8"
+        },
+        {
+          "id": "CVE-2026-48961",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.40.1-8"
+        },
+        {
+          "id": "CVE-2026-48962",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.40.1-8"
+        },
+        {
+          "id": "CVE-2026-57432",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.40.1-8"
+        },
+        {
+          "id": "CVE-2026-57433",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.40.1-8"
+        },
+        {
+          "id": "CVE-2026-7017",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.42.3-1"
+        },
+        {
+          "id": "CVE-2026-8376",
+          "status": "resolved",
+          "fixedVersion": "5.40.1-6+deb13u1",
+          "developmentFixedVersion": "5.40.1-8"
+        },
+        {
+          "id": "CVE-2026-9538",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "5.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "util-linux",
+      "sourcePackage": "util-linux",
+      "previousVersion": "2.41.5-0+deb13u1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "7d5b1176cc3d8cc6b290b3ec17af458f362d9200845f30da22057a8198744430"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "7d5b1176cc3d8cc6b290b3ec17af458f362d9200845f30da22057a8198744430"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "d427f83a08d46107e8f7d39f1522a8a316e785e45f04ad657d2ecb7570210d84"
+          },
+          {
+            "suite": "trixie-security",
+            "version": "2.41.5-0+deb13u1",
+            "sha256": "d427f83a08d46107e8f7d39f1522a8a316e785e45f04ad657d2ecb7570210d84"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-76642",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78408",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78409",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        },
+        {
+          "id": "CVE-2026-78410",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": "2.42.3-1"
+        }
+      ]
+    },
+    {
+      "package": "xdg-utils",
+      "sourcePackage": "xdg-utils",
+      "previousVersion": "1.2.1-2",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1.2.1-2",
+            "sha256": "01dd31db093f1e810824519200112ec3fd447ba0341f7213244525eaa289355e"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1.2.1-2",
+            "sha256": "01dd31db093f1e810824519200112ec3fd447ba0341f7213244525eaa289355e"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2022-4055",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        }
+      ]
+    },
+    {
+      "package": "zlib1g",
+      "sourcePackage": "zlib",
+      "previousVersion": "1:1.3.dfsg+really1.3.1-1+b1",
+      "candidates": {
+        "amd64": [
+          {
+            "suite": "trixie",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "sha256": "015be740d6236ad114582dea500c1d907f29e16d6db00566ca32fb68d71ac90d"
+          }
+        ],
+        "arm64": [
+          {
+            "suite": "trixie",
+            "version": "1:1.3.dfsg+really1.3.1-1+b1",
+            "sha256": "209aa5cf671e97b9eb0410844fa6df4cae2e75b0c72e7802ab6c8ece13e6ddef"
+          }
+        ]
+      },
+      "advisories": [
+        {
+          "id": "CVE-2026-85091",
+          "status": "open",
+          "fixedVersion": null,
+          "developmentFixedVersion": null
+        }
+      ]
+    }
+  ]
+}

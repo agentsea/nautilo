@@ -1,0 +1,18 @@
+{
+  "name": "@nautilo/server-bin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@nautilo/agent": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/server": "workspace:*",
+    "@nautilo/catalog": "workspace:*",
+    "@nautilo/runtime": "workspace:*",
+    "@nautilo/trust": "workspace:*",
+    "dotenv": "16.6.1",
+    "@nautilo/config-guard": "workspace:*"
+  }
+}

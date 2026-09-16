@@ -1,0 +1,24 @@
+{
+  "extends": "../tsconfig.base.json",
+  "include": [
+    "scripts/generate-application-catalogue.ts",
+    "probes/*.ts",
+    "qualification/harnesses/*.ts",
+    "tools/db-migration-safety/check-comment-redaction.ts",
+    "tests/repo-invariants/migration-comment-redactions.test.ts",
+    "scripts/office-transformation/writer-docx-corpus.test.ts",
+    "tools/nautilo-backup/index.ts",
+    "tests/repo-invariants/lint-staged.test.ts",
+    "tests/repo-invariants/private-document-references.test.ts",
+    "tests/repo-invariants/migration-hook.test.ts",
+    "tests/repo-invariants/publication-boundaries.test.ts",
+    "tests/repo-invariants/workflow-security-invariants.test.ts",
+    "tests/repo-invariants/test-turbo-cache-guard.test.ts",
+    "tests/repo-invariants/desktop-test-prerequisites.test.ts",
+    "tests/repo-invariants/test-d489-lifecycle-guards.test.ts",
+    "tests/repo-invariants/image-publication-authority.test.ts",
+    "tests/repo-invariants/tart-consumer-boundary.test.ts",
+    "tests/repo-invariants/publication-fixture-isolation.test.ts",
+    "scripts/prepare-board.ts"
+  ]
+}

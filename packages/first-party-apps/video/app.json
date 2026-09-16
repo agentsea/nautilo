@@ -1,0 +1,1803 @@
+{
+  "id": "nautilo-video",
+  "name": "Video",
+  "description": "Multi-track video editing with a reusable Media Bin, timeline trimming, separate audio, and a Generate workspace. Import, preview, and export media through supported host capabilities.",
+  "version": "0.2.3",
+  "liveReview": { "enabled": true },
+  "entry": "./main.ts",
+  "html": "./index.html",
+  "styles": [
+    "./styles.css"
+  ],
+  "fileAssociations": {
+    "extensions": [],
+    "mimeTypes": []
+  },
+  "capabilities": {
+    "document": {
+      "artifact": "readwrite",
+      "currentFolder": "readwrite"
+    },
+    "state": "readwrite"
+  },
+  "agent": {
+    "instructions": "Use inspect-generation for saved scenes, reference IDs, Media Bin IDs and completed takes. edit-generation appends or updates a scene with optimistic version checks; continueFromPrevious uses the preceding scene. review-generation asks the active editor to prepare that saved scene through its normal visual exact-price approval. Choose an inspected continuationTakeId to continue a specific previous take. review_requested is NOT paid submission or completion: wait for the Human's separate exact-price approval, then inspect the saved project's takes. Do not ask the Human to copy files or type internal IDs. Never replay unknown generation requests or claim a completed video from a review receipt. Generated media is admitted to the same Media Bin automatically. Use control-open-video for transient transport: inspect, play/pause/seek/preview-range/clear-range. The host binds this active editor; never invent tokens or target another document. Ready transport is not decoded playback. Dirty/stale/closed rejects change nothing. Saved timeline edits use inspect-timeline and edit-timeline with the inspected hash/revision. Use organize-generation to delete or reorder scenes and direction blocks using inspected IDs and saved versions; generated takes and timeline media are retained. Use inspect-video-media and manage-video-media for the active editor's native import/export workflows. Native file and save dialogs still need human selection; never ask for copied internal IDs or arbitrary filesystem paths. Import succeeds only after its Media Bin entry saves; export succeeds only when a local MP4 is confirmed. Inspect Workspace publication separately. Choose the first-source rate or cancel using the inspected operationId. Cancellation is not rollback. Inspect/cancel remain available during edits; new work requires a clean saved document. Operation receipts are session-only: after reconnect/reopen, inspect saved results before considering another attempt. Clip speed remains unavailable.",
+    "contextProvider": "video.activeContext",
+    "tools": [
+      {
+        "id": "inspect-generation", "title": "Inspect video scenes and takes",
+        "description": "Read saved scene prompts, continuation flags, ordered direction blocks with IDs, reference names/IDs, Media Bin IDs and completed take IDs. No paths or preview leases are returned for media. Includes saved hash/revision for edit-generation and organize-generation. Does not spend or confirm a pending provider job.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "inspectGeneration",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+          "target": { "type": "object", "additionalProperties": false, "properties": { "surface": { "type": "string", "enum": ["workspace", "currentFolder"] }, "path": { "type": "string" }, "relativePath": { "type": "string" } }, "required": ["surface"] }
+        }, "required": ["target"] },
+        "impact": "low", "requiredCapability": "use_project_content", "resultScanPolicy": "never"
+      },
+      {
+        "id": "organize-generation", "title": "Delete or reorder video direction",
+        "description": "Atomically delete or move saved scenes and direction blocks. Inspect-generation returns IDs in current order. destinationIndex is zero-based. Actions: delete-scene, move-scene, delete-block, move-block. Deleting a scene block also removes that scene; completed takes, Media Bin assets and timeline clips are retained. Continuation is relative to the new preceding scene; inspect the new order and turn off continueFromPrevious if a scene becomes the opening. Invalid operations or stale versions change nothing.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "organizeGeneration",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+          "target": { "type": "object", "additionalProperties": false, "properties": { "surface": { "type": "string", "enum": ["workspace", "currentFolder"] }, "path": { "type": "string" }, "relativePath": { "type": "string" } }, "required": ["surface"] },
+          "expectedSha256": { "type": "string" }, "expectedRevision": { "type": "integer", "minimum": 0 },
+          "operations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "properties": { "action": { "type": "string", "enum": ["delete-scene", "move-scene", "delete-block", "move-block"] }, "id": { "type": "string" }, "destinationIndex": { "type": "integer", "minimum": 0 } }, "required": ["action", "id"] } }
+        }, "required": ["target", "expectedSha256", "operations"] },
+        "impact": "high", "requiredCapability": "use_project_content", "resultScanPolicy": "never"
+      },
+      {
+        "id": "inspect-video-media", "title": "Inspect video import and export",
+        "description": "Read the active editor's current import/export operation IDs, stages, progress, saved Media Bin ID and export result. Native file/save dialogs require a human selection. Choosing, saving, rendering and cancelling are not completion. Import succeeded means the Media Bin entry was saved. Export succeeded means a local MP4 exists; inspect workspace.status separately. Results belong to this editor session only: after reopen inspect saved media/Workspace instead of blindly retrying. Read-only; no native work starts.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "inspectVideoMedia",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": {} },
+        "impact": "low", "requiredCapability": "use_project_content", "resultScanPolicy": "never"
+      },
+      {
+        "id": "manage-video-media", "title": "Import or export video media",
+        "description": "Use the active editor's native media workflows. import-media opens the existing file chooser; after selection the media is inspected and saved to its Media Bin without placing clips. If awaiting-rate, choose-import-rate with the inspected operationId and adopt-source-rate or keep-project-rate. export-media renders the exact clean saved timeline to MP4 and opens the native save dialog; publishToWorkspace explicitly requests an additional Workspace copy, not a replacement for the local save. Cancel with the exact inspected operationId. Cancellation is a request, not rollback; inspect-video-media reports the eventual outcome. No arbitrary paths, overwrite authority, automatic retry or paid generation. Requires a supported Desktop host and clean saved document to start; observation/cancellation remain available during edits.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "controlVideoMedia",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+          "command": { "type": "object", "additionalProperties": false, "properties": {
+            "action": { "type": "string", "enum": ["import-media", "export-media", "choose-import-rate", "cancel-import", "cancel-export"] },
+            "publishToWorkspace": { "type": "boolean" }, "operationId": { "type": "string" }, "decision": { "type": "string", "enum": ["adopt-source-rate", "keep-project-rate"] },
+            "exportSettings": { "type": "object", "additionalProperties": false, "description": "Optional export-only settings; does not edit the project. Defaults: 1080p, balanced, 192 kbps AAC. Frame rate stays at the project rate. Custom bitrate is a target average, not a promised file size.", "properties": {
+              "resolution": { "type": "string", "enum": ["720p", "1080p", "4k"] },
+              "quality": { "type": "string", "enum": ["smaller", "balanced", "high", "custom"] },
+              "audioBitrateKbps": { "type": "number", "enum": [128, 192, 320] },
+              "videoBitrateKbps": { "type": "number", "exclusiveMinimum": 0, "description": "Required only with quality custom. Kilobits per second; e.g. 8000 is 8 Mbps. Do not supply for a quality preset." }
+            } }
+          }, "required": ["action"] }
+        }, "required": ["command"] },
+        "impact": "high", "requiredCapability": "use_project_content", "resultScanPolicy": "never"
+      },
+      {
+        "id": "edit-generation", "title": "Edit a video scene",
+        "description": "Append a scene (omit shotId) or update an existing scene using its ID. Set title, prompt, optional durationSec, camera, motion and continueFromPrevious. referenceIds reuse inspected references; mediaIds select image/video items already in this project's Media Bin. This saves direction only, never spends or changes timeline clips. Inspect the saved version first. After saving inspect again for the scene ID, then use review-generation in the open editor. Shared references remain shared. Native media import is not performed by this tool.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "editGeneration",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+          "target": { "type": "object", "additionalProperties": false, "properties": { "surface": { "type": "string", "enum": ["workspace", "currentFolder"] }, "path": { "type": "string" }, "relativePath": { "type": "string" } }, "required": ["surface"] },
+          "expectedSha256": { "type": "string" }, "expectedRevision": { "type": "integer", "minimum": 0 },
+          "scene": { "type": "object", "additionalProperties": false, "properties": {
+            "shotId": { "type": "string" }, "title": { "type": "string" }, "prompt": { "type": "string" },
+            "continueFromPrevious": { "type": "boolean" }, "durationSec": { "type": "number" },
+            "camera": { "type": "string" }, "motion": { "type": "string" },
+            "referenceIds": { "type": "array", "items": { "type": "string" } },
+            "mediaIds": { "type": "array", "items": { "type": "string" } }
+          }, "required": ["title", "prompt"] }
+        }, "required": ["target", "expectedSha256", "scene"] },
+        "impact": "high", "requiredCapability": "use_project_content", "resultScanPolicy": "never"
+      },
+      {
+        "id": "review-generation", "title": "Review one video generation",
+        "description": "Request the active open editor's visual exact-price approval for ONE saved scene. Does not approve payment. Provide the inspected shotId, explicit model/settings, and optionally a completed continuationTakeId belonging to the preceding scene. review_requested means preparation started, not payment or completion. Human approval is separate. On unknown do not retry. Completed media automatically enters the same project's Media Bin. Requires a clean, current open Workspace video project.",
+        "runtime": "server", "module": "./agent-tools.ts", "handler": "reviewOpenVideoGeneration",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+          "command": { "type": "object", "additionalProperties": false, "properties": {
+            "action": { "type": "string", "enum": ["review-generation"] }, "shotId": { "type": "string" },
+            "modelId": { "type": "string", "enum": ["venice:seedance-2-5-text-to-video-basic", "venice:seedance-2-5-reference-to-video-basic", "venice:minimax-h3-enhanced-text-to-video"] },
+            "settings": { "type": "object", "additionalProperties": false, "properties": { "durationSeconds": { "type": "integer" }, "resolution": { "type": "string" }, "aspectRatio": { "type": "string" }, "audio": { "type": "boolean" } } },
+            "continuationTakeId": { "type": "string" }
+          }, "required": ["action", "shotId", "modelId", "settings"] }
+        }, "required": ["command"] },
+        "impact": "low", "requiredCapability": "use_project_content", "resultScanPolicy": "never"
+      },
+      {
+        "id": "control-open-video",
+        "title": "Control open video",
+        "description": "Inspect or control transport in the active open Video editor only. Actions: inspect, play, pause, seek (seconds), preview-range (inSec/outSec), clear-range. Preview-range plays from IN to OUT and stops; clear-range returns to full-sequence transport. No saved document edits. Ready confirms editor state, not decoded video/audio. Dirty, stale, closed or unavailable editors reject. Never retry unknown completion automatically; inspect again or ask the user to reopen the editor.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "controlOpenVideo",
+        "inputSchema": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "command": { "type": "object", "additionalProperties": false,
+            "properties": {
+              "action": { "type": "string", "enum": ["inspect", "play", "pause", "seek", "preview-range", "clear-range"] },
+              "seconds": { "type": "number", "minimum": 0 },
+              "inSec": { "type": "number", "minimum": 0 },
+              "outSec": { "type": "number", "minimum": 0 }
+            }, "required": ["action"]
+          } }, "required": ["command"]
+        },
+        "impact": "low",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "never"
+      },
+      {
+        "id": "preview-timeline-edit",
+        "title": "Preview timeline edit",
+        "description": "Compute a non-mutating structural before/after plan, not a video render. Inspect with includeClips first; use its version.sha256 as expectedSha256 and revision when present. Use op:track with mode add/update/delete/reorder (trackId required except add), or op:links with mode link/unlink (only links among the given clips change). Other op values name individual edits. Operations run in order, atomically, against the first sequence. New tracks accept all clip kinds. Use existing media IDs, never paths. copy-selection duplicates and move-selection cuts/pastes directly to destinationSec on original lanes, without a cross-call clipboard. A nonempty inSec/outSec range overrides clipIds and excludes hidden/locked tracks. Collisions and protected linked peers refuse the whole batch. set-fade/set-transition durationSec 0 removes that effect. Clip speed, media import, playback, rendering/export and generation are not supported here.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "previewTimelineEdit",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "expectedSha256": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "track"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "add",
+                          "update",
+                          "delete",
+                          "reorder"
+                        ]
+                      },
+                      "trackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "beforeTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "hidden": {
+                        "type": "boolean"
+                      },
+                      "muted": {
+                        "type": "boolean"
+                      },
+                      "locked": {
+                        "type": "boolean"
+                      },
+                      "destinationIndex": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "mode"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "links"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "link",
+                          "unlink"
+                        ]
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "mode",
+                      "clipIds"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "add-clip"
+                      },
+                      "trackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "video",
+                          "audio",
+                          "image",
+                          "text",
+                          "caption",
+                          "callout"
+                        ]
+                      },
+                      "mediaId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      },
+                      "sourceInSec": {
+                        "type": "number"
+                      },
+                      "sourceOutSec": {
+                        "type": "number"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "trackId",
+                      "kind",
+                      "timelineStartSec",
+                      "durationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "toTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move-group"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "anchorClipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "toTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipIds",
+                      "anchorClipId",
+                      "toTrackId",
+                      "timelineStartSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "split-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "atSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "atSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "trim-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceInSec": {
+                        "type": "number"
+                      },
+                      "sourceOutSec": {
+                        "type": "number"
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "delete-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "detach-audio"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "toTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-text"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "text"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-clip-audio"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "muted": {
+                        "type": "boolean"
+                      },
+                      "volume": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-fade"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "key": {
+                        "type": "string",
+                        "enum": [
+                          "videoIn",
+                          "videoOut",
+                          "audioIn",
+                          "audioOut"
+                        ]
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      },
+                      "linkedAudio": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "key",
+                      "durationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-transition"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "crossfade",
+                          "swipe"
+                        ]
+                      },
+                      "direction": {
+                        "type": "string",
+                        "enum": [
+                          "left",
+                          "right",
+                          "up",
+                          "down"
+                        ]
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "kind",
+                      "direction",
+                      "durationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "delete-selection"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "inSec": {
+                        "type": "number"
+                      },
+                      "outSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "copy-selection"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "inSec": {
+                        "type": "number"
+                      },
+                      "outSec": {
+                        "type": "number"
+                      },
+                      "destinationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "destinationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move-selection"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "inSec": {
+                        "type": "number"
+                      },
+                      "outSec": {
+                        "type": "number"
+                      },
+                      "destinationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "destinationSec"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "target",
+            "expectedSha256",
+            "operations"
+          ]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "edit-timeline",
+        "title": "Edit timeline",
+        "description": "Apply the exact reviewed timeline operations as one authored document transaction. Inspect/preview again if the version changes; do not automatically replay after conflict or an uncertain write. Inspect with includeClips first; use its version.sha256 as expectedSha256 and revision when present. Use op:track with mode add/update/delete/reorder (trackId required except add), or op:links with mode link/unlink (only links among the given clips change). Other op values name individual edits. Operations run in order, atomically, against the first sequence. New tracks accept all clip kinds. Use existing media IDs, never paths. copy-selection duplicates and move-selection cuts/pastes directly to destinationSec on original lanes, without a cross-call clipboard. A nonempty inSec/outSec range overrides clipIds and excludes hidden/locked tracks. Collisions and protected linked peers refuse the whole batch. set-fade/set-transition durationSec 0 removes that effect. Clip speed, media import, playback, rendering/export and generation are not supported here.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "editTimeline",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "expectedSha256": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "track"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "add",
+                          "update",
+                          "delete",
+                          "reorder"
+                        ]
+                      },
+                      "trackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "beforeTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "hidden": {
+                        "type": "boolean"
+                      },
+                      "muted": {
+                        "type": "boolean"
+                      },
+                      "locked": {
+                        "type": "boolean"
+                      },
+                      "destinationIndex": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "mode"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "links"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "link",
+                          "unlink"
+                        ]
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "mode",
+                      "clipIds"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "add-clip"
+                      },
+                      "trackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "video",
+                          "audio",
+                          "image",
+                          "text",
+                          "caption",
+                          "callout"
+                        ]
+                      },
+                      "mediaId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      },
+                      "sourceInSec": {
+                        "type": "number"
+                      },
+                      "sourceOutSec": {
+                        "type": "number"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "trackId",
+                      "kind",
+                      "timelineStartSec",
+                      "durationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "toTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move-group"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "anchorClipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "toTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipIds",
+                      "anchorClipId",
+                      "toTrackId",
+                      "timelineStartSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "split-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "atSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "atSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "trim-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceInSec": {
+                        "type": "number"
+                      },
+                      "sourceOutSec": {
+                        "type": "number"
+                      },
+                      "timelineStartSec": {
+                        "type": "number"
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "delete-clip"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "detach-audio"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "toTrackId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-text"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "text"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-clip-audio"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "muted": {
+                        "type": "boolean"
+                      },
+                      "volume": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-fade"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "key": {
+                        "type": "string",
+                        "enum": [
+                          "videoIn",
+                          "videoOut",
+                          "audioIn",
+                          "audioOut"
+                        ]
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      },
+                      "linkedAudio": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "key",
+                      "durationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "set-transition"
+                      },
+                      "clipId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "crossfade",
+                          "swipe"
+                        ]
+                      },
+                      "direction": {
+                        "type": "string",
+                        "enum": [
+                          "left",
+                          "right",
+                          "up",
+                          "down"
+                        ]
+                      },
+                      "durationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "clipId",
+                      "kind",
+                      "direction",
+                      "durationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "delete-selection"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "inSec": {
+                        "type": "number"
+                      },
+                      "outSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "copy-selection"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "inSec": {
+                        "type": "number"
+                      },
+                      "outSec": {
+                        "type": "number"
+                      },
+                      "destinationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "destinationSec"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move-selection"
+                      },
+                      "clipIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "inSec": {
+                        "type": "number"
+                      },
+                      "outSec": {
+                        "type": "number"
+                      },
+                      "destinationSec": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "destinationSec"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "target",
+            "expectedSha256",
+            "operations"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "create-file",
+        "description": "Create a Video Timeline document. The filename must use the .html extension, because Video documents are HTML containers (.video.html).",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "createFile",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "targetSurface": {
+              "type": "string",
+              "enum": [
+                "workspace",
+                "currentFolder"
+              ]
+            },
+            "filename": {
+              "type": "string"
+            },
+            "openAfterCreate": {
+              "type": "boolean"
+            },
+            "initialContent": {
+              "type": "string",
+              "enum": [
+                "empty"
+              ]
+            }
+          },
+          "required": [
+            "targetSurface",
+            "filename"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-timeline",
+        "title": "Inspect timeline",
+        "description": "Inspect saved video sequence metadata and version, Media Bin identities, named tracks and protection. Set includeClips:true for all clip source windows, links, text/audio/effect properties and measured transition handles. No media bytes or source paths are returned. Active selection is separate live context; save dirty human work before planning from this snapshot.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "inspectTimeline",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "includeClips": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "impact": "read-only",
+        "requiredCapability": null,
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "add-clip",
+        "description": "Add a clip to a track on the video timeline.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "addClip",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "trackId": {
+              "type": "string"
+            },
+            "clip": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "video",
+                    "audio",
+                    "image",
+                    "text",
+                    "caption",
+                    "callout"
+                  ]
+                },
+                "mediaId": {
+                  "type": "string"
+                },
+                "timelineStartSec": {
+                  "type": "number"
+                },
+                "durationSec": {
+                  "type": "number"
+                },
+                "sourceInSec": {
+                  "type": "number"
+                },
+                "sourceOutSec": {
+                  "type": "number"
+                },
+                "props": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "kind",
+                "timelineStartSec",
+                "durationSec"
+              ]
+            }
+          },
+          "required": [
+            "target",
+            "trackId",
+            "clip"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "move-clip",
+        "description": "Move a clip to a new timeline start and/or a compatible track.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "moveClip",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "clipId": {
+              "type": "string"
+            },
+            "toTrackId": {
+              "type": "string"
+            },
+            "timelineStartSec": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "target",
+            "clipId"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "trim-clip",
+        "description": "Trim a clip's source in/out and/or timeline duration. Rejects negative or invalid source ranges.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "trimClip",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "clipId": {
+              "type": "string"
+            },
+            "sourceInSec": {
+              "type": "number"
+            },
+            "sourceOutSec": {
+              "type": "number"
+            },
+            "durationSec": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "target",
+            "clipId"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "split-clip",
+        "description": "Split a clip at a playhead position, preserving linked metadata.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "splitClip",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "clipId": {
+              "type": "string"
+            },
+            "atSec": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "target",
+            "clipId",
+            "atSec"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "delete-clip",
+        "description": "Delete a clip from the timeline.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "deleteClip",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "clipId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "clipId"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "detach-audio",
+        "description": "Detach the audio from a video media clip into a linked audio clip on an audio track.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "detachAudio",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "clipId": {
+              "type": "string"
+            },
+            "toTrackId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "clipId"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "replace-caption-text",
+        "description": "Replace the text of a caption clip.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "replaceCaptionText",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "clipId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "clipId",
+            "text"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "add-overlay",
+        "description": "Add an overlay (text/callout/image) clip to an overlay track.",
+        "runtime": "server",
+        "module": "./agent-tools.ts",
+        "handler": "addOverlay",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "sequenceId": {
+              "type": "string"
+            },
+            "trackId": {
+              "type": "string"
+            },
+            "clip": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "callout",
+                    "image"
+                  ]
+                },
+                "timelineStartSec": {
+                  "type": "number"
+                },
+                "durationSec": {
+                  "type": "number"
+                },
+                "props": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "kind",
+                "timelineStartSec",
+                "durationSec"
+              ]
+            }
+          },
+          "required": [
+            "target",
+            "trackId",
+            "clip"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      }
+    ]
+  },
+  "createActions": [
+    {
+      "id": "new-video",
+      "label": "New video",
+      "defaultFilename": "Untitled.video.html",
+      "mimeType": "text/html",
+      "targetSurfaces": [
+        "workspace",
+        "currentFolder"
+      ],
+      "template": {
+        "kind": "file",
+        "path": "templates/empty-video.html"
+      },
+      "openAfterCreate": true
+    }
+  ],
+  "contentAssociations": [
+    {
+      "id": "video-html",
+      "kind": "html-script-json",
+      "scriptId": "manifest",
+      "scriptType": "application/vnd.nautilo.document+json",
+      "match": {
+        "documentType": "video",
+        "editor": "nautilo-video",
+        "payloadFormat": "application/vnd.nautilo.video-edl+json"
+      }
+    }
+  ]
+}

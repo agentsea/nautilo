@@ -1,0 +1,38 @@
+{
+  "name": "@nautilo/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Configuration resolution and runtime paths (logger lives in @nautilo/logger)",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./design-tokens": "./src/design-tokens.ts",
+    "./instance-id": "./src/instance-id.ts",
+    "./vendored-binary": "./src/vendored-binary.ts",
+    "./vendored-binary-fetch": "./src/vendored-binary-fetch.ts",
+    "./federated-id-pure": "./src/federated-id-pure.ts",
+    "./loopback-origin": "./src/loopback-origin.ts",
+    "./officecli": "./src/officecli/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun run test:unit",
+    "test:unit": "bun test --timeout 15000 tests/unit/"
+  },
+  "dependencies": {
+    "@nautilo/types": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "fflate": "^0.8.3",
+    "ipaddr.js": "2.3.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

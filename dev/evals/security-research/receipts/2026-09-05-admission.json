@@ -1,0 +1,1 @@
+{"observations":227,"milliseconds":{"sequential":367.09,"atomic_batch":2.07},"note":"Ledger admission only; excludes scanners, model latency, and network."}

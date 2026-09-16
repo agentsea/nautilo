@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "allowedDownloadHosts": [
+    "media.nautilo.ai"
+  ],
+  "allowedDownloadPrefixes": {
+    "media.nautilo.ai": [
+      "/security-scanners/v1/"
+    ]
+  },
+  "artifacts": [
+    {
+      "component": "gitleaks",
+      "kind": "engine",
+      "version": "8.30.1",
+      "platform": "darwin-arm64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/gitleaks/8.30.1/darwin-arm64/gitleaks.tar.gz",
+      "archiveBytes": 7897593,
+      "sha256": "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+      "format": "tar.gz",
+      "entrypoint": "gitleaks",
+      "entrypointSha256": "ba52fb1bfabbcde42f032afad3d6e0b19dff8ed105229a16e7caa338bbc0e84f",
+      "license": "MIT",
+      "source": "https://github.com/gitleaks/gitleaks/tree/v8.30.1",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/gitleaks-8.30.1.txt",
+        "sha256": "0baba5e8a472b4a3564d205df3c1f21514be3cc4552f7f34b8e1c164e7f6fb33",
+        "bytes": 252
+      }
+    },
+    {
+      "component": "gitleaks",
+      "kind": "engine",
+      "version": "8.30.1",
+      "platform": "darwin-x64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/gitleaks/8.30.1/darwin-x64/gitleaks.tar.gz",
+      "archiveBytes": 8359235,
+      "sha256": "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
+      "format": "tar.gz",
+      "entrypoint": "gitleaks",
+      "entrypointSha256": "cee01fea7173f1b779dff188e1c26ecbcb4027d394acc573b23aaf0be260e291",
+      "license": "MIT",
+      "source": "https://github.com/gitleaks/gitleaks/tree/v8.30.1",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/gitleaks-8.30.1.txt",
+        "sha256": "0baba5e8a472b4a3564d205df3c1f21514be3cc4552f7f34b8e1c164e7f6fb33",
+        "bytes": 252
+      }
+    },
+    {
+      "component": "osv-scanner",
+      "kind": "engine",
+      "version": "2.5.1",
+      "platform": "darwin-arm64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/osv-scanner/2.5.1/darwin-arm64/osv-scanner.bin",
+      "archiveBytes": 55484002,
+      "sha256": "75c44d6332f892a1e56286f4105a98ed751ae28d215ca0a8b65cc00d84103054",
+      "format": "binary",
+      "entrypoint": "osv-scanner",
+      "entrypointSha256": "75c44d6332f892a1e56286f4105a98ed751ae28d215ca0a8b65cc00d84103054",
+      "license": "Apache-2.0",
+      "source": "https://github.com/google/osv-scanner/tree/v2.5.1",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/osv-scanner-2.5.1.txt",
+        "sha256": "eb693a4313e81827cbc0ec449f96b277abd9275e68304a08e43b78d76378c4b6",
+        "bytes": 261
+      }
+    },
+    {
+      "component": "osv-scanner",
+      "kind": "engine",
+      "version": "2.5.1",
+      "platform": "darwin-x64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/osv-scanner/2.5.1/darwin-x64/osv-scanner.bin",
+      "archiveBytes": 58916784,
+      "sha256": "9f89beb6c3d784893cb1cae0a3d56c529bfe91075418c2f9440c45b79654198b",
+      "format": "binary",
+      "entrypoint": "osv-scanner",
+      "entrypointSha256": "9f89beb6c3d784893cb1cae0a3d56c529bfe91075418c2f9440c45b79654198b",
+      "license": "Apache-2.0",
+      "source": "https://github.com/google/osv-scanner/tree/v2.5.1",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/osv-scanner-2.5.1.txt",
+        "sha256": "eb693a4313e81827cbc0ec449f96b277abd9275e68304a08e43b78d76378c4b6",
+        "bytes": 261
+      }
+    },
+    {
+      "component": "trivy",
+      "kind": "engine",
+      "version": "0.74.0",
+      "platform": "darwin-arm64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/trivy/0.74.0/darwin-arm64/trivy.tar.gz",
+      "archiveBytes": 47694894,
+      "sha256": "1caada5e0e2091909357c7525d3aa76f4b660b13821bc143b190c7483e31cc11",
+      "format": "tar.gz",
+      "entrypoint": "trivy",
+      "entrypointSha256": "0ed07c205ca9ecc1065dc57b9f9f77adc79393bb469d9d1de9ec90c8c94ffc2f",
+      "license": "Apache-2.0",
+      "source": "https://github.com/aquasecurity/trivy/tree/v0.74.0",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/trivy-0.74.0.txt",
+        "sha256": "e3b33f9a3867895ba3137dff89545fd691105ca52c5fe97362c698a48b960f60",
+        "bytes": 257
+      }
+    },
+    {
+      "component": "trivy",
+      "kind": "engine",
+      "version": "0.74.0",
+      "platform": "darwin-x64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/trivy/0.74.0/darwin-x64/trivy.tar.gz",
+      "archiveBytes": 51440811,
+      "sha256": "472816f6888dda689d075c30254d4210b4d1035acf365aa72332f584c2f60485",
+      "format": "tar.gz",
+      "entrypoint": "trivy",
+      "entrypointSha256": "43ae1fd02532315b44a9d0496ae06326d5a1f3496cae26499be624807813fa8c",
+      "license": "Apache-2.0",
+      "source": "https://github.com/aquasecurity/trivy/tree/v0.74.0",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/trivy-0.74.0.txt",
+        "sha256": "e3b33f9a3867895ba3137dff89545fd691105ca52c5fe97362c698a48b960f60",
+        "bytes": 257
+      }
+    },
+    {
+      "component": "semgrep",
+      "kind": "engine",
+      "version": "1.172.0",
+      "platform": "darwin-arm64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/semgrep/1.172.0/darwin-arm64/semgrep.tar.gz",
+      "archiveBytes": 49196066,
+      "sha256": "3e9496bfcfa600fd8215df26291f10dc80413d90074d6b7d2fce75ae48c42a3f",
+      "format": "tar.gz",
+      "entrypoint": "bin/semgrep-core",
+      "entrypointSha256": "7f1068f0fbffe1606531b26a79019f2597b13162d1930c95866f791dd4821321",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://github.com/semgrep/semgrep/tree/v1.172.0",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/semgrep-1.172.0.txt",
+        "sha256": "64a249c84e27a80d9fc30bc23a7667bd0d611edb28f3ecd6333095261dfa3828",
+        "bytes": 265
+      }
+    },
+    {
+      "component": "semgrep",
+      "kind": "engine",
+      "version": "1.172.0",
+      "platform": "darwin-x64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/semgrep/1.172.0/darwin-x64/semgrep.tar.gz",
+      "archiveBytes": 44503230,
+      "sha256": "b4d73a1b9725f0536f5b29cc9c35d9d4c68d7c11662bd9feebf77b0e945c98d0",
+      "format": "tar.gz",
+      "entrypoint": "bin/semgrep-core",
+      "entrypointSha256": "3f9eec97fa9f2e38ac2cfe604298daca7cddfde05674d5cc8e926d7104a271d0",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://github.com/semgrep/semgrep/tree/v1.172.0",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/semgrep-1.172.0.txt",
+        "sha256": "64a249c84e27a80d9fc30bc23a7667bd0d611edb28f3ecd6333095261dfa3828",
+        "bytes": 265
+      }
+    },
+    {
+      "component": "semgrep-nautilo-rules",
+      "kind": "rules",
+      "version": "1.0.0",
+      "platform": "darwin-arm64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/semgrep-nautilo-rules/1.0.0/darwin/rules.tar.gz",
+      "archiveBytes": 2311,
+      "sha256": "8e8ced5d8b8095ac0da811e248a206bd4a76d553d0c4778841d7571526943e9c",
+      "format": "tar.gz",
+      "license": "MIT",
+      "source": "https://github.com/agentsea/nautilo/tree/main/apps/desktop/security-scanners/rules",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/semgrep-nautilo-rules-1.0.0.txt",
+        "sha256": "0566d7f327d51d99b35535d45706c00701a06cd97b15b1af550132da534257f1",
+        "bytes": 297
+      }
+    },
+    {
+      "component": "semgrep-nautilo-rules",
+      "kind": "rules",
+      "version": "1.0.0",
+      "platform": "darwin-x64",
+      "url": "https://media.nautilo.ai/security-scanners/v1/semgrep-nautilo-rules/1.0.0/darwin/rules.tar.gz",
+      "archiveBytes": 2311,
+      "sha256": "8e8ced5d8b8095ac0da811e248a206bd4a76d553d0c4778841d7571526943e9c",
+      "format": "tar.gz",
+      "license": "MIT",
+      "source": "https://github.com/agentsea/nautilo/tree/main/apps/desktop/security-scanners/rules",
+      "notices": {
+        "url": "https://media.nautilo.ai/security-scanners/v1/notices/semgrep-nautilo-rules-1.0.0.txt",
+        "sha256": "0566d7f327d51d99b35535d45706c00701a06cd97b15b1af550132da534257f1",
+        "bytes": 297
+      }
+    }
+  ]
+}

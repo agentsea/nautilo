@@ -1,0 +1,1 @@
+ALTER TABLE "session_messages" ADD COLUMN "tool_name" text;

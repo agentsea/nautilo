@@ -1,0 +1,106 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+.next/
+out/
+
+# turbo
+.turbo/
+
+# tsc --incremental / --noEmit cache (per-package)
+*.tsbuildinfo
+
+# Codex protocol generators write full upstream trees only to temporary roots.
+packages/codex-app-server/generated/*/upstream/
+
+# Stack 1 real-DB smoke artifacts (scripts/stack-1-real-db-smoke.sh)
+.smoke-logs/
+
+# testing
+coverage/
+/dev/evals/official-skills/.results/
+/dev/evals/official-skills/.venv/
+packages/runtime/tests/evals/.results/reflection-hierarchy/
+packages/runtime/tests/evals/.results/reflection-foreground/
+packages/lattice-crypto/.stryker-tmp/
+packages/lattice-crypto/reports/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files — block everything, whitelist only .env.example
+.env*
+!.env.example
+!.envrc.example
+
+# nautilo CLI setup templates — block working files (may contain admin
+# password, claim invite token, provider API keys); whitelist only
+# example/template artifacts that ship with the repo.
+#
+# Working files belong in ~/.nautilo-<id>/setup.toml (chmod 600), NOT
+# anywhere inside this tree. See playbook/setup-new-instance-from-scratch.md.
+setup*.toml
+*.setup.toml
+!setup.example.toml
+!**/templates/*.toml
+!**/*.example.toml
+
+# operator / bootstrap secrets (D112 Phase 13)
+# Real concern: never commit an env-file holding bootstrap PINs, admin
+# passwords, provider API keys, etc. These two file-name rules cover it.
+# (D112 §13 originally also had `**/operator-secrets/` as a directory-
+# level belt-and-suspenders rule, but with the new `@nautilo/operator-secrets`
+# package at `packages/operator-secrets/` it created a conflict that
+# `!`-negations couldn't reliably resolve across all tools that read
+# .gitignore — notably knip's gitignore parser handles re-includes
+# poorly. The file-name rules below are sufficient defense; the runtime
+# operator-secrets directory the broad rule targeted lives under
+# `$HOME/.config/nautilo/`, outside any git work tree, and is further
+# protected by `assertPathOutsideGitWorkTree` in the helper itself.)
+secrets.env
+*.secrets.env
+
+next-env.d.ts
+
+# docker volumes
+postgres_data/
+
+# claude
+.claude/
+
+# logs
+logs/
+
+# Electron builder output
+release/
+
+# Swift build artifacts
+native/**/.build/
+apps/desktop/vendor/
+!apps/desktop/vendor/
+apps/desktop/vendor/*
+!apps/desktop/vendor/codex-runtime.manifest.json
+!apps/desktop/vendor/tool-runtimes.manifest.json
+
+*.tsbuildinfo
+
+!.env.local-smoke.example
+
+# CodeBoarding architecture-viz output (auto-generated, exploratory).
+# Describes emergent de-facto structure, not intended design — never commit.
+.codeboarding/
+
+# D431 local-only, generated OOXML transport/capacity packages.
+apps/workbench/tests/fixtures/ooxml/capacity/
+
+# D490 raw exact-image reports are CI/release artifacts, not source inputs.
+/packaging/docker/evidence/source-*/

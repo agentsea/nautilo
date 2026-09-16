@@ -1,0 +1,20 @@
+{
+  "name": "@nautilo/relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./native-search": "./src/native-search.ts"
+  },
+  "dependencies": {
+    "@nautilo/config": "workspace:*",
+    "@nautilo/computer-use-host-protocol": "workspace:*",
+    "@nautilo/desktop-filesystem-grants": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "@nautilo/workstation-profiles": "workspace:*",
+    "linkedom": "0.18.13",
+    "ws": "8.21.2"
+  }
+}

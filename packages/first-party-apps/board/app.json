@@ -1,0 +1,616 @@
+{
+  "id": "nautilo-board",
+  "name": "Board",
+  "description": "Think together on an infinite canvas with notes, text, shapes, connectors and images.",
+  "version": "0.1.0",
+  "entry": "./engine/main.js",
+  "html": "./index.html",
+  "styles": [
+    "./styles.css"
+  ],
+  "display": {
+    "groupId": "nautilo-office",
+    "groupName": "Nautilo Office",
+    "groupOrder": 10,
+    "appOrder": 40,
+    "defaultCollapsed": false
+  },
+  "fileAssociations": {
+    "extensions": [],
+    "mimeTypes": []
+  },
+  "capabilities": {
+    "document": {
+      "artifact": "readwrite",
+      "currentFolder": "readwrite"
+    }
+  },
+  "createActions": [
+    {
+      "id": "new-board",
+      "label": "New board",
+      "defaultFilename": "Untitled.board.html",
+      "mimeType": "text/html",
+      "targetSurfaces": [
+        "workspace",
+        "currentFolder"
+      ],
+      "template": {
+        "kind": "file",
+        "path": "templates/empty-board.html"
+      },
+      "openAfterCreate": true
+    }
+  ],
+  "contentAssociations": [
+    {
+      "id": "wafflebase-board",
+      "kind": "html-script-json",
+      "scriptId": "manifest",
+      "scriptType": "application/vnd.nautilo.document+json",
+      "match": {
+        "documentType": "board",
+        "editor": "wafflebase",
+        "payloadFormat": "application/vnd.wafflebase.board+json"
+      }
+    }
+  ],
+  "liveReview": {
+    "enabled": true
+  },
+  "agent": {
+    "contextProvider": "board.activeContext",
+    "instructions": "For a new Board, call create-file, inspect and populate the returned target, then offer its Open in Board action. Never ask the Human to create a blank file or copy a path. opened=false means the saved board is ready to open. A filename collision preserves the existing file; select another name or inspect the existing document according to intent.\nInspect the exact canonical source before edits. Default inspection returns the complete model, while elementIds returns exact selected objects. describe-authoring offers the full generated native model schema and individual definitions with their dependencies. Closed edits use expectedSha256; open edits copy versionToken to expectedVersion. The host owns active document identity, authority, session and idempotency. On stale refusal inspect again and reconsider; never overwrite an unsaved Human draft.\nUse JSON Pointer add/remove/replace/copy/move/test to edit all native fields: text runs and fonts, shape geometry and colors, groups, connectors, images and cropping. Native schema and integrity validation are the boundary; there is no creative property allowlist. Use test operations to protect addressed identities and preserve unrelated content. Each complete batch validates and writes once, or writes nothing. Preserve unique element IDs and attached connector references. Inspect schema errors to repair exact affected paths. Do not generate base64 or fabricate media bytes. Use insert-image with an authorized asset reference, Workspace path or Current Folder relativePath and a native element frame. Omit element.id, type and data.src: code generates identity and resolves exact bytes. The full batch validates before any write; copy returned elementId from the receipt for later refinements.\nChoose content, typography and layout from the Human's intent. Verify the saved receipt and visible result before claiming completion. After uncertain writes inspect canonical state before retrying.",
+    "tools": [
+      {
+        "id": "create-file",
+        "title": "Create board and open",
+        "description": "Create a saved Board without requiring an open blank file. Returns a target and Open in Board action. Never overwrites an existing filename. opened=false means ready to open, not failure. Use a basename ending in .board.html.",
+        "runtime": "server",
+        "module": "./engine/agent-tools.js",
+        "handler": "createFile",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "targetSurface": {
+              "type": "string",
+              "enum": [
+                "workspace",
+                "currentFolder"
+              ]
+            },
+            "filename": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "targetSurface",
+            "filename"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "describe-authoring",
+        "title": "Discover Board model",
+        "description": "Discover the complete source-derived native model schema. includeSchema=true returns all definitions; definition returns one definition and every referenced definition.",
+        "runtime": "server",
+        "module": "./engine/agent-tools.js",
+        "handler": "describeAuthoring",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "definition": {
+              "type": "string"
+            },
+            "includeSchema": {
+              "type": "boolean"
+            }
+          }
+        },
+        "impact": "low",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-board",
+        "title": "Inspect board",
+        "description": "Read complete canonical Board contents and exact expectedSha256. Optional elementIds selects exact objects without hidden truncation.",
+        "runtime": "server",
+        "module": "./engine/agent-tools.js",
+        "handler": "inspectBoard",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "elementIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "impact": "low",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "edit-board",
+        "title": "Edit board",
+        "description": "Apply one atomic JSON Patch batch to an inspected saved Board using its exact expectedSha256. The complete native model is editable; validation or conflicts write nothing.",
+        "runtime": "server",
+        "module": "./engine/agent-tools.js",
+        "handler": "editBoard",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "surface": {
+                  "type": "string",
+                  "enum": [
+                    "workspace",
+                    "currentFolder"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "relativePath": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "surface"
+              ]
+            },
+            "expectedSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "add"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "value": {}
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "remove"
+                      },
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "path"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "replace"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "value": {}
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "copy"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "from"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "from"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "test"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "value": {}
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "insert-image",
+                        "type": "string"
+                      },
+                      "element": {
+                        "type": "object",
+                        "description": "Native image frame and optional style/data fields. Omit id, type and data.src: code supplies identity and authorized bytes.",
+                        "additionalProperties": true,
+                        "required": [
+                          "frame"
+                        ]
+                      },
+                      "asset": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "surface": {
+                            "enum": [
+                              "workspace",
+                              "currentFolder"
+                            ]
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "relativePath": {
+                            "type": "string"
+                          }
+                        },
+                        "description": "Exactly one source: pinned artifact ref, workspace surface+path, or currentFolder surface+relativePath. The host authorizes and reads the bytes."
+                      },
+                      "atIndex": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional top-level insertion index; omitted appends."
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "asset",
+                      "element"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "target",
+            "expectedSha256",
+            "operations"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "inspect-open-board",
+        "title": "Inspect open board",
+        "description": "Inspect the active Board using host-owned session and document identity. Returns exact native content and versionToken. Do not pass a target or session.",
+        "runtime": "server",
+        "module": "./engine/agent-tools.js",
+        "handler": "inspectOpenBoard",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "elementIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          }
+        },
+        "impact": "low",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      },
+      {
+        "id": "edit-open-board",
+        "title": "Edit open board",
+        "description": "Apply one atomic JSON Patch batch to the active Board using the inspected versionToken as expectedVersion. Host owns binding, authority and idempotency; unsaved Human edits are protected.",
+        "runtime": "server",
+        "module": "./engine/agent-tools.js",
+        "handler": "editOpenBoard",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "expectedVersion": {
+              "type": "string"
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "add"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "value": {}
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "remove"
+                      },
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "path"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "replace"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "value": {}
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "copy"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "from"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "from"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "test"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "value": {}
+                    },
+                    "required": [
+                      "op",
+                      "path",
+                      "value"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "insert-image",
+                        "type": "string"
+                      },
+                      "element": {
+                        "type": "object",
+                        "description": "Native image frame and optional style/data fields. Omit id, type and data.src: code supplies identity and authorized bytes.",
+                        "additionalProperties": true,
+                        "required": [
+                          "frame"
+                        ]
+                      },
+                      "asset": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "surface": {
+                            "enum": [
+                              "workspace",
+                              "currentFolder"
+                            ]
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "relativePath": {
+                            "type": "string"
+                          }
+                        },
+                        "description": "Exactly one source: pinned artifact ref, workspace surface+path, or currentFolder surface+relativePath. The host authorizes and reads the bytes."
+                      },
+                      "atIndex": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional top-level insertion index; omitted appends."
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "asset",
+                      "element"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "expectedVersion",
+            "operations"
+          ]
+        },
+        "impact": "high",
+        "requiredCapability": "use_project_content",
+        "resultScanPolicy": "on-suspicious"
+      }
+    ]
+  }
+}

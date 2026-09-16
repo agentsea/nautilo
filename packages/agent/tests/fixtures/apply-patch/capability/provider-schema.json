@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "status": "implemented",
+  "tool": "apply_patch",
+  "arguments": {
+    "patch": "See multi-file-20.patch for the Codex apply_patch grammar body.",
+    "target": "current"
+  },
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["patch"],
+    "properties": {
+      "patch": {
+        "type": "string",
+        "minLength": 1,
+        "description": "A complete Codex apply_patch body bounded by *** Begin Patch and *** End Patch."
+      },
+      "target": {
+        "type": "string",
+        "enum": ["workspace", "current"],
+        "description": "Optional compatibility selector. Use \"current\" for Desktop Current Folder work; \"workspace\" returns unsupported_target."
+      }
+    }
+  }
+}

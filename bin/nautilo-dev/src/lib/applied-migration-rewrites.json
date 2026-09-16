@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "rewrites": [
+    {
+      "path": "packages/db/src/migrations/0282_content_access_receipt_immutability.sql",
+      "createdAt": 1789053000788,
+      "beforeSha256": "47337a4fe1ee995f371ef309e8a0253f531adc88177c96804056d569912c7c24",
+      "afterSha256": "c9d57e7399b6b071b21efbd22a1dc47f0e219830eab10103efd0fb0b6bded3ca",
+      "reason": "The replacement only brackets initial trigger creation with a temporary owner grant; databases that already applied the original migration already contain the same function and triggers."
+    }
+  ]
+}

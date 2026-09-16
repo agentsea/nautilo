@@ -1,0 +1,9 @@
+# Source-only overlay. Registry deploys deliberately never load this file,
+# so their `build: !reset null` path has no source-checkout interpolation.
+services:
+  nautilo-server:
+    build:
+      args:
+        NAUTILO_SOURCE_SHA: ${NAUTILO_SOURCE_SHA:?NAUTILO_SOURCE_SHA must be resolved from a clean source checkout}
+        NAUTILO_WAFFLEBASE_SHEETS: ${NAUTILO_WAFFLEBASE_SHEETS:-1}
+        NAUTILO_WAFFLEBASE_SLIDES: ${NAUTILO_WAFFLEBASE_SLIDES:-1}

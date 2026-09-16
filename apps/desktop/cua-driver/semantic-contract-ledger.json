@@ -1,0 +1,450 @@
+{
+  "schemaVersion": 1,
+  "purpose": "D516 executable semantic-contract gate. This is a reviewed projection boundary for a future Nautilo routine and Room summary; it neither changes nor widens the pinned Cua provider schema.",
+  "pinnedProvider": {
+    "name": "cua-driver",
+    "version": "0.23.2",
+    "sourceSha": "e88e9d899ac5effaeae38619527ebaa46b26ce72",
+    "platform": "macos",
+    "sources": [
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/launch_app.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/press_key.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/invoke_menu.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/type_text.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/set_value.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/scroll.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/click.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/right_click.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/double_click.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/drag.rs",
+      "libs/cua-driver/rust/crates/cua-driver-contract/src/verification.rs",
+      "libs/cua-driver/rust/crates/cua-driver-core/src/expectation.rs",
+      "libs/cua-driver/rust/crates/cua-driver-core/src/element_token.rs",
+      "libs/cua-driver/rust/crates/cua-driver-core/src/background_input.rs",
+      "libs/cua-driver/rust/crates/platform-macos/src/tools/mod.rs"
+    ]
+  },
+  "baselineEvidence": {
+    "qualification": "Repeated observation during local qualification",
+    "providerObservationBytes": {
+      "lower": 8192,
+      "upper": 12288,
+      "unit": "bytes",
+      "interpretation": "Observed repeated raw provider observation was 8–12KB; this is evidence, not a newly invented provider or routine byte ceiling."
+    },
+    "inputTokens": {
+      "firstObserved": 24020,
+      "repeatedObserved": 102052,
+      "interpretation": "Repeated retained observations grew input tokens from 24,020 to 102,052."
+    }
+  },
+  "projectionInvariant": {
+    "launchCommonPath": "A new routine projection may carry at most one semantic app target and the immediately selected unique semantic window target. It may not carry an application inventory, multiple candidate windows, or native identifiers.",
+    "deduplication": "Unchanged inventory and provider diagnostics never repeat in the model projection or ordinary Room summary.",
+    "serialization": "The test measures exact representative fixture serialization. Repeated identical calls grow only by one compact projection record plus its record separator; retained raw provider payloads are forbidden.",
+    "noHardCeiling": "No hard byte ceiling is asserted because the available baseline is an observation, not a provider contract."
+  },
+  "projectionBoundary": {
+    "providerPrivateOrSensitiveFields": [
+      "pid",
+      "window_id",
+      "owner_pid",
+      "owner_app_name",
+      "bundle_id",
+      "urls",
+      "additional_arguments",
+      "webkit_inspector_port",
+      "creates_new_application_instance",
+      "element_index",
+      "element_token",
+      "snapshot_id",
+      "tree_markdown",
+      "elements",
+      "screenshot_file_path",
+      "screenshot_error",
+      "background_input",
+      "reason",
+      "message",
+      "diagnostics"
+    ],
+    "modelProjectionFields": [
+      "operation",
+      "target.app",
+      "target.window",
+      "outcome",
+      "verification.status",
+      "verification.route",
+      "nextStep"
+    ],
+    "ordinaryRoomSummaryFields": [
+      "operation",
+      "target.app",
+      "target.window",
+      "outcome",
+      "nextStep"
+    ],
+    "rule": "Model and ordinary Room projections are public semantic descriptions, never a serialized provider response, error, screenshot, AX tree, native process/window identity, inventory, or diagnostics."
+  },
+  "rows": [
+    {
+      "id": "launch_app",
+      "providerOperation": "launch_app",
+      "publicSemanticOperation": "launch an already-authorized app without promoting provider-specific launch controls",
+      "publicSemanticTarget": "one app selected by a stable Nautilo app identity; if a unique ordinary window appears, select that one semantic window only",
+      "literalProviderRequest": {
+        "acceptedKeys": ["bundle_id", "name", "urls", "webkit_inspector_port", "creates_new_application_instance", "additional_arguments"],
+        "schemaRequiredKeys": [],
+        "runtimeRequirement": "one of bundle_id or name",
+        "source": "platform-macos/src/tools/launch_app.rs::def, invoke"
+      },
+      "nautiloNarrowedRequest": {
+        "acceptedKeys": ["app"],
+        "requiredKeys": ["app"],
+        "providerMapping": {"app": "bundle_id only after Nautilo resolves one allowed app"},
+        "excludedProviderKeys": ["name", "urls", "webkit_inspector_port", "creates_new_application_instance", "additional_arguments", "pid", "window_id"],
+        "reason": "Routine launch does not grant URL/file opening, ports/DevTools, argv, forced instances, or native target selection."
+      },
+      "successStructured": {
+        "requiredKeys": ["pid", "bundle_id", "name", "windows", "launch_state"],
+        "optionalKeys": ["self_activation_suppressed"],
+        "providerActionBoundary": "LaunchServices app-launch request; Cua polls for windows but launch_state.window_ready can remain false.",
+        "sessionAndScopePrerequisites": "No Cua session or window scope is required; app must resolve as installed and may be protected from launch.",
+        "mutationReplayCancellation": "mutation; provider advertises idempotent:true but open_world:true; no cancellation contract is exposed, so do not blindly replay after an indeterminate transport/native error.",
+        "verificationRoute": "If launch_state.window_ready is true, choose the immediately returned unique ordinary window and call get_window_state with its native target inside the adapter; otherwise re-observe through the normal Nautilo window path."
+      },
+      "closedFamilies": {
+        "refusalOrFailureCodes": ["APP_NOT_INSTALLED", "PROTECTED_HOST_ENTRYPOINT", "NSWORKSPACE_LAUNCH_FAILED", "LAUNCH_RESULT_MISSING", "LAUNCH_CALLBACK_TIMEOUT", "APP_URL_INVALID", "LAUNCH_FAILED", "FILE_NOT_FOUND"],
+        "indeterminate": ["launch_state.requested/process_running/window_ready is the only closed readiness progression; a requested/running app without a window is not success for a window-dependent routine."],
+        "source": "launch_app.rs::structured_launch_error, structured_launch_failure, preflight_file_urls, launch_state"
+      },
+      "envelopeDescriptors": [
+        {"name": "launch_success", "transport": "success", "exactKeys": ["pid", "bundle_id", "name", "windows", "launch_state", "self_activation_suppressed"], "requiredKeys": ["pid", "bundle_id", "name", "windows", "launch_state"], "optionalKeys": ["self_activation_suppressed"], "constraints": {"launch_state": "object with requested|process_running|window_ready boolean progression"}},
+        {"name": "launch_app_not_installed", "transport": "error", "exactKeys": ["error", "name", "bundle_id"], "requiredKeys": ["error"], "optionalKeys": ["name", "bundle_id"], "constraints": {"error": ["APP_NOT_INSTALLED"], "oneOfExactly": ["name", "bundle_id"]}},
+        {"name": "launch_protected_entrypoint", "transport": "error", "exactKeys": ["error"], "requiredKeys": ["error"], "optionalKeys": [], "constraints": {"error": ["PROTECTED_HOST_ENTRYPOINT"]}},
+        {"name": "launch_failure_with_state", "transport": "error", "exactKeys": ["error", "launch_state"], "requiredKeys": ["error", "launch_state"], "optionalKeys": [], "constraints": {"error": ["NSWORKSPACE_LAUNCH_FAILED", "LAUNCH_RESULT_MISSING", "LAUNCH_CALLBACK_TIMEOUT", "APP_URL_INVALID", "LAUNCH_FAILED"], "launch_state": "object with requested|process_running|window_ready boolean progression"}},
+        {"name": "launch_file_not_found", "transport": "error", "exactKeys": ["error", "url", "path"], "requiredKeys": ["error", "url", "path"], "optionalKeys": [], "constraints": {"error": ["FILE_NOT_FOUND"]}},
+        {"name": "launch_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "launch_app", "target": {"app": "semantic app", "window": "immediately selected unique window or omitted"}, "outcome": "launched|not_ready|refused|failed", "verification": {"status": "required|not_applicable", "route": "get_window_state"}, "nextStep": "semantic next action"},
+      "ordinaryRoomSummary": {"operation": "launch_app", "target": {"app": "semantic app", "window": "semantic window when unique"}, "outcome": "launched|not_ready|refused|failed", "nextStep": "semantic next action"}
+    },
+    {
+      "id": "get_window_state",
+      "providerOperation": "get_window_state",
+      "publicSemanticOperation": "observe one already-selected window sufficiently to verify or choose the next bounded action",
+      "publicSemanticTarget": "one unique semantic window selected by the routine; native pid/window_id remain adapter-local",
+      "literalProviderRequest": {
+        "acceptedKeys": ["session", "pid", "window_id", "query", "capture_mode", "include_screenshot", "screenshot_out_file", "max_elements", "max_depth"],
+        "schemaRequiredKeys": ["pid", "window_id"],
+        "runtimeRequirement": "target window must remain live and owned by pid",
+        "source": "platform-macos/src/tools/get_window_state.rs::def, invoke"
+      },
+      "nautiloNarrowedRequest": {
+        "acceptedKeys": ["window", "intent"],
+        "requiredKeys": ["window"],
+        "providerMapping": {"window": "adapter-resolved pid/window_id", "intent": "adapter-owned bounded observation mode"},
+        "excludedProviderKeys": ["session", "pid", "window_id", "query", "capture_mode", "include_screenshot", "screenshot_out_file", "max_elements", "max_depth"],
+        "reason": "The model asks for a semantic selected window, not capture storage, tree query/caps, session plumbing, or native IDs."
+      },
+      "successStructured": {
+        "requiredKeys": ["window_id", "pid", "element_count", "total_element_count", "returned_element_count", "elements_complete", "tree_markdown", "elements", "_note"],
+        "optionalKeys": ["filtered_element_count", "snapshot_id", "degraded", "degraded_reason", "escalation", "background_input", "screenshot_width", "screenshot_height", "screenshot_mime_type", "window_bounds", "screenshot_scale", "screenshot_frame_valid", "screenshot_error", "screenshot_file_path", "browser_chrome_capture_coverage"],
+        "providerActionBoundary": "AX tree walk plus optional ScreenCaptureKit capture; it updates the provider element cache and snapshot-token registry.",
+        "sessionAndScopePrerequisites": "Native pid/window_id required; the window scope is revalidated before and after the AX walk. session is optional provider cursor/session plumbing.",
+        "mutationReplayCancellation": "observation; provider advertises read_only:true, destructive:false, idempotent:false; a timed-out blocking AX walk is not cancellable by dropping its task, so retry only as a fresh observation.",
+        "verificationRoute": "Use the result only as adapter-local evidence. Report a compact semantic verification state; never retain its AX tree, element tokens, screenshot, or diagnostics in model/Room projection."
+      },
+      "closedFamilies": {
+        "refusalCodes": ["window_id_not_found", "window_owner_pid_mismatch"],
+        "degradedReasons": ["ax_tree_empty", "ax_window_unresolved", "px_frame_mismatch", "px_capture_unavailable"],
+        "indeterminate": ["elements_complete is always false in this source; no missing element proves absence. Screenshot frame absence/error leaves pixel geometry unproven."],
+        "source": "get_window_state.rs::window_scope_refusal, degradation_for, screenshot frame handling"
+      },
+      "envelopeDescriptors": [
+        {"name": "window_state_success", "transport": "success", "exactKeys": ["window_id", "pid", "element_count", "total_element_count", "returned_element_count", "elements_complete", "tree_markdown", "elements", "_note", "filtered_element_count", "snapshot_id", "degraded", "degraded_reason", "escalation", "background_input", "screenshot_width", "screenshot_height", "screenshot_mime_type", "window_bounds", "screenshot_scale", "screenshot_frame_valid", "screenshot_error", "screenshot_file_path", "browser_chrome_capture_coverage"], "requiredKeys": ["window_id", "pid", "element_count", "total_element_count", "returned_element_count", "elements_complete", "tree_markdown", "elements", "_note"], "optionalKeys": ["filtered_element_count", "snapshot_id", "degraded", "degraded_reason", "escalation", "background_input", "screenshot_width", "screenshot_height", "screenshot_mime_type", "window_bounds", "screenshot_scale", "screenshot_frame_valid", "screenshot_error", "screenshot_file_path", "browser_chrome_capture_coverage"], "constraints": {"degraded": "when present, boolean", "degraded_reason": {"prefixes": ["ax_tree_empty:", "ax_window_unresolved:", "px_frame_mismatch:", "px_capture_unavailable:"]}}},
+        {"name": "window_scope_not_found", "transport": "error", "exactKeys": ["code", "pid", "window_id", "suggestion"], "requiredKeys": ["code", "pid", "window_id", "suggestion"], "optionalKeys": [], "constraints": {"code": ["window_id_not_found"]}},
+        {"name": "window_scope_owner_mismatch", "transport": "error", "exactKeys": ["code", "pid", "window_id", "owner_pid", "owner_app_name", "suggestion"], "requiredKeys": ["code", "pid", "window_id", "owner_pid", "owner_app_name", "suggestion"], "optionalKeys": [], "constraints": {"code": ["window_owner_pid_mismatch"]}},
+        {"name": "window_state_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "observe_window", "target": {"window": "semantic selected window"}, "outcome": "observed|degraded|refused|indeterminate", "verification": {"status": "supported|indeterminate", "route": "fresh semantic observation"}, "nextStep": "bounded semantic action or re-observe"},
+      "ordinaryRoomSummary": {"operation": "observe_window", "target": {"window": "semantic selected window"}, "outcome": "observed|degraded|refused|indeterminate", "nextStep": "bounded semantic action or re-observe"}
+    },
+    {
+      "id": "press_key_window",
+      "providerOperation": "press_key",
+      "publicSemanticOperation": "send one explicit key gesture to the selected window only when exact-target delivery is admissible",
+      "publicSemanticTarget": "one semantic selected window and a named key gesture; no raw element or native target is model-visible",
+      "literalProviderRequest": {
+        "acceptedKeys": ["session", "pid", "key", "modifiers", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "scope", "delivery_mode"],
+        "schemaRequiredKeys": ["key"],
+        "runtimeRequirement": "window path requires pid; foreground delivery also requires window_id",
+        "source": "platform-macos/src/tools/press_key.rs::def, invoke"
+      },
+      "nautiloNarrowedRequest": {
+        "acceptedKeys": ["window", "key", "modifiers", "delivery"],
+        "requiredKeys": ["window", "key"],
+        "providerMapping": {"window": "adapter-resolved pid/window_id", "delivery": "background or explicit foreground policy"},
+        "excludedProviderKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "scope"],
+        "reason": "The routine exposes a reviewed semantic window/key action; token, pixel, session, and native delivery plumbing stay provider-private."
+      },
+      "successStructured": {
+        "requiredKeys": ["effect", "route"],
+        "optionalKeys": ["delivery", "evidence", "escalation"],
+        "providerActionBoundary": "cua-driver-core::tool::publish_action_result replaces the successful tool-local structured output with the public ActionResult. Background is PID-routed CGEvent; foreground briefly activates the exact window for HID delivery then restores focus. Both are mutations.",
+        "sessionAndScopePrerequisites": "Window scope requires pid. Exact background delivery requires fresh same-pid WindowServer/AX ownership, proven visibility and no competing same-pid keyboard destination. A supplied element must prove ancestry. Foreground requires window_id.",
+        "mutationReplayCancellation": "mutation; destructive:true and idempotent:false; no cancellation contract. Never replay after lost, cancelled, or otherwise indeterminate transport/native completion. A published ActionResult with effect:unverifiable requires a fresh semantic observation or verification before deciding any next action.",
+        "verificationRoute": "The public ActionResult's evidence is action-level evidence, not the routine's semantic postcondition. The adapter may use same-target AX value/selection evidence internally; otherwise effect:unverifiable is not delivery failure and requires fresh semantic observation before deciding the next action."
+      },
+      "toolLocalStructured": {
+        "requiredKeys": ["path", "verified", "effect"],
+        "optionalKeys": [],
+        "visibility": "internal only; publish_action_result does not expose this success payload through MCP/supervisor"
+      },
+      "closedFamilies": {
+        "refusalCodes": ["window_not_found", "owner_pid_mismatch", "off_space_or_ax_unresolved", "minimized_or_hidden_window", "same_pid_keyboard_ambiguity", "element_outside_target_window"],
+        "deliveryFailureCodes": ["delivery_failed"],
+        "indeterminateEffects": ["effect:unverifiable"],
+        "source": "press_key.rs::delivery_failed and action_record; cua-driver-core/src/background_input.rs::refusal_codes; tools/mod.rs::background_refusal_result"
+      },
+      "envelopeDescriptors": [
+        {"name": "window_background_confirmed", "transport": "success", "exactKeys": ["effect", "route", "delivery", "evidence"], "requiredKeys": ["effect", "route", "delivery", "evidence"], "optionalKeys": [], "constraints": {"effect": ["confirmed"], "route": ["synthetic_events"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": {"itemExactKeys": ["kind"], "exactly": ["value_readback"]}}},
+        {"name": "window_background_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["synthetic_events"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent"}},
+        {"name": "window_foreground_confirmed", "transport": "success", "exactKeys": ["effect", "route", "delivery", "evidence"], "requiredKeys": ["effect", "route", "delivery", "evidence"], "optionalKeys": [], "constraints": {"effect": ["confirmed"], "route": ["global_input"], "delivery": {"exactKeys": ["mode"], "mode": ["foreground"]}, "evidence": {"itemExactKeys": ["kind"], "exactly": ["value_readback"]}}},
+        {"name": "window_foreground_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["global_input"], "delivery": {"exactKeys": ["mode"], "mode": ["foreground"]}, "evidence": "absent"}},
+        {"name": "background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch", "off_space_or_ax_unresolved", "minimized_or_hidden_window", "same_pid_keyboard_ambiguity", "element_outside_target_window"], "reason": "nonempty provider-private string", "escalation": {"exactKeys": ["recommended", "reason"]}}},
+        {"name": "delivery_failed", "transport": "error", "exactKeys": ["code", "message"], "requiredKeys": ["code", "message"], "optionalKeys": [], "constraints": {"code": ["delivery_failed"], "message": "nonempty provider-private string"}},
+        {"name": "press_key_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "press_key", "target": {"window": "semantic selected window"}, "outcome": "confirmed|unverifiable|refused|failed", "verification": {"status": "confirmed|required", "route": "fresh semantic observation"}, "nextStep": "verify before retry when unverifiable"},
+      "ordinaryRoomSummary": {"operation": "press_key", "target": {"window": "semantic selected window"}, "outcome": "confirmed|unverifiable|refused|failed", "nextStep": "verify before retry when needed"}
+    },
+    {
+      "id": "press_key_desktop",
+      "providerOperation": "press_key",
+      "publicSemanticOperation": "send one explicit key gesture to the current desktop foreground only",
+      "publicSemanticTarget": "the foreground desktop, deliberately not a native process or window",
+      "literalProviderRequest": {
+        "acceptedKeys": ["session", "pid", "key", "modifiers", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "scope", "delivery_mode"],
+        "schemaRequiredKeys": ["key"],
+        "runtimeRequirement": "scope must be desktop and pid/window_id must both be absent",
+        "source": "platform-macos/src/tools/press_key.rs::def, invoke desktop branch; cua-driver-contract/src/inputs.rs::PressKeyInput"
+      },
+      "nautiloNarrowedRequest": {
+        "acceptedKeys": ["key", "modifiers"],
+        "requiredKeys": ["key"],
+        "providerMapping": {"key": "key", "modifiers": "modifiers"},
+        "excludedProviderKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "scope", "delivery_mode"],
+        "reason": "Desktop mode is intentionally only a foreground-desktop gesture; it cannot smuggle a process/window target or delivery policy."
+      },
+      "successStructured": {
+        "requiredKeys": ["effect", "route"],
+        "optionalKeys": ["delivery", "evidence", "escalation"],
+        "providerActionBoundary": "cua-driver-core::tool::publish_action_result replaces the successful tool-local structured output with the public ActionResult. The underlying action is a global HID key transition to the current frontmost desktop application.",
+        "sessionAndScopePrerequisites": "scope:desktop with no pid/window_id; session is optional and is not a target selector.",
+        "mutationReplayCancellation": "mutation; the provider advertises destructive:true/idempotent:false; no cancellation or replay safety is exposed. Never replay after lost, cancelled, or otherwise indeterminate transport/native completion.",
+        "verificationRoute": "The published ActionResult is action-level evidence, not a semantic postcondition. effect:unverifiable requires re-observing the intended user-visible result; never infer delivery from the native API return."
+      },
+      "toolLocalStructured": {
+        "requiredKeys": ["scope", "path", "effect"],
+        "optionalKeys": [],
+        "visibility": "internal only; publish_action_result does not expose this success payload through MCP/supervisor"
+      },
+      "closedFamilies": {
+        "refusalCodes": [],
+        "deliveryFailure": "desktop press_key failed/task failed is arbitrary native text, not a closed model-visible family",
+        "indeterminateEffects": ["effect:unverifiable"],
+        "source": "press_key.rs desktop branch"
+      },
+      "envelopeDescriptors": [
+        {"name": "desktop_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["global_input"], "delivery": {"exactKeys": ["mode"], "mode": ["not_applicable"]}, "evidence": "absent"}},
+        {"name": "press_key_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "press_key", "target": {"desktop": "foreground"}, "outcome": "unverifiable|failed", "verification": {"status": "required", "route": "fresh semantic observation"}, "nextStep": "verify before retry"},
+      "ordinaryRoomSummary": {"operation": "press_key", "target": {"desktop": "foreground"}, "outcome": "unverifiable|failed", "nextStep": "verify before retry"}
+    },
+    {
+      "id": "create_window_textedit",
+      "providerOperation": "invoke_menu plus bounded list_windows handoff",
+      "publicSemanticOperation": "create one TextEdit window from an already-authorized semantic app; File/New is host-composed and never model-addressable",
+      "publicSemanticTarget": "one authorized TextEdit app capability; only a unique appeared window returns a new opaque app/window context",
+      "literalProviderRequest": {"acceptedKeys": ["pid", "window_id", "path"], "schemaRequiredKeys": ["pid", "window_id", "path"], "runtimeRequirement": "literal path [File, New] against one measured AX-resolvable TextEdit window", "source": "platform-macos/src/tools/invoke_menu.rs::invoke"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["app"], "requiredKeys": ["app"], "providerMapping": {"app": "host-resolved Cua pid/window_id and literal File/New"}, "excludedProviderKeys": ["pid", "window_id", "path", "session"], "reason": "Menu topology, native identifiers and menu text remain host-private; Cua invoke_menu is not directly agent-exposed."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "providerActionBoundary": "Cua publishes an ActionResult with effect:unverifiable after native menu dispatch; it has no evidence field. Nautilo separately compares complete private pre/post native window-id sets.", "sessionAndScopePrerequisites": "Checked TextEdit app/PID/bundle authority, complete pre-set, one measured menu anchor, no Human-input epoch advance.", "mutationReplayCancellation": "one crossed menu boundary; never replay after dispatch. Post-set is bounded to 8,000ms, at most 12 list_windows reads and 150ms zero-delta intervals.", "verificationRoute": "Only exactly one appeared private native id yields a fresh dctx/datgt/dtgt and semantic completed/verified/changed result; zero, multiple or incomplete yields no authority."},
+      "closedFamilies": {"refusalCodes": ["menu_path_unavailable"], "postObservation": ["none_observed", "unique", "ambiguous", "incomplete"], "source": "invoke_menu.rs::menu_path_unavailable; CUA-LAB-0049 exact set-delta fixture"},
+      "envelopeDescriptors": [
+        {"name": "menu_action_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["accessibility"], "delivery": {"mode": ["foreground"]}, "evidence": "absent"}},
+        {"name": "menu_path_unavailable", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.code": ["menu_path_unavailable"]}},
+        {"name": "menu_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "create_window", "target": {"app": "semantic authorized app", "window": "fresh opaque appeared window only when unique"}, "outcome": "created|none_observed|ambiguous|incomplete|refused", "verification": {"status": "verified only for unique delta", "route": "bounded native-set handoff"}, "nextStep": "observe fresh window before acting"},
+      "ordinaryRoomSummary": {"operation": "create_window", "target": {"app": "semantic app", "window": "fresh window when unique"}, "outcome": "created|not_proven|refused", "nextStep": "observe fresh window"}
+    },
+    {
+      "id": "type_text_element_background",
+      "providerOperation": "type_text",
+      "publicSemanticOperation": "type exact text once into one freshly observed fresh-document text-area element",
+      "publicSemanticTarget": "one opaque detgt text-area capability; token and text remain provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["pid", "window_id", "element_token", "text", "delivery_mode"], "schemaRequiredKeys": ["text"], "runtimeRequirement": "fresh AXTextArea element_token with background delivery only", "source": "platform-macos/src/tools/type_text.rs::invoke; cua-driver-core/src/element_token.rs"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["element", "text"], "requiredKeys": ["element", "text"], "providerMapping": {"element": "one-shot host token", "delivery": "background only"}, "excludedProviderKeys": ["pid", "window_id", "element_token", "snapshot_id", "scope", "delivery_mode"], "reason": "A semantic element capability cannot expose native AX tokens or fall back to foreground HID input."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": ["evidence"], "providerActionBoundary": "Background AX element text mutation publishes its ActionResult.", "sessionAndScopePrerequisites": "Exactly one enabled AXTextArea in unique File/New fresh-document provenance, with a fresh single-use token. Omitted AXValue is not blank proof.", "mutationReplayCancellation": "mutation; claim token once and never replay after the provider boundary.", "verificationRoute": "A later fresh verify_state gives the semantic content proof; observed provider text is discarded."},
+      "closedFamilies": {"refusalCodes": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window", "stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"], "noForegroundFallback": true, "source": "type_text.rs; element_token.rs", "elementTokenRefusal": "source-proven pre-effect; consumed detgt is not replayed or re-armed"},
+      "envelopeDescriptors": [
+        {"name": "element_background_confirmed", "transport": "success", "exactKeys": ["effect", "route", "delivery", "evidence"], "requiredKeys": ["effect", "route", "delivery", "evidence"], "optionalKeys": [], "constraints": {"route": ["accessibility"], "delivery.mode": ["background"]}},
+        {"name": "element_token_refusal", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.exactKeys": ["code", "message"], "refusal.code": ["stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"]}},
+        {"name": "element_background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["element_outside_target_window"], "escalation": {"exactKeys": ["recommended", "reason"]}}}
+      ],
+      "compactProjection": {"operation": "type_text", "target": {"element": "fresh document text area"}, "outcome": "confirmed|unverifiable|refused|unknown", "verification": {"status": "required", "route": "verify_state"}, "nextStep": "verify exact state"},
+      "ordinaryRoomSummary": {"operation": "type_text", "target": {"element": "fresh document text area"}, "outcome": "delivered|not_proven|failed", "nextStep": "verify"}
+    },
+    {
+      "id": "set_value_element_background",
+      "providerOperation": "set_value",
+      "publicSemanticOperation": "set one exact semantic value once on one uniquely selected native or web accessibility control",
+      "publicSemanticTarget": "one opaque single-use detgt control capability; native token, prior value and requested value remain provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "value"], "schemaRequiredKeys": ["pid", "value"], "runtimeRequirement": "fresh element_token resolving to the exact pid/window; semantic AX route only", "source": "platform-macos/src/tools/set_value.rs::invoke; cua-driver-core/src/element_token.rs"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["element", "value"], "requiredKeys": ["element", "value"], "providerMapping": {"element": "one-shot host token for one exact role-selected control", "delivery": "background semantic AX only"}, "excludedProviderKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id"], "reason": "The model selects a bounded semantic role and opaque capability; it never receives or supplies native identity, snapshots or delivery controls."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": ["evidence"], "providerActionBoundary": "Cua replaces the tool-local AX result with its public ActionResult before the checked supervisor returns.", "sessionAndScopePrerequisites": "Exactly one enabled tokenized control of an admitted set-value role in one current exact window, with a fresh single-use token and unchanged Human-input epoch.", "mutationReplayCancellation": "Claim the one-shot detgt only at the checked provider-dispatch boundary. Confirmed is complete; unverifiable or suspected_noop fences replay and requires fresh semantic verification.", "verificationRoute": "Confirmed accessibility/background/value_readback is inline proof. Every other successful ActionResult requires bounded verify_state against the exact window; observed/requested values are discarded from receipts."},
+      "toolLocalStructured": {"requiredKeys": ["path", "verified", "effect"], "optionalKeys": ["escalation"], "visibility": "internal only; publish_action_result replaces it with the closed public ActionResult"},
+      "closedFamilies": {"refusalCodes": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window", "stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"], "indeterminateEffects": ["effect:unverifiable"], "noForegroundFallback": true, "source": "set_value.rs; element_token.rs; background_input.rs", "elementTokenRefusal": "source-proven pre-effect; the one-shot detgt is consumed and is never silently re-armed"},
+      "envelopeDescriptors": [
+        {"name": "set_value_confirmed", "transport": "success", "exactKeys": ["effect", "route", "delivery", "evidence"], "requiredKeys": ["effect", "route", "delivery", "evidence"], "optionalKeys": [], "constraints": {"effect": ["confirmed"], "route": ["accessibility"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": [{"kind": "value_readback"}]}},
+        {"name": "set_value_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery", "escalation"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": ["escalation"], "constraints": {"effect": ["unverifiable"], "route": ["accessibility"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent", "escalationWhenPresent": {"target": ["pixel"], "reason": ["effect_unconfirmed"]}}},
+        {"name": "set_value_element_token_refusal", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.exactKeys": ["code", "message"], "refusal.code": ["stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"]}},
+        {"name": "set_value_background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window"], "escalation": {"exactKeys": ["recommended", "reason"]}}},
+        {"name": "set_value_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "set_value", "target": {"element": "one exact semantic control role"}, "outcome": "confirmed|not_proven|refused|unknown", "verification": {"status": "inline only for value_readback; otherwise required", "route": "verify_state"}, "nextStep": "verify before any new action when not confirmed"},
+      "ordinaryRoomSummary": {"operation": "set_value", "target": {"element": "semantic control"}, "outcome": "changed|not_proven|failed", "nextStep": "verify when not proven"}
+    },
+    {
+      "id": "scroll_element_background",
+      "providerOperation": "scroll",
+      "publicSemanticOperation": "scroll one semantic text area unique among the checked returned projection up or down once",
+      "publicSemanticTarget": "one opaque single-use detgt text-area capability; its native token and private exact-window/selected-text-area frame signature remain provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "direction", "by", "amount", "x", "y", "scope", "delivery_mode"], "schemaRequiredKeys": ["direction"], "runtimeRequirement": "fresh AXTextArea element_token resolving to the exact pid/window; Nautilo admits Cua's vertical directions up and down, fixes amount 5 and background delivery, and omits by (Cua default); CUA-LAB-0037 captured the down request family", "source": "platform-macos/src/tools/scroll.rs::def, invoke; cua-driver-core/src/element_token.rs; CUA-LAB-0037"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["target", "direction"], "requiredKeys": ["target", "direction"], "selector": {"role": "text_area", "action": "scroll"}, "providerMapping": {"target": "one-shot host capability for one text area unique among the checked returned projection", "direction": ["up", "down"], "amount": 5, "delivery": "background only"}, "excludedProviderKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "by", "amount", "x", "y", "scope", "delivery_mode"], "reason": "The model selects one bounded semantic text area and one Cua-supported vertical direction. Native identity, private frame evidence, token, wheel granularity and delivery controls never cross the semantic boundary."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "providerActionBoundary": "Cua publishes an accessibility/background ActionResult that remains effect:unverifiable.", "sessionAndScopePrerequisites": "Exactly one not-explicitly-disabled tokenized AXTextArea and exactly one finite AXWindow frame in one closed, nondegraded checked exact-window response, unique among the checked returned projection, with a fresh single-use token and unchanged Human-input epoch. Cua privately checks the native AXTextArea parent during dispatch; Nautilo does not expose or target that parent.", "mutationReplayCancellation": "Claim the one-shot detgt only at the checked provider-dispatch boundary. A dispatched scroll is never replayed, including after cancellation, malformed output, provider failure, or Human interference.", "verificationRoute": "One new checked response after delivery must report one text area unique among its returned projection with changed selected-text-area geometry within an unchanged exact-window frame; private frames and fresh token are discarded."},
+      "toolLocalStructured": {"requiredKeys": ["path", "verified", "effect"], "optionalKeys": [], "visibility": "internal only; CUA-LAB-0037's checked supervisor projection is the closed public ActionResult."},
+      "closedFamilies": {"refusalCodes": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window", "off_space_or_ax_unresolved", "minimized_or_hidden_window", "stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target", "background_unavailable"], "indeterminateEffects": ["effect:unverifiable accessibility", "effect:unverifiable synthetic_events"], "noForegroundFallback": true, "source": "scroll.rs; element_token.rs; background_input.rs; CUA-LAB-0037", "elementTokenRefusal": "source-proven pre-effect; the one-shot detgt is consumed and must be selected again from fresh state", "backgroundRefusalBoundary": "window/owner/element/off-space/minimized background refusals may arise after AXScrollToVisible during pointer re-gating, so remain crossed unknown/no-replay; foreground advice is never followed. Only token resolver refusals and background_unavailable are source-unambiguous pre-effect"},
+      "envelopeDescriptors": [
+        {"name": "scroll_background_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["accessibility"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent"}},
+        {"name": "scroll_synthetic_background_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["synthetic_events"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent", "escalation": "absent", "outcome": "unknown_no_replay"}},
+        {"name": "scroll_element_token_refusal", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.exactKeys": ["code", "message"], "refusal.code": ["stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"]}},
+        {"name": "scroll_background_refusal_window_owner", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": [], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch"], "escalation": "absent", "outcome": "unknown_no_replay"}},
+        {"name": "scroll_background_refusal_element", "transport": "error", "exactKeys": ["code", "effect", "escalation", "pid", "reason", "window_id"], "requiredKeys": ["code", "effect", "escalation", "pid", "reason", "window_id"], "optionalKeys": [], "constraints": {"effect": ["refused"], "code": ["element_outside_target_window"], "escalation": {"exactKeys": ["recommended", "reason"], "recommended": ["get_window_state"]}, "outcome": "unknown_no_replay"}},
+        {"name": "scroll_background_refusal_off_space", "transport": "error", "exactKeys": ["code", "effect", "escalation", "pid", "reason", "window_id"], "requiredKeys": ["code", "effect", "escalation", "pid", "reason", "window_id"], "optionalKeys": [], "constraints": {"effect": ["refused"], "code": ["off_space_or_ax_unresolved"], "escalation": {"exactKeys": ["recommended", "reason"], "recommended": ["foreground"]}, "outcome": "unknown_no_replay"}},
+        {"name": "scroll_background_refusal_minimized", "transport": "error", "exactKeys": ["code", "effect", "escalation", "pid", "reason", "window_id"], "requiredKeys": ["code", "effect", "escalation", "pid", "reason", "window_id"], "optionalKeys": [], "constraints": {"effect": ["refused"], "code": ["minimized_or_hidden_window"], "escalation": {"exactKeys": ["recommended", "reason"], "recommended": ["accessibility"]}, "outcome": "unknown_no_replay"}},
+        {"name": "scroll_background_unavailable", "transport": "error", "exactKeys": ["code"], "requiredKeys": ["code"], "optionalKeys": [], "constraints": {"code": ["background_unavailable"], "outcome": "pre_effect_not_completed"}},
+        {"name": "scroll_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "scroll", "target": {"element": "one exact semantic text area"}, "outcome": "changed|not_proven|refused|unknown", "verification": {"status": "required reported selected-text-area geometry change within an unchanged exact-window frame", "route": "get_window_state"}, "nextStep": "observe again; never replay when not proven"},
+      "ordinaryRoomSummary": {"operation": "scroll", "target": {"element": "semantic text area"}, "outcome": "changed|not_proven|failed", "nextStep": "observe again when not proven"}
+    },
+    {
+      "id": "click_element_background",
+      "providerOperation": "click",
+      "publicSemanticOperation": "press one exact uniquely selected button or checkbox once through background accessibility",
+      "publicSemanticTarget": "one opaque single-use detgt control capability; label and native token remain provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "action", "button", "count", "modifier", "from_zoom", "debug_image_out", "delivery_mode", "scope"], "schemaRequiredKeys": [], "runtimeRequirement": "fresh element_token resolving to the exact pid/window, default AXPress action and background delivery", "source": "platform-macos/src/tools/click.rs::invoke; cua-driver-core/src/element_token.rs"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["element"], "requiredKeys": ["element"], "providerMapping": {"element": "one-shot host token for one exact role-selected button or checkbox", "action": "default press", "delivery": "background semantic AX only"}, "excludedProviderKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "action", "button", "count", "modifier", "from_zoom", "debug_image_out", "delivery_mode", "scope"], "reason": "The model selects a semantic role, optional exact request-only label and opaque capability; it never receives or supplies native identity, pixel controls, AX actions or delivery controls."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": ["evidence", "escalation"], "providerActionBoundary": "Cua replaces the private AXPress result with its public ActionResult before the checked supervisor returns.", "sessionAndScopePrerequisites": "Exactly one enabled tokenized AXButton or AXCheckBox matching the semantic selector in one current exact window, with a fresh single-use token and unchanged Human-input epoch.", "mutationReplayCancellation": "Claim the one-shot detgt only at the checked provider-dispatch boundary. Confirmed is complete; unverifiable or suspected_noop fences replay and requires fresh semantic verification.", "verificationRoute": "Confirmed accessibility/background/value_readback is inline proof for list-like selection. Every other dispatched ActionResult requires bounded verify_state against the exact window."},
+      "closedFamilies": {"refusalCodes": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window", "stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"], "indeterminateEffects": ["effect:unverifiable", "effect:suspected_noop"], "noForegroundFallback": true, "source": "click.rs; element_token.rs; background_input.rs", "elementTokenRefusal": "source-proven pre-effect; the one-shot detgt is consumed and must be selected again from fresh state"},
+      "envelopeDescriptors": [
+        {"name": "click_element_confirmed", "transport": "success", "exactKeys": ["effect", "route", "delivery", "evidence"], "requiredKeys": ["effect", "route", "delivery", "evidence"], "optionalKeys": [], "constraints": {"effect": ["confirmed"], "route": ["accessibility"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": [{"kind": "value_readback"}]}},
+        {"name": "click_element_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["accessibility"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent"}},
+        {"name": "click_element_suspected_noop", "transport": "success", "exactKeys": ["effect", "route", "delivery", "escalation"], "requiredKeys": ["effect", "route", "delivery", "escalation"], "optionalKeys": [], "constraints": {"effect": ["suspected_noop"], "route": ["accessibility"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent", "escalation": {"target": ["pixel"], "reason": ["suspected_noop"]}}},
+        {"name": "click_element_token_refusal", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.exactKeys": ["code", "message"], "refusal.code": ["stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"]}},
+        {"name": "click_element_background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window"], "escalation": {"exactKeys": ["recommended", "reason"]}}},
+        {"name": "click_element_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "click", "target": {"element": "one exact button or checkbox role"}, "outcome": "confirmed|not_proven|suspected_noop|refused|unknown", "verification": {"status": "inline only for value_readback; otherwise required", "route": "verify_state"}, "nextStep": "verify before any new action when not confirmed"},
+      "ordinaryRoomSummary": {"operation": "click", "target": {"element": "semantic button or checkbox"}, "outcome": "changed|not_proven|failed", "nextStep": "verify when not proven"}
+    },
+    {
+      "id": "right_click_element_background",
+      "providerOperation": "right_click",
+      "publicSemanticOperation": "request the context menu for one exact uniquely selected button or checkbox once",
+      "publicSemanticTarget": "one opaque single-use detgt control capability bound to right_click; label and native token remain provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "element_index", "element_token", "snapshot_id", "window_id", "x", "y", "modifier", "delivery_mode"], "schemaRequiredKeys": ["pid"], "runtimeRequirement": "fresh element_token resolving to the exact pid/window and background delivery; no x, y, modifier or foreground fallback", "source": "platform-macos/src/tools/right_click.rs::def, invoke; cua-driver-core/src/element_token.rs"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["element"], "requiredKeys": ["element"], "providerMapping": {"element": "one-shot host token selected with interaction right_click", "delivery": "background only"}, "excludedProviderKeys": ["session", "pid", "element_index", "element_token", "snapshot_id", "window_id", "x", "y", "modifier", "delivery_mode"], "reason": "The model binds the context-menu interaction while selecting one semantic control; it never receives or supplies native identity, coordinates, modifiers or delivery controls."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "providerActionBoundary": "Cua replaces the private AXShowMenu or pid-routed right-mouse result with its public ActionResult before the checked supervisor returns.", "sessionAndScopePrerequisites": "Exactly one enabled tokenized AXButton or AXCheckBox matching the selector in one current exact window, with interaction right_click, a fresh single-use token and unchanged Human-input epoch.", "mutationReplayCancellation": "Claim the detgt only at checked provider dispatch. The public ActionResult is unverifiable, so every crossed call is unknown completion, fences replay and requires fresh observation.", "verificationRoute": "A fresh bounded verify_state may prove an intended semantic postcondition such as one known AXMenuItem; the right_click receipt itself never proves the menu opened."},
+      "closedFamilies": {"refusalCodes": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window", "stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"], "indeterminateEffects": ["effect:unverifiable"], "noForegroundFallback": true, "source": "right_click.rs; action_record.rs; element_token.rs; background_input.rs", "elementTokenRefusal": "source-proven pre-effect; the one-shot detgt is consumed and must be selected again from fresh state"},
+      "envelopeDescriptors": [
+        {"name": "right_click_element_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["synthetic_events"], "delivery": {"exactKeys": ["mode"], "mode": ["unknown"]}, "evidence": "absent"}},
+        {"name": "right_click_element_token_refusal", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.exactKeys": ["code", "message"], "refusal.code": ["stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"]}},
+        {"name": "right_click_element_background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window"], "escalation": {"exactKeys": ["recommended", "reason"]}}},
+        {"name": "right_click_element_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "click", "target": {"element": "one exact button or checkbox role", "interaction": "right_click"}, "outcome": "unknown_completion|refused|unknown", "verification": {"status": "required", "route": "verify_state"}, "nextStep": "observe and verify; never replay"},
+      "ordinaryRoomSummary": {"operation": "click", "target": {"element": "semantic context-menu target"}, "outcome": "not_proven|failed", "nextStep": "observe and verify without replay"}
+    },
+    {
+      "id": "double_click_element_background",
+      "providerOperation": "double_click",
+      "publicSemanticOperation": "double-click one exact uniquely selected button once",
+      "publicSemanticTarget": "one opaque single-use detgt button capability bound to double_click; label and native token remain provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "x", "y", "window_id", "element_index", "element_token", "snapshot_id", "delivery_mode"], "schemaRequiredKeys": ["pid"], "runtimeRequirement": "fresh element_token resolving to the exact pid/window and background delivery; no x, y or foreground fallback", "source": "platform-macos/src/tools/double_click.rs::def, invoke; cua-driver-core/src/element_token.rs"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["element"], "requiredKeys": ["element"], "providerMapping": {"element": "one-shot host token for one exact button selected with interaction double_click", "delivery": "background only"}, "excludedProviderKeys": ["session", "pid", "x", "y", "window_id", "element_index", "element_token", "snapshot_id", "delivery_mode"], "reason": "The model binds one qualified double-click while selecting a semantic button; it never receives or supplies native identity, coordinates or delivery controls."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "providerActionBoundary": "Cua replaces the private AXOpen or routed double-pointer result with its public ActionResult before the checked supervisor returns.", "sessionAndScopePrerequisites": "Exactly one enabled tokenized AXButton matching the selector in one current exact window, with interaction double_click, a fresh single-use token and unchanged Human-input epoch.", "mutationReplayCancellation": "Claim the detgt only at checked provider dispatch. The public ActionResult is unverifiable, so every crossed call is unknown completion, fences replay and requires fresh observation.", "verificationRoute": "A fresh bounded verify_state may prove the intended application state; the double_click receipt itself never proves the activation landed."},
+      "closedFamilies": {"refusalCodes": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window", "stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"], "indeterminateEffects": ["effect:unverifiable"], "noForegroundFallback": true, "source": "double_click.rs; action_record.rs; element_token.rs; background_input.rs", "elementTokenRefusal": "source-proven pre-effect; the one-shot detgt is consumed and must be selected again from fresh state"},
+      "envelopeDescriptors": [
+        {"name": "double_click_element_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["synthetic_events"], "delivery": {"exactKeys": ["mode"], "mode": ["unknown"]}, "evidence": "absent"}},
+        {"name": "double_click_element_token_refusal", "transport": "error", "exactKeys": ["status", "refusal"], "requiredKeys": ["status", "refusal"], "optionalKeys": [], "constraints": {"status": ["refused"], "refusal.exactKeys": ["code", "message"], "refusal.code": ["stale_element_token", "generation_mismatch", "invalid_element_token", "conflicting_element_target"]}},
+        {"name": "double_click_element_background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch", "element_outside_target_window"], "escalation": {"exactKeys": ["recommended", "reason"]}}},
+        {"name": "double_click_element_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "click", "target": {"element": "one exact button role", "interaction": "double_click"}, "outcome": "unknown_completion|refused|unknown", "verification": {"status": "required", "route": "verify_state"}, "nextStep": "observe and verify; never replay"},
+      "ordinaryRoomSummary": {"operation": "click", "target": {"element": "semantic double-click target"}, "outcome": "not_proven|failed", "nextStep": "observe and verify without replay"}
+    },
+    {
+      "id": "click_window_snapshot_background",
+      "providerOperation": "click",
+      "publicSemanticOperation": "click once at one literal pixel selected from one exact fresh window screenshot",
+      "publicSemanticTarget": "one opaque single-use dsnap capability bound host-side to a private pid/window and exact PNG dimensions; image bytes remain vision-only",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "x", "y", "action", "button", "count", "modifier", "from_zoom", "debug_image_out", "delivery_mode", "scope"], "schemaRequiredKeys": [], "runtimeRequirement": "exact private pid/window_id, one in-frame literal window-screenshot pixel, default left click and background delivery", "source": "platform-macos/src/tools/click.rs::def, invoke; Cua macOS window-pixel contract; CUA-LAB-0077/0078"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["snapshot", "coordinateSpace", "x", "y"], "requiredKeys": ["snapshot", "coordinateSpace", "x", "y"], "providerMapping": {"snapshot": "host-resolved private pid/window_id and exact PNG dimensions", "coordinateSpace": "window_snapshot_pixels", "gesture": "one default background click"}, "excludedProviderKeys": ["session", "pid", "window_id", "element_index", "element_token", "snapshot_id", "action", "button", "count", "modifier", "from_zoom", "debug_image_out", "delivery_mode", "scope"], "reason": "The image itself advertises the literal coordinate frame. Genie chooses a point only from that image; native identity, input routing and every provider control remain host-owned."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "providerActionBoundary": "Cua publishes one background synthetic-events ActionResult after the exact pid/window-routed click.", "sessionAndScopePrerequisites": "Fresh exact window screenshot, matching private dimensions, one in-frame point and unchanged Human-input epoch immediately before dispatch.", "mutationReplayCancellation": "The snapshot context is fenced at checked provider dispatch. Successful delivery is returned as completed but not verified; provider failure or malformed output remains unknown completion and is never replayed.", "verificationRoute": "Re-observe the exact window and verify the intended visible state; the click receipt proves delivery only."},
+      "closedFamilies": {"refusalCodes": ["background_unavailable", "window_not_found", "owner_pid_mismatch", "off_space_or_ax_unresolved", "minimized_or_hidden_window"], "indeterminateEffects": ["effect:unverifiable"], "noForegroundFallback": true, "source": "click.rs; background_input.rs; action_record.rs; CUA-LAB-0077/0078"},
+      "envelopeDescriptors": [
+        {"name": "click_window_background_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["synthetic_events"], "delivery": {"exactKeys": ["mode"], "mode": ["background"]}, "evidence": "absent"}},
+        {"name": "click_window_background_unavailable", "transport": "error", "exactKeys": ["code"], "requiredKeys": ["code"], "optionalKeys": [], "constraints": {"code": ["background_unavailable"], "outcome": "not_delivered"}},
+        {"name": "click_window_background_refusal", "transport": "error", "exactKeys": ["code", "effect", "pid", "reason", "window_id", "escalation"], "requiredKeys": ["code", "effect", "pid", "reason", "window_id"], "optionalKeys": ["escalation"], "constraints": {"effect": ["refused"], "code": ["window_not_found", "owner_pid_mismatch", "off_space_or_ax_unresolved", "minimized_or_hidden_window"], "reason": "nonempty provider-private string", "escalation": {"exactKeys": ["recommended", "reason"]}}},
+        {"name": "click_window_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "click", "target": {"snapshot": "one exact fresh window image"}, "outcome": "delivered_unverified|not_started|unknown", "verification": {"status": "required", "route": "fresh window observation"}, "nextStep": "observe and verify; never replay"},
+      "ordinaryRoomSummary": {"operation": "click", "target": {"window": "semantic exact window"}, "outcome": "delivered|not_proven|failed", "nextStep": "observe and verify without replay"}
+    },
+    {
+      "id": "drag_drop_window_foreground",
+      "providerOperation": "drag",
+      "publicSemanticOperation": "drag once between two pixels selected from one exact fresh window screenshot",
+      "publicSemanticTarget": "one opaque single-use dsnap capability bound to a private pid/window and exact PNG dimensions; image bytes remain vision-only and provider-private",
+      "literalProviderRequest": {"acceptedKeys": ["session", "pid", "window_id", "from_x", "from_y", "to_x", "to_y", "duration_ms", "steps", "modifier", "button", "from_zoom", "scope", "delivery_mode"], "schemaRequiredKeys": ["from_x", "from_y", "to_x", "to_y"], "runtimeRequirement": "exact private pid/window_id, literal window-local screenshot pixels, duration_ms 700, steps 30, left button and foreground delivery", "source": "platform-macos/src/tools/drag.rs::def, invoke; CUA-LAB-0035 foreground drag-drop fixture"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["snapshot", "coordinateSpace", "from", "to"], "requiredKeys": ["snapshot", "coordinateSpace", "from", "to"], "providerMapping": {"snapshot": "host-resolved private pid/window_id and exact PNG dimensions", "coordinateSpace": "window_snapshot_pixels", "gesture": "fixed 700ms, 30 steps, left button, foreground delivery"}, "excludedProviderKeys": ["session", "pid", "window_id", "duration_ms", "steps", "modifier", "button", "from_zoom", "scope", "delivery_mode"], "reason": "CUA-LAB-0035 proved Retina logical-point coordinates can hit the wrong control. Genie selects only literal pixels from the matching window image; provider timing, input route and native identity remain host-owned."},
+      "successStructured": {"requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "providerActionBoundary": "Cua publishes the foreground global-input ActionResult after its mouseDown-drag-mouseUp sequence.", "sessionAndScopePrerequisites": "Fresh exact window screenshot, matching dimensions, in-frame from/to points and unchanged Human-input epoch immediately before dispatch.", "mutationReplayCancellation": "The snapshot context is fenced at checked provider dispatch. A crossed drag is never replayed because Cua cannot prove the intended application postcondition.", "verificationRoute": "Re-observe the exact window and verify the intended semantic state; the drag receipt proves delivery only."},
+      "closedFamilies": {"refusalCodes": ["background_unavailable"], "indeterminateEffects": ["effect:unverifiable"], "foregroundOnly": true, "source": "drag.rs; action_record.rs", "labCounterexample": "Logical-point coordinates (124,388)->(360,388) on a 2x screenshot toggled the wrong checkbox; qualified screenshot pixels were (248,776)->(720,776)."},
+      "envelopeDescriptors": [
+        {"name": "drag_foreground_unverifiable", "transport": "success", "exactKeys": ["effect", "route", "delivery"], "requiredKeys": ["effect", "route", "delivery"], "optionalKeys": [], "constraints": {"effect": ["unverifiable"], "route": ["global_input"], "delivery": {"exactKeys": ["mode"], "mode": ["foreground"]}, "evidence": "absent"}},
+        {"name": "drag_background_unavailable", "transport": "error", "exactKeys": ["code"], "requiredKeys": ["code"], "optionalKeys": [], "constraints": {"code": ["background_unavailable"], "content": "provider-private refusal text"}},
+        {"name": "drag_null_structured_error", "transport": "error", "structuredContent": "null", "exactKeys": [], "requiredKeys": [], "optionalKeys": [], "constraints": {"content": "arbitrary native/task/transport text; open and provider-private"}}
+      ],
+      "compactProjection": {"operation": "drag_drop", "target": {"snapshot": "one exact fresh window image"}, "outcome": "delivered_unverified|not_started|unknown", "verification": {"status": "required", "route": "fresh window observation"}, "nextStep": "observe and verify; never replay"},
+      "ordinaryRoomSummary": {"operation": "drag_drop", "target": {"window": "semantic exact window"}, "outcome": "not_proven|failed", "nextStep": "observe and verify without replay"}
+    },
+    {
+      "id": "verify_state_exact",
+      "providerOperation": "verify_state",
+      "publicSemanticOperation": "verify bounded semantic predicates after an exact target action",
+      "publicSemanticTarget": "one already-authorized semantic window; observed values never leave the adapter",
+      "literalProviderRequest": {"acceptedKeys": ["pid", "window_id", "expect", "timeout_ms", "stable_samples", "include_screenshot"], "schemaRequiredKeys": ["pid", "window_id", "expect"], "runtimeRequirement": "timeout_ms 2000, stable_samples 2, include_screenshot false", "source": "cua-driver-contract/src/verification.rs; cua-driver-core/src/expectation.rs"},
+      "nautiloNarrowedRequest": {"acceptedKeys": ["window", "expect"], "requiredKeys": ["window", "expect"], "providerMapping": {"window": "host-resolved native target", "stability": "fixed 2000ms/2 samples"}, "excludedProviderKeys": ["pid", "window_id", "timeout_ms", "stable_samples", "include_screenshot", "observed_json"], "reason": "Timing and provider readback content are contract-owned, not model parameters."},
+      "successStructured": {"requiredKeys": ["status", "stable", "elapsed_ms", "samples", "predicates"], "optionalKeys": [], "providerActionBoundary": "read-only bounded polling", "sessionAndScopePrerequisites": "fresh exact window preflight and unchanged Human-input epoch before and after read", "mutationReplayCancellation": "read-only; a new observation is required after cancellation or interrupted epoch", "verificationRoute": "satisfied requires stable true and samples >= 2; unsatisfied/unknown have stable false and discard observed_json."},
+      "closedFamilies": {"statuses": ["satisfied", "unsatisfied", "unknown"], "source": "verification.rs; expectation.rs"},
+      "envelopeDescriptors": [{"name": "verification_receipt", "transport": "success", "exactKeys": ["status", "stable", "elapsed_ms", "samples", "predicates"], "requiredKeys": ["status", "stable", "elapsed_ms", "samples", "predicates"], "optionalKeys": [], "constraints": {"satisfied": "stable true and samples >= 2", "other": "stable false; samples may exceed 2"}}],
+      "compactProjection": {"operation": "verify", "target": {"window": "semantic selected window"}, "outcome": "satisfied|unsatisfied|unknown", "verification": {"status": "closed", "route": "Cua bounded verification"}, "nextStep": "continue only when satisfied"},
+      "ordinaryRoomSummary": {"operation": "verify", "target": {"window": "semantic window"}, "outcome": "satisfied|not_satisfied|unknown", "nextStep": "continue or observe"}
+    }
+  ],
+  "openErrorBoundary": "Arbitrary native, task, AX, and transport error text is not closed or model-visible. Preserve it only in provider-private diagnostics; map it to the semantic outcome failed or indeterminate without teaching the model a fabricated finite error taxonomy."
+}

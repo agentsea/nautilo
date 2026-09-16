@@ -1,0 +1,83 @@
+# =============================================================================
+# Nautilo CLI setup template — EXAMPLE / REFERENCE FILE
+# =============================================================================
+#
+# This file is a discoverable copy of the canonical template at
+#   apps/cli/templates/nautilo-setup.quickstart.toml
+# which is also what `nautilo setup --print-template` emits at runtime.
+#
+# IMPORTANT — DO NOT use this file directly as your working setup.toml.
+# Working files contain admin passwords, claim-invite tokens, and provider
+# API keys. They MUST live OUTSIDE this repo (the .gitignore at the workspace
+# root blocks setup*.toml by pattern, but the safe convention is to keep the
+# working file under your instance dir):
+#
+#   nautilo setup --print-template > ~/.nautilo-<instance-id>/setup.toml
+#   chmod 600 ~/.nautilo-<instance-id>/setup.toml
+#   $EDITOR ~/.nautilo-<instance-id>/setup.toml
+#   nautilo setup --file ~/.nautilo-<instance-id>/setup.toml --delete-file
+#
+# Where raw secret VALUES live (operator machine): ~/.config/nautilo/secrets.env
+# (mode 0600). The TOML stays inert — use `{ fromEnv = "VAR" }` for passwords,
+# PINs, claim codes, and provider keys so nothing sensitive is stored in the
+# template file on disk.
+#
+# Precedence for server URL (see packages/api-client resolveCliServerUrl):
+#   CLI --server > template's serverUrl > NAUTILO_SERVER_URL > instance default
+#
+# Secrets support inline `{ value = "..." }` OR `{ fromEnv = "VAR" }`.
+# Prefer fromEnv so secrets never land on disk (see playbook operator-secrets.md).
+# =============================================================================
+
+schemaVersion = 1
+
+# Optional explicit server URL (must be loopback for `nautilo setup`).
+# serverUrl = "http://127.0.0.1:3001"
+
+[admin]
+# Lowercase handle, 3–30 chars: [a-z][a-z0-9_]{2,29}
+handle = "owner_handle"
+
+displayName = "Primary Owner"
+
+# Minimum 8 characters when inlined. Prefer fromEnv (values in ~/.config/nautilo/secrets.env):
+# This is your permanent owner password. Keep it in protected operator custody.
+password = { fromEnv = "NAUTILO_BOOTSTRAP_ADMIN_PASSWORD" }
+
+# Six–eight digit PIN for device-style recovery flows.
+pin = { fromEnv = "NAUTILO_BOOTSTRAP_PIN" }
+
+[claim]
+# Paste the claim invite token or URL fragment from infra bootstrap output.
+inviteCode = { fromEnv = "NAUTILO_CLAIM_INVITE" }
+
+# Provider registry keys must match ~/.nautilo-*/config.env variable names.
+[[providers]]
+key = "OPENAI_API_KEY"
+value = { fromEnv = "OPENAI_API_KEY" }
+
+# Optional: add more providers as needed for voice / search / alternate LLMs.
+# [[providers]]
+# key = "ELEVENLABS_API_KEY"
+# value = { fromEnv = "ELEVENLABS_API_KEY" }
+
+# -----------------------------------------------------------------------------
+# Genie defaults (Phase 12) — optional block
+# -----------------------------------------------------------------------------
+# mode = "skip" | "explicit" | "randomize"
+[genie]
+mode = "skip"
+
+# Example explicit mode:
+# [genie]
+# mode = "explicit"
+# name = "Astra"
+# voice = "openai:nova"
+# defaultModel = "openai:gpt-4o-mini"
+# personality = "Warm mentor tone; patient explanations."
+# avatar = { kind = "preset", presetId = "avatar-03" }
+
+# Example randomize (fleet):
+# [genie]
+# mode = "randomize"
+# seed = 42

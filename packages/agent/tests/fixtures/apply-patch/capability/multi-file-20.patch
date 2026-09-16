@@ -1,0 +1,82 @@
+*** Begin Patch
+*** Update File: src/feature/file-01.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-02.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-03.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-04.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-05.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-06.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-07.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-08.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-09.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-10.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-11.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-12.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-13.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-14.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-15.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-16.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-17.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-18.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-19.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** Update File: src/feature/file-20.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** End Patch

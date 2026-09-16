@@ -1,0 +1,93 @@
+import type { PathBuilder, AdjustmentSpec, AdjustmentHandle } from "../builder";
+import { insetAlongAxis } from "../handles";
+
+/**
+ * `mathEqual` — `=` glyph: two parallel horizontal bars centred on
+ * the frame.
+ *
+ * Adjustments (`MATH_EQUAL_ADJUSTMENTS`):
+ *   [0] barThickness — OOXML thousandths of `h`. Default 23520.
+ *   [1] gap          — OOXML thousandths of `h`, between the inner
+ *                      edges of the two bars. Default 11760.
+ *
+ * OOXML proportions: each bar spans only `73.49%` of the width, centred
+ * (`dx1 = w * 73490/200000`), so the bars run `[hc - dx1, hc + dx1]` —
+ * NOT the full width. Vertically the upper bar is `[y1, y2]` with
+ * `dy2 = h * gap/200000` (half-gap), `y2 = vc - dy2`, `y1 = y2 - bar`.
+ */
+export const MATH_EQUAL_ADJUSTMENTS: readonly AdjustmentSpec[] = [
+  { name: "Bar thickness", defaultValue: 23520, min: 0, max: 36745 },
+  { name: "Gap", defaultValue: 11760, min: 0, max: 100000 },
+];
+
+const pinFinite = (
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+) => Math.max(min, Math.min(max, Number.isFinite(value) ? value! : fallback));
+
+export function resolveMathEqualAdjustments(
+  adjustments?: number[],
+): [bar: number, gap: number] {
+  const bar = pinFinite(adjustments?.[0], 23520, 0, 36745);
+  const gap = pinFinite(adjustments?.[1], 11760, 0, 100000 - 2 * bar);
+  return [bar, gap];
+}
+
+export const buildMathEqual: PathBuilder = ({ w, h }, adjustments) => {
+  const [barAdj, gapAdj] = resolveMathEqualAdjustments(adjustments);
+  const bar = (barAdj / 100000) * h;
+  const gap = (gapAdj / 100000) * h;
+  const dx1 = (w * 73490) / 200000; // half bar-width (73.49% of w)
+  const hc = w / 2;
+  const cy = h / 2;
+  const path = new Path2D();
+  path.rect(hc - dx1, cy - gap / 2 - bar, dx1 * 2, bar);
+  path.rect(hc - dx1, cy + gap / 2, dx1 * 2, bar);
+  return path;
+};
+
+// Two handles on the upper bar:
+//  [0] bar thickness → top of upper bar (w/2, cy - gap/2 - bar)
+//  [1] gap           → bottom of upper bar (w/2, cy - gap/2)
+const ME_BAR_MIN = MATH_EQUAL_ADJUSTMENTS[0].min;
+const ME_BAR_DEF = MATH_EQUAL_ADJUSTMENTS[0].defaultValue;
+const ME_GAP_MIN = MATH_EQUAL_ADJUSTMENTS[1].min;
+const ME_GAP_DEF = MATH_EQUAL_ADJUSTMENTS[1].defaultValue;
+export const MATH_EQUAL_HANDLES: readonly AdjustmentHandle[] = [
+  {
+    position: ({ w, h }, adjustments) => {
+      const [barAdj, gapAdj] = resolveMathEqualAdjustments(adjustments);
+      const bar = (barAdj / 100000) * h;
+      const gap = (gapAdj / 100000) * h;
+      return { x: w / 2, y: insetAlongAxis(h / 2 - gap / 2 - bar, h) };
+    },
+    apply: ({ h }, start, pointer) => {
+      const y = Math.max(0, Math.min(h, pointer.y));
+      const [, gapAdj] = resolveMathEqualAdjustments(start);
+      const gap = (gapAdj / 100000) * h;
+      const bar = h / 2 - gap / 2 - y;
+      const raw = h > 0 ? Math.round((bar / h) * 100000) : 0;
+      const result = [...start];
+      result[0] = pinFinite(raw, ME_BAR_DEF, ME_BAR_MIN, 36745);
+      return result;
+    },
+  },
+  {
+    position: ({ w, h }, adjustments) => {
+      const [, gapAdj] = resolveMathEqualAdjustments(adjustments);
+      const gap = (gapAdj / 100000) * h;
+      return { x: w / 2, y: insetAlongAxis(h / 2 - gap / 2, h) };
+    },
+    apply: ({ h }, start, pointer) => {
+      const y = Math.max(0, Math.min(h, pointer.y));
+      const gap = h - 2 * y; // gap = h - 2y so 2y = h - gap → y = (h - gap)/2 → gap = h - 2y
+      const raw = h > 0 ? Math.round((gap / h) * 100000) : 0;
+      const result = [...start];
+      const [bar] = resolveMathEqualAdjustments(start);
+      result[1] = pinFinite(raw, ME_GAP_DEF, ME_GAP_MIN, 100000 - 2 * bar);
+      return result;
+    },
+  },
+];

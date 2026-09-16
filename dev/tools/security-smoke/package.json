@@ -1,0 +1,22 @@
+{
+  "name": "nautilo-security-smoke-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for driving the Nautilo security smoke harness (D063) via the local HTTP API",
+  "main": "index.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "bun-types": "1.3.11"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.15",
+    "body-parser": "2.3.0",
+    "hono": "4.12.34",
+    "qs": "6.15.3"
+  }
+}

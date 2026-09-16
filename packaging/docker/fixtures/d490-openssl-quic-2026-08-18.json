@@ -1,0 +1,17 @@
+{
+  "workflowRunId": 32134862040,
+  "sourceSha": "15cb25e97abb47edd47995fc09f6297d74287e2c",
+  "architectures": ["linux/amd64", "linux/arm64"],
+  "findingTuples": [
+    ["grype", "CVE-2026-14456", "libssl3t64", "3.5.6-1~deb13u2", "high"],
+    ["grype", "CVE-2026-14456", "openssl-provider-legacy", "3.5.6-1~deb13u2", "high"],
+    ["grype", "CVE-2026-14456", "openssl", "3.5.6-1~deb13u2", "high"],
+    ["trivy", "CVE-2026-14456", "libssl3t64", "3.5.6-1~deb13u2", "high"],
+    ["trivy", "CVE-2026-14456", "openssl-provider-legacy", "3.5.6-1~deb13u2", "high"],
+    ["trivy", "CVE-2026-14456", "openssl", "3.5.6-1~deb13u2", "high"]
+  ],
+  "convergedAdvisory": "CVE-2026-53615",
+  "convergedTupleCount": 9,
+  "debianAssessment": "minor-postponed",
+  "runtimeExposure": "no-openssl-quic-listener"
+}

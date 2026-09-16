@@ -1,0 +1,6 @@
+*** Begin Patch
+*** Update File: src/feature/file-01.ts
+@@
+-export const enabled = false;
++export const enabled = true;
+*** End Patch

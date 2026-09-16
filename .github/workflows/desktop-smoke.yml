@@ -1,0 +1,138 @@
+name: Desktop smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/desktop-smoke.yml"
+      - "apps/desktop/**"
+      - "packages/acp-host/**"
+      - "packages/api-client/**"
+      - "packages/catalog/**"
+      - "packages/claude-agent-sdk-host/**"
+      - "packages/codex-app-server/**"
+      - "packages/codex-app-server-host/**"
+      - "packages/computer-use-contracts/**"
+      - "packages/computer-use-host/**"
+      - "packages/computer-use-host-protocol/**"
+      - "packages/config/**"
+      - "packages/config-guard/**"
+      - "packages/db/**"
+      - "packages/desktop-filesystem-grants/**"
+      - "packages/document-mutations/**"
+      - "packages/first-party-apps/**"
+      - "packages/genie-customization-ui/**"
+      - "packages/generated-media-ui/**"
+      - "packages/instance-discovery/**"
+      - "packages/lattice-bridge/**"
+      - "packages/reflection/**"
+      - "packages/lattice-crypto/**"
+      - "packages/logger/**"
+      - "packages/mcp-client/**"
+      - "packages/model-capabilities/**"
+      - "packages/office-core/**"
+      - "packages/office-docs/**"
+      - "packages/profile-portability/**"
+      - "packages/relay/**"
+      - "packages/sandbox/**"
+      - "packages/security/**"
+      - "packages/trust/**"
+      - "packages/types/**"
+      - "packages/vault/**"
+      - "packages/voice-catalog-ui/**"
+      - "packages/workbench-components/**"
+      - "packages/workstation-profiles/**"
+      - "packages/writer-proposal-core/**"
+      - "dev/scripts/install-first-party-apps.ts"
+      - "package.json"
+      - "bun.lock"
+      - "turbo.json"
+      - "tsconfig.base.json"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.3.11"
+
+jobs:
+  desktop-smoke:
+    name: Desktop smoke (unpackaged boot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TURBO_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.id == github.event.repository.id) && github.actor != 'dependabot[bot]' && secrets.TURBO_TOKEN || '' }}
+      TURBO_TEAM: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.id == github.event.repository.id) && github.actor != 'dependabot[bot]' && vars.TURBO_TEAM || '' }}
+      TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+      TURBO_SCM_HEAD: HEAD
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+
+      - name: Ensure exact pull request base is available
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash dev/scripts/ensure-ci-base.sh "$BASE_SHA"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Restore Bun cache
+        id: bun-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Install first-party app dependencies
+        run: bun run first-party-apps:install
+
+      - name: Save Bun cache
+        if: always() && steps.bun-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+
+      # `--ignore-scripts` above skips Electron's binary download. Resolve
+      # its install script wherever Bun hoisted it and run it explicitly.
+      - name: Download Electron binary
+        run: |
+          set -e
+          ELECTRON_INSTALL="$(find . -path '*/node_modules/electron/install.js' -not -path '*/node_modules/.bin/*' -print -quit)"
+          if [ -z "$ELECTRON_INSTALL" ]; then
+            echo "electron install.js not found under any node_modules" >&2
+            exit 1
+          fi
+          echo "Running: node $ELECTRON_INSTALL"
+          node "$ELECTRON_INSTALL"
+
+      - name: Desktop integration tests
+        run: bun run --cwd apps/desktop test:integration
+
+      - name: Build workbench-components dist
+        run: bun run --cwd packages/workbench-components build
+
+      - name: Build electron main bundle
+        run: bun run --cwd apps/desktop build:electron
+
+      - name: Unpackaged boot smoke (xvfb)
+        env:
+          ELECTRON_DISABLE_SANDBOX: "1"
+        run: |
+          xvfb-run -a \
+            --server-args="-screen 0 1280x960x24" \
+            bun run --cwd apps/desktop smoke:unpackaged

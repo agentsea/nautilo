@@ -1,0 +1,36 @@
+# Nautilo Railway CLI provider setup. Fill in the quoted REPLACE values.
+# Recommended location: ~/.config/nautilo/providers.toml
+# Protect before use: chmod 600 ~/.config/nautilo/providers.toml
+
+schemaVersion = 1
+
+[providers]
+
+# Keep a copy in your password manager. Never upload or share the filled file.
+# Delete any enabled line you will not use. Do not leave empty values or
+# REPLACE placeholders on enabled lines. Each entry accepts exactly one of:
+#   { value = "literal-secret" }
+#   { fromEnv = "CANONICAL_ENVIRONMENT_VARIABLE" }
+
+openrouter = { value = "REPLACE_with_OpenRouter_key" }
+openai = { value = "REPLACE_with_OpenAI_key" }
+tavily = { value = "REPLACE_with_Tavily_key" }
+elevenlabs = { value = "REPLACE_with_ElevenLabs_key" }
+
+# Recommended extras: remove the leading # and replace the value.
+# cloudconvert = { value = "REPLACE_with_CloudConvert_key" }
+# venice = { value = "REPLACE_with_Venice_key" }
+# anthropic = { value = "REPLACE_with_Anthropic_key" }
+# browser-use = { value = "REPLACE_with_Browser_Use_key" }
+
+# Other supported services. Enable only the ones you intend to use.
+# google = { value = "REPLACE_with_Google_key" }
+# fireworks = { value = "REPLACE_with_Fireworks_key" }
+# groq = { value = "REPLACE_with_Groq_key" }
+# gateway = { value = "REPLACE_with_gateway_key" }
+# A custom gateway also needs its URL configured separately in Nautilo.
+# This file is not a Railway dashboard upload. Pass it to nautilo host adopt
+# with --provider-config, or to host plan/deploy with --all-providers.
+
+# Never add Railway credentials, owner credentials, URLs, image references, or
+# claim values. This file is provider-only.

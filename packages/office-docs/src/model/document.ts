@@ -1,0 +1,1088 @@
+import {
+  walkBlockArrays, walkBlocks } from './block-walk.js';
+import {
+  type Block,
+  type BlockCellInfo,
+  type BlockType,
+  type CellAddress,
+  type CellRange,
+  type CellStyle,
+  type DocPosition,
+  type DocRange,
+  type Document,
+  type HeadingLevel,
+  type Inline,
+  type InlineStyle,
+  type BlockStyle,
+  type SearchOptions,
+  type SearchMatch,
+  type TableCell,
+  createEmptyBlock,
+  createTableBlock,
+  createTableCell,
+  getCellText,
+  DEFAULT_BLOCK_STYLE,
+  DEFAULT_HEADER_MARGIN_FROM_EDGE,
+  getBlockText,
+  getBlockTextLength,
+  generateBlockId,
+  unlistedBlockType,
+} from './types.js';
+import { normalizeInlines } from '../store/block-helpers.js';
+import { MemDocStore } from '../store/memory.js';
+import type { DocStore } from '../store/store.js';
+import { blockStyleId, markAuthoredSpacing, resolveStyleInline } from './named-styles.js';
+import { visitCellRectangleSlices, visitRangeSlices } from './range-slices.js';
+
+/**
+ * The inline-style keys the B/I/U/S toggles write as plain booleans. Kept
+ * here rather than derived from `InlineStyle` because `pageNumber` is a
+ * boolean too and is structural, not character formatting.
+ */
+const BOOLEAN_INLINE_STYLE_KEYS = [
+  'bold',
+  'italic',
+  'underline',
+  'strikethrough',
+  'superscript',
+  'subscript',
+] as const;
+
+/**
+ * Does any run the range touches carry a hyperlink?
+ *
+ * A collapsed range touches the runs on both sides of the caret, since a
+ * caret sitting on a link boundary is about to write into either.
+ */
+function rangeCarriesLink(block: Block, from: number, to: number): boolean {
+  let pos = 0;
+  for (const inline of block.inlines) {
+    const end = pos + inline.text.length;
+    const touches = from === to ? pos <= from && end >= from : end > from && pos < to;
+    if (touches && inline.style.href !== undefined) return true;
+    pos = end;
+  }
+  return false;
+}
+
+/**
+ * The current editing context for header/footer routing.
+ */
+export type EditContext = 'body' | 'header' | 'footer';
+
+/**
+ * Recursively search `blocks` (and every nested table cell) for a block with
+ * `blockId`. Used as the parent-map-independent fallback in `findBlockInCells`.
+ */
+function walkCellsForBlock(blocks: Block[], blockId: string): Block | undefined {
+  for (const children of walkBlockArrays([blocks]) ) {
+      const found = children.find((block) => block.id === blockId);
+          if (found) return found;
+          }
+      return undefined;
+}
+
+/**
+ * Document manipulation logic.
+ *
+ * Delegates all mutations through a DocStore. Maintains a cached
+ * Document for reads, refreshed after each mutation.
+ */
+export class Doc {
+  private store: DocStore;
+  private _document: Document;
+  private _blockParentMap: Map<string, BlockCellInfo> = new Map();
+  editContext: EditContext = 'body';
+
+  constructor(store: DocStore) {
+    this.store = store;
+    this._document = this.store.getDocument();
+  }
+
+  get document(): Document {
+    return this._document;
+  }
+
+  setBlockParentMap(map: Map<string, BlockCellInfo>): void {
+    this._blockParentMap = map;
+  }
+
+  get blockParentMap(): Map<string, BlockCellInfo> {
+    return this._blockParentMap;
+  }
+
+  /**
+   * Refresh cached document from store.
+   */
+  refresh(): void {
+    this._document = this.store.getDocument();
+  }
+
+  /**
+   * Run `fn` as a single store undo unit (see `DocStore.batch`), keeping
+   * this cache consistent with what actually landed.
+   *
+   * The wrapper is not ceremony. `batch()` is the one place where a store
+   * write can be *un-done by the store itself*: `YorkieDocStore` runs the
+   * whole batch inside one `doc.update`, so a throw makes Yorkie discard the
+   * clone and nothing commits. The reads this class does during the batch —
+   * `dropStaleStyleOffAll` calls `refresh()` twice — would then leave
+   * `_document` holding never-committed state, and every later read
+   * (`getBlock`, layout, paint) would answer from it. Before the seam
+   * existed each write was its own `doc.update`, so partial writes really
+   * did land and the cache matched reality; now it would not.
+   *
+   * So on a throw, re-read before rethrowing. Callers that catch the error
+   * — and the editor's own error boundary, which does not — then see the
+   * document the store actually has. A store that keeps partial writes
+   * (`MemDocStore`) is served by the same refresh.
+   */
+  batch(fn: () => void): void {
+    try {
+      this.store.batch(fn);
+    } catch (err) {
+      this.refresh();
+      throw err;
+    }
+  }
+
+  /**
+   * Get blocks for the current editing context (body, header, or footer).
+   */
+  getContextBlocks(): Block[] {
+    if (this.editContext === 'header') return this._document.header?.blocks ?? [];
+    if (this.editContext === 'footer') return this._document.footer?.blocks ?? [];
+    return this._document.blocks;
+  }
+
+  /**
+   * Ensure a header region exists, creating one with an empty block if needed.
+   */
+  ensureHeader(): void {
+    if (!this._document.header) {
+      this.store.setHeader({
+        blocks: [createEmptyBlock()],
+        marginFromEdge: DEFAULT_HEADER_MARGIN_FROM_EDGE,
+      });
+      this.refresh();
+    }
+  }
+
+  /**
+   * Ensure a footer region exists, creating one with an empty block if needed.
+   */
+  ensureFooter(): void {
+    if (!this._document.footer) {
+      this.store.setFooter({
+        blocks: [createEmptyBlock()],
+        marginFromEdge: DEFAULT_HEADER_MARGIN_FROM_EDGE,
+      });
+      this.refresh();
+    }
+  }
+
+  /**
+   * Create a new Doc with a single empty paragraph.
+   */
+  static create(): Doc {
+    const store = new MemDocStore();
+    store.setDocument({ blocks: [createEmptyBlock()] });
+    return new Doc(store);
+  }
+
+  /**
+   * Find a block by ID. Throws if not found.
+   */
+  getBlock(blockId: string): Block {
+    const block = this._document.blocks.find((b) => b.id === blockId);
+    if (block) return block;
+
+    // Search header/footer blocks
+    const hBlock = this._document.header?.blocks.find((b) => b.id === blockId);
+    if (hBlock) return hBlock;
+    const fBlock = this._document.footer?.blocks.find((b) => b.id === blockId);
+    if (fBlock) return fBlock;
+
+    const cellBlock = this.findBlockInCells(blockId);
+    if (cellBlock) return cellBlock;
+
+    throw new Error(`Block not found: ${blockId}`);
+  }
+
+  /**
+   * Find a block by ID, returning undefined if not found (non-throwing variant of getBlock).
+   */
+  findBlock(blockId: string): Block | undefined {
+    const block = this._document.blocks.find((b) => b.id === blockId);
+    if (block) return block;
+
+    const hBlock = this._document.header?.blocks.find((b) => b.id === blockId);
+    if (hBlock) return hBlock;
+    const fBlock = this._document.footer?.blocks.find((b) => b.id === blockId);
+    if (fBlock) return fBlock;
+
+    return this.findBlockInCells(blockId);
+  }
+
+  /**
+   * Recursively search for a block inside table cells using the BlockParentMap chain.
+   * Handles nested tables where the parent table is itself inside another table cell.
+   */
+  private findBlockInCells(blockId: string): Block | undefined {
+    // Fast path: the parent map (populated at layout time) locates the cell
+    // directly, so getBlock stays cheap for blocks that existed at the last
+    // layout.
+    const path: Array<{ id: string; info: BlockCellInfo }> = [];
+    const visited = new Set<string>();
+    let id = blockId;
+    while (this._blockParentMap.has(id) && !visited.has(id)) {
+      visited.add(id);
+      const info = this._blockParentMap.get(id)!;
+      path.push({ id, info });
+      id = info.tableBlockId;
+    }
+    let found = this._document.blocks.find((block) => block.id === id)
+      ?? this._document.header?.blocks.find((block) => block.id === id)
+      ?? this._document.footer?.blocks.find((block) => block.id === id);
+    while (found && path.length > 0) {
+      const step = path.pop()!;
+      found = found.tableData?.rows[step.info.rowIndex]?.cells[step.info.colIndex]
+        ?.blocks.find((block) => block.id === step.id);
+    }
+    if (found?.id === blockId) return found;
+
+    // Fallback: a full iterative walk. The parent map is only rebuilt on
+    // layout, so a block created since the last layout — e.g. the tail block a
+    // paste splits out inside a cell — isn't in it yet; walk the tables so
+    // getBlock never spuriously throws for a real cell block.
+    return walkCellsForBlock(this._document.blocks, blockId)
+      ?? walkCellsForBlock(this._document.header?.blocks ?? [], blockId)
+      ?? walkCellsForBlock(this._document.footer?.blocks ?? [], blockId);
+  }
+
+  /**
+   * Find block index by ID within the current context. Returns -1 if not found.
+   */
+  getBlockIndex(blockId: string): number {
+    return this.getContextBlocks().findIndex((b) => b.id === blockId);
+  }
+
+  /**
+   * Find the parent table block for a cell-internal block.
+   * Returns undefined if the block is not inside a table cell.
+   */
+  getParentTableBlock(blockId: string): Block | undefined {
+    const cellInfo = this._blockParentMap.get(blockId);
+    if (!cellInfo) return undefined;
+    return this.findBlock(cellInfo.tableBlockId);
+  }
+
+  /**
+   * Insert text at a document position.
+   */
+  insertText(pos: DocPosition, text: string): void {
+    this.store.insertText(pos.blockId, pos.offset, text);
+    this.refresh();
+  }
+
+  /**
+   * Insert an image inline at the given offset within a block.
+   * The image inline uses \uFFFC as its text character.
+   */
+  insertImageInline(blockId: string, offset: number, imageInline: Inline): void {
+    this.store.insertImageInline(blockId, offset, imageInline);
+    this.refresh();
+  }
+
+  /**
+   * Delete `length` characters forward from position.
+   */
+  deleteText(pos: DocPosition, length: number): void {
+    this.store.deleteText(pos.blockId, pos.offset, length);
+    this.refresh();
+  }
+
+  /**
+   * Backspace: delete one character before position, or merge with
+   * previous block if at the start of a block.
+   * Returns the new cursor position after deletion.
+   */
+  deleteBackward(pos: DocPosition): DocPosition {
+    if (pos.offset > 0) {
+      const newPos = { blockId: pos.blockId, offset: pos.offset - 1 };
+      this.deleteText(newPos, 1);
+      return newPos;
+    }
+
+    const curBlock = this.getBlock(pos.blockId);
+    if (curBlock.type === 'list-item' && getBlockTextLength(curBlock) === 0) {
+      // Same exit as the toolbar toggle: a bulleted heading returns to its
+      // heading, everything else to a paragraph.
+      const exit = unlistedBlockType(curBlock);
+      this.setBlockType(pos.blockId, exit.type, exit.opts);
+      return pos;
+    }
+
+    // At start of block — merge with previous
+    const blocks = this.getContextBlocks();
+    const blockIndex = this.getBlockIndex(pos.blockId);
+    if (blockIndex <= 0) return pos;
+
+    const prevBlock = blocks[blockIndex - 1];
+    const currentBlock = blocks[blockIndex];
+
+    // Cannot merge into a non-text block (e.g., horizontal-rule, page-break)
+    if (prevBlock.type === 'horizontal-rule' || prevBlock.type === 'page-break') {
+      // Delete the HR or page-break instead
+      this.store.deleteBlock(prevBlock.id);
+      this.refresh();
+      return pos;
+    }
+
+    const prevLength = getBlockTextLength(prevBlock);
+    this.mergeBlocks(prevBlock.id, currentBlock.id);
+    return { blockId: prevBlock.id, offset: prevLength };
+  }
+
+  /**
+   * Split a block at the given offset (Enter key).
+   * Returns the ID of the newly created block.
+   */
+  splitBlock(blockId: string, offset: number): string {
+    const block = this.getBlock(blockId);
+    const blockText = getBlockText(block);
+
+    // Empty list-item: exit the list, restoring the heading it was bulleted
+    // from (`unlistedBlockType`) so Enter matches Backspace and the toggle.
+    if (block.type === 'list-item' && blockText.length === 0) {
+      const exit = unlistedBlockType(block);
+      this.setBlockType(blockId, exit.type, exit.opts);
+      return blockId;
+    }
+
+    // Horizontal rules and page-breaks should not be split — create paragraph after
+    if (block.type === 'horizontal-rule' || block.type === 'page-break') {
+      const newBlock: Block = {
+        id: generateBlockId(),
+        type: 'paragraph',
+        inlines: [{ text: '', style: {} }],
+        style: { ...DEFAULT_BLOCK_STYLE },
+      };
+      const cellInfo = this._blockParentMap.get(blockId);
+      if (cellInfo) {
+        this.store.insertBlockAfter(blockId, newBlock);
+      } else {
+        const blockIndex = this.getBlockIndex(blockId);
+        this.store.insertBlock(blockIndex + 1, newBlock);
+      }
+      this.refresh();
+      return newBlock.id;
+    }
+
+    // Determine new block type
+    let newType: BlockType = 'paragraph';
+    if (block.type === 'list-item') {
+      newType = 'list-item';
+    } else if (
+      (block.type === 'title' || block.type === 'subtitle' || block.type === 'heading') &&
+      offset < blockText.length
+    ) {
+      newType = block.type;
+    }
+
+    const newBlockId = generateBlockId();
+    this.store.splitBlock(blockId, offset, newBlockId, newType);
+    this.refresh();
+    return newBlockId;
+  }
+
+  /**
+   * Merge two adjacent blocks. The second block is removed.
+   *
+   * Deliberately *not* swept for stale style-off flags. Backspace at the
+   * start of a Heading 6 does land its `italic: false` in a paragraph that
+   * supplies no italic, so the flag goes dead — but the sweep costs a second
+   * `store.applyStyles`, and under `YorkieDocStore` (where `snapshot()` is a
+   * no-op and undo granularity is per `doc.update()`) that turned one
+   * Backspace into two Cmd+Z on the hottest editing path there is, the first
+   * of which looks like it did nothing.
+   *
+   * `DocStore.batch()` now exists and would fold the two writes into one
+   * undo unit, so this is unblocked — but wiring it here is its own change
+   * (the merge path is the hottest one in the editor and needs its own
+   * tests). Until then the behaviour below is what the tests pin.
+   */
+  mergeBlocks(blockId: string, nextBlockId: string): void {
+    this.store.mergeBlock(blockId, nextBlockId);
+    this.refresh();
+  }
+
+  /**
+   * Apply inline style to every block slice the range covers.
+   *
+   * The dispatch — same block, cross-block inside one cell, top-level with
+   * cell endpoints normalized to their parent table — lives in
+   * `visitRangeSlices`, which the *reads* (`visitStyledRunsInRange`, and
+   * through it the style summary and the B/I/U/S toggles) drive too. Keeping
+   * one traversal is what guarantees a toggle decides add-vs-remove from the
+   * runs it is about to write (issue #715).
+   *
+   * A `range.tableCellRange` is ignored here, as it always was: the editors
+   * route a cell rectangle to `applyStyleToCellRange` above this call.
+   */
+  applyInlineStyle(range: DocRange, style: Partial<InlineStyle>): void {
+    visitRangeSlices(this, range, (blockId, from, to) => {
+      this.store.applyStyle(blockId, from, to, this.styleOffAsClear(blockId, from, to, style));
+    });
+    this.refresh();
+  }
+
+  /**
+   * Rewrite a boolean inline key that the caller turned *off* from an explicit
+   * `false` into `undefined`, i.e. "remove the key" — the convention
+   * `CLEAR_INLINE_STYLE` already uses and the Yorkie store already honours.
+   *
+   * A stored `false` is a dead flag: `inlineStylesEqual` compares strictly, so
+   * `false !== undefined` and `normalizeInlines` can never re-merge the run
+   * with the identical-looking neighbour it was split from. Worse, style
+   * resolution layers named-style defaults *underneath* the run style, so the
+   * dead flag also pins the run against a style later redefined to set it —
+   * the lazy-cascade hazard `getSelectionStyleImpl` documents (issue #749).
+   *
+   * The exception is every case where `false` carries information — where
+   * some layer *under* the run style supplies the key, so clearing it would
+   * leave the run styled and the toggle-off would be a visual no-op. There
+   * are two such layers, and both are checked here:
+   *
+   * 1. The block's named style (Heading 6 is italic).
+   * 2. The hyperlink default: `renderRun` underlines an `href` run unless
+   *    `style.underline` is explicitly set (`view/paint-layout.ts`), so an
+   *    absent `underline` on a link means *underlined*.
+   *
+   * Keeping the whole slice's `underline: false` when *any* run in it is a
+   * link is deliberate: a slice is written as one patch, and a dead flag on
+   * the plain runs beside a link is strictly better than an untogglable
+   * underline on the link.
+   */
+  private styleOffAsClear(
+    blockId: string,
+    from: number,
+    to: number,
+    style: Partial<InlineStyle>,
+  ): Partial<InlineStyle> {
+    let block: Block | undefined;
+    let looked = false;
+    let defaults: Partial<InlineStyle> | undefined;
+    let cleared: Partial<InlineStyle> | undefined;
+    for (const key of BOOLEAN_INLINE_STYLE_KEYS) {
+      if (style[key] !== false) continue;
+      if (!looked) {
+        block = this.findBlock(blockId);
+        looked = true;
+      }
+      if (!defaults) {
+        defaults = block
+          ? resolveStyleInline(blockStyleId(block), this._document.styles)
+          : {};
+      }
+      if (defaults[key]) continue;
+      if (key === 'underline' && block && rangeCarriesLink(block, from, to)) continue;
+      cleared = cleared ?? { ...style };
+      cleared[key] = undefined;
+    }
+    return cleared ?? style;
+  }
+
+  /**
+   * Drop a boolean `false` that `styleOffAsClear` kept as a named-style
+   * override but whose named style no longer supplies the key.
+   *
+   * Called after a block-type change: the `italic: false` a Heading 6 run
+   * legitimately stored becomes a dead flag the moment the block turns into a
+   * paragraph, which is the very #749 hazard the clear-on-toggle-off rule
+   * exists to remove. The link-underline override is left alone — its
+   * defaulting layer is the run's own `href`, not the block's style, so a
+   * block-type change cannot strand it.
+   *
+   * Returns whether anything was written, so the caller can skip a second
+   * store read when there was nothing stale.
+   */
+  private dropStaleStyleOff(blockId: string): boolean {
+    const block = this.findBlock(blockId);
+    if (!block) return false;
+    return this.writeStaleStyleOffEdits(this.collectStaleStyleOff([block]));
+  }
+
+  /**
+   * The same cleanup over every block in the document — body, header, footer
+   * and every (possibly nested) table cell.
+   *
+   * A block-type change is not the only way a run's named-style layer stops
+   * supplying the key it stored a `false` against: redefining, resetting, or
+   * wholesale-replacing the document's styles moves the layer *under* an
+   * untouched run. Every such entry point (`setDocStyles`,
+   * `updateStyleToMatch`, `resetNamedStyle`, `resetAllNamedStyles`) must call
+   * this, or the overrides `styleOffAsClear` deliberately keeps become exactly
+   * the dead flags issue #749 is about. They all route through
+   * `withNamedStyleChange` in `view/editor.ts`, which does exactly that.
+   *
+   * All edits go out as one `applyStyles` batch, so this is one store write
+   * however many runs it strands — and `withNamedStyleChange` wraps it and
+   * the registry write in one `DocStore.batch()`, so the whole redefinition
+   * is one undo unit.
+   *
+   * Self-refreshing on both ends — it must decide from the *new* style table,
+   * and leaves the cached document current — so any caller can invoke it right
+   * after its own store write without bookkeeping.
+   */
+  dropStaleStyleOffAll(): boolean {
+    this.refresh();
+    const blocks: Block[] = [];
+    for (const list of walkBlockArrays([
+      this._document.blocks, this._document.header?.blocks ?? [], this._document.footer?.blocks ?? [],
+    ])) {
+      for (const block of list) blocks.push(block);
+    }
+    if (!this.writeStaleStyleOffEdits(this.collectStaleStyleOff(blocks))) return false;
+    this.refresh();
+    return true;
+  }
+
+  /**
+   * Per-run patches that drop a `false` no layer under the run supplies any
+   * more. Style-only writes never change the text, so the block-level offsets
+   * collected here stay valid for every edit in the batch.
+   */
+  private collectStaleStyleOff(
+    blocks: Block[],
+  ): Array<{ blockId: string; fromOffset: number; toOffset: number; style: Partial<InlineStyle> }> {
+    const edits: Array<{
+      blockId: string;
+      fromOffset: number;
+      toOffset: number;
+      style: Partial<InlineStyle>;
+    }> = [];
+    for (const block of blocks) {
+      const defaults = resolveStyleInline(blockStyleId(block), this._document.styles);
+      let pos = 0;
+      for (const inline of block.inlines) {
+        const end = pos + inline.text.length;
+        let patch: Partial<InlineStyle> | undefined;
+        for (const key of BOOLEAN_INLINE_STYLE_KEYS) {
+          if (inline.style[key] !== false) continue;
+          if (defaults[key]) continue;
+          if (key === 'underline' && inline.style.href !== undefined) continue;
+          patch = patch ?? {};
+          patch[key] = undefined;
+        }
+        if (patch && end > pos) {
+          edits.push({ blockId: block.id, fromOffset: pos, toOffset: end, style: patch });
+        }
+        pos = end;
+      }
+    }
+    return edits;
+  }
+
+  /**
+   * Write the collected patches as a single undo unit. `applyStyles` rather
+   * than a loop of `applyStyle`: the store contract ties undo granularity to
+   * the write, so a loop would split one user action (a block-type change, a
+   * style redefinition) into one undo step per run it cleaned up.
+   */
+  private writeStaleStyleOffEdits(
+    edits: Array<{ blockId: string; fromOffset: number; toOffset: number; style: Partial<InlineStyle> }>,
+  ): boolean {
+    if (edits.length === 0) return false;
+    this.store.applyStyles(edits);
+    return true;
+  }
+
+  /**
+   * Apply inline style to every block of every cell in a cell rectangle.
+   *
+   * Shares `visitCellRectangleSlices` with the summary read, so the toolbar's
+   * verdict for a cell-rectangle selection describes the cells this writes.
+   */
+  applyInlineStyleToCells(
+    cellRange: { blockId: string; start: CellAddress; end: CellAddress },
+    style: Partial<InlineStyle>,
+  ): void {
+    visitCellRectangleSlices(this, cellRange, (blockId, from, to) => {
+      this.store.applyStyle(blockId, from, to, this.styleOffAsClear(blockId, from, to, style));
+    });
+    this.refresh();
+  }
+
+  /**
+   * Apply block-level style to a paragraph.
+   *
+   * Every interactive block-style write funnels through here — the toolbar's
+   * line-spacing picker and alignment buttons, `indent`/`outdent`, the slides
+   * text-box editor — so this is where a patch is stamped with the
+   * authored-spacing markers it implies (`markAuthoredSpacing`). Doing it here
+   * rather than in each control is deliberate: a per-control marker is one the
+   * next control can forget, and forgetting silently returns the field to
+   * "inherit from the named style", which is the bug the marker exists to fix
+   * (picking 1.5 on a Heading 1 used to be a no-op).
+   *
+   * Patches with no spacing field in them — alignment, `marginLeft` from
+   * indent/outdent — are passed through untouched and claim nothing.
+   */
+  applyBlockStyle(blockId: string, style: Partial<BlockStyle>): void {
+    this.store.applyBlockStyle(blockId, markAuthoredSpacing(style));
+    this.refresh();
+  }
+
+  /**
+   * Change the block type, setting type-specific fields and clearing stale ones.
+   */
+  setBlockType(
+    blockId: string,
+    type: BlockType,
+    opts?: {
+      headingLevel?: HeadingLevel;
+      listKind?: 'ordered' | 'unordered';
+      listLevel?: number;
+    },
+  ): void {
+    this.store.setBlockType(blockId, type, opts);
+    // Refresh before the cleanup: it decides from the block's *new* style id,
+    // which only becomes visible once the store read is re-taken. Refreshed
+    // again only when it actually wrote, so the common case stays one read.
+    this.refresh();
+    if (this.dropStaleStyleOff(blockId)) this.refresh();
+  }
+
+  /**
+   * Delete a block by ID.
+   */
+  deleteBlock(blockId: string): void {
+    this.store.deleteBlock(blockId);
+    this.refresh();
+  }
+
+  /**
+   * Delete a block by index.
+   */
+  deleteBlockByIndex(index: number): void {
+    this.store.deleteBlockByIndex(index);
+    this.refresh();
+  }
+
+  /**
+   * Update a block directly (e.g. after modifying its inlines externally).
+   */
+  updateBlockDirect(blockId: string, block: Block): void {
+    this.store.updateBlock(blockId, block);
+    this.refresh();
+  }
+
+  /**
+   * Insert a block at a specific index.
+   */
+  insertBlockAt(index: number, block: Block): void {
+    this.store.insertBlock(index, block);
+    this.refresh();
+  }
+
+  /**
+   * Insert `block` immediately after the sibling identified by
+   * `siblingBlockId`, wherever that sibling lives — top-level body, header,
+   * footer, or inside a table cell. Region/cell-aware (the store resolves the
+   * sibling's containing array), unlike `insertBlockAt`, which is body-index
+   * based. Used by paste so a table dropped inside a cell nests into it.
+   */
+  insertBlockAfter(siblingBlockId: string, block: Block): void {
+    this.store.insertBlockAfter(siblingBlockId, block);
+    this.refresh();
+  }
+
+  /**
+   * Insert several blocks after the sibling, in order, as one store write.
+   * The multi-block paste path: looping `insertBlockAfter()` costs a full
+   * `refresh()` (a whole-document read) *and* a separate store write per
+   * block, which on `YorkieDocStore` is also one CRDT change and one undo
+   * unit each. Here both happen once for the batch.
+   */
+  insertBlocksAfter(siblingBlockId: string, blocks: Block[]): void {
+    if (blocks.length === 0) return;
+    this.store.insertBlocksAfter(siblingBlockId, blocks);
+    this.refresh();
+  }
+
+  /**
+   * Search for text matches across all blocks.
+   * Returns matches with block ID and character offsets.
+   */
+  searchText(query: string, options?: SearchOptions): SearchMatch[] {
+    if (!query) return [];
+    const matches: SearchMatch[] = [];
+    const flags = options?.caseSensitive ? 'g' : 'gi';
+    let pattern: RegExp;
+    try {
+      pattern = options?.useRegex
+        ? new RegExp(query, flags)
+        : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+    } catch {
+      return [];
+    }
+
+    for (const block of walkBlocks(this._document.blocks) ) {
+      if (block.type === 'table' ) continue; const text = getBlockText(block);
+              pattern.lastIndex = 0;
+              let match: RegExpExecArray | null;
+              while ((match = pattern.exec(text)) !== null) {
+                if (match[0].length === 0) {
+                  pattern.lastIndex++;
+                  continue;
+                }
+                matches.push({
+                  blockId: block.id,
+            startOffset: match.index,
+            endOffset: match.index + match[0].length,
+          });
+        }
+      }
+    return matches;
+  }
+
+  // --- Table methods ---
+
+  /**
+   * Insert a table block at the given block index.
+   * Returns the new block's ID.
+   */
+  insertTable(blockIndex: number, rows: number, cols: number): string {
+    const block = createTableBlock(rows, cols);
+    this.store.insertBlock(blockIndex, block);
+    this.refresh();
+    return block.id;
+  }
+
+  /**
+   * Insert a table block into the cell containing `blockId`.
+   * The new table is inserted after the block at `blockId`.
+   * Returns the new table block (not just the ID) so callers can access
+   * its tableData without a getBlock() lookup — the BlockParentMap has
+   * not been rebuilt yet at this point.
+   */
+  insertTableInCell(blockId: string, rows: number, cols: number): Block {
+    const cellInfo = this._blockParentMap.get(blockId);
+    if (!cellInfo) {
+      throw new Error(`Block ${blockId} is not inside a table cell`);
+    }
+
+    const newTable = createTableBlock(rows, cols);
+    this.store.insertBlockAfter(blockId, newTable);
+    this.refresh();
+    return newTable;
+  }
+
+  /**
+   * Delete a nested table from its parent cell.
+   * Ensures the cell retains at least one empty block.
+   * Returns the ID of the block the cursor should move to.
+   */
+  deleteTableInCell(tableBlockId: string): string {
+    const parentCellInfo = this._blockParentMap.get(tableBlockId);
+    if (!parentCellInfo) {
+      throw new Error(`Block ${tableBlockId} is not inside a table cell`);
+    }
+    const parentTableBlock = this.getBlock(parentCellInfo.tableBlockId);
+    const parentCell = parentTableBlock.tableData!.rows[parentCellInfo.rowIndex].cells[parentCellInfo.colIndex];
+    const cellBlockCount = parentCell.blocks.length;
+
+    if (cellBlockCount <= 1) {
+      // Only block in cell — replace with empty paragraph instead of deleting
+      const emptyBlock = createTableCell().blocks[0];
+      this.store.updateBlock(tableBlockId, emptyBlock);
+      this.refresh();
+      return emptyBlock.id;
+    }
+
+    // Multiple blocks — safe to delete; find cursor target before removal
+    const idx = parentCell.blocks.findIndex((b) => b.id === tableBlockId);
+    const cursorBlockId = idx > 0
+      ? parentCell.blocks[idx - 1].id
+      : parentCell.blocks[1].id;
+    this.store.deleteBlock(tableBlockId);
+    this.refresh();
+    return cursorBlockId;
+  }
+
+  /**
+   * Ensure a non-table block exists after the given block index.
+   * If the block at `blockIndex` is the last block (or followed only by
+   * another table), an empty paragraph is appended after it.
+   * Returns the ID of the block immediately after `blockIndex`.
+   */
+  ensureBlockAfter(blockIndex: number): string {
+    // Resolve against the active editing context (body / header / footer) so
+    // exiting a header/footer table appends the new paragraph to that region.
+    const blocks = this.getContextBlocks();
+    if (blockIndex < blocks.length - 1) {
+      return blocks[blockIndex + 1].id;
+    }
+    const newBlock = createEmptyBlock();
+    const sibling = blocks[blockIndex];
+    if (sibling) {
+      // insertBlockAfter is region-aware (keyed by sibling id) in both the
+      // in-memory and Yorkie stores; insertBlock(index) is body-only.
+      this.store.insertBlockAfter(sibling.id, newBlock);
+    } else {
+      this.store.insertBlock(blockIndex + 1, newBlock);
+    }
+    this.refresh();
+    return newBlock.id;
+  }
+
+  /**
+   * Insert a new row at the given index.
+   */
+  insertRow(blockId: string, atIndex: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    const colCount = td.columnWidths.length;
+    const cells: TableCell[] = [];
+    for (let c = 0; c < colCount; c++) {
+      cells.push(createTableCell());
+    }
+    td.rows.splice(atIndex, 0, { cells });
+    if (td.rowHeights) {
+      td.rowHeights.splice(atIndex, 0, undefined);
+      this.store.updateTableAttrs(blockId, { cols: td.columnWidths, rowHeights: td.rowHeights });
+    }
+    this.store.insertTableRow(blockId, atIndex, td.rows[atIndex]);
+    this.refresh();
+  }
+
+  /**
+   * Delete a row at the given index. Adjusts rowSpan of cells that span
+   * across the deleted row. Prevents deleting the last row.
+   */
+  deleteRow(blockId: string, rowIndex: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    if (td.rows.length <= 1) return; // Prevent 0-row table
+
+    // Adjust rowSpan for cells above that span into the deleted row
+    for (let r = 0; r < rowIndex; r++) {
+      for (let c = 0; c < td.rows[r].cells.length; c++) {
+        const cell = td.rows[r].cells[c];
+        const rs = cell.rowSpan ?? 1;
+        if (r + rs > rowIndex) {
+          this.store.applyCellSpan(blockId, r, c, { rowSpan: rs - 1 });
+          cell.rowSpan = rs - 1 === 1 ? undefined : rs - 1;
+        }
+      }
+    }
+    td.rows.splice(rowIndex, 1);
+    if (td.rowHeights) {
+      td.rowHeights.splice(rowIndex, 1);
+      this.store.updateTableAttrs(blockId, { cols: td.columnWidths, rowHeights: td.rowHeights });
+    }
+    this.store.deleteTableRow(blockId, rowIndex);
+    this.refresh();
+  }
+
+  /**
+   * Insert a column at the given index, renormalize widths.
+   */
+  insertColumn(blockId: string, atIndex: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    td.columnWidths.splice(atIndex, 0, 0);
+    // Renormalize to equal widths
+    const count = td.columnWidths.length;
+    for (let i = 0; i < count; i++) {
+      td.columnWidths[i] = 1 / count;
+    }
+    for (const row of td.rows) {
+      row.cells.splice(atIndex, 0, createTableCell());
+    }
+    const newCells = td.rows.map((row) => row.cells[atIndex]);
+    this.store.insertTableColumn(blockId, atIndex, newCells);
+    this.store.updateTableAttrs(blockId, { cols: td.columnWidths });
+    this.refresh();
+  }
+
+  /**
+   * Delete a column at the given index, renormalize widths. Adjusts colSpan
+   * of cells that span across the deleted column. Prevents deleting the last column.
+   */
+  deleteColumn(blockId: string, colIndex: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    if (td.columnWidths.length <= 1) return; // Prevent 0-column table
+
+    // Adjust colSpan for cells left of the deleted column that span into it
+    for (let ri = 0; ri < td.rows.length; ri++) {
+      for (let c = 0; c < colIndex; c++) {
+        const cell = td.rows[ri].cells[c];
+        const cs = cell.colSpan ?? 1;
+        if (c + cs > colIndex) {
+          this.store.applyCellSpan(blockId, ri, c, { colSpan: cs - 1 });
+          cell.colSpan = cs - 1 === 1 ? undefined : cs - 1;
+        }
+      }
+    }
+
+    td.columnWidths.splice(colIndex, 1);
+    const count = td.columnWidths.length;
+    for (let i = 0; i < count; i++) {
+      td.columnWidths[i] = 1 / count;
+    }
+    for (const row of td.rows) {
+      row.cells.splice(colIndex, 1);
+    }
+    this.store.deleteTableColumn(blockId, colIndex);
+    this.store.updateTableAttrs(blockId, { cols: td.columnWidths });
+    this.refresh();
+  }
+
+  /**
+   * Merge cells in the given range. Top-left cell gets colSpan/rowSpan,
+   * covered cells get colSpan: 0. Text from covered cells is appended
+   * to the top-left cell.
+   */
+  mergeCells(blockId: string, range: CellRange): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    const { start, end } = range;
+    const topLeft = td.rows[start.rowIndex].cells[start.colIndex];
+    const rowSpan = end.rowIndex - start.rowIndex + 1;
+    const colSpan = end.colIndex - start.colIndex + 1;
+
+    // Collect blocks from all cells in range (row-major, skip top-left)
+    for (let r = start.rowIndex; r <= end.rowIndex; r++) {
+      for (let c = start.colIndex; c <= end.colIndex; c++) {
+        if (r === start.rowIndex && c === start.colIndex) continue;
+        const cell = td.rows[r].cells[c];
+        const cellTextContent = getCellText(cell);
+        if (cellTextContent.length > 0) {
+          // Append all non-empty blocks from source cell to top-left
+          for (const srcBlock of cell.blocks) {
+            const nonEmpty = srcBlock.inlines.filter((i) => i.text.length > 0);
+            if (nonEmpty.length > 0) {
+              topLeft.blocks.push({
+                id: generateBlockId(),
+                type: srcBlock.type,
+                inlines: nonEmpty,
+                style: { ...srcBlock.style },
+                ...(srcBlock.listKind ? { listKind: srcBlock.listKind } : {}),
+                ...(srcBlock.listLevel !== undefined ? { listLevel: srcBlock.listLevel } : {}),
+                ...(srcBlock.headingLevel !== undefined ? { headingLevel: srcBlock.headingLevel } : {}),
+              });
+            }
+          }
+        }
+        // Mark as covered
+        cell.blocks = [{ id: generateBlockId(), type: 'paragraph', inlines: [{ text: '', style: {} }], style: { ...DEFAULT_BLOCK_STYLE } }];
+        cell.colSpan = 0;
+        cell.rowSpan = undefined;
+      }
+    }
+
+    // Normalize inlines in each block of the merged cell. Shares the one
+    // merge rule in `normalizeInlines` — a second copy here drifted from it
+    // and re-merged structural inlines, concatenating two images from
+    // different cells into a single run that renders only one of them.
+    for (const blk of topLeft.blocks) {
+      blk.inlines = normalizeInlines(blk.inlines);
+    }
+    topLeft.colSpan = colSpan;
+    topLeft.rowSpan = rowSpan;
+    // Update each affected cell in the store
+    for (let r = start.rowIndex; r <= end.rowIndex; r++) {
+      for (let c = start.colIndex; c <= end.colIndex; c++) {
+        this.store.updateTableCell(blockId, r, c, td.rows[r].cells[c]);
+      }
+    }
+    this.refresh();
+  }
+
+  /**
+   * Split a previously merged cell, restoring all covered cells.
+   */
+  splitCell(blockId: string, cell: CellAddress): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    const target = td.rows[cell.rowIndex].cells[cell.colIndex];
+    const rowSpan = target.rowSpan ?? 1;
+    const colSpan = target.colSpan ?? 1;
+
+    // Clear merge on top-left via intent-preserving span update
+    delete target.colSpan;
+    delete target.rowSpan;
+    this.store.applyCellSpan(blockId, cell.rowIndex, cell.colIndex, { colSpan: 1, rowSpan: 1 });
+
+    // Restore covered cells (block reset + span clear)
+    for (let r = cell.rowIndex; r < cell.rowIndex + rowSpan; r++) {
+      for (let c = cell.colIndex; c < cell.colIndex + colSpan; c++) {
+        if (r === cell.rowIndex && c === cell.colIndex) continue;
+        const covered = td.rows[r].cells[c];
+        delete covered.colSpan;
+        delete covered.rowSpan;
+        covered.blocks = [{ id: generateBlockId(), type: 'paragraph', inlines: [{ text: '', style: {} }], style: { ...DEFAULT_BLOCK_STYLE } }];
+        this.store.updateTableCell(blockId, r, c, covered);
+      }
+    }
+    this.refresh();
+  }
+
+  /**
+   * Apply CellStyle to a table cell.
+   */
+  applyCellStyle(
+    blockId: string,
+    cell: CellAddress,
+    style: Partial<CellStyle>,
+  ): void {
+    this.store.applyCellStyle(blockId, cell.rowIndex, cell.colIndex, style);
+    this.refresh();
+  }
+
+  /**
+   * Set a column's width ratio and renormalize the remaining columns
+   * so all widths sum to 1.0.
+   */
+  setColumnWidth(blockId: string, colIndex: number, ratio: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    const count = td.columnWidths.length;
+    const remaining = 1.0 - ratio;
+    const otherCount = count - 1;
+    td.columnWidths[colIndex] = ratio;
+    if (otherCount > 0) {
+      const each = remaining / otherCount;
+      for (let i = 0; i < count; i++) {
+        if (i !== colIndex) td.columnWidths[i] = each;
+      }
+    }
+    this.store.updateTableAttrs(blockId, { cols: td.columnWidths });
+    this.refresh();
+  }
+
+  resizeColumn(blockId: string, colIndex: number, leftRatio: number, rightRatio: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    td.columnWidths[colIndex] = leftRatio;
+    td.columnWidths[colIndex + 1] = rightRatio;
+    this.store.updateTableAttrs(blockId, { cols: td.columnWidths });
+    this.refresh();
+  }
+
+  setRowHeight(blockId: string, rowIndex: number, height: number): void {
+    const block = this.getBlock(blockId);
+    const td = block.tableData!;
+    if (!td.rowHeights) {
+      td.rowHeights = new Array(td.rows.length).fill(undefined);
+    }
+    td.rowHeights[rowIndex] = height;
+    this.store.updateTableAttrs(blockId, { cols: td.columnWidths, rowHeights: td.rowHeights });
+    this.refresh();
+  }
+
+  // --- Private helpers ---
+}

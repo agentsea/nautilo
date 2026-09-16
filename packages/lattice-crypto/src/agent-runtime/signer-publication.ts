@@ -1,0 +1,37 @@
+import {
+  agentRuntimeSignerPublicationMatchesRuntimeV1,
+  agentRuntimeInitializationPublicStateCommitmentV1,
+  agentRuntimeInitializationSignerPublicationMatchesStateV1,
+  agentRuntimeRotationSignerPublicationMatchesManifestV1,
+  verifyHistoricalAgentRuntimeSignerPublicationV1,
+  type AgentRuntimeSignerPublicationManagerV1,
+  type AgentRuntimeSignerPublicationV1,
+  type CurrentAgentRuntimeSignerPublicationManagerContextV1,
+  type HistoricalAgentRuntimeSignerPublicationManagerContextV1,
+  type ResolveCurrentAgentRuntimeSignerPublicationManagerV1,
+  type ResolveHistoricalAgentRuntimeSignerPublicationManagerV1,
+} from "./signer-publication-v1.ts";
+
+export const agentRuntimeSignerPublicationMatchesRuntime =
+  agentRuntimeSignerPublicationMatchesRuntimeV1;
+export const agentRuntimeInitializationPublicStateCommitment =
+  agentRuntimeInitializationPublicStateCommitmentV1;
+export const agentRuntimeInitializationSignerPublicationMatchesState =
+  agentRuntimeInitializationSignerPublicationMatchesStateV1;
+export const agentRuntimeRotationSignerPublicationMatchesManifest =
+  agentRuntimeRotationSignerPublicationMatchesManifestV1;
+export const verifyHistoricalAgentRuntimeSignerPublication =
+  verifyHistoricalAgentRuntimeSignerPublicationV1;
+
+export type AgentRuntimeSignerPublication =
+  AgentRuntimeSignerPublicationV1;
+export type AgentRuntimeSignerPublicationManager =
+  AgentRuntimeSignerPublicationManagerV1;
+export type CurrentAgentRuntimeSignerPublicationManagerContext =
+  CurrentAgentRuntimeSignerPublicationManagerContextV1;
+export type HistoricalAgentRuntimeSignerPublicationManagerContext =
+  HistoricalAgentRuntimeSignerPublicationManagerContextV1;
+export type ResolveCurrentAgentRuntimeSignerPublicationManager =
+  ResolveCurrentAgentRuntimeSignerPublicationManagerV1;
+export type ResolveHistoricalAgentRuntimeSignerPublicationManager =
+  ResolveHistoricalAgentRuntimeSignerPublicationManagerV1;

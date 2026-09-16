@@ -1,0 +1,10 @@
+# tart-config.yaml — Nautilo security smoke Tart VM configuration.
+#
+# VM name: nautilo-smoke-macos (working clone)
+# Baseline: nautilo-smoke-macos-baseline
+# Base image: ghcr.io/cirruslabs/macos-sonoma-base:latest
+#
+# Phase 1 scaffolding — fill in during D063 Phase 1 task 1.3.1.
+# See scripts/security-test-env/README.md for provisioning and snapshot usage.
+#
+# Reference: https://tart.run/

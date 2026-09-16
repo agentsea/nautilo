@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "currentRelease": "0.2.1",
+  "releases": [
+    {
+      "version": "0.2.1",
+      "status": "internal-testing",
+      "releaseNotes": "0.2.1.md",
+      "candidateCommit": "965e1a1072a297edc6ff0913105b38b824f3119e",
+      "builds": [
+        {
+          "platform": "android",
+          "nativeBuildNumber": 42,
+          "easBuildId": "a91d3613-1665-4086-adee-9c2a47e09131",
+          "sourceCommit": "965e1a1072a297edc6ff0913105b38b824f3119e",
+          "gitCommitHash": "81f2f921985fd8906a1e1f69ce863730b7e767c1",
+          "submissionId": "fa14c1fa-9115-4582-b7a4-ff17140548d7",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-09-13",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 37,
+          "easBuildId": "6d4f1d07-18df-45ef-b052-02858c786e82",
+          "sourceCommit": "965e1a1072a297edc6ff0913105b38b824f3119e",
+          "gitCommitHash": "81f2f921985fd8906a1e1f69ce863730b7e767c1",
+          "submissionId": "2076067a-93ce-4816-8eb2-462b4d2bd71d",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "testFlightGroup": "Nautilo RC",
+          "testFlightGroupId": "731fa432-ca25-47c6-8cfb-b8d9697fe16e",
+          "appStoreConnectBuildId": "a7d32ca3-c81e-4075-bde6-c95d7bbac1fc",
+          "verifiedAt": "2026-09-13",
+          "publicStoreUrl": null
+        }
+      ]
+    },
+    {
+      "version": "0.2.0",
+      "status": "internal-testing",
+      "releaseNotes": "0.2.0.md",
+      "candidateCommit": "ec0454ec0f3678cd44cc4bef067086cf484a5b60",
+      "builds": [
+        {
+          "platform": "android",
+          "nativeBuildNumber": 40,
+          "easBuildId": "ddf070bf-b8e8-4d74-a0d4-5471cc0c1444",
+          "gitCommitHash": "ec0454ec0f3678cd44cc4bef067086cf484a5b60",
+          "submissionId": "15d63c17-10fc-4b32-b3fe-a4dd89fc8b1c",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-09-09",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 35,
+          "easBuildId": "1a76ec1c-b85f-46f5-9b33-c8513a8927ae",
+          "gitCommitHash": "ec0454ec0f3678cd44cc4bef067086cf484a5b60",
+          "submissionId": "8aadbca4-83bd-4e5e-bd25-ff7dfda71295",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "testFlightGroup": "Nautilo RC",
+          "testFlightGroupId": "731fa432-ca25-47c6-8cfb-b8d9697fe16e",
+          "appStoreConnectBuildId": "23f2ce45-5bb8-4540-a0a1-041ff00bc796",
+          "verifiedAt": "2026-09-09",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 39,
+          "easBuildId": "7c554b27-91d1-4fd2-974c-3481b43d0db8",
+          "gitCommitHash": "a56fc1fbefa2a0e38321549dd6d17f3018bd09e8",
+          "submissionId": "58e6cf08-3f07-4276-8a85-e7b63180db4a",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-09-09",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 34,
+          "easBuildId": "975e1894-9233-4d58-8627-0d6eee50f14a",
+          "gitCommitHash": "a56fc1fbefa2a0e38321549dd6d17f3018bd09e8",
+          "submissionId": "2e4632bd-6222-4854-ab57-7aa874d00dd3",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "testFlightGroup": "Nautilo RC",
+          "testFlightGroupId": "731fa432-ca25-47c6-8cfb-b8d9697fe16e",
+          "appStoreConnectBuildId": "2f59b2d5-9036-4900-b4be-af6ef26c1b73",
+          "verifiedAt": "2026-09-09",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 32,
+          "easBuildId": "197a6db7-0b5c-4e7c-8a9f-2dbc73d80732",
+          "gitCommitHash": "2f050ce70360cae8860ccd961cbccc3b1ceab490",
+          "submissionId": "73a7d902-0606-4710-86ff-234ac034668c",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "testFlightGroup": "Nautilo RC",
+          "testFlightGroupId": "731fa432-ca25-47c6-8cfb-b8d9697fe16e",
+          "appStoreConnectBuildId": "29b1bfae-5176-44b9-b6c7-02e4836cbc70",
+          "verifiedAt": "2026-09-08",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 38,
+          "easBuildId": "75c2df63-81b7-4c1c-ba74-17fd3a84e281",
+          "gitCommitHash": "2f050ce70360cae8860ccd961cbccc3b1ceab490",
+          "submissionId": "27b9c6d6-f7e0-47f3-aa4a-0ee97c1f929d",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-09-08",
+          "publicStoreUrl": null
+        }
+      ]
+    },
+    {
+      "version": "0.1.2",
+      "status": "internal-testing",
+      "releaseNotes": "0.1.2.md",
+      "candidateCommit": "29828af2b85f8bb2a48368cec231b52bf3c1308d",
+      "builds": [
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 31,
+          "easBuildId": "24c421eb-4c20-430b-84f2-3c39d23ae62b",
+          "gitCommitHash": "29828af2b85f8bb2a48368cec231b52bf3c1308d",
+          "submissionId": "d4215005-a5eb-44b8-865f-07c42e9dd240",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "testFlightGroup": "Nautilo RC",
+          "testFlightGroupId": "731fa432-ca25-47c6-8cfb-b8d9697fe16e",
+          "appStoreConnectBuildId": "00c1d6b1-e899-456e-af74-d11f80183af9",
+          "verifiedAt": "2026-09-07",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 37,
+          "easBuildId": "cdd9ad39-98b0-4822-b9c3-7c2bf912c24e",
+          "gitCommitHash": "29828af2b85f8bb2a48368cec231b52bf3c1308d",
+          "submissionId": "3044b616-d161-483a-92b6-b287c75e1729",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-09-07",
+          "publicStoreUrl": null
+        }
+      ]
+    },
+    {
+      "version": "0.1.0",
+      "status": "internal-testing",
+      "releaseNotes": null,
+      "candidateCommit": "c451f8246205f318fb9114ae29fb5905b61d8046",
+      "builds": [
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 25,
+          "easBuildId": "75e7a34f-93b1-478b-a883-e4e45aaa041c",
+          "submissionId": "818b7bef-0074-42fd-a946-81cc9399a109",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 31,
+          "easBuildId": "d2e8c50f-859a-40f2-9988-16d296369752",
+          "submissionId": "c4bf49ef-4a8e-41b6-83cc-21b25b09e768",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "publicStoreUrl": null
+        }
+      ]
+    },
+    {
+      "version": "0.1.1",
+      "status": "internal-testing",
+      "releaseNotes": "0.1.1.md",
+      "candidateCommit": "6557c408ec4cf9078b03117e123cf48a974dd0a4",
+      "builds": [
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 30,
+          "easBuildId": "ea4fbbe5-609d-48ce-9804-00e21e31a46b",
+          "gitCommitHash": "6557c408ec4cf9078b03117e123cf48a974dd0a4",
+          "submissionId": "d6beb4f6-52ce-4f7e-ae84-8982c33740e8",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "productionState": "READY_FOR_DISTRIBUTION",
+          "verifiedAt": "2026-09-07",
+          "publicStoreUrl": "https://apps.apple.com/app/id6800470419"
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 36,
+          "easBuildId": "32a792f0-1dab-4027-9c70-c86b818e5800",
+          "gitCommitHash": "6557c408ec4cf9078b03117e123cf48a974dd0a4",
+          "submissionId": "e4f27d7d-acb2-4089-b448-96ca94da15eb",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-09-07",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "ios",
+          "nativeBuildNumber": 27,
+          "gitCommitHash": "5c19b5cee6ee76ce6f8f6edca1bb0a63c65091de",
+          "easBuildId": "942cc73b-52d7-4635-973e-f8c3191156af",
+          "submissionId": "7d6a8f67-a573-4369-9942-19f61aaf93c6",
+          "channel": "testflight",
+          "storeState": "in_beta_testing",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 33,
+          "gitCommitHash": "5c19b5cee6ee76ce6f8f6edca1bb0a63c65091de",
+          "easBuildId": "3d4f672e-f7a1-4a14-8f58-dd56585f536c",
+          "submissionId": "24271295-772b-418f-a611-4aa59ab59dd3",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "publicStoreUrl": null
+        }
+      ]
+    }
+  ]
+}

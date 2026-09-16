@@ -1,0 +1,256 @@
+appId: com.nautilo.desktop
+productName: Nautilo
+copyright: Copyright © 2026 Nautilo
+
+directories:
+  output: release
+  buildResources: assets
+
+# electron-builder emits latest-mac.yml only when an update provider exists.
+# This vendor-owned generic URL is compiled into app-update.yml inside the
+# signed app; the main process never accepts a feed override at runtime.
+# The publisher workflow uploads artifacts itself and promotes latest-mac.yml
+# last, so this prefix contains only the stable macOS feed.
+publish:
+  - provider: generic
+    url: https://media.nautilo.ai/desktop/stable/mac/
+    useMultipleRangeRequest: false
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Contributor packages use ad-hoc identity and cannot acquire a certificate.
+  identity: "-"
+  entitlements: entitlements.mac.unsigned.plist
+  entitlementsInherit: entitlements.mac.unsigned.inherit.plist
+  sign: ./scripts/sign-adhoc.cjs
+  # Bundled tool runtimes are copied into both arch temp apps before the
+  # universal merge. They are selected at runtime via process.arch, not lipo'd.
+  # D373 stack-137 — node-pty (asarUnpack'd above) ships thin per-arch prebuilds
+  # under prebuilds/darwin-{arm64,x64}/ (pty.node + spawn-helper). Both dirs land
+  # in EACH per-arch temp app, so @electron/universal sees single-arch Mach-O
+  # binaries that are byte-identical across builds and refuses to lipo them. Like
+  # the vendored runtimes above, they're runtime-selected (node-pty loads the
+  # prebuilds/darwin-<process.arch>/ copy), so allowlist them here instead.
+  # Sharp's darwin native addons and libvips payload are selected by
+  # process.arch. Keep both thin payload trees as runtime-selected files
+  # during universal merge rather than attempting to lipo them.
+  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-agent-browser,tools-gog,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
+  notarize: false
+  # D057 2a.5 + D103 P3.5: user-facing permission strings + Info.plist
+  # release metadata. macOS requires permission strings in Info.plist
+  # (NOT entitlements.plist) — without them the TCC prompt never
+  # appears, even with the matching entitlement granted. Wired via
+  # electron-builder's mac.extendInfo so they land in the final
+  # .app/Contents/Info.plist at build time. Version + copyright +
+  # min-OS keep the About-this-Mac / Get Info pane accurate.
+  extendInfo:
+    NSMicrophoneUsageDescription: >-
+      Nautilo uses your microphone to transcribe speech when you tap the
+      mic button or enable voice conversations.
+    NSScreenCaptureUsageDescription: >-
+      Nautilo captures the screen only when you enable Computer use and ask
+      a Genie to observe or control this Mac.
+    NSAppleEventsUsageDescription: >-
+      Nautilo uses Automation only when an approved Computer use action needs
+      to communicate with another app.
+    # D489 — local-server discovery is initiated only by the server picker.
+    # This Info.plist declaration is shared by signed and unsigned macOS
+    # packages; it is deliberately not an entitlement or a second discovery path.
+    NSLocalNetworkUsageDescription: >-
+      Nautilo looks for Nautilo servers on your local network when you open
+      the server picker.
+    NSBonjourServices:
+      - _nautilo._tcp
+    NSHumanReadableCopyright: "Copyright © 2026 Nautilo"
+    LSMinimumSystemVersion: "11.0"
+  extraResources:
+    # D516 — this Darwin-universal executable must remain mac-only. Keeping the
+    # resource mapping under `mac` prevents a stale macOS vendor cache from
+    # leaking Cua into Linux/Windows packages, whose build scripts do not vendor it.
+    - from: vendor/cua-driver
+      to: tools-cua
+      filter:
+        - "qualification.patch"
+        - "cua-driver"
+        - "LICENSE"
+        - "manifest.json"
+        - "PROVENANCE.md"
+    # The Host receives only Electron-attested Cua paths over inherited stdio.
+    # It is an in-repo universal binary; mac-only mapping prevents stale vendor
+    # output from leaking it into other platform packages.
+    - from: vendor/computer-use-host
+      to: tools-computer-use-host
+      filter:
+        - "nautilo-computer-use-host"
+        - "manifest.json"
+    # D565 — Electron consumes Relay only through this private child process.
+    - from: vendor/relay-host
+      to: tools-relay-host
+      filter:
+        - "nautilo-relay-host.js"
+        - "manifest.json"
+    # D516 — source-owned universal helper used only to invoke the host-owned
+    # CGRequestScreenCaptureAccess API. It is never downloaded at runtime.
+    - from: vendor/screen-recording-permission
+      to: tools-permissions
+      filter:
+        - "nautilo-screen-recording-permission"
+
+win:
+  target:
+    - nsis
+  icon: assets/icon.ico
+
+linux:
+  target:
+    - AppImage
+  icon: assets/icon.png
+
+asar: true
+# asarIntegrity is enabled by default in electron-builder 26.x when
+# `asar: true` (the option was removed as a top-level key). Verify
+# integrity at runtime via the Electron fuse `EnableEmbeddedAsarIntegrityValidation`
+# (flipped on in scripts/flip-fuses.ts → after-pack.cjs, P4.3).
+
+# D373 stack-137 — node-pty, argon2, and Sharp's dynamically-resolved native
+# addon/libvips packages cannot live inside app.asar. electron-builder's
+# implicit smart-unpack is unreliable over Bun's symlinked isolated
+# node_modules layout, so pin them explicitly. node-pty's runtime resolver additionally rewrites
+# `app.asar` → `app.asar.unpacked` for spawn-helper; after-pack.cjs re-asserts
+# +x on that helper. tests/unit/build-output.test.ts guards these pins.
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+  - "**/node_modules/argon2/**"
+  - "**/node_modules/sharp/**"
+  # Covers Sharp's platform-selected native addon and libvips payload on
+  # macOS, Linux, and Windows without broadening unrelated native packages.
+  - "**/node_modules/@img/sharp-*/**"
+  - "**/node_modules/@img/sharp-libvips-*/**"
+
+# D103 P4.3 — flip Electron fuses on every packaged build so production
+# binaries ship with the locked-in security posture (RunAsNode disabled,
+# NodeOptions/NodeCliInspect disabled, CookieEncryption + asar-integrity
+# runtime check enabled). See scripts/after-pack.cjs and scripts/flip-fuses.ts.
+afterPack: ./scripts/after-pack.cjs
+afterSign: ./scripts/after-sign.cjs
+
+dmg:
+  title: Nautilo
+  background: assets/dmg-background.png
+  contents:
+    - x: 130
+      y: 220
+      type: file
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+files:
+  - dist/**/*
+  - assets/**/*
+  # Production source maps disclose dependency source and add no supported
+  # end-user debugging path. The afterPack inventory guard below verifies the
+  # generated archive, including electron-builder's implicit node_modules set.
+  - "!**/*.map"
+  - "!**/*.{test,spec}.{js,cjs,mjs,jsx,ts,tsx}"
+  - "!**/{tests,test,__tests__,*.test.ts,*.spec.ts}"
+  - "!**/{*.md,*.markdown}"
+  - "!**/{tsconfig.json,tsconfig.*.json}"
+
+# D057 2a.2 — bundle the Bun runtime so the packaged app works on any
+# Mac whether or not the user has Bun installed. Produced at build time
+# by scripts/vendor-bun.ts (called from the pack/dist npm scripts).
+#
+# arm64 + x64 both shipped so a universal DMG works; electron-builder
+# picks the right subdir at runtime via process.arch. Size impact:
+# ~60 MB per architecture on top of the Electron base.
+extraResources:
+  # Keep the canonical notices outside ASAR without weakening runtime exclusions.
+  - from: ../../THIRD_PARTY_NOTICES.md
+    to: legal/THIRD_PARTY_NOTICES.md
+  # Sharp's platform optional packages are vendored at package time because
+  # Bun installs only the host arch. Copy both Darwin addon/libvips trees into
+  # the exact unpacked Node resolution path in both universal temporary apps.
+  - from: vendor/sharp-darwin/node_modules/@img
+    to: app.asar.unpacked/node_modules/@img
+    filter:
+      - "sharp-darwin-arm64/**"
+      - "sharp-darwin-x64/**"
+      - "sharp-libvips-darwin-arm64/**"
+      - "sharp-libvips-darwin-x64/**"
+  # D336/M195 — provider plugin must be a real file because bundled Bun runs
+  # outside Electron's ASAR filesystem shim.
+  - from: dist/browser-control-provider.js
+    to: browser-control-provider.js
+  - from: vendor/bun
+    to: bun
+    filter:
+      - "**/*"
+  # M195 — vendor agent-browser + gog CLIs (both arches) for universal DMG.
+  # Resolved at runtime by bundledToolPath() (electron/relay.ts).
+  - from: vendor/agent-browser
+    to: tools-agent-browser
+    filter:
+      - "**/*"
+  - from: vendor/gog
+    to: tools-gog
+    filter:
+      - "**/*"
+  # Stack 178 — managed LGPL FFmpeg binaries and complete source ship for both macOS arches.
+  # Resolved by electron/ffmpeg-runtime.ts; no PATH/Homebrew fallback exists
+  # in production.
+  - from: vendor/ffmpeg
+    to: tools-ffmpeg
+    filter:
+      - "**/*"
+  # Stack 173 — universal OpenHue CLI is relay-only and resolves directly at
+  # Contents/Resources/tools/openhue. The universal artifact is copied intact;
+  # it must not be lipo'd during the universal app merge.
+  - from: vendor/openhue
+    to: tools
+    filter:
+      - "openhue"
+      - "LICENSE-openhue.txt"
+  # M206 — vendor OfficeCLI (darwin-arm64 + darwin-x64) for local-zone execution.
+  # Resolved at runtime by resolveDesktopOfficeCliPath() (electron/tool-runtime-resolver.ts).
+  # M197 — strict allowlist: canonical darwin runtimes + license/version metadata only.
+  # Never bundle OfficeCLI auto-update sidecars (officecli.update / .update.partial).
+  - from: vendor/officecli
+    to: tools-officecli
+    filter:
+      - "darwin-arm64/officecli"
+      - "darwin-x64/officecli"
+      - "LICENSE-officecli.txt"
+      - ".version"
+  # D448 — source-built Darwin apply-patch runtimes remain outside ASAR. The
+  # build command records the exact local output hashes before package signing;
+  # the signed and notarized bundle is verified separately afterwards.
+  - from: vendor/apply-patch
+    to: tools-apply-patch
+    filter:
+      - "darwin-arm64/nautilo-apply-patch"
+      - "darwin-x64/nautilo-apply-patch"
+      - "runtime-manifest.json"
+      - "LICENSE"
+      - "NOTICE"
+      - "UPSTREAM.toml"
+      - "THIRD_PARTY_NOTICES.txt"
+  # D446 — official checksum-pinned ripgrep archives, extracted at package time.
+  - from: vendor/ripgrep
+    to: tools-ripgrep
+    filter:
+      - "darwin-arm64/rg"
+      - "darwin-x64/rg"
+      - "LICENSE-ripgrep.txt"
+      - "PROVENANCE.md"
+      - "manifest.json"
+      - ".version"

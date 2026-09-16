@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "description": "D448 reusable apply_patch boundary fixtures. Patch grammar assertions beyond the Begin/End envelope are deferred to the pinned native extraction.",
+  "nativeParserCorpusDeferred": [
+    "Context matching, hunk seeking, and on-disk effects require the pinned native extraction; this TypeScript fixture suite deliberately makes no parser or mutation claim."
+  ],
+  "entries": [
+    {
+      "id": "valid-multi-file-envelope",
+      "kind": "request",
+      "phase": "model_request",
+      "valid": true,
+      "expected": { "result": "accepted_envelope_only" },
+      "files": ["requests/valid-multi-file.patch"]
+    },
+    {
+      "id": "invalid-missing-envelope",
+      "kind": "request",
+      "phase": "model_request",
+      "valid": false,
+      "expected": { "error": "parse_error" },
+      "files": ["requests/invalid-missing-envelope.patch"]
+    },
+    {
+      "id": "frozen-phase0-twenty-file-comparison",
+      "kind": "request",
+      "phase": "frozen_phase0_baseline_evidence",
+      "valid": true,
+      "expected": { "result": "accepted_envelope_only" },
+      "files": [
+        "capability/phase0-top-level-absence-baseline.json",
+        "capability/provider-schema.json",
+        "capability/phase0-multi-file-20-baseline.json",
+        "capability/performance-methodology.json",
+        "capability/multi-file-20.patch",
+        "capability/one-file.patch"
+      ]
+    },
+    {
+      "id": "implemented-guidance-contract",
+      "kind": "request",
+      "phase": "implemented_guidance_contract",
+      "valid": true,
+      "expected": { "result": "accepted_envelope_only" },
+      "files": [
+        "capability/guidance-contract.json",
+        "capability/multi-file-20.patch"
+      ]
+    },
+    {
+      "id": "valid-multi-file-plan",
+      "kind": "preflight",
+      "phase": "trusted_preflight",
+      "valid": true,
+      "expected": { "result": "accepted" },
+      "files": ["preflight/valid-multi-file.json"]
+    },
+    {
+      "id": "valid-upstream-path-forms",
+      "kind": "preflight",
+      "phase": "trusted_preflight",
+      "valid": true,
+      "expected": { "result": "accepted" },
+      "files": ["preflight/valid-upstream-path-forms.json"]
+    },
+    {
+      "id": "valid-operation-shape-duplicate-path",
+      "kind": "preflight",
+      "phase": "trusted_preflight",
+      "valid": true,
+      "expected": { "result": "accepted" },
+      "files": ["preflight/valid-operation-shape-duplicate-path.json"]
+    },
+    {
+      "id": "complete-public-result",
+      "kind": "normalization",
+      "phase": "server_relay_revision_ui",
+      "valid": true,
+      "expected": { "result": "applied" },
+      "files": [
+        "normalization/complete.child.json",
+        "normalization/complete.metadata.json",
+        "normalization/complete.public.json"
+      ]
+    },
+    {
+      "id": "partial-committed-prefix-public-result",
+      "kind": "normalization",
+      "phase": "server_relay_revision_ui",
+      "valid": true,
+      "expected": { "result": "partial" },
+      "files": [
+        "normalization/partial.child.json",
+        "normalization/partial.metadata.json",
+        "normalization/partial.public.json"
+      ]
+    },
+    {
+      "id": "invalid-cross-zone-trusted-context-claim",
+      "kind": "normalization",
+      "phase": "trusted_context",
+      "valid": false,
+      "expected": { "error": "missing_context" },
+      "files": [
+        "normalization/complete.child.json",
+        "normalization/invalid-cross-zone.metadata.json"
+      ]
+    },
+    {
+      "id": "invalid-cross-root-trusted-context-claim",
+      "kind": "normalization",
+      "phase": "trusted_context",
+      "valid": false,
+      "expected": { "error": "missing_context" },
+      "files": [
+        "normalization/complete.child.json",
+        "normalization/invalid-cross-root.metadata.json"
+      ]
+    }
+  ]
+}

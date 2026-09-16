@@ -1,0 +1,4 @@
+Nautilo updater generic-provider fixture payload.
+This file is deliberately not unpacked by the provider integration test: the
+provider resolves and downloads it as the macOS ZIP artifact, then validates
+the standard latest-mac.yml SHA-512 value while streaming it from localhost.

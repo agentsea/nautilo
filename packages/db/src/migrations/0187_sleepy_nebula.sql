@@ -1,0 +1,2 @@
+ALTER TABLE "reflection_record_semantic_work" ADD COLUMN "started_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "reflection_record_semantic_work" ADD CONSTRAINT "reflection_record_semantic_work_started_coherent" CHECK ("reflection_record_semantic_work"."started_at" is null or "reflection_record_semantic_work"."started_at" >= "reflection_record_semantic_work"."due_since");

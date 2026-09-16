@@ -1,0 +1,74 @@
+# dependencies / build artifacts (already excluded; keep)
+**/node_modules
+**/dist/
+**/.next/
+**/coverage/
+
+# Sheets' compiled engine is a generated image artifact. The opt-in build
+# recreates it in its isolated stage, so developer leftovers never reach the
+# context or shadow the reviewed output.
+packages/first-party-apps/spreadsheet/engine/
+packages/first-party-apps/spreadsheet/engine.staging-*/
+packages/first-party-apps/spreadsheet/engine.previous-*/
+packages/first-party-apps/presentation/engine/
+packages/first-party-apps/presentation/engine.staging-*/
+packages/first-party-apps/presentation/engine.previous-*/
+
+# tooling cache directories — these invalidate the COPY layer constantly
+# and contribute zero to the build.
+**/.turbo/
+**/*.tsbuildinfo
+
+# secrets — already excluded; keep.
+**/.env
+**/.env.local
+**/.env.*.local
+
+# repo metadata.
+.git/
+.cursor/
+.claude/
+
+# dev-sandbox snapshots (operator-local).
+dev-snapshots/
+
+# logs + misc OS noise.
+*.log
+.DS_Store
+
+# Swift build outputs (M118: these are 91 MB of cache that invalidates on
+# every `swift build`).
+native/**/.build/
+
+# Electron builder release artifacts (M118: M092 desktop release outputs).
+apps/desktop/release/
+
+# Electron vendor cache (Electron-only, multi-hundred-MB).
+apps/desktop/vendor/
+
+# D568 server agent-browser binaries are downloaded in their isolated image
+# stage. Keep a developer's local cache out of the image context while leaving
+# the checked-in manifest available to that stage.
+packages/server/vendor/agent-browser/
+!packages/server/vendor/agent-browser/
+packages/server/vendor/agent-browser/*
+!packages/server/vendor/agent-browser/manifest.json
+
+# Server-side artifact search/patch runtimes are intentionally unsupported.
+# Exclude stale local payloads as defense in depth even if an old checkout
+# generated them before these server vendor surfaces were retired.
+packages/server/vendor/apply-patch/
+packages/server/vendor/ripgrep/
+
+# DB volumes if any operator left them in tree.
+postgres_data/
+
+# Test trees, fixtures, and test sources — excluded unless a build-stage closure
+# explicitly allowlists one shared qualification fixture below (M209).
+**/tests/
+**/fixtures/
+**/*.test.ts
+**/*.integration.test.ts
+
+!dev/fixtures/
+!dev/fixtures/assistant-response-gfm-table.ts

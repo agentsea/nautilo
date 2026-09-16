@@ -1,0 +1,819 @@
+// @vitest-environment jsdom
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as zlib from 'node:zlib';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString, PDFHexString } from 'pdf-lib';
+import { PdfExporter } from '../../src/export/pdf-exporter.js';
+import { PdfFonts, type PdfFontKey } from '../../src/export/pdf-fonts.js';
+import { DEFAULT_BLOCK_STYLE, generateBlockId } from '../../src/model/types.js';
+import type { Document } from '../../src/model/types.js';
+import { setThemeMode } from '../../src/view/theme.js';
+
+// jsdom Blob shim — older jsdom builds lack arrayBuffer()
+if (typeof Blob.prototype.arrayBuffer !== 'function') {
+
+  Blob.prototype.arrayBuffer = function (this: Blob): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result as ArrayBuffer);
+      r.onerror = () => reject(r.error ?? new Error('Blob read failed'));
+      r.readAsArrayBuffer(this);
+    });
+  };
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEST_FONT_BUFFER = fs.readFileSync(
+  path.resolve(__dirname, 'fixtures/fonts/test-cjk.ttf'),
+).buffer;
+
+const ALL_KEYS: PdfFontKey[] = [
+  'sans-regular','sans-bold','sans-italic','sans-boldItalic',
+  'serif-regular','serif-bold','serif-italic','serif-boldItalic',
+  'kr-sans-regular','kr-sans-bold',
+  'kr-serif-regular','kr-serif-bold',
+];
+
+function testFonts(): PdfFonts {
+  const sources: Partial<Record<PdfFontKey, () => Promise<ArrayBuffer>>> = {};
+  for (const key of ALL_KEYS) {
+    sources[key] = () => Promise.resolve(TEST_FONT_BUFFER);
+  }
+  return new PdfFonts({ sources });
+}
+
+// Deterministic measurer used by every export() call below. Required —
+// PdfExporter throws without `opts.measurer` and we want goldens, not
+// jsdom canvas surprises.
+import { stubMeasurer } from '../view/_stub-measurer.js';
+
+const testMeasurer = stubMeasurer();
+
+type ExportOpts = Parameters<typeof PdfExporter.export>[1];
+
+function exportOpts(extra: Partial<ExportOpts> = {}): ExportOpts {
+  return { fonts: testFonts(), measurer: testMeasurer, ...extra };
+}
+
+describe('PdfExporter (hello world)', () => {
+  it('produces a valid PDF for a single Korean line', async () => {
+    const doc: Document = {
+      blocks: [{
+        id: generateBlockId(),
+        type: 'paragraph',
+        inlines: [{ text: '안녕하세요', style: {} }],
+        style: { ...DEFAULT_BLOCK_STYLE },
+      }],
+    };
+
+    const blob = await PdfExporter.export(doc, exportOpts());
+    expect(blob.size).toBeGreaterThan(0);
+    expect(blob.type).toBe('application/pdf');
+
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBeGreaterThanOrEqual(1);
+  });
+});
+
+const simpleFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/simple-paragraph.json'),
+    'utf8',
+  ),
+) as Document;
+
+const mixedFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/mixed-korean-english.json'),
+    'utf8',
+  ),
+) as Document;
+
+const hfFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-header-footer-pagenumber.json'),
+    'utf8',
+  ),
+) as Document;
+
+const listFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-list.json'),
+    'utf8',
+  ),
+) as Document;
+
+const tableFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-table.json'),
+    'utf8',
+  ),
+) as Document;
+
+const mergedFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-merged-cells.json'),
+    'utf8',
+  ),
+) as Document;
+
+const splitRowFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-split-row.json'),
+    'utf8',
+  ),
+) as Document;
+
+const imageFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-image.json'),
+    'utf8',
+  ),
+) as Document;
+
+const headingFixture = JSON.parse(
+  fs.readFileSync(
+    path.resolve(__dirname, 'fixtures/pdf/with-headings-and-links.json'),
+    'utf8',
+  ),
+) as Document;
+
+const TEST_PNG = fs.readFileSync(
+  path.resolve(__dirname, 'fixtures/pdf/test-image.png'),
+);
+
+describe('PdfExporter (full pipeline)', () => {
+  it('exports the simple-paragraph fixture', async () => {
+    const blob = await PdfExporter.export(simpleFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    const pages = pdfDoc.getPages();
+    expect(pages[0].getWidth()).toBeGreaterThan(0);
+  });
+
+  it('exports the mixed-korean-english fixture', async () => {
+    const blob = await PdfExporter.export(mixedFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    expect(blob.size).toBeGreaterThan(1000);
+  });
+});
+
+describe('PdfExporter (multi-page)', () => {
+  it('produces multiple pages for long content', async () => {
+    const longDoc: Document = {
+      blocks: Array.from({ length: 200 }, (_, i) => ({
+        id: `p${i}`,
+        type: 'paragraph' as const,
+        inlines: [{ text: `Paragraph ${i}: lorem ipsum dolor sit amet consectetur adipiscing elit.`, style: {} }],
+        style: { ...DEFAULT_BLOCK_STYLE },
+      })),
+    };
+    const blob = await PdfExporter.export(longDoc, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('PdfExporter (header/footer/page-number)', () => {
+  it('exports the with-header-footer-pagenumber fixture', async () => {
+    const blob = await PdfExporter.export(hfFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    // Header + footer presence: blob should be larger than a body-only equivalent
+    expect(blob.size).toBeGreaterThan(800);
+  });
+
+  it('renders larger PDF for documents with headers/footers vs without', async () => {
+    const bodyOnly: Document = {
+
+      blocks: hfFixture.blocks.map(b => ({ ...b, style: { ...b.style } })),
+    };
+    const a = await PdfExporter.export(bodyOnly, exportOpts());
+    const b = await PdfExporter.export(hfFixture, exportOpts());
+    expect(b.size).toBeGreaterThan(a.size);
+  });
+});
+
+describe('PdfExporter (tables)', () => {
+  it('exports a table fixture with backgrounds and borders', async () => {
+    const blob = await PdfExporter.export(tableFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    expect(blob.size).toBeGreaterThan(800);
+  });
+
+  it('table PDF is larger than equivalent paragraphs (proves chrome was drawn)', async () => {
+
+    const tableBlock = tableFixture.blocks[0];
+    if (!tableBlock.tableData) throw new Error('Expected table fixture');
+    const flat: Document = {
+
+      blocks: tableBlock.tableData.rows.flatMap((r) =>
+
+        r.cells.map((c) => ({
+          ...c.blocks[0],
+          id: `flat-${Math.random().toString(36).slice(2, 8)}`,
+        })),
+      ),
+    };
+    const flatBlob = await PdfExporter.export(flat, exportOpts());
+    const tableBlob = await PdfExporter.export(tableFixture, exportOpts());
+    expect(tableBlob.size).toBeGreaterThan(flatBlob.size);
+  });
+
+  it('table cell content text appears in PDF (size delta)', async () => {
+    // Same fixture but with empty cell text
+    const empty = JSON.parse(JSON.stringify(tableFixture)) as Document;
+    const emptyTable = empty.blocks[0]?.tableData;
+    if (!emptyTable) throw new Error('Expected table fixture');
+    for (const row of emptyTable.rows) {
+      for (const cell of row.cells) {
+        cell.blocks = [];
+      }
+    }
+    const emptyBlob = await PdfExporter.export(empty, exportOpts());
+    const fullBlob = await PdfExporter.export(tableFixture, exportOpts());
+    expect(fullBlob.size).toBeGreaterThan(emptyBlob.size);
+  });
+});
+
+describe('PdfExporter (merged cells)', () => {
+  it('exports a table with colSpan and rowSpan without erroring', async () => {
+    const blob = await PdfExporter.export(mergedFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    expect(blob.size).toBeGreaterThan(800);
+  });
+});
+
+describe('PdfExporter (row split)', () => {
+  it('exports a table with a row that splits across pages', async () => {
+    const blob = await PdfExporter.export(splitRowFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBeGreaterThanOrEqual(2);
+    expect(blob.size).toBeGreaterThan(800);
+  });
+});
+
+describe('PdfExporter (images)', () => {
+  it('embeds an image inline', async () => {
+    let fetchCount = 0;
+    const blob = await PdfExporter.export(imageFixture, exportOpts({
+      imageFetcher: async (src: string) => {
+        fetchCount++;
+        expect(src).toBe('test://image1');
+        return new Blob([TEST_PNG], { type: 'image/png' });
+      },
+    }));
+    expect(fetchCount).toBe(1);
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    expect(blob.size).toBeGreaterThan(TEST_PNG.byteLength);
+
+    // Compare against the same fixture with the image inline stripped:
+    // the embedded-image PDF must be meaningfully larger.
+    const noImage: Document = {
+      blocks: imageFixture.blocks.map(b => ({
+        ...b,
+        inlines: b.inlines.filter(i => !i.style.image),
+      })),
+    };
+    const noImageBlob = await PdfExporter.export(noImage, exportOpts());
+    expect(blob.size).toBeGreaterThan(noImageBlob.size + 50);
+  });
+
+  it('throws when image inline exists but no fetcher provided', async () => {
+    await expect(
+      PdfExporter.export(imageFixture, exportOpts()),
+    ).rejects.toThrow(/imageFetcher/i);
+  });
+
+  it('drops an image whose fetch fails when the caller reports errors', async () => {
+    // A `src` is document content — it can be stale, external, unreachable,
+    // or refused by the CLI's SSRF guard. A caller that supplies a reporter
+    // (the CLI) would rather lose that image than the export, so the failure
+    // is reported and the rest of the document still renders.
+    const reported: Array<[string, string]> = [];
+    const blob = await PdfExporter.export(imageFixture, exportOpts({
+      imageFetcher: async () => {
+        throw new Error('Refusing to fetch image from a non-public address');
+      },
+      onImageError: (src, error) => {
+        reported.push([src, (error as Error).message]);
+      },
+    }));
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+    expect(reported).toEqual([
+      ['test://image1', 'Refusing to fetch image from a non-public address'],
+    ]);
+  });
+
+  it('fails the export when a failed image is not opted into', async () => {
+    // No reporter means the caller never asked to survive a missing image —
+    // the browser exporters, whose UI reports a thrown error and has nowhere
+    // to show a `console.warn`. Swallowing here would hand the user a
+    // silently incomplete document.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(
+        PdfExporter.export(imageFixture, exportOpts({
+          imageFetcher: async () => {
+            throw new Error('Image fetch failed: 404 Not Found');
+          },
+        })),
+      ).rejects.toThrow(/Image fetch failed: 404/);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('PdfExporter (list markers)', () => {
+  it('exports list items with markers', async () => {
+    const blob = await PdfExporter.export(listFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getPageCount()).toBe(1);
+
+    // Equivalent doc with paragraphs (no markers) should yield smaller PDF
+    const flatDoc: Document = {
+      blocks: listFixture.blocks.map(b => ({
+        ...b,
+        type: 'paragraph' as const,
+        listKind: undefined,
+        listLevel: undefined,
+      })),
+    };
+    const flatBlob = await PdfExporter.export(flatDoc, exportOpts());
+    expect(blob.size).toBeGreaterThan(flatBlob.size);
+  });
+});
+
+describe('PdfExporter (metadata)', () => {
+  it('writes title and author into PDF metadata', async () => {
+    const blob = await PdfExporter.export(simpleFixture, exportOpts({
+      metadata: { title: 'My Doc', author: 'Alice' },
+    }));
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    expect(pdfDoc.getTitle()).toBe('My Doc');
+    expect(pdfDoc.getAuthor()).toBe('Alice');
+  });
+
+  it('sets producer/creator when no metadata provided', async () => {
+    const blob = await PdfExporter.export(simpleFixture, exportOpts());
+    // updateMetadata: false prevents pdf-lib from overwriting the Producer
+    // field with its own default during the load() call.
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    expect(pdfDoc.getProducer()).toMatch(/wafflebase/i);
+  });
+});
+
+describe('PdfExporter (progress)', () => {
+  it('reports per-page progress ending at total', async () => {
+    const longDoc: Document = {
+      blocks: Array.from({ length: 200 }, (_, i) => ({
+        id: `p${i}`,
+        type: 'paragraph' as const,
+        inlines: [{ text: `Paragraph ${i}: lorem ipsum dolor sit amet consectetur adipiscing elit.`, style: {} }],
+        style: { ...DEFAULT_BLOCK_STYLE },
+      })),
+    };
+    const calls: Array<[number, number, string]> = [];
+    await PdfExporter.export(longDoc, exportOpts({
+      onProgress: (done, total, phase) => calls.push([done, total, phase]),
+    }));
+    expect(calls[0][0]).toBe(0);
+    expect(calls[0][2]).toBe('pages');
+    const last = calls[calls.length - 1];
+    expect(last[0]).toBe(last[1]); // done === total at the end
+    expect(last[1]).toBeGreaterThan(0);
+    const dones = calls.map((c) => c[0]);
+    expect(dones).toEqual([...dones].sort((a, b) => a - b));
+    // Lock the contract for every callback: constant total, constant phase.
+    expect(calls.every((c) => c[1] === last[1] && c[2] === 'pages')).toBe(true);
+  });
+});
+
+describe('PdfExporter (outline)', () => {
+  it('emits a heading outline tree', async () => {
+    const blob = await PdfExporter.export(headingFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    const catalog = pdfDoc.catalog;
+    const outlines = catalog.lookup(PDFName.of('Outlines'));
+    expect(outlines).toBeDefined();
+    // Drill into the dictionary to verify it has First/Last
+    const outlinesDict = outlines as PDFDict;
+    expect(outlinesDict.get(PDFName.of('First'))).toBeDefined();
+    expect(outlinesDict.get(PDFName.of('Last'))).toBeDefined();
+  });
+
+  it('outline contains the heading titles in document order', async () => {
+    const blob = await PdfExporter.export(headingFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    const outlinesDict = pdfDoc.catalog.lookup(PDFName.of('Outlines')) as PDFDict;
+
+    // Walk the linked list of outline items via First/Next.
+    const titles: string[] = [];
+    let cur: PDFDict | undefined = outlinesDict.lookup(
+      PDFName.of('First'), PDFDict,
+    ) as PDFDict | undefined;
+    while (cur) {
+      const titleObj = cur.get(PDFName.of('Title'));
+      // pdf-lib stores PDFString and PDFHexString — both expose .decodeText()
+
+      if (titleObj instanceof PDFString || titleObj instanceof PDFHexString) {
+        titles.push(titleObj.decodeText());
+      }
+      // Resolve Next manually: the typed lookup throws when missing,
+      // but a plain `lookup` returns undefined for absent keys.
+      const next = cur.lookup(PDFName.of('Next'));
+      cur = next instanceof PDFDict ? next : undefined;
+    }
+    expect(titles).toEqual(['Chapter One', 'Section 1.1', 'Section 1.2']);
+  });
+
+  it('outline items reference page destinations', async () => {
+    const blob = await PdfExporter.export(headingFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    const outlinesDict = pdfDoc.catalog.lookup(PDFName.of('Outlines')) as PDFDict;
+    const first = outlinesDict.lookup(PDFName.of('First'), PDFDict);
+    const dest = first.lookup(PDFName.of('Dest'), PDFArray);
+    expect(dest).toBeDefined();
+    // First entry should be /Fit on the first (and only) page.
+    expect(dest.lookup(1, PDFName)).toBe(PDFName.of('Fit'));
+  });
+
+  it('omits the outline tree for documents with no headings', async () => {
+    const blob = await PdfExporter.export(simpleFixture, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    const outlines = pdfDoc.catalog.lookup(PDFName.of('Outlines'));
+    expect(outlines).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Link annotations
+// ---------------------------------------------------------------------------
+/**
+ * `PdfPainter` gates every `style.href` on `isSafeUrl`, which answers `false`
+ * for a relative reference as well as for an unsafe scheme. That makes the PDF
+ * export deliberately stricter than the Markdown serializer, which keeps
+ * relative targets — a `.md` file is read next to the site it came from, while
+ * a downloaded PDF carries no base URI to resolve one against (this exporter
+ * writes none; PDF 32000-1 §12.6.4.7), so a relative `/URI` action is dead or
+ * viewer-dependent.
+ *
+ * Pinned here because the divergence is easy to mistake for an oversight and
+ * "fix" by loosening the gate.
+ *
+ * The two defects that used to live at this emission site are pinned below:
+ * the gate validating a normalized string while the raw one is written
+ * (#988), and the raw one then being spliced into a PDF literal that escapes
+ * nothing (#990).
+ */
+describe('PdfExporter — link annotation targets', () => {
+  function linkDoc(href: string): Document {
+    return {
+      blocks: [{
+        id: generateBlockId(),
+        type: 'paragraph',
+        inlines: [{ text: 'Click me', style: { href } }],
+        style: { ...DEFAULT_BLOCK_STYLE },
+      }],
+    };
+  }
+
+  /**
+   * The distinct URI targets of every Link annotation in the export.
+   * Distinct because the painter emits one annotation per drawn text segment,
+   * so a single run can produce several identical annotations — a detail of
+   * how the text is measured, not of the gate under test here.
+   */
+  async function linkUris(doc: Document): Promise<string[]> {
+    const blob = await PdfExporter.export(doc, exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    const uris: string[] = [];
+    for (const page of pdfDoc.getPages()) {
+      const annots = page.node.lookup(PDFName.of('Annots'));
+      if (!(annots instanceof PDFArray)) continue;
+      for (let i = 0; i < annots.size(); i++) {
+        const annot = annots.lookup(i);
+        if (!(annot instanceof PDFDict)) continue;
+        const action = annot.lookup(PDFName.of('A'));
+        if (!(action instanceof PDFDict)) continue;
+        const uri = action.lookup(PDFName.of('URI'));
+
+        if (uri instanceof PDFString || uri instanceof PDFHexString) {
+          uris.push(uri.decodeText());
+        }
+      }
+    }
+    return [...new Set(uris)];
+  }
+
+  it('writes an annotation for an absolute safe URL', async () => {
+    expect(await linkUris(linkDoc('https://example.com/a'))).toEqual([
+      'https://example.com/a',
+    ]);
+  });
+
+  it('writes no annotation for an unsafe scheme', async () => {
+    expect(await linkUris(linkDoc('javascript:alert(1)'))).toEqual([]);
+  });
+
+  it('writes no annotation for a relative target, unlike Markdown export', async () => {
+    expect(await linkUris(linkDoc('/uploads/report.pdf'))).toEqual([]);
+    expect(await linkUris(linkDoc('./diagram.png'))).toEqual([]);
+    expect(await linkUris(linkDoc('#anchor'))).toEqual([]);
+  });
+
+  // ── The parser differential (#988) ──────────────────────────────────────
+  // `isSafeUrl` parses with WHATWG `new URL()`, which deletes every tab, CR
+  // and LF and trims C0-or-space *before* it reads the scheme. Gating on that
+  // and then writing `style.href` verbatim means the string that cleared the
+  // allowlist is not the string the annotation carries. Same payload table as
+  // the Markdown serializer's matching suite, because it is the same defect
+  // in a different emission site.
+  const BREAKOUT_PAYLOADS: Array<[string, string]> = [
+    ['a tab', 'https://example.com/a\tb'],
+    ['a line feed', 'https://example.com/a\nb'],
+    ['a carriage return', 'https://example.com/a\rb'],
+    ['a CRLF', 'https://example.com/a\r\nb'],
+    ['a space', 'https://example.com/a b'],
+    // Normalization strips the newline mid-scheme, so the *validated* string
+    // reads `javascript:` while the raw one names no scheme at all.
+    ['a scheme split by a newline', 'java\nscript:alert(1)'],
+    ['leading whitespace', '  https://example.com/a'],
+  ];
+
+  it.each(BREAKOUT_PAYLOADS)(
+    'writes no annotation for an href containing %s',
+    async (_label, href) => {
+      expect(await linkUris(linkDoc(href))).toEqual([]);
+    },
+  );
+
+  // ── PDF literal syntax (#990) ───────────────────────────────────────────
+  // `PDFString.of` escapes nothing, so an unbalanced `)` closed the literal,
+  // the following `>>` closed the annotation's `/A` dictionary, and the rest
+  // of the href became PDF syntax. Both assertions below failed before the
+  // fix — the injection one by emitting a different URI, and `PDFDocument`
+  // .load throwing outright on the malformed object.
+  it('round-trips an href containing PDF literal delimiters', async () => {
+    // Parens are ordinary URI characters the serializer keeps, so they
+    // reach the literal and must be escaped there.
+    expect(await linkUris(linkDoc('https://example.com/a)b'))).toEqual([
+      'https://example.com/a)b',
+    ]);
+    expect(await linkUris(linkDoc('https://example.com/a(b'))).toEqual([
+      'https://example.com/a(b',
+    ]);
+  });
+
+  // The other half of #988: a URL parser rewrites more than whitespace.
+  // For a special scheme it folds a backslash into `/`, so the authority
+  // `isSafeUrl` judged and the one a raw string resolves to under an RFC
+  // 3986 parser are different hosts. Writing the serialization is what
+  // makes the judged string and the written string the same string.
+  it('writes the authority the gate validated, not the raw one', async () => {
+    expect(await linkUris(linkDoc('https://good.com\\@evil.com/'))).toEqual([
+      'https://good.com/@evil.com/',
+    ]);
+  });
+
+
+  // pdf-lib writes a literal one *byte* per UTF-16 code unit, truncating
+  // each `charCodeAt`. So a non-ASCII character whose low byte is 0x28 /
+  // 0x29 / 0x5C emits a raw delimiter that an escaper working on code
+  // points never sees — U+0429 re-opened the injection above, and U+0428
+  // corrupted the file outright. Percent-encoding non-ASCII before the
+  // escape is what makes the escape total.
+  it.each([
+    ['U+0429, whose low byte is `)`', String.fromCharCode(0x0429)],
+    ['U+0428, whose low byte is `(`', String.fromCharCode(0x0428)],
+    ['U+D55C, whose low byte is a backslash', String.fromCharCode(0xd55c)],
+  ])('does not let %s reach the literal as a raw delimiter', async (_label, ch) => {
+    const href = `https://example.com/${ch}>>/JS(app.alert(1))`;
+    // Percent-encoded, so the URI reads as one value and nothing escapes
+    // into the dictionary.
+    expect(await linkUris(linkDoc(href))).toEqual([
+      `https://example.com/${encodeURIComponent(ch)}%3E%3E/JS(app.alert(1))`,
+    ]);
+  });
+
+  it('percent-encodes a non-ASCII path and punycodes a non-ASCII host', async () => {
+    expect(await linkUris(linkDoc('https://example.com/\uD55C\uAE00'))).toEqual([
+      'https://example.com/%ED%95%9C%EA%B8%80',
+    ]);
+    // A host must be punycoded, never percent-encoded — percent-encoding
+    // one produces a link no resolver can follow.
+    expect(await linkUris(linkDoc('https://\u00E9xample.com/'))).toEqual([
+      'https://xn--xample-9ua.com/',
+    ]);
+    // An href that already carries percent-escapes is ASCII, so it is left
+    // exactly as written rather than re-encoded to `%2541`.
+    expect(await linkUris(linkDoc('https://example.com/a%41b'))).toEqual([
+      'https://example.com/a%41b',
+    ]);
+  });
+
+  // A lone surrogate has no UTF-8 encoding. The URL serializer replaces it
+  // with U+FFFD, so it can never reach `encodeURIComponent` (which would
+  // throw) — the annotation is written, carrying the replacement.
+  it('replaces a lone surrogate rather than throwing', async () => {
+    expect(await linkUris(linkDoc('https://example.com/\uD800'))).toEqual([
+      'https://example.com/%EF%BF%BD',
+    ]);
+  });
+  it('does not let an href inject keys into the annotation dictionary', async () => {
+    const href = 'https://example.com/)>>/JS(app.alert(1))';
+    // The whole href survives as one URI value, rather than half of it
+    // becoming the value and the remainder becoming dictionary keys. `>`
+    // arrives percent-encoded because what is written is the URL parser's
+    // own serialization, which is the string the gate judged.
+    expect(await linkUris(linkDoc(href))).toEqual([
+      'https://example.com/)%3E%3E/JS(app.alert(1))',
+    ]);
+
+    const blob = await PdfExporter.export(linkDoc(href), exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer(), {
+      updateMetadata: false,
+    });
+    for (const page of pdfDoc.getPages()) {
+      const annots = page.node.lookup(PDFName.of('Annots'));
+      if (!(annots instanceof PDFArray)) continue;
+      for (let i = 0; i < annots.size(); i++) {
+        const annot = annots.lookup(i);
+        if (!(annot instanceof PDFDict)) continue;
+        expect(annot.lookup(PDFName.of('JS'))).toBeUndefined();
+        const action = annot.lookup(PDFName.of('A'));
+        if (!(action instanceof PDFDict)) continue;
+        expect(action.lookup(PDFName.of('JS'))).toBeUndefined();
+        expect(action.keys().map(String).sort()).toEqual([
+          '/S',
+          '/Type',
+          '/URI',
+        ]);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unusable stored geometry
+// ---------------------------------------------------------------------------
+// Same argument as the DOCX exporter's matching suite: `resolvePageSetup` is
+// the model's single read path for stored geometry, and the Export menu can
+// hand either exporter a `pageSetup` no local write ever validated — a `.docx`
+// import's parsed geometry, or a collaborator's CRDT write, which
+// `YorkieDocStore.readPageSetup` renders as `NaN` for any missing field.
+// Reading `doc.pageSetup` raw propagates that NaN into the content width, the
+// pagination and finally the page's MediaBox: `paginateLayout` terminates, so
+// the failure is a corrupt PDF rather than a hang.
+describe('PdfExporter — unusable stored page setup', () => {
+  const nanSetup = {
+    paperSize: { name: 'Letter', width: NaN, height: NaN },
+    orientation: 'portrait' as const,
+    margins: { top: NaN, bottom: NaN, left: NaN, right: NaN },
+  };
+
+  const docWith = (pageSetup: unknown): Document => ({
+    blocks: [{
+      id: generateBlockId(),
+      type: 'paragraph',
+      inlines: [{ text: 'Hello', style: {} }],
+      style: { ...DEFAULT_BLOCK_STYLE },
+    }],
+
+    pageSetup: pageSetup as Document['pageSetup'],
+  });
+
+  it('emits finite page dimensions for a NaN page setup', async () => {
+    const blob = await PdfExporter.export(docWith(nanSetup), exportOpts());
+    const pdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+    const pages = pdfDoc.getPages();
+    expect(pages.length).toBeGreaterThan(0);
+    for (const page of pages) {
+      const { width, height } = page.getSize();
+      expect(Number.isFinite(width)).toBe(true);
+      expect(Number.isFinite(height)).toBe(true);
+      expect(width).toBeGreaterThan(0);
+      expect(height).toBeGreaterThan(0);
+    }
+  });
+
+  it('matches the default-geometry export, since that is what it falls back to', async () => {
+    const nan = await PdfExporter.export(docWith(nanSetup), exportOpts());
+    const bare = await PdfExporter.export(docWith(undefined), exportOpts());
+    const nanPage = (await PDFDocument.load(await nan.arrayBuffer())).getPage(0);
+    const barePage = (await PDFDocument.load(await bare.arrayBuffer())).getPage(0);
+    expect(nanPage.getSize()).toEqual(barePage.getSize());
+  });
+
+  it('survives a page setup missing paperSize and margins entirely', async () => {
+    const blob = await PdfExporter.export(
+      docWith({ orientation: 'portrait' }),
+      exportOpts(),
+    );
+    const page = (await PDFDocument.load(await blob.arrayBuffer())).getPage(0);
+    const { width, height } = page.getSize();
+    expect(Number.isFinite(width) && width > 0).toBe(true);
+    expect(Number.isFinite(height) && height > 0).toBe(true);
+  });
+});
+
+describe('PdfExporter (named-style colors are always the light surface)', () => {
+  // The single most important test of the dark-mode named-style work.
+  //
+  // PDF export runs *client-side*, in the same module instance where the docs
+  // editor has already called `setThemeMode('dark')`. The exporter resolves the
+  // named styles on the light surface only because it omits `surface` from the
+  // `LayoutOptions` it passes (`DOCS_LAYOUT_OPTIONS` carries no such key), so
+  // this asserts the actual bytes rather than the intent: a heading 3 exported
+  // from a dark-mode editor must still be painted `#434343` on white paper, not
+  // the dark page's `#B0B0B0`.
+  afterEach(() => {
+    // `setThemeMode` mutates a module-level global shared with the slides
+    // text-box suites — never leave it dark.
+    setThemeMode('light');
+  });
+
+  /** The `r g b rg` fill-color operators in page 0's content stream. */
+  async function fillColorOps(blob: Blob): Promise<string[]> {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const loaded = await PDFDocument.load(bytes);
+    const contents = loaded.getPage(0).node.Contents()!;
+    const refs = contents instanceof PDFArray ? contents.asArray() : [contents];
+    let text = '';
+    for (const ref of refs) {
+      // pdf-lib Flate-compresses content streams on save(); a future version
+      // that stops would still be read correctly by the raw fallback.
+      const stream = loaded.context.lookup(ref) as { contents?: Uint8Array };
+      const raw = Buffer.from(stream.contents ?? new Uint8Array());
+      try {
+        text += zlib.inflateSync(raw).toString('latin1');
+      } catch {
+        text += raw.toString('latin1');
+      }
+    }
+    return text.match(/[-\d.]+ [-\d.]+ [-\d.]+ rg/g) ?? [];
+  }
+
+  const GREY = (hex: string) => {
+    const c = (i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+    return `${c(0)} ${c(1)} ${c(2)} rg`;
+  };
+
+  function greyDoc(): Document {
+    return {
+      blocks: [
+        {
+          id: generateBlockId(),
+          type: 'heading',
+          headingLevel: 3,
+          inlines: [{ text: 'Heading three', style: {} }],
+          style: { ...DEFAULT_BLOCK_STYLE },
+        },
+        {
+          id: generateBlockId(),
+          type: 'subtitle',
+          inlines: [{ text: 'A subtitle', style: {} }],
+          style: { ...DEFAULT_BLOCK_STYLE },
+        },
+      ],
+    };
+  }
+
+  it('exports the light greys even when the editor is in dark mode', async () => {
+    setThemeMode('dark');
+    const ops = await fillColorOps(await PdfExporter.export(greyDoc(), exportOpts()));
+    expect(ops).toContain(GREY('#434343'));
+    expect(ops).toContain(GREY('#666666'));
+    expect(ops).not.toContain(GREY('#B0B0B0'));
+    expect(ops).not.toContain(GREY('#999999'));
+  });
+
+  it('produces byte-identical color output in both theme modes', async () => {
+    setThemeMode('light');
+    const light = await fillColorOps(await PdfExporter.export(greyDoc(), exportOpts()));
+    setThemeMode('dark');
+    const dark = await fillColorOps(await PdfExporter.export(greyDoc(), exportOpts()));
+    expect(dark).toEqual(light);
+  });
+});

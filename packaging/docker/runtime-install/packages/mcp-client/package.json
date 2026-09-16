@@ -1,0 +1,19 @@
+{
+  "name": "@nautilo/mcp-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "1.1.45",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/relay": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "cockatiel": "4.0.0",
+    "zod": "4.3.6"
+  }
+}

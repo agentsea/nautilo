@@ -1,0 +1,18 @@
+{
+  "status": "partial",
+  "partial": true,
+  "operationCounts": { "add": 1, "update": 0, "move": 0, "delete": 0 },
+  "pathResults": [
+    { "operation": "add", "path": "docs/committed.md", "status": "applied", "bytesTouched": 5, "revisionId": "revision-prefix" },
+    { "operation": "update", "path": "src/config.ts", "status": "unknown", "bytesTouched": null, "revisionId": null, "error": { "code": "partial_execution", "message": "State unknown after writing [authorized-root]/src/config.ts", "retryable": false } },
+    { "operation": "delete", "path": "tmp/later.txt", "status": "not_applied", "bytesTouched": 0, "revisionId": null, "error": { "code": "partial_execution", "message": "Not attempted after the prior failure.", "retryable": false } }
+  ],
+  "changedFiles": [
+    { "operation": "add", "path": "docs/committed.md", "status": "applied", "bytesTouched": 5, "revisionId": "revision-prefix" }
+  ],
+  "revisionIds": ["revision-prefix"],
+  "unifiedDiff": "diff --git a/[authorized-root]/src/config.ts b/[authorized-root]/src/config.ts\n",
+  "runtimeVersion": "nautilo-apply-patch@3389fa55",
+  "turnId": "turn-partial-1",
+  "error": { "code": "partial_execution", "message": "A committed prefix remains under [authorized-root].", "retryable": false }
+}

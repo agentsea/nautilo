@@ -1,0 +1,1 @@
+ALTER TABLE "server_profile" ADD COLUMN "reviewed_at" timestamp with time zone;

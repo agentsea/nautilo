@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "m212-pool-construction-allowlist.schema.json",
+  "title": "M212 pool construction allowlist",
+  "type": "object",
+  "required": ["issue", "phase", "description", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "issue": { "type": "string", "minLength": 1 },
+    "phase": { "type": "integer", "minimum": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!\\.\\./)[^\\s]+$"
+          },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

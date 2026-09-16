@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.base.json",
+  "include": [
+    "security-test-env/provision-relay-pairing.ts",
+    "stack309-android-emulator-input-helper.ts",
+    "stack309-dev-invite-fixture.test.ts"
+  ]
+}

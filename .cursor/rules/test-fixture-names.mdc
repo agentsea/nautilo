@@ -1,0 +1,20 @@
+---
+description: Use neutral persona names in tests
+globs: "**/*.{test,spec}.{ts,tsx}"
+alwaysApply: false
+---
+
+# Neutral Test Fixture Names
+
+Do not use real operator, teammate, friend, or customer names/handles/emails in
+test fixtures, snapshots, mock users, comments, or expected strings.
+
+Use role-based or synthetic names instead:
+
+- Good: `Sender`, `Recipient`, `Agent Owner`, `Room Admin`, `Guest User`
+- Good: `Test User A`, `Test User B`, `Bot Alpha`, `Bot Beta`
+- Good handles/emails: `sender`, `recipient`, `agent-owner`, `user-a@test.local`
+- Avoid: real people names, real handles, or personal email-shaped fixtures.
+
+If a test needs multiple humans, name them by role in the scenario:
+`requester`, `recipient`, `roomOwner`, `agentOwner`, `viewer`.

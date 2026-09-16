@@ -1,0 +1,1 @@
+ALTER TABLE "session_messages" ADD COLUMN "summary_revision" integer DEFAULT 0 NOT NULL;

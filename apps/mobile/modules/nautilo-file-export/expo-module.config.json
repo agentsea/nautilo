@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["NautiloFileExportModule"]
+  },
+  "android": {
+    "modules": ["ai.nautilo.fileexport.NautiloFileExportModule"]
+  }
+}

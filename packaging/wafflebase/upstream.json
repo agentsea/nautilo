@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/wafflebase/wafflebase.git",
+  "revision": "acde58012910ec68645c65b6896d5408fad1645c",
+  "version": "0.6.9",
+  "ownership": "nautilo-monorepo-source",
+  "license": "Apache-2.0"
+}

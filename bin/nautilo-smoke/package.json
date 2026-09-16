@@ -1,0 +1,26 @@
+{
+  "name": "@nautilo/smoke-bin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI for driving security smoke tests against Lima/Tart VMs",
+  "bin": {
+    "nautilo-smoke": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit/"
+  },
+  "dependencies": {
+    "@nautilo/smoke-runner": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

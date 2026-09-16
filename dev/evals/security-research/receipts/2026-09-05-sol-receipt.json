@@ -1,0 +1,529 @@
+{
+  "httpStatus": 200,
+  "bytes": 18406,
+  "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+  "runId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+  "startedAt": "2026-09-05T20:44:56.063Z",
+  "completedAt": "2026-09-05T20:49:08.358Z",
+  "executionState": "completed",
+  "model": "openai:gpt-5.6-sol",
+  "toolResults": 54,
+  "scanStart": {
+    "version": "security-scan-v1",
+    "scanId": "scan_eee17c31de8ad1da0199653c92d7c706f22d22a244eaec07",
+    "state": "active",
+    "phase": "researching",
+    "terminalState": null,
+    "mode": "deep_research",
+    "targetDirectory": ".",
+    "targetFingerprint": "68b2af6a1bcfbf373fa9bca01cd12ecf8eda4950c0381312b7f64d01f086b65e",
+    "modelId": "openai:gpt-5.6-sol",
+    "modelState": "running",
+    "completedSteps": 1,
+    "totalSteps": 2,
+    "lanes": [
+      {
+        "probe": "gitleaks",
+        "state": "completed",
+        "observationCount": 0,
+        "coverage": "limited",
+        "error": null
+      },
+      {
+        "probe": "osv_scanner",
+        "state": "unavailable",
+        "observationCount": 0,
+        "coverage": "limited",
+        "error": {
+          "code": "probe_unavailable",
+          "retryable": false,
+          "message": "OSV found no supported package sources in the target. Dependency vulnerability coverage is unavailable; no dependencies were verified."
+        }
+      },
+      {
+        "probe": "trivy",
+        "state": "completed",
+        "observationCount": 0,
+        "coverage": "limited",
+        "error": null
+      },
+      {
+        "probe": "semgrep",
+        "state": "completed",
+        "observationCount": 0,
+        "coverage": "limited",
+        "error": null
+      }
+    ],
+    "coverage": [],
+    "hypotheses": []
+  },
+  "finalPage": {
+    "ok": true,
+    "operation": "results",
+    "result": {
+      "reportReady": true,
+      "version": "security-scan-v1",
+      "status": {
+        "version": "security-scan-v1",
+        "scanId": "scan_eee17c31de8ad1da0199653c92d7c706f22d22a244eaec07",
+        "state": "partial",
+        "phase": null,
+        "terminalState": "partial",
+        "mode": "deep_research",
+        "targetDirectory": ".",
+        "targetFingerprint": "68b2af6a1bcfbf373fa9bca01cd12ecf8eda4950c0381312b7f64d01f086b65e",
+        "modelId": "openai:gpt-5.6-sol",
+        "modelState": "completed",
+        "completedSteps": 2,
+        "totalSteps": 2,
+        "lanes": [
+          {
+            "probe": "gitleaks",
+            "state": "completed",
+            "observationCount": 0,
+            "coverage": "limited",
+            "error": null
+          },
+          {
+            "probe": "osv_scanner",
+            "state": "unavailable",
+            "observationCount": 0,
+            "coverage": "limited",
+            "error": {
+              "code": "probe_unavailable",
+              "retryable": false,
+              "message": "OSV found no supported package sources in the target. Dependency vulnerability coverage is unavailable; no dependencies were verified."
+            }
+          },
+          {
+            "probe": "trivy",
+            "state": "completed",
+            "observationCount": 0,
+            "coverage": "limited",
+            "error": null
+          },
+          {
+            "probe": "semgrep",
+            "state": "completed",
+            "observationCount": 0,
+            "coverage": "limited",
+            "error": null
+          }
+        ],
+        "coverage": [
+          {
+            "surfaceKey": "direct-document-read",
+            "label": "Direct document reads",
+            "state": "reviewed",
+            "rationale": "Traced session.userId through document lookup, cached canRead decision, project membership source, and body return. Confirmed cross-user cache collision; verified preview uses fresh membership and narrows the bug to readDocument. All definitions and repository callers were searched."
+          },
+          {
+            "surfaceKey": "export-create-worker-download",
+            "label": "Export create/worker/download flow",
+            "state": "reviewed",
+            "rationale": "Traced untrusted projectId/documentId through createExport, shared job storage, worker dereference/serialization, state transition, and owner-only download. Confirmed cross-project object-binding failure; verified job ownership and ready-state guards; reviewed all callers/tests."
+          },
+          {
+            "surfaceKey": "session-authentication",
+            "label": "Gateway session authentication boundary",
+            "state": "limited",
+            "rationale": "Reviewed local requireSession use on every API function. Session authenticity, cookie validation/flags, CSRF protections, gateway-to-service integrity, and logout/expiry cannot be assessed because the documented trusted gateway and HTTP transport are absent. No local authentication bypass was claimed."
+          },
+          {
+            "surfaceKey": "tenant-isolation",
+            "label": "Project and user isolation",
+            "state": "reviewed",
+            "rationale": "Reviewed project membership checks, document-to-project association, shared authorization cache, shared jobs/results, job ownership enforcement, and authorization freshness. Two cross-project confidentiality failures are confirmed. Post-revocation export behavior remains unresolved because membership lifecycle semantics are absent."
+          },
+          {
+            "surfaceKey": "tests-and-config",
+            "label": "Tests, package metadata, and ignored build output",
+            "state": "limited",
+            "rationale": "Read all repository source, README, package metadata, tests, .gitignore, checked-out branch pointer, and the ignored dist/generated.js artifact. Existing tests omit cross-user cache ordering, mismatched export IDs, revocation, unauthenticated cases, and malformed input. Tests were not executed because authorized tools are read-only and provide no code-execution capability. OSV dependency verification was unavailable because package.json has no supported dependency source; Semgrep, Gitleaks, and"
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "record_2a6172ab8cf6af93f95c7c60",
+            "state": "supported",
+            "summary": "Confirmed: readDocument's shared readDecisions cache is keyed only by projectId, permitting cross-user reuse of allow/deny decisions."
+          },
+          {
+            "id": "record_1555c9ff692b82f764304072",
+            "state": "supported",
+            "summary": "Confirmed: export creation authorizes only the submitted projectId while the worker independently dereferences documentId, enabling cross-project export."
+          },
+          {
+            "id": "record_39cff7e55a6f28b7d264d7f7",
+            "state": "unresolved",
+            "summary": "Partially confirmed and left unresolved as a separate finding: direct-read cache decisions are indefinitely stale, but that is included in the confirmed cache finding. Export creation is one-time authorized and later stages do not recheck membership; however, the repository does not define revocation or snapshot-retention semantics, so post-revocation export access cannot be conclusively labeled a vulnerability from available source."
+          },
+          {
+            "id": "record_731789b971e5cc2bd9a9cc09",
+            "state": "rejected",
+            "summary": "Rejected within available repository scope: session authenticity is explicitly delegated to a trusted gateway, whose implementation is unavailable. Local truthiness-only validation is noted as defense-in-depth and an external coverage gap, not a demonstrated bypass."
+          }
+        ]
+      },
+      "observations": [],
+      "codeEvidence": [],
+      "records": [
+        {
+          "id": "record_6d2bbe9021311bf74fac275e",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:47:45.547Z",
+          "updatedAt": "2026-09-05T20:47:45.547Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "coverage",
+            "surfaceKey": "tenant-isolation",
+            "state": "reviewed",
+            "rationale": "Reviewed project membership checks, document-to-project association, shared authorization cache, shared jobs/results, job ownership enforcement, and authorization freshness. Two cross-project confidentiality failures are confirmed. Post-revocation export behavior remains unresolved because membership lifecycle semantics are absent.",
+            "evidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_e43560e7fb77b6bd96df2304"
+              },
+              {
+                "kind": "ledger_record",
+                "id": "record_8468182b0939b4039853cf26"
+              },
+              {
+                "kind": "ledger_record",
+                "id": "record_63375ac2de8851518deda0b5"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_6753ea34d51262af4cf7c879"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_a527a04db2f39f699fc34506"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_2ed79d4fbe8d9e366ab41888"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_61f28fea3f3ebd3240c3ba55"
+              }
+            ]
+          }
+        },
+        {
+          "id": "record_731789b971e5cc2bd9a9cc09",
+          "revision": 2,
+          "createdAt": "2026-09-05T20:47:18.908Z",
+          "updatedAt": "2026-09-05T20:47:26.431Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "hypothesis",
+            "summary": "Rejected within available repository scope: session authenticity is explicitly delegated to a trusted gateway, whose implementation is unavailable. Local truthiness-only validation is noted as defense-in-depth and an external coverage gap, not a demonstrated bypass.",
+            "state": "rejected",
+            "evidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_15a5d8b90eac92e85f676ea4"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_e183e2d983f82ad630dfcf8c"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_139f038975881748690b532a"
+              }
+            ],
+            "counterevidenceRefs": []
+          }
+        },
+        {
+          "id": "record_8468182b0939b4039853cf26",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:46:51.074Z",
+          "updatedAt": "2026-09-05T20:46:51.074Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "finding",
+            "title": "Export job binds authorization to one project but reads a document from another",
+            "summary": "POST /exports trusts separate caller-controlled projectId and documentId fields. It authorizes only projectId, queues documentId without resolving it, and the worker later serializes whichever document documentId names. An orchard member can queue doc-harbor under projectId orchard and download harbor's body as the job owner.",
+            "confidence": "high",
+            "impact": "Authenticated members can exfiltrate documents from projects/tenants they do not belong to through the asynchronous export path, bypassing both direct-read and preview membership checks.",
+            "exploitPreconditions": "Attacker has a valid session and membership in any project, knows or guesses another project's document ID, can invoke export creation, and the worker processes the queued job. The attacker then downloads their own ready job.",
+            "evidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_54790c18ca5ac9cd549cf48e"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_b6ddd8efa7a2ccbe9670dc0a"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_905ef1b5ad12d5106c0442d2"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_c93ccb8b9d0537e7bcef71e0"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_c68c28d2fd4a20603270edaa"
+              }
+            ],
+            "counterevidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_b76e48a346947a13b3daaf15"
+              }
+            ]
+          }
+        },
+        {
+          "id": "record_98078ab7975372bb65f67022",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:47:36.150Z",
+          "updatedAt": "2026-09-05T20:47:36.150Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "coverage",
+            "surfaceKey": "export-create-worker-download",
+            "state": "reviewed",
+            "rationale": "Traced untrusted projectId/documentId through createExport, shared job storage, worker dereference/serialization, state transition, and owner-only download. Confirmed cross-project object-binding failure; verified job ownership and ready-state guards; reviewed all callers/tests.",
+            "evidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_54790c18ca5ac9cd549cf48e"
+              },
+              {
+                "kind": "ledger_record",
+                "id": "record_b76e48a346947a13b3daaf15"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_841b7d34e1635c89b5075b88"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_a0b54aebf2db1d54f1177912"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_8fc3fc922b611ae5103b1551"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_7a55a80f4359a459293036cb"
+              }
+            ]
+          }
+        },
+        {
+          "id": "record_b76e48a346947a13b3daaf15",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:46:45.369Z",
+          "updatedAt": "2026-09-05T20:46:45.369Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "counterevidence",
+            "summary": "downloadExport correctly hides missing or foreign jobs and requires ready state, so another user cannot directly download the attacker's job. This does not defeat the cross-project export: the attacker remains the job owner and can download the unauthorized document. The existing export test uses matching orchard project/document IDs and therefore does not exercise the mismatch.",
+            "evidenceRefs": [
+              {
+                "kind": "code_evidence",
+                "id": "evidence_6980d0d9bbfe1d3ed1b89d6f"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_e733dde369d2a93f949624a6"
+              }
+            ]
+          }
+        },
+        {
+          "id": "record_ca4941029da30d8c97e064c6",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:46:24.692Z",
+          "updatedAt": "2026-09-05T20:46:24.692Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "evidence",
+            "summary": "Confirmed cross-user cache-key collision: readDocument derives userId, loads the document's projectId, then canRead reads and writes store.readDecisions using only projectId. Once any user stores true for a project, later users receive true without a membership lookup; no cache invalidation or user component exists anywhere in the repository.",
+            "evidenceRefs": [
+              {
+                "kind": "code_evidence",
+                "id": "evidence_73ccd8c6af7193e583edcf88"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_9528f53312fe8253649003f2"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_6815ddd1f4e4e437207cb674"
+              }
+            ]
+          }
+        },
+        {
+          "id": "record_e16f1843d54790e2ba98fcf0",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:47:39.482Z",
+          "updatedAt": "2026-09-05T20:47:39.482Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "coverage",
+            "surfaceKey": "session-authentication",
+            "state": "limited",
+            "rationale": "Reviewed local requireSession use on every API function. Session authenticity, cookie validation/flags, CSRF protections, gateway-to-service integrity, and logout/expiry cannot be assessed because the documented trusted gateway and HTTP transport are absent. No local authentication bypass was claimed.",
+            "evidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_15a5d8b90eac92e85f676ea4"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_2208dc334bc153ed7daf4a7b"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_f4941d90342cef0fc411d085"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_dbba59470da780c0fae557bd"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_619581bfefdc63981b17de4e"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_4f9943da5abed7e06194f175"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_b8608c03c8580dbed925d225"
+              }
+            ]
+          }
+        },
+        {
+          "id": "record_e43560e7fb77b6bd96df2304",
+          "revision": 1,
+          "createdAt": "2026-09-05T20:46:34.550Z",
+          "updatedAt": "2026-09-05T20:46:34.550Z",
+          "createdBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "updatedBy": {
+            "taskId": "fa0f8827-682e-41bc-801e-4a5ea306e57a",
+            "taskRunId": "7fceb066-f81f-4434-9de2-169e6acbaea6",
+            "modelId": "openai:gpt-5.6-sol"
+          },
+          "entry": {
+            "kind": "finding",
+            "title": "Project-only authorization cache leaks documents across users",
+            "summary": "readDocument caches a membership decision by projectId alone. After a legitimate member reads any document in a project, an authenticated nonmember can request a document in that project and receive its body because canRead returns the prior user's cached true without checking the current user. Reverse request order also creates persistent false denials for legitimate members.",
+            "confidence": "high",
+            "impact": "Cross-project confidentiality breach for direct document reads; request ordering can also cause authorization denial-of-service. The shared store makes the decision global to all users of the service instance.",
+            "exploitPreconditions": "Attacker has any gateway-authenticated session and knows or guesses a target document ID. A project member must previously cause a successful direct read for that project in the same store lifetime; document IDs are supplied directly at the route boundary.",
+            "evidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_ca4941029da30d8c97e064c6"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_0bcc61468ceccfe2962413e2"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_3106ed8df4b48d07dc413fc3"
+              },
+              {
+                "kind": "code_evidence",
+                "id": "evidence_950c91fc547b53ce2eef3edb"
+              }
+            ],
+            "counterevidenceRefs": [
+              {
+                "kind": "ledger_record",
+                "id": "record_645e8219ffddac8b609a94e9"
+              }
+            ]
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  "reportMatchesTaskAnswer": true
+}

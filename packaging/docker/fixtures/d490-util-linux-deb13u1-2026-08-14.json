@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "workflowRunId": 31827859101,
+  "sourceSha": "760480b868db785ee3e57859236b108c392df904",
+  "architectures": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "databaseIdentities": {
+    "grype": "5cda03620f5bc8012feb682198f3e48a984068c760bfbdce1284ff152e60ed89",
+    "trivy": "76213b27bda05820231b84c09ca2854ec548147e9b46c0974247116f4ced4f67"
+  },
+  "findingTuples": [
+    ["trivy", "CVE-2026-53615", "bsdutils", "1:2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "libblkid1", "2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "liblastlog2-2", "2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "libmount1", "2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "libsmartcols1", "2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "libuuid1", "2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "login", "1:4.16.0-2+really2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "mount", "2.41.5-0+deb13u1", "high"],
+    ["trivy", "CVE-2026-53615", "util-linux", "2.41.5-0+deb13u1", "high"]
+  ]
+}

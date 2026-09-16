@@ -1,0 +1,183 @@
+{
+  "schema": "nautilo/reflection-foreground-context-eval/v1",
+  "corpusVersion": "reflection-foreground-context-2026-08-15.1",
+  "selectedCandidate": "balanced_semantic_first",
+  "policy": {
+    "policyVersion": 1,
+    "queryMaximumUtf8Bytes": 4096,
+    "initialRecordLimit": 5,
+    "recordSelectionSoftDeadlineMilliseconds": 5000,
+    "semanticFlexibleCharactersPercent": 50,
+    "journalSemanticSharePercent": 55,
+    "recordSemanticSharePercent": 45,
+    "estimatedCharactersPerToken": 4
+  },
+  "hardGatesPassed": true,
+  "candidates": [
+    {
+      "candidate": "balanced_semantic_first",
+      "passed": true,
+      "continuityRate": 1,
+      "outcomes": [
+        {
+          "scenarioId": "referential-decision-rationale",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 650
+        },
+        {
+          "scenarioId": "outstanding-commitment",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 600
+        },
+        {
+          "scenarioId": "recent-correction",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 298
+        },
+        {
+          "scenarioId": "useful-parent-and-leaf",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 428
+        },
+        {
+          "scenarioId": "unrelated-empty-selection",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 79
+        },
+        {
+          "scenarioId": "oversized-mandatory-suffix",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 120
+        }
+      ]
+    },
+    {
+      "candidate": "journal_first",
+      "passed": false,
+      "continuityRate": 0.8333333333333334,
+      "outcomes": [
+        {
+          "scenarioId": "referential-decision-rationale",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 650
+        },
+        {
+          "scenarioId": "outstanding-commitment",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 86
+        },
+        {
+          "scenarioId": "recent-correction",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 298
+        },
+        {
+          "scenarioId": "useful-parent-and-leaf",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 428
+        },
+        {
+          "scenarioId": "unrelated-empty-selection",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 79
+        },
+        {
+          "scenarioId": "oversized-mandatory-suffix",
+          "passed": false,
+          "bounded": true,
+          "requiredRetained": false,
+          "forbiddenAbsent": false,
+          "characters": 120
+        }
+      ]
+    },
+    {
+      "candidate": "records_first",
+      "passed": false,
+      "continuityRate": 0.5,
+      "outcomes": [
+        {
+          "scenarioId": "referential-decision-rationale",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 273
+        },
+        {
+          "scenarioId": "outstanding-commitment",
+          "passed": false,
+          "bounded": true,
+          "requiredRetained": false,
+          "forbiddenAbsent": true,
+          "characters": 600
+        },
+        {
+          "scenarioId": "recent-correction",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 251
+        },
+        {
+          "scenarioId": "useful-parent-and-leaf",
+          "passed": true,
+          "bounded": true,
+          "requiredRetained": true,
+          "forbiddenAbsent": true,
+          "characters": 378
+        },
+        {
+          "scenarioId": "unrelated-empty-selection",
+          "passed": false,
+          "bounded": true,
+          "requiredRetained": false,
+          "forbiddenAbsent": true,
+          "characters": 29
+        },
+        {
+          "scenarioId": "oversized-mandatory-suffix",
+          "passed": false,
+          "bounded": true,
+          "requiredRetained": false,
+          "forbiddenAbsent": true,
+          "characters": 120
+        }
+      ]
+    }
+  ]
+}

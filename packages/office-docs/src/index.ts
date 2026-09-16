@@ -1,0 +1,239 @@
+// Model
+export type {
+  Document,
+  Block,
+  BlockType,
+  HeadingLevel,
+  Inline,
+  BlockStyle,
+  BlockMarker,
+  InlineStyle,
+  ImageData,
+  DocPosition,
+  DocRange,
+  PageSetup,
+  PageMargins,
+  PaperSize,
+  TableData,
+  TableRow,
+  TableCell,
+  CellStyle,
+  BorderStyle,
+  CellAddress,
+  CellRange,
+  BlockCellInfo,
+  TableCellRange,
+  HeaderFooter,
+} from './model/types.js';
+export {
+  DEFAULT_BLOCK_STYLE,
+  DEFAULT_INLINE_STYLE,
+  CLEAR_INLINE_STYLE,
+  DEFAULT_PAGE_SETUP,
+  PAPER_SIZES,
+  MIN_CONTENT_PX,
+  LIST_INDENT_PX,
+  UNORDERED_MARKERS,
+  ORDERED_FORMATS,
+  createBlock,
+  createEmptyBlock,
+  generateBlockId,
+  getBlockText,
+  getBlockTextLength,
+  inlineStylesEqual,
+  isStructuralInline,
+  normalizeStyleClears,
+  normalizeCellStyleClears,
+  resolvePageSetup,
+  getEffectiveDimensions,
+  normalizeBlockStyle,
+  DEFAULT_CELL_STYLE,
+  DEFAULT_BORDER_STYLE,
+  createTableBlock,
+  createTableCell,
+  getCellText,
+  DEFAULT_HEADER_MARGIN_FROM_EDGE,
+} from './model/types.js';
+
+// Yorkie Tree attribute codec for block style. Shared by the editor store
+// (`YorkieDocStore`) and the backend's `docs-tree.ts` so both writers encode
+// the same attributes and either reader can invert the other's output.
+export {
+  BLOCK_ALIGNMENTS,
+  BLOCK_STYLE_NUMERIC_FIELDS,
+  AUTHORED_SPACING_ATTRS,
+  AUTHORED_SPACING_FIELDS,
+  isBlockAlignment,
+  serializeBlockStyleAttrs,
+  parseBlockStyleAttrs,
+  serializeMarginFromEdgeAttrs,
+  parseMarginFromEdgeAttr,
+} from './model/crdt-attrs.js';
+export {
+  docsTreeToDocument,
+  parseBorderStyle,
+  treeNodeToBlock,
+} from './model/crdt-tree.js';
+export type { DocsTreeNode } from './model/crdt-tree.js';
+export type { StyleId, NamedStyleDef, DocStyles, BlockSpacing, BlockSpacingContext, StyleSurface } from './model/named-styles.js';
+export {
+  BUILTIN_STYLES,
+  STYLE_IDS,
+  blockStyleId,
+  resolveStyleInline,
+  resolveStyleBlock,
+  omitBuiltinStyleDefaults,
+  effectiveBlockSpacing,
+  STYLE_OWNED_SPACING_DEFAULTS,
+  STYLE_OWNED_SPACING_MARKERS,
+  markAuthoredSpacing,
+  clearAuthoredSpacing,
+  materializeBlockSpacing,
+  rematerializeDocSpacing,
+} from './model/named-styles.js';
+export { Doc } from './model/document.js';
+export type { EditContext } from './model/document.js';
+export type { StoredColor, ColorResolver } from './model/color.js';
+export {
+  defaultColorResolver,
+  storedColorsEqual,
+  toRgbHexColor,
+  wrapLegacyColor,
+} from './model/color.js';
+
+// Store
+export type { DocStore } from './store/store.js';
+export { MemDocStore } from './store/memory.js';
+export {
+  resolveOffset,
+  resolveDeleteRange,
+  resolveStyleRange,
+  normalizeInlines,
+  applyInsertText,
+  applyDeleteText,
+  applyInlineStyle as applyInlineStyleHelper,
+  resolveScriptExclusion,
+  applyInsertInline,
+  applySplitBlock,
+  applyMergeBlocks,
+  mergeDropsHeadingMemory,
+  splitMovesHeadingMemory,
+  resolveOffsetForSplit,
+} from './store/block-helpers.js';
+export type { InlinePosition, InlineSegment } from './store/block-helpers.js';
+
+// View
+export { initialize, type EditorAPI } from './view/editor.js';
+export { TextEditor } from './view/text-editor.js';
+export {
+  initializeTextBox,
+  type TextBoxEditorAPI,
+  type TextBoxEditorOptions,
+} from './view/text-box-editor.js';
+export { paintLayout, type PaintLayoutOpts } from './view/paint-layout.js';
+export { findPositionAtPixel, type PixelPosition } from './view/find-position-at-pixel.js';
+export type { TableMergeContext } from './view/table-merge-context.js';
+export { computeLayout, computeListCounters, clearMeasureCache, disposeMeasureCache, DOCS_LAYOUT_OPTIONS } from './view/layout.js';
+export type {
+  DocumentLayout,
+  LayoutBlock,
+  LayoutLine,
+  LayoutOptions,
+  LayoutRun,
+} from './view/layout.js';
+export {
+  paginateLayout,
+  getPageYOffset,
+  getTotalHeight,
+  getPageXOffset,
+  findPageForPosition,
+  paginatedPixelToPosition,
+} from './view/pagination.js';
+export type {
+  PageLine,
+  LayoutPage,
+  PaginatedLayout,
+} from './view/pagination.js';
+// `getThemeMode` is exported here but deliberately NOT from `node.ts`: the
+// CLI/export surface must have no way to reach the editor's theme mode at all
+// (see `resolveStyleInline`).
+export { Theme, buildFont, ptToPx, setThemeMode, getTheme, getThemeMode } from './view/theme.js';
+export type { ThemeMode, DocTheme } from './view/theme.js';
+export type { TextMeasurer, ResolvedFont } from './view/measurer.js';
+export { CanvasTextMeasurer } from './view/canvas-measurer.js';
+export { DocCanvas } from './view/doc-canvas.js';
+export { Cursor } from './view/cursor.js';
+export {
+  type PeerCursor,
+  type PositionPixel,
+  resolvePositionPixel,
+  drawPeerCaret,
+  drawPeerLabel,
+} from './view/peer-cursor.js';
+export { Selection } from './view/selection.js';
+export {
+  Ruler,
+  RULER_SIZE,
+  detectUnit,
+  getGridConfig,
+  snapToGrid,
+  drawTicks,
+} from './view/ruler/index.js';
+export type {
+  RulerUnit,
+  GridConfig,
+  TickDensity,
+  DrawTicksOpts,
+} from './view/ruler/index.js';
+export { FindReplaceState } from './view/find-replace.js';
+export type { SearchMatch, SearchOptions } from './model/types.js';
+export type { CommentMarker, HighlightRect } from './view/comment-markers.js';
+export {
+  SHORTCUTS,
+  formatCombo,
+  type ShortcutEntry,
+  type ShortcutCategory,
+} from './view/shortcuts-catalog.js';
+export { findMarkerAt } from './view/comment-markers.js';
+
+// Spell check (view-local; never serialized to the CRDT)
+export { SpellSession } from './spell/session.js';
+export type { SpellError, DocLike } from './spell/session.js';
+export { SpellRouter } from './spell/router.js';
+export { LocalSpellProvider } from './spell/local-provider.js';
+export type { SpellChecker, Lang, Script } from './spell/spell-checker.js';
+export { isSafeUrl, normalizeLinkUrl } from './view/url-detect.js';
+export { computeScaleFactor, MOBILE_PADDING } from './view/scale.js';
+export type { LayoutTable, LayoutTableCell } from './view/table-layout.js';
+export { resolveFontFamily, isKoreanCapableFamily, FontRegistry } from './view/fonts.js';
+
+// Serialize (Markdown / text / JSON)
+export { serializeMarkdown } from './serialize/markdown.js';
+export type { MarkdownOptions } from './serialize/markdown.js';
+export { serializeText } from './serialize/text.js';
+export type { TextOptions } from './serialize/text.js';
+export { serializeJson } from './serialize/json.js';
+export type { BlockPageMeta, SerializedJson } from './serialize/json.js';
+
+// Import / Export (DOCX)
+export { DocxImporter } from './import/docx-importer.js';
+export type { ImageUploader } from './import/docx-importer.js';
+export { DocxExporter } from './export/docx-exporter.js';
+// `ImageFetcher` is the historical name; `DocxImageFetcher` is the
+// disambiguated alias that survives both the browser entry and the
+// `node` exports condition. CLI / backend code should prefer the latter
+// to avoid colliding with `pdf-image-painter`'s `ImageFetcher`.
+export type {
+  ImageFetcher,
+  ImageFetcher as DocxImageFetcher,
+} from './export/docx-exporter.js';
+
+// Supplying this is what opts a caller into dropping an image the fetcher
+// could not deliver; exported so a consumer can name the type it passes.
+export type { ImageErrorReporter } from './export/pdf-image-painter.js';
+
+// Export (PDF)
+export { PdfExporter } from './export/pdf-exporter.js';
+export type { PdfExportOptions } from './export/pdf-exporter.js';
+export { PdfFonts, scanFontsUsed } from './export/pdf-fonts.js';
+export type { PdfFontKey, PdfFontsOptions, FontUsage } from './export/pdf-fonts.js';

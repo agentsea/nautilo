@@ -1,0 +1,9 @@
+appId: ai.nautilo.app
+name: Stack 309 keyboard resize smoke
+---
+- launchApp:
+    stopApp: true
+- tapOn: "https://your-server.example.com"
+- inputText: "https://server.example.test"
+- assertVisible: "Connect"
+- takeScreenshot: "stack309-keyboard-add-server"

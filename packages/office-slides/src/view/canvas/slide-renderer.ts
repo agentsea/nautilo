@@ -1,0 +1,406 @@
+// Modified by Nautilo: resolve the owned Office workspace packages.
+import type { Element, Frame } from '../../model/element';
+import type { BackgroundImage, Slide, SlidesDocument } from '../../model/presentation';
+import {
+  SLIDE_WIDTH,
+  deckSlideHeight,
+  getThemeForSlide,
+  resolveBackgroundFill,
+  resolveBackgroundImage,
+} from '../../model/presentation';
+import { buildElementWorldLookup } from '../../model/group';
+import { boundingBox } from '../../model/frame';
+import type { AnimState } from '../../anim/state';
+import { drawElement } from './element-renderer';
+import { drawImage, drawCropPreview, type CropPreview } from './image-renderer';
+import { resolveFillStyle } from './render-context';
+import { screenToWorld, type Viewport } from './viewport';
+
+/** Global alpha applied to the hover-ghost element so the user can see
+ * exactly what (kind + size + position) is about to be inserted while
+ * still reading the slide content underneath. */
+export const GHOST_ALPHA = 0.4;
+
+/**
+ * World-space (slide-logical px) margin the board-mode visible-cull rect
+ * is padded by on every side. A frame's AABB doesn't cover paint that
+ * renders outside it — drop shadows, reflections, thick strokes,
+ * connector arrowheads — so culling on the bare frame pops that overhang
+ * in/out at the viewport edge while panning/zooming. 64px comfortably
+ * covers typical shadow/reflection spread and stroke/arrowhead width.
+ * See {@link SlideRendererOptions.viewport}.
+ */
+const CULL_MARGIN = 64;
+
+export interface SlideRendererOptions {
+  hostWidth: number;   // CSS pixels of the SLIDE rect (excludes pasteboard)
+  hostHeight: number;  // CSS pixels of the SLIDE rect (excludes pasteboard)
+  dpr: number;         // devicePixelRatio
+  /**
+   * Slide-logical pixels from the canvas top-left to the slide rect
+   * top-left, on each axis. Non-zero values are how the editor turns
+   * the empty area around the slide inside `canvasWrap` (the
+   * "pasteboard") into a paint surface for off-slide elements.
+   * The caller sizes the actual `<canvas>` bitmap big enough to
+   * cover both the slide and the surrounding pasteboard; the
+   * renderer translates the slide-logical origin to
+   * `(slideOffsetLogicalX, slideOffsetLogicalY)` inside that bitmap
+   * and paints the slide background + shadow only in the slide
+   * rect, leaving the pasteboard transparent so `canvasWrap`'s CSS
+   * background can supply the pasteboard color.
+   *
+   * Defaults `0` preserve pre-pasteboard behaviour (canvas == slide).
+   */
+  slideOffsetLogicalX?: number;
+  slideOffsetLogicalY?: number;
+  /**
+   * When set, overrides the fixed fit-scale with an explicit pan/zoom
+   * transform (board mode: an unbounded infinite canvas rather than a
+   * single fitted slide rect). No slide-rect background is painted —
+   * the board itself supplies the surrounding plane.
+   */
+  viewport?: Viewport;
+  /**
+   * When `viewport` is also set, skip elements whose rotated AABB
+   * doesn't intersect the visible screen rect. No-op without
+   * `viewport`.
+   */
+  cull?: boolean;
+  /** Paint empty-slot authoring prompts. Off for presentation, previews and exports. */
+  showPlaceholderHints?: boolean;
+  /**
+   * Called after an async asset (e.g. a background or element image)
+   * finishes loading, in addition to the internal dirty flag. Consumers
+   * without a continuous render loop (mobile single-slide view, presenter)
+   * use this to schedule a repaint; the desktop editor's RAF loop repaints
+   * from the dirty flag alone and can omit it.
+   */
+  onAssetLoad?: () => void;
+}
+
+/**
+ * Renders a single `Slide` onto a Canvas 2D context. Owns the
+ * world↔host coordinate scale (logical 1920×1080 → host pixels) and
+ * a dirty flag so consumers can call `render()` on every animation
+ * frame without re-painting unchanged slides.
+ *
+ * One renderer per visible slide. Sharing a single renderer across
+ * multiple slides is an anti-pattern — the dirty flag is per-slide
+ * state.
+ */
+export class SlideRenderer {
+  private dirty = true;
+  // Explicit field declarations + body assignments instead of TypeScript
+  // parameter properties. Node's `--experimental-strip-types` (used by
+  // the frontend test runner) cannot parse parameter properties, so any
+  // file that flows through `@nautilo/office-slides`'s public surface must
+  // stay strip-types compatible — otherwise the SLIDES_SRC_INDEX
+  // fallback in `frontend/tests/resolve-hooks.mjs` blows up when the
+  // dist isn't pre-built.
+  private ctx: CanvasRenderingContext2D;
+  private options: SlideRendererOptions;
+
+  constructor(
+    ctx: CanvasRenderingContext2D,
+    options: SlideRendererOptions,
+  ) {
+    this.ctx = ctx;
+    this.options = options;
+  }
+
+  /** Trigger a repaint on the next `render()` call. */
+  markDirty(): void {
+    this.dirty = true;
+  }
+
+  /**
+   * Whether the next `render()` would actually paint.
+   *
+   * Exposed so consumers can skip the work they'd otherwise do to
+   * *build* `render()`'s arguments when the paint would be a no-op.
+   * `SlidesEditorImpl.render()` uses this: it must call
+   * `store.read()` to obtain the `slide`/`doc` pair, and on a large
+   * deck (or a board, which is one unbounded slide holding the whole
+   * document) that read deep-unwraps every element. Without this
+   * accessor the dirty short-circuit inside `render()` came far too
+   * late — the expensive read had already happened on every frame of
+   * the caller's RAF loop, even at idle.
+   */
+  isDirty(): boolean {
+    return this.dirty;
+  }
+
+  /**
+   * Asset-load callback handed to `drawSlide`. Marks the slide dirty and
+   * notifies the consumer so paths without a per-frame render loop (mobile
+   * view, presenter) can schedule a repaint. Consumers that re-drive
+   * `render()` every frame (desktop editor) leave `onAssetLoad` unset — the
+   * dirty flag alone repaints them on the next frame.
+   */
+  private handleAssetLoad(): void {
+    this.markDirty();
+    this.options.onAssetLoad?.();
+  }
+
+  /**
+   * Paint `slide` onto the bound ctx if dirty. No-op otherwise.
+   *
+   * `doc` and `slide` provide the scoped theme via `getThemeForSlide`; every
+   * `ctx.fillStyle` / `ctx.strokeStyle` downstream is resolved against
+   * that theme so the same canvas pipeline serves both srgb (literal)
+   * and role-bound (palette) colors.
+   */
+  render(slide: Slide, doc: SlidesDocument): void {
+    if (!this.dirty) return;
+    drawSlide(this.ctx, slide, doc, this.options, () => this.handleAssetLoad());
+    this.dirty = false;
+  }
+
+  /**
+   * Paint unconditionally (bypass the dirty check). Used by interaction
+   * live-paint paths in the editor that need to draw an in-memory
+   * frame override on every mousemove without committing to the store.
+   *
+   * `ghosts` — optional elements drawn on top of the committed slide at
+   * `GHOST_ALPHA`. Used by three live-paint paths:
+   *   - shape-insert hover preview (single ghost of the to-be-inserted
+   *     shape under the cursor before mousedown).
+   *   - connector endpoint drag preview (single ghost copy of the
+   *     connector with the dragged endpoint moved to the cursor target,
+   *     while the real connector stays anchored on `slide`).
+   *   - shape-move drag preview (one ghost per selected element at the
+   *     dragged offset).
+   * Kept out of `slide` so the ghost never participates in selection,
+   * hit-test, or z-order. For a connector ghost, attached endpoints
+   * still resolve through `slide`'s element lookup, so a half-attached
+   * ghost line stays visually anchored to its host shape.
+   */
+  forceRender(
+    slide: Slide,
+    doc: SlidesDocument,
+    ghosts?: readonly Element[],
+    animStates?: ReadonlyMap<string, AnimState>,
+    cropPreview?: CropPreview,
+  ): void {
+    this.dirty = true;
+    drawSlide(
+      this.ctx,
+      slide,
+      doc,
+      this.options,
+      () => this.handleAssetLoad(),
+      ghosts,
+      animStates,
+      cropPreview,
+    );
+    this.dirty = false;
+  }
+}
+
+/**
+ * Functional core of the renderer — exposed for tests and for the
+ * thumbnail path which doesn't need the dirty-flag bookkeeping. Looks
+ * up the active theme from `doc`, fills the background through
+ * `resolveFillStyle` (solid color or gradient), and dispatches each
+ * element to `drawElement`.
+ */
+export function drawSlide(
+  ctx: CanvasRenderingContext2D,
+  slide: Slide,
+  doc: SlidesDocument,
+  options: SlideRendererOptions,
+  onAssetLoad: () => void = () => undefined,
+  ghosts?: readonly Element[],
+  animStates?: ReadonlyMap<string, AnimState>,
+  cropPreview?: CropPreview,
+): void {
+  const theme = getThemeForSlide(doc, slide);
+  const slideH = deckSlideHeight(doc.meta);
+  const { hostWidth, hostHeight, dpr } = options;
+  const slideOffsetLogicalX = options.slideOffsetLogicalX ?? 0;
+  const slideOffsetLogicalY = options.slideOffsetLogicalY ?? 0;
+  const hasPasteboard = slideOffsetLogicalX !== 0 || slideOffsetLogicalY !== 0;
+
+  // Bitmap dims come from `ctx.canvas` when available (the real
+  // browser canvas, which the caller has sized to cover slide +
+  // pasteboard). The test 2D-context stub doesn't expose `canvas`,
+  // so fall back to `hostWidth × hostHeight` — tests don't drive a
+  // non-zero pasteboard, so the fallback matches reality there.
+  const bitmapW = ctx.canvas?.width ?? hostWidth * dpr;
+  const bitmapH = ctx.canvas?.height ?? hostHeight * dpr;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  if (options.viewport) {
+    // Board mode: an explicit pan/zoom transform overrides the fixed
+    // fit-scale, and no slide-rect background is painted — the board
+    // is an unbounded plane, not a single fitted slide.
+    ctx.clearRect(0, 0, bitmapW, bitmapH);
+    const { panX, panY, zoom } = options.viewport;
+    ctx.setTransform(zoom * dpr, 0, 0, zoom * dpr, panX * dpr, panY * dpr);
+  } else {
+    // Uniform fit-scale: pick whichever axis is the binding constraint
+    // so the slide fits inside the host canvas without distortion. The
+    // SlidesView host is currently a fixed 16:9 (960×540), so both
+    // axes give the same scale — but a host whose aspect ratio differs
+    // from SLIDE_WIDTH:SLIDE_HEIGHT would have the slide stretched
+    // horizontally if we derived the scale from `hostWidth` alone.
+    const scaleX = (hostWidth / SLIDE_WIDTH) * dpr;
+    const scaleY = (hostHeight / slideH) * dpr;
+    const scale = Math.min(scaleX, scaleY);
+
+    // With pasteboard the off-slide band stays transparent so
+    // `canvasWrap`'s CSS background can supply the pasteboard color.
+    // Without pasteboard (default) we still fill the full bitmap with
+    // the slide background fill — this hides the 1–2 px aspect-ratio
+    // rounding gap that would otherwise reveal the canvas's CSS
+    // `background` underneath. With pasteboard the slide-bg fill below
+    // pads its own slide rect by ±1 logical px for the same reason.
+    if (!hasPasteboard) {
+      // This branch runs under the IDENTITY ctm (the `ctx.scale(scale,
+      // scale)` below hasn't been applied yet) and fills the DEVICE-pixel
+      // rect `fillRect(0, 0, bitmapW, bitmapH)`. A gradient's axis must
+      // therefore be laid out across `bitmapW × bitmapH`, not the logical
+      // `SLIDE_WIDTH × slideH` — otherwise the axis only matches the
+      // filled rect when `bitmapW === SLIDE_WIDTH` (e.g. it silently
+      // breaks thumbnails, PDF export, and no-pasteboard presentation /
+      // mobile, whose bitmaps are smaller than the logical slide).
+      ctx.fillStyle = resolveFillStyle(
+        ctx, resolveBackgroundFill(slide, doc), theme, bitmapW, bitmapH,
+      );
+      ctx.fillRect(0, 0, bitmapW, bitmapH);
+    } else {
+      ctx.clearRect(0, 0, bitmapW, bitmapH);
+    }
+    ctx.scale(scale, scale);
+    if (hasPasteboard) {
+      // Move slide-logical (0,0) to the slide rect inside the bigger
+      // canvas so every drawElement call paints relative to
+      // slide-left/top without per-element offset bookkeeping.
+      // Coordinates outside the slide rect (negative x/y, or beyond
+      // SLIDE_WIDTH / SLIDE_HEIGHT) now land in the pasteboard band
+      // rather than off the bitmap.
+      ctx.translate(slideOffsetLogicalX, slideOffsetLogicalY);
+      // Slide background fill, restricted to the slide rect. The ±1 px
+      // pad absorbs the same aspect-ratio rounding gap the
+      // no-pasteboard path solves with a full-canvas fill. Drop shadow
+      // and hairline are owned by `slideElevation` in slides-view.tsx
+      // — keeping them in CSS means they survive every paint mode
+      // (no-pasteboard, mobile, presenter, …) and stay theme-reactive.
+      ctx.fillStyle = resolveFillStyle(
+        ctx, resolveBackgroundFill(slide, doc), theme, SLIDE_WIDTH, slideH,
+      );
+      ctx.fillRect(-1, -1, SLIDE_WIDTH + 2, slideH + 2);
+    }
+  }
+
+  // Image-fill background (PPTX `<p:bg><p:bgPr><a:blipFill>`). Painted
+  // *after* the full-canvas color fill so the surrounding strip stays
+  // background-color and transparent regions of the image still show
+  // the color underneath. Stretch to the logical 1920×1080 region
+  // because that's what OOXML `<a:stretch><a:fillRect/></a:stretch>`
+  // means; tile mode is a v3 problem.
+  //
+  // Skipped in `viewport` (board) mode, mirroring the slide-rect
+  // background fill above: a board is an unbounded plane, not a single
+  // fitted slide, so it has no slide-sized background to paint.
+  const bgImage = options.viewport ? undefined : pickBackgroundImage(slide, doc);
+  if (bgImage) {
+    drawImage(ctx, { w: SLIDE_WIDTH, h: slideH }, bgImage, onAssetLoad);
+  }
+
+  // Board mode + culling: the visible world-rect, computed once from the
+  // viewport and host size. Elements whose rotated AABB doesn't
+  // intersect it are skipped entirely (not even given to `drawElement`)
+  // — this is what keeps an unbounded board's paint cost bounded by the
+  // viewport rather than the full element count.
+  const visible =
+    options.viewport && options.cull
+      ? (() => {
+          const topLeft = screenToWorld(options.viewport, { x: 0, y: 0 });
+          const bottomRight = screenToWorld(options.viewport, { x: hostWidth, y: hostHeight });
+          // Cull against the frame AABB, but that AABB doesn't cover
+          // paint that renders outside it — drop shadows, reflections,
+          // thick strokes, connector arrowheads. Culling on the bare
+          // frame would pop those in/out at the viewport edge as the
+          // board is panned/zoomed. Pad the visible rect outward by a
+          // fixed world-space margin so overhang stays visible slightly
+          // past the true edge; 64 logical px comfortably covers typical
+          // shadow/reflection spread and stroke/arrowhead width without
+          // meaningfully growing the culled set. Trades a few extra
+          // off-screen draws for correctness — cheaper than computing
+          // per-element effect bounds.
+          return {
+            x0: topLeft.x - CULL_MARGIN,
+            y0: topLeft.y - CULL_MARGIN,
+            x1: bottomRight.x + CULL_MARGIN,
+            y1: bottomRight.y + CULL_MARGIN,
+          };
+        })()
+      : null;
+
+  // Iterate elements in array order = z-order, last is front. Built
+  // once per slide-render so each connector doesn't rebuild it.
+  const elementsLookup = buildElementWorldLookup(slide.elements);
+  for (const element of slide.elements) {
+    // The element under an active crop session is painted by the crop
+    // preview below (dimmed full bitmap + bright window), not as a
+    // normal cropped element, so mask it here.
+    if (cropPreview && element.id === cropPreview.elementId) continue;
+    if (visible && !frameIntersectsRect(element.frame, visible)) continue;
+    drawElement(
+      ctx, element, doc, theme, onAssetLoad, elementsLookup,
+      undefined, undefined, animStates?.get(element.id), options.showPlaceholderHints,
+    );
+  }
+
+  if (ghosts !== undefined && ghosts.length > 0) {
+    // Paint hover/drag-preview ghosts on top of the committed slide so
+    // their semi-transparency reveals the underlying content. One
+    // save/restore band per ghost keeps `globalAlpha` writes scoped
+    // and isolates any future per-ghost style overrides.
+    for (const ghost of ghosts) {
+      ctx.save();
+      ctx.globalAlpha = GHOST_ALPHA;
+      drawElement(ctx, ghost, doc, theme, onAssetLoad, elementsLookup,
+        undefined, undefined, undefined, options.showPlaceholderHints);
+      ctx.restore();
+    }
+  }
+
+  // Crop session preview on top: dimmed full bitmap + bright crop
+  // window. Drawn last so the dimmed band reads clearly over slide
+  // content and the bright window is never occluded by other elements.
+  if (cropPreview) {
+    drawCropPreview(ctx, cropPreview, onAssetLoad);
+  }
+}
+
+/**
+ * True iff `frame`'s rotated AABB (via `boundingBox`, the canonical
+ * rotated-AABB computation shared with the snap-candidates engine)
+ * overlaps the world-space rect `r`. Used to cull off-screen elements
+ * in board mode.
+ */
+function frameIntersectsRect(
+  frame: Frame,
+  r: { x0: number; y0: number; x1: number; y1: number },
+): boolean {
+  const box = boundingBox(frame);
+  return (
+    box.x < r.x1 &&
+    box.x + box.w > r.x0 &&
+    box.y < r.y1 &&
+    box.y + box.h > r.y0
+  );
+}
+
+/**
+ * Image background precedence slide → layout → master (see
+ * {@link resolveBackgroundImage}). Returns `undefined` when none is set.
+ */
+function pickBackgroundImage(
+  slide: Slide,
+  doc: SlidesDocument,
+): BackgroundImage | undefined {
+  return resolveBackgroundImage(slide, doc);
+}

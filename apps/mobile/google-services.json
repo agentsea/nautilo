@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "720303693792",
+    "project_id": "nautilo-mobile-production",
+    "storage_bucket": "nautilo-mobile-production.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:720303693792:android:edcfdc0b6f9ec161f7d585",
+        "android_client_info": {
+          "package_name": "ai.nautilo.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA-1TD9bQ2mmSxUrj-V86irHoe84GHMA0c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

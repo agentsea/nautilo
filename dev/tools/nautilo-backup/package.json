@@ -1,0 +1,19 @@
+{
+  "name": "nautilo-backup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for inspecting + preflight-ing Nautilo dev snapshots. Destructive operations (restore/clean) stay CLI-only by design.",
+  "main": "index.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.15",
+    "hono": "4.12.34"
+  }
+}

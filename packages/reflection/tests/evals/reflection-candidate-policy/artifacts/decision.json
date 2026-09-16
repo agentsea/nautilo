@@ -1,0 +1,1129 @@
+{
+  "schema": "nautilo/reflection-candidate-results/v1",
+  "corpusVersion": "2026-08-20.1",
+  "policyVersion": "candidate-policy-v1",
+  "boundGrid": [
+    2,
+    4,
+    8
+  ],
+  "baselineBound": 4,
+  "semanticMinimumScore": 0.5,
+  "baselines": [
+    {
+      "id": "memory",
+      "kind": "baseline",
+      "mode": "same_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.416667,
+        "meanContamination": 0,
+        "totalSelected": 5,
+        "totalCompared": 5,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "postgres-decision",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "disagreement",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "partial-dependency-loss",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-parent-reuse",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "kind": "baseline",
+      "mode": "cross_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.8,
+        "meanContamination": 0,
+        "totalSelected": 4,
+        "totalCompared": 4,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "journal_recent",
+      "kind": "baseline",
+      "mode": "same_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.520833,
+        "meanContamination": 0.625,
+        "totalSelected": 22,
+        "totalCompared": 25,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "postgres-decision",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "disagreement",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "partial-dependency-loss",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "journal_recent",
+      "kind": "baseline",
+      "mode": "cross_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0,
+        "meanContamination": 0,
+        "totalSelected": 0,
+        "totalCompared": 0,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-attached-leaf",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "invocation-not-requester",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "semantic-authority-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "public-private-boundary",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "flat_combined",
+      "kind": "baseline",
+      "mode": "same_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.875,
+        "meanContamination": 0,
+        "totalSelected": 14,
+        "totalCompared": 14,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "flat_combined",
+      "kind": "baseline",
+      "mode": "cross_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0.1,
+        "totalSelected": 9,
+        "totalCompared": 9,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    }
+  ],
+  "candidatePolicies": [
+    {
+      "id": "semantic_neighbors",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 2,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.916667,
+        "meanContamination": 0,
+        "totalSelected": 14,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "postgres-decision",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "semantic_neighbors",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 2,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0.1,
+        "totalSelected": 10,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    },
+    {
+      "id": "semantic_neighbors",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0,
+        "totalSelected": 19,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    },
+    {
+      "id": "semantic_neighbors",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0.1,
+        "totalSelected": 10,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    },
+    {
+      "id": "semantic_neighbors",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 8,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0,
+        "totalSelected": 19,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    },
+    {
+      "id": "semantic_neighbors",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 8,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0.1,
+        "totalSelected": 10,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    },
+    {
+      "id": "existing_parent",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 2,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.208333,
+        "meanContamination": 0,
+        "totalSelected": 4,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "postgres-decision",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "disagreement",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "partial-dependency-loss",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-parent-reuse",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "existing_parent",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 2,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0,
+        "meanContamination": 0,
+        "totalSelected": 0,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-attached-leaf",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "invocation-not-requester",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "semantic-authority-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "public-private-boundary",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "existing_parent",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.375,
+        "meanContamination": 0,
+        "totalSelected": 7,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "disagreement",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "partial-dependency-loss",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "existing_parent",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0,
+        "meanContamination": 0,
+        "totalSelected": 0,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-attached-leaf",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "invocation-not-requester",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "semantic-authority-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "public-private-boundary",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "existing_parent",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 8,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.375,
+        "meanContamination": 0,
+        "totalSelected": 7,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "disagreement",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "partial-dependency-loss",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "existing_parent",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 8,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0,
+        "meanContamination": 0,
+        "totalSelected": 0,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-attached-leaf",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "invocation-not-requester",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "semantic-authority-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "public-private-boundary",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "temporal_room_anchor",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 2,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.520833,
+        "meanContamination": 0.4375,
+        "totalSelected": 16,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "postgres-decision",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "disagreement",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "multi-parent-reuse",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "temporal_room_anchor",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 2,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.9,
+        "meanContamination": 0.2,
+        "totalSelected": 9,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "temporal_room_anchor",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.833333,
+        "meanContamination": 0.458333,
+        "totalSelected": 28,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "emergent-depth",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "temporal_room_anchor",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 4,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.9,
+        "meanContamination": 0.2,
+        "totalSelected": 9,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "temporal_room_anchor",
+      "kind": "candidate_policy",
+      "mode": "same_room",
+      "bound": 8,
+      "aggregate": {
+        "hardGatesPassed": true,
+        "meanRecall": 1,
+        "meanContamination": 0.439583,
+        "totalSelected": 34,
+        "totalCompared": 34,
+        "repeatStable": true
+      },
+      "failedFixtures": []
+    },
+    {
+      "id": "temporal_room_anchor",
+      "kind": "candidate_policy",
+      "mode": "cross_room",
+      "bound": 8,
+      "aggregate": {
+        "hardGatesPassed": false,
+        "meanRecall": 0.9,
+        "meanContamination": 0.2,
+        "totalSelected": 9,
+        "totalCompared": 11,
+        "repeatStable": true
+      },
+      "failedFixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "failures": [
+            "required_relationship_unreachable"
+          ]
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "mode": "same_room",
+      "outcome": "selected",
+      "policyId": "semantic_neighbors",
+      "bound": 4,
+      "reason": "Passed every hard gate; selected by lowest contamination, then deterministic work, bound, and policy simplicity (mean contamination 0)."
+    },
+    {
+      "mode": "cross_room",
+      "outcome": "selected",
+      "policyId": "semantic_neighbors",
+      "bound": 2,
+      "reason": "Passed every hard gate; selected by lowest contamination, then deterministic work, bound, and policy simplicity (mean contamination 0.1)."
+    }
+  ],
+  "selectedEvidence": [
+    {
+      "mode": "same_room",
+      "policyId": "semantic_neighbors",
+      "bound": 4,
+      "fixtures": [
+        {
+          "fixtureId": "postgres-decision",
+          "selectedIds": [
+            "postgres-decision.postgres-argument",
+            "postgres-decision.neon-argument",
+            "postgres-decision.requirements-memory"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 3,
+            "comparedCount": 4,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "valuable-leaf",
+          "selectedIds": [],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 0,
+            "comparedCount": 2,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "emergent-depth",
+          "selectedIds": [
+            "emergent-depth.failure-cluster",
+            "emergent-depth.latency-cluster",
+            "emergent-depth.cost-cluster"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 3,
+            "comparedCount": 5,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "disagreement",
+          "selectedIds": [
+            "disagreement.cost-risk-counterclaim",
+            "disagreement.usage-estimate",
+            "disagreement.premature-consensus"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 3,
+            "comparedCount": 4,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "edited-evidence",
+          "selectedIds": [
+            "edited-evidence.retention-forever",
+            "edited-evidence.corrected-policy"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 3,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "partial-dependency-loss",
+          "selectedIds": [
+            "partial-dependency-loss.portability",
+            "partial-dependency-loss.transactions"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 3,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "multi-parent-reuse",
+          "selectedIds": [
+            "multi-parent-reuse.database-sibling",
+            "multi-parent-reuse.deployment-sibling",
+            "multi-parent-reuse.database-parent",
+            "multi-parent-reuse.deployment-parent"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 4,
+            "comparedCount": 5,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "temporal-anchor-trap",
+          "selectedIds": [
+            "temporal-anchor-trap.restore-evidence",
+            "temporal-anchor-trap.backup-memory"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 8,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        }
+      ]
+    },
+    {
+      "mode": "cross_room",
+      "policyId": "semantic_neighbors",
+      "bound": 2,
+      "fixtures": [
+        {
+          "fixtureId": "cross-room-intersection",
+          "selectedIds": [
+            "cross-room-intersection.room-a-argument",
+            "cross-room-intersection.room-b-argument"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 3,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "multi-attached-leaf",
+          "selectedIds": [
+            "multi-attached-leaf.all-three-support",
+            "multi-attached-leaf.all-three-parent"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 2,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "invocation-not-requester",
+          "selectedIds": [
+            "invocation-not-requester.shared-policy",
+            "invocation-not-requester.shared-journal"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 2,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "semantic-authority-trap",
+          "selectedIds": [
+            "semantic-authority-trap.lexical-decoy",
+            "semantic-authority-trap.authorized-rationale"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0.5,
+            "selectedCount": 2,
+            "comparedCount": 2,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        },
+        {
+          "fixtureId": "public-private-boundary",
+          "selectedIds": [
+            "public-private-boundary.public-rationale",
+            "public-private-boundary.public-decoy"
+          ],
+          "metrics": {
+            "usefulNeighborRecall": 1,
+            "contaminationRate": 0,
+            "selectedCount": 2,
+            "comparedCount": 2,
+            "anchorCoverage": 1,
+            "existingParentCoverage": 1,
+            "repeatStable": true
+          },
+          "gates": {
+            "authorityLeakFree": true,
+            "forbiddenExposureFree": true,
+            "requiredRelationshipsReachable": true,
+            "deterministic": true,
+            "passed": true,
+            "failures": []
+          }
+        }
+      ]
+    }
+  ]
+}

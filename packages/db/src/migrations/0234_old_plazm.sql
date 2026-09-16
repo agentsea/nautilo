@@ -1,0 +1,2 @@
+ALTER TABLE "connected_web_operations" ADD COLUMN "requested_wake_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "idx_connected_web_operations_requested_wake" ON "connected_web_operations" USING btree ("requested_wake_at") WHERE "connected_web_operations"."requested_wake_at" is not null;

@@ -1,0 +1,1508 @@
+{
+  "qualification": "ordinary owned security Task through Genie UI; synthetic fixture only",
+  "runtimeCommit": "87f8ae7cdf247f930aa74d0874218136eb32e637",
+  "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+  "runId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+  "modelId": "openrouter:z-ai/glm-5.3",
+  "requestedModelId": null,
+  "startedAt": "2026-09-06T19:44:33.896Z",
+  "completedAt": "2026-09-06T19:49:40.611Z",
+  "durationMs": 306715,
+  "taskStatus": "completed",
+  "researchStatus": "partial",
+  "fixture": {
+    "head": "c7c8901ea8bcf7a87ebbc18446812e167966ccad",
+    "files": [
+      {
+        "path": ".gitignore",
+        "bytes": 20,
+        "sha256": "790e3169bc19b046fe55ba1da6d13b976c28363c8c00462a2195fe5faf260910"
+      },
+      {
+        "path": "README.md",
+        "bytes": 1320,
+        "sha256": "049c0d7392f737d9fe0b6e919c8d808e83c0d04fdbe56ac4539f7908ebc3e162"
+      },
+      {
+        "path": "behavior.test.mjs",
+        "bytes": 1022,
+        "sha256": "10bb8c2ab9acd98b42eda51edf33dfc55c440e11301aa0d28d1b6d1bfb5e8873"
+      },
+      {
+        "path": "package.json",
+        "bytes": 152,
+        "sha256": "c3656e985d7fd67fa371cb5e215b0487e3b8bae6f06cfca37f43f54561d1783b"
+      },
+      {
+        "path": "packages/http/api.mjs",
+        "bytes": 1612,
+        "sha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3"
+      },
+      {
+        "path": "packages/identity/policy.mjs",
+        "bytes": 588,
+        "sha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b"
+      },
+      {
+        "path": "packages/jobs/worker.mjs",
+        "bytes": 354,
+        "sha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8"
+      },
+      {
+        "path": "packages/storage/store.mjs",
+        "bytes": 472,
+        "sha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f"
+      }
+    ],
+    "sourceReadWindows": 7,
+    "sourceReadBytes": 5520,
+    "unreadFile": ".gitignore (20 bytes; non-source metadata)",
+    "unchangedAfterRun": true,
+    "oracleOutsideModelFolder": true
+  },
+  "tools": {
+    "whitelist": [
+      "file",
+      "security_scan"
+    ],
+    "results": {
+      "security_scan": 44,
+      "file": 8
+    }
+  },
+  "report": {
+    "originalArtifactBytes": 10364,
+    "originalArtifactSha256": "768d15e6c14d8dd1a51bd8ad7d8864e58ce2e4ba0a47284f96db16b49d777aaf",
+    "sanitizedFile": "2026-09-06-glm-section-report.md",
+    "retrievedThroughAuthenticatedArtifactApi": true,
+    "sameReportBodyAsTaskAnswer": true,
+    "redactions": [
+      "standalone temporary fixture path"
+    ]
+  },
+  "sameTaskRecovery": {
+    "newHumanSchedulingMessages": 0,
+    "correctedFailures": [
+      {
+        "kind": "argument_validation",
+        "tool": "security_scan",
+        "message": "Error: security_scan received invalid arguments (entry.kind: Invalid option: expected one of \"repository_map\"|\"hypothesis\"|\"evidence\"|\"counterevidence\"|\"finding\"|\"dismissal\"|\"coverage\"|\"checkpoint\"|\"open_question\"). Correct the listed fields and retry the record operation once. Do not send scanId; the server binds this TaskRun to its scan. Do not start, finalize, or reopen a scan because this validation failure was not dispatched."
+      },
+      {
+        "kind": "argument_validation",
+        "tool": "security_scan",
+        "message": "Error: security_scan received invalid arguments (fileCitations: evidence records require a durable reference or revalidated file citation). Correct the listed fields and retry the record operation once. Do not send scanId; the server binds this TaskRun to its scan. Do not start, finalize, or reopen a scan because this validation failure was not dispatched. Add top-level fileCitations:[{relativePath:<exact inspected path relative to Current Folder>,startLine:<first inspected line>,endLine:<last inspected line>}]. Mentioning paths in entry.summary is not a citation. Retry one corrected record alone and inspect its receipt."
+      },
+      {
+        "kind": "argument_validation",
+        "tool": "security_scan",
+        "message": "Error: security_scan received invalid arguments (operation: Invalid input). To begin, call exactly {\"version\":\"security-scan-v1\",\"operation\":\"start\",\"mode\":\"deep_research\",\"targetDirectory\":\"<requested directory>\"}. For later calls, omit scanId because the server binds this TaskRun to its scan."
+      },
+      {
+        "code": "research_incomplete",
+        "retryable": true,
+        "message": "Research remains incomplete. Continue this same active scan.",
+        "continuation": "Section http: the hypothesis needs source evidence and inspected counterevidence/protections, not only a scanner lead or conclusion. Use status or paged research results for the complete plan."
+      },
+      {
+        "code": "research_incomplete",
+        "retryable": true,
+        "message": "Research remains incomplete. Continue this same active scan.",
+        "continuation": "Resolve question record_6c07e497c19b482d4ced5677, or link it from limited coverage with a concrete corroborated blocker. Use status or paged research results for the complete plan."
+      },
+      {
+        "code": "research_incomplete",
+        "retryable": true,
+        "message": "Research remains incomplete. Continue this same active scan.",
+        "continuation": "Section gateway_and_transport: link the investigated hypothesis ledger records in coverage.evidenceRefs. Use status or paged research results for the complete plan."
+      }
+    ]
+  },
+  "scanners": [
+    {
+      "probe": "gitleaks",
+      "state": "completed",
+      "observationCount": 0,
+      "coverage": "limited",
+      "error": null
+    },
+    {
+      "probe": "osv_scanner",
+      "state": "unavailable",
+      "observationCount": 0,
+      "coverage": "limited",
+      "error": {
+        "code": "probe_unavailable",
+        "retryable": false,
+        "message": "OSV found no supported package sources in the target. Dependency vulnerability coverage is unavailable; no dependencies were verified."
+      }
+    },
+    {
+      "probe": "trivy",
+      "state": "completed",
+      "observationCount": 0,
+      "coverage": "limited",
+      "error": null
+    },
+    {
+      "probe": "semgrep",
+      "state": "completed",
+      "observationCount": 0,
+      "coverage": "limited",
+      "error": null
+    }
+  ],
+  "coverage": [
+    {
+      "surfaceKey": "cross_boundary",
+      "label": "Cross-section trust boundaries",
+      "state": "reviewed",
+      "rationale": "Cross-section trust boundaries reviewed: (1) HTTP→identity: two different check paths (cached canRead vs fresh requireFreshMembership) produce inconsistent guarantees between readDocument and previewDocument — readDocument is revocation-blind via F1 cache, previewDocument is fresh. (2) HTTP→jobs: enqueue-time authorization snapshot not revalidated at worker or download (F3); project-level check never binds to document (F2). (3) identity→storage: shared readDecisions Map cross-user keyed (F1). (4"
+    },
+    {
+      "surfaceKey": "gateway_and_transport",
+      "label": "gateway_and_transport",
+      "state": "limited",
+      "rationale": "gateway_and_transport: LIMITED. The trusted upstream gateway (session verification, cookie handling, HTTP routing, error mapping) is documented as external to the repo. Under read-only constraints we cannot inspect it, so end-to-end exploitability of F1-F3 over a real HTTP surface is an unverified assumption; severity is rated against the fixture's data model as-is."
+    },
+    {
+      "surfaceKey": "http",
+      "label": "HTTP handlers and export delivery",
+      "state": "reviewed",
+      "rationale": "http reviewed: all four handlers (readDocument, createExport, downloadExport, previewDocument) fully traced. readDocument affected by F1 via canRead. createExport: F2 (document/project unbound) and F3 (enqueue-only membership). downloadExport: ownership check correct; missing membership recheck (F3); error enumeration dismissed. previewDocument uses requireFreshMembership — correct in isolation."
+    },
+    {
+      "surfaceKey": "identity",
+      "label": "Identity and membership policy",
+      "state": "reviewed",
+      "rationale": "identity reviewed: all three exported functions (requireSession, canRead, requireFreshMembership) traced across their callers in api.mjs. canRead cache-key flaw confirmed (F1); fresh-membership path correct in isolation. Gateway trust documented and dismissed."
+    },
+    {
+      "surfaceKey": "jobs",
+      "label": "Async export worker",
+      "state": "reviewed",
+      "rationale": "jobs reviewed: runExportWorker fully inspected (9 lines). Worker trusts job.projectId/documentId from enqueue, never re-derives authorization, materializes doc.body into job.result for any queued job (contributor to F2 and F3). Worker correctly marks missing documents failed. Only entry point in section."
+    },
+    {
+      "surfaceKey": "storage",
+      "label": "Shared storage adapter",
+      "state": "reviewed",
+      "rationale": "storage reviewed: createStore fully inspected (14 lines). Shared Maps confirmed: readDecisions keyed by projectId only (enabler of F1); jobs map retains materialized results with no revocation hook (enabler of F3); documents carry projectId enabling the missing binding check (F2). No persistence layer, no other storage code in section."
+    }
+  ],
+  "hypotheses": [
+    {
+      "id": "record_3ac2ae08c3f60f867c2bb541",
+      "state": "supported",
+      "summary": "H1 (identity/storage, cross-user cache poisoning): canRead() caches authorization decisions in store.readDecisions keyed by projectId ONLY, not (userId, projectId). The first caller to trigger a decision for a project fixes the result for every subsequent caller. If a member (e.g. alice for 'orchard') reads first, cache=true; then a non-member (bob) calling readDocument for a doc-orchard gets cached true → forbidden read of project documents. Conversely if a non-member query runs first (cache=fa"
+    },
+    {
+      "id": "record_921da3363b0a1a7d00a2394b",
+      "state": "supported",
+      "summary": "H2 (http/jobs cross-boundary, queued export survives membership revocation): createExport calls requireFreshMembership on body.projectId at enqueue time only. downloadExport checks only job.userId === session userId and job.state==='ready' — it performs NO fresh membership check on job.projectId. A member who queues an export, is then removed from the project, can still download the materialized result containing the project document body. README explicitly states revocation must prevent queued"
+    },
+    {
+      "id": "record_79f2994be482fdbc69b0e6e4",
+      "state": "supported",
+      "summary": "H3 (http→jobs, projectId/documentId not bound): createExport validates body.projectId membership but never checks that body.documentId belongs to body.projectId, nor that the user can read that document. A user can pass projectId they are a member of plus a documentId from a DIFFERENT project they cannot read (e.g. alice: projectId='orchard', documentId='doc-harbor'); the worker materializes doc-harbor's body into job.result and downloadExport returns it because ownership/ready checks pass. Dire"
+    },
+    {
+      "id": "record_659c9a5627600b84507c6145",
+      "state": "rejected",
+      "summary": "H4 (http, downloadExport lacks job existence side-channel hardening / error handling): 'not found' vs 'not ready' distinguishable errors could allow job-state enumeration; also job.result may be undefined if state==='ready' set without result (not reachable in current worker). Low severity, mostly an information-disclosure nuance. Also assess whether error differentiation is a real finding for this synthetic scope."
+    },
+    {
+      "id": "record_163ccd3560938822b0463d64",
+      "state": "rejected",
+      "summary": "H5 (gateway session assumption): requireSession trusts session.userId supplied by the external gateway; no verification exists in-repo. README says the gateway is trusted and explicitly instructs not to infer a bypass from this assumption. Expect to dismiss as documented trust boundary, not a finding, but record counterevidence."
+    }
+  ],
+  "codeEvidence": [
+    {
+      "id": "evidence_06558af1b5ea09645063c1e6",
+      "relativePath": "README.md",
+      "startLine": 3,
+      "endLine": 5,
+      "fileSha256": "049c0d7392f737d9fe0b6e919c8d808e83c0d04fdbe56ac4539f7908ebc3e162",
+      "rangeSha256": "24fca208d425e9f0ecb094bd5af5a8abe50cc9042401215ba0319ed0afaa8777",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:48:22.187Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_07d16cd0210c8045c0792c9d",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 23,
+      "endLine": 28,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "7d4def6a52bb72e923731f749510212df4039c2ed129a5bb7dcd6dd5d916c4f7",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:48.562Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_4328dcabe845c44c03f308fa",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 16,
+      "endLine": 17,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "cd20781e9ad411b770cc1ff02c54c736601b89b9b83e24cb839e9ae5a0e5abff",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:42.043Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_475b28c11bac72337bb37bef",
+      "relativePath": "packages/storage/store.mjs",
+      "startLine": 10,
+      "endLine": 14,
+      "fileSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rangeSha256": "41599b0c14610fe73c3abe0828d419deda9ac0419da51e22ed9d18fd6993942e",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:22.310Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_49e63f99a2b7028a6cd7b61c",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 5,
+      "endLine": 10,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "2988d0bf374971a3355185bf6e0a7be29aeb31b92f418001aa67f44f3faa51d6",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:37.674Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_4ed259d6053c116a2841d262",
+      "relativePath": "packages/jobs/worker.mjs",
+      "startLine": 1,
+      "endLine": 9,
+      "fileSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rangeSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:44.105Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_546082ace763299071894752",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 12,
+      "endLine": 20,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "bd182f56128949da4735c7c26444c564a23f74f237f9c0d7891aea6fd6444088",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:44.105Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_5590daa4a9d7c0f9bd078fb7",
+      "relativePath": "packages/identity/policy.mjs",
+      "startLine": 1,
+      "endLine": 16,
+      "fileSha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+      "rangeSha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:47:18.852Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_56189ed5de28836c20af9043",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 1,
+      "endLine": 39,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:58.408Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_5d9cbfb7ab12ce1788493c82",
+      "relativePath": "README.md",
+      "startLine": 11,
+      "endLine": 13,
+      "fileSha256": "049c0d7392f737d9fe0b6e919c8d808e83c0d04fdbe56ac4539f7908ebc3e162",
+      "rangeSha256": "3bd39b48f129f0d49b1ab0ed396b5f08c3a9886c179f5981977dd1a48c98cc19",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:40.809Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_63869992df6d7bdc442da870",
+      "relativePath": "packages/jobs/worker.mjs",
+      "startLine": 1,
+      "endLine": 9,
+      "fileSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rangeSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:34.697Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_6e8e33f23c53ff533ae9f748",
+      "relativePath": "packages/jobs/worker.mjs",
+      "startLine": 1,
+      "endLine": 9,
+      "fileSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rangeSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:47:18.852Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_73756b98042171b16c907181",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 12,
+      "endLine": 20,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "bd182f56128949da4735c7c26444c564a23f74f237f9c0d7891aea6fd6444088",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:27.572Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_75fe9ad1b6e067a07f9be1be",
+      "relativePath": "README.md",
+      "startLine": 1,
+      "endLine": 5,
+      "fileSha256": "049c0d7392f737d9fe0b6e919c8d808e83c0d04fdbe56ac4539f7908ebc3e162",
+      "rangeSha256": "3625b5a02ebc6f9639fac36c48b406bb32656065208c0afeb617f0ed58a77f41",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:45.721Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_79183d696290ca0990677841",
+      "relativePath": "packages/storage/store.mjs",
+      "startLine": 1,
+      "endLine": 14,
+      "fileSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rangeSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:47:04.373Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_873a97a87dd382c4927ddb90",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 1,
+      "endLine": 39,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:47:18.852Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_882371e4c859270ec88295c8",
+      "relativePath": "packages/jobs/worker.mjs",
+      "startLine": 1,
+      "endLine": 9,
+      "fileSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rangeSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:27.573Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_8ac58659c83a59c27629907f",
+      "relativePath": "packages/identity/policy.mjs",
+      "startLine": 6,
+      "endLine": 12,
+      "fileSha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+      "rangeSha256": "11eff0262619f571af10c925c8c7cb9563f1602f94b9119916dbcf7878fdca21",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:22.310Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_8ae05cba4bcbbc5dfde00d5f",
+      "relativePath": "README.md",
+      "startLine": 11,
+      "endLine": 14,
+      "fileSha256": "049c0d7392f737d9fe0b6e919c8d808e83c0d04fdbe56ac4539f7908ebc3e162",
+      "rangeSha256": "328ff57f7d7c3c7b94d1900532bb7863a609d7436a9bbfafc1ac7c43fe3ed65c",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:34.697Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_8b2f2e204d90eca1a25eaef1",
+      "relativePath": "packages/identity/policy.mjs",
+      "startLine": 6,
+      "endLine": 16,
+      "fileSha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+      "rangeSha256": "3929baa8b8f7e91d0086af8da78ab351242f05ecbdfe6580fef30c43a5ac4d4d",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:37.674Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_91b9d6e7e4cc8c75d70892cd",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 23,
+      "endLine": 28,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "7d4def6a52bb72e923731f749510212df4039c2ed129a5bb7dcd6dd5d916c4f7",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:42.043Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_a678718fcba4827b82ac78d7",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 12,
+      "endLine": 28,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "4284075bff5fbf01eea45287e76dcbc0abad661a620bae86322de8d6d3d60a7c",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:34.697Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_ae44fb57031876935de52c56",
+      "relativePath": "packages/identity/policy.mjs",
+      "startLine": 1,
+      "endLine": 3,
+      "fileSha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+      "rangeSha256": "2cd08310787a5d6e0ffc33c549f62119da3d5ca81d542cb718e6630f74e90ec9",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:51.395Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_b49e913d798842ece6c90aac",
+      "relativePath": "packages/identity/policy.mjs",
+      "startLine": 1,
+      "endLine": 3,
+      "fileSha256": "e97a5d6f34b6d7c402def039330b33915f18fdc9d1190d5c686c4441d9da1c9b",
+      "rangeSha256": "2cd08310787a5d6e0ffc33c549f62119da3d5ca81d542cb718e6630f74e90ec9",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:45.721Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_b6b782289fd9639f5cd6bfa4",
+      "relativePath": "packages/jobs/worker.mjs",
+      "startLine": 1,
+      "endLine": 9,
+      "fileSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rangeSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:47:08.932Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_c2683d3a1e156ee275986848",
+      "relativePath": "README.md",
+      "startLine": 1,
+      "endLine": 5,
+      "fileSha256": "049c0d7392f737d9fe0b6e919c8d808e83c0d04fdbe56ac4539f7908ebc3e162",
+      "rangeSha256": "3625b5a02ebc6f9639fac36c48b406bb32656065208c0afeb617f0ed58a77f41",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:51.395Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_c684a8309e27d43b98cd42e5",
+      "relativePath": "packages/storage/store.mjs",
+      "startLine": 1,
+      "endLine": 14,
+      "fileSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rangeSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:47:18.852Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_d3a789b24a953b18b902e26d",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 12,
+      "endLine": 28,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "4284075bff5fbf01eea45287e76dcbc0abad661a620bae86322de8d6d3d60a7c",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:40.809Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_db5bee1f791bffb6c5bcd1f8",
+      "relativePath": "packages/storage/store.mjs",
+      "startLine": 1,
+      "endLine": 14,
+      "fileSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rangeSha256": "8cf100df80ee4adf746c03aa37dcc085d04803ec14d66698220fa5b01ff04e8f",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:37.674Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_f74c10df554ac88e898b81ff",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 16,
+      "endLine": 17,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "cd20781e9ad411b770cc1ff02c54c736601b89b9b83e24cb839e9ae5a0e5abff",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:48.562Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_f79ae8a53c9b738f3ddbdfb6",
+      "relativePath": "packages/jobs/worker.mjs",
+      "startLine": 1,
+      "endLine": 9,
+      "fileSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rangeSha256": "2dc66bfbc067c2f8b157178f721ba066b877746d0546ecf7deb76dbd63f239f8",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:45:40.809Z",
+      "gitHead": null,
+      "gitDirty": null
+    },
+    {
+      "id": "evidence_f9f10915cd5dd2d227ad5a73",
+      "relativePath": "packages/http/api.mjs",
+      "startLine": 5,
+      "endLine": 10,
+      "fileSha256": "198319b58e97206811d2c5e79f63d7ac0a559abc148991edda001c1cf677baf3",
+      "rangeSha256": "2988d0bf374971a3355185bf6e0a7be29aeb31b92f418001aa67f44f3faa51d6",
+      "rootFingerprint": "053bba3be806d670bae22c178207e2fb009c54ba9325227602ab634dfd95f5c4",
+      "capturedAt": "2026-09-06T19:46:22.310Z",
+      "gitHead": null,
+      "gitDirty": null
+    }
+  ],
+  "records": [
+    {
+      "id": "record_040cfb134c33770969b4e954",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:45:40.809Z",
+      "updatedAt": "2026-09-06T19:45:40.809Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "evidence",
+        "summary": "H2 evidence: createExport (api.mjs lines 12-20) checks requireFreshMembership only at enqueue; downloadExport (lines 23-28) checks only job existence, job.userId===userId, and state==='ready' — no fresh membership recheck of job.projectId. Worker materializes doc.body into job.result. Nothing in policy.mjs or store.mjs invalidates jobs or rechecks membership between worker and download. A job queued while a member, completed by the worker, remains downloadable after removal from project. README line 13 states revocation must prevent queued exports from disclosing the former project's documents — confirmed violation.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_d3a789b24a953b18b902e26d"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_f79ae8a53c9b738f3ddbdfb6"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_5d9cbfb7ab12ce1788493c82"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_100ab46ea463ecb8d30d5aad",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:27.573Z",
+      "updatedAt": "2026-09-06T19:46:27.573Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "finding",
+        "title": "F2: Export document/project unbound — cross-project document disclosure via export pipeline",
+        "summary": "F2 (HIGH): createExport never binds documentId to projectId and never checks the user can read the requested document. It validates only that body.projectId is a project the user belongs to and that documentId is a string (api.mjs lines 14-18). The worker then resolves the document by documentId alone and copies doc.body into job.result (worker.mjs). downloadExport passes because ownership and state checks are satisfied. A user can therefore export any document in the store, including documents of projects they are not a member of, by supplying their own project id as the membership ticket and a foreign document id. Cross-section failure: HTTP validation (project-level) is never propagated as a document-level constraint into the jobs section.",
+        "confidence": "high",
+        "impact": "Confidentiality: direct exfiltration of any document body in the store, e.g. alice (orchard member) reads 'harbor acquisition planning' by pairing projectId='orchard' with documentId='doc-harbor'. Bypasses the project membership boundary entirely for the export pipeline.",
+        "exploitPreconditions": "Any authenticated user with a membership in at least one project, plus knowledge (or guessing) of a document id in another project. Document ids are simple slugs ('doc-orchard'), making guessing trivial in this fixture.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_79f2994be482fdbc69b0e6e4"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_aa477bc301bf384dbcbea358"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_73756b98042171b16c907181"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_882371e4c859270ec88295c8"
+          }
+        ],
+        "counterevidenceRefs": []
+      }
+    },
+    {
+      "id": "record_110c62e820c4e980390cda21",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:45:48.562Z",
+      "updatedAt": "2026-09-06T19:45:48.562Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "counterevidence",
+        "summary": "H4 counterevidence: downloadExport's 'not found' vs 'not ready' distinction only reveals state of a job the caller OWNS (job.userId===userId is checked before the state check), so cross-user enumeration is not possible; job IDs are randomUUID (api.mjs line 16), not guessable. Within this synthetic, undeployed fixture with no real HTTP layer, per-user error differentiation is not a meaningful finding. Downgrade to dismissed.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_07d16cd0210c8045c0792c9d"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_f74c10df554ac88e898b81ff"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_163ccd3560938822b0463d64",
+      "revision": 2,
+      "createdAt": "2026-09-06T19:45:34.743Z",
+      "updatedAt": "2026-09-06T19:46:12.366Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "hypothesis",
+        "summary": "H5 (gateway session assumption): requireSession trusts session.userId supplied by the external gateway; no verification exists in-repo. README says the gateway is trusted and explicitly instructs not to infer a bypass from this assumption. Expect to dismiss as documented trust boundary, not a finding, but record counterevidence.",
+        "state": "rejected",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_2e8629dcc5767b9c6dee9f02"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_2e8629dcc5767b9c6dee9f02"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_2e8629dcc5767b9c6dee9f02",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:45:51.395Z",
+      "updatedAt": "2026-09-06T19:45:51.395Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "counterevidence",
+        "summary": "H5 counterevidence / dismissal: README.md lines 3-5 state the trusted upstream gateway supplies verified session user IDs, its implementation is external, and explicitly 'Do not infer a gateway bypass from this assumption'. requireSession only rejects missing identity; there is no in-repo spoofing surface. Documented trust boundary, dismissed as a finding; noted as deployment assumption limitation.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_c2683d3a1e156ee275986848"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_ae44fb57031876935de52c56"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_33e91ed83cb1f99979954ac0",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:58.408Z",
+      "updatedAt": "2026-09-06T19:46:58.408Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "coverage",
+        "surfaceKey": "http",
+        "state": "reviewed",
+        "rationale": "http reviewed: all four handlers (readDocument, createExport, downloadExport, previewDocument) fully traced. readDocument affected by F1 via canRead. createExport: F2 (document/project unbound) and F3 (enqueue-only membership). downloadExport: ownership check correct; missing membership recheck (F3); error enumeration dismissed. previewDocument uses requireFreshMembership — correct in isolation.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_3ac2ae08c3f60f867c2bb541"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_659c9a5627600b84507c6145"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_56189ed5de28836c20af9043"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_3680f9d7becdbb6729f4098c",
+      "revision": 2,
+      "createdAt": "2026-09-06T19:48:22.187Z",
+      "updatedAt": "2026-09-06T19:48:31.834Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "coverage",
+        "blocker": "The upstream gateway implementation and production HTTP wiring are external to this repository (README.md lines 3-5) and unavailable under this audit's read-only, no-network, exact-targetDirectory constraints. Their code cannot be inspected with the granted file/security_scan tools, so session verification and error-to-HTTP mapping remain unverified assumptions.",
+        "surfaceKey": "gateway_and_transport",
+        "state": "limited",
+        "rationale": "gateway_and_transport: LIMITED. The trusted upstream gateway (session verification, cookie handling, HTTP routing, error mapping) is documented as external to the repo. Under read-only constraints we cannot inspect it, so end-to-end exploitability of F1-F3 over a real HTTP surface is an unverified assumption; severity is rated against the fixture's data model as-is.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_163ccd3560938822b0463d64"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_6c07e497c19b482d4ced5677"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_2e8629dcc5767b9c6dee9f02"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_8347170f81421916c9f33cd5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_3ac2ae08c3f60f867c2bb541",
+      "revision": 4,
+      "createdAt": "2026-09-06T19:45:23.917Z",
+      "updatedAt": "2026-09-06T19:47:52.647Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "hypothesis",
+        "summary": "H1 (identity/storage, cross-user cache poisoning): canRead() caches authorization decisions in store.readDecisions keyed by projectId ONLY, not (userId, projectId). The first caller to trigger a decision for a project fixes the result for every subsequent caller. If a member (e.g. alice for 'orchard') reads first, cache=true; then a non-member (bob) calling readDocument for a doc-orchard gets cached true → forbidden read of project documents. Conversely if a non-member query runs first (cache=false), members are wrongly denied (DoS). No invalidation on membership change exists.",
+        "state": "supported",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_98ee92f61ef380a97c7468d0"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_110c62e820c4e980390cda21"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_5b60f219e88c79c4d02d1c00",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:45:21.062Z",
+      "updatedAt": "2026-09-06T19:45:21.062Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "repository_map",
+        "summary": "Synthetic Node ESM document service, four sections. packages/http/api.mjs: readDocument, createExport, downloadExport, previewDocument handlers, called with a shared `store` and a gateway-verified session. packages/identity/policy.mjs: requireSession, canRead (uses store.readDecisions cache keyed by projectId), requireFreshMembership. packages/storage/store.mjs: createStore with projects (members sets), documents, jobs, and readDecisions cache. packages/jobs/worker.mjs: runExportWorker materializes queued jobs into job.result with no authorization check. Tests behavior.test.mjs cover happy paths plus two denials. No external deps (package.json), not deployed. Trust boundaries: session identity from external gateway (per README, do not infer bypass); HTTP→identity policy calls; HTTP→storage shared Maps; HTTP→jobs queue; jobs→documents read at worker time.",
+        "surfaces": [
+          {
+            "key": "http",
+            "label": "HTTP handlers and export delivery",
+            "coverage": "unreviewed",
+            "rationale": "Entry points readDocument/createExport/downloadExport/previewDocument in packages/http/api.mjs"
+          },
+          {
+            "key": "identity",
+            "label": "Identity and membership policy",
+            "coverage": "unreviewed",
+            "rationale": "Session check, cached read decision, fresh membership check in packages/identity/policy.mjs"
+          },
+          {
+            "key": "storage",
+            "label": "Shared storage adapter",
+            "coverage": "unreviewed",
+            "rationale": "createStore shared Maps incl. readDecisions cache in packages/storage/store.mjs"
+          },
+          {
+            "key": "jobs",
+            "label": "Async export worker",
+            "coverage": "unreviewed",
+            "rationale": "runExportWorker materializes job results in packages/jobs/worker.mjs"
+          },
+          {
+            "key": "cross_boundary",
+            "label": "Cross-section trust boundaries",
+            "coverage": "unreviewed",
+            "rationale": "Cache shared across users; queue snapshot vs current membership; export project/document binding; job ownership vs membership at download"
+          }
+        ],
+        "evidenceRefs": []
+      }
+    },
+    {
+      "id": "record_659c9a5627600b84507c6145",
+      "revision": 2,
+      "createdAt": "2026-09-06T19:45:32.412Z",
+      "updatedAt": "2026-09-06T19:46:09.644Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "hypothesis",
+        "summary": "H4 (http, downloadExport lacks job existence side-channel hardening / error handling): 'not found' vs 'not ready' distinguishable errors could allow job-state enumeration; also job.result may be undefined if state==='ready' set without result (not reachable in current worker). Low severity, mostly an information-disclosure nuance. Also assess whether error differentiation is a real finding for this synthetic scope.",
+        "state": "rejected",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_110c62e820c4e980390cda21"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_110c62e820c4e980390cda21"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_6c07e497c19b482d4ced5677",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:47:23.768Z",
+      "updatedAt": "2026-09-06T19:47:23.768Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "open_question",
+        "question": "Can the external gateway's session verification and the real HTTP routing/serialization layer be audited for end-to-end exploitability? These are outside this repository (README lines 3-5). Under the read-only, no-network constraint of this audit, the gateway implementation is a concrete external blocker: the exact HTTP wire format, cookie handling, and how store/session objects are wired in production are unknown, so severity ratings assume the fixture's data model applies verbatim in deployment.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_8347170f81421916c9f33cd5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_79adba9ee5121c17caf95f8f",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:47:04.373Z",
+      "updatedAt": "2026-09-06T19:47:04.373Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "coverage",
+        "surfaceKey": "storage",
+        "state": "reviewed",
+        "rationale": "storage reviewed: createStore fully inspected (14 lines). Shared Maps confirmed: readDecisions keyed by projectId only (enabler of F1); jobs map retains materialized results with no revocation hook (enabler of F3); documents carry projectId enabling the missing binding check (F2). No persistence layer, no other storage code in section.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_3ac2ae08c3f60f867c2bb541"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_921da3363b0a1a7d00a2394b"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_79183d696290ca0990677841"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_79f2994be482fdbc69b0e6e4",
+      "revision": 3,
+      "createdAt": "2026-09-06T19:45:29.694Z",
+      "updatedAt": "2026-09-06T19:48:00.704Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "hypothesis",
+        "summary": "H3 (http→jobs, projectId/documentId not bound): createExport validates body.projectId membership but never checks that body.documentId belongs to body.projectId, nor that the user can read that document. A user can pass projectId they are a member of plus a documentId from a DIFFERENT project they cannot read (e.g. alice: projectId='orchard', documentId='doc-harbor'); the worker materializes doc-harbor's body into job.result and downloadExport returns it because ownership/ready checks pass. Direct cross-project disclosure.",
+        "state": "supported",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_aa477bc301bf384dbcbea358"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_110c62e820c4e980390cda21"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_8347170f81421916c9f33cd5",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:45.721Z",
+      "updatedAt": "2026-09-06T19:46:45.721Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "dismissal",
+        "summary": "Dismissed: unverified gateway session trust (requireSession trusting session.userId). README.md lines 3-5 document the upstream gateway as the verified session authority, external to this repo, and explicitly instruct not to infer a gateway bypass. No in-repo spoofing surface exists; this is a documented trust boundary, retained as a deployment assumption limitation rather than a finding.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_75fe9ad1b6e067a07f9be1be"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_b49e913d798842ece6c90aac"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_2e8629dcc5767b9c6dee9f02"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_8fb49e467b458f8e0210b3b9",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:47:08.932Z",
+      "updatedAt": "2026-09-06T19:47:08.932Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "coverage",
+        "surfaceKey": "jobs",
+        "state": "reviewed",
+        "rationale": "jobs reviewed: runExportWorker fully inspected (9 lines). Worker trusts job.projectId/documentId from enqueue, never re-derives authorization, materializes doc.body into job.result for any queued job (contributor to F2 and F3). Worker correctly marks missing documents failed. Only entry point in section.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_921da3363b0a1a7d00a2394b"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_79f2994be482fdbc69b0e6e4"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_b6b782289fd9639f5cd6bfa4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_921da3363b0a1a7d00a2394b",
+      "revision": 5,
+      "createdAt": "2026-09-06T19:45:26.263Z",
+      "updatedAt": "2026-09-06T19:47:56.598Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "hypothesis",
+        "summary": "H2 (http/jobs cross-boundary, queued export survives membership revocation): createExport calls requireFreshMembership on body.projectId at enqueue time only. downloadExport checks only job.userId === session userId and job.state==='ready' — it performs NO fresh membership check on job.projectId. A member who queues an export, is then removed from the project, can still download the materialized result containing the project document body. README explicitly states revocation must prevent queued exports from disclosing the former project's documents, so this violates a stated security requirement.",
+        "state": "supported",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_040cfb134c33770969b4e954"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_110c62e820c4e980390cda21"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_98ee92f61ef380a97c7468d0",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:45:37.674Z",
+      "updatedAt": "2026-09-06T19:45:37.674Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "evidence",
+        "summary": "H1 evidence: policy.mjs canRead() reads store.readDecisions.get(projectId) and returns the cached value for ANY user; the cache key is projectId only. store.mjs defines readDecisions as a plain Map in the shared store. The only caller is readDocument in api.mjs (line 8). Membership sets exist per project in store.mjs but no cache invalidation hook exists anywhere (no .delete or .set on readDecisions outside canRead). No (userId,projectId) composite key. Confirms cross-user cache poisoning/first-caller fixation in both directions.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_8b2f2e204d90eca1a25eaef1"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_db5bee1f791bffb6c5bcd1f8"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_49e63f99a2b7028a6cd7b61c"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_9ae870554e7de8f155938cb7",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:22.310Z",
+      "updatedAt": "2026-09-06T19:46:22.310Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "finding",
+        "title": "F1: Authorization cache keyed by project only — cross-user permission bleed and denial",
+        "summary": "F1 (HIGH): Cross-user authorization cache poisoning in canRead(). The read decision cache (store.readDecisions) is keyed by projectId alone, so the first user to trigger a decision for a project fixes the answer for every subsequent user. A member's successful read caches true, after which any non-member passes canRead for that project's documents — authorization bypass and cross-user disclosure via readDocument. If a non-member's check runs first, the cache stores false and all members are denied. No cache invalidation on membership change exists anywhere, so revocation never affects readDocument either.",
+        "confidence": "high",
+        "impact": "Confidentiality: cross-user disclosure of any project document body to non-members (e.g. bob reads 'orchard quarterly results'). Availability: reversed direction wrongly denies legitimate members. Cache is never invalidated, so membership revocation also has no effect on readDocument.",
+        "exploitPreconditions": "Attacker has any authenticated session (gateway-issued) and knows a document id of a project they are not a member of (e.g. 'doc-orchard'); a member of that project has previously performed any readDocument that populated the cache. No other privilege needed.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_3ac2ae08c3f60f867c2bb541"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_98ee92f61ef380a97c7468d0"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_8ac58659c83a59c27629907f"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_f9f10915cd5dd2d227ad5a73"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_475b28c11bac72337bb37bef"
+          }
+        ],
+        "counterevidenceRefs": []
+      }
+    },
+    {
+      "id": "record_a2eb6901ea69f86f33d317b7",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:34.697Z",
+      "updatedAt": "2026-09-06T19:46:34.697Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "finding",
+        "title": "F3: Queued export survives membership revocation — revocation bypass at download",
+        "summary": "F3 (MEDIUM-HIGH): Membership revocation does not invalidate queued or completed export jobs. createExport performs requireFreshMembership only at enqueue time (api.mjs line 15). downloadExport checks only job.userId and job.state, never current membership of job.projectId (api.mjs lines 23-28). The worker materializes the document body into job.result with no authorization recheck (worker.mjs). Once a user's membership is revoked, a job they queued as a member still yields the project's document content at download. README.md lines 11-13 explicitly require that revocation invalidate cached grants and prevent queued exports from disclosing the former project's documents — this is a direct violation of the stated security requirement ('a queued job is work to validate, not a perpetual grant').",
+        "confidence": "high",
+        "impact": "Confidentiality: former member retains full access to the project document body via the materialized export result, defeating the revocation requirement. Severity medium-high: requires a valid prior membership and timing window, but the effect is a complete revocation bypass for the export channel.",
+        "exploitPreconditions": "User is a project member at enqueue time, queues an export, then is removed from the project's member set (revocation), then requests download. Worker must have run between queue and download.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_921da3363b0a1a7d00a2394b"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_040cfb134c33770969b4e954"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_a678718fcba4827b82ac78d7"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_63869992df6d7bdc442da870"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_8ae05cba4bcbbc5dfde00d5f"
+          }
+        ],
+        "counterevidenceRefs": []
+      }
+    },
+    {
+      "id": "record_a858e9878b3f9b129818a73f",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:47:30.444Z",
+      "updatedAt": "2026-09-06T19:47:30.444Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "checkpoint",
+        "summary": "All repository files read in full (7 files: README, package.json, behavior.test.mjs, and all four package modules). No scanner observations were produced by gitleaks/trivy/semgrep; osv_scanner unavailable due to no supported package sources. Five hypotheses resolved with evidence and counterevidence. Section coverage: http, identity, storage, jobs, cross_boundary all reviewed. Final report next.",
+        "nextWork": "Finalize ledger and produce comprehensive report. All four sections plus cross-boundary surface reviewed with resolved hypotheses (H1-H3 supported, H4-H5 rejected), 3 findings recorded (F1, F2, F3), 2 dismissals, 1 open question on external gateway blocker.",
+        "openRecordIds": [
+          "record_6c07e497c19b482d4ced5677"
+        ],
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_9ae870554e7de8f155938cb7"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_100ab46ea463ecb8d30d5aad"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_a2eb6901ea69f86f33d317b7"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_aa477bc301bf384dbcbea358",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:45:44.105Z",
+      "updatedAt": "2026-09-06T19:45:44.105Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "evidence",
+        "summary": "H3 evidence: createExport validates only that body.projectId is a project the user belongs to, and that body.documentId is a string. It never loads the document, never compares doc.projectId === body.projectId, and never checks canRead/requireFreshMembership for the document's actual project. Worker.mjs resolves the job by documentId alone and copies doc.body into job.result regardless of job.projectId. So {projectId:'orchard', documentId:'doc-harbor'} by alice enqueues successfully and downloads harbor content. Confirmed cross-project disclosure via unbound parameters.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_546082ace763299071894752"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_4ed259d6053c116a2841d262"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_cba9df4c30c2fd762aa7a1ae",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:47:18.852Z",
+      "updatedAt": "2026-09-06T19:47:18.852Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "coverage",
+        "surfaceKey": "cross_boundary",
+        "state": "reviewed",
+        "rationale": "Cross-section trust boundaries reviewed: (1) HTTP→identity: two different check paths (cached canRead vs fresh requireFreshMembership) produce inconsistent guarantees between readDocument and previewDocument — readDocument is revocation-blind via F1 cache, previewDocument is fresh. (2) HTTP→jobs: enqueue-time authorization snapshot not revalidated at worker or download (F3); project-level check never binds to document (F2). (3) identity→storage: shared readDecisions Map cross-user keyed (F1). (4) jobs→storage: worker reads documents directly with no policy call at all — the jobs section has no identity dependency, meaning no authorization layer exists between queue and document body.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_3ac2ae08c3f60f867c2bb541"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_921da3363b0a1a7d00a2394b"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_79f2994be482fdbc69b0e6e4"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_873a97a87dd382c4927ddb90"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_5590daa4a9d7c0f9bd078fb7"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_c684a8309e27d43b98cd42e5"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_6e8e33f23c53ff533ae9f748"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_dd9b6634ca21bf5400e48318",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:42.043Z",
+      "updatedAt": "2026-09-06T19:46:42.043Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "dismissal",
+        "summary": "Dismissed: job-state error enumeration via downloadExport. downloadExport checks job.userId===userId BEFORE the state check (api.mjs lines 24-26), so 'not found' vs 'not ready' is only distinguishable for jobs the caller owns; cross-user enumeration is impossible. Job ids are randomUUID (api.mjs line 16), not guessable. No finding for this synthetic, undeployed fixture with no real HTTP error-mapping layer.",
+        "evidenceRefs": [
+          {
+            "kind": "code_evidence",
+            "id": "evidence_91b9d6e7e4cc8c75d70892cd"
+          },
+          {
+            "kind": "code_evidence",
+            "id": "evidence_4328dcabe845c44c03f308fa"
+          }
+        ],
+        "counterevidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_110c62e820c4e980390cda21"
+          }
+        ]
+      }
+    },
+    {
+      "id": "record_df731c755f90260a533a1d44",
+      "revision": 1,
+      "createdAt": "2026-09-06T19:46:53.672Z",
+      "updatedAt": "2026-09-06T19:46:53.672Z",
+      "createdBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "updatedBy": {
+        "taskId": "7a529089-ff10-45a7-8e42-c9224df8c0d6",
+        "taskRunId": "eea2200e-f9b0-42d9-b0c2-9cb02966b1fe",
+        "modelId": "openrouter:z-ai/glm-5.3"
+      },
+      "entry": {
+        "kind": "coverage",
+        "surfaceKey": "identity",
+        "state": "reviewed",
+        "rationale": "identity reviewed: all three exported functions (requireSession, canRead, requireFreshMembership) traced across their callers in api.mjs. canRead cache-key flaw confirmed (F1); fresh-membership path correct in isolation. Gateway trust documented and dismissed.",
+        "evidenceRefs": [
+          {
+            "kind": "ledger_record",
+            "id": "record_3ac2ae08c3f60f867c2bb541"
+          },
+          {
+            "kind": "ledger_record",
+            "id": "record_163ccd3560938822b0463d64"
+          }
+        ]
+      }
+    }
+  ],
+  "reportReady": true,
+  "nextCursor": null,
+  "acceptance": {
+    "allRequestedSectionsReviewed": true,
+    "allThreeOracleVulnerabilityClassesFound": true,
+    "safeControlsAndDismissalsReviewed": true,
+    "independentOracleAndBehaviorChecks": "6 passed after live audit",
+    "sessionAndMoxieRestoredAfterCleanRestart": true,
+    "nativeThemeCheck": "Passed against 33957f187: real Task cards in light and dark themes; read-only source; 360 CSS-pixel constrained card retains horizontal scrolling.",
+    "reportScopeExplanation": "Needs correction: first report conflated absent external implementation with an authorization restriction, and did not identify unavailable scanner coverage as another cause of the partial ledger."
+  },
+  "limitations": [
+    "Small fixture acceptance does not certify a two-million-line repository.",
+    "External gateway and transport implementation are absent; coverage remains explicitly limited.",
+    "OSV found no supported package source; dependencies were not verified.",
+    "Malformed JSON recovery is separately proven by the production graph regression and real default-model repair probe; this live run repaired schema validation and completion errors.",
+    "The first report wording is retained unchanged apart from path redaction; a follow-up scope-clarification run is required."
+  ]
+}

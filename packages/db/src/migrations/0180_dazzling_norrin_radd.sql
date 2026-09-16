@@ -1,0 +1,1 @@
+ALTER TABLE "server_context_config" ADD COLUMN "reflection_sleep_enabled" boolean DEFAULT false NOT NULL;

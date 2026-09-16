@@ -1,0 +1,2 @@
+ALTER TABLE "relay_tokens" ADD COLUMN "installation_id" uuid;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_relay_tokens_user_installation_active" ON "relay_tokens" USING btree ("user_id","installation_id") WHERE "relay_tokens"."installation_id" IS NOT NULL AND "relay_tokens"."revoked_at" IS NULL;

@@ -1,0 +1,13 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "include": [
+    "*.ts",
+    "*.mjs",
+    "fixture/*.mjs",
+    "section-fixture/**/*.mjs"
+  ],
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false
+  }
+}

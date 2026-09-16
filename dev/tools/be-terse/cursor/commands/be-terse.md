@@ -1,0 +1,1 @@
+../../claude/commands/fb/be-terse.md

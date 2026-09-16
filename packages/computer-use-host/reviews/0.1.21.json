@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "hostVersion": "0.1.21",
+  "reviewedAt": "2026-09-10T22:38:19.000Z",
+  "reviewedBy": "Codex synthesis-refusal compatibility review - full Host regressions passed - live qualification pending",
+  "approvedForRelease": true,
+  "contracts": [
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.bind_window",
+      "contractVersion": 3,
+      "schemaDigest": "sha256:a8a326b6948dd07592913a70178a5714834b7aeee33fda6a4a4557ef183ce313",
+      "effectClass": "read",
+      "replayClass": "safe",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.click",
+      "contractVersion": 3,
+      "schemaDigest": "sha256:4bae30cb3d410984df8dbba05d4411400362046dd1c3dc69a7f00b35c2bf1447",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.dialog",
+      "contractVersion": 3,
+      "schemaDigest": "sha256:bbce237701bf74575887b6cf43f4db83c46302d9fcd38152e3a53390a5da9b3e",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.navigate",
+      "contractVersion": 4,
+      "schemaDigest": "sha256:559d33c3335e249868dbce7db5bb37a8756dff76363dc44f3b699d7e2e7ae567",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.open_url",
+      "contractVersion": 4,
+      "schemaDigest": "sha256:600144e2bf1fd96dd1c4126687d9cf778061651c1174144217eac81fd6215aad",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.pointer",
+      "contractVersion": 4,
+      "schemaDigest": "sha256:78fa161dd99e901d2d1a312a0f15c35a4783c4061bf0b1b65001054b9aa683f9",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.prepare",
+      "contractVersion": 4,
+      "schemaDigest": "sha256:b34870ddef0c336f4d8577407a8bfc95e45d229e12ca5c06c50baf4de24037a1",
+      "effectClass": "sensitive",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.read_page",
+      "contractVersion": 5,
+      "schemaDigest": "sha256:5aefb67e6419e7f7ba3e2c317d0e42e69196b159f0f3fa82ecf23b31cc9e63c2",
+      "effectClass": "read",
+      "replayClass": "safe",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "browser.type",
+      "contractVersion": 3,
+      "schemaDigest": "sha256:04cefd3ff87c0cc7964fab35235a32be52884aa34530c719e113d597e6c6f4bb",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "native.do",
+      "contractVersion": 11,
+      "schemaDigest": "sha256:02f27a6c99ca195b6af1d5b5edbe14f11d4471dbe1b499ce89c6ebe283587145",
+      "effectClass": "mutate",
+      "replayClass": "at_most_once",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "native.observe",
+      "contractVersion": 9,
+      "schemaDigest": "sha256:42798b1158f2702307e4eb5ffb4e5ac993e1021480a19fa0d89393b9952d4de6",
+      "effectClass": "read",
+      "replayClass": "safe",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "png",
+      "disclosureClass": "semantic_and_visual"
+    },
+    {
+      "contractNamespace": "nautilo.computer_use",
+      "contractId": "native.verify",
+      "contractVersion": 3,
+      "schemaDigest": "sha256:0dfb7a8eb75913df7602457b06f0a6f4de7f1017648ded1ef861602fdc09d7aa",
+      "effectClass": "read",
+      "replayClass": "safe",
+      "authorityClass": "standing_computer_use",
+      "attachmentClass": "none",
+      "disclosureClass": "semantic"
+    }
+  ]
+}

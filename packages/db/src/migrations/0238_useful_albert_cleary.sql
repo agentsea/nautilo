@@ -1,0 +1,2 @@
+CREATE INDEX "idx_shadow_turn_retained_signer" ON "conversation_shadow_turn_agent_signers" USING btree ("agent_signer_key_id","agent_runtime_generation","created_at","operation_id");--> statement-breakpoint
+CREATE INDEX "idx_shared_agent_execution_retained_signer" ON "conversation_shared_agent_shadow_executions" USING btree ("agent_id","agent_runtime_generation","agent_signer_key_id","sequence");

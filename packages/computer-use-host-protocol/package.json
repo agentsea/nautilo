@@ -1,0 +1,25 @@
+{
+  "name": "@nautilo/computer-use-host-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generic structural broker protocol and explicit Node wire for managed Computer Use",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./host-wire": "./src/host-wire.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "bun run test:unit",
+    "test:unit": "bun test tests/unit/"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

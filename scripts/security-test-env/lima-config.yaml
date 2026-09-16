@@ -1,0 +1,96 @@
+# lima-config.yaml — Nautilo security smoke Lima VM configuration.
+#
+# VM name: nautilo-smoke-linux
+# Distro: Ubuntu 24.04 LTS (aarch64 on Apple Silicon hosts)
+#
+# SECURITY: deliberately NO host mounts. Default Lima templates mount
+# ~ from host into the guest, which would expose real user secrets
+# (~/.ssh, ~/.aws, etc.) — exactly what this VM exists to test denial
+# of. Nautilo source is pushed in via `limactl shell <vm> -- tar`
+# after boot. See setup-linux.sh.
+#
+# Resources sized for `bun install` + running `bun run oss` + shell
+# smoke tests. Can be reduced if the host is constrained.
+
+minimumLimaVersion: "2.0.0"
+
+# VM driver: qemu, not the macOS default "vz".
+#
+# WHY: `limactl snapshot create/apply` requires QEMU. The `vz` driver
+# (Apple Virtualization.framework) is faster to boot but snapshot is
+# "unimplemented" there — we need snapshot-restore for the per-test
+# clean-state pattern (see D063 issue § "Per-test execution model").
+#
+# On Apple Silicon, QEMU runs arm64 guests via HVF acceleration
+# at native speed — no emulation penalty for same-arch.
+vmType: "qemu"
+
+# Base: Ubuntu 24.04 cloud images.
+# Do NOT include _default/mounts (which mounts ~) — we want isolation.
+base:
+- template:_images/ubuntu-24.04
+
+# VM resources
+cpus: 4
+memory: "4GiB"
+disk: "30GiB"
+
+# SECURITY: no host mounts. Nautilo source transferred in separately.
+mounts: []
+
+# SSH: Lima manages a per-VM keypair; don't consume host ~/.ssh/*.pub
+ssh:
+  loadDotSSHPubKeys: false
+
+# System-level provisioning: install dependencies, create test user.
+provision:
+
+# Install system dependencies
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y \
+      git curl ca-certificates build-essential \
+      unzip jq rsync
+
+# Create nautilotest user with passwordless sudo.
+# Passwordless sudo is needed for the sudo-pattern smoke tests
+# (verifies the scanner blocks `sudo` before we ever hit the prompt).
+# Safe because the VM is a disposable sandbox.
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! id nautilotest >/dev/null 2>&1; then
+      useradd --create-home --shell /bin/bash nautilotest
+    fi
+    cat > /etc/sudoers.d/nautilotest <<'EOF'
+    nautilotest ALL=(ALL) NOPASSWD:ALL
+    EOF
+    chmod 440 /etc/sudoers.d/nautilotest
+
+# Install bun for the nautilotest user (used for `bun install` during setup).
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! sudo -u nautilotest bash -lc 'test -x "$HOME/.bun/bin/bun"'; then
+      sudo -u nautilotest bash -lc 'curl -fsSL https://bun.sh/install | bash'
+    fi
+
+# Readiness probes — fail `limactl start` if provisioning didn't complete.
+probes:
+- script: |
+    #!/bin/bash
+    set -e
+    id nautilotest >/dev/null 2>&1
+  hint: "nautilotest user creation failed — inspect /var/log/cloud-init-output.log"
+
+- script: |
+    #!/bin/bash
+    set -e
+    sudo -u nautilotest test -x /home/nautilotest/.bun/bin/bun
+  hint: "bun install failed — re-run limactl start to retry provisioning"

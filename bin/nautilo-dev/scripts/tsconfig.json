@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["./qualify-sheets-browser.ts"],
+  "exclude": ["node_modules", "dist"]
+}

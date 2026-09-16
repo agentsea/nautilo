@@ -1,0 +1,66 @@
+# -----------------------------------------------------------------------------
+# Nautilo OSS operator quickstart — SETUP TEMPLATE (chmod 600 before use)
+# -----------------------------------------------------------------------------
+# Copy to your instance directory, replace placeholders, then run:
+#   chmod 600 setup.toml
+#   nautilo setup --file setup.toml --delete-file
+#
+# Raw secret values belong in ~/.config/nautilo/secrets.env (mode 0600), not in
+# this TOML. Use `{ fromEnv = "VAR" }` for passwords, PINs, invites, and keys.
+# Export the referenced variables into the CLI process before running setup.
+#
+# Precedence for server URL (see packages/api-client resolveCliServerUrl):
+#   CLI --server > this file's serverUrl > NAUTILO_SERVER_URL > instance default
+#
+# Secrets support inline `{ value = "..." }` OR `{ fromEnv = "VAR" }`.
+# -----------------------------------------------------------------------------
+
+schemaVersion = 1
+
+# Optional explicit server URL (must be loopback for `nautilo setup`).
+# serverUrl = "http://127.0.0.1:3001"
+
+[admin]
+# Lowercase handle, 3–30 chars: [a-z][a-z0-9_]{2,29}
+handle = "owner_handle"
+
+displayName = "Primary Owner"
+
+# This is your permanent owner password. Keep it in protected operator custody.
+password = { fromEnv = "NAUTILO_BOOTSTRAP_ADMIN_PASSWORD" }
+
+pin = { fromEnv = "NAUTILO_BOOTSTRAP_PIN" }
+
+[claim]
+inviteCode = { fromEnv = "NAUTILO_CLAIM_INVITE" }
+
+# Provider registry keys must match ~/.nautilo-*/instance.env variable names.
+[[providers]]
+key = "OPENAI_API_KEY"
+value = { fromEnv = "OPENAI_API_KEY" }
+
+# Optional: add more providers as needed for voice / search / alternate LLMs.
+# [[providers]]
+# key = "ELEVENLABS_API_KEY"
+# value = { fromEnv = "ELEVENLABS_API_KEY" }
+
+# -----------------------------------------------------------------------------
+# Genie defaults (Phase 12) — optional block
+# -----------------------------------------------------------------------------
+# mode = "skip" | "explicit" | "randomize"
+[genie]
+mode = "skip"
+
+# Example explicit mode:
+# [genie]
+# mode = "explicit"
+# name = "Astra"
+# voice = "openai:nova"
+# defaultModel = "openai:gpt-4o-mini"
+# personality = "Warm mentor tone; patient explanations."
+# avatar = { kind = "preset", presetId = "avatar-03" }
+
+# Example randomize (fleet):
+# [genie]
+# mode = "randomize"
+# seed = 42

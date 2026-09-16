@@ -1,0 +1,300 @@
+# M114: isolated deploy-stack compose template.
+#
+# Topology: two Postgres clusters + nautilo-server on direct PostgreSQL wire
+# protocol (M212+ / M215). Host ports are SHIFTED so this stack can run
+# side-by-side with `bun run infra:start`:
+#
+#   app-postgres    (pgvector/pg17) — app DB ONLY (`nautilo`).
+#   logto-postgres  (postgres:16) — Logto DB (`logto_nautilo`).
+#   logto + logto-seed — upstream Logto OSS. NOT bootstrapped in M114
+#                        (option B per the issue).
+#   nautilo-server  — built from packaging/docker/Dockerfile, talks to
+#                      app-postgres directly (runtime + migration URLs).
+#
+# Naming note: dev's `packages/db/docker/docker-compose.yml` calls the app
+# Postgres `legacy-postgres` (anchored to an older two-DB era). It is NOT
+# legacy — it is the dedicated app cluster, sized + tuned for the app
+# workload, kept distinct from Logto's cluster on purpose. Renamed here.
+#
+# Default project: `nautilo` (M092). M092's `ComposeDriver` sets
+# `COMPOSE_PROJECT_NAME` per-profile; the M114 `scripts/m114-docker-smoke.sh`
+# still works because its `.env` can set an explicit `COMPOSE_PROJECT_NAME` override.
+#
+# This file is the deploy/full-stack rehearsal target — intentionally separate
+# from `infra/compose/nautilo.yml` (the dev infra stack used by `bun run
+# infra:start`). Do not consolidate them in M114; M092 Step 2 may revisit.
+#
+# Profiles:
+#   `auth`   → logto + logto-seed (+ their `logto-postgres` dependency).
+#   `app`    → nautilo-server (+ app-postgres dependency).
+#              Composes with `--profile auth` for the full stack:
+#              `--profile auth --profile app`.
+#
+# Bring up:
+#   cp .env.local-smoke.example .env  # one-time
+#   docker compose --profile auth --profile app up -d --build
+#
+# Tear down (only affects this compose project — dev volumes untouched):
+#   docker compose --profile auth --profile app down -v
+#
+# M114 ships with `LOGTO_*` keys BLANK on nautilo-server (option B). `/health`
+# returns 200 with empty logto fields; protected routes fail JWT verify. Real
+# Logto bootstrap inside the deploy stack lands in M092 Step 4.
+
+name: ${COMPOSE_PROJECT_NAME:-nautilo}
+
+services:
+  # ── App DB cluster (pgvector, app workload only) ───────────────────────────
+  app-postgres:
+    image: ${PGVECTOR_IMAGE}
+    environment:
+      # No POSTGRES_DB here — the init script below owns DB + role creation
+      # (`nautilo`, `nautilo_agent`, etc.). Setting POSTGRES_DB would race
+      # with the script's `CREATE DATABASE nautilo` and break first-boot.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:-postgres}
+      NAUTILO_DB_PASSWORD: ${NAUTILO_DB_PASSWORD:-nautilo}
+      LOGTO_DB_PASSWORD: ${LOGTO_DB_PASSWORD:-logto}
+      NAUTILO_AGENT_DB_PASSWORD: ${NAUTILO_AGENT_DB_PASSWORD:-nautilo_agent}
+      NAUTILO_CRYPTO_DB_PASSWORD: ${NAUTILO_CRYPTO_DB_PASSWORD:?NAUTILO_CRYPTO_DB_PASSWORD must be set by ensureDbPasswords (M231)}
+      NAUTILO_POSTGRES_CLUSTER_KIND: app
+    ports:
+      # Host-side diagnostics stay available without exposing Postgres off-host.
+      - "127.0.0.1:${NAUTILO_DEPLOY_APP_DB_PORT:-6434}:5432"
+    volumes:
+      - app_pgdata:/var/lib/postgresql/data
+      # Same init script as logto-postgres — creates `nautilo`, `nautilo_agent`,
+      # and `logto` roles + databases. Idempotent across both clusters (runs
+      # once per fresh volume); each cluster ends up with both DBs but only
+      # uses the one it owns. Required because the server's agent-DB
+      # connection (`packages/db/src/config/agent-database.ts`) uses the
+      # `nautilo_agent` role, not the postgres superuser.
+      - ../../../infra/postgres-init.sh:/docker-entrypoint-initdb.d/01-nautilo.sh:ro
+    healthcheck:
+      # The official entrypoint starts a temporary PostgreSQL server while
+      # running init scripts. pg_isready alone can accept that transient
+      # process and release dependent services too early. PID 1 is the final
+      # server only after the entrypoint has completed initialization.
+      test: ["CMD-SHELL", "test \"$$(cat /proc/1/comm)\" = postgres && pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - deploy-net
+
+  # ── Logto DB cluster (plain postgres, Logto workload only) ─────────────────
+  # Distinct cluster from `app-postgres`. Image is plain `postgres:16` —
+  # Logto does not need pgvector. The init script creates the `logto`
+  # role + `logto_nautilo` DB (and also creates a `nautilo` role/DB which
+  # is unused on this cluster; harmless leftover, kept for byte-identity
+  # with `infra/postgres-init.sh`).
+  logto-postgres:
+    image: ${POSTGRES_IMAGE}
+    volumes:
+      - logto_pgdata:/var/lib/postgresql/data
+      - ../../../infra/postgres-init.sh:/docker-entrypoint-initdb.d/01-nautilo.sh:ro
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      NAUTILO_DB_PASSWORD: ${NAUTILO_DB_PASSWORD:-nautilo}
+      LOGTO_DB_PASSWORD:   ${LOGTO_DB_PASSWORD:-logto}
+      NAUTILO_AGENT_DB_PASSWORD: ${NAUTILO_AGENT_DB_PASSWORD:-nautilo_agent}
+      NAUTILO_POSTGRES_CLUSTER_KIND: logto
+    ports:
+      # Host-side diagnostics stay available without exposing Postgres off-host.
+      - "127.0.0.1:${NAUTILO_DEPLOY_DB_PORT:-6432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$$(cat /proc/1/comm)\" = postgres && pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 2s
+      retries: 30
+    networks:
+      - deploy-net
+
+  logto:
+    image: ${LOGTO_IMAGE}
+    profiles: ["auth", "full"]
+    depends_on:
+      logto-postgres: { condition: service_healthy }
+      logto-seed: { condition: service_completed_successfully }
+    ports:
+      - "${NAUTILO_DEPLOY_LOGTO_PORT:-4301}:${NAUTILO_DEPLOY_LOGTO_PORT:-4301}"
+      # The SSH bootstrap tunnel targets this host-loopback-only listener.
+      - "127.0.0.1:${NAUTILO_DEPLOY_LOGTO_ADMIN_PORT:-4302}:${NAUTILO_DEPLOY_LOGTO_ADMIN_PORT:-4302}"
+    environment:
+      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-logto}@logto-postgres:5432/logto_nautilo
+      PORT:                 ${NAUTILO_DEPLOY_LOGTO_PORT:-4301}
+      ADMIN_PORT:           ${NAUTILO_DEPLOY_LOGTO_ADMIN_PORT:-4302}
+      ENDPOINT:             ${LOGTO_ENDPOINT:-http://localhost:4301}
+      ADMIN_ENDPOINT:       ${LOGTO_CONTAINER_ADMIN_ENDPOINT:-http://127.0.0.1:4302}
+      CASE_SENSITIVE_USERNAME: "false"
+      TRUST_PROXY_HEADER:   ${LOGTO_TRUST_PROXY:-0}
+    networks:
+      - deploy-net
+
+  logto-seed:
+    image: ${LOGTO_IMAGE}
+    profiles: ["auth", "full"]
+    depends_on:
+      logto-postgres: { condition: service_healthy }
+    restart: "no"
+    environment:
+      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-logto}@logto-postgres:5432/logto_nautilo
+    command: ["cli", "--", "db", "seed", "--swe"]
+    networks:
+      - deploy-net
+
+  nautilo-server:
+    image: nautilo-server:${NAUTILO_SERVER_TAG:-local-dev}
+    build:
+      context: ../../..
+      dockerfile: packaging/docker/Dockerfile
+    profiles: ["app", "full"]
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+    ports:
+      - "${NAUTILO_DEPLOY_SERVER_PORT:-4001}:3001"
+    environment:
+      NAUTILO_HOST: 0.0.0.0
+      NAUTILO_PORT: 3001
+      NAUTILO_HOSTING_MODE: local
+      # Instance identity, always present on EVERY compose invocation (deploy,
+      # restore/rollback, manual `up`) via the --env-file. Empty = the default
+      # instance; named instances (e.g. omega) get their id here so the D374
+      # marker + server self-identity never depend on the server overlay alone.
+      # The server overlay still sets this too (belt-and-suspenders).
+      NAUTILO_INSTANCE_ID: "${NAUTILO_INSTANCE_ID:-}"
+      NAUTILO_DB_BOOTSTRAP: container
+      NAUTILO_ARTIFACTS_ROOT: /var/lib/nautilo/artifacts
+      NAUTILO_MIGRATIONS_DIR: /srv/migrations
+      NAUTILO_WORKBENCH_DIST: /srv/workbench
+      # M116 §4 — migrations run as `nautilo` (DB owner) so tables are owned
+      # by `nautilo`, which keys the ALTER DEFAULT PRIVILEGES chain in
+      # postgres-init.sh that grants nautilo_agent automatically. Fresh
+      # volumes install vector via infra/postgres-init.sh; existing volumes
+      # get vector from the deploy repairAppDbOwnership superuser pass
+      # (buildFullLegacyRoleRepairSql) before server up, so migration 0002's
+      # `CREATE EXTENSION IF NOT EXISTS vector` is a no-op here.
+      DB_DIRECT_CONNECTION: postgres://nautilo:${NAUTILO_DB_PASSWORD:?NAUTILO_DB_PASSWORD must be set}@app-postgres:5432/nautilo
+      DB_CONNECTION_STRING: postgres://nautilo:${NAUTILO_DB_PASSWORD:?NAUTILO_DB_PASSWORD must be set}@app-postgres:5432/nautilo
+      DB_AGENT_CONNECTION_STRING: postgres://nautilo_agent:${NAUTILO_AGENT_DB_PASSWORD:?NAUTILO_AGENT_DB_PASSWORD must be set by ensureDbPasswords (M116)}@app-postgres:5432/nautilo
+      DB_AGENT_DIRECT_CONNECTION: postgres://nautilo_agent:${NAUTILO_AGENT_DB_PASSWORD:?NAUTILO_AGENT_DB_PASSWORD must be set by ensureDbPasswords (M116)}@app-postgres:5432/nautilo
+      NAUTILO_AGENT_DB_PASSWORD: ${NAUTILO_AGENT_DB_PASSWORD:?NAUTILO_AGENT_DB_PASSWORD must be set by ensureDbPasswords (M116)}
+      # M092 — force plain HTTP even though we bind on 0.0.0.0. The
+      # host port-forward IS the trust boundary; self-signed certs in
+      # the container have nowhere to surface for CLI/Electron trust.
+      NAUTILO_DISABLE_TLS: "${NAUTILO_DISABLE_TLS:-1}"
+      # Public origin advertised by /health, setup-status, and minted
+      # invite links. Do NOT pass NAUTILO_SERVER_URL into this container:
+      # resolveInstance() treats it as a bind/listen URL override and would
+      # turn an https://<domain> public URL into preferred port 443 inside
+      # the container. NAUTILO_PORT above remains the bind source of truth.
+      NAUTILO_PUBLIC_BASE_URL: "${NAUTILO_PUBLIC_BASE_URL:-}"
+      # M201 R1/R2 — topology-aware Collabora/office origins for the
+      # containerized server. Static compose-DNS values (see the `office` /
+      # `collabora` services below, `app` profile). Inside this container
+      # `127.0.0.1`/`host.docker.internal` do NOT reach the engines or the
+      # server, so every server↔engine + engine→server URL is an explicit
+      # deploy-net service name. Match: NAUTILO_WOPI_CALLBACK_ORIGIN ==
+      # collabora `aliasgroup1`; NAUTILO_COLLABORA_ENGINE_URL == the collabora
+      # service DNS; NAUTILO_OFFICE_URL == the nwuno service DNS.
+      NAUTILO_COLLABORA_ENGINE_URL: http://collabora:9980
+      NAUTILO_WOPI_CALLBACK_ORIGIN: http://nautilo-server:3001
+      NAUTILO_OFFICE_URL: http://office:2003/
+      # M201 office feature flag — the server registers office tools/routes +
+      # advertises the feature to clients only when this is true. Driven by the
+      # profile `office` field via buildComposeEnv (deploy.compose.env).
+      NAUTILO_OFFICE_ENABLED: "${NAUTILO_OFFICE_ENABLED:-false}"
+      # NAUTILO_COLLABORA_WS_ORIGIN: uncomment + set to the public origin ONLY
+      # if live QA shows coolwsd rejects the agent co-session WS under
+      # server_name=${NAUTILO_DOMAIN} (default loopback origin is usually fine).
+      # LOGTO_* keys intentionally blank on nautilo-server (option B). /health returns 200 with
+      # empty logto fields; protected routes fail trust. M092 Step 4 wires real bootstrap.
+      NAUTILO_MEDIA_ROOT: /var/lib/nautilo/media
+    volumes:
+      - app_artifacts:/var/lib/nautilo/artifacts
+      - app_media:/var/lib/nautilo/media
+      - app_apps:/var/lib/nautilo/apps
+    healthcheck:
+      # Plain HTTP — NAUTILO_DISABLE_TLS=1 (above) disables the LAN-host
+      # TLS branch. Compose override of the Dockerfile-level HEALTHCHECK.
+      test: ["CMD", "bun", "-e", "const response = await fetch('http://localhost:3001/health'); if (!response.ok) process.exit(1)"]
+      interval: 5s
+      retries: 30
+      start_period: 45s
+    networks:
+      - deploy-net
+
+  # ── Office engines (M201) ──────────────────────────────────────────────
+  # Office is an always-on feature, so the engines come up with the SAME
+  # `app`/`full` profile as `nautilo-server` — a normal `nautilo deploy`
+  # starts them, no extra flag. (Trade-off: the coolwsd image is ~2GB, pulled
+  # on first deploy / local-smoke.) Both reach the server — and are reached by
+  # it — over `deploy-net` DNS with NO host `ports:` mapping: the engines are
+  # never exposed to the public internet. The browser reaches coolwsd
+  # same-origin via the server's `/office-engine/*` proxy (which rides the
+  # single Caddy vhost), and the WOPI callback stays container→container
+  # (`nautilo-server:3001`).
+
+  # nwuno — LibreOffice headless engine (agent `office`/`edit_doc` tool lane).
+  # Reachable at `office:2003` (== NAUTILO_OFFICE_URL on the server).
+  office:
+    build:
+      context: ../../../infra/nwuno
+    profiles: ["office"]
+    restart: unless-stopped
+    networks:
+      - deploy-net
+
+  # coolwsd — Collabora Online interactive editor engine. Reachable at
+  # `collabora:9980` (== NAUTILO_COLLABORA_ENGINE_URL on the server).
+  # M201 R3 hardening vs the dev compose: admin console disabled, no default
+  # creds, `frame_ancestors` driven by the public origin (NOT `*`),
+  # `server_name` from the domain, and `ssl.termination=true` because Caddy
+  # terminates TLS upstream (the server↔engine hop is plain http on deploy-net).
+  # `home_mode.enable=false` lifts the dev concurrency cap; the welcome/feedback
+  # bars are handled by the workbench `nw-strip.css` overlay.
+  collabora:
+    build:
+      # Same thin fonts-overlay image as dev (layers MS-metric-compatible +
+      # broad-Unicode fonts on the pinned coolwsd base). COOLWSD_BASE mirrors
+      # DEPENDENCY_PINS.collabora / COLLABORA_IMAGE in the .env templates.
+      context: ../../../infra/coolwsd-fonts
+      args:
+        COOLWSD_BASE: ${COLLABORA_IMAGE:-collabora/code:26.04.1.4.1}
+    profiles: ["office"]
+    restart: unless-stopped
+    cap_add:
+      - MKNOD
+    environment:
+      DONT_GEN_SSL_CERT: "1"
+      # M201 — coolwsd MUST emit URLs the browser can reach, not the internal
+      # `collabora:9980` compose host. `server_name` = the public host:port
+      # (NAUTILO_PUBLIC_HOST, e.g. `localhost:4001` or `nautilo.example.com`);
+      # `ssl.termination` = true ONLY behind edge TLS (Caddy/LE) so coolwsd
+      # emits wss/https, false for plain-http local/LAN so it emits ws/http.
+      # `frame_ancestors` = the full public origin. All three are computed per
+      # topology by buildComposeEnv; empty defaults are a safe fallback.
+      extra_params: >-
+        --o:ssl.enable=false --o:ssl.termination=${NAUTILO_COOLWSD_SSL_TERMINATION:-false}
+        --o:welcome.enable=false --o:home_mode.enable=false
+        --o:admin_console.enable=false
+        --o:net.service_root=/office-engine
+        --o:net.frame_ancestors=${NAUTILO_PUBLIC_BASE_URL:-}
+        --o:server_name=${NAUTILO_PUBLIC_HOST:-}
+      # WOPI-host allowlist — MUST equal NAUTILO_WOPI_CALLBACK_ORIGIN.
+      aliasgroup1: "http://nautilo-server:3001"
+    networks:
+      - deploy-net
+
+volumes:
+  app_pgdata:
+  logto_pgdata:
+  app_artifacts:
+  app_media:
+  app_apps:
+
+networks:
+  deploy-net:
+    driver: bridge

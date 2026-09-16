@@ -1,0 +1,72 @@
+{
+  "name": "@nautilo/office-docs",
+  "version": "0.6.9",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Canvas-based document editor for Wafflebase",
+  "type": "module",
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE.md",
+    "DICTIONARY-LICENSE.txt"
+  ],
+  "main": "dist/browser.cjs",
+  "module": "dist/browser.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./dist/node.d.ts",
+        "import": "./dist/node.js",
+        "require": "./dist/node.cjs",
+        "default": "./dist/node.js"
+      },
+      "types": "./dist/index.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs",
+      "default": "./dist/browser.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "require": "./dist/node.cjs",
+      "default": "./dist/node.js"
+    },
+    "./browser": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs",
+      "default": "./dist/browser.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest --run",
+    "test:watch": "vitest --watch",
+    "build": "vite --config vite.build.ts build && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test:ime": "node scripts/verify-ime-browser.mjs",
+    "format": "prettier --write .",
+    "test:unit": "vitest --run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@types/nspell": "^2.1.6",
+    "@vitest/coverage-v8": "^4.1.8",
+    "jsdom": "^28.0.0",
+    "playwright": "^1.58.2",
+    "prettier": "^3.3.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.2",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "@nautilo/office-core": "0.6.9",
+    "jszip": "^3.10.1",
+    "nspell": "^2.1.5",
+    "pdf-lib": "^1.17.1"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@nautilo/first-party-video",
+  "private": true,
+  "type": "module",
+  "version": "0.2.3",
+  "scripts": {
+    "build": "bun build ./main.ts --outdir=./dist --target=browser",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nautilo/generated-media-ui": "file:../../generated-media-ui",
+    "@nautilo/types": "file:../../types",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@nautilo/computer-use-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Server-owned public Computer Use contract primitives",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./native": "./src/native.ts",
+    "./schema-digest": "./src/schema-digest.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "bun test tests/unit/"
+  },
+  "dependencies": {
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

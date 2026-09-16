@@ -1,0 +1,2 @@
+ALTER TABLE "invites" ADD COLUMN "half_redeemed_user_id" uuid;--> statement-breakpoint
+ALTER TABLE "invites" ADD CONSTRAINT "invites_half_redeemed_user_id_users_id_fk" FOREIGN KEY ("half_redeemed_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;

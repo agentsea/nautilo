@@ -1,0 +1,50 @@
+{
+  "name": "@nautilo/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Database schema, connection, and migrations for Nautilo",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./testing": "./src/testing/instance-guard.ts"
+  },
+  "scripts": {
+    "db:generate": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate && bun scripts/finalize-crypto-delivery-migration.ts && bun scripts/finalize-m237-message-crypto-lifecycle.ts && bun scripts/finalize-m241-background-authorization.ts && bun scripts/finalize-m244-background-authority-sets.ts && bun scripts/finalize-m243-memory-crypto-lifecycle.ts && bun scripts/finalize-m257-reflection-records.ts && bun scripts/finalize-m258-reflection-authority.ts && bun scripts/finalize-m327-reflection-replay-authority.ts && bun scripts/finalize-m261-artifact-crypto-lifecycle.ts && bun scripts/finalize-m264-reflection-search.ts && bun scripts/finalize-m267-stenographer-record-cutover.ts && bun scripts/finalize-m271-reflection-semantic-work.ts && bun scripts/finalize-m274-encryption-transition.ts && bun scripts/finalize-m279-reflection-convergence.ts && bun scripts/finalize-m282-live-shadow-encryption.ts && bun scripts/finalize-m301-domain-key-authority.ts && bun scripts/finalize-m304-human-device-membership.ts && bun scripts/finalize-m275-history-read-observations.ts && bun scripts/finalize-m295-human-peer-shadow-encryption.ts && bun scripts/finalize-m296-shared-agent-shadow-encryption.ts && bun scripts/finalize-m298-runtime-foreground-authority.ts && bun scripts/finalize-m299-runtime-conductor.ts && bun scripts/finalize-m313-message-backfill.ts && bun scripts/finalize-m313-message-reservation.ts && bun scripts/finalize-m313-tool-context.ts && bun scripts/finalize-m313-repair-source.ts && bun scripts/finalize-m314-public-room-message-authority.ts && bun scripts/finalize-event-feed.ts && bun scripts/finalize-content-access-operations.ts",
+    "db:generate:content-access-immutability": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name content_access_receipt_immutability && bun scripts/finalize-content-access-operations.ts --immutability",
+    "db:repair-meta-snapshots": "bun scripts/repair-migration-meta-snapshots.mjs",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "db:check": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit check",
+    "db:dedupe-membership-system-messages": "bun src/utils/dedupe-membership-system-messages.ts",
+    "hosted-bootstrap": "bun src/hosted-bootstrap/cli.ts",
+    "db:dev": "docker compose -f docker/docker-compose.yml up -d",
+    "db:dev:down": "docker compose -f docker/docker-compose.yml down",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "bun run test:unit && bun run test:integration",
+    "test:unit": "bun test tests/unit/",
+    "test:integration": "bun test tests/integration/",
+    "clean": "rm -rf dist .turbo node_modules",
+    "db:generate:m314-public-rooms": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name m314_public_room_message_authority && bun scripts/finalize-m314-public-room-message-authority.ts",
+    "db:generate:m314-participant-set": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name m314_participant_set_authority && bun scripts/finalize-m314-public-room-message-authority.ts"
+  },
+  "dependencies": {
+    "@nautilo/config": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "postgres": "3.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "@typescript-eslint/rule-tester": "8.50.0",
+    "@typescript-eslint/utils": "8.50.0",
+    "dotenv": "16.6.1",
+    "drizzle-kit": "0.31.8",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "tsBuildInfoFile": "../../node_modules/.cache/tsconfig/wafflebase-packaging.tsbuildinfo"
+  },
+  "include": ["./*.mjs", "./*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,20 @@
+Nautilo lattice-crypto OpenMLS WASM wrapper
+
+This package includes source derived from OpenMLS openmls-wasm and a compiled
+WASM artifact built from the Cargo dependency resolution in
+openmls-wasm/Cargo.lock.
+
+OpenMLS source baseline:
+  tag: openmls-v0.8.1
+  commit: 47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6
+  repository: https://github.com/openmls/openmls
+  license: MIT
+
+The wrapper was modified by the lattice-lab and Nautilo projects. The original
+lattice-lab license is preserved in LICENSE.lattice-lab. OpenMLS's license is
+preserved in openmls-wasm/LICENSE.
+
+The compiled dependency closure includes MPL-2.0 software from the hpke-rs
+project. Source and license information, dependency inventory, and security
+advisory dispositions are in THIRD_PARTY_NOTICES.md,
+THIRD_PARTY_NOTICES.cargo.md, and openmls-wasm/ADVISORIES.md.

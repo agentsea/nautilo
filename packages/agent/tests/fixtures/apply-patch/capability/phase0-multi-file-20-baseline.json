@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "status": "frozen_phase0_baseline",
+  "change": "Coherent twenty-file TypeScript feature update with one small export change per file.",
+  "files": [
+    "src/feature/file-01.ts", "src/feature/file-02.ts", "src/feature/file-03.ts", "src/feature/file-04.ts", "src/feature/file-05.ts",
+    "src/feature/file-06.ts", "src/feature/file-07.ts", "src/feature/file-08.ts", "src/feature/file-09.ts", "src/feature/file-10.ts",
+    "src/feature/file-11.ts", "src/feature/file-12.ts", "src/feature/file-13.ts", "src/feature/file-14.ts", "src/feature/file-15.ts",
+    "src/feature/file-16.ts", "src/feature/file-17.ts", "src/feature/file-18.ts", "src/feature/file-19.ts", "src/feature/file-20.ts"
+  ],
+  "historicalFileWorkflow": {
+    "tool": "file",
+    "command": "str_replace",
+    "calls": 20,
+    "oneFilePerCall": true
+  },
+  "recordedApplyPatchComparison": {
+    "tool": "apply_patch",
+    "calls": 1,
+    "argument": "patch",
+    "grammar": "codex_apply_patch",
+    "fixture": "multi-file-20.patch"
+  }
+}

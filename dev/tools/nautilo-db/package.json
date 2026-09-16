@@ -1,0 +1,23 @@
+{
+  "name": "nautilo-db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for read-only SQL queries against the local Nautilo Postgres dev database",
+  "main": "index.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "pg": "8.13.1",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "@types/pg": "8.11.10"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.15",
+    "body-parser": "2.3.0",
+    "hono": "4.12.34",
+    "qs": "6.15.3"
+  }
+}

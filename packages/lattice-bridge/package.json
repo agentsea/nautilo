@@ -1,0 +1,71 @@
+{
+  "name": "@nautilo/lattice-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./server": {
+      "types": "./src/server/index.ts",
+      "import": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    },
+    "./client/electron": {
+      "types": "./src/client/electron/index.ts",
+      "import": "./src/client/electron/index.ts",
+      "default": "./src/client/electron/index.ts"
+    },
+    "./client/browser": {
+      "types": "./src/client/browser/index.ts",
+      "import": "./src/client/browser/index.ts",
+      "default": "./src/client/browser/index.ts"
+    },
+    "./client/background": {
+      "types": "./src/device/background-authorization-client.ts",
+      "import": "./src/device/background-authorization-client.ts",
+      "default": "./src/device/background-authorization-client.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "import": "./src/testing/index.ts",
+      "default": "./src/testing/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun run test:unit && bun run test:property && bun run test:scenarios",
+    "test:unit": "bun test --timeout 15000 tests/unit/",
+    "test:property": "bun test --timeout 15000 tests/property/",
+    "test:scenarios": "bun test --timeout 15000 tests/scenarios/",
+    "test:browser": "bun scripts/run-browser-vault-integration.ts",
+    "test:integration": "bun scripts/run-postgres-integration.ts"
+  },
+  "dependencies": {
+    "@nautilo/api-client": "workspace:*",
+    "@nautilo/db": "workspace:*",
+    "@nautilo/lattice-crypto": "workspace:*",
+    "@nautilo/logger": "workspace:*",
+    "@nautilo/reflection": "workspace:*",
+    "@nautilo/trust": "workspace:*",
+    "@nautilo/types": "workspace:*",
+    "@noble/hashes": "2.2.0",
+    "@scure/bip39": "2.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "drizzle-orm": "0.45.2",
+    "playwright": "1.62.1",
+    "postgres": "3.4.7",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "sourceSha": "540cd50aa708b13270a7cbd47727e4d3b4062ecd",
+  "dockerfileSha256": "sha256:8c0a534aae1d0cd6b07ae78beac6016599d0f63d6f8cfed02cb1c3c4d2475ae6",
+  "capturedAt": "2026-08-05T00:33:30.171Z",
+  "host": {
+    "os": "darwin",
+    "architecture": "arm64",
+    "dockerEngineArchitecture": "aarch64"
+  },
+  "requestedPlatform": "linux/amd64",
+  "executionMode": "emulated",
+  "executionModeBasis": "requested platform compared with docker info .Architecture",
+  "image": {
+    "reference": "nautilo-runtime:d490-0.6-amd64",
+    "id": "sha256:a03eb2d5a26a274c595d1db36376a557213753b6c527be07964536b087565d3d",
+    "repoDigests": [],
+    "sizeBytes": 1049572801
+  },
+  "probe": {
+    "version": 1,
+    "platform": "linux/amd64",
+    "observedRuntime": {
+      "os": "linux",
+      "architecture": "x64"
+    },
+    "inventory": {
+      "platform": "linux/amd64",
+      "sharpPackage": "/srv/repo/node_modules/sharp/package.json",
+      "sharpAddon": "/srv/repo/node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64-0.35.3.node",
+      "sharpLibvipsPackage": "/srv/repo/node_modules/@img/sharp-libvips-linux-x64/package.json",
+      "sharpLibvipsLibrary": "/srv/repo/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.3",
+      "argon2Package": "/srv/repo/node_modules/argon2/package.json",
+      "argon2Addon": "/srv/repo/node_modules/argon2/prebuilds/linux-x64/argon2.glibc.node"
+    },
+    "sharp": {
+      "version": "0.35.3",
+      "libvipsVersion": "8.18.3",
+      "output": {
+        "format": "png",
+        "width": 2,
+        "height": 1,
+        "channels": 4,
+        "premultiplied": true,
+        "hasAlpha": true,
+        "size": 92
+      },
+      "sha256": "12129de123d06f94f9e52e74e6d15f34f8f228229d8b288b741405333bb9f24e"
+    },
+    "argon2": {
+      "algorithm": "argon2id",
+      "verified": true,
+      "rejectedWrongValue": true
+    }
+  }
+}

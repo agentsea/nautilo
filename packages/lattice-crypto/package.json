@@ -1,0 +1,55 @@
+{
+  "name": "@nautilo/lattice-crypto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wire": "./src/wire.ts",
+    "./background": "./src/background/client.ts",
+    "./wire-limits": "./src/wire-limits.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules openmls-wasm/target",
+    "test": "bun run test:unit && bun run test:property && bun run test:integration && bun run test:scenarios && bun run test:fuzz",
+    "test:unit": "bun test --timeout 60000 tests/unit/",
+    "test:property": "bun test --timeout 60000 tests/property/",
+    "test:integration": "bun test --timeout 60000 tests/integration/",
+    "test:scenarios": "bun run playground/runner.ts all all && bun test --timeout 60000 tests/scenarios/",
+    "test:fuzz": "bun test --timeout 60000 tests/fuzz/",
+    "test:soak": "bun test --timeout 60000 tests/soak/",
+    "test:mutation": "bun run scripts/run-mutation-gate.ts",
+    "test:mutation:hosted-aggregate": "bun run scripts/aggregate-hosted-mutation.ts",
+    "test:mutation:target": "bun run scripts/run-mutation-target.ts",
+    "mutation:hosted-matrix": "bun run scripts/print-hosted-mutation-matrix.ts",
+    "test:assurance": "bun run test:unit && bun run test:property && bun run test:integration && bun run test:scenarios && bun run test:fuzz && bun run test:soak && bun run test:mutation && bun run wasm:audit && bun run wasm:license-verify && bun run wasm:test-verifier && bun run wasm:verify",
+    "play": "bun run playground/runner.ts",
+    "repl": "bun run playground/repl.ts",
+    "provenance:generate": "bun run scripts/generate-import-provenance.ts",
+    "provenance:verify": "bun run scripts/verify-import-provenance.ts",
+    "wasm:audit": "bash scripts/audit-openmls-wasm.sh",
+    "wasm:license-verify": "bun run scripts/verify-openmls-license-inventory.ts",
+    "wasm:test-verifier": "bash scripts/test-openmls-wasm-verifier.sh",
+    "wasm:verify": "bash scripts/verify-openmls-wasm.sh",
+    "wasm:update": "bash scripts/update-openmls-wasm.sh"
+  },
+  "dependencies": {
+    "@hpke/core": "1.9.0",
+    "@noble/ciphers": "2.2.0",
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
+    "ts-mls": "1.6.2"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "9.6.1",
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

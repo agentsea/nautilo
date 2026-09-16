@@ -1,0 +1,395 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "stryker": ["stryker.d486.config.mjs"],
+  "workspaces": {
+    "packages/office-board": {
+      "entry": [
+        "src/index.ts",
+        "scripts/**/*.mjs",
+        "test/browser-entry.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "scripts/**/*.mjs",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/office-docs": {
+      "entry": [
+        "src/index.ts",
+        "src/node.ts",
+        "test/**/*.test.ts",
+        "scripts/**/*.mjs"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "scripts/**/*.ts",
+        "scripts/**/*.mjs"
+      ]
+    },
+    "packages/office-slides": {
+      "entry": [
+        "src/index.ts",
+        "src/node.ts",
+        "test/**/*.test.ts",
+        "scripts/**/*.mjs"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "scripts/**/*.ts",
+        "scripts/**/*.mjs"
+      ]
+    },
+    "packages/office-core": {
+      "ignoreDependencies": ["tsx"],
+      "entry": [
+        "src/geometry/index.ts",
+        "src/image/index.ts",
+        "src/tokens/index.ts",
+        "src/url/index.ts",
+        "scripts/preview-tokens.mts",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "scripts/**/*.ts",
+        "scripts/**/*.mts",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/office-sheets": {
+      "entry": [
+        "src/index.ts",
+        "src/node.ts",
+        "src/compat/*.ts",
+        "test/**/*.test.ts",
+        "src/**/__tests__/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "antlr/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    ".": {
+      "entry": [
+        "packaging/docker/bootstrap-entrypoint.ts",
+        "packaging/docker/bootstrap-native-probe-cli.ts",
+        "packaging/docker/bootstrap-release-evidence-gate.ts",
+        "packaging/docker/exact-image-audit-cli.ts",
+        "packaging/docker/exact-image-audit-tools-cli.ts",
+        "packaging/docker/native-runtime-probe-cli.ts",
+        "packaging/docker/prepare-release-audit.ts",
+        "packaging/docker/release-evidence-gate.ts"
+      ],
+      "project": ["packaging/docker/**/*.ts"]
+    },
+    "packages/db": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/config": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/logger": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/agent": {
+      "entry": [
+        "tests/integration/fixtures/d516-postgres-read-worker.ts",
+        "src/**/*.test.ts",
+        "tests/unit/**/*.test.ts",
+        "tests/unit-isolated/**/*.test.ts",
+        "tests/integration/**/*.test.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/runtime": {
+      "entry": [
+        "tests/unit/**/*.test.ts",
+        "tests/unit-isolated/**/*.test.ts",
+        "tests/integration/**/*.test.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/codex-app-server": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": [
+        "src/**/*.ts",
+        "testkit/**/*.ts",
+        "scripts/**/*.ts",
+        "tests/**/*.ts"
+      ]
+    },
+    "packages/encryption-invariants": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": [
+        "baseline/**/*.ts",
+        "src/**/*.ts",
+        "tests/**/*.ts"
+      ],
+      "ignoreDependencies": ["@stryker-mutator/command-runner"]
+    },
+    "packages/lattice-crypto": {
+      "entry": [
+        "src/index.ts",
+        "src/testing/index.ts",
+        "tests/**/*.test.ts",
+        "playground/runner.ts",
+        "playground/repl.ts",
+        "playground/v2-runner.ts",
+        "scripts/verify-openmls-wasm-surface.ts"
+      ],
+      "ignoreDependencies": [
+        "@stryker-mutator/command-runner",
+        "@stryker-mutator/core"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts",
+        "playground/**/*.ts",
+        "scripts/**/*.ts"
+      ]
+    },
+    "packages/lattice-bridge": {
+      "entry": [
+        "src/index.ts",
+        "src/server/index.ts",
+        "src/testing/index.ts",
+        "scripts/**/*.ts",
+        "tests/**/*.test.ts",
+        "tests/browser/**/*.browser.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "scripts/**/*.ts",
+        "tests/**/*.ts"
+      ]
+    },
+    "packages/server": {
+      "entry": [
+        "tests/unit/**/*.test.ts",
+        "tests/unit-isolated/**/*.test.ts",
+        "tests/integration/**/*.test.ts",
+        "tests/acp-integration/**/*.test.ts",
+        "tests/fresh-instance-integration/**/*.test.ts",
+        "tests/test-env-preload.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/relay": {
+      "entry": [
+        "tests/unit/**/*.test.ts",
+        "src/browser-page-reader.test.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/computer-use-host": {
+      "entry": [
+        "src/main.ts",
+        "tests/unit/**/*.test.ts",
+        "tests/live/**/*.ts",
+        "tests/fixtures/**/main.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"],
+      "ignoreBinaries": ["lipo"]
+    },
+    "packages/trust": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/types": {
+      "project": ["src/**/*.ts"],
+      "ignoreDependencies": ["bun-types"]
+    },
+    "bin/nautilo-dev": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": ["src/**/*.ts", "tests/**/*.ts"],
+      "ignoreDependencies": ["@logto/cli"]
+    },
+    "packages/api-client": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/cli-auth": {
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "packages/realtime-client": {
+      "entry": ["tests/integration/**/*.test.ts"],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "apps/cli": {
+      "entry": [
+        "src/lib/bootstrap-token-migration.ts",
+        "src/installer-index.ts",
+        "src/server-admin-index.ts",
+        "tests/**/*.test.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "bin/nautilo-local": {
+      "entry": [
+        "src/oss-retired.ts",
+        "src/hosted-logto-bootstrap.ts",
+        "tests/**/*.test.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}", "tests/**/*.ts"]
+    },
+    "apps/workbench": {
+      "entry": [
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "tests/unit/**/*.test.ts",
+        "tests/unit/**/*.test.tsx",
+        "tests/unit-isolated/**/*.test.ts",
+        "tests/unit-isolated/**/*.test.tsx"
+      ],
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignoreDependencies": [
+        "@mdxeditor/lexical",
+        "@mdxeditor/lexical-clipboard",
+        "@mdxeditor/lexical-code",
+        "@mdxeditor/lexical-devtools-core",
+        "@mdxeditor/lexical-dragon",
+        "@mdxeditor/lexical-hashtag",
+        "@mdxeditor/lexical-history",
+        "@mdxeditor/lexical-html",
+        "@mdxeditor/lexical-link",
+        "@mdxeditor/lexical-list",
+        "@mdxeditor/lexical-mark",
+        "@mdxeditor/lexical-markdown",
+        "@mdxeditor/lexical-offset",
+        "@mdxeditor/lexical-overflow",
+        "@mdxeditor/lexical-plain-text",
+        "@mdxeditor/lexical-react",
+        "@mdxeditor/lexical-rich-text",
+        "@mdxeditor/lexical-selection",
+        "@mdxeditor/lexical-table",
+        "@mdxeditor/lexical-text",
+        "@mdxeditor/lexical-utils",
+        "@mdxeditor/lexical-yjs"
+      ]
+    },
+    "apps/mobile": {
+      "metro": true,
+      "entry": [
+        "src/app/**/*.{ts,tsx}",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "app.json",
+        "expo-env.d.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"],
+      "ignore": ["metro.config.js"],
+      "ignoreDependencies": [
+        "@nautilo/shared-browser-viewer-wasm",
+        "react-native-worklets",
+        "expo-updates",
+        "@expo/ui",
+        "expo-device",
+        "expo-file-system",
+        "expo-glass-effect",
+        "expo-image",
+        "expo-symbols",
+        "react-native-sse"
+      ]
+    },
+    "apps/desktop": {
+      "entry": [
+        "electron/main.ts",
+        "electron/preload.ts",
+        "electron/preload-first-run.ts",
+        "electron/preload-onboarding.ts",
+        "electron/passwords/guest-preload.ts",
+        "electron/passwords/**/*.test.ts",
+        "scripts/verify-packaged-computer-use-host.ts",
+        "scripts/verify-ffmpeg.ts",
+        "first-run/index.tsx",
+        "onboarding/index.tsx",
+        "tests/unit/**/*.test.ts",
+        "tests/unit-isolated/**/*.test.ts",
+        "tests/integration/**/*.test.ts",
+        "tests/integration-isolated/**/*.test.ts",
+        "tests/fixtures/sequence-text-electron.ts"
+      ],
+      "project": [
+        "electron/**/*.ts",
+        "first-run/**/*.{ts,tsx}",
+        "onboarding/**/*.{ts,tsx}",
+        "scripts/**/*.ts",
+        "tests/**/*.ts"
+      ],
+      "ignore": [
+        "scripts/flip-fuses.ts"
+      ],
+      "ignoreDependencies": [
+        "@electron/fuses",
+        "electron-updater",
+        "argon2"
+      ]
+    },
+    "packages/smoke-runner": {
+      "entry": ["scan-helper.ts"],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    },
+    "bin/nautilo-smoke": {
+      "project": ["src/**/*.ts"]
+    }
+  },
+  "ignoreWorkspaces": [
+    "packages/vendor/wafflebase/tokens"
+  ],
+  "ignore": [
+    "**/*.test.ts",
+    "**/__lint_fixtures__/**",
+    "dev/**",
+    "deploy/contracts/generate-auth-contract.ts",
+    "packaging/docker/native-runtime-probe.ts",
+    "packages/first-party-apps/**",
+    "**/tests/test-env-preload.ts"
+  ],
+  "ignoreBinaries": [
+    "swift",
+    "electron-fuses",
+    "unset"
+  ],
+  "ignoreDependencies": [
+    "@stryker-mutator/command-runner",
+    "dotenv"
+  ],
+  "ignoreIssues": {
+    "apps/cli/src/commands/login.ts": ["exports"],
+    "packages/agent/src/store/profile-store.ts": ["exports"],
+    "packages/agent/src/tools/office/session-manager.ts": ["exports"],
+    "packages/genie-customization-ui/src/hooks/useWizardState.ts": ["exports"],
+    "packages/genie-customization-ui/src/screens/RevealScreen.tsx": ["exports"],
+    "apps/workbench/src/adapters/open-mini-app-ref.ts": ["exports"],
+    "apps/desktop/electron/relay.ts": ["exports"],
+    "bin/nautilo-local/src/logto-hosted-auth-branding.ts": ["exports"],
+    "packages/config/src/officecli/provisioning.ts": ["exports"],
+    "deploy/contracts/auth.ts": ["exports"],
+    "apps/desktop/electron/document-mutations/desktop-document-mutation-outbox.ts": ["exports"],
+    "apps/desktop/electron/document-mutations/desktop-file-mutation-backend.ts": ["exports"],
+    "apps/desktop/electron/local-file-dispatch/change-event.ts": ["exports"],
+    "apps/desktop/electron/local-file-dispatch/guarded-write.ts": ["exports"],
+    "apps/desktop/electron/local-file-history/journal-root-lock.ts": ["exports"],
+    "apps/desktop/electron/local-file-history/journal.ts": ["exports"],
+    "apps/workbench/src/artifacts/workspace-document-mutation-events.ts": ["exports"],
+    "apps/mobile/src/lib/settings-reauth-navigation.ts": ["exports"],
+    "packages/agent/src/tools/apply-patch/contract.ts": ["exports", "types"],
+    "packages/agent/src/tools/file/workspace-history.ts": ["exports"],
+    "packages/server/src/document-mutations/workspace-artifact-mutation-backend.ts": ["exports"],
+    "packages/server/src/document-mutations/workspace-document-mutation-runtime.ts": ["exports"],
+    "packaging/docker/bounded-disclosure.ts": ["exports"],
+    "packaging/docker/exact-image-audit-tools.ts": ["exports"],
+    "packaging/docker/native-runtime-contract.ts": ["exports"],
+    "packaging/docker/runtime-image-evidence.ts": ["exports"],
+    "packaging/docker/vulnerability-db-identity.ts": ["exports"],
+    "packaging/docker/vulnerability-policy.ts": ["exports"]
+  },
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true
+  }
+}

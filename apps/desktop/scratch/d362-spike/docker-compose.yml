@@ -1,0 +1,35 @@
+# D362 Phase-0 spike — throwaway. Brings up the two engines the spike needs:
+#   - collabora/code (coolwsd + LOK): interactive tile render/edit  → task 0.1, 0.2, 0.3
+#   - unoserver: headless one-shot convert/extract                 → task 0.4
+#
+# NOT production. No self-build, no trademark strip (that's Phase 5). CODE image
+# is fine for a feasibility spike (D362 Phase 0 explicitly uses collabora/code).
+#
+# Run:   docker compose -f apps/desktop/scratch/d362-spike/docker-compose.yml up
+services:
+  collabora:
+    image: collabora/code:latest
+    container_name: d362-collabora
+    ports:
+      - "9980:9980"
+    environment:
+      # SSL off for the local harness (no cert dance); NOT for prod.
+      - DONT_GEN_SSL_CERT=1
+      - extra_params=--o:ssl.enable=false --o:ssl.termination=false
+      # Allowlist the WOPI stub host. coolwsd's URI parser rejects a regex in
+      # the port position (":.*" → "bad or invalid port number"), so pin the
+      # explicit WOPI-stub port (D362_WOPI_PORT default = 8628).
+      - aliasgroup1=http://host.docker.internal:8628
+      - username=admin
+      - password=admin
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux parity with macOS/Windows
+    cap_add:
+      - MKNOD
+
+  unoserver:
+    image: ghcr.io/unoconv/unoserver-docker:latest
+    container_name: d362-unoserver
+    ports:
+      - "2003:2003"
+    command: ["unoserver", "--interface", "0.0.0.0", "--port", "2003"]

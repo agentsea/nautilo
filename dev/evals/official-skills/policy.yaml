@@ -1,0 +1,14 @@
+# Nautilo owns bundled-skill authorship at the repository level. The generated
+# evaluator packages are temporary compatibility projections, not independently
+# published artifacts with separate author identities. Keep the missing-author
+# signal visible, but do not let it obscure skill-content findings.
+profile: nautilo-official-skills
+
+severity_overrides:
+  SCHEMA.author_missing: medium
+  # Nautilo's official skills target large-context models; 5,000 tokens is an
+  # efficiency review signal, not a correctness or release failure.
+  QUALITY.quality_efficiency: medium
+  # Example macOS home paths are operational documentation, not secrets. Keep
+  # the scanner's other PII and credential categories at their default levels.
+  PII.personal_paths: medium

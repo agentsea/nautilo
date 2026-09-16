@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Why we need it: Electron depends on V8's JIT; without this entitlement the hardened runtime blocks normal Chromium/Electron execution. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Why we need it: outbound TCP/TLS for the bundled server, APIs, WebSockets, and OIDC. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- Why we need it: microphone access for voice features (getUserMedia audio). Without this, a packaged hardened build can reject mic access before the TCC prompt. NSMicrophoneUsageDescription lives in Info.plist via electron-builder mac.extendInfo, not here. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <!-- D516: local qualification builds exercise the same host-owned Cua TCC responsibility contract as signed releases. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <key>com.apple.security.device.screen-capture</key>
+    <true/>
+    <!-- Ad-hoc builds only: hardenedRuntime enables library validation, but ad-hoc signatures have no Team ID so dyld rejects Electron Framework. Signed Developer-ID builds use entitlements.mac.plist instead (library validation stays enabled). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

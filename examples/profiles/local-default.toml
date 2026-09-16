@@ -1,0 +1,30 @@
+# M092 example profile — the SHARED LOCAL INSTANCE.
+#
+# Copy to ~/.nautilo/profiles/local-default.toml, then:
+#   nautilo profile use local-default
+#   nautilo deploy --profile local-default
+#
+# instance_id="" maps to:
+#   - ~/.nautilo/                 (root)
+#   - compose project `nautilo`   (compose project name)
+#   - default port bundle from packages/config/src/instance-defaults.ts
+#     (server 3001, logto core 3301, logto admin 3302, app-postgres 5434,
+#      logto-postgres 5432)
+#
+# Coexists with named profiles (e.g. `local-beta`) — they get stride-shifted
+# ports via resolveInstance() so two stacks can run simultaneously.
+#
+# NOTE: cannot run alongside `bun run server` / `bun run infra:start` (they
+# claim the same default ports). Use `local-beta` for side-by-side dev.
+
+name        = "local-default"
+transport   = "local"
+lifecycle   = "compose"
+instance_id = ""
+from_source = true
+tag         = "local-dev"
+# Password recovery mode:
+# - oss_relay: OSS/no-real-email path; Logto http-email posts to Nautilo relay.
+# - logto_native: real Logto email/passkey/social recovery; no Nautilo relay.
+# - disabled: operator reset only.
+password_recovery = "oss_relay"

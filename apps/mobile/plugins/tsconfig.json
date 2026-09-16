@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true
+  },
+  "include": ["with-nautilo-share-extension.js", "with-nautilo-ios-local-network.js", "with-nautilo-media-export.js"]
+}

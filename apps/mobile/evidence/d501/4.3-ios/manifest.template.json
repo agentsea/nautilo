@@ -1,0 +1,51 @@
+{
+  "task": "D501-4.3",
+  "status": "not-run",
+  "runtime": {
+    "stackAlias": "stack302",
+    "serverAlias": "stack302-loopback",
+    "serverLoopbackPort": 6401,
+    "iosMetroAlias": "stack302-ios-metro",
+    "iosRuntimeProfileAlias": "stack302-ios-profile",
+    "d468Isolation": "required"
+  },
+  "harness": "d501-ios-source-actions.yaml",
+  "build": {
+    "commitOrBuild": "not-recorded",
+    "simulator": "not-recorded",
+    "metroPort": "not-recorded",
+    "runtimeProfile": "not-recorded"
+  },
+  "automatedRows": {
+    "sourceInputAndMarkdownActions": "not-run",
+    "previewEditContinuity": "not-run",
+    "saveTapAndEditorRetention": "not-run"
+  },
+  "manualCheckpoints": {
+    "markdownExactByteSaveAndReopen": "not-run",
+    "plainTextExactByteSaveAndReopen": "not-run",
+    "sourceSelectionImeAndPaste": "not-run",
+    "sourceEditingAndDirtyBackRecovery": "not-run",
+    "lightAndDarkSmallestViewportKeyboardOpenToolbar": "not-run",
+    "largeSourceKeyboardScroll": "not-run",
+    "sourceConflictPreservesEditsAndRecovery": "not-run",
+    "writerViewerOnlyNoEditAffordance": "not-run",
+    "rename": "not-run",
+    "delete": "not-run",
+    "discussContinuity": "not-run",
+    "editorLifecycleAndRemount": "not-run",
+    "fixtureCleanup": "not-run"
+  },
+  "comparisonEvidence": {
+    "syntheticFixtureAliases": {
+      "markdown": "not-recorded",
+      "plainText": "not-recorded",
+      "writerViewer": "not-recorded"
+    },
+    "methodAndVersion": "not-recorded",
+    "secureComparisonRecordRef": "not-recorded",
+    "revisionAndByteCountMetadata": "not-recorded",
+    "redactedResultRefs": "not-recorded"
+  },
+  "notes": "Do not store secrets, fixture identifiers, clone-private paths, or private artifact content."
+}

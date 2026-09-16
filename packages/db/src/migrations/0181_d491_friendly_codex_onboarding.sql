@@ -1,0 +1,4 @@
+ALTER TABLE "codex_account_profiles" ADD COLUMN "registration_state" varchar(16) DEFAULT 'registered' NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_codex_account_profiles_active_provisional_owner_relay" ON "codex_account_profiles" USING btree ("user_id","relay_id") WHERE "codex_account_profiles"."removal_state" <> 'removed' AND "codex_account_profiles"."registration_state" = 'provisional';--> statement-breakpoint
+ALTER TABLE "codex_account_profiles" ADD CONSTRAINT "codex_account_profiles_registration_state_check" CHECK ("codex_account_profiles"."registration_state" IN ('provisional', 'registered'));--> statement-breakpoint
+ALTER TABLE "codex_account_profiles" ADD CONSTRAINT "codex_account_profiles_provisional_auth_check" CHECK ("codex_account_profiles"."registration_state" <> 'provisional' OR "codex_account_profiles"."auth_state" <> 'signed_in');

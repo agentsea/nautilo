@@ -1,0 +1,37 @@
+appId: ai.nautilo.app
+---
+# Default-instance acceptance assumes the isolated Electron profile's Current
+# Folder is this repository root. This proves viewport movement, not merely that
+# the automation driver accepted a swipe gesture.
+- openLink: "nautilo://files"
+- tapOn: "Browse files on a paired computer"
+- extendedWaitUntil:
+    visible: "Browse Current Folder"
+    timeout: 15000
+- tapOn: "Browse Current Folder"
+- extendedWaitUntil:
+    visible: "Open folder apps"
+    timeout: 15000
+- assertVisible: "Preview file AGENTS.md"
+- assertNotVisible: "Open folder infra"
+# Begin over the header controls. The whole screen below the app bar is one
+# scroll surface; this guards against a small, sluggish nested list returning.
+- swipe:
+    start: "50%,32%"
+    end: "50%,15%"
+    duration: 800
+- extendedWaitUntil:
+    visible: "Open folder deploy"
+    timeout: 5000
+- swipe:
+    start: "50%,80%"
+    end: "50%,25%"
+    duration: 800
+- swipe:
+    start: "50%,80%"
+    end: "50%,25%"
+    duration: 800
+- extendedWaitUntil:
+    visible: "Preview file turbo.json"
+    timeout: 5000
+- assertNotVisible: "Preview file knip.json"

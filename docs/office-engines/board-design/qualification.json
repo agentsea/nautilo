@@ -1,0 +1,19 @@
+{
+  "result": "pass",
+  "checks": [
+    "six-note example",
+    "font family",
+    "font size",
+    "bold",
+    "inline text edit",
+    "add note",
+    "undo",
+    "redo",
+    "drag",
+    "Ivory/Tokyo",
+    "contextual formatting",
+    "blank state creation",
+    "720px no page overflow"
+  ],
+  "pageErrors": []
+}

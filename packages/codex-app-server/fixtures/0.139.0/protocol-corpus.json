@@ -1,0 +1,1161 @@
+{
+  "schemaVersion": 1,
+  "codexVersion": "0.139.0",
+  "fixtures": [
+    {
+      "id": "initialize.success",
+      "family": "initialize",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 1,
+            "method": "initialize",
+            "params": {
+              "clientInfo": {
+                "name": "nautilo",
+                "title": "Nautilo",
+                "version": "0.1.0"
+              },
+              "capabilities": {
+                "experimentalApi": true,
+                "requestAttestation": false
+              }
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 1,
+            "result": {
+              "userAgent": "codex-cli/0.139.0",
+              "codexHome": "/opaque/codex-home",
+              "platformFamily": "unix",
+              "platformOs": "macos"
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "method": "initialized"
+          }
+        }
+      ],
+      "expected": "initialize succeeds and records negotiated capabilities"
+    },
+    {
+      "id": "initialize.error",
+      "family": "initialize",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 2,
+            "method": "initialize",
+            "params": {}
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 2,
+            "error": {
+              "code": -32602,
+              "message": "invalid initialize params"
+            }
+          }
+        }
+      ],
+      "expected": "invalid parameters fail without starting a session"
+    },
+    {
+      "id": "initialize.timeout",
+      "family": "initialize",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 3,
+            "method": "initialize",
+            "params": {
+              "clientInfo": {
+                "name": "nautilo",
+                "title": null,
+                "version": "0.1.0"
+              },
+              "capabilities": null
+            }
+          }
+        }
+      ],
+      "expected": "initialize deadline expires and the child generation is rejected"
+    },
+    {
+      "id": "thread.success",
+      "family": "thread",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 10,
+            "method": "thread/start",
+            "params": {
+              "cwd": "/workspace",
+              "approvalPolicy": "on-request",
+              "sandbox": "workspace-write",
+              "dynamicTools": [
+                {
+                  "namespace": "nautilo",
+                  "name": "read_task",
+                  "description": "Read a bounded Nautilo Task result",
+                  "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                      "taskId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["taskId"]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expected": "new immutable binding accepts the selected cwd and capability manifest"
+    },
+    {
+      "id": "thread.error",
+      "family": "thread",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 11,
+            "method": "thread/resume",
+            "params": {
+              "threadId": "thread-wrong-profile"
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 11,
+            "error": {
+              "code": -32010,
+              "message": "thread not found"
+            }
+          }
+        }
+      ],
+      "expected": "unknown or cross-profile thread fails closed"
+    },
+    {
+      "id": "turn.success",
+      "family": "turn",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 20,
+            "method": "turn/start",
+            "params": {
+              "threadId": "thread-1",
+              "input": [
+                {
+                  "type": "text",
+                  "text": "Inspect the repository",
+                  "text_elements": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 20,
+            "result": {
+              "turn": {
+                "id": "turn-1",
+                "items": [],
+                "itemsView": "notLoaded",
+                "status": "inProgress",
+                "error": null,
+                "startedAt": null,
+                "completedAt": null,
+                "durationMs": null
+              }
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "method": "item/completed",
+            "params": {
+              "item": {
+                "type": "agentMessage",
+                "id": "item-1",
+                "text": "BYTE-MAP-ITEMS-VIEW",
+                "phase": "final_answer",
+                "memoryCitation": null
+              },
+              "threadId": "thread-1",
+              "turnId": "turn-1",
+              "completedAtMs": 2
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "method": "turn/completed",
+            "params": {
+              "threadId": "thread-1",
+              "turn": {
+                "id": "turn-1",
+                "items": [],
+                "itemsView": "notLoaded",
+                "status": "completed",
+                "error": null,
+                "startedAt": 1,
+                "completedAt": 2,
+                "durationMs": 1000
+              }
+            }
+          }
+        }
+      ],
+      "expected": "item completion remains authoritative when the terminal turn items view is not loaded"
+    },
+    {
+      "id": "turn.error",
+      "family": "turn",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "method": "turn/completed",
+            "params": {
+              "threadId": "thread-1",
+              "turn": {
+                "id": "turn-2",
+                "items": [],
+                "itemsView": "full",
+                "status": "failed",
+                "error": {
+                  "message": "model unavailable",
+                  "codexErrorInfo": null,
+                  "additionalDetails": null
+                },
+                "startedAt": 1,
+                "completedAt": 2,
+                "durationMs": 1000
+              }
+            }
+          }
+        }
+      ],
+      "expected": "failed turn maps to one stable terminal error"
+    },
+    {
+      "id": "turn.cancel",
+      "family": "turn",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 21,
+            "method": "turn/interrupt",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-3"
+            }
+          }
+        }
+      ],
+      "expected": "Job cancellation interrupts the exact active turn"
+    },
+    {
+      "id": "turn.timeout",
+      "family": "turn",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 22,
+            "method": "turn/start",
+            "params": {
+              "threadId": "thread-1",
+              "input": [
+                {
+                  "type": "text",
+                  "text": "Long operation",
+                  "text_elements": []
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expected": "turn deadline triggers bounded interrupt and escalation"
+    },
+    {
+      "id": "steer.success",
+      "family": "steer",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 30,
+            "method": "turn/steer",
+            "params": {
+              "threadId": "thread-1",
+              "expectedTurnId": "turn-4",
+              "input": [
+                {
+                  "type": "text",
+                  "text": "Focus on the database package",
+                  "text_elements": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 30,
+            "result": {}
+          }
+        }
+      ],
+      "expected": "explicit steer reaches only the expected active turn"
+    },
+    {
+      "id": "steer.error",
+      "family": "steer",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 31,
+            "method": "turn/steer",
+            "params": {
+              "threadId": "thread-1",
+              "expectedTurnId": "stale-turn",
+              "input": []
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 31,
+            "error": {
+              "code": -32011,
+              "message": "active turn precondition failed"
+            }
+          }
+        }
+      ],
+      "expected": "stale steer precondition fails without becoming a follow-up"
+    },
+    {
+      "id": "interrupt.success",
+      "family": "interrupt",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 40,
+            "method": "turn/interrupt",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-4"
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 40,
+            "result": {}
+          }
+        }
+      ],
+      "expected": "interrupt acknowledgement is correlated once"
+    },
+    {
+      "id": "interrupt.error",
+      "family": "interrupt",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 41,
+            "method": "turn/interrupt",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "missing-turn"
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 41,
+            "error": {
+              "code": -32012,
+              "message": "turn not active"
+            }
+          }
+        }
+      ],
+      "expected": "missing turn does not affect another active turn"
+    },
+    {
+      "id": "approval.success",
+      "family": "approval",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 50,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-5",
+              "itemId": "item-1",
+              "startedAtMs": 1000,
+              "command": "git status",
+              "cwd": "/workspace"
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 50,
+            "result": {
+              "decision": "accept"
+            }
+          }
+        }
+      ],
+      "expected": "human decision returns to the exact Codex request"
+    },
+    {
+      "id": "approval.cancel",
+      "family": "approval",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 51,
+            "method": "item/fileChange/requestApproval",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-5",
+              "itemId": "item-2",
+              "reason": "write requested",
+              "grantRoot": "/workspace"
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 51,
+            "result": {
+              "decision": "cancel"
+            }
+          }
+        }
+      ],
+      "expected": "cancel resolves only the exact approval request"
+    },
+    {
+      "id": "approval.timeout",
+      "family": "approval",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 52,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-5",
+              "itemId": "item-3",
+              "startedAtMs": 1000,
+              "command": "make release",
+              "cwd": "/workspace"
+            }
+          }
+        }
+      ],
+      "expected": "expired approval cannot be answered or keep a Job alive indefinitely"
+    },
+    {
+      "id": "request-user-input.success",
+      "family": "request_user_input",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 60,
+            "method": "item/tool/requestUserInput",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-6",
+              "itemId": "item-4",
+              "questions": [
+                {
+                  "id": "deployment",
+                  "header": "Deploy",
+                  "question": "Which target?",
+                  "isOther": false,
+                  "isSecret": false,
+                  "options": [
+                    {
+                      "label": "Staging",
+                      "description": "Deploy to staging"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 60,
+            "result": {
+              "answers": {
+                "deployment": {
+                  "answers": ["Staging"]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expected": "owning Human answer resumes the same Codex turn"
+    },
+    {
+      "id": "request-user-input.cancel",
+      "family": "request_user_input",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 61,
+            "method": "item/tool/requestUserInput",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-6",
+              "itemId": "item-5",
+              "questions": []
+            }
+          }
+        }
+      ],
+      "expected": "Stop cancels the pending request and ignores a late answer"
+    },
+    {
+      "id": "request-user-input.timeout",
+      "family": "request_user_input",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 62,
+            "method": "item/tool/requestUserInput",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-6",
+              "itemId": "item-6",
+              "questions": []
+            }
+          }
+        }
+      ],
+      "expected": "expired request enters explicit awaiting-human timeout state"
+    },
+    {
+      "id": "login.success",
+      "family": "login",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 70,
+            "method": "account/login/start",
+            "params": {
+              "type": "chatgptDeviceCode"
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 70,
+            "result": {
+              "type": "chatgptDeviceCode",
+              "deviceCode": "REDACTED",
+              "userCode": "REDACTED",
+              "verificationUrl": "https://example.invalid/device"
+            }
+          }
+        }
+      ],
+      "expected": "login details are owner-scoped and redacted in persisted evidence"
+    },
+    {
+      "id": "login.error",
+      "family": "login",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 71,
+            "method": "account/login/start",
+            "params": {
+              "type": "chatgpt"
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 71,
+            "error": {
+              "code": -32020,
+              "message": "login unavailable"
+            }
+          }
+        }
+      ],
+      "expected": "login failure affects only the selected profile"
+    },
+    {
+      "id": "login.cancel",
+      "family": "login",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 72,
+            "method": "account/login/cancel",
+            "params": {
+              "loginId": "login-1"
+            }
+          }
+        }
+      ],
+      "expected": "login cancellation is bounded and profile-scoped"
+    },
+    {
+      "id": "account.success",
+      "family": "account",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 80,
+            "method": "account/read",
+            "params": {
+              "refreshToken": false
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 80,
+            "result": {
+              "account": {
+                "type": "chatgpt",
+                "email": "redacted@example.invalid",
+                "planType": "unknown"
+              },
+              "requiresOpenaiAuth": true
+            }
+          }
+        }
+      ],
+      "expected": "safe account summary updates only the bound profile"
+    },
+    {
+      "id": "account.error",
+      "family": "account",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 81,
+            "method": "account/read",
+            "params": {}
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 81,
+            "error": {
+              "code": -32021,
+              "message": "signed out"
+            }
+          }
+        }
+      ],
+      "expected": "signed-out state exposes an owner-only login action"
+    },
+    {
+      "id": "usage.success",
+      "family": "usage",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 90,
+            "method": "account/rateLimits/read",
+            "params": null
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 90,
+            "result": {
+              "rateLimits": {
+                "limitId": "codex",
+                "limitName": "Codex",
+                "primary": {
+                  "usedPercent": 50,
+                  "windowDurationMins": 300,
+                  "resetsAt": 2000
+                },
+                "secondary": null,
+                "credits": null,
+                "individualLimit": null,
+                "planType": null,
+                "rateLimitReachedType": null
+              },
+              "rateLimitsByLimitId": null
+            }
+          }
+        }
+      ],
+      "expected": "provider-reported usage retains profile source and freshness"
+    },
+    {
+      "id": "usage.error",
+      "family": "usage",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 91,
+            "method": "account/usage/read",
+            "params": null
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 91,
+            "error": {
+              "code": -32022,
+              "message": "usage unavailable"
+            }
+          }
+        }
+      ],
+      "expected": "usage unavailable is visible and never triggers account switching"
+    },
+    {
+      "id": "overload.error",
+      "family": "overload",
+      "scenario": "overload",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 100,
+            "error": {
+              "code": -32001,
+              "message": "Server overloaded; retry later."
+            }
+          }
+        }
+      ],
+      "expected": "overload retries on the same transport and never routes to another profile"
+    },
+    {
+      "id": "malformed.error",
+      "family": "malformed",
+      "scenario": "malformed",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": {
+              "unexpected": true
+            },
+            "result": "wrong-shape"
+          }
+        }
+      ],
+      "expected": "required-projection validation rejects the frame before product mapping"
+    },
+    {
+      "id": "dynamic-call.success",
+      "family": "dynamic_call",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 110,
+            "method": "item/tool/call",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-7",
+              "callId": "call-1",
+              "namespace": "nautilo",
+              "tool": "read_task",
+              "arguments": {
+                "taskId": "task-1"
+              }
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 110,
+            "result": {
+              "contentItems": [
+                {
+                  "type": "inputText",
+                  "text": "{\"status\":\"completed\"}"
+                }
+              ],
+              "success": true
+            }
+          }
+        }
+      ],
+      "expected": "declared callback returns one bounded correlated result"
+    },
+    {
+      "id": "dynamic-call.error",
+      "family": "dynamic_call",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 111,
+            "method": "item/tool/call",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-7",
+              "callId": "call-2",
+              "namespace": "nautilo",
+              "tool": "undeclared_tool",
+              "arguments": {}
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": 111,
+            "error": {
+              "code": -32601,
+              "message": "undeclared dynamic tool"
+            }
+          }
+        }
+      ],
+      "expected": "undeclared callback fails before Nautilo execution"
+    },
+    {
+      "id": "dynamic-call.cancel",
+      "family": "dynamic_call",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 112,
+            "method": "item/tool/call",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-7",
+              "callId": "call-3",
+              "namespace": "nautilo",
+              "tool": "wait_for_task",
+              "arguments": {
+                "taskId": "task-2"
+              }
+            }
+          }
+        }
+      ],
+      "expected": "Stop propagates cancellation and late callback completion is ignored"
+    },
+    {
+      "id": "dynamic-call.timeout",
+      "family": "dynamic_call",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": 113,
+            "method": "item/tool/call",
+            "params": {
+              "threadId": "thread-1",
+              "turnId": "turn-7",
+              "callId": "call-4",
+              "namespace": "nautilo",
+              "tool": "wait_for_task",
+              "arguments": {
+                "taskId": "task-3"
+              }
+            }
+          }
+        }
+      ],
+      "expected": "callback deadline yields one bounded timeout response"
+    },
+    {
+      "id": "task-report-back.success",
+      "family": "task_report_back",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "nautilo_internal",
+          "message": {
+            "taskId": "task-4",
+            "parentTaskId": "task-codex",
+            "state": "completed",
+            "result": {
+              "summary": "Inspection complete"
+            },
+            "wakeCaller": true
+          }
+        }
+      ],
+      "expected": "completion reports to and may wake only the correlated caller"
+    },
+    {
+      "id": "task-report-back.error",
+      "family": "task_report_back",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "nautilo_internal",
+          "message": {
+            "taskId": "task-5",
+            "parentTaskId": "task-codex",
+            "state": "failed",
+            "error": {
+              "code": "TARGET_FAILED"
+            },
+            "wakeCaller": true
+          }
+        }
+      ],
+      "expected": "delegated failure is attributed and cannot impersonate a Human"
+    },
+    {
+      "id": "task-report-back.cancel",
+      "family": "task_report_back",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "nautilo_internal",
+          "message": {
+            "taskId": "task-6",
+            "parentTaskId": "task-codex",
+            "state": "cancelled",
+            "wakeCaller": false
+          }
+        }
+      ],
+      "expected": "cancelled delegated work cannot mutate a completed caller"
+    },
+    {
+      "id": "task-report-back.timeout",
+      "family": "task_report_back",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "nautilo_internal",
+          "message": {
+            "taskId": "task-7",
+            "parentTaskId": "task-codex",
+            "state": "timed_out",
+            "deadlineMs": 5000,
+            "wakeCaller": true
+          }
+        }
+      ],
+      "expected": "bounded wait reports timeout and rejects late results"
+    },
+    {
+      "id": "transport-json-rpc-error",
+      "family": "initialize",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": "c-1",
+            "method": "initialize",
+            "params": {
+              "clientInfo": { "name": "nautilo", "title": "Nautilo", "version": "0.1.0" },
+              "capabilities": { "experimentalApi": true, "requestAttestation": false }
+            }
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": "c-1",
+            "error": { "code": -32602, "message": "invalid initialize params" }
+          }
+        }
+      ],
+      "expected": "literal anchored JSON-RPC error is sanitized and terminates initialization"
+    },
+    {
+      "id": "transport-server-request",
+      "family": "dynamic_call",
+      "scenario": "success",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": {
+            "id": "server-fixture-1",
+            "method": "item/tool/call",
+            "params": {
+              "threadId": "thread-fixture",
+              "turnId": "turn-fixture",
+              "callId": "call-fixture",
+              "namespace": "nautilo",
+              "tool": "read_task",
+              "arguments": { "taskId": "task-fixture" }
+            }
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": "server-fixture-1",
+            "result": { "contentItems": [], "success": true }
+          }
+        }
+      ],
+      "expected": "literal anchored server request is decoded, handled, and correlated"
+    },
+    {
+      "id": "transport-timeout",
+      "family": "initialize",
+      "scenario": "timeout",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": "c-1",
+            "method": "initialize",
+            "params": {
+              "clientInfo": { "name": "nautilo", "title": "Nautilo", "version": "0.1.0" },
+              "capabilities": { "experimentalApi": true, "requestAttestation": false }
+            }
+          }
+        },
+        { "direction": "nautilo_internal", "message": { "event": "timeout" } }
+      ],
+      "expected": "literal anchored timeout leaves the request unanswered until its deadline"
+    },
+    {
+      "id": "transport-cancellation",
+      "family": "initialize",
+      "scenario": "cancel",
+      "frames": [
+        {
+          "direction": "client_to_server",
+          "message": {
+            "id": "c-1",
+            "method": "initialize",
+            "params": {
+              "clientInfo": { "name": "nautilo", "title": "Nautilo", "version": "0.1.0" },
+              "capabilities": { "experimentalApi": true, "requestAttestation": false }
+            }
+          }
+        },
+        { "direction": "nautilo_internal", "message": { "event": "abort" } }
+      ],
+      "expected": "literal anchored local abort cancels only the correlated request"
+    },
+    {
+      "id": "transport-eof",
+      "family": "malformed",
+      "scenario": "error",
+      "frames": [
+        { "direction": "nautilo_internal", "message": { "event": "eof" } }
+      ],
+      "expected": "literal anchored clean EOF faults the active transport with the stable EOF code"
+    },
+    {
+      "id": "transport-unknown-id",
+      "family": "malformed",
+      "scenario": "error",
+      "frames": [
+        {
+          "direction": "server_to_client",
+          "message": { "id": "unknown-transport-id", "result": {} }
+        }
+      ],
+      "expected": "literal anchored unknown response id faults the active transport"
+    }
+  ]
+}

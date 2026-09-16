@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "status": "guidance_complete",
+  "scope": "D448 Phase 4.1/4.2 guidance contract for the model-callable top-level apply_patch workflow.",
+  "baseline": {
+    "topLevelApplyPatch": {
+      "tool": "apply_patch",
+      "registered": true,
+      "core": true,
+      "promptOrSkillGuidancePresent": true
+    },
+    "historicalInternalFileApplyPatch": {
+      "identifier": "file.apply_patch",
+      "meaning": "historical internal staging/apply pipeline identifier; not the model-callable top-level apply_patch tool"
+    },
+    "additionalUnifiedFileTool": {
+      "tool": "file",
+      "exposure": "discoverable",
+      "core": false,
+      "features": ["glob", "grep", "read", "write", "history"],
+      "commands": ["list", "grep", "read", "write", "undo", "undo_turn", "list_revisions"],
+      "discoveryPath": ["discover_tools", "activate_tools", "file"]
+    }
+  },
+  "requiredGuidance": {
+    "supported": [
+      {
+        "tool": "file.write",
+        "when": "Create one new UTF-8 file or workspace artifact.",
+        "modes": ["overwrite", "append", "prepend"]
+      },
+      {
+        "tool": "file.write",
+        "when": "Intentionally replace the whole existing UTF-8 file.",
+        "modes": ["overwrite"]
+      },
+      {
+        "tool": "apply_patch",
+        "when": "Make contextual edits to existing Current Folder UTF-8 text after acquiring file context.",
+        "benefit": "Preserves untouched portions of large files."
+      },
+      {
+        "tool": "apply_patch",
+        "when": "Make one coherent Current Folder UTF-8 Add, Update, Move, or Delete change across multiple files.",
+        "benefit": "Expresses the related operation set in one patch."
+      }
+    ],
+    "unsupported": [
+      {
+        "targets": ["non-UTF-8", "binary"],
+        "route": "Do not use apply_patch."
+      },
+      {
+        "targets": ["images", "media", "fonts", "archives", "executables", "databases"],
+        "route": "Use a dedicated binary or format-aware tool."
+      },
+      {
+        "targets": ["PDF", "OOXML containers"],
+        "route": "Use format-aware document tools, not apply_patch or raw file.write bytes."
+      },
+      {
+        "targets": ["Workspace artifacts"],
+        "route": "Use file.list, file.read, and artifact-aware file mutation commands; Workspace glob, grep, and apply_patch are unsupported."
+      }
+    ],
+    "workflow": [
+      "Core tools are only a baseline, not a complete capability claim.",
+      "Before patching, acquire file context with the applicable file reading/search command.",
+      "When file is absent, call discover_tools and activate the filesystem family or file tool if eligible; do not assume the core set is complete.",
+      "Preserve dirty changes, reread affected context, and run focused verification after changes.",
+      "Use file.undo or file.undo_turn for rollback when available; do not promise atomic multi-file rollback.",
+      "Use file.glob, file.grep, and apply_patch only for Desktop-local Current Folder work.",
+      "For Workspace artifacts, use file.list with a logical path prefix, file.read, and artifact-aware file.str_replace, file.insert, file.write, file.move, or file.delete.",
+      "The optional workspace target selector is compatibility-only and returns unsupported_target; omit target or select current for Current Folder work.",
+      "Prefer repository-relative Current Folder paths for clarity and portability, while existing Desktop authority decides what can be reached.",
+      "Keep patches coherent and focused; use about three context lines by default and @@ class/function anchors when snippets are ambiguous.",
+      "Use a generator, formatter, or script for generated output or a broad mechanical rewrite when that better expresses the intended change."
+    ]
+  }
+}

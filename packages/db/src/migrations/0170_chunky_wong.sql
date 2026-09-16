@@ -1,0 +1,1 @@
+ALTER TABLE "push_installation_bindings" ADD COLUMN "badge_enabled" boolean DEFAULT false NOT NULL;

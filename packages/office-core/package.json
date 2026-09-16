@@ -1,0 +1,55 @@
+{
+  "name": "@nautilo/office-core",
+  "private": true,
+  "version": "0.6.9",
+  "license": "Apache-2.0",
+  "description": "Shared foundation for Wafflebase (design tokens, geometry, canvas helpers, OOXML)",
+  "type": "module",
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "exports": {
+    "./geometry": {
+      "types": "./dist/geometry/index.d.ts",
+      "import": "./dist/geometry/index.js",
+      "require": "./dist/cjs/geometry/index.js",
+      "default": "./dist/geometry/index.js"
+    },
+    "./image": {
+      "types": "./dist/image/index.d.ts",
+      "import": "./dist/image/index.js",
+      "require": "./dist/cjs/image/index.js",
+      "default": "./dist/image/index.js"
+    },
+    "./tokens": {
+      "types": "./dist/tokens/index.d.ts",
+      "import": "./dist/tokens/index.js",
+      "require": "./dist/cjs/tokens/index.js",
+      "default": "./dist/tokens/index.js"
+    },
+    "./tokens.css": "./dist/tokens.css",
+    "./url": {
+      "types": "./dist/url/index.d.ts",
+      "import": "./dist/url/index.js",
+      "require": "./dist/cjs/url/index.js",
+      "default": "./dist/url/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.build.cjs.json && node -e \"require('node:fs').writeFileSync('dist/cjs/package.json', '{\\\"type\\\": \\\"commonjs\\\"}\\n')\" && bun scripts/build-css.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --run",
+    "format": "prettier --write .",
+    "test:unit": "vitest --run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  }
+}

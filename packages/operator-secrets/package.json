@@ -1,0 +1,27 @@
+{
+  "name": "@nautilo/operator-secrets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared parser / loader / atomic-appender for operator secrets files (§13.2 / §13.3)",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test --timeout 15000 tests/unit/",
+    "test:unit": "bun test --timeout 15000 tests/unit/"
+  },
+  "dependencies": {
+    "@nautilo/config-guard": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

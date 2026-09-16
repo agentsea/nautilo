@@ -1,0 +1,27 @@
+{
+  "name": "@nautilo/first-party-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./main.ts --target=browser --outdir=dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src main.ts agent-tools.ts preview.ts scripts",
+    "test": "bun test src",
+    "test:browser": "bun scripts/qualify-browser.ts",
+    "schema:generate": "node scripts/generate-board-model-schema.mjs",
+    "schema:check": "node scripts/generate-board-model-schema.mjs --check",
+    "test:canonical-browser": "bun scripts/qualify-canonical-browser.ts"
+  },
+  "devDependencies": {
+    "@nautilo/office-board": "workspace:*",
+    "@nautilo/office-slides": "workspace:*",
+    "@nautilo/office-docs": "workspace:*",
+    "ajv": "8.18.0",
+    "ts-json-schema-generator": "2.9.0",
+    "playwright": "1.62.1",
+    "happy-dom": "20.11.6",
+    "typescript": "5.9.3",
+    "eslint": "9.39.2"
+  }
+}

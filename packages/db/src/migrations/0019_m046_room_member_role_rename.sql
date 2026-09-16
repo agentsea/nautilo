@@ -1,0 +1,1 @@
+ALTER TABLE "room_members" RENAME COLUMN "role" TO "room_role";

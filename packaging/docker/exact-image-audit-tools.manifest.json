@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "tools": {
+    "syft": {
+      "version": "1.50.0",
+      "archiveMember": "syft",
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://github.com/anchore/syft/releases/download/v1.50.0/syft_1.50.0_darwin_arm64.tar.gz",
+          "sha256": "e32fdb9d47823fa633748a1efca2528fd77c37469ea93c9e40ab835da44e4cce"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/anchore/syft/releases/download/v1.50.0/syft_1.50.0_darwin_amd64.tar.gz",
+          "sha256": "d11a8c7bc27114853bd7c1e1b2f3be3ddda3a1de17aee585329f04c369341c75"
+        },
+        "linux-amd64": {
+          "url": "https://github.com/anchore/syft/releases/download/v1.50.0/syft_1.50.0_linux_amd64.tar.gz",
+          "sha256": "bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/anchore/syft/releases/download/v1.50.0/syft_1.50.0_linux_arm64.tar.gz",
+          "sha256": "887c57cbcc2d0e8c5c110a4571a3fc7150058b24d74f993ee4663516e5c8ce86"
+        }
+      }
+    },
+    "grype": {
+      "version": "0.116.1",
+      "archiveMember": "grype",
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://github.com/anchore/grype/releases/download/v0.116.1/grype_0.116.1_darwin_arm64.tar.gz",
+          "sha256": "f493f169cbaae48bade169532b20235fc16653d2a044a5bc6fe6f69a3923f975"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/anchore/grype/releases/download/v0.116.1/grype_0.116.1_darwin_amd64.tar.gz",
+          "sha256": "e5ff3adac317511876de7863598587a7dbab0c47c8e150368b7df06909c11f4e"
+        },
+        "linux-amd64": {
+          "url": "https://github.com/anchore/grype/releases/download/v0.116.1/grype_0.116.1_linux_amd64.tar.gz",
+          "sha256": "0122df7b655981abe547ad3d2190d65551dac6a2bfc80b4dc2a989b5d0587458"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/anchore/grype/releases/download/v0.116.1/grype_0.116.1_linux_arm64.tar.gz",
+          "sha256": "a8d7504a149629324eb5f4ce3dc25dfd211bbfe047e64ee2bf7844b466c3d84d"
+        }
+      }
+    },
+    "trivy": {
+      "version": "0.73.0",
+      "archiveMember": "trivy",
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_macOS-ARM64.tar.gz",
+          "sha256": "80cc25faaf6378e37701202d0b4f9f43d9e413d198d594ba60fdf559fe44a683"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_macOS-64bit.tar.gz",
+          "sha256": "d39d1374dd3e35d48621b82df9b6625fe69f9920cc67d2739ed81bb679f16f51"
+        },
+        "linux-amd64": {
+          "url": "https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz",
+          "sha256": "2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-ARM64.tar.gz",
+          "sha256": "13833d97e8a1a5367471c372a173180157f593bece570e20d5d925fef552f5dd"
+        }
+      }
+    }
+  }
+}

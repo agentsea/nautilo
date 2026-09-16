@@ -1,0 +1,40 @@
+name: FFmpeg qualification
+
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'packages/types/src/video-export.ts'
+      - 'packages/first-party-apps/video/**'
+      - '.github/workflows/ffmpeg-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-media:
+    name: Native FFmpeg (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run --cwd apps/desktop vendor:ffmpeg
+      - name: Verify native media behavior with the production pin
+        run: >-
+          bun test
+          apps/desktop/tests/unit/sequence-renderer.test.ts
+          apps/desktop/tests/unit/cut-transition-renderer.test.ts
+          apps/desktop/tests/unit/workspace-sequence-export.test.ts
+          apps/desktop/tests/unit/media-source-inspection.test.ts
+          apps/desktop/tests/unit/media-waveform.test.ts
+          apps/desktop/tests/unit/media-process.test.ts
+          apps/desktop/tests/unit/ffmpeg-media-metadata.test.ts
+          apps/desktop/tests/unit/ffmpeg-distribution.test.ts

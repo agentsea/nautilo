@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noPropertyAccessFromIndexSignature": false },
+  "include": [
+    "exact-image-audit*.ts",
+    "bounded-disclosure*.ts",
+    "check-vulnerability-exception-expiry*.ts",
+    "vulnerability-db-identity.ts",
+    "runtime-image-evidence.ts",
+    "bootstrap-*.ts",
+    "prepare-release-audit.ts",
+    "release-*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

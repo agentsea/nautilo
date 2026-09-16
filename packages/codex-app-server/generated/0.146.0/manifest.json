@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "codexVersion": "0.146.0",
+  "cliReportedVersion": "codex-cli 0.146.0",
+  "source": {
+    "distribution": "official Codex CLI 0.146.0",
+    "launcherSha256": "ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02",
+    "executableSha256": "ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02",
+    "platform": "darwin",
+    "architecture": "arm64"
+  },
+  "commands": [
+    "codex app-server generate-ts --out <stable-typescript>",
+    "codex app-server generate-json-schema --out <stable-json-schema>",
+    "codex app-server generate-ts --experimental --out <experimental-typescript>",
+    "codex app-server generate-json-schema --experimental --out <experimental-json-schema>"
+  ],
+  "upstream": {
+    "files": 1947,
+    "bytes": 6969288,
+    "sha256": "48e2c2cd0ffc998f161828a854bb5dfc66f46c38d6cfb3b80f31903dbf63df2a"
+  },
+  "inventory": {
+    "files": 2,
+    "bytes": 90706,
+    "sha256": "c40cc5df528754440c43288f75bc1adc9fea8ec18b2bb6ea9dfcff5f3f145521"
+  }
+}

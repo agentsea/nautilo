@@ -1,0 +1,21 @@
+{
+  "context": {
+    "zone": "workspace",
+    "workspaceId": "workspace-cross-root",
+    "relayId": null,
+    "agentId": "agent-apply-patch",
+    "turnId": "turn-cross-root"
+  },
+  "redactionRoot": "/private/work/project",
+  "requestedRoot": "/private/other/project",
+  "runtimeVersion": "nautilo-apply-patch@3389fa55",
+  "preflight": {
+    "operations": [
+      { "operation": "add", "path": "docs/new.md" },
+      { "operation": "update", "path": "src/main.ts" },
+      { "operation": "move", "fromPath": "src/old.ts", "path": "src/renamed.ts" },
+      { "operation": "delete", "path": "tmp/obsolete.txt" }
+    ]
+  },
+  "revisions": []
+}

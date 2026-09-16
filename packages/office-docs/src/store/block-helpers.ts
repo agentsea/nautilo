@@ -1,0 +1,489 @@
+import { cloneJsonData } from '../model/json-data.js';
+// packages/docs/src/store/block-helpers.ts
+import type { Block, Inline, InlineStyle, BlockType } from '../model/types.js';
+import {
+  inlineStylesEqual,
+  generateBlockId,
+  isStructuralInline,
+  normalizeStyleClears,
+} from '../model/types.js';
+
+export interface InlinePosition {
+  inlineIndex: number;
+  charOffset: number;
+}
+
+export interface InlineSegment {
+  inlineIndex: number;
+  charFrom: number;
+  charTo: number;
+}
+
+/**
+ * Resolve a block-level character offset to an inline index + char offset.
+ */
+export function resolveOffset(block: Block, offset: number): InlinePosition {
+  // A block with no inlines (e.g. a table block, whose text lives in cell
+  // paragraphs) has no resolvable inline position. Return a benign zero
+  // position instead of indexing `inlines[-1]` and throwing.
+  if (block.inlines.length === 0) {
+    return { inlineIndex: 0, charOffset: 0 };
+  }
+  let remaining = offset;
+  for (let i = 0; i < block.inlines.length; i++) {
+    const len = block.inlines[i].text.length;
+    if (remaining <= len) {
+      return { inlineIndex: i, charOffset: remaining };
+    }
+    remaining -= len;
+  }
+  const last = block.inlines.length - 1;
+  return { inlineIndex: last, charOffset: block.inlines[last].text.length };
+}
+
+/**
+ * Resolve a delete range (offset + length) into per-inline segments.
+ * Segments are returned in forward order (inline[0] first).
+ */
+export function resolveDeleteRange(
+  block: Block,
+  offset: number,
+  length: number,
+): InlineSegment[] {
+  const segments: InlineSegment[] = [];
+  let remaining = length;
+  let pos = 0;
+
+  for (let i = 0; i < block.inlines.length && remaining > 0; i++) {
+    const inlineLen = block.inlines[i].text.length;
+    const inlineEnd = pos + inlineLen;
+
+    if (offset >= inlineEnd) {
+      pos = inlineEnd;
+      continue;
+    }
+
+    const charFrom = Math.max(0, offset - pos);
+    const available = inlineLen - charFrom;
+    const charTo = charFrom + Math.min(remaining, available);
+
+    segments.push({ inlineIndex: i, charFrom, charTo });
+    remaining -= charTo - charFrom;
+    pos = inlineEnd;
+  }
+
+  return segments;
+}
+
+/**
+ * Merge adjacent inlines with identical styles and remove empty inlines.
+ * Always returns at least one inline.
+ *
+ * Structural inlines (images, page numbers) never merge, however equal they
+ * compare: one such inline describes exactly one object, so concatenating two
+ * of them silently drops the second while the offsets keep counting both.
+ * Two *identical* images pasted side by side are exactly that case, and
+ * `inlineStylesEqual` compares images by value — so equality is not the test
+ * here. Same rule as `isStructuralInline`'s contract and the paste path's
+ * `TextEditor.normalizeInlineList`.
+ */
+export function normalizeInlines(inlines: Inline[]): Inline[] {
+  const merged: Inline[] = [];
+  for (const inline of inlines) {
+    if (inline.text.length === 0) continue;
+    const last = merged[merged.length - 1];
+    if (
+      last &&
+      !isStructuralInline(last) &&
+      !isStructuralInline(inline) &&
+      inlineStylesEqual(last.style, inline.style)
+    ) {
+      last.text += inline.text;
+    } else {
+      merged.push({ text: inline.text, style: { ...inline.style } });
+    }
+  }
+  if (merged.length > 0) return merged;
+  // All inlines were empty: produce a single fallback. Drop image style here
+  // — an empty-text inline must never carry image style, otherwise the
+  // canvas renders a ghost (image width comes from style.image, not text).
+  const fallbackStyle = { ...(inlines[0]?.style ?? {}) };
+  delete fallbackStyle.image;
+  return [{ text: '', style: fallbackStyle }];
+}
+
+/**
+ * Insert text at block-level offset. Returns a new Block (pure function).
+ */
+export function applyInsertText(block: Block, offset: number, text: string): Block {
+  const newBlock = cloneBlock(block);
+  const { inlineIndex, charOffset } = resolveOffset(newBlock, offset);
+  const inline = newBlock.inlines[inlineIndex];
+
+  // Structural inlines must not absorb regular text — split at the insertion
+  // point and place the new text in its own inline, without the structural
+  // style. One such inline describes exactly one object and the renderer
+  // draws it from the style, not from the text: an image run is painted from
+  // `style.image`, and a page-number run is replaced whole by the page's
+  // number. Text merged into either is text that can never be drawn, while
+  // the offsets keep counting it — the caret advances over characters that
+  // are in the model and absent from the screen (#871).
+  // The structural run itself is never cut in two: it describes exactly one
+  // object, so two copies of it paint the image — or the page number — twice.
+  // A well-formed one holds a single character and there is nothing to cut,
+  // but one that absorbed text before this rule existed does not, and the
+  // Yorkie tree path in `YorkieDocStore.insertText` puts the new node wholly
+  // before or after the run either way. The two must not disagree.
+  if (isStructuralInline(inline)) {
+    const { image: _img, pageNumber: _pn, ...plainStyle } = inline.style;
+    const at = charOffset === 0 ? inlineIndex : inlineIndex + 1;
+    newBlock.inlines.splice(at, 0, { text, style: plainStyle });
+    newBlock.inlines = normalizeInlines(newBlock.inlines);
+    return newBlock;
+  }
+
+  inline.text =
+    inline.text.slice(0, charOffset) + text + inline.text.slice(charOffset);
+  return newBlock;
+}
+
+/**
+ * Delete `length` characters starting at block-level offset. Returns new Block.
+ */
+export function applyDeleteText(block: Block, offset: number, length: number): Block {
+  const newBlock = cloneBlock(block);
+  const segments = resolveDeleteRange(newBlock, offset, length);
+
+  // Delete in reverse order to preserve earlier indices
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i];
+    const inline = newBlock.inlines[seg.inlineIndex];
+    inline.text =
+      inline.text.slice(0, seg.charFrom) + inline.text.slice(seg.charTo);
+  }
+
+  newBlock.inlines = normalizeInlines(newBlock.inlines);
+  return newBlock;
+}
+
+function cloneBlock(block: Block): Block {
+  return cloneJsonData(block);
+}
+
+/**
+ * Deep-clone a block and regenerate every block id it contains — the block
+ * itself, plus (for tables) every block inside every cell, recursively for
+ * nested tables. Used when pasting a block so the paste is independent of its
+ * source: the two share no ids, so editing / clicking one can't leak into the
+ * other. The source block is not mutated.
+ */
+export function cloneBlockWithFreshIds(block: Block): Block {
+  const clone = cloneBlock(block);
+  refreshBlockIds(clone);
+  return clone;
+}
+
+function refreshBlockIds(block: Block): void {
+  const work = [block];
+  while (work.length > 0) {
+    const current = work.pop()!;
+    current.id = generateBlockId();
+  if (current.tableData) {
+    for (const row of current.tableData.rows) {
+      for (const cell of row.cells) {
+        for (const child of cell.blocks) work.push(child);
+      }
+    }
+  }
+}
+
+}
+
+/**
+ * Resolve a style range [from, to) into per-inline segments.
+ */
+export function resolveStyleRange(
+  block: Block,
+  from: number,
+  to: number,
+): InlineSegment[] {
+  return resolveDeleteRange(block, from, to - from);
+}
+
+/**
+ * Like `resolveOffset` but treats an offset at the exact end of an
+ * image inline as belonging to the NEXT inline instead.  This prevents
+ * `splitLevel=2` from splitting through the image element.
+ */
+export function resolveOffsetForSplit(block: Block, offset: number): InlinePosition {
+  const result = resolveOffset(block, offset);
+  const inline = block.inlines[result.inlineIndex];
+  if (
+    inline?.style.image &&
+    result.charOffset === inline.text.length &&
+    result.inlineIndex + 1 < block.inlines.length
+  ) {
+    return { inlineIndex: result.inlineIndex + 1, charOffset: 0 };
+  }
+  return result;
+}
+
+/**
+ * Get the inline style at a split point so empty sides preserve formatting.
+ */
+function getSplitPointStyle(inlines: Inline[], offset: number): InlineStyle {
+  const { inlineIndex } = resolveOffset({ inlines } as Block, offset);
+  const { image: _image, ...rest } = inlines[inlineIndex].style;
+  return rest;
+}
+
+/**
+ * Split a block at offset. Returns [beforeBlock, afterBlock].
+ * The afterBlock gets the new id and type.
+ */
+export function applySplitBlock(
+  block: Block,
+  offset: number,
+  newBlockId: string,
+  newBlockType: BlockType,
+): [Block, Block] {
+  const before = cloneBlock(block);
+  const after = cloneBlock(block);
+  after.id = newBlockId;
+  after.type = newBlockType;
+
+  const beforeInlines: Inline[] = [];
+  const afterInlines: Inline[] = [];
+  let pos = 0;
+
+  for (const inline of block.inlines) {
+    const inlineEnd = pos + inline.text.length;
+
+    if (inlineEnd <= offset) {
+      beforeInlines.push({ text: inline.text, style: { ...inline.style } });
+    } else if (pos >= offset) {
+      afterInlines.push({ text: inline.text, style: { ...inline.style } });
+    } else {
+      const splitAt = offset - pos;
+      beforeInlines.push({
+        text: inline.text.slice(0, splitAt),
+        style: { ...inline.style },
+      });
+      afterInlines.push({
+        text: inline.text.slice(splitAt),
+        style: { ...inline.style },
+      });
+    }
+    pos = inlineEnd;
+  }
+
+  // Preserve the style at the split point for empty sides
+  const splitStyle = getSplitPointStyle(block.inlines, offset);
+  before.inlines = normalizeInlines(beforeInlines.length > 0 ? beforeInlines : [{ text: '', style: splitStyle }]);
+  after.inlines = normalizeInlines(afterInlines.length > 0 ? afterInlines : [{ text: '', style: splitStyle }]);
+
+  // Remove block-specific attrs from after block
+  delete after.tableData;
+  // A bulleted heading's remembered level describes that block's own text, so
+  // a split at offset 0 — which hands *all* of that text to the new block —
+  // moves the memory across instead of stranding it on the empty leading
+  // bullet (which would otherwise be the half `unlistedBlockType` promotes).
+  const movesMemory = splitMovesHeadingMemory(block, offset, newBlockType);
+  if (newBlockType !== 'heading' && !movesMemory) {
+    delete after.headingLevel;
+  }
+  if (movesMemory) {
+    delete before.headingLevel;
+  }
+  // Preserve list attrs when the new block is also a list-item
+  if (newBlockType !== 'list-item') {
+    delete after.listKind;
+    delete after.listLevel;
+  }
+
+  return [before, after];
+}
+
+/**
+ * Whether splitting `block` at `offset` hands the heading level a bulleted
+ * heading remembers to the split-off block instead of leaving it behind.
+ *
+ * The memory only describes the text the block that was bulleted holds, and a
+ * split at offset 0 moves every character of it into the new block — leaving
+ * the level on the now-empty leading bullet would make the wrong half restore
+ * a heading, and would strip it from the text that actually was one. Any other
+ * offset keeps the memory where it is: the heading text starts in `before`, so
+ * the new bullet is body text (see `Block.headingLevel`).
+ *
+ * Shared by `applySplitBlock` and `YorkieDocStore.splitBlock`, which has to
+ * move the same attribute in the Yorkie tree to stay in sync.
+ */
+export function splitMovesHeadingMemory(
+  block: Block,
+  offset: number,
+  newBlockType: BlockType,
+): boolean {
+  return (
+    offset === 0 &&
+    newBlockType === 'list-item' &&
+    block.type === 'list-item' &&
+    block.headingLevel !== undefined &&
+    block.inlines.some((inline) => inline.text.length > 0)
+  );
+}
+
+/**
+ * Whether a merge into `block` invalidates the heading level a bulleted
+ * heading remembers (see `Block`). A merge appends another block's text into
+ * `block`; when `block` is a list item that has no text of its own, none of
+ * the remembered heading survives, so the level must not travel onto the
+ * incoming body text — otherwise removing the list promotes text that was
+ * never a heading.
+ *
+ * Shared by `applyMergeBlocks` and `YorkieDocStore.mergeBlock`, which has to
+ * drop the same attribute from the Yorkie tree to stay in sync.
+ */
+export function mergeDropsHeadingMemory(block: Block): boolean {
+  return (
+    block.type === 'list-item' &&
+    block.headingLevel !== undefined &&
+    block.inlines.every((inline) => inline.text.length === 0)
+  );
+}
+
+/**
+ * Merge nextBlock into block. Returns the merged block.
+ */
+export function applyMergeBlocks(block: Block, nextBlock: Block): Block {
+  const merged = cloneBlock(block);
+  const nextClone = cloneBlock(nextBlock);
+  if (mergeDropsHeadingMemory(merged)) delete merged.headingLevel;
+  merged.inlines = normalizeInlines([...merged.inlines, ...nextClone.inlines]);
+  return merged;
+}
+
+/**
+ * Insert an inline element at a block-level character offset.
+ * Splits inlines at offset, inserts the new inline in between,
+ * and normalizes the result. Returns a new Block (pure function).
+ */
+export function applyInsertInline(block: Block, offset: number, inline: Inline): Block {
+  const newBlock = cloneBlock(block);
+  const before: Inline[] = [];
+  const after: Inline[] = [];
+  let remaining = offset;
+
+  for (const existing of newBlock.inlines) {
+    if (remaining >= existing.text.length) {
+      before.push(existing);
+      remaining -= existing.text.length;
+    } else if (remaining > 0) {
+      before.push({ text: existing.text.slice(0, remaining), style: { ...existing.style } });
+      after.push({ text: existing.text.slice(remaining), style: { ...existing.style } });
+      remaining = 0;
+    } else {
+      after.push(existing);
+    }
+  }
+
+  newBlock.inlines = normalizeInlines([...before, { ...inline }, ...after]);
+  return newBlock;
+}
+
+/**
+ * Merge a style patch over a run's style, treating a key set to `undefined`
+ * as "remove it" rather than "store it as undefined".
+ *
+ * A plain spread would leave the key present with an `undefined` value, which
+ * reads the same everywhere but keeps a phantom entry in the stored run (and
+ * in anything that enumerates it). Clearing is how `CLEAR_INLINE_STYLE` and
+ * the boolean toggle-off path express themselves, so it is the one merge both
+ * go through.
+ */
+function mergeInlineStyle(
+  base: InlineStyle,
+  patch: Partial<InlineStyle>,
+): InlineStyle {
+  const merged: InlineStyle = { ...base, ...patch };
+  for (const key of Object.keys(patch) as (keyof InlineStyle)[]) {
+    if (patch[key] === undefined) delete merged[key];
+  }
+  return merged;
+}
+
+/**
+ * Enforce the one rule a style patch cannot express on its own: superscript
+ * and subscript are mutually exclusive, so turning one on clears the other.
+ *
+ * Exported because a store may have to write the same patch twice — the
+ * Yorkie store applies it to its local `Block` cache *and* to the Tree CRDT.
+ * Both writes must resolve the exclusion identically, or the CRDT keeps both
+ * flags while the cache shows one.
+ */
+export function resolveScriptExclusion(
+  style: Partial<InlineStyle>,
+): Partial<InlineStyle> {
+  const resolved: Partial<InlineStyle> = { ...style };
+  if (resolved.superscript) {
+    resolved.subscript = undefined;
+  } else if (resolved.subscript) {
+    resolved.superscript = undefined;
+  }
+  return resolved;
+}
+
+/**
+ * Apply inline style to a range within a block. Returns new Block.
+ * Splits inlines as needed and normalizes the result.
+ */
+export function applyInlineStyle(
+  block: Block,
+  from: number,
+  to: number,
+  style: Partial<InlineStyle>,
+): Block {
+  // Two normalizations, both required and independent. `normalizeStyleClears`
+  // turns a colour picker's `''` into the key-present-undefined shape that
+  // means "clear" (#793); `resolveScriptExclusion` drops the opposite script
+  // flag. The latter is this file's extraction of the exclusion that used to
+  // be spelled inline here, so it replaces that copy rather than adding to it.
+  const resolvedStyle = resolveScriptExclusion(normalizeStyleClears(style));
+
+  const newBlock = cloneBlock(block);
+  const newInlines: Inline[] = [];
+  let pos = 0;
+
+  for (const inline of newBlock.inlines) {
+    const inlineEnd = pos + inline.text.length;
+
+    if (inlineEnd <= from || pos >= to) {
+      newInlines.push({ text: inline.text, style: { ...inline.style } });
+    } else {
+      const overlapStart = Math.max(0, from - pos);
+      const overlapEnd = Math.min(inline.text.length, to - pos);
+
+      if (overlapStart > 0) {
+        newInlines.push({
+          text: inline.text.slice(0, overlapStart),
+          style: { ...inline.style },
+        });
+      }
+
+      newInlines.push({
+        text: inline.text.slice(overlapStart, overlapEnd),
+        style: mergeInlineStyle(inline.style, resolvedStyle),
+      });
+
+      if (overlapEnd < inline.text.length) {
+        newInlines.push({
+          text: inline.text.slice(overlapEnd),
+          style: { ...inline.style },
+        });
+      }
+    }
+    pos = inlineEnd;
+  }
+
+  newBlock.inlines = normalizeInlines(newInlines);
+  return newBlock;
+}

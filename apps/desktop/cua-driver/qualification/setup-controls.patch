@@ -1,0 +1,1869 @@
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
+index f50f24090..85242692a 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
+@@ -230,6 +230,47 @@ pub unsafe fn copy_bool_attr(element: AXUIElementRef, attr_name: &str) -> Option
+     None
+ }
+
++/// Convert a borrowed AX attribute value only when it is an exact binary state.
++unsafe fn coerce_binary_value(value: CFTypeRef) -> Option<bool> {
++    use core_foundation::boolean::CFBoolean;
++    use core_foundation::number::CFNumber;
++    let type_id = core_foundation::base::CFGetTypeID(value);
++    if type_id == CFBoolean::type_id() {
++        return Some(CFBoolean::wrap_under_get_rule(value as _).into());
++    }
++    if type_id == CFNumber::type_id() {
++        return match CFNumber::wrap_under_get_rule(value as _).to_f64()? {
++            0.0 => Some(false),
++            1.0 => Some(true),
++            _ => None,
++        };
++    }
++    None
++}
++
++/// Copy an exact binary attribute from an AX element in one read.
++///
++/// Accepts native `CFBoolean` values and numeric `0` or `1`. Other numeric
++/// values and all other types return `None` instead of being coerced to true.
++/// Use this for two-state controls whose intermediate or malformed values must
++/// fail closed; use [`copy_bool_attr`] for ordinary truthy attributes.
++///
++/// # Safety
++///
++/// `element` must be a valid Accessibility object reference for the duration
++/// of this call.
++pub unsafe fn copy_binary_attr(element: AXUIElementRef, attr_name: &str) -> Option<bool> {
++    let attr = CFStr::new(attr_name);
++    let mut value: CFTypeRef = std::ptr::null();
++    let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut value);
++    if err != kAXErrorSuccess || value.is_null() {
++        return None;
++    }
++    let result = coerce_binary_value(value);
++    CFRelease(value);
++    result
++}
++
+ /// A copied AX attribute represented for both existing string-only consumers
+ /// and the wider structured control-state response.
+ #[derive(Debug, PartialEq, Eq)]
+@@ -492,31 +533,53 @@ pub fn focused_window_id_of_pid(pid: i32) -> Option<u32> {
+ ///
+ /// `element` must be valid, and the caller must release every returned element.
+ pub unsafe fn copy_children(element: AXUIElementRef) -> Vec<AXUIElementRef> {
+-    let attr = CFStr::new("AXChildren");
++    copy_element_array_attr(element, "AXChildren")
++}
++
++/// Copy an array of AX elements, retaining each result for the caller.
++///
++/// # Safety
++/// `element` must be valid; the caller must release every returned element.
++pub unsafe fn copy_element_array_attr(element: AXUIElementRef, name: &str) -> Vec<AXUIElementRef> {
++    copy_element_array_attr_checked(element, name).unwrap_or_default()
++}
++
++/// Like copy_element_array_attr, but preserves an unreadable/unsupported
++/// attribute as None instead of claiming that the array was empty.
++///
++/// # Safety
++/// `element` must be valid; the caller must release every returned element.
++pub unsafe fn copy_element_array_attr_checked(
++    element: AXUIElementRef,
++    name: &str,
++) -> Option<Vec<AXUIElementRef>> {
++    let attr = CFStr::new(name);
+     let mut value: CFTypeRef = std::ptr::null();
+     let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut value);
+     if err != kAXErrorSuccess || value.is_null() {
+-        return vec![];
++        return None;
+     }
+     let cf_array_type_id = CFArray::<CFTypeRef>::type_id();
+     if core_foundation::base::CFGetTypeID(value) != cf_array_type_id {
+         CFRelease(value);
+-        return vec![];
++        return None;
+     }
+     let arr = CFArray::<CFTypeRef>::wrap_under_create_rule(value as _);
+     let ax_type_id = AXUIElementGetTypeID();
+-    (0..arr.len())
+-        .filter_map(|i| {
+-            let item = *arr.get(i)?;
+-            if core_foundation::base::CFGetTypeID(item) == ax_type_id {
+-                // Retain so we own it — caller is responsible for releasing.
+-                CFRetain(item);
+-                Some(item as AXUIElementRef)
+-            } else {
+-                None
+-            }
+-        })
+-        .collect()
++    Some(
++        (0..arr.len())
++            .filter_map(|i| {
++                let item = *arr.get(i)?;
++                if core_foundation::base::CFGetTypeID(item) == ax_type_id {
++                    // Retain so we own it — caller is responsible for releasing.
++                    CFRetain(item);
++                    Some(item as AXUIElementRef)
++                } else {
++                    None
++                }
++            })
++            .collect(),
++    )
+ }
+
+ /// Copy an AX element-valued attribute. The returned element is retained and
+@@ -724,6 +787,49 @@ mod tests {
+     use super::*;
+     use core_foundation::{boolean::CFBoolean, number::CFNumber};
+
++    #[test]
++    fn binary_value_accepts_booleans_and_exact_zero_or_one() {
++        let true_value = CFBoolean::true_value();
++        let false_value = CFBoolean::false_value();
++        let zero = CFNumber::from(0.0);
++        let one = CFNumber::from(1.0);
++        let fractional = CFNumber::from(0.5);
++        let other = CFNumber::from(2.0);
++        let string = CFStr::new("1");
++
++        assert_eq!(
++            unsafe { coerce_binary_value(true_value.as_CFTypeRef()) },
++            Some(true)
++        );
++        assert_eq!(
++            unsafe { coerce_binary_value(false_value.as_CFTypeRef()) },
++            Some(false)
++        );
++        assert_eq!(
++            unsafe { coerce_binary_value(zero.as_CFTypeRef()) },
++            Some(false)
++        );
++        assert_eq!(
++            unsafe { coerce_binary_value(one.as_CFTypeRef()) },
++            Some(true)
++        );
++        assert_eq!(
++            unsafe { coerce_binary_value(fractional.as_CFTypeRef()) },
++            None
++        );
++        assert_eq!(unsafe { coerce_binary_value(other.as_CFTypeRef()) }, None);
++        assert_eq!(unsafe { coerce_binary_value(string.as_CFTypeRef()) }, None);
++        for value in [
++            f64::MIN_POSITIVE,
++            1.0 - f64::EPSILON / 2.0,
++            f64::NAN,
++            f64::INFINITY,
++        ] {
++            let number = CFNumber::from(value);
++            assert_eq!(unsafe { coerce_binary_value(number.as_CFTypeRef()) }, None);
++        }
++    }
++
+     #[test]
+     fn stringish_value_coerces_cfstring_cfnumber_and_cfboolean() {
+         let string = CFStr::new("Search");
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+index ee1f5d3a1..9776d7fcc 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
+@@ -337,6 +337,114 @@ pub fn walk_tree_bounded(
+     }
+ }
+
++/// Read only sheets directly attached to an exact native window. In particular,
++/// do not traverse its web document to discover a sheet: Chromium places native
++/// sheets after that document in AXChildren, regardless of the page's size.
++/// Returned actionable nodes follow TreeWalkResult's retained-pointer contract.
++pub(crate) fn walk_window_sheets(pid: i32, window_id: u32, max_elements: usize) -> TreeWalkResult {
++    let mut nodes = Vec::new();
++    let mut lines = Vec::new();
++    let mut counter = 0;
++    let mut visited = 0;
++    let mut truncated = false;
++    let mut matched = false;
++    unsafe {
++        let app = AXUIElementCreateApplication(pid);
++        if !app.is_null() {
++            set_messaging_timeout(app);
++            super::enablement::ensure_chromium_ax_enabled(pid, app);
++            let windows = copy_ax_windows(app);
++            let mut sheets = Vec::new();
++            for &window in &windows {
++                set_messaging_timeout(window);
++                if copy_string_attr(window, "AXRole").as_deref() != Some("AXWindow")
++                    || ax_get_window_id(window) != Some(window_id)
++                {
++                    continue;
++                }
++                matched = true;
++                let Some(children) = copy_element_array_attr_checked(window, "AXChildren") else {
++                    truncated = true;
++                    continue;
++                };
++                let candidates = copy_element_array_attr(window, "AXSheets")
++                    .into_iter()
++                    .chain(children)
++                    .collect::<Vec<_>>();
++                let selected = direct_sheet_roots(
++                    &candidates,
++                    |element| {
++                        set_messaging_timeout(*element);
++                        copy_string_attr(*element, "AXRole").unwrap_or_else(|| {
++                            truncated = true;
++                            String::new()
++                        })
++                    },
++                    |left, right| CFEqual(*left as CFTypeRef, *right as CFTypeRef) != 0,
++                );
++                for sheet in selected {
++                    if !sheets
++                        .iter()
++                        .any(|&other| CFEqual(other as CFTypeRef, sheet as CFTypeRef) != 0)
++                    {
++                        CFRetain(sheet as CFTypeRef);
++                        sheets.push(sheet);
++                    }
++                }
++                for element in candidates {
++                    CFRelease(element as CFTypeRef);
++                }
++            }
++            for sheet in sheets {
++                walk_element(
++                    sheet,
++                    0,
++                    None,
++                    false,
++                    &mut nodes,
++                    &mut lines,
++                    &mut counter,
++                    &mut visited,
++                    &mut truncated,
++                    max_elements,
++                    // The node budget already bounds this small native sheet.
++                    // Do not silently depth-truncate a privileged uniqueness scan.
++                    max_elements,
++                );
++                CFRelease(sheet as CFTypeRef);
++            }
++            for window in windows {
++                CFRelease(window as CFTypeRef);
++            }
++            CFRelease(app as CFTypeRef);
++        }
++    }
++    TreeWalkResult {
++        tree_markdown: render_lines(&lines),
++        nodes,
++        truncated,
++        window_scope: Some(if matched {
++            WindowScope::Matched
++        } else {
++            WindowScope::AxUnresolved { ax_window_count: 0 }
++        }),
++    }
++}
++
++fn direct_sheet_roots<T: Copy>(
++    candidates: &[T],
++    mut role: impl FnMut(&T) -> String,
++    same: impl Fn(&T, &T) -> bool,
++) -> Vec<T> {
++    let mut sheets = Vec::new();
++    for candidate in candidates {
++        if role(candidate) == "AXSheet" && !sheets.iter().any(|sheet| same(sheet, candidate)) {
++            sheets.push(*candidate);
++        }
++    }
++    sheets
++}
++
+ #[allow(clippy::too_many_arguments)]
+ unsafe fn walk_element(
+     element: AXUIElementRef,
+@@ -607,6 +715,27 @@ mod web_content_role_tests {
+             assert!(!is_web_content_role(role), "{role} stays native");
+         }
+     }
++
++    #[test]
++    fn sheet_discovery_does_not_walk_the_preceding_web_document() {
++        // Only root roles are inspected. The web document can contain any
++        // number of descendants, including page-authored lookalike dialogs.
++        let roots = [
++            (1, "AXWebArea"),
++            (2, "AXSheet"),
++            (3, "AXSheet"),
++            (4, "AXToolbar"),
++        ];
++        let sheets = super::direct_sheet_roots(
++            &roots,
++            |node| node.1.into(),
++            |a, b| {
++                // Two proxies for the same native sheet, as AXSheets + AXChildren expose.
++                a.0 == b.0 || matches!((a.0, b.0), (2, 3) | (3, 2))
++            },
++        );
++        assert_eq!(sheets, vec![(2, "AXSheet")]);
++    }
+ }
+
+ fn format_node_line(node: &AXNode) -> String {
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
+index ff05feaf1..f6b8ae846 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
+@@ -3,19 +3,17 @@
+ use std::time::{Duration, Instant};
+ use std::{collections::HashSet, iter};
+
+-use core_foundation::base::{CFRelease, CFTypeRef};
++use core_foundation::base::{CFEqual, CFRelease, CFTypeRef};
+ use cua_driver_core::browser::{
+     BrowserConsentOutcome, BrowserConsentRequest, BrowserRefusal, BrowserRefusalCode,
+ };
+
+ use crate::ax::bindings::{kAXErrorSuccess, perform_action, AXUIElementRef};
+-use crate::ax::tree::{walk_tree_bounded, AXNode, DEFAULT_MAX_DEPTH};
++use crate::ax::tree::{walk_window_sheets, AXNode};
+
+-// Large Chromium pages can put the browser-owned consent sheet after the
+-// ordinary 2,000-node snapshot cap. Keep this privileged scan bounded while
+-// allowing enough headroom to inspect Chrome's top-level sheet on pages such
+-// as Gmail. The matcher below still requires one exact AXSheet and one exact
+-// semantic Allow action before it will press anything.
++// This budget applies to attached native sheets only, never to the page behind
++// them. An incomplete sheet scan is an error, not evidence of absence or of a
++// unique Allow action.
+ const CONSENT_MAX_ELEMENTS: usize = 5_000;
+
+ fn refusal(code: BrowserRefusalCode, message: impl Into<String>) -> BrowserRefusal {
+@@ -43,6 +41,49 @@ fn release_actionable_nodes(nodes: &[AXNode]) {
+     }
+ }
+
++fn read_consent_trees(pid: i32, window_id: u32) -> Result<Vec<Vec<AXNode>>, BrowserRefusal> {
++    let mut trees = Vec::new();
++    let mut resolved = false;
++    let mut incomplete = false;
++    for id in consent_surface_ids(crate::windows::all_windows(), pid, window_id) {
++        let tree = walk_window_sheets(pid, id, CONSENT_MAX_ELEMENTS);
++        resolved |= tree
++            .window_scope
++            .as_ref()
++            .is_some_and(|scope| scope.is_matched());
++        incomplete |= tree.truncated;
++        trees.push(tree.nodes);
++    }
++    if incomplete || !resolved {
++        for nodes in &trees {
++            release_actionable_nodes(nodes);
++        }
++        return Err(refusal(
++            BrowserRefusalCode::BrowserWrongTargetRefused,
++            if incomplete {
++                "the native browser consent sheet scan was incomplete"
++            } else {
++                "the browser's native windows could not be resolved for consent inspection"
++            },
++        ));
++    }
++    Ok(trees)
++}
++
++fn distinct_elements(elements: Vec<usize>, same: impl Fn(usize, usize) -> bool) -> Vec<usize> {
++    let mut distinct = Vec::new();
++    for element in elements {
++        if !distinct.iter().any(|&other| same(element, other)) {
++            distinct.push(element);
++        }
++    }
++    distinct
++}
++
++fn same_element(left: usize, right: usize) -> bool {
++    unsafe { CFEqual(left as CFTypeRef, right as CFTypeRef) != 0 }
++}
++
+ fn consent_surface_ids(
+     windows: impl IntoIterator<Item = crate::windows::WindowInfo>,
+     pid: i32,
+@@ -68,7 +109,7 @@ fn consent_surface_ids(
+
+ fn remote_debugging_sheet_present(nodes: &[AXNode]) -> bool {
+     nodes.iter().enumerate().any(|(sheet_index, sheet)| {
+-        if sheet.role != "AXSheet" {
++        if sheet.role != "AXSheet" || sheet.in_web_content {
+             return false;
+         }
+         let end = nodes
+@@ -79,7 +120,8 @@ fn remote_debugging_sheet_present(nodes: &[AXNode]) -> bool {
+             .map_or(nodes.len(), |(index, _)| index);
+         nodes[sheet_index..end].iter().any(|node| {
+             let text = normalized_text(node);
+-            text.contains("remote debugging") || text.contains("remote-debugging")
++            !node.in_web_content
++                && (text.contains("remote debugging") || text.contains("remote-debugging"))
+         })
+     })
+ }
+@@ -89,7 +131,7 @@ fn exact_allow_button(nodes: &[AXNode]) -> Result<Option<usize>, BrowserRefusal>
+     for (sheet_index, sheet) in nodes
+         .iter()
+         .enumerate()
+-        .filter(|(_, node)| node.role == "AXSheet")
++        .filter(|(_, node)| node.role == "AXSheet" && !node.in_web_content)
+     {
+         let end = nodes
+             .iter()
+@@ -100,13 +142,19 @@ fn exact_allow_button(nodes: &[AXNode]) -> Result<Option<usize>, BrowserRefusal>
+         let sheet_nodes = &nodes[sheet_index..end];
+         let prompt_is_remote_debugging = sheet_nodes.iter().any(|node| {
+             let text = normalized_text(node);
+-            text.contains("remote debugging") || text.contains("remote-debugging")
++            !node.in_web_content
++                && (text.contains("remote debugging") || text.contains("remote-debugging"))
+         });
+         if !prompt_is_remote_debugging {
+             continue;
+         }
+         for node in sheet_nodes {
+-            if node.role != "AXButton" || !node.actions.iter().any(|action| action == "AXPress") {
++            if node.in_web_content
++                || node.enabled == Some(false)
++                || node.element_index.is_none()
++                || node.role != "AXButton"
++                || !node.actions.iter().any(|action| action == "AXPress")
++            {
+                 continue;
+             }
+             let label = normalized_text(node);
+@@ -138,7 +186,7 @@ fn exact_cancel_button(nodes: &[AXNode]) -> Result<Option<usize>, BrowserRefusal
+     for (sheet_index, sheet) in nodes
+         .iter()
+         .enumerate()
+-        .filter(|(_, node)| node.role == "AXSheet")
++        .filter(|(_, node)| node.role == "AXSheet" && !node.in_web_content)
+     {
+         let end = nodes
+             .iter()
+@@ -149,13 +197,17 @@ fn exact_cancel_button(nodes: &[AXNode]) -> Result<Option<usize>, BrowserRefusal
+         let sheet_nodes = &nodes[sheet_index..end];
+         let prompt_is_remote_debugging = sheet_nodes.iter().any(|node| {
+             let text = normalized_text(node);
+-            text.contains("remote debugging") || text.contains("remote-debugging")
++            !node.in_web_content
++                && (text.contains("remote debugging") || text.contains("remote-debugging"))
+         });
+         if !prompt_is_remote_debugging {
+             continue;
+         }
+         for node in sheet_nodes {
+-            if node.role == "AXButton"
++            if !node.in_web_content
++                && node.enabled != Some(false)
++                && node.element_index.is_some()
++                && node.role == "AXButton"
+                 && node.actions.iter().any(|action| action == "AXPress")
+                 && normalized_text(node) == "cancel"
+             {
+@@ -180,19 +232,7 @@ pub fn dismiss(pid: i32, approved_window_id: u32) -> Result<bool, BrowserRefusal
+     let deadline = Instant::now() + Duration::from_secs(2);
+     let mut dismissed = false;
+     loop {
+-        let trees = consent_surface_ids(crate::windows::all_windows(), pid, approved_window_id)
+-            .into_iter()
+-            .map(|candidate_window_id| {
+-                walk_tree_bounded(
+-                    pid,
+-                    Some(candidate_window_id),
+-                    None,
+-                    CONSENT_MAX_ELEMENTS,
+-                    DEFAULT_MAX_DEPTH,
+-                )
+-                .nodes
+-            })
+-            .collect::<Vec<_>>();
++        let trees = read_consent_trees(pid, approved_window_id)?;
+         let prompt_present = trees
+             .iter()
+             .any(|nodes| remote_debugging_sheet_present(nodes));
+@@ -215,8 +255,7 @@ pub fn dismiss(pid: i32, approved_window_id: u32) -> Result<bool, BrowserRefusal
+                 }
+             }
+         }
+-        candidates.sort_unstable();
+-        candidates.dedup();
++        let candidates = distinct_elements(candidates, same_element);
+         if let Some(error) = matcher_error {
+             for nodes in &trees {
+                 release_actionable_nodes(nodes);
+@@ -283,28 +322,14 @@ pub async fn handle(
+     let mut saw_prompt = false;
+     let mut accepted_prompt = false;
+     loop {
+-        let trees = tokio::task::spawn_blocking(move || {
+-            consent_surface_ids(crate::windows::all_windows(), pid, window_id)
+-                .into_iter()
+-                .map(|candidate_window_id| {
+-                    walk_tree_bounded(
+-                        pid,
+-                        Some(candidate_window_id),
+-                        None,
+-                        CONSENT_MAX_ELEMENTS,
+-                        DEFAULT_MAX_DEPTH,
+-                    )
+-                    .nodes
+-                })
+-                .collect::<Vec<_>>()
+-        })
+-        .await
+-        .map_err(|error| {
+-            refusal(
+-                BrowserRefusalCode::BrowserRouteUnavailable,
+-                format!("could not inspect the browser consent UI: {error}"),
+-            )
+-        })?;
++        let trees = tokio::task::spawn_blocking(move || read_consent_trees(pid, window_id))
++            .await
++            .map_err(|error| {
++                refusal(
++                    BrowserRefusalCode::BrowserRouteUnavailable,
++                    format!("could not inspect the browser consent UI: {error}"),
++                )
++            })??;
+         let prompt_present = trees
+             .iter()
+             .any(|nodes| remote_debugging_sheet_present(nodes));
+@@ -321,14 +346,22 @@ pub async fn handle(
+                 }
+             }
+         }
+-        candidates.sort_unstable();
+-        candidates.dedup();
++        let candidates = distinct_elements(candidates, same_element);
+         if let Some(error) = matcher_error {
+             for nodes in &trees {
+                 release_actionable_nodes(nodes);
+             }
+             return Err(error);
+         }
++        if Instant::now() >= deadline && prompt_present {
++            for nodes in &trees {
++                release_actionable_nodes(nodes);
++            }
++            return Err(refusal(
++                BrowserRefusalCode::BrowserWrongTargetRefused,
++                "the browser consent sheet remained unresolved before the consent deadline",
++            ));
++        }
+         if let [element] = candidates.as_slice() {
+             let pressed = unsafe { perform_action(*element as AXUIElementRef, "AXPress") };
+             for nodes in &trees {
+@@ -452,6 +485,40 @@ mod tests {
+         assert_eq!(exact_cancel_button(&unrelated).unwrap(), None);
+     }
+
++    #[test]
++    fn consent_matchers_reject_web_lookalikes_and_disabled_actions() {
++        let mut nodes = vec![
++            node("AXSheet", 0, Some("Allow remote debugging?"), &[]),
++            node("AXButton", 1, Some("Cancel"), &["AXPress"]),
++            node("AXButton", 1, Some("Allow"), &["AXPress"]),
++        ];
++        for node in &mut nodes {
++            node.in_web_content = true;
++        }
++        assert!(!remote_debugging_sheet_present(&nodes));
++        assert_eq!(exact_allow_button(&nodes).unwrap(), None);
++        assert_eq!(exact_cancel_button(&nodes).unwrap(), None);
++        for node in &mut nodes {
++            node.in_web_content = false;
++            node.enabled = Some(false);
++        }
++        assert!(remote_debugging_sheet_present(&nodes));
++        assert_eq!(exact_allow_button(&nodes).unwrap(), None);
++        assert_eq!(exact_cancel_button(&nodes).unwrap(), None);
++    }
++
++    #[test]
++    fn native_proxy_aliases_are_not_multiple_consent_actions() {
++        assert_eq!(
++            distinct_elements(vec![11, 12, 21], |a, b| a / 10 == b / 10),
++            vec![11, 21]
++        );
++        assert_eq!(
++            distinct_elements(vec![11, 12], |a, b| a / 10 == b / 10),
++            vec![11]
++        );
++    }
++
+     #[test]
+     fn consent_surfaces_keep_approved_window_then_frontmost_normal_windows() {
+         let window = |window_id, title: &str, z_index| crate::windows::WindowInfo {
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+index dcdc4ec0f..12009d1d9 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
+@@ -13,7 +13,7 @@ use cua_driver_core::browser::{
+ };
+
+ use crate::ax::bindings::{
+-    copy_number_attr, copy_string_attr, element_screen_center, focused_element_of_pid,
++    copy_binary_attr, copy_string_attr, element_screen_center, focused_element_of_pid,
+     kAXErrorSuccess, perform_action, set_bool_attr_true, set_string_attr, AXUIElementRef,
+ };
+ use crate::ax::tree::{walk_tree, AXNode, TreeWalkResult};
+@@ -50,14 +50,43 @@ fn unique_actionable(
+     label: &str,
+     action: &str,
+ ) -> Result<Option<usize>, BrowserRefusal> {
+-    let matches = nodes
+-        .iter()
+-        .filter(|node| node.role == role && field_equals(node, label) && has_action(node, action))
+-        .map(|node| node.element_ptr)
+-        .collect::<Vec<_>>();
++    unique_actionable_with_identity(nodes, role, label, action, is_same_element)
++}
++
++// Only indexed rows own retained AX references after walk_tree returns. Passive
++// nodes are display evidence, not handles that may be passed to CFEqual.
++fn distinct_controls<'a>(
++    nodes: impl Iterator<Item = &'a AXNode>,
++    same_element: &impl Fn(usize, usize) -> bool,
++) -> Vec<&'a AXNode> {
++    let mut distinct: Vec<&AXNode> = Vec::new();
++    for node in nodes.filter(|node| node.element_index.is_some()) {
++        if !distinct
++            .iter()
++            .any(|prior| same_element(prior.element_ptr, node.element_ptr))
++        {
++            distinct.push(node);
++        }
++    }
++    distinct
++}
++
++fn unique_actionable_with_identity<'a>(
++    nodes: impl IntoIterator<Item = &'a AXNode>,
++    role: &str,
++    label: &str,
++    action: &str,
++    same_element: impl Fn(usize, usize) -> bool,
++) -> Result<Option<usize>, BrowserRefusal> {
++    let matches = distinct_controls(
++        nodes.into_iter().filter(|node| {
++            node.role == role && field_equals(node, label) && has_action(node, action)
++        }),
++        &same_element,
++    );
+     match matches.as_slice() {
+         [] => Ok(None),
+-        [element] => Ok(Some(*element)),
++        [node] => Ok(Some(node.element_ptr)),
+         _ => Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!("multiple exact {role} controls matched {label:?}"),
+@@ -88,28 +117,40 @@ fn setup_page_proven(nodes: &[AXNode], descriptor: &BrowserSetupDescriptor) -> b
+ }
+
+ fn native_setup_page_proven(nodes: &[AXNode], descriptor: &BrowserSetupDescriptor) -> bool {
+-    let exact_urls = nodes
+-        .iter()
+-        .filter(|node| {
++    native_setup_page_proven_with_identity(nodes, descriptor, is_same_element)
++}
++
++fn native_setup_page_proven_with_identity(
++    nodes: &[AXNode],
++    descriptor: &BrowserSetupDescriptor,
++    same_element: impl Fn(usize, usize) -> bool,
++) -> bool {
++    let exact_urls = distinct_controls(
++        nodes.iter().filter(|node| {
+             node.role == "AXTextField"
++                && !node.in_web_content
+                 && field_equals(node, "Address and search bar")
+                 && node
+                     .value
+                     .as_deref()
+                     .is_some_and(|value| value.trim().eq_ignore_ascii_case(descriptor.setup_url))
+-        })
+-        .count();
+-    let exact_selected_tabs = nodes
+-        .iter()
+-        .filter(|node| {
++        }),
++        &same_element,
++    )
++    .len();
++    let exact_selected_tabs = distinct_controls(
++        nodes.iter().filter(|node| {
+             node.role == "AXRadioButton"
++                && !node.in_web_content
+                 && node.selected == Some(true)
+                 && descriptor
+                     .page_titles
+                     .iter()
+                     .any(|title| field_equals(node, title))
+-        })
+-        .count();
++        }),
++        &same_element,
++    )
++    .len();
+     let omnibox_popup_open = nodes
+         .iter()
+         .any(|node| node.role == "AXWebArea" && field_equals(node, "Omnibox Popup"));
+@@ -127,6 +168,7 @@ fn native_setup_page_committed(
+     let exact_omnibox = nodes.iter().find(|node| {
+         node.role == "AXTextField"
+             && node.element_index.is_some()
++            && !node.in_web_content
+             && field_equals(node, "Address and search bar")
+             && node
+                 .value
+@@ -169,7 +211,14 @@ fn unique_omnibox(
+     nodes: &[AXNode],
+     descriptor: &BrowserSetupDescriptor,
+ ) -> Result<usize, BrowserRefusal> {
+-    unique_actionable(nodes, "AXTextField", "Address and search bar", "AXPress")?.ok_or_else(|| {
++    unique_actionable_with_identity(
++        nodes.iter().filter(|node| !node.in_web_content),
++        "AXTextField",
++        "Address and search bar",
++        "AXPress",
++        is_same_element,
++    )?
++    .ok_or_else(|| {
+         refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!(
+@@ -204,17 +253,27 @@ fn exact_omnibox_suggestion(
+     nodes: &[AXNode],
+     descriptor: &BrowserSetupDescriptor,
+ ) -> Result<Option<usize>, BrowserRefusal> {
+-    let omniboxes = nodes
+-        .iter()
+-        .filter(|node| {
++    exact_omnibox_suggestion_with_identity(nodes, descriptor, is_same_element)
++}
++
++fn exact_omnibox_suggestion_with_identity(
++    nodes: &[AXNode],
++    descriptor: &BrowserSetupDescriptor,
++    same_element: impl Fn(usize, usize) -> bool,
++) -> Result<Option<usize>, BrowserRefusal> {
++    let omniboxes = distinct_controls(
++        nodes.iter().filter(|node| {
+             node.role == "AXTextField"
++                && !node.in_web_content
+                 && field_equals(node, "Address and search bar")
+                 && node
+                     .value
+                     .as_deref()
+                     .is_some_and(|value| value.trim().eq_ignore_ascii_case(descriptor.setup_url))
+-        })
+-        .count();
++        }),
++        &same_element,
++    )
++    .len();
+     match omniboxes {
+         0 => return Ok(None),
+         1 => {}
+@@ -233,37 +292,40 @@ fn exact_omnibox_suggestion(
+         .enumerate()
+         .filter(|(_, node)| node.role == "AXWebArea" && field_equals(node, "Omnibox Popup"))
+         .collect::<Vec<_>>();
+-    let (popup_index, popup) = match popups.as_slice() {
+-        [] => return Ok(None),
+-        [(index, popup)] => (*index, *popup),
+-        _ => {
+-            return Err(refusal(
+-                BrowserRefusalCode::BrowserWrongTargetRefused,
+-                format!(
+-                    "{} exposed multiple exact omnibox suggestion popups",
+-                    descriptor.product_name
+-                ),
+-            ))
+-        }
+-    };
+-    let end = nodes
+-        .iter()
+-        .enumerate()
+-        .skip(popup_index + 1)
+-        .find(|(_, node)| node.depth <= popup.depth)
+-        .map_or(nodes.len(), |(index, _)| index);
+-    let matches = nodes[popup_index + 1..end]
+-        .iter()
+-        .filter(|node| {
+-            node.role == "AXMenuItem"
+-                && node_is_exact_setup_suggestion(node, descriptor.setup_url)
+-                && has_action(node, "AXPress")
+-        })
+-        .map(|node| node.element_ptr)
+-        .collect::<Vec<_>>();
++    // Popup rows can be passive (unretained). Each occurrence must identify the
++    // same retained suggestion; an empty or unrelated popup cannot borrow proof
++    // from another subtree. Never compare the passive popup handles with CFEqual.
++    let mut candidates = Vec::new();
++    let mut missing_suggestion = false;
++    for (popup_index, popup) in popups {
++        let end = nodes
++            .iter()
++            .enumerate()
++            .skip(popup_index + 1)
++            .find(|(_, node)| node.depth <= popup.depth)
++            .map_or(nodes.len(), |(index, _)| index);
++        let occurrence = nodes[popup_index + 1..end]
++            .iter()
++            .filter(|node| {
++                node.role == "AXMenuItem"
++                    && node.element_index.is_some()
++                    && node_is_exact_setup_suggestion(node, descriptor.setup_url)
++                    && has_action(node, "AXPress")
++            })
++            .collect::<Vec<_>>();
++        missing_suggestion |= occurrence.is_empty();
++        candidates.extend(occurrence);
++    }
++    let matches = distinct_controls(candidates.into_iter(), &same_element);
++    if missing_suggestion && !matches.is_empty() {
++        return Err(refusal(
++            BrowserRefusalCode::BrowserWrongTargetRefused,
++            "omnibox popup occurrences did not agree on the exact setup suggestion",
++        ));
++    }
+     match matches.as_slice() {
+         [] => Ok(None),
+-        [element] => Ok(Some(*element)),
++        [node] => Ok(Some(node.element_ptr)),
+         _ => Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!(
+@@ -278,19 +340,63 @@ fn new_tab_button(
+     nodes: &[AXNode],
+     descriptor: &BrowserSetupDescriptor,
+ ) -> Result<usize, BrowserRefusal> {
+-    unique_actionable(nodes, "AXButton", "New Tab", "AXPress")?.ok_or_else(|| {
+-        refusal(
++    select_new_tab_button(nodes, descriptor, is_same_element)
++}
++
++fn select_new_tab_button(
++    nodes: &[AXNode],
++    descriptor: &BrowserSetupDescriptor,
++    same_element: impl Fn(usize, usize) -> bool,
++) -> Result<usize, BrowserRefusal> {
++    let mut matches = Vec::new();
++    for candidate in nodes.iter().filter(|node| {
++        node.role == "AXButton"
++            && node.element_index.is_some()
++            && !node.in_web_content
++            && field_equals(node, "New Tab")
++            && has_action(node, "AXPress")
++    }) {
++        // The walker collapses layout groups. Require native window-level
++        // controls alongside native tabs, excluding bookmarks and page buttons.
++        let Some(parent) = candidate.parent_element_index else {
++            continue;
++        };
++        let window_parent = nodes.iter().any(|node| {
++            node.element_index == Some(parent) && node.role == "AXWindow" && !node.in_web_content
++        });
++        let native_tab_sibling = nodes.iter().any(|node| {
++            node.parent_element_index == Some(parent)
++                && node.role == "AXRadioButton"
++                && node.element_index.is_some()
++                && !node.in_web_content
++        });
++        if window_parent
++            && native_tab_sibling
++            && !matches
++                .iter()
++                .any(|prior| same_element(*prior, candidate.element_ptr))
++        {
++            matches.push(candidate.element_ptr);
++        }
++    }
++    match matches.as_slice() {
++        [element] => Ok(*element),
++        [] => Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!(
+                 "the approved {} window has no exact New Tab button",
+                 descriptor.product_name
+             ),
+-        )
+-    })
++        )),
++        _ => Err(refusal(
++            BrowserRefusalCode::BrowserWrongTargetRefused,
++            "multiple distinct native New Tab buttons matched",
++        )),
++    }
+ }
+
+ fn is_same_element(left: usize, right: usize) -> bool {
+-    unsafe { CFEqual(left as CFTypeRef, right as CFTypeRef) != 0 }
++    left == right || unsafe { CFEqual(left as CFTypeRef, right as CFTypeRef) != 0 }
+ }
+
+ fn select_new_tab_close_button(
+@@ -301,7 +407,9 @@ fn select_new_tab_close_button(
+ ) -> Result<Option<usize>, BrowserRefusal> {
+     let prior_tabs = before
+         .iter()
+-        .filter(|node| node.role == "AXRadioButton" && node.element_index.is_some())
++        .filter(|node| {
++            node.role == "AXRadioButton" && node.element_index.is_some() && !node.in_web_content
++        })
+         .map(|node| node.element_ptr)
+         .collect::<Vec<_>>();
+     let new_tabs = after
+@@ -310,42 +418,55 @@ fn select_new_tab_close_button(
+         .filter(|(_, node)| {
+             node.role == "AXRadioButton"
+                 && node.element_index.is_some()
++                && !node.in_web_content
+                 && !prior_tabs
+                     .iter()
+                     .any(|prior| same_element(*prior, node.element_ptr))
+         })
+         .collect::<Vec<_>>();
+-    let (tab_index, tab) = match new_tabs.as_slice() {
+-        [(index, tab)] => (*index, *tab),
+-        [] => return Ok(None),
+-        _ => {
+-            return Err(refusal(
+-                BrowserRefusalCode::BrowserWrongTargetRefused,
+-                format!(
+-                    "{} exposed multiple new tab candidates",
+-                    descriptor.product_name
+-                ),
+-            ))
+-        }
++    let Some((_, first_tab)) = new_tabs.first() else {
++        return Ok(None);
+     };
+-    let end = after
++    if new_tabs
+         .iter()
+-        .enumerate()
+-        .skip(tab_index + 1)
+-        .find(|(_, node)| node.depth <= tab.depth)
+-        .map_or(after.len(), |(index, _)| index);
+-    let close_buttons = after[tab_index + 1..end]
+-        .iter()
+-        .filter(|node| {
++        .any(|(_, tab)| !same_element(first_tab.element_ptr, tab.element_ptr))
++    {
++        return Err(refusal(
++            BrowserRefusalCode::BrowserWrongTargetRefused,
++            format!(
++                "{} exposed multiple new tab candidates",
++                descriptor.product_name
++            ),
++        ));
++    }
++    // Inspect every occurrence of the one native tab. Duplicate rows can expose
++    // different descendants; never silently select one occurrence's subtree.
++    let mut close_buttons = Vec::new();
++    for (tab_index, tab) in new_tabs {
++        let end = after
++            .iter()
++            .enumerate()
++            .skip(tab_index + 1)
++            .find(|(_, node)| node.depth <= tab.depth)
++            .map_or(after.len(), |(index, _)| index);
++        for node in after[tab_index + 1..end].iter().filter(|node| {
+             node.role == "AXButton"
++                && node.element_index.is_some()
++                && !node.in_web_content
+                 && descriptor
+                     .tab_close_labels
+                     .iter()
+                     .any(|label| field_equals(node, label))
+                 && has_action(node, "AXPress")
+-        })
+-        .map(|node| node.element_ptr)
+-        .collect::<Vec<_>>();
++        }) {
++            if !close_buttons
++                .iter()
++                .any(|prior| same_element(*prior, node.element_ptr))
++            {
++                close_buttons.push(node.element_ptr);
++            }
++        }
++    }
+     match close_buttons.as_slice() {
+         [element] => Ok(Some(*element)),
+         [] => Err(refusal(
+@@ -423,6 +544,8 @@ fn setup_geometry(
+         || !omnibox_frame.into_iter().all(f64::is_finite)
+         || window_frame[2] <= 0.0
+         || window_frame[3] <= 0.0
++        || omnibox_frame[2] <= 0.0
++        || omnibox_frame[3] <= 0.0
+         || screenshot_size.0 == 0
+         || screenshot_size.1 == 0
+     {
+@@ -430,7 +553,6 @@ fn setup_geometry(
+     }
+     let tolerance = 1.0;
+     if omnibox_frame[0] < window_frame[0] - tolerance
+-        || omnibox_frame[1] < window_frame[1] - tolerance
+         || omnibox_frame[0] + omnibox_frame[2] > window_frame[0] + window_frame[2] + tolerance
+         || omnibox_frame[1] + omnibox_frame[3] > window_frame[1] + window_frame[3] + tolerance
+     {
+@@ -446,8 +568,12 @@ fn setup_geometry(
+     {
+         return Err("screenshot and native window scales disagree");
+     }
+-    let local_omnibox_bottom = omnibox_frame[1] + omnibox_frame[3] - window_frame[1];
+-    if local_omnibox_bottom < -tolerance || local_omnibox_bottom > window_frame[3] + tolerance {
++    // The caller proves this native omnibox belongs to the exact setup window.
++    // In full screen its toolbar lives above the main captured content surface.
++    // Search only inside that surface, without pretending the toolbar is in the
++    // image or changing the image-to-window transform.
++    let local_omnibox_bottom = (omnibox_frame[1] + omnibox_frame[3] - window_frame[1]).max(0.0);
++    if local_omnibox_bottom > window_frame[3] + tolerance {
+         return Err("address-field frame has invalid window-local geometry");
+     }
+     let left = (window_frame[2] * 0.15 * scale_x).round().max(0.0) as u32;
+@@ -680,6 +806,27 @@ fn detect_checkbox_pixels(
+     candidates
+ }
+
++fn unique_native_frame<'a>(
++    nodes: impl Iterator<Item = &'a AXNode>,
++    same_element: impl Fn(usize, usize) -> bool,
++) -> Option<[f64; 4]> {
++    let nodes = nodes
++        .filter(|node| node.element_index.is_some() && !node.in_web_content)
++        .collect::<Vec<_>>();
++    let distinct = distinct_controls(nodes.iter().copied(), &same_element);
++    let [control] = distinct.as_slice() else {
++        return None;
++    };
++    let frame = control.frame?;
++    // Equal identities with conflicting observations are not a stable geometry
++    // proof. Do not drop missing frames or select the first alias's frame.
++    (frame.iter().all(|value| value.is_finite())
++        && frame[2] > 0.0
++        && frame[3] > 0.0
++        && nodes.iter().all(|node| node.frame == Some(frame)))
++    .then_some(frame)
++}
++
+ fn exact_pixel_setup_checkbox(
+     pid: i32,
+     tree: &TreeWalkResult,
+@@ -703,12 +850,11 @@ fn exact_pixel_setup_checkbox(
+     if !native_setup_page_committed(pid, nodes, descriptor) {
+         return Ok(None);
+     }
+-    let window_frames = nodes
+-        .iter()
+-        .filter(|node| node.role == "AXWindow")
+-        .filter_map(|node| node.frame)
+-        .collect::<Vec<_>>();
+-    let [window_frame] = window_frames.as_slice() else {
++    let window_frame = unique_native_frame(
++        nodes.iter().filter(|node| node.role == "AXWindow"),
++        is_same_element,
++    );
++    let Some(window_frame) = window_frame else {
+         return Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!(
+@@ -717,9 +863,8 @@ fn exact_pixel_setup_checkbox(
+             ),
+         ));
+     };
+-    let omnibox_frames = nodes
+-        .iter()
+-        .filter(|node| {
++    let omnibox_frame = unique_native_frame(
++        nodes.iter().filter(|node| {
+             node.role == "AXTextField"
+                 && node.element_index.is_some()
+                 && field_equals(node, "Address and search bar")
+@@ -727,10 +872,10 @@ fn exact_pixel_setup_checkbox(
+                     .value
+                     .as_deref()
+                     .is_some_and(|value| value.trim().eq_ignore_ascii_case(descriptor.setup_url))
+-        })
+-        .filter_map(|node| node.frame)
+-        .collect::<Vec<_>>();
+-    let [omnibox_frame] = omnibox_frames.as_slice() else {
++        }),
++        is_same_element,
++    );
++    let Some(omnibox_frame) = omnibox_frame else {
+         return Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!(
+@@ -754,7 +899,7 @@ fn exact_pixel_setup_checkbox(
+         capture_bounds.width,
+         capture_bounds.height,
+     ];
+-    if !frames_agree(*window_frame, capture_frame, 1.0) {
++    if !frames_agree(window_frame, capture_frame, 1.0) {
+         return Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             format!(
+@@ -785,7 +930,7 @@ fn exact_pixel_setup_checkbox(
+         .to_rgba8();
+     let geometry = setup_geometry(
+         capture_frame,
+-        *omnibox_frame,
++        omnibox_frame,
+         (screenshot.width(), screenshot.height()),
+     )
+     .map_err(|cause| {
+@@ -825,13 +970,11 @@ fn press_pixel_checkbox(
+             {
+                 anyhow::bail!("the exact committed setup-page proof changed before the click");
+             }
+-            let frames = current
+-                .nodes
+-                .iter()
+-                .filter(|node| node.role == "AXWindow")
+-                .filter_map(|node| node.frame)
+-                .collect::<Vec<_>>();
+-            let [frame] = frames.as_slice() else {
++            let frame = unique_native_frame(
++                current.nodes.iter().filter(|node| node.role == "AXWindow"),
++                is_same_element,
++            );
++            let Some(frame) = frame else {
+                 anyhow::bail!("the exact setup window frame became ambiguous before the click");
+             };
+             if frame
+@@ -875,11 +1018,11 @@ fn press_pixel_checkbox(
+     })
+ }
+
+-fn checkbox_state(value: Option<f64>) -> Result<CheckboxState, BrowserRefusal> {
++fn checkbox_state(value: Option<bool>) -> Result<CheckboxState, BrowserRefusal> {
+     match value {
+-        Some(value) if value.abs() < f64::EPSILON => Ok(CheckboxState::Off),
+-        Some(value) if (value - 1.0).abs() < f64::EPSILON => Ok(CheckboxState::On),
+-        _ => Err(refusal(
++        Some(false) => Ok(CheckboxState::Off),
++        Some(true) => Ok(CheckboxState::On),
++        None => Err(refusal(
+             BrowserRefusalCode::BrowserWrongTargetRefused,
+             "the exact remote-debugging checkbox had an unknown checked state",
+         )),
+@@ -923,7 +1066,7 @@ impl SetupUiHandle {
+             let checkbox = exact_setup_checkbox(&tree, self.descriptor);
+             let result = match checkbox {
+                 Ok(Some(element)) => {
+-                    let value = unsafe { copy_number_attr(element as AXUIElementRef, "AXValue") };
++                    let value = unsafe { copy_binary_attr(element as AXUIElementRef, "AXValue") };
+                     match checkbox_state(value) {
+                         Ok(CheckboxState::Off) => Some(true),
+                         Ok(CheckboxState::On) => {
+@@ -1313,10 +1456,11 @@ fn set_remote_debugging(
+             }
+             let exact_value = unsafe { copy_string_attr(omnibox as AXUIElementRef, "AXValue") }
+                 .is_some_and(|value| value.trim().eq_ignore_ascii_case(descriptor.setup_url));
+-            let can_confirm = created
+-                .nodes
+-                .iter()
+-                .any(|node| node.element_ptr == omnibox && has_action(node, "AXConfirm"));
++            let can_confirm = created.nodes.iter().any(|node| {
++                node.element_index.is_some()
++                    && has_action(node, "AXConfirm")
++                    && is_same_element(node.element_ptr, omnibox)
++            });
+             let confirmed = can_confirm
+                 && unsafe { perform_action(omnibox as AXUIElementRef, "AXConfirm") }
+                     == kAXErrorSuccess;
+@@ -1493,7 +1637,7 @@ fn set_remote_debugging(
+         let checkbox = exact_setup_checkbox(&tree, descriptor);
+         match checkbox {
+             Ok(Some(element)) => {
+-                let value = unsafe { copy_number_attr(element as AXUIElementRef, "AXValue") };
++                let value = unsafe { copy_binary_attr(element as AXUIElementRef, "AXValue") };
+                 match checkbox_state(value) {
+                     Ok(state) if (state == CheckboxState::On) == desired_enabled => {
+                         if desired_enabled
+@@ -1710,6 +1854,87 @@ mod tests {
+         existing_profile_setup_descriptor(BrowserProduct::GoogleChrome).unwrap()
+     }
+
++    #[test]
++    #[ignore = "read-only diagnostic requiring an explicitly selected live Chrome window and existing AX access"]
++    fn live_new_tab_control_identity() {
++        assert!(
++            unsafe { crate::ax::bindings::AXIsProcessTrusted() },
++            "existing AX access is required; this test never requests permission"
++        );
++        let pid = std::env::var("CUA_TEST_BROWSER_PID")
++            .expect("explicit browser pid")
++            .parse::<i32>()
++            .unwrap();
++        let window = std::env::var("CUA_TEST_WINDOW_ID")
++            .expect("explicit window id")
++            .parse::<u32>()
++            .unwrap();
++        let state = walk_tree(pid, Some(window), None);
++        let mut identities = Vec::new();
++        let mut rows = 0;
++        for candidate in state.nodes.iter().filter(|node| {
++            node.role == "AXButton" && field_equals(node, "New Tab") && has_action(node, "AXPress")
++        }) {
++            rows += 1;
++            let identity = match identities
++                .iter()
++                .position(|prior| is_same_element(*prior, candidate.element_ptr))
++            {
++                Some(index) => index,
++                None => {
++                    identities.push(candidate.element_ptr);
++                    identities.len() - 1
++                }
++            };
++            let parent_role = candidate
++                .parent_element_index
++                .and_then(|index| {
++                    state
++                        .nodes
++                        .iter()
++                        .find(|node| node.element_index == Some(index))
++                })
++                .map(|node| node.role.as_str());
++            eprintln!("new-tab row: native_identity={identity} parent_role={parent_role:?} web_content={}", candidate.in_web_content);
++        }
++        eprintln!(
++            "new-tab summary: rows={rows} distinct_native_identities={}",
++            identities.len()
++        );
++        let selected = new_tab_button(&state.nodes, chrome());
++        if let Ok(element) = selected.as_ref() {
++            let identity = identities
++                .iter()
++                .position(|prior| is_same_element(*prior, *element));
++            eprintln!("read-only selector: native_identity={identity:?}");
++        }
++        for role in ["AXWindow", "AXTextField", "AXRadioButton"] {
++            let candidates = state
++                .nodes
++                .iter()
++                .filter(|node| {
++                    node.role == role && node.element_index.is_some() && !node.in_web_content
++                })
++                .collect::<Vec<_>>();
++            let distinct = distinct_controls(candidates.iter().copied(), &is_same_element);
++            eprintln!(
++                "retained native role={role}: rows={} identities={}",
++                candidates.len(),
++                distinct.len()
++            );
++        }
++        eprintln!(
++            "read-only omnibox selection: {}",
++            unique_omnibox(&state.nodes, chrome()).is_ok()
++        );
++        release_actionable_nodes(&state.nodes);
++        assert!(
++            rows > 0,
++            "the selected window did not expose a New Tab control"
++        );
++        assert!(selected.is_ok(), "read-only selector refused: {selected:?}");
++    }
++
+     fn node(role: &str, title: Option<&str>, value: Option<&str>, actions: &[&str]) -> AXNode {
+         AXNode {
+             element_index: (!actions.is_empty()).then_some(0),
+@@ -1750,6 +1975,236 @@ mod tests {
+         }
+     }
+
++    fn native_tab_strip() -> Vec<AXNode> {
++        let mut window = tree_node("AXWindow", None, 1, 0);
++        window.element_index = Some(0);
++        let mut tab = tree_node("AXRadioButton", Some("Original"), 10, 1);
++        tab.element_index = Some(1);
++        tab.parent_element_index = Some(0);
++        let mut button = tree_node("AXButton", Some("New Tab"), 20, 1);
++        button.element_index = Some(2);
++        button.parent_element_index = Some(0);
++        vec![window, tab, button]
++    }
++
++    #[test]
++    fn duplicate_setup_controls_are_one_native_control() {
++        for role in ["AXTextField", "AXCheckBox"] {
++            let control = node(role, Some("Exact control"), None, &["AXPress"]);
++            assert_eq!(
++                unique_actionable(
++                    &[control.clone(), control],
++                    role,
++                    "Exact control",
++                    "AXPress"
++                )
++                .unwrap(),
++                Some(7)
++            );
++        }
++    }
++
++    #[test]
++    fn duplicate_native_setup_rows_preserve_committed_page_proof() {
++        let omnibox = node(
++            "AXTextField",
++            Some("Address and search bar"),
++            Some(chrome().setup_url),
++            &["AXPress"],
++        );
++        let mut tab = node(
++            "AXRadioButton",
++            Some(chrome().page_titles[0]),
++            None,
++            &["AXPress"],
++        );
++        tab.selected = Some(true);
++        assert!(native_setup_page_proven(
++            &[omnibox.clone(), tab.clone(), omnibox, tab],
++            chrome()
++        ));
++    }
++
++    #[test]
++    fn duplicate_popup_occurrences_preserve_one_retained_suggestion() {
++        let omnibox = node(
++            "AXTextField",
++            Some("Address and search bar"),
++            Some(chrome().setup_url),
++            &["AXPress"],
++        );
++        let mut popup = node("AXWebArea", Some("Omnibox Popup"), None, &[]);
++        popup.depth = 1;
++        popup.element_ptr = 0; // Passive rows must never be dereferenced for CFEqual.
++        let mut suggestion = node("AXMenuItem", Some(chrome().setup_url), None, &["AXPress"]);
++        suggestion.depth = 2;
++        assert_eq!(
++            exact_omnibox_suggestion(
++                &[
++                    omnibox.clone(),
++                    omnibox,
++                    popup.clone(),
++                    suggestion.clone(),
++                    popup,
++                    suggestion
++                ],
++                chrome()
++            )
++            .unwrap(),
++            Some(7)
++        );
++    }
++
++    #[test]
++    fn setup_control_uniqueness_uses_native_identity_not_wrapper_or_frame() {
++        let control = node("AXCheckBox", Some("Exact"), None, &["AXPress"]);
++        let mut alias = control.clone();
++        alias.element_ptr = 8;
++        assert_eq!(
++            unique_actionable_with_identity(
++                &[control.clone(), alias.clone()],
++                "AXCheckBox",
++                "Exact",
++                "AXPress",
++                |_, _| true
++            )
++            .unwrap(),
++            Some(7)
++        );
++        assert!(unique_actionable_with_identity(
++            &[control, alias],
++            "AXCheckBox",
++            "Exact",
++            "AXPress",
++            |a, b| a == b
++        )
++        .is_err());
++        let mut passive = node("AXCheckBox", Some("Exact"), None, &["AXPress"]);
++        passive.element_index = None;
++        passive.element_ptr = 0;
++        assert_eq!(
++            unique_actionable_with_identity(
++                &[passive.clone(), passive],
++                "AXCheckBox",
++                "Exact",
++                "AXPress",
++                |_, _| panic!("passive handle compared")
++            )
++            .unwrap(),
++            None
++        );
++    }
++
++    #[test]
++    fn native_frame_deduplicates_only_consistent_retained_identity() {
++        let mut control = node("AXWindow", None, None, &["AXRaise"]);
++        control.frame = Some([0.0, 0.0, 800.0, 600.0]);
++        let mut alias = control.clone();
++        alias.element_ptr = 8;
++        assert_eq!(
++            unique_native_frame([&control, &alias].into_iter(), |_, _| true),
++            control.frame
++        );
++        assert!(unique_native_frame([&control, &alias].into_iter(), |a, b| a == b).is_none());
++        alias.frame = Some([1.0, 0.0, 800.0, 600.0]);
++        assert!(unique_native_frame([&control, &alias].into_iter(), |_, _| true).is_none());
++        alias.frame = None;
++        assert!(unique_native_frame([&control, &alias].into_iter(), |_, _| true).is_none());
++        control.element_index = None;
++        alias.element_index = None;
++        assert!(
++            unique_native_frame([&control, &alias].into_iter(), |_, _| panic!(
++                "passive handle compared"
++            ))
++            .is_none()
++        );
++    }
++
++    #[test]
++    fn popup_suggestion_selection_checks_later_occurrences_for_ambiguity() {
++        let omnibox = node(
++            "AXTextField",
++            Some("Address and search bar"),
++            Some(chrome().setup_url),
++            &["AXPress"],
++        );
++        let mut popup = node("AXWebArea", Some("Omnibox Popup"), None, &[]);
++        popup.depth = 1;
++        popup.element_ptr = 0;
++        let mut first = node("AXMenuItem", Some(chrome().setup_url), None, &["AXPress"]);
++        first.depth = 2;
++        first.element_ptr = 20;
++        let mut second = first.clone();
++        second.element_ptr = 21;
++        let nodes = [omnibox, popup.clone(), first, popup, second];
++        assert_eq!(
++            exact_omnibox_suggestion_with_identity(&nodes, chrome(), |a, b| a == b
++                || (a >= 20 && b >= 20))
++            .unwrap(),
++            Some(20)
++        );
++        assert!(exact_omnibox_suggestion_with_identity(&nodes, chrome(), |a, b| a == b).is_err());
++        let mut discordant = nodes.to_vec();
++        discordant.remove(2);
++        assert!(
++            exact_omnibox_suggestion_with_identity(&discordant, chrome(), |a, b| a == b).is_err()
++        );
++    }
++
++    #[test]
++    fn new_tab_ignores_bookmarks_and_web_content_and_deduplicates_native_identity() {
++        let mut nodes = native_tab_strip();
++        let mut repeated = nodes[2].clone();
++        repeated.element_ptr = 21; // Different wrapper, same injected native identity.
++        repeated.element_index = Some(3);
++        nodes.push(repeated);
++        let mut toolbar = tree_node("AXToolbar", Some("Bookmarks"), 30, 1);
++        toolbar.element_index = Some(4);
++        toolbar.parent_element_index = Some(0);
++        nodes.push(toolbar);
++        let mut bookmark = nodes[2].clone();
++        bookmark.element_ptr = 31;
++        bookmark.element_index = Some(5);
++        bookmark.parent_element_index = Some(4);
++        nodes.push(bookmark);
++        let mut page_button = nodes[2].clone();
++        page_button.element_ptr = 40;
++        page_button.element_index = Some(6);
++        page_button.in_web_content = true;
++        nodes.push(page_button);
++        assert_eq!(
++            select_new_tab_button(&nodes, chrome(), |a, b| a == b
++                || (a / 10 == 2 && b / 10 == 2))
++            .unwrap(),
++            20
++        );
++    }
++
++    #[test]
++    fn new_tab_refuses_distinct_controls_even_with_identical_labels_and_geometry() {
++        let mut nodes = native_tab_strip();
++        nodes[2].frame = Some([100.0, 30.0, 28.0, 41.0]);
++        let mut other = nodes[2].clone();
++        other.element_ptr = 21;
++        other.element_index = Some(3);
++        nodes.push(other);
++        assert!(select_new_tab_button(&nodes, chrome(), |a, b| a == b).is_err());
++    }
++
++    #[test]
++    fn new_tab_requires_native_window_and_tab_context() {
++        for alteration in 0..4 {
++            let mut nodes = native_tab_strip();
++            match alteration {
++                0 => nodes[0].role = "AXToolbar".into(),
++                1 => nodes[1].in_web_content = true,
++                2 => nodes[2].parent_element_index = None,
++                _ => nodes[2].element_index = None,
++            }
++            assert!(select_new_tab_button(&nodes, chrome(), |a, b| a == b).is_err());
++        }
++    }
++
+     #[test]
+     fn checkbox_requires_exact_internal_page_proof() {
+         let nodes = vec![
+@@ -1783,7 +2238,12 @@ mod tests {
+
+     #[test]
+     fn checkbox_matcher_refuses_ambiguity() {
+-        let nodes = vec![
++        use core_foundation::{base::TCFType, number::CFNumber};
++        // Real owned CF identities keep the production CFEqual seam exercised;
++        // two copies of the old fake pointer represented one control, not two.
++        let first = CFNumber::from(1i32);
++        let second = CFNumber::from(2i32);
++        let mut nodes = vec![
+             node("AXWebArea", Some(chrome().page_titles[0]), None, &[]),
+             node("AXHeading", Some(chrome().page_heading), None, &[]),
+             node(
+@@ -1805,6 +2265,8 @@ mod tests {
+                 &["AXPress"],
+             ),
+         ];
++        nodes[3].element_ptr = first.as_CFTypeRef() as usize;
++        nodes[4].element_ptr = second.as_CFTypeRef() as usize;
+         assert_eq!(
+             exact_setup_checkbox(&tree(nodes), chrome())
+                 .unwrap_err()
+@@ -2150,6 +2612,20 @@ mod tests {
+         assert!(setup_geometry(frame, [-90.0, 290.0, 380.0, 30.0], (800, 500)).is_err());
+     }
+
++    #[test]
++    fn setup_geometry_handles_a_native_fullscreen_toolbar_above_the_content_window() {
++        let frame = [0.0, 121.0, 1512.0, 861.0];
++        let omnibox = [158.0, 85.0, 952.0, 24.0];
++        let geometry = setup_geometry(frame, omnibox, (3024, 1722)).unwrap();
++        assert_eq!(geometry.scale_x, 2.0);
++        assert_eq!(geometry.scale_y, 2.0);
++        assert_eq!(geometry.search.1, 60);
++        assert_eq!(
++            pixel_to_screen(frame, (600, 180), geometry),
++            (300.0, 211.0, 300.0, 90.0)
++        );
++    }
++
+     #[test]
+     fn unique_pixel_checkbox_preserves_ambiguity_and_control_identity() {
+         let geometry = SetupGeometry {
+@@ -2269,6 +2745,47 @@ mod tests {
+         );
+     }
+
++    #[test]
++    fn new_tab_cleanup_deduplicates_identities_and_checks_every_occurrence() {
++        let before = vec![tree_node("AXRadioButton", Some("Original"), 10, 1)];
++        let mut after = vec![
++            tree_node("AXRadioButton", Some("New Tab"), 20, 1),
++            tree_node("AXButton", Some("Close"), 30, 2),
++            tree_node("AXRadioButton", Some("New Tab"), 21, 1),
++            tree_node("AXButton", Some("Close"), 31, 2),
++        ];
++        let same = |a, b| a / 10 == b / 10;
++        assert_eq!(
++            select_new_tab_close_button(&before, &after, same, chrome()).unwrap(),
++            Some(30)
++        );
++        after[3].element_ptr = 40;
++        assert!(select_new_tab_close_button(&before, &after, same, chrome()).is_err());
++        after.remove(1); // First occurrence has no descendant; later one still supplies proof.
++        assert_eq!(
++            select_new_tab_close_button(&before, &after, same, chrome()).unwrap(),
++            Some(40)
++        );
++    }
++
++    #[test]
++    fn new_tab_cleanup_ignores_page_radios_and_page_close_buttons() {
++        let mut page_radio = tree_node("AXRadioButton", Some("New Tab"), 50, 1);
++        page_radio.in_web_content = true;
++        let mut page_close = tree_node("AXButton", Some("Close"), 51, 2);
++        page_close.in_web_content = true;
++        let after = vec![
++            page_radio,
++            tree_node("AXRadioButton", Some("New Tab"), 20, 1),
++            tree_node("AXButton", Some("Close"), 30, 2),
++            page_close,
++        ];
++        assert_eq!(
++            select_new_tab_close_button(&[], &after, |a, b| a == b, chrome()).unwrap(),
++            Some(30)
++        );
++    }
++
+     #[test]
+     fn setup_navigation_selects_only_the_exact_omnibox_suggestion() {
+         let omnibox = node(
+@@ -2339,24 +2856,24 @@ mod tests {
+         second.element_ptr = 8;
+
+         assert_eq!(
+-            exact_omnibox_suggestion(&[omnibox, popup, first, second], chrome())
+-                .unwrap_err()
+-                .code,
++            exact_omnibox_suggestion_with_identity(
++                &[omnibox, popup, first, second],
++                chrome(),
++                |a, b| a == b
++            )
++            .unwrap_err()
++            .code,
+             BrowserRefusalCode::BrowserWrongTargetRefused
+         );
+     }
+
+     #[test]
+     fn unknown_checkbox_values_refuse() {
+-        assert_eq!(checkbox_state(Some(0.0)).unwrap(), CheckboxState::Off);
+-        assert_eq!(checkbox_state(Some(1.0)).unwrap(), CheckboxState::On);
++        assert_eq!(checkbox_state(Some(false)).unwrap(), CheckboxState::Off);
++        assert_eq!(checkbox_state(Some(true)).unwrap(), CheckboxState::On);
+         assert_eq!(
+             checkbox_state(None).unwrap_err().code,
+             BrowserRefusalCode::BrowserWrongTargetRefused
+         );
+-        assert_eq!(
+-            checkbox_state(Some(0.5)).unwrap_err().code,
+-            BrowserRefusalCode::BrowserWrongTargetRefused
+-        );
+     }
+ }
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/capture.rs b/libs/cua-driver/rust/crates/platform-macos/src/capture.rs
+index 88ea72f1a..34cc33b07 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/capture.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/capture.rs
+@@ -268,12 +268,6 @@ fn screenshot_window_bytes_shell(window_id: u32) -> anyhow::Result<Vec<u8>> {
+ /// Hard ceiling on capture dimensions to avoid unbounded allocations.
+ const MAX_CAPTURE_DIM: u32 = 16384;
+
+-fn content_rect_usable(rect: screencapturekit::cg::CGRect) -> bool {
+-    let w = rect.size.width;
+-    let h = rect.size.height;
+-    w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0
+-}
+-
+ /// Round a positive finite pixel extent into `1..=MAX_CAPTURE_DIM` as `u32`.
+ fn rounded_pixel_dim(value: f64, label: &str) -> anyhow::Result<u32> {
+     if !value.is_finite() || value <= 0.0 {
+@@ -450,7 +444,7 @@ fn build_window_capture_plan(
+     window_id: u32,
+     expected_identity: WindowCaptureIdentity,
+ ) -> anyhow::Result<std::sync::Arc<WindowCapturePlan>> {
+-    use screencapturekit::prelude::{SCContentFilter, SCShareableContent, SCStreamConfiguration};
++    use screencapturekit::prelude::{SCContentFilter, SCShareableContent};
+
+     let content = SCShareableContent::get()
+         .map_err(|e| anyhow::anyhow!("SCShareableContent::get failed: {e}"))?;
+@@ -491,24 +485,13 @@ fn build_window_capture_plan(
+     // https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(desktopindependentwindow:)
+     let filter = SCContentFilter::create().with_window(&window).build();
+
+-    // Pixel output size = content_rect * point_pixel_scale (macOS 14+ filter info).
+-    // https://docs.rs/screencapturekit/6.0.1/screencapturekit/
++    // The published coordinate frame is this exact native window, not a
++    // composition of it and its child windows. Size from that same frame.
+     let scale = f64::from(filter.point_pixel_scale());
+-    let (width_pts, height_pts) = {
+-        let rect = filter.content_rect();
+-        if content_rect_usable(rect) {
+-            (rect.size.width, rect.size.height)
+-        } else {
+-            (frame.size.width, frame.size.height)
+-        }
+-    };
++    let out_w = rounded_pixel_dim(frame.size.width * scale, "width")?;
++    let out_h = rounded_pixel_dim(frame.size.height * scale, "height")?;
+
+-    let out_w = rounded_pixel_dim(width_pts * scale, "width")?;
+-    let out_h = rounded_pixel_dim(height_pts * scale, "height")?;
+-
+-    let config = SCStreamConfiguration::new()
+-        .with_width(out_w)
+-        .with_height(out_h);
++    let config = exact_window_configuration(out_w, out_h);
+
+     Ok(std::sync::Arc::new(WindowCapturePlan {
+         filter,
+@@ -517,6 +500,21 @@ fn build_window_capture_plan(
+     }))
+ }
+
++fn exact_window_configuration(
++    width: u32,
++    height: u32,
++) -> screencapturekit::prelude::SCStreamConfiguration {
++    // ScreenCaptureKit includes child windows by default. Chrome's full-screen
++    // toolbar is a child above the main window: including it scales a larger
++    // composition into the main window's pixel frame and adds a black margin.
++    // Neither children nor shadows belong to our window-local coordinate space.
++    screencapturekit::prelude::SCStreamConfiguration::new()
++        .with_width(width)
++        .with_height(height)
++        .with_includes_child_windows(false)
++        .with_ignores_shadows_single_window(true)
++}
++
+ /// Single-frame capture + RGBA/PNG encode from an existing plan.
+ ///
+ /// https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager
+@@ -822,6 +820,14 @@ pub fn png_dimensions(data: &[u8]) -> anyhow::Result<(u32, u32)> {
+
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn exact_window_capture_excludes_children_and_shadows() {
++        let config = super::exact_window_configuration(3024, 1722);
++        assert!(!config.includes_child_windows());
++        assert!(config.ignores_shadows_single_window());
++        assert_eq!(config.width(), 3024);
++        assert_eq!(config.height(), 1722);
++    }
+     use super::*;
+     use std::cell::Cell;
+     use std::rc::Rc;
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/cursor/overlay.rs b/libs/cua-driver/rust/crates/platform-macos/src/cursor/overlay.rs
+index 21f036745..eb045208b 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/cursor/overlay.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/cursor/overlay.rs
+@@ -31,6 +31,7 @@
+
+ use std::collections::HashMap;
+ use std::ffi::c_void;
++use std::sync::atomic::{AtomicU32, Ordering};
+ use std::sync::{Mutex, OnceLock};
+ use std::time::{Duration, Instant};
+
+@@ -74,6 +75,15 @@ static CMD_TX: OnceLock<std::sync::mpsc::SyncSender<OverlayMsg>> = OnceLock::new
+ // Single-consumer slot; receiver is moved into run_on_main_thread().
+ static CMD_RX_CELL: Mutex<Option<std::sync::mpsc::Receiver<OverlayMsg>>> = Mutex::new(None);
+ static RENDER: Mutex<Option<RenderMap>> = Mutex::new(None);
++static OWNED_WINDOW_ID: AtomicU32 = AtomicU32::new(0);
++
++/// Exclude only our transparent cursor surface from native focus verification.
++/// AppKit supplies the identity on the main thread; callers never message the
++/// NSWindow from a worker thread or infer ownership from a display name.
++pub(crate) fn owned_window_identity() -> Option<(i32, u32)> {
++    let window_id = OWNED_WINDOW_ID.load(Ordering::Acquire);
++    (window_id != 0).then_some((std::process::id() as i32, window_id))
++}
+
+ /// The keyed, insertion-ordered collection of owned cursors that the render
+ /// loop composites every frame. Insertion order = stable z-order (later keys
+@@ -678,6 +688,10 @@ unsafe fn run_appkit(_cfg: CursorConfig, rx: std::sync::mpsc::Receiver<OverlayMs
+
+     // ---- Show the window ----
+     let _: () = msg_send![win, orderFrontRegardless];
++    let window_number: isize = msg_send![win, windowNumber];
++    if let Ok(window_id) = u32::try_from(window_number) {
++        OWNED_WINDOW_ID.store(window_id, Ordering::Release);
++    }
+
+     // ---- Render thread (60 fps) ----
+     let layer_ptr = layer as usize;
+@@ -688,6 +702,7 @@ unsafe fn run_appkit(_cfg: CursorConfig, rx: std::sync::mpsc::Receiver<OverlayMs
+
+     // ---- NSApplication run loop (blocks until process exits) ----
+     let _: () = msg_send![app, run];
++    OWNED_WINDOW_ID.store(0, Ordering::Release);
+ }
+
+ fn render_loop(
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/bring_to_front.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/bring_to_front.rs
+index 3c5b4167c..2bd8bf0cb 100644
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/bring_to_front.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/bring_to_front.rs
+@@ -119,15 +119,25 @@ fn classify_exact_outcome(
+     }
+ }
+
++fn frontmost_ordinary_window(
++    windows: &[crate::windows::WindowInfo],
++    cursor_overlay: Option<(i32, u32)>,
++) -> Option<u32> {
++    windows
++        .iter()
++        .filter(|window| window.is_on_screen && window.layer == 0)
++        .filter(|window| cursor_overlay != Some((window.pid, window.window_id)))
++        .max_by_key(|window| window.z_index)
++        .map(|window| window.window_id)
++}
++
+ fn observe_exact_window(pid: i32, window_id: u32) -> ExactWindowObservation {
+     let windows = crate::windows::visible_windows();
+     let target_visible_ordinary = windows
+         .iter()
+         .any(|window| window.pid == pid && window.window_id == window_id && window.layer == 0);
+-    let frontmost_ordinary_window_id = windows
+-        .iter()
+-        .max_by_key(|window| window.z_index)
+-        .map(|window| window.window_id);
++    let frontmost_ordinary_window_id =
++        frontmost_ordinary_window(&windows, crate::cursor::overlay::owned_window_identity());
+     ExactWindowObservation {
+         workspace_frontmost_pid: crate::apps::frontmost_pid(),
+         front_process_matches_target: crate::input::skylight::front_process_matches(pid, window_id),
+@@ -424,6 +434,41 @@ impl Tool for BringToFrontTool {
+ mod tests {
+     use super::*;
+
++    fn window(pid: i32, window_id: u32, z_index: usize) -> crate::windows::WindowInfo {
++        crate::windows::WindowInfo {
++            pid,
++            window_id,
++            app_name: String::new(),
++            title: String::new(),
++            bounds: crate::windows::WindowBounds {
++                x: 0.0,
++                y: 0.0,
++                width: 800.0,
++                height: 600.0,
++            },
++            layer: 0,
++            z_index,
++            is_on_screen: true,
++            current_space_id: None,
++            on_current_space: None,
++            space_ids: None,
++        }
++    }
++
++    #[test]
++    fn cursor_overlay_does_not_mask_the_exact_focused_window() {
++        let windows = [window(42, 7, 1), window(90, 8, 2)];
++        assert_eq!(frontmost_ordinary_window(&windows, Some((90, 8))), Some(7));
++        assert_eq!(frontmost_ordinary_window(&windows, None), Some(8));
++    }
++
++    #[test]
++    fn overlay_exclusion_does_not_hide_other_windows_or_foreign_owners() {
++        let windows = [window(42, 7, 1), window(90, 9, 2), window(90, 8, 3)];
++        assert_eq!(frontmost_ordinary_window(&windows, Some((90, 8))), Some(9));
++        assert_eq!(frontmost_ordinary_window(&windows, Some((91, 8))), Some(8));
++    }
++
+     fn observation(
+         workspace_frontmost_pid: Option<i32>,
+         front_process_matches_target: Option<bool>,

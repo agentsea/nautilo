@@ -1,0 +1,11 @@
+# Stack 19 per-worktree convention: derive NAUTILO_INSTANCE_ID from this
+# worktree's basename (matches dev-stack's resolveInstanceIdForDevStack).
+# Use a distinct named instance for each isolated development checkout.
+WORKTREE_BASENAME="$(basename "$PWD")"
+if [ "$WORKTREE_BASENAME" = "nautilo" ]; then
+  unset NAUTILO_INSTANCE_ID
+elif [[ "$WORKTREE_BASENAME" == nautilo-* ]]; then
+  export NAUTILO_INSTANCE_ID="${WORKTREE_BASENAME#nautilo-}"
+else
+  export NAUTILO_INSTANCE_ID="$WORKTREE_BASENAME"
+fi

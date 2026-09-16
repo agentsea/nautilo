@@ -1,0 +1,3 @@
+ALTER TABLE "codex_account_profiles" DROP CONSTRAINT "codex_account_profiles_plan_type_check";--> statement-breakpoint
+ALTER TABLE "codex_account_profiles" ADD COLUMN "account_email" varchar(320);--> statement-breakpoint
+ALTER TABLE "codex_account_profiles" ADD CONSTRAINT "codex_account_profiles_plan_type_check" CHECK ("codex_account_profiles"."plan_type" IS NULL OR "codex_account_profiles"."plan_type" IN ('free', 'go', 'plus', 'pro', 'prolite', 'team', 'business', 'enterprise', 'ent26', 'edu', 'usage_based', 'unknown', 'self_serve_business_usage_based', 'enterprise_cbp_usage_based'));

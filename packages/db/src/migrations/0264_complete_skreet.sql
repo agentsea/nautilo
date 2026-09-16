@@ -1,0 +1,1 @@
+ALTER TABLE "message_backfill_failures" ADD COLUMN "source_revision" integer;

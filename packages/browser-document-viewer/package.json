@@ -1,0 +1,26 @@
+{
+  "name": "@nautilo/browser-document-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Inert browser document viewer policy and OOXML safety primitives",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pdf/renderer": "./src/pdf/renderer.ts",
+    "./policy": "./src/policy.ts",
+    "./ooxml/archive-preflight": "./src/ooxml/archive-preflight.ts",
+    "./ooxml/lifecycle": "./src/ooxml/lifecycle.ts",
+    "./ooxml/source": "./src/ooxml/source.ts",
+    "./ooxml/renderer": "./src/ooxml/renderer.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests/"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

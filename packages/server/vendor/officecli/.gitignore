@@ -1,0 +1,4 @@
+# M203 — vendored OfficeCLI binaries are provisioned at build/dev-start,
+# never committed. Keep manifest.json / .version / SHA256SUMS tracked.
+*/officecli
+*/officecli.exe

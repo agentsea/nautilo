@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none';" />
+  <title>Nautilo — Setup</title>
+  <style>
+    /* Injected from @nautilo/config semantic light/dark tokens at build time. */
+    /* __NAUTILO_SEMANTIC_SETUP_PALETTE__ */
+
+    :root {
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+    }
+
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); }
+    body { display: flex; align-items: center; justify-content: center; user-select: none; }
+    #root { width: 100%; max-width: 560px; padding: 24px; }
+
+    .connection-activity {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-right: 8px;
+      vertical-align: 2px;
+    }
+    .connection-activity > span {
+      width: 6px;
+      height: 6px;
+      border-radius: 2px;
+      background: var(--accent);
+      animation: connection-activity-pulse 1.15s ease-in-out infinite;
+    }
+    .connection-activity > span:nth-child(2) { animation-delay: 140ms; }
+    .connection-activity > span:nth-child(3) { animation-delay: 280ms; }
+    @keyframes connection-activity-pulse {
+      0%, 70%, 100% { opacity: 0.28; transform: translateY(0) scale(0.78); }
+      35% { opacity: 1; transform: translateY(-2px) scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .connection-activity > span { animation: none; opacity: 0.72; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="./index.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "sourceSha": "cb4f605532d6e9b9903aa16531dbecae7b0cc46f",
+  "image": "ghcr.io/agentsea/nautilo-runtime@sha256:8b1b0c79b779da7dabe6ce8c508d2f97ca5a8e6bdbdfb66b4012db1a8029f461",
+  "manifestDigest": "sha256:8b1b0c79b779da7dabe6ce8c508d2f97ca5a8e6bdbdfb66b4012db1a8029f461",
+  "architectures": {
+    "linux/amd64": "sha256:661c310e4df92bbda5b0be53c130af8fed5f6963a015dff46131db24bb44c554",
+    "linux/arm64": "sha256:d1a235eba3dfdb42942471d11a1f44dfd2c97ec2af301d6760f7bbce564a164a"
+  },
+  "evidence": {
+    "sbom": "sha256:2b85ab39c020bd9b6a3f76dfa7a8f293ce53b9e38cabac063d6727aa5eb923e9",
+    "vulnerabilities": "sha256:2b85ab39c020bd9b6a3f76dfa7a8f293ce53b9e38cabac063d6727aa5eb923e9",
+    "disclosure": "sha256:2b85ab39c020bd9b6a3f76dfa7a8f293ce53b9e38cabac063d6727aa5eb923e9",
+    "licenses": "sha256:2b85ab39c020bd9b6a3f76dfa7a8f293ce53b9e38cabac063d6727aa5eb923e9",
+    "acceptance": "sha256:2b85ab39c020bd9b6a3f76dfa7a8f293ce53b9e38cabac063d6727aa5eb923e9"
+  },
+  "compatibility": {
+    "authContract": "Anonymous pull of ghcr.io/agentsea/nautilo-runtime by immutable digest; runtime requires configured Logto OIDC.",
+    "database": "This record adds no database migration; use the existing ComposeDriver migration-aware release transaction.",
+    "rollback": "full-bundle-required"
+  }
+}

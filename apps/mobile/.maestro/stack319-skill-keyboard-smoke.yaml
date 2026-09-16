@@ -1,0 +1,39 @@
+appId: ai.nautilo.app
+name: Stack 319 Skill editor keyboard and capability selector smoke
+---
+- openLink: nautilo://settings/skills
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: Skills
+    timeout: 30000
+- tapOn: Create new Skill
+- assertVisible: New Skill
+- tapOn: "Choose needed capabilities.*"
+- scrollUntilVisible:
+    element:
+      text: Search capabilities
+    direction: DOWN
+    timeout: 30000
+- assertVisible: Search capabilities
+- tapOn: Search capabilities
+- inputText: file
+- assertVisible: "No matching capabilities|Files|File.*"
+- pressKey: Enter
+- scrollUntilVisible:
+    element:
+      text: Skill name
+    direction: UP
+    timeout: 30000
+- tapOn: Skill name
+- inputText: keyboard-check
+- scrollUntilVisible:
+    element:
+      text: Create Skill
+    direction: DOWN
+    timeout: 30000
+- assertVisible: Create Skill
+- tapOn: Go back

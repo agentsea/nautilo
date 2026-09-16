@@ -1,0 +1,211 @@
+# Nautilo — developer and AI-assistant orientation
+
+Nautilo is a multi-user AI workspace: Humans and Genies collaborate in Rooms,
+delegate durable Tasks, use shared Memory and Artifacts, and work through
+browser, Desktop, and Mobile clients. This file maps the current source and
+execution boundaries. Read [`AGENTS.md`](AGENTS.md) for working rules,
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution scope, and
+[`DOCS.md`](DOCS.md) for the public documentation index.
+
+This orientation was reconciled with source on 2026-09-09. Package manifests,
+entry points, tests, and workflows take precedence over historical notes or
+planning IDs when establishing current behavior.
+
+## Product surfaces
+
+| Surface | Source | Execution boundary |
+| --- | --- | --- |
+| Workbench | `apps/workbench`, `packages/workbench-components` | Canonical browser UI, built and served by the Nautilo server on its origin. |
+| Desktop | `apps/desktop/electron` | Electron connects to the selected server's Workbench and adds local device authority, native UI, and managed execution. |
+| Mobile and Mobile Web | `apps/mobile` | Expo/React Native client plus the Mobile Web export served by the server; shares typed API and realtime contracts. |
+| Administrator CLI | `apps/cli` | Profile-aware server administration, Compose/hosting deployment, and recovery; signed standalone and ordinary package channels are distinct. |
+| Headless Relay | `bin/nautilo-relay` | Independently operated consumer of the shared Relay library, advertising its own supported handlers. |
+| Development tooling | `bin/nautilo-dev`, `dev/` | Source-workspace builds, named instances, qualification, and deterministic checks. |
+
+The TUI product is retired. Desktop is a connect-to-server client: it does not
+embed the server, Postgres, Logto, or migrations. Production Workbench loading
+uses the paired server URL; a local `dist/workbench` smoke fixture does not
+change that architecture. Do not build a second Desktop Workbench or restore
+a separate Vite-server production path.
+
+## Find the owner before changing behavior
+
+| Concern | Main source owners |
+| --- | --- |
+| HTTP/WebSocket control plane, routes, composition | `packages/server` |
+| Agent graph, routing, providers, tool catalogue | `packages/agent` |
+| Durable task execution, jobs, scheduling | `packages/runtime` |
+| Identity, capabilities, scope admission | `packages/trust`, `packages/security`, `packages/cli-auth` |
+| Database schema, queries, generated migrations | `packages/db`; typed-query checks in `packages/query-invariants` |
+| Client HTTP/realtime and shared data contracts | `packages/api-client`, `packages/realtime-client`, `packages/types` |
+| Relay protocol, transport, cancellation, capability acknowledgements | `packages/relay` |
+| Local filesystem grants and workstation policy | `packages/desktop-filesystem-grants`, `packages/workstation-profiles`, `packages/sandbox`, Desktop authorities |
+| Computer Use semantics, private protocol, native execution | `packages/computer-use-contracts`, `packages/computer-use-host-protocol`, `packages/computer-use-host` |
+| Encryption and device/content authority | `packages/lattice-crypto`, `packages/lattice-bridge`, `packages/encryption-invariants`, server compositions |
+| Reflection and Memory organization | `packages/reflection`, `packages/reflection-bridge`, server/runtime compositions |
+| Document editing and first-party apps | `packages/document-mutations`, `packages/first-party-apps`, `packages/office-core`, `packages/office-docs`, `packages/office-sheets`, `packages/office-slides` |
+| External task runtimes | `packages/codex-app-server-host`, `packages/claude-agent-sdk-host`, `packages/acp-host` |
+| Deployment, profiles, hosting | `packages/compose-lifecycle`, `packages/hosting`, `packages/railway-hosting`, `packages/deploy-config`, `deploy/`, `packaging/` |
+
+These are navigation pointers, not permission to bypass the owning layer.
+Trace a change from producer through admission, persistence, execution, and
+consumer before choosing its implementation location.
+
+## Identity, data, and execution authority
+
+Logto authenticates Humans. Nautilo resolves canonical principals, membership,
+capabilities, scopes, and current device admission. PIN/biometric confirmation
+is consent for an operation; it does not replace authorization. Keep Room,
+Human, Genie, Task, Namespace, Memory, and Artifact identities explicit across
+routing and asynchronous work. Never infer an owner/default agent when the
+request's actual identity is missing.
+
+Protected data has device and Namespace authority beyond ordinary route
+access. Use the canonical crypto/data-operation compositions and supported
+mode policy. A browser admission, relay advertisement, cached grant, or
+historical message representation is not a replacement for current authority.
+Do not introduce plaintext fallbacks to make protected reads or writes succeed.
+See [browser crypto compatibility](docs/crypto-browser-compatibility.md).
+
+External model, agent, browser, and connected-app providers are adapters.
+Nautilo retains canonical task identity, routing, admission, approval, Memory,
+and result ownership. Provider credentials, browser session capabilities,
+cookies, and raw protocol details do not belong in model-visible arguments or
+ordinary logs.
+
+## Desktop, Relay Host, and Computer Use Host
+
+The Desktop execution path has separate process owners:
+
+```text
+Server / Agent admission
+  -> private Relay Host / RelayClient (authenticated server WebSocket)
+  -> Electron authority and fixed Desktop handlers
+  -> managed Computer Use Host (for admitted Computer Use)
+  -> attested Cua Driver
+```
+
+The private Relay Host alone constructs Desktop's `RelayClient`. Electron
+supervises that child over inherited pipes and keeps Human/session authority,
+filesystem grants, permissions, browser surfaces, and local execution policy.
+The headless Relay uses the same library independently; it does not acquire
+Desktop-only capabilities by sharing that transport.
+
+The managed Computer Use Host owns Cua supervision and provider parsing.
+Electron supplies attested runtime paths and authorization bindings. Cua is
+the native provider; the legacy Peekaboo handler is removed. Host release and
+activation are independent of the Desktop release, while compatibility and
+current grants still constrain every call. Preserve generation fencing,
+verification, and cancellation: an uncertain mutation is not permission to
+replay it through another process or provider.
+
+Read the [Relay/Host ownership map](docs/relay-host-ownership.md) before changing
+these boundaries. Keep context isolation, renderer sandboxing, sender checks,
+fixed IPC contracts, and private inherited-pipe protocols intact.
+
+## Tools, browsers, and connected applications
+
+Model-facing tools belong in the Agent catalogue and typed contracts under
+`packages/agent/src/tools`. Discovery does not grant execution authority;
+server admission and the selected executor must still validate the call.
+`dev/tools/` contains contributor harness personas/commands, not the product's
+runtime tool registry. See [progressive tool activation](docs/progressive-tool-activation.md).
+
+Connected Websites combine server-owned protected account/browser state with
+supervised hosted or direct browser execution. They are distinct from local
+Desktop browser control. Follow the [Connected Website contract](docs/connected-web-browser-contract.md)
+for ownership, Human takeover, recovery, and credential containment.
+
+Connected-app adapters, including OpenConnector, must preserve Nautilo-owned
+Connection identity and typed outcomes. Do not treat an upstream MCP or API
+surface as unrestricted tool authority. Semantic UI help is also separate:
+[the Genie Application Bridge](docs/genie-application-bridge.md) keeps executable
+routes and focus behavior in the installed client; remote catalogue updates
+are metadata only.
+
+## Office, Artifacts, and local files
+
+Nautilo owns the Wafflebase-derived Core, Docs, Sheets and Slides source inside this workspace.
+Build it through Bun/Turbo; do not require a Wafflebase submodule, upstream
+backend, or external package release. `private` in these package manifests
+means they are not npm publication targets. See the
+[owned-engine maintenance and qualification record](docs/office-engines/README.md).
+Writer uses the owned Docs browser and Node exports. Slides has a packaged
+mini-app enabled on fresh installs; upgrades preserve the Human's preference.
+Notes and Board remain separate work; upstream source alone does not establish
+a delivered Nautilo app.
+
+Writer, Sheets, Design, and Video integrate with Nautilo's app/document
+lifecycle. Preserve exact Artifact/Workspace identity, live document versions,
+draft recovery, and commit ownership when importing, exporting, or editing.
+A provider filesystem path is not a Nautilo Workspace path. Current Folder and
+Desktop local files require the selected device's grants and relay boundary.
+
+OfficeCLI is a pinned document-processing executable used by Desktop and
+Server. Both manifests must select the same release and identical shared
+platform artifacts. Update their hashes, provenance, and notices together;
+see [OfficeCLI provisioning](docs/officecli-provisioning.md) and
+[apply-patch ownership](docs/apply-patch-runtime-boundary.md).
+
+## Translation and localization work
+
+Code and documentation are currently in English. Translation PRs are welcome
+for UI/UX, documentation, onboarding, help, accessibility text, errors, and
+other user-facing content. Follow the
+[translation contribution guidance](CONTRIBUTING.md#translations-and-localization).
+
+Plan broader localization as dedicated, maintainable work with an agreed
+language and surface scope, complete user journeys, fluent-speaker review,
+coverage tracking, and a named maintenance owner. Aim for broad coverage across
+affected clients and documentation, including failure and recovery states.
+Reuse the shared Workbench/Desktop UI and agree on reusable message resources
+and fallback behavior before changing production code.
+
+Keep the six README editions aligned with the English `README.md`, including
+links, commands, and product claims. Update translations when the source
+changes or visibly flag stale content; disclose coverage gaps and pending
+language review. Translated READMEs do not establish application language
+support. See [README maintenance](CONTRIBUTING.md#readme-maintenance) for source
+hashes and verification.
+
+## Build, test, and operate from source
+
+Use the repository's Bun workspace and package scripts. Install with
+`bun install --frozen-lockfile`; inspect the relevant package's `package.json`
+and workflow for its build/runtime pin. The contributor Bun pin and the
+container runtime pin can differ, so do not replace one based on the other.
+
+Start with focused checks for the changed behavior. The full repository checks
+are `bun run lint`, `bun run typecheck`, `bun run test:unit`, and
+`bun run lint:unused`. The executable CI lanes live in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and
+[`dev/scripts/ci-gates.sh`](dev/scripts/ci-gates.sh); affected-package selection
+and invariant checks also matter. Report skips, prerequisites, and exact results.
+
+Unit tests must not require a live database, server, provider key, or external
+service. Integration/packaged acceptance owns those dependencies separately.
+Use named development instances and inspect their resources before changing
+processes, databases, ports, or profiles. The default instance can hold real
+user data; do not repurpose it as an empty fixture. Configuration comes through
+`@nautilo/config`; secrets and per-instance state stay outside source control.
+
+Change the Drizzle schema first and generate migrations with repository tools.
+Use the typed query boundary and close owned database clients. Run
+`bun run limits:check` when changing a production/operator limit, and investigate
+the actual producer-to-consumer behavior before recording a policy decision.
+
+## Releases and current records
+
+Follow [`RELEASE.md`](RELEASE.md) for the independent Desktop, server, CLI,
+Mobile, and Host channels. A successful merge/build is not proof of public
+publication, CDN propagation, store availability, or installed adoption.
+Update [`CHANGELOG.md`](CHANGELOG.md) for user-visible changes and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) when distribution changes.
+Use source-owned release records and verified artifacts rather than historical
+version examples.
+
+Public GitHub issues/PRs and [contribution guidance](https://nautilo.ai/community/contribute)
+define proposed work. No private roadmap or local maintainer path is needed to
+understand this source tree. Report vulnerabilities through
+[`SECURITY.md`](SECURITY.md), never through a public issue containing exploit or
+credential details.

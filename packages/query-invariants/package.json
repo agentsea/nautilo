@@ -1,0 +1,21 @@
+{
+  "name": "@nautilo/query-invariants",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Static database query inventory and migration guard.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "inventory": "bun src/node/cli.ts --write",
+    "check": "bun src/node/cli.ts --check",
+    "test": "bun run test:unit",
+    "test:unit": "bun test tests/unit/"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

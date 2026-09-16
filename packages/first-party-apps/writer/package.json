@@ -1,0 +1,32 @@
+{
+  "name": "@nautilo/first-party-writer",
+  "private": true,
+  "type": "module",
+  "version": "2.0.1",
+  "scripts": {
+    "build": "bun build ./main.ts --outdir=./dist --target=browser",
+    "typecheck": "tsc --ignoreConfig --noEmit --jsx react-jsx --module ESNext --moduleResolution bundler --target ES2022 --lib ES2022,DOM,DOM.Iterable --strict --skipLibCheck main.ts src/writer-doc-surface.tsx src/writer-app.tsx src/writer-spellcheck.ts src/writer-spell-menu.tsx src/office-document.ts src/writer-preview-hydration.ts src/context-summary.ts src/bridge.ts src/agent-tool-handlers.ts src/nautilo-doc-store.ts src/accept-proposal-persistence.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@nautilo/office-core": "file:../../office-core",
+    "@nautilo/office-docs": "file:../../office-docs",
+    "@nautilo/types": "file:../../types",
+    "@nautilo/writer-proposal-core": "file:../../writer-proposal-core",
+    "lucide-react": "1.8.0",
+    "parse5": "8.0.1",
+    "react": "19.2.5",
+    "react-dom": "19.2.5"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "happy-dom": "20.11.6",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "@nautilo/office-core": "file:../../office-core",
+    "@nautilo/office-docs": "file:../../office-docs",
+    "@nautilo/types": "file:../../types"
+  }
+}

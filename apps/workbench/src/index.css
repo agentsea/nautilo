@@ -1,0 +1,660 @@
+@import "tailwindcss";
+@import "react-data-grid/lib/styles.css";
+@plugin "@tailwindcss/typography";
+
+.airtable-result-grid {
+  --rdg-color: var(--foreground);
+  --rdg-border-color: var(--border);
+  --rdg-background-color: var(--background);
+  --rdg-header-background-color: var(--background-element);
+  --rdg-header-draggable-background-color: var(--background-element);
+  --rdg-row-hover-background-color: color-mix(in srgb, var(--accent) 8%, var(--background));
+  --rdg-row-selected-background-color: color-mix(in srgb, var(--accent) 14%, var(--background));
+  --rdg-row-selected-hover-background-color: color-mix(in srgb, var(--accent) 18%, var(--background));
+  --rdg-selection-color: var(--accent);
+  --rdg-checkbox-focus-color: var(--accent);
+  --rdg-font-size: 0.75rem;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Dark-mode strategy — match the class-based theme below.
+
+   Tailwind v4 defaults the `dark:` variant to the
+   `prefers-color-scheme: dark` media query. Our theme tokens
+   switch on the `.dark` class on <html>, NOT on OS preference.
+   Without this override, `dark:prose-invert` (and any other
+   `dark:` utility) fires based on OS setting — which means a
+   user with a light-theme app on a dark-preference OS sees
+   inverted typography colors fight our light-mode tokens, and
+   vice versa.
+
+   This aligns the utility variant with the class-based theme
+   so `.dark` on <html> is the single source of truth.
+   ───────────────────────────────────────────────────────────── */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-background: var(--background);
+  --color-background-panel: var(--background-panel);
+  --color-background-element: var(--background-element);
+  --color-background-subtle: var(--background-subtle);
+  --color-background-overlay: var(--background-overlay);
+
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-foreground-dim: var(--foreground-dim);
+  --color-foreground-disabled: var(--foreground-disabled);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-muted: var(--primary-muted);
+
+  --color-accent: var(--accent);
+  --color-accent-brand: var(--accent-brand);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-interactive: var(--border-interactive);
+
+  --color-error: var(--error);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-info: var(--info);
+
+  --color-label-user: var(--label-user);
+  --color-label-assistant: var(--label-assistant);
+  --color-tool-running: var(--tool-running);
+  --color-tool-success: var(--tool-success);
+  --color-tool-error: var(--tool-error);
+  --color-online: var(--online);
+}
+
+@layer base {
+  /* ═══════════════════════════════════════════════════════
+     COLOR MIRROR CONTRACT — these :root / .dark color values are
+     HAND-MIRRORED from packages/config/src/design-tokens.ts
+     (semantic.light / semantic.dark). They are NOT generated.
+     If you change a color here, change it in design-tokens.ts AND the
+     parity test (packages/config/tests/unit/workbench-css-token-parity.test.ts)
+     in the same commit, or the parity test fails (by design).
+     Making this generated (true single-source) is a tracked follow-up.
+     ───────────────────────────────────────────────────────
+     LIGHT — Papyrus "Manga Minimal"
+     Warm cream tones, ink-black text, terracotta accents.
+     Source: papyrus/apps/web/app/globals.css
+     ═══════════════════════════════════════════════════════ */
+  :root {
+    --background: #faf8f5;
+    --background-panel: #f5f0eb;
+    --background-element: #ece5dd;
+    --background-subtle: #f5f0eb;
+    --background-overlay: rgba(250, 248, 245, 0.85);
+
+    --foreground: #1c1917;
+    --foreground-muted: #57534e;
+    --foreground-dim: #78716c;
+    --foreground-disabled: #a8a29e;
+
+    --primary: #2d2a26;
+    --primary-hover: #1a1816;
+    --primary-muted: rgba(45, 42, 38, 0.06);
+    --on-primary: #faf8f5;
+    /* Dedicated tree-row focus/selection fill. Light already reads well, so
+       this matches the prior --background-element value; dark is boosted
+       separately (see the dark block) because there panel/element are nearly
+       identical. Kept separate from --background-element on purpose: that token
+       also backs code blocks and surfaces app-wide. */
+    --tree-row-active: #ece5dd;
+
+    --accent: #c85040;
+    --accent-brand: #c85040;
+    --accent-brand-hover: #d4624e;
+
+    --border: #d6d3d1;
+    --border-strong: #c4bfb8;
+    --border-interactive: #2d2a26;
+
+    --error: #b33a3a;
+    --warning: #9a6b1e;
+    --success: #2d7a3e;
+    --info: #5a8fa5;
+
+    --chat-human-bg: #2d2a26;
+    --chat-human-text: #faf8f5;
+    --chat-ai-bg: #ece5dd;
+    --chat-ai-text: #1a1a1a;
+
+    /*
+     * Speaker labels are SEMANTIC color cues — "whose voice is this"
+     * at a glance. They need to be visually distinct from both
+     * --foreground (body text) and each other.
+     *
+     * Dark-mode pairing: --label-user = Tokyonight blue (#82aaff),
+     * --label-assistant = Tokyonight green (#c3e88d). Cool blue for
+     * user, warm green for the Agent — the VSCode / Discord dichotomy.
+     *
+     * Light-mode pairing (Papyrus warm palette): --label-user = deep
+     * burnt-sienna, --label-assistant = forest green. Earlier
+     * --label-user was #2d2a26 (dark brown-black), indistinguishable
+     * from --foreground #1a1a1a — made "You:" read as bolded body
+     * text rather than a color-distinct speaker label. The new value
+     * picks up the Papyrus accent-brand terracotta family while
+     * staying darker + more grounded than the older bright #cc5500
+     * config value (~6.3:1 contrast vs white,
+     * passes WCAG AA).
+     */
+    --label-user: #a84500;
+    --label-assistant: #2d7a3e;
+    --tool-running: #9a6b1e;
+    --tool-success: #2d7a3e;
+    --tool-error: #b33a3a;
+    --online: #2d7a3e;
+
+    --ring: #d4cfc7;
+    --radius: 0.5rem;
+  }
+
+  /* ═══════════════════════════════════════════════════════
+     DARK — Tokyonight Moon
+     Midnight blues, neon accents. Downtown Tokyo at night.
+     Palette: Tokyo Night
+     ═══════════════════════════════════════════════════════ */
+  .dark {
+    --background: #1a1b26;
+    --background-panel: #1e2030;
+    --background-element: #222436;
+    --background-subtle: #1e2030;
+    --background-overlay: rgba(26, 27, 38, 0.85);
+
+    --foreground: #c8d3f5;
+    --foreground-muted: #828bb8;
+    --foreground-dim: #545c7e;
+    --foreground-disabled: #3b4261;
+
+    --primary: #82aaff;
+    --primary-hover: #89b4fa;
+    --primary-muted: rgba(130, 170, 255, 0.12);
+    --on-primary: #1a1b26;
+    /* Tree-row focus/selection fill. In dark, --background-element (#222436) is
+       nearly identical to --background-panel (#1e2030), so a background-element
+       fill is invisible. Use a stronger accent tint so the highlight actually
+       reads without lightening the shared surface/code-block token. */
+    --tree-row-active: rgba(130, 170, 255, 0.2);
+
+    --accent: #ff966c;
+    --accent-brand: #ff966c;
+    --accent-brand-hover: #ffa882;
+
+    --border: #3b4261;
+    --border-strong: #545c7e;
+    --border-interactive: #82aaff;
+
+    --error: #ff757f;
+    --warning: #ffc777;
+    --success: #c3e88d;
+    --info: #82aaff;
+
+    --chat-human-bg: #292e42;
+    --chat-human-text: #c8d3f5;
+    --chat-ai-bg: #1e2030;
+    --chat-ai-text: #c8d3f5;
+
+    --label-user: #82aaff;
+    --label-assistant: #c3e88d;
+    --tool-running: #ffc777;
+    --tool-success: #c3e88d;
+    --tool-error: #ff757f;
+    --online: #c3e88d;
+
+    --ring: #545c7e;
+    --radius: 0.5rem;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Prose tokens — bind every `.prose` color to a theme variable
+   so the markdown body (the Agent's assistant messages) inherits
+   the `.dark`-switchable palette instead of the typography
+   plugin's fixed-gray defaults.
+
+   Before: only headings / links / bold / code / pre-bg /
+   pre-code were overridden; body text fell through to
+   `theme('colors.gray[700]')` (fixed #374151). In combination
+   with the `dark:prose-invert` on the assistant text wrapper
+   and the earlier `prefers-color-scheme`-based dark variant
+   (now fixed above), this produced the "agent prose text is too
+   light to read" live-repro on light mode (2026-04-24
+   screenshot).
+
+   After: every prose token maps to a `--foreground` / `--accent`
+   / `--border` theme variable. Both forward and `-invert-` pairs
+   are set explicitly so `dark:prose-invert` can't fall through
+   to a fixed-gray regardless of whether OS-prefers-dark happens
+   to match our `.dark`-class state.
+   ───────────────────────────────────────────────────────────── */
+.prose {
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--accent);
+  --tw-prose-lead: var(--foreground);
+  --tw-prose-links: var(--primary);
+  --tw-prose-bold: var(--accent);
+  --tw-prose-counters: var(--foreground-muted);
+  --tw-prose-bullets: var(--foreground-muted);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--foreground);
+  --tw-prose-quote-borders: var(--border-strong);
+  --tw-prose-captions: var(--foreground-muted);
+  --tw-prose-code: var(--success);
+  --tw-prose-pre-bg: var(--background-element);
+  --tw-prose-pre-code: var(--foreground);
+  --tw-prose-th-borders: var(--border-strong);
+  --tw-prose-td-borders: var(--border);
+
+  /* Mirror every forward token into the invert pair so
+     `dark:prose-invert` can't introduce a palette mismatch.
+     Our `.dark` class already flips every underlying token, so
+     the invert variants intentionally resolve to the same
+     variables — there's nothing to invert at the plugin level
+     because our theme already did. */
+  --tw-prose-invert-body: var(--foreground);
+  --tw-prose-invert-headings: var(--accent);
+  --tw-prose-invert-lead: var(--foreground);
+  --tw-prose-invert-links: var(--primary);
+  --tw-prose-invert-bold: var(--accent);
+  --tw-prose-invert-counters: var(--foreground-muted);
+  --tw-prose-invert-bullets: var(--foreground-muted);
+  --tw-prose-invert-hr: var(--border);
+  --tw-prose-invert-quotes: var(--foreground);
+  --tw-prose-invert-quote-borders: var(--border-strong);
+  --tw-prose-invert-captions: var(--foreground-muted);
+  --tw-prose-invert-code: var(--success);
+  --tw-prose-invert-pre-bg: var(--background-element);
+  --tw-prose-invert-pre-code: var(--foreground);
+  --tw-prose-invert-th-borders: var(--border-strong);
+  --tw-prose-invert-td-borders: var(--border);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   MDXEditor theme bridge.
+
+   MDXEditor ships a full visual system of its own. The Workbench
+   theme, however, is already single-sourced through CSS variables
+   flipped by `.dark` on <html>. Keep this override scoped to the
+   editor instance (`.nautilo-mdx-editor`) so reader markdown and
+   other prose are unaffected.
+   ───────────────────────────────────────────────────────────── */
+.nautilo-mdx-editor {
+  --baseBg: var(--background-panel);
+  --basePageBg: var(--background-panel);
+  --baseText: var(--foreground);
+  /* MDXEditor defaults --baseTextContrast to --slate-12 (near-black). The
+     table column/row editors, trash/delete controls, and toggle groups all
+     read this token, so without an override their icons render unreadable on
+     our panel background. Bind it to the themed foreground. */
+  --baseTextContrast: var(--foreground);
+  --baseBorder: var(--border);
+  --baseBorderHover: var(--border-strong);
+  --baseSolid: var(--background-element);
+  --baseSolidHover: var(--primary-muted);
+  --accentBg: var(--primary-muted);
+  --accentText: var(--primary);
+  --accentSolid: var(--primary);
+  --accentSolidHover: var(--primary-hover);
+  --accentBorder: var(--border-interactive);
+  --focusRing: var(--ring);
+
+  color: var(--foreground);
+  background: var(--background-panel);
+}
+
+/* MDXEditor copies its className to the separately portaled popup host. Keep
+   layout on the real editor root so that host does not add page-level padding. */
+.nautilo-mdx-editor.mdxeditor {
+  min-height: 100%;
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+}
+
+.dark .nautilo-mdx-editor {
+  color-scheme: dark;
+}
+
+.nautilo-mdx-editor [class*="toolbar"],
+.nautilo-mdx-editor [role="toolbar"] {
+  background: var(--background-element);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.nautilo-mdx-editor button,
+.nautilo-mdx-editor [role="button"] {
+  color: var(--foreground-muted);
+}
+
+/* Icons are supplied via the MDXEditor `iconComponentFor` prop as lucide-react
+   glyphs: stroke-based, `fill="none"`, `stroke="currentColor"`, with their own
+   stroke width. The previous normalization here was tuned for MDXEditor's
+   bundled (fill-based) Material icons and actively harms lucide — it forced a
+   0.9 stroke (washed out) and filled the stroke paths that carry no `fill`
+   attr (blobby, e.g. the table trash icon). So we no longer touch geometry —
+   we only drive `color` (which lucide reads via `currentColor`) and we do it
+   through the theme tokens, never hard-coded values.
+
+   Resting icons sit at full `--foreground` (the buttons themselves default to
+   `--foreground-muted`, and lucide would otherwise inherit that washed-out
+   value). Active toggles use `--primary`; disabled uses `--foreground-disabled`. */
+.nautilo-mdx-editor button svg,
+.nautilo-mdx-editor [role="button"] svg {
+  color: var(--foreground);
+}
+
+.nautilo-mdx-editor button[data-state="on"] svg,
+.nautilo-mdx-editor button[aria-pressed="true"] svg,
+.nautilo-mdx-editor [role="button"][data-state="on"] svg,
+.nautilo-mdx-editor [role="button"][aria-pressed="true"] svg {
+  color: var(--primary);
+}
+
+.nautilo-mdx-editor button:disabled svg,
+.nautilo-mdx-editor [role="button"][aria-disabled="true"] svg,
+.nautilo-mdx-editor button[data-disabled] svg,
+.nautilo-mdx-editor [role="button"][data-disabled] svg {
+  color: var(--foreground-disabled);
+}
+
+.nautilo-mdx-editor button:hover,
+.nautilo-mdx-editor [role="button"]:hover {
+  background: var(--primary-muted);
+  color: var(--foreground);
+}
+
+.nautilo-mdx-editor button[data-state="on"],
+.nautilo-mdx-editor button[aria-pressed="true"],
+.nautilo-mdx-editor [role="button"][data-state="on"],
+.nautilo-mdx-editor [role="button"][aria-pressed="true"] {
+  background: var(--primary-muted);
+  color: var(--primary);
+}
+
+.nautilo-mdx-editor button:disabled,
+.nautilo-mdx-editor [role="button"][aria-disabled="true"] {
+  color: var(--foreground-disabled);
+  opacity: 0.65;
+}
+
+.nautilo-mdx-editor [contenteditable="true"] {
+  color: var(--foreground);
+  caret-color: var(--primary);
+}
+
+/* Lexical's checklist box is 1rem high while prose uses a taller line box.
+   Center both checkbox layers on the first line, including wrapped items. */
+.nautilo-mdx-editor.mdxeditor [role="checkbox"][aria-checked]::before {
+  top: calc((1lh - var(--spacing-4)) / 2);
+}
+
+.nautilo-mdx-editor.mdxeditor [role="checkbox"][aria-checked="true"]::after {
+  top: calc((1lh - var(--spacing-4)) / 2 + var(--spacing-0_5));
+}
+
+.nautilo-mdx-editor pre,
+.nautilo-mdx-editor code,
+.nautilo-mdx-editor .cm-editor {
+  background: var(--background-element);
+  color: var(--foreground);
+}
+
+.nautilo-mdx-editor .cm-gutters {
+  background: var(--background-element);
+  color: var(--foreground-muted);
+  border-color: var(--border);
+}
+
+.nautilo-mdx-editor [data-radix-popper-content-wrapper] > *,
+.nautilo-mdx-editor [role="dialog"],
+.nautilo-mdx-editor [role="menu"],
+.nautilo-mdx-editor [role="listbox"] {
+  background: var(--background-panel);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Focus-ring policy — kill the browser-default yellow outline,
+   use a subtle theme-aware ring for keyboard focus on
+   non-text-input elements only.
+
+   The browser default paints a chunky yellow/blue outline on
+   every :focus (mouse OR keyboard). That looks broken inside a
+   themed UI and lingers on every clicked button (live-repro:
+   Settings → any button → yellow rectangle stays until you
+   click elsewhere).
+
+   Policy:
+   - `:focus` (mouse + keyboard) → no outline. Mouse users get
+     visual feedback from :hover / :active states; they don't
+     need a persistent rectangle.
+   - `:focus-visible` (keyboard-first) → 2px ring in --ring color
+     for interactive non-text elements (buttons, links, tabs,
+     etc.). Accessibility for keyboard users preserved;
+     mouse-click noise eliminated.
+   - Text inputs / textareas / contenteditable: NO outline even
+     on :focus-visible. Browsers fire :focus-visible on text
+     inputs for mouse clicks too (the caret alone is considered
+     insufficient feedback), which would drop a grey ring around
+     the composer every time someone clicks it. Text inputs have
+     their own focus affordance — the caret, the bg tint from
+     component-level focus-within, and the thumb-sized click
+     target. No browser-level outline wanted.
+   ───────────────────────────────────────────────────────────── */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[contenteditable]:focus-visible,
+[contenteditable=""]:focus-visible,
+[contenteditable="true"]:focus-visible {
+  outline: none;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   D087 UX pass — subtle, unobtrusive scrollbars.
+
+   Chromium / Electron's default scrollbar is chunky and obeys the
+   OS "Always show scrollbars" setting, which on macOS with that
+   toggle on paints a heavy gray track right down the middle of
+   the conversation column. The assistant-ui thread is a high-
+   density reading surface — the scrollbar needs to exist (so the
+   user knows they CAN scroll) but stay visually quiet.
+
+   Spec:
+   - 10px wide on overlay, 6px thumb (tight and thin)
+   - transparent track (blends with any background)
+   - thumb tinted with our border token so it changes with theme
+   - slightly more visible on hover so "grab me" is discoverable
+   - `scrollbar-gutter: stable` reserves width in the layout so
+     toggling the scrollbar doesn't reflow the content horizontally
+
+   Applies everywhere; components that want a specific style can
+   still override via `::-webkit-scrollbar`-targeting classes.
+   ───────────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--border) 70%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--border) 65%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--border-strong) 75%, transparent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.room-tab-strip-scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.room-tab-strip-scrollbar-none::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Stack-3 Phase 6b — typing indicator dots */
+@keyframes connected-app-transfer-flow {
+  0% {
+    opacity: 0;
+    transform: translate(-110%, -50%);
+  }
+
+  16%, 84% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(430%, -50%);
+  }
+}
+
+.connected-app-transfer-flow {
+  animation: connected-app-transfer-flow 1.8s ease-in-out infinite;
+}
+
+.connected-app-transfer-flow-reverse {
+  animation-direction: reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connected-app-transfer-flow,
+  .connected-app-transfer-flow-reverse {
+    animation: none;
+    opacity: 0.7;
+    transform: translate(150%, -50%);
+  }
+}
+
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
+
+.animate-typing-bounce {
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+/* D212 P5 — reaction pill entrance: playful pop + float-and-settle.
+   Applied (via the `reaction-pill-pop` class) ONLY to a just-arrived
+   reaction; existing reactions on rehydrate/scroll render statically. */
+@keyframes reaction-pill-pop {
+  0% {
+    transform: scale(0.6) translateY(4px);
+    opacity: 0;
+  }
+  45% {
+    transform: scale(1.18) translateY(-3px);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(0.94) translateY(1px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+
+.reaction-pill-pop {
+  animation: reaction-pill-pop 360ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: center bottom;
+}
+
+/* D212 follow-up — emoji-only messages feel more like a native chat sticker:
+   big glyph, same transcript flow, one-shot pop/settle on arrival. */
+@keyframes emoji-message-pop {
+  0% {
+    transform: scale(0.55) translateY(10px) rotate(-4deg);
+    opacity: 0;
+    filter: saturate(0.75);
+  }
+  48% {
+    transform: scale(1.18) translateY(-4px) rotate(3deg);
+    opacity: 1;
+    filter: saturate(1.25);
+  }
+  72% {
+    transform: scale(0.96) translateY(1px) rotate(-1deg);
+  }
+  100% {
+    transform: scale(1) translateY(0) rotate(0deg);
+    opacity: 1;
+    filter: saturate(1);
+  }
+}
+
+.emoji-message-pop {
+  display: inline-block;
+  animation: emoji-message-pop 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: center bottom;
+}
+
+/* Reduced-motion: keep the strip static — no pop, no float. */
+@media (prefers-reduced-motion: reduce) {
+  .reaction-pill-pop,
+  .emoji-message-pop {
+    animation: none;
+  }
+}
+
+/* D513 — ephemeral, route-local focus emphasis for a Human-clicked guide. */
+.genie-ui-target-spotlight {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+  background-color: color-mix(in oklab, var(--accent) 12%, var(--background-panel));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .genie-ui-target-spotlight {
+    animation: genie-ui-target-spotlight 900ms ease-in-out 6;
+  }
+}
+
+@keyframes genie-ui-target-spotlight {
+  50% { box-shadow: 0 0 0 6px color-mix(in oklab, var(--accent) 28%, transparent); }
+}

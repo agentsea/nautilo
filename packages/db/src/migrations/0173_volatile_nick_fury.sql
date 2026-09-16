@@ -1,0 +1,1 @@
+ALTER TABLE "server_model_config" ADD COLUMN "reflection_model" text;

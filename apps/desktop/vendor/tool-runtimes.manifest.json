@@ -1,0 +1,138 @@
+{
+  "agent-browser": {
+    "version": "0.35.2",
+    "license": "Apache-2.0",
+    "source": "https://github.com/vercel-labs/agent-browser",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-darwin-arm64",
+        "sha256": "e1e08f3b0a1c711750209e6a25b6f3a9dab7ed6e6a24b55a2556050b991fcc97"
+      },
+      "darwin-x64": {
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-darwin-x64",
+        "sha256": "d76cfc76885d5007f3c119008a80a145b381ec4dfdd202f43e46cd0829751774"
+      }
+    }
+  },
+  "gog": {
+    "version": "0.31.1",
+    "license": "MIT",
+    "source": "https://github.com/openclaw/gogcli",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/openclaw/gogcli/releases/download/v0.31.1/gogcli_0.31.1_darwin_arm64.tar.gz",
+        "sha256": "a330742ff92a740746109cb03338d2fed477a1b3f4d8416bd651578f71c31dc9",
+        "member": "gog"
+      },
+      "darwin-x64": {
+        "url": "https://github.com/openclaw/gogcli/releases/download/v0.31.1/gogcli_0.31.1_darwin_amd64.tar.gz",
+        "sha256": "eea70c8e174ac27255734e25f682bf014d5952a75bc1462905b33f0d7f7312c4",
+        "member": "gog"
+      }
+    }
+  },
+  "ffmpeg": {
+    "version": "9.0.1",
+    "license": "LGPL-3.0-or-later",
+    "source": "https://github.com/ispysoftware/agentdvr-ffmpeg-build",
+    "binaryName": "bin/ffmpeg",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/ispysoftware/agentdvr-ffmpeg-build/releases/download/v9.0.1/ffmpeg9.0.1-lgpl-macos-arm64.zip",
+        "sha256": "39d84ef366ea48e13c34db27f5a19f39bc993cf69962812f7c1285271ddcf57e",
+        "binarySha256": "9450191627103eee12422d72ac22f0be91c37df3fc230f95eea9c554230b42aa",
+        "member": "bin/ffmpeg",
+        "sizeMin": 300000
+      },
+      "darwin-x64": {
+        "url": "https://github.com/ispysoftware/agentdvr-ffmpeg-build/releases/download/v9.0.1/ffmpeg9.0.1-lgpl-macos-x86_64.zip",
+        "sha256": "11d48a60696f3280a4faae07de8c059cc863a44ab57ed89291e7574251a5a143",
+        "binarySha256": "b88651ac846c726e94f5b198bd7693beb42fc936d016b1795796355cf1b2785e",
+        "member": "bin/ffmpeg",
+        "sizeMin": 300000
+      }
+    }
+  },
+  "openhue": {
+    "version": "0.24",
+    "license": "Apache-2.0",
+    "source": "https://github.com/openhue/openhue-cli",
+    "binaryName": "openhue",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/openhue/openhue-cli/releases/download/0.24/openhue_Darwin_all.tar.gz",
+        "sha256": "a99e24102e9f11d958fad2ac98a06aabad5e5099fd2aa3143d6874e2c3ce18b6",
+        "member": "openhue",
+        "sizeMin": 1000000
+      }
+    }
+  },
+  "officecli": {
+    "version": "1.0.148",
+    "license": "Apache-2.0",
+    "source": "https://github.com/iOfficeAI/OfficeCLI",
+    "binaryName": "officecli",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.148/officecli-mac-arm64",
+        "sha256": "501a67fe52ad2afc5cc5626287a204082083db431e5532dd361d6b55158caed1",
+        "sizeMin": 1000000
+      },
+      "darwin-x64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.148/officecli-mac-x64",
+        "sha256": "235055a83a33e9e675bd85de7a03c9ee657a81d57aad6a24fa41b954caede1b6",
+        "sizeMin": 1000000
+      }
+    }
+  },
+  "apply-patch": {
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "source": "https://github.com/openai/codex/tree/3389fa554e953d07a12a34f5681aae46f17958f8",
+    "binaryName": "nautilo-apply-patch",
+    "protocol": "nautilo.apply_patch/v1",
+    "provenance": {
+      "format": "nautilo.apply_patch.provenance/v1",
+      "upstreamRevision": "3389fa554e953d07a12a34f5681aae46f17958f8",
+      "licenseSha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+      "noticeSha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915",
+      "rustToolchain": "1.95.0",
+      "cargoLockSha256": "4d1e7759fb6b28b8333dc1cb7cb3eae08b0863dae7dbec5bb6cdc41a3aaf2576",
+      "nautiloExtractionRevision": "678566dae31b7fbd1d6e29acb570a2be01d07b5d5fe407ab05d56ad61633ec94"
+    },
+    "artifacts": {
+      "darwin-arm64": {
+        "sizeMin": 100000,
+        "machOArch": "arm64",
+        "target": "aarch64-apple-darwin"
+      },
+      "darwin-x64": {
+        "sizeMin": 100000,
+        "machOArch": "x64",
+        "target": "x86_64-apple-darwin"
+      }
+    }
+  },
+  "ripgrep": {
+    "version": "15.1.0",
+    "license": "MIT OR Unlicense",
+    "source": "https://github.com/BurntSushi/ripgrep",
+    "binaryName": "rg",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "378e973289176ca0c6054054ee7f631a065874a352bf43f0fa60ef079b6ba715",
+        "binarySha256": "4fdf1d8365af224bc70e3c1490d8461d859c37cc70e739a11e987af0215f3e94",
+        "member": "rg",
+        "sizeMin": 4048816
+      },
+      "darwin-x64": {
+        "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-apple-darwin.tar.gz",
+        "sha256": "64811cb24e77cac3057d6c40b63ac9becf9082eedd54ca411b475b755d334882",
+        "binarySha256": "3bafa7e6ee51ba3ac4ed065883484a309be09b26ea6dad561ae4049bfe049c50",
+        "member": "rg",
+        "sizeMin": 4442900
+      }
+    }
+  }
+}

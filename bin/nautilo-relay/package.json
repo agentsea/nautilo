@@ -1,0 +1,30 @@
+{
+  "name": "@nautilo/relay-bin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local headless Relay consumer for a Nautilo server",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "start:desktop-host": "bun src/desktop-host-main.ts",
+    "build:desktop-host": "bun build --target=bun ./src/desktop-host-main.ts --outfile ./dist/nautilo-relay-host.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "bun test tests/",
+    "test:unit": "bun test tests/unit/"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "1.3.0",
+    "@nautilo/cli-auth": "workspace:*",
+    "@nautilo/config": "workspace:*",
+    "@nautilo/mcp-client": "workspace:*",
+    "@nautilo/relay": "workspace:*",
+    "@nautilo/sandbox": "workspace:*",
+    "@nautilo/logger": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

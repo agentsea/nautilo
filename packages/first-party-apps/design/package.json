@@ -1,0 +1,9 @@
+{
+  "name": "@nautilo/first-party-design",
+  "private": true,
+  "type": "module",
+  "version": "0.3.0",
+  "dependencies": {
+    "fontkit": "2.0.4"
+  }
+}

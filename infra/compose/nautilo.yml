@@ -1,0 +1,212 @@
+# M051 (Logto cluster): supporting-infra compose file.
+#
+# Three services:
+#   - postgres     : always-on, hosts both `nautilo` and `logto_nautilo` DBs.
+#   - logto        : profile-gated (auth/full/saas), the OIDC core + admin.
+#   - logto-seed   : profile-gated, runs `db seed` once and exits 0.
+#
+# Deliberate divergence from research/logto-integration-v1.md §7.5: the
+# `nautilo-server` service is intentionally NOT included in this issue.
+# `bin/nautilo-local --with-logto` runs the Bun server on the host, and
+# nothing else in this PR brings up a containerized Nautilo. Adding the
+# untested service would be deadweight; it lands when the fully-Dockerized
+# OSS deploy mode actually gets wired (post-cluster).
+#
+# Profiles:
+#   (none)        → only postgres comes up. Useful when sharing the cluster
+#                   with a host-side Bun server.
+#   `auth`        → postgres + logto + logto-seed. The `--with-logto` path.
+#   `full`        → identical to `auth` today; reserved for future `dev:full`
+#                   capabilities. Wave 0 has no encryption activation input.
+#   `saas`        → identical to `auth` today; reserved for managed-SaaS
+#                   provisioning (TLS terminator, hostnames diverge).
+#
+# Bring up with:
+#   docker compose -f infra/compose/nautilo.yml --profile auth up -d
+#
+# Tear down with:
+#   docker compose -f infra/compose/nautilo.yml down
+#
+# Host-published ports default to 5432 / 3301 / 3302; override with
+# NAUTILO_LOGTO_DB_PORT, NAUTILO_LOGTO_PORT, NAUTILO_LOGTO_ADMIN_PORT.
+# Compose project name defaults to `nautilo`; override with COMPOSE_PROJECT_NAME.
+
+name: ${COMPOSE_PROJECT_NAME:-nautilo}
+
+services:
+  postgres:
+    image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Init script runs once on first volume boot; creates `nautilo` +
+      # `logto_nautilo` DBs and roles. Skipped on subsequent boots; use
+      # `bun run dev:verify-postgres-databases --fix` for upgrades from
+      # pre-M051 volumes (Phase 4b).
+      - ../postgres-init.sh:/docker-entrypoint-initdb.d/01-nautilo.sh:ro
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Passed through to postgres-init.sh shell substitutions.
+      NAUTILO_DB_PASSWORD: ${NAUTILO_DB_PASSWORD:-nautilo}
+      LOGTO_DB_PASSWORD: ${LOGTO_DB_PASSWORD:-logto}
+      NAUTILO_AGENT_DB_PASSWORD: ${NAUTILO_AGENT_DB_PASSWORD:-nautilo_agent}
+      NAUTILO_CRYPTO_DB_PASSWORD: ${NAUTILO_CRYPTO_DB_PASSWORD:-nautilo_crypto}
+      NAUTILO_POSTGRES_CLUSTER_KIND: app
+    ports:
+      - "${NAUTILO_LOGTO_DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-postgres}"]
+      interval: 2s
+      retries: 30
+
+  logto:
+    image: ghcr.io/logto-io/logto:1.38.0
+    profiles: ["auth", "full", "saas"]
+    # M120 — the dev flow runs `nautilo-server` on the HOST, so Logto's
+    # `http-email` ForgotPassword connector must reach it via
+    # `host.docker.internal:<serverPort>`. Built-in on Docker Desktop;
+    # `host-gateway` makes it resolvable on Linux dev hosts too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      logto-seed:
+        condition: service_completed_successfully
+    ports:
+      - "${NAUTILO_LOGTO_PORT:-3301}:${NAUTILO_LOGTO_PORT:-3301}"
+      - "${NAUTILO_LOGTO_ADMIN_PORT:-3302}:${NAUTILO_LOGTO_ADMIN_PORT:-3302}"
+    environment:
+      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-logto}@postgres:5432/logto_nautilo
+      PORT: ${NAUTILO_LOGTO_PORT:-3301}
+      ADMIN_PORT: ${NAUTILO_LOGTO_ADMIN_PORT:-3302}
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3301}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3302}
+      # Usernames are identifiers, not display names. Keep lookup consistent
+      # across Android and iOS keyboards (iOS may capitalize the first letter).
+      CASE_SENSITIVE_USERNAME: "false"
+      # Set to 1 when Logto sits behind an HTTPS-terminating proxy
+      # (D048 local CA, Cloud Run, nginx, Caddy, etc.). Default off
+      # for local dev where `ENDPOINT=http://localhost:3301`.
+      TRUST_PROXY_HEADER: ${LOGTO_TRUST_PROXY:-0}
+
+  logto-seed:
+    # One-shot container — runs `logto db seed --swe`, exits 0.
+    #
+    # `--swe` (Skip With Existing) is the Logto CLI flag that makes seed
+    # idempotent. Without it, a second `up -d` against an already-seeded
+    # volume fails with 42710 (duplicate role) on the m-admin role
+    # creation, blocking the dependent `logto` service from starting.
+    # Upstream's reference compose uses the same flag — verified at
+    # github.com/logto-io/logto master docker-compose.yml.
+    #
+    # The image's ENTRYPOINT is ["npm", "run"] (verified via
+    # `docker inspect ghcr.io/logto-io/logto:1.38.0`), so `command:` only
+    # supplies the script name + args. Including "npm" "run" here would
+    # double-up to `npm run npm run cli ...` and fail with
+    # `Missing script: "npm"`.
+    image: ghcr.io/logto-io/logto:1.38.0
+    profiles: ["auth", "full", "saas"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-logto}@postgres:5432/logto_nautilo
+    command: ["cli", "--", "db", "seed", "--swe"]
+
+  # D456 — local connected-app runtime. Nautilo owns the exact upstream
+  # revision + reviewed derivative patch under packaging/openconnector.
+  # Host exposure is loopback-only; the browser can complete OAuth callbacks,
+  # while LAN peers cannot reach OpenConnector's administrator API directly.
+  openconnector:
+    image: nautilo/openconnector:1.4.1-nautilo.1
+    build:
+      context: ../..
+      dockerfile: packaging/openconnector/Dockerfile
+    profiles: ["connections", "full", "saas"]
+    ports:
+      - "127.0.0.1:${NAUTILO_OPENCONNECTOR_PORT:-3010}:3000"
+    volumes:
+      - "${NAUTILO_OPENCONNECTOR_DATA_DIR:?Nautilo must provide the per-instance OpenConnector data directory}:/app/data"
+      - "${NAUTILO_OPENCONNECTOR_ENCRYPTION_KEY_PATH:?Nautilo must provide the per-instance OpenConnector encryption key}:/run/nautilo/openconnector-encryption.key:ro"
+    environment:
+      OOMOL_CONNECT_ORIGIN: "http://127.0.0.1:${NAUTILO_OPENCONNECTOR_PORT:-3010}"
+      OOMOL_CONNECT_ENCRYPTION_KEY_FILE: /run/nautilo/openconnector-encryption.key
+    restart: unless-stopped
+
+  # D362 — nwuno: LibreOffice headless engine (unoserver fork + Tier-A mutation
+  # endpoints). Profile-gated `office` (heavy image; off by default). Host port
+  # NAUTILO_OFFICE_PORT is derived per-instance (stride offset) by
+  # resolvedInstanceChildEnv; internal port is 2003. Bring up with:
+  #   bun run office:up            (or: docker compose … --profile office up -d --build)
+  office:
+    build:
+      context: ../nwuno
+    profiles: ["office"]
+    ports:
+      - "${NAUTILO_OFFICE_PORT:-2003}:2003"
+    restart: unless-stopped
+
+  # D362 — collabora: Collabora Online (coolwsd + LOK), the interactive
+  # tile/editor engine. Same `office` profile as nwuno — `bun run office:up`
+  # brings up BOTH. Host port NAUTILO_COLLABORA_PORT is derived per-instance
+  # (stride offset) by resolvedInstanceChildEnv; internal container port is
+  # 9980. coolwsd's URI parser rejects a regex in the port position, so
+  # aliasgroup1 pins the explicit numeric NAUTILO_PORT (the host-side WOPI
+  # stub = the Nautilo server). SSL is disabled for local dev.
+  #
+  # §2.1.4 — instead of pulling the upstream `collabora/code` image directly,
+  # we build a thin derived image (`infra/coolwsd-fonts/Dockerfile`) that
+  # layers MS-metric-compatible + broad-Unicode fonts (Carlito/Caladea/
+  # Liberation/DejaVu/Noto) on top of the pinned base and refreshes
+  # fontconfig. `bun run office:up` passes `--build`, so the derived image
+  # is rebuilt on demand and cached otherwise. The COOLWSD_BASE build arg
+  # MUST mirror DEPENDENCY_PINS.collabora in deploy/dependency-pins.ts —
+  # that pin is the sync source for the coolwsd base tag. When Phase 5.2
+  # ships the self-built coolwsd, either flip COOLWSD_BASE to the self-built
+  # tag or fold the font RUN stanza into the Phase-5.2 Dockerfile (see
+  # infra/coolwsd-fonts/Dockerfile for the prod path notes).
+  collabora:
+    build:
+      context: ../coolwsd-fonts
+      args:
+        # MUST mirror DEPENDENCY_PINS.collabora in deploy/dependency-pins.ts.
+        COOLWSD_BASE: collabora/code:26.04.1.4.1
+    profiles: ["office"]
+    ports:
+      - "${NAUTILO_COLLABORA_PORT:-9980}:9980"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DONT_GEN_SSL_CERT: "1"
+      # D362 Phase 3 §3.1b — `service_root=/office-engine` so coolwsd
+      # serves assets + emits internal URLs under the proxy prefix
+      # (matches `OFFICE_PROXY_PREFIX` in routes/office-proxy.ts).
+      # `frame_ancestors=*` permits framing from the Nautilo origin in
+      # dev; a tight origin list is a Phase-5 hardening. Kept alongside
+      # the SSL-off + welcome-off + feedback-off nag-suppression set.
+      # `home_mode.enable=true` is the ONLY supported switch that kills the
+      # "Please send us your feedback" bar in this coolwsd (26.04): the
+      # auto-show is hardwired to `!home_mode.enable` — FileServer.cpp:1899-1906
+      # sets %AUTO_SHOW_FEEDBACK% = "false" iff home_mode.enable. There is NO
+      # `feedback.show` key in this version's coolwsd.xml (the earlier flag was
+      # a silent no-op). Home mode also caps concurrency at 20 connections / 10
+      # docs — fine for dev; revisit if we ever load-test. It further makes
+      # welcome auto-show follow `welcome.enable` (already false), so the
+      # welcome splash stays suppressed too (FileServer.cpp:1846-1848).
+      extra_params: "--o:ssl.enable=false --o:ssl.termination=false --o:welcome.enable=false --o:home_mode.enable=true --o:net.service_root=/office-engine --o:net.frame_ancestors=* --o:server_name=127.0.0.1:${NAUTILO_PORT:-3001}"
+      aliasgroup1: "http://host.docker.internal:${NAUTILO_PORT:-3001}"
+      # M201: `frame_ancestors=*` + the admin console `admin/admin` below are
+      # DEV-ONLY and LOCALHOST-ONLY. The network-reachable deploy template
+      # (deploy/compose-driver/templates/docker-compose.yml, `office` profile)
+      # disables the admin console, drops these creds, and drives
+      # frame_ancestors/server_name from the public origin/domain.
+      username: admin
+      password: admin
+    cap_add:
+      - MKNOD
+    restart: unless-stopped
+
+volumes:
+  pgdata:

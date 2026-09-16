@@ -1,0 +1,18 @@
+[
+  {
+    "name": "duplicate reasoning aliases cannot be presented as distinct choices",
+    "mutate": { "entry": 0, "path": ["controls", "reasoning", "levels"], "value": ["low", "low"] }
+  },
+  {
+    "name": "unsupported reasoning default is rejected",
+    "mutate": { "entry": 0, "path": ["controls", "reasoning", "defaultLevel"], "value": "minimal" }
+  },
+  {
+    "name": "arbitrary provider request fields are rejected",
+    "mutate": { "entry": 4, "path": ["controls", "serving", "profiles", 1, "selector", "headers"], "value": { "x-provider-secret": "no" } }
+  },
+  {
+    "name": "cross-provider router overrides are rejected",
+    "mutate": { "entry": 4, "path": ["controls", "serving", "profiles", 2, "selector", "modelId"], "value": "openai:gpt-5.6-sol" }
+  }
+]

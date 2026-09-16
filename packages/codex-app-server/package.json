@@ -1,0 +1,34 @@
+{
+  "name": "@nautilo/codex-app-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed, compatibility-gated integration with the official Codex app-server protocol",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testkit": {
+      "types": "./testkit/index.ts",
+      "import": "./testkit/index.ts",
+      "default": "./testkit/index.ts"
+    }
+  },
+  "scripts": {
+    "protocol:generate": "bun scripts/generate-protocol.ts --update-anchor",
+    "protocol:check": "bun scripts/generate-protocol.ts --check",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun test --timeout 15000",
+    "test:unit": "bun test --timeout 15000 tests/unit/"
+  },
+  "dependencies": {
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "typescript": "5.9.3"
+  }
+}

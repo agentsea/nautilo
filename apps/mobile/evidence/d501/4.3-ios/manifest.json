@@ -1,0 +1,59 @@
+{
+  "task": "D501-4.3",
+  "status": "passed",
+  "runtime": {
+    "stackAlias": "stack302",
+    "serverAlias": "stack302-loopback",
+    "serverLoopbackPort": 6401,
+    "iosMetroAlias": "stack302-ios-metro",
+    "iosRuntimeProfileAlias": "stack302-ios-profile",
+    "d468Isolation": "preserved"
+  },
+  "harness": "d501-ios-source-actions.yaml",
+  "build": {
+    "commitOrBuild": "d96e809419b06588bf2e887edb22b0a39022ba7e",
+    "simulator": "D501 Wave10 iPhone / iOS 18.3",
+    "metroPort": 8081,
+    "runtimeProfile": "stack302-ios-profile"
+  },
+  "automatedRows": {
+    "sourceInputAndMarkdownActions": "passed",
+    "previewEditContinuity": "passed",
+    "saveTapAndEditorRetention": "passed"
+  },
+  "manualCheckpoints": {
+    "markdownExactByteSaveAndReopen": "passed",
+    "plainTextExactByteSaveAndReopen": "passed",
+    "sourceSelectionImeAndPaste": "passed",
+    "sourceEditingAndDirtyBackRecovery": "passed",
+    "lightAndDarkSmallestViewportKeyboardOpenToolbar": "passed",
+    "largeSourceKeyboardScroll": "passed",
+    "sourceConflictPreservesEditsAndRecovery": "passed",
+    "writerViewerOnlyNoEditAffordance": "passed",
+    "rename": "passed",
+    "delete": "passed",
+    "discussContinuity": "passed",
+    "editorLifecycleAndRemount": "passed",
+    "fixtureCleanup": "passed"
+  },
+  "comparisonEvidence": {
+    "syntheticFixtureAliases": {
+      "markdown": "ios-source-a",
+      "plainText": "ios-plain-a",
+      "writerViewer": "writer-viewer-a"
+    },
+    "methodAndVersion": "canonical storage SHA-256 plus cold client reopen; Maestro 2.6.1",
+    "secureComparisonRecordRef": "secure-operator-record:d501-final-20260808",
+    "revisionAndByteCountMetadata": "retained in secure operator record",
+    "redactedResultRefs": {
+      "maestroSha256": "4604f102f1586c7a7713272bb0b8675633282a9e58bac10db2b18b88a6ecb869",
+      "selectionSha256": "79f58f2cc843b2bb4aa58e105769e6eb56ec28a30136e81c54bfaf49958f8697",
+      "darkToolbarSha256": "e93d5cb7b5eebc37710ab546692beeb3d90c1ba2381bbd05086a06090b22f95c",
+      "conflictSha256": "7535544e7b7a4822b927c5b76a5685c31eac0b040d5d2285e9e17deebeee43a8",
+      "writerViewerSha256": "da5053c9a006a348de9ab398f28208010149774f4e1ecce698e154e59966ca1d",
+      "deleteConfirmationSha256": "3846b9b14a1d5763c81cf6cd37b6544c12cbd3b110cc37139d2592f2fb0f1c4f",
+      "cleanupSha256": "8ee7e8a019006cce1a2abb580d7f946c9ca27f15636be6ebf49592af07e9b037"
+    }
+  },
+  "notes": "iOS ships the same native Markdown/plain source editor and native read-only Writer viewer as the locked D501 contract; no rich Writer editor is present."
+}

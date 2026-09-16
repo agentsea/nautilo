@@ -1,0 +1,2 @@
+[test]
+preload = ["./packages/db/tests/test-env-preload.ts"]

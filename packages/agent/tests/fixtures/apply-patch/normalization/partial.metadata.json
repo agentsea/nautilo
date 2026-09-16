@@ -1,0 +1,18 @@
+{
+  "context": {
+    "zone": "current",
+    "root": "/private/work/project",
+    "relayId": "relay-desktop",
+    "agentId": "agent-apply-patch",
+    "turnId": "turn-partial-1"
+  },
+  "runtimeVersion": "nautilo-apply-patch@3389fa55",
+  "preflight": {
+    "operations": [
+      { "operation": "add", "path": "docs/committed.md" },
+      { "operation": "update", "path": "src/config.ts" },
+      { "operation": "delete", "path": "tmp/later.txt" }
+    ]
+  },
+  "revisions": [{ "path": "docs/committed.md", "revisionId": "revision-prefix" }]
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Nautilo support and diagnostics
+    url: https://nautilo.ai/community/support
+    about: Start with the relevant guide and a redacted minimal diagnostic bundle.
+  - name: Security guidance
+    url: https://nautilo.ai/security
+    about: Do not disclose vulnerabilities, credentials, or private content in a public issue.

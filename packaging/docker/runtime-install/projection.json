@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "packaging/docker/generate-runtime-install.ts",
+  "entryWorkspace": "@nautilo/server-bin",
+  "workspaceCount": 41,
+  "workspaces": [
+    {
+      "name": "@nautilo/server-bin",
+      "path": "bin/nautilo-server"
+    },
+    {
+      "name": "@nautilo/acp-host",
+      "path": "packages/acp-host"
+    },
+    {
+      "name": "@nautilo/agent",
+      "path": "packages/agent"
+    },
+    {
+      "name": "@nautilo/api-client",
+      "path": "packages/api-client"
+    },
+    {
+      "name": "@nautilo/attachments",
+      "path": "packages/attachments"
+    },
+    {
+      "name": "@nautilo/catalog",
+      "path": "packages/catalog"
+    },
+    {
+      "name": "@nautilo/cloudconvert",
+      "path": "packages/cloudconvert"
+    },
+    {
+      "name": "@nautilo/computer-use-contracts",
+      "path": "packages/computer-use-contracts"
+    },
+    {
+      "name": "@nautilo/computer-use-host-protocol",
+      "path": "packages/computer-use-host-protocol"
+    },
+    {
+      "name": "@nautilo/config",
+      "path": "packages/config"
+    },
+    {
+      "name": "@nautilo/config-guard",
+      "path": "packages/config-guard"
+    },
+    {
+      "name": "@nautilo/db",
+      "path": "packages/db"
+    },
+    {
+      "name": "@nautilo/desktop-filesystem-grants",
+      "path": "packages/desktop-filesystem-grants"
+    },
+    {
+      "name": "@nautilo/document-mutations",
+      "path": "packages/document-mutations"
+    },
+    {
+      "name": "@nautilo/encryption-invariants",
+      "path": "packages/encryption-invariants"
+    },
+    {
+      "name": "@nautilo/event-feed",
+      "path": "packages/event-feed"
+    },
+    {
+      "name": "@nautilo/fonts",
+      "path": "packages/fonts"
+    },
+    {
+      "name": "@nautilo/lattice-bridge",
+      "path": "packages/lattice-bridge"
+    },
+    {
+      "name": "@nautilo/lattice-crypto",
+      "path": "packages/lattice-crypto"
+    },
+    {
+      "name": "@nautilo/loffice",
+      "path": "packages/loffice"
+    },
+    {
+      "name": "@nautilo/logger",
+      "path": "packages/logger"
+    },
+    {
+      "name": "@nautilo/mcp-client",
+      "path": "packages/mcp-client"
+    },
+    {
+      "name": "@nautilo/message-invariants",
+      "path": "packages/message-invariants"
+    },
+    {
+      "name": "@nautilo/model-capabilities",
+      "path": "packages/model-capabilities"
+    },
+    {
+      "name": "@nautilo/office-core",
+      "path": "packages/office-core"
+    },
+    {
+      "name": "@nautilo/office-docs",
+      "path": "packages/office-docs"
+    },
+    {
+      "name": "@nautilo/operator-secrets",
+      "path": "packages/operator-secrets"
+    },
+    {
+      "name": "@nautilo/profile-portability",
+      "path": "packages/profile-portability"
+    },
+    {
+      "name": "@nautilo/reflection",
+      "path": "packages/reflection"
+    },
+    {
+      "name": "@nautilo/reflection-bridge",
+      "path": "packages/reflection-bridge"
+    },
+    {
+      "name": "@nautilo/relay",
+      "path": "packages/relay"
+    },
+    {
+      "name": "@nautilo/runtime",
+      "path": "packages/runtime"
+    },
+    {
+      "name": "@nautilo/sandbox",
+      "path": "packages/sandbox"
+    },
+    {
+      "name": "@nautilo/security",
+      "path": "packages/security"
+    },
+    {
+      "name": "@nautilo/server",
+      "path": "packages/server"
+    },
+    {
+      "name": "@nautilo/trust",
+      "path": "packages/trust"
+    },
+    {
+      "name": "@nautilo/types",
+      "path": "packages/types"
+    },
+    {
+      "name": "@nautilo/vault",
+      "path": "packages/vault"
+    },
+    {
+      "name": "@nautilo/voice",
+      "path": "packages/voice"
+    },
+    {
+      "name": "@nautilo/workstation-profiles",
+      "path": "packages/workstation-profiles"
+    },
+    {
+      "name": "@nautilo/writer-proposal-core",
+      "path": "packages/writer-proposal-core"
+    }
+  ],
+  "reviewedExceptions": [
+    {
+      "kind": "root-override",
+      "name": "@hono/node-server",
+      "reason": "Keep the shipped MCP HTTP transport on the audited patched Node adapter release."
+    },
+    {
+      "kind": "root-override",
+      "name": "@langchain/langgraph-checkpoint",
+      "reason": "Keep the checkpoint protocol implementation on the repository-approved compatibility version."
+    },
+    {
+      "kind": "root-override",
+      "name": "@langchain/openai",
+      "reason": "Keep all OpenAI-compatible providers on the repository-approved adapter version."
+    },
+    {
+      "kind": "root-override",
+      "name": "body-parser",
+      "reason": "Keep the shipped Express request parser on the audited patched release."
+    },
+    {
+      "kind": "root-override",
+      "name": "hono",
+      "reason": "Keep the shipped MCP HTTP transport on the audited patched Hono release."
+    },
+    {
+      "kind": "root-override",
+      "name": "jose",
+      "reason": "Keep server authentication on the repository-approved JOSE version."
+    },
+    {
+      "kind": "root-override",
+      "name": "qs",
+      "reason": "Keep the shipped Express query parser on the audited patched release."
+    }
+  ]
+}

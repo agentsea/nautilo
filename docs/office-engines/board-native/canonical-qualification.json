@@ -1,0 +1,18 @@
+{
+  "browser": "152.0.7977.83",
+  "scope": "Prepared Board application with an HTTP canonical bridge fixture; no live Nautilo account or provider",
+  "checks": [
+    "real native typing holds autosave, stable header/context, explicit Save commits exact canonical bytes",
+    "fresh page reopen renders the persisted native board without a write",
+    "unsupported image is refused before changing the model or dirty Human lease",
+    "decode failure leaves canonical bytes, revision and clean Human state unchanged",
+    "pending real image refuses Save/close, journals exact:false, then saves exact bytes once after release",
+    "reader abort and reader error leave canonical bytes, revision and writes unchanged",
+    "reload during pending image restores the inexact journal in conflict without writing canonical bytes",
+    "Ivory and Tokyo palette changes preserve canonical bytes",
+    "concurrent canonical update preserves active Human text and saves an exact separate copy",
+    "read-only native preview renders canonical content without Save or close-write registration"
+  ],
+  "writes": 2,
+  "errors": []
+}

@@ -1,0 +1,39 @@
+name: ${COMPOSE_PROJECT_NAME:-nautilo}
+
+services:
+  legacy-postgres:
+    image: pgvector/pgvector:pg17
+    container_name: ${COMPOSE_PROJECT_NAME:-nautilo}-postgres
+    environment:
+      # postgres-init.sh creates `nautilo` and `logto_nautilo`; leave the
+      # image's automatic POSTGRES_DB target on the maintenance DB so it
+      # does not pre-create `nautilo` before the init script runs.
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      NAUTILO_DB_PASSWORD: ${NAUTILO_DB_PASSWORD:-nautilo}
+      LOGTO_DB_PASSWORD: ${LOGTO_DB_PASSWORD:-logto}
+      NAUTILO_AGENT_DB_PASSWORD: ${NAUTILO_AGENT_DB_PASSWORD:-nautilo_agent}
+      NAUTILO_CRYPTO_DB_PASSWORD: ${NAUTILO_CRYPTO_DB_PASSWORD:-nautilo_crypto}
+      NAUTILO_POSTGRES_CLUSTER_KIND: app
+    ports:
+      - "${NAUTILO_DB_PORT:-5434}:5432"
+    volumes:
+      - nautilo_pgdata:/var/lib/postgresql/data
+      - ../../../infra/postgres-init.sh:/docker-entrypoint-initdb.d/01-nautilo.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - nautilo-local
+
+volumes:
+  nautilo_pgdata:
+    driver: local
+
+networks:
+  nautilo-local:
+    driver: bridge

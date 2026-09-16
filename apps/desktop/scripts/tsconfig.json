@@ -1,0 +1,20 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node", "bun-types"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "build-qualification-cua-driver.ts",
+    "vendor-cua-driver.ts",
+    "vendor-agent-browser.ts",
+    "vendor-computer-use-host.ts",
+    "vendor-sharp-darwin.ts",
+    "verify-packaged-computer-use-host.ts",
+    "desktop-license-payload.ts",
+    "vendor-bun.ts"
+  ]
+}

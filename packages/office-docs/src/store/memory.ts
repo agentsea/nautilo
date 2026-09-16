@@ -1,0 +1,442 @@
+import { cloneJsonData as cloneJson, stringifyJsonData } from '../model/json-data.js';
+import type { Block, BlockStyle, CellStyle, Document, HeadingLevel, HeaderFooter, Inline, InlineStyle, PageSetup, TableRow, TableCell, BlockType } from '../model/types.js';
+import { resolvePageSetup, normalizeBlockStyle, normalizeCellStyleClears } from '../model/types.js';
+import type { DocStyles, NamedStyleDef, StyleId } from '../model/named-styles.js';
+import { blockStyleId, materializeBlockSpacing, rematerializeDocSpacing } from '../model/named-styles.js';
+import type { DocStore } from './store.js';
+import { walkBlockArrays } from '../model/block-walk.js';
+import { applyInsertText, applyDeleteText, applyInlineStyle as applyInlineStyleHelper, applyInsertInline, applySplitBlock, applyMergeBlocks } from './block-helpers.js';
+
+/**
+ * Deep clone a document for snapshot-based undo/redo.
+ */
+function cloneDocument(doc: Document): Document {
+  const cloned = cloneJson(doc);
+  for (const block of cloned.blocks) {
+    block.style = normalizeBlockStyle(block.style);
+  }
+  if (cloned.header) {
+    for (const block of cloned.header.blocks) {
+      block.style = normalizeBlockStyle(block.style);
+    }
+  }
+  if (cloned.footer) {
+    for (const block of cloned.footer.blocks) {
+      block.style = normalizeBlockStyle(block.style);
+    }
+  }
+  return cloned;
+}
+
+/**
+ * In-memory DocStore implementation with snapshot-based undo/redo.
+ */
+export class MemDocStore implements DocStore {
+  private doc: Document;
+  private undoStack: Document[] = [];
+  private redoStack: Document[] = [];
+  /** Depth of nested `batch()` calls; 0 outside a batch. */
+  private batchDepth = 0;
+
+  constructor(doc?: Document) {
+    this.doc = doc ? cloneDocument(doc) : { blocks: [] };
+  }
+
+  getDocument(): Document {
+    return cloneDocument(this.doc);
+  }
+
+  setDocument(doc: Document): void {
+    // Prohibited inside a batch so both stores enforce the same contract.
+    // `YorkieDocStore.setDocument()` throws because it reads its `undoFloor`
+    // *after* the write lands, which inside a batch is not until the batch's
+    // single `doc.update` closes — the floor would land one unit low and the
+    // whole loaded document would become undoable. Nothing breaks here, but
+    // the docs package's only store is this one, so code written and tested
+    // against it would pass and then throw under the collaborative store.
+    if (this.batchDepth > 0) {
+      throw new Error('setDocument() must not be called inside batch()');
+    }
+    this.doc = cloneDocument(doc);
+  }
+
+  replaceDocument(doc: Document): void {
+    this.doc = cloneDocument(doc);
+  }
+
+  getBlock(id: string): Block | undefined {
+    try {
+      const { blocks, index } = this.findBlockInAnyArray(id);
+      return cloneJson(blocks[index]);
+    } catch {
+      return undefined;
+    }
+  }
+
+  updateBlock(id: string, block: Block): void {
+    const { blocks, index } = this.findBlockInAnyArray(id);
+    blocks[index] = cloneJson(block);
+  }
+
+  insertBlock(index: number, block: Block): void {
+    this.doc.blocks.splice(index, 0, cloneJson(block));
+  }
+
+  insertBlockAfter(siblingBlockId: string, block: Block): void {
+    const { blocks, index } = this.findBlockInAnyArray(siblingBlockId);
+    blocks.splice(index + 1, 0, cloneJson(block));
+  }
+
+  insertBlocksAfter(siblingBlockId: string, newBlocks: Block[]): void {
+    if (newBlocks.length === 0) return;
+    const { blocks, index } = this.findBlockInAnyArray(siblingBlockId);
+    blocks.splice(index + 1, 0, ...cloneJson(newBlocks));
+  }
+
+  deleteBlock(id: string): void {
+    const { blocks, index } = this.findBlockInAnyArray(id);
+    blocks.splice(index, 1);
+  }
+
+  deleteBlockByIndex(index: number): void {
+    if (index < 0 || index >= this.doc.blocks.length) {
+      throw new Error(`Block index out of bounds: ${index}`);
+    }
+    this.doc.blocks.splice(index, 1);
+  }
+
+  getPageSetup(): PageSetup {
+    return resolvePageSetup(this.doc.pageSetup);
+  }
+
+  setPageSetup(setup: PageSetup): void {
+    this.doc.pageSetup = cloneJson(setup);
+  }
+
+  getDocStyles(): DocStyles {
+    return this.doc.styles ? cloneJson(this.doc.styles) : {};
+  }
+
+  setDocStyles(styles: DocStyles): void {
+    this.doc.styles = cloneJson(styles);
+    // Re-materialize spacing across all styled blocks so "Use my default
+    // styles" applies paragraph spacing too (inline defaults reflow lazily).
+    rematerializeDocSpacing(this.doc);
+  }
+
+  updateStyleDefinition(styleId: StyleId, def: NamedStyleDef): void {
+    if (!this.doc.styles) this.doc.styles = {};
+    this.doc.styles[styleId] = cloneJson(def);
+    rematerializeDocSpacing(this.doc, styleId);
+  }
+
+  resetStyle(styleId: StyleId): void {
+    if (this.doc.styles) delete this.doc.styles[styleId];
+    rematerializeDocSpacing(this.doc, styleId);
+  }
+
+  resetAllStyles(): void {
+    this.doc.styles = {};
+    rematerializeDocSpacing(this.doc);
+  }
+
+  getHeader(): HeaderFooter | undefined {
+    return this.doc.header ? cloneJson(this.doc.header) : undefined;
+  }
+
+  getFooter(): HeaderFooter | undefined {
+    return this.doc.footer ? cloneJson(this.doc.footer) : undefined;
+  }
+
+  setHeader(header: HeaderFooter | undefined): void {
+    this.doc.header = header ? cloneJson(header) : undefined;
+  }
+
+  setFooter(footer: HeaderFooter | undefined): void {
+    this.doc.footer = footer ? cloneJson(footer) : undefined;
+  }
+
+  undo(): void {
+    if (!this.canUndo()) return;
+    this.redoStack.push(cloneDocument(this.doc));
+    this.doc = this.undoStack.pop()!;
+  }
+
+  redo(): void {
+    if (!this.canRedo()) return;
+    this.undoStack.push(cloneDocument(this.doc));
+    this.doc = this.redoStack.pop()!;
+  }
+
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
+  snapshot(): void {
+    // Inside a batch the checkpoint has already been taken by `batch()`
+    // itself, and it captured the true pre-batch state. Pushing again here
+    // would make one batch N undo units — the opposite of the contract.
+    if (this.batchDepth > 0) return;
+    this.pushUndo();
+    this.redoStack = [];
+  }
+
+  batch(fn: () => void): void {
+    // Nested batch: already covered by the outer one's checkpoint. Just run
+    // the body — opening a second would split one action into two undo
+    // units, exactly what the seam exists to prevent.
+    if (this.batchDepth > 0) {
+      this.batchDepth++;
+      try {
+        fn();
+      } finally {
+        this.batchDepth--;
+      }
+      return;
+    }
+    // Checkpoint up front rather than letting the body's first `snapshot()`
+    // do it. Deferring would mean a body that writes *before* it snapshots
+    // (every editor operation snapshots partway through, so composing two of
+    // them lands here) leaves those first writes permanently unundoable, and
+    // a body that never snapshots at all costs no undo unit — neither of
+    // which `YorkieDocStore` does, since its single `doc.update` covers the
+    // whole body regardless. Mirrors `MemSlidesStore.batch()`.
+    const before = cloneDocument(this.doc);
+    const priorRedo = this.redoStack;
+    this.undoStack.push(before);
+    this.redoStack = [];
+    this.batchDepth++;
+    try {
+      fn();
+    } finally {
+      this.batchDepth--;
+      // A batch that wrote nothing costs no undo unit — and no redo history
+      // either, which is why `priorRedo` is put back rather than left
+      // cleared. `YorkieDocStore` pushes no change in that case, so
+      // `doc.history` keeps its redo stack; the two stores share one
+      // contract, so this one must too.
+      //
+      // Compared rather than tracked with a flag so a body that writes and
+      // then reverts itself is also free. Both sides of the comparison go
+      // through `cloneDocument`, which normalizes block styles: comparing a
+      // normalized clone against the raw live document would report a write
+      // for any document holding a partial style (`updateBlock` stores one
+      // verbatim), leaving a dead undo checkpoint behind.
+      //
+      // On a throw the partial writes stand (this store does not roll back),
+      // so the checkpoint is kept — that is what makes the mess undoable.
+      const wroteNothing =
+        this.undoStack[this.undoStack.length - 1] === before &&
+        stringifyJsonData(before) === stringifyJsonData(cloneDocument(this.doc));
+      if (wroteNothing) {
+        this.undoStack.pop();
+        this.redoStack = priorRedo;
+      }
+    }
+  }
+
+  insertTableRow(tableBlockId: string, atIndex: number, row: TableRow): void {
+    const block = this.findBlock(tableBlockId);
+    block.tableData!.rows.splice(atIndex, 0, cloneJson(row));
+  }
+
+  deleteTableRow(tableBlockId: string, rowIndex: number): void {
+    const block = this.findBlock(tableBlockId);
+    block.tableData!.rows.splice(rowIndex, 1);
+  }
+
+  insertTableColumn(tableBlockId: string, atIndex: number, cells: TableCell[]): void {
+    const block = this.findBlock(tableBlockId);
+    block.tableData!.rows.forEach((row, i) => {
+      row.cells.splice(atIndex, 0, cloneJson(cells[i]));
+    });
+  }
+
+  deleteTableColumn(tableBlockId: string, colIndex: number): void {
+    const block = this.findBlock(tableBlockId);
+    block.tableData!.rows.forEach((row) => {
+      row.cells.splice(colIndex, 1);
+    });
+  }
+
+  updateTableCell(
+    tableBlockId: string, rowIndex: number, colIndex: number, cell: TableCell,
+  ): void {
+    const block = this.findBlock(tableBlockId);
+    block.tableData!.rows[rowIndex].cells[colIndex] = cloneJson(cell);
+  }
+
+  updateTableAttrs(tableBlockId: string, attrs: { cols: number[]; rowHeights?: (number | undefined)[] }): void {
+    const block = this.findBlock(tableBlockId);
+    block.tableData!.columnWidths = [...attrs.cols];
+    if (attrs.rowHeights !== undefined) {
+      block.tableData!.rowHeights = [...attrs.rowHeights];
+    }
+  }
+
+  insertText(blockId: string, offset: number, text: string): void {
+    const { blocks, index } = this.findBlockInAnyArray(blockId);
+    blocks[index] = applyInsertText(blocks[index], offset, text);
+  }
+
+  deleteText(blockId: string, offset: number, length: number): void {
+    const { blocks, index } = this.findBlockInAnyArray(blockId);
+    blocks[index] = applyDeleteText(blocks[index], offset, length);
+  }
+
+  applyStyle(blockId: string, fromOffset: number, toOffset: number, style: Partial<InlineStyle>): void {
+    const { blocks, index } = this.findBlockInAnyArray(blockId);
+    blocks[index] = applyInlineStyleHelper(blocks[index], fromOffset, toOffset, style);
+  }
+
+  applyStyles(
+    edits: Array<{ blockId: string; fromOffset: number; toOffset: number; style: Partial<InlineStyle> }>,
+  ): void {
+    for (const edit of edits) {
+      this.applyStyle(edit.blockId, edit.fromOffset, edit.toOffset, edit.style);
+    }
+  }
+
+  splitBlock(blockId: string, offset: number, newBlockId: string, newBlockType: BlockType): void {
+    const { blocks, index } = this.findBlockInAnyArray(blockId);
+    const [before, after] = applySplitBlock(blocks[index], offset, newBlockId, newBlockType);
+    blocks[index] = before;
+    blocks.splice(index + 1, 0, after);
+  }
+
+  mergeBlock(blockId: string, nextBlockId: string): void {
+    if (blockId === nextBlockId) throw new Error('Cannot merge a block with itself');
+    const { blocks: arr1, index: idx1 } = this.findBlockInAnyArray(blockId);
+    const { blocks: arr2, index: idx2 } = this.findBlockInAnyArray(nextBlockId);
+    if (arr1 !== arr2) throw new Error('Cannot merge blocks from different regions');
+    arr1[idx1] = applyMergeBlocks(arr1[idx1], arr2[idx2]);
+    arr2.splice(idx2, 1);
+  }
+
+  setBlockType(
+    blockId: string,
+    type: BlockType,
+    opts?: { headingLevel?: HeadingLevel; listKind?: 'ordered' | 'unordered'; listLevel?: number },
+  ): void {
+    const block = this.findBlock(blockId);
+    const prevStyleId = blockStyleId(block);
+    const prevHeadingLevel = block.headingLevel;
+    block.type = type;
+    delete block.headingLevel;
+    delete block.listKind;
+    delete block.listLevel;
+    if (type === 'heading') {
+      block.headingLevel = opts?.headingLevel ?? 1;
+    }
+    if (type === 'list-item') {
+      // A bulleted heading remembers its level so removing the list restores
+      // the heading instead of flattening it to body text (see `Block`).
+      if (prevHeadingLevel !== undefined) block.headingLevel = prevHeadingLevel;
+      block.listKind = opts?.listKind ?? 'unordered';
+      block.listLevel = opts?.listLevel ?? 0;
+    }
+    if (type === 'horizontal-rule' || type === 'page-break') {
+      block.inlines = [];
+    } else if (block.inlines.length === 0) {
+      block.inlines = [{ text: '', style: {} }];
+    }
+    // Applying a different named style resets the block's style-owned spacing
+    // to that style's definition (Google Docs parity). A bullet toggle
+    // (paragraph↔list-item, both 'normal') leaves spacing untouched.
+    if (blockStyleId(block) !== prevStyleId) {
+      block.style = materializeBlockSpacing(block, this.doc.styles);
+    }
+  }
+
+  applyBlockStyle(blockId: string, style: Partial<BlockStyle>): void {
+    const block = this.findBlock(blockId);
+    block.style = normalizeBlockStyle({ ...block.style, ...style });
+  }
+
+  applyCellStyle(
+    tableBlockId: string, rowIndex: number, colIndex: number,
+    style: Partial<CellStyle>,
+  ): void {
+    const block = this.findBlock(tableBlockId);
+    const cell = block.tableData!.rows[rowIndex].cells[colIndex];
+    // The cell-background "Reset" entry passes `''`; normalizing it to an
+    // explicit `undefined` and then dropping the key keeps this cache in step
+    // with the Yorkie store, which removes the attribute outright (#793).
+    // Spreading alone would leave the key present holding `undefined`, so
+    // `'backgroundColor' in cell.style` would answer true here and false there.
+    const cleared = normalizeCellStyleClears(style);
+    const merged: CellStyle = { ...cell.style, ...cleared };
+    for (const key of Object.keys(cleared) as Array<keyof CellStyle>) {
+      if (cleared[key] === undefined) delete merged[key];
+    }
+    cell.style = merged;
+  }
+
+  applyCellSpan(
+    tableBlockId: string, rowIndex: number, colIndex: number,
+    span: { colSpan?: number; rowSpan?: number },
+  ): void {
+    const block = this.findBlock(tableBlockId);
+    const cell = block.tableData!.rows[rowIndex].cells[colIndex];
+    if (span.colSpan !== undefined) {
+      cell.colSpan = span.colSpan === 1 ? undefined : span.colSpan;
+    }
+    if (span.rowSpan !== undefined) {
+      cell.rowSpan = span.rowSpan === 1 ? undefined : span.rowSpan;
+    }
+  }
+
+  insertImageInline(blockId: string, offset: number, inline: Inline): void {
+    const { blocks, index } = this.findBlockInAnyArray(blockId);
+    blocks[index] = applyInsertInline(blocks[index], offset, inline);
+  }
+
+  private findBlock(id: string): Block {
+    const { blocks, index } = this.findBlockInAnyArray(id);
+    return blocks[index];
+  }
+
+  private findBlockInAnyArray(id: string): { blocks: Block[]; index: number } {
+    const bodyIdx = this.doc.blocks.findIndex((b) => b.id === id);
+    if (bodyIdx !== -1) return { blocks: this.doc.blocks, index: bodyIdx };
+    if (this.doc.header) {
+      const hIdx = this.doc.header.blocks.findIndex((b) => b.id === id);
+      if (hIdx !== -1) return { blocks: this.doc.header.blocks, index: hIdx };
+    }
+    if (this.doc.footer) {
+      const fIdx = this.doc.footer.blocks.findIndex((b) => b.id === id);
+      if (fIdx !== -1) return { blocks: this.doc.footer.blocks, index: fIdx };
+    }
+    // Recursively search inside table cells (supports nested tables)
+    const nested = this.findBlockInTableCells(id, this.doc.blocks);
+    if (nested) return nested;
+    if (this.doc.header) {
+      const hNested = this.findBlockInTableCells(id, this.doc.header.blocks);
+      if (hNested) return hNested;
+    }
+    if (this.doc.footer) {
+      const fNested = this.findBlockInTableCells(id, this.doc.footer.blocks);
+      if (fNested) return fNested;
+    }
+    throw new Error(`Block not found: ${id}`);
+  }
+
+  private findBlockInTableCells(
+    id: string,
+    blocks: Block[],
+  ): { blocks: Block[]; index: number } | undefined {
+    for (const children of walkBlockArrays([blocks])) {
+      const index = children.findIndex((block) => block.id === id);
+      if (index !== -1) return { blocks: children, index };
+    }
+    return undefined;
+  }
+
+  private pushUndo(): void {
+    this.undoStack.push(cloneDocument(this.doc));
+  }
+}

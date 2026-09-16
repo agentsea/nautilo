@@ -1,0 +1,89 @@
+name: Reproducible defect
+description: Report a bounded failure with known intended behavior and a safe reproduction.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share less. Prove more. Never paste credentials, provider keys, recovery codes, private Room content, personal paths, or full configuration files into a public issue. Do not report vulnerabilities here.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched for an existing report.
+          required: true
+        - label: I removed secrets and private data from every attachment and log excerpt.
+          required: true
+        - label: This is a defect with known intended behavior, not a feature or redesign proposal.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Nautilo version or commit
+      description: Use a release tag or commit SHA. Do not write "latest."
+      placeholder: v0.x.y or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Server or API
+        - Web workbench
+        - Desktop
+        - Mobile
+        - TUI or CLI
+        - Deployment or upgrade
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Give the smallest deterministic sequence, including setup that materially changes the result.
+      placeholder: |
+        1. Start from...
+        2. Run...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the already-established behavior you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: State what happened, including stable error text when safe.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant environment
+      description: OS, runtime, deployment mode, client, and model/provider only when they affect the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Include only the smallest useful excerpt. Review it again before submission.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: recovery
+    attributes:
+      label: Recovery or workaround
+      description: Explain whether retry, restart, rollback, or another action restored a known-good state.
+    validations:
+      required: false

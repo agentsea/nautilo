@@ -1,0 +1,56 @@
+---
+description: Nautilo Desktop ownership, pairing, authentication, and packaging boundaries.
+globs:
+  - "apps/desktop/**"
+  - "**/electron-builder.yml"
+  - "**/build-electron.ts"
+alwaysApply: true
+---
+
+# Electron architecture
+
+Apply the [repository working rules](../../AGENTS.md) and
+[architecture map](../../README.ai). Desktop is a client of the selected
+Nautilo server; Workbench is served by that server.
+
+## Pairing and authentication
+
+Keep the active server, Human session, tokens, workspace selection, grants,
+and pending connection attempts scoped to their owning pairing. A late result
+from a previous connection must not update its replacement. Read the existing
+connection controllers and tests before changing switching or reconnect behavior.
+
+Desktop sign-in uses the selected server's Logto configuration and the PKCE
+flow under `apps/desktop/electron/auth/`. The auth window has no privileged
+preload. Preserve navigation containment, callback/state validation, and token
+storage boundaries. Authentication, PIN/biometric consent, and encryption
+admission are separate checks; one must not substitute for another.
+
+## Execution ownership
+
+Electron owns Human/session/grant/policy/native authority. Relay Host owns
+the authenticated server WebSocket through `RelayClient`. Computer Use Host
+owns Cua supervision and provider parsing; Electron brokers admitted requests
+using attested paths and private inherited pipes. Preserve cancellation,
+generation fencing, and recovery without replaying ambiguous mutations.
+
+Read [Relay/Host ownership](../../docs/relay-host-ownership.md) before changing
+local execution. Browser, clipboard, filesystem, media, and credential handlers
+must retain their existing sender and grant checks.
+
+## Packaging and verification
+
+The production app packages its client UI, preloads, native integrations, and
+managed host/runtime artifacts. It does not package or start the Nautilo server,
+Postgres, database migrations, or Compose infrastructure. Server lifecycle belongs
+to the operator. Use the checked-in package inventory policy and manifests to
+determine which dependencies and artifacts belong in Desktop.
+
+A packaged smoke harness can use an owned HTTP stub to exercise the Workbench
+window. It does not prove a connected server session, authentication, device
+grants, or live Computer Use acceptance. Keep these evidence boundaries explicit.
+
+Use named development instances and isolated Desktop profiles; see the
+[Desktop README](../../apps/desktop/README.md). Packaging, signing, and release
+procedures live in [PRODUCTION.md](../../apps/desktop/PRODUCTION.md),
+[SIGNING.md](../../apps/desktop/SIGNING.md), and [RELEASE.md](../../RELEASE.md).

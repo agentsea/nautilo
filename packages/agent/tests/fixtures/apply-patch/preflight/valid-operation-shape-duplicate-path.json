@@ -1,0 +1,6 @@
+{
+  "operations": [
+    { "operation": "move", "fromPath": "src/old.ts", "path": "src/renamed.ts" },
+    { "operation": "delete", "path": "src/old.ts" }
+  ]
+}

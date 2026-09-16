@@ -1,0 +1,65 @@
+{
+  "workflowRunId": 34408544871,
+  "sourceSha": "032b5ccf9f5b6e75bb22193fb6d1572113429006",
+  "dockerfileSha256": "sha256:869dc6bdd27bd87520a7b0f42e234a06a4d7dbc6f8d1fb12fae871b0f767bbd4",
+  "architectures": ["linux/amd64", "linux/arm64"],
+  "imageBindings": {
+    "linux/amd64": "sha256:b67b54028cd17eaf75be0ac6b90f87504755bb0f4d5c5ccd7b2e0d5c5025102b",
+    "linux/arm64": "sha256:30b1b976546c700bfc08fd3ec3b221918049b2ff6006b29f891c14fa7eab743f"
+  },
+  "scannerDatabases": {
+    "grype": "25e9d8e0893cd6a71c891c3ad4769916a30f44ff99c7aa7de61cbd14ab2669a6",
+    "trivy": "432338717249b87cfb041a041137d44b6335adaf65129dae97f7a767f7899277"
+  },
+  "dependencyRemediation": {
+    "package": "smol-toml",
+    "from": "1.6.1",
+    "to": "1.8.0",
+    "fixedFloor": "1.7.1",
+    "failure": ["trivy", "CVE-2026-85730", "smol-toml", "1.6.1", "high", true]
+  },
+  "chromiumInstalledVersion": "152.0.7977.82-1~deb13u1",
+  "chromiumFixedFloor": "153.0.8010.36",
+  "chromiumAdvisories": [
+    "CVE-2026-87444",
+    "CVE-2026-87460",
+    "CVE-2026-87468",
+    "CVE-2026-87471",
+    "CVE-2026-87498",
+    "CVE-2026-87499",
+    "CVE-2026-87569",
+    "CVE-2026-87570",
+    "CVE-2026-87588",
+    "CVE-2026-87612",
+    "CVE-2026-87616",
+    "CVE-2026-87636"
+  ],
+  "failureTuples": [
+    ["fixable-high-critical", "trivy", "CVE-2026-85730", "smol-toml", "1.6.1", "high", true],
+    ["unmatched-high-critical", "trivy", "CVE-2026-85730", "smol-toml", "1.6.1", "high", true],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87444", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87444", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87460", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87460", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87468", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87468", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87471", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87471", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87498", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87498", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87499", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87499", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87569", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87569", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87570", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87570", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87588", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87588", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87612", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87612", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87616", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87616", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87636", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["unmatched-high-critical", "trivy", "CVE-2026-87636", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false]
+  ]
+}

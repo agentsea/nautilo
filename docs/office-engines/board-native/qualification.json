@@ -1,0 +1,28 @@
+{
+  "testedAt": "2026-09-13T19:55:22.057Z",
+  "browser": "152.0.7977.83",
+  "checks": [
+    "empty board → one click note → immediate native text entry",
+    "typing preserves header and rail nodes; zero header mutations",
+    "negative-coordinate note visibly highlights selected text; color changes only that range and undo restores it",
+    "Escape commits note and returns canvas focus",
+    "visible font family/size and whole-object emphasis",
+    "native selection drag preserves text and color",
+    "search native registry → drag a resizable ellipse",
+    "native resize handles change geometry",
+    "native connector creation between objects",
+    "multi-select → group → ungroup",
+    "image retains exact PNG bytes and paints after asynchronous decode without another click",
+    "image insert undo/redo",
+    "pan and repeatable fit retain native geometry",
+    "explicit zoom below inherited floor",
+    "overview and minimap navigation with close/focus return",
+    "live palette switch keeps document colors and geometry unchanged",
+    "Ivory/Tokyo and narrow embedded surface with reachable formatting",
+    "read-only view preserves model",
+    "keyboard create, text, commit, nudge, undo and delete"
+  ],
+  "limitations": [
+    "Surface fixture only: integrated Desktop, canonical concurrency/image integrity and packaged lifecycle evidence are recorded separately in the live and packaged qualification documents."
+  ]
+}

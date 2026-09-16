@@ -1,0 +1,12 @@
+{
+  "status": "applied",
+  "partial": false,
+  "operationCounts": { "add": 1, "update": 1, "move": 1, "delete": 1 },
+  "pathResults": [
+    { "operation": "add", "path": "docs/new.md", "status": "applied", "bytesTouched": 18 },
+    { "operation": "update", "path": "src/main.ts", "status": "applied", "bytesTouched": 10 },
+    { "operation": "move", "fromPath": "src/old.ts", "path": "src/renamed.ts", "status": "applied", "bytesTouched": 8 },
+    { "operation": "delete", "path": "tmp/obsolete.txt", "status": "applied", "bytesTouched": 4 }
+  ],
+  "unifiedDiff": "--- a/src/main.ts\n+++ b/src/main.ts\n-export const enabled = false;\n+export const enabled = true;\n"
+}

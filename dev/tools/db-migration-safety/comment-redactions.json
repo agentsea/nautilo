@@ -1,0 +1,60 @@
+{
+  "reason": "Maintainer-authorized public-source privacy cleanup; only the exact recorded standalone-comment edits are allowed. Executable SQL and statement breakpoints are unchanged.",
+  "redactions": [
+    {
+      "path": "packages/db/src/migrations/0022_d091_avatar_url_legacy_paths.sql",
+      "beforeSha256": "a746f5b39dd7a2e6e0c5e44c5465f5766ac76cacbb4fdb8f0f3b11d55a8833f2",
+      "afterSha256": "3ab08cb2cc92f8e505845fbbec9565647c8b6c1bd0ec35d15e3990451a06943d"
+    },
+    {
+      "path": "packages/db/src/migrations/0050_d168_p2_rls_path_c.sql",
+      "beforeSha256": "a62e92996a4c2d1013ef03a349ac8765df6f2c1b01e6e6aa84c41faac503c9f3",
+      "afterSha256": "b3c3ba03edd854d37c720548b5eb7cabe04604ee8c1eed4f89c12cb33d20c5af"
+    },
+    {
+      "path": "packages/db/src/migrations/0051_d168_p3_force_rls_credentials.sql",
+      "beforeSha256": "a57b08c8e542e36369bf23270aa29e511760ab776398f163d4900e1a99f9a55b",
+      "afterSha256": "b437cfa1518684bb57ed22cdb125c70352adf1d6e52932061dbf9b1e28817a4e"
+    },
+    {
+      "path": "packages/db/src/migrations/0088_d319_backfill_agent_handles_from_profile_names.sql",
+      "beforeSha256": "1cc2045cb238275d4be6a4eefe9d234d5e5badb852e7fa3e9e8a5fe4315f1443",
+      "afterSha256": "5d9c1576a9ddbdb9ca5d50bf6a49c7ffe85d0c57150c1c92772d968e24f272fa"
+    },
+    {
+      "path": "packages/db/src/migrations/0047_d111_subthread_substrate.sql",
+      "beforeSha256": "dbdd5c48d3985c89ad11ac52e7b40d89fec14ce125a82305459494b6039b5f40",
+      "afterSha256": "f4ab2f5aa7b1d0bba3ebc8b10c414ad80ad1ed837420bbde5cb7ca5fb0981ca5"
+    },
+    {
+      "path": "packages/db/src/migrations/0048_d124_h2h_message_state.sql",
+      "beforeSha256": "1c7f81f36892ef14489f64fade1a9b65323345b91ec7bd35227cfb3fe0bf3b45",
+      "afterSha256": "92aafb82c24d4a4ad4b5d8919e57b0b0e053419ddca4da14a723dd800314c8db"
+    },
+    {
+      "path": "packages/db/src/migrations/0054_d128_agent_response_mode.sql",
+      "beforeSha256": "3ed3d73116c05f7435459cce1912c50426d876c96683dbb9bc20d6eb36a63ff8",
+      "afterSha256": "7c1a7c4dfb8121c9d0ce835aa42a344fe01853204e510d0ad43c3a16bc63a68f"
+    },
+    {
+      "path": "packages/db/src/migrations/0058_d211_drop_user_agent_preferences.sql",
+      "beforeSha256": "4d999af6d5f972e5f3904a3615301d620e098ef07803d7e823eec26cae49d656",
+      "afterSha256": "206dc171d788ff850e5c4782ff8977e6cc9e36056b8aa0bf8bfa7086cb666e56"
+    },
+    {
+      "path": "packages/db/src/migrations/0060_m127_drop_agent_id_from_path_c.sql",
+      "beforeSha256": "fc9e68f5dde7d158d6479e3d80ec26af3f6eaad443739bd1f69abb641c717da5",
+      "afterSha256": "0a7e01bd1b2efab512a53c1f10144b297359452c6fec00ed444f1d2a12338941"
+    },
+    {
+      "path": "packages/db/src/migrations/0064_m124_rooms_kind_open.sql",
+      "beforeSha256": "c242b3bd5ee4003176720db2c6fb14a1cf13c9c0d97a1d45c69a51e0374e0a87",
+      "afterSha256": "3a8e31c671965615a9c01ef1adf4b9ba53ad944b8e878d707508096fb1eb9bfc"
+    },
+    {
+      "path": "packages/db/src/migrations/0063_m128_unify_server_invites.sql",
+      "beforeSha256": "25778e99b195a9708389f25fbea341d0c46f649c80e5bc78f7aaa26a81e60226",
+      "afterSha256": "a834381c56f8df0ef9cc3fa7b04e01c037c84a391bbdafc46e30e5a4bc0d06ac"
+    }
+  ]
+}

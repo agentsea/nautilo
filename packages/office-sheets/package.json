@@ -1,0 +1,65 @@
+{
+  "name": "@nautilo/office-sheets",
+  "private": true,
+  "version": "0.6.9",
+  "license": "Apache-2.0",
+  "description": "Nautilo-owned spreadsheet engine derived from Wafflebase",
+  "type": "module",
+  "main": "dist/browser.cjs",
+  "module": "dist/browser.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs",
+      "default": "./dist/browser.js"
+    },
+    "./browser": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs",
+      "default": "./dist/browser.js"
+    },
+    "./node": {
+      "types": "./dist/src/node.d.ts",
+      "import": "./dist/node.js",
+      "require": "./dist/node.cjs",
+      "default": "./dist/node.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest --run",
+    "test:watch": "vitest --watch",
+    "build": "vite --config vite.build.ts build --mode browser && vite --config vite.build.ts build --mode node && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "build:formula": "antlr4ts -visitor antlr/Formula.g4 && bash scripts/fix-antlr-ts.sh",
+    "preview": "vite preview",
+    "format": "prettier --write .",
+    "test:unit": "vitest --run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "dependencies": {
+    "@nautilo/office-core": "workspace:*",
+    "hyparquet": "^1.29.2",
+    "hyparquet-compressors": "^1.1.1",
+    "jszip": "^3.10.1",
+    "antlr4ts": "^0.5.0-alpha.4"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.8",
+    "antlr4ts-cli": "^0.5.0-alpha.4",
+    "jsdom": "^28.0.0",
+    "prettier": "^3.3.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.2",
+    "vitest": "^4.1.8"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE.md"
+  ]
+}

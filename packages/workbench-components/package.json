@@ -1,0 +1,41 @@
+{
+  "name": "@nautilo/workbench-components",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lit-based <nw-*> custom elements for Workbench HTML artifact iframes (D121)",
+  "main": "./dist/runtime.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
+    "./runtime": {
+      "import": "./dist/runtime.js"
+    },
+    "./dist/runtime.js": "./dist/runtime.js",
+    "./components/*": "./src/components/*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "clean": "rm -rf dist .turbo node_modules",
+    "test": "bun run test:unit && bun run test:integration",
+    "test:unit": "vitest run",
+    "test:integration": "tsup && vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "lit": "3.3.2"
+  },
+  "devDependencies": {
+    "@microsoft/api-extractor": "7.58.13",
+    "@types/node": "24.10.4",
+    "happy-dom": "20.11.6",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

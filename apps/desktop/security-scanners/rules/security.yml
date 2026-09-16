@@ -1,0 +1,179 @@
+rules:
+  - id: nautilo.javascript.untrusted-command
+    languages: [javascript, typescript]
+    message: Untrusted request or process input may reach an operating-system command sink. Verify validation, allowlisting, argument separation, and shell behavior.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.query.$KEY
+          - pattern: $REQ.body.$KEY
+          - pattern: $REQ.params.$KEY
+          - pattern: process.argv[$INDEX]
+          - pattern: $URL.searchParams.get(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $CP.exec($COMMAND, ...)
+          - pattern: $CP.execSync($COMMAND, ...)
+          - pattern: exec($COMMAND, ...)
+          - pattern: execSync($COMMAND, ...)
+
+  - id: nautilo.javascript.untrusted-code-evaluation
+    languages: [javascript, typescript]
+    message: Untrusted input may reach dynamic JavaScript evaluation. Remove the evaluation path or prove a strict non-code allowlist.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.query.$KEY
+          - pattern: $REQ.body.$KEY
+          - pattern: $REQ.params.$KEY
+          - pattern: process.argv[$INDEX]
+    pattern-sinks:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: Function($CODE)
+          - pattern: new Function($CODE)
+          - pattern: $VM.runInNewContext($CODE, ...)
+          - pattern: $VM.runInThisContext($CODE, ...)
+
+  - id: nautilo.javascript.untrusted-filesystem-path
+    languages: [javascript, typescript]
+    message: Untrusted input may reach a filesystem path operation. Verify canonicalization, root confinement, symlink handling, and deny-overrides.
+    severity: WARNING
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.query.$KEY
+          - pattern: $REQ.body.$KEY
+          - pattern: $REQ.params.$KEY
+          - pattern: $URL.searchParams.get(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $FS.readFile($PATH, ...)
+          - pattern: $FS.readFileSync($PATH, ...)
+          - pattern: $FS.writeFile($PATH, ...)
+          - pattern: $FS.writeFileSync($PATH, ...)
+          - pattern: $FS.rm($PATH, ...)
+          - pattern: $FS.rmSync($PATH, ...)
+          - pattern: $FS.createReadStream($PATH, ...)
+          - pattern: $FS.createWriteStream($PATH, ...)
+
+  - id: nautilo.javascript.untrusted-sql
+    languages: [javascript, typescript]
+    message: Untrusted input may reach a SQL query string. Verify that the value is bound as data rather than interpolated into SQL syntax.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.query.$KEY
+          - pattern: $REQ.body.$KEY
+          - pattern: $REQ.params.$KEY
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $DB.query($SQL, ...)
+          - pattern: $DB.execute($SQL, ...)
+
+  - id: nautilo.javascript.untrusted-network-destination
+    languages: [javascript, typescript]
+    message: Untrusted input may control an outbound network destination. Verify scheme/host allowlisting, redirect policy, DNS rebinding defenses, and private-address denial.
+    severity: WARNING
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.query.$KEY
+          - pattern: $REQ.body.$KEY
+          - pattern: $REQ.params.$KEY
+    pattern-sinks:
+      - pattern-either:
+          - pattern: fetch($URL, ...)
+          - pattern: $AXIOS.get($URL, ...)
+          - pattern: $AXIOS.post($URL, ...)
+          - pattern: $HTTP.request($URL, ...)
+          - pattern: $HTTPS.request($URL, ...)
+
+  - id: nautilo.python.untrusted-command
+    languages: [python]
+    message: Untrusted request or process input may reach an operating-system command sink. Verify argument separation, allowlisting, and shell behavior.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: request.args.get(...)
+          - pattern: request.form.get(...)
+          - pattern: request.json.get(...)
+          - pattern: sys.argv[$INDEX]
+    pattern-sinks:
+      - pattern-either:
+          - pattern: os.system($COMMAND)
+          - pattern: os.popen($COMMAND, ...)
+          - patterns:
+              - pattern: subprocess.$CALL($COMMAND, ..., shell=True, ...)
+              - metavariable-regex:
+                  metavariable: $CALL
+                  regex: ^(run|call|check_call|check_output|Popen)$
+
+  - id: nautilo.python.untrusted-code-evaluation
+    languages: [python]
+    message: Untrusted input may reach Python code evaluation. Remove the evaluation path or prove a strict non-code allowlist.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: request.args.get(...)
+          - pattern: request.form.get(...)
+          - pattern: request.json.get(...)
+          - pattern: sys.argv[$INDEX]
+    pattern-sinks:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: exec($CODE)
+          - pattern: compile($CODE, ...)
+
+  - id: nautilo.python.untrusted-sql
+    languages: [python]
+    message: Untrusted input may reach a SQL query string. Verify that the value is bound as data rather than interpolated into SQL syntax.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: request.args.get(...)
+          - pattern: request.form.get(...)
+          - pattern: request.json.get(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $DB.execute($SQL, ...)
+          - pattern: $DB.executemany($SQL, ...)
+          - pattern: $DB.executescript($SQL, ...)
+
+  - id: nautilo.go.untrusted-command
+    languages: [go]
+    message: Untrusted HTTP input may reach an operating-system command. Verify strict command/argument allowlisting and avoid shell interpretation.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.URL.Query().Get(...)
+          - pattern: $REQ.FormValue(...)
+          - pattern: $REQ.PathValue(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: exec.Command($COMMAND, ...)
+          - pattern: exec.CommandContext($CTX, $COMMAND, ...)
+
+  - id: nautilo.go.untrusted-sql
+    languages: [go]
+    message: Untrusted HTTP input may reach a SQL query string. Verify placeholders and bound arguments rather than query construction.
+    severity: ERROR
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.URL.Query().Get(...)
+          - pattern: $REQ.FormValue(...)
+          - pattern: $REQ.PathValue(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $DB.Query($SQL, ...)
+          - pattern: $DB.QueryContext($CTX, $SQL, ...)
+          - pattern: $DB.Exec($SQL, ...)
+          - pattern: $DB.ExecContext($CTX, $SQL, ...)

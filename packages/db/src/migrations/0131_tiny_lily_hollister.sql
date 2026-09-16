@@ -1,0 +1,3 @@
+ALTER TABLE "session_messages" ADD COLUMN "crypto_object_id" text;--> statement-breakpoint
+ALTER TABLE "session_messages" ADD CONSTRAINT "session_messages_crypto_object_id_crypto_objects_object_id_fk" FOREIGN KEY ("crypto_object_id") REFERENCES "public"."crypto_objects"("object_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session_messages" ADD CONSTRAINT "uq_session_messages_crypto_object_id" UNIQUE("crypto_object_id");

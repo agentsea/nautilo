@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "purpose": "D431 reader qualification corpus; original, redistributable, bounded content only",
+  "provenance": {
+    "authoredBy": "D431 fixture generator",
+    "license": "Nautilo project asset distributed under the repository MIT License",
+    "privateDocuments": "excluded",
+    "existingSmokeOnly": [
+      "apps/desktop/scratch/d362-spike/sample/sample.docx",
+      "apps/desktop/scratch/d362-spike/sample/sample.xlsx",
+      "apps/desktop/scratch/d362-spike/sample/sample.pptx",
+      "packages/server/assets/office-templates/blank.docx",
+      "packages/server/assets/office-templates/blank.xlsx",
+      "packages/server/assets/office-templates/blank.pptx",
+      "packages/server/tests/integration/fixtures/d391-roundtrip.docx"
+    ]
+  },
+  "generation": {
+    "docx": "apps/workbench/scripts/ooxml-fixtures/generate_docx.py",
+    "xlsxAndPptx": "apps/workbench/scripts/ooxml-fixtures/generate_office.mjs",
+    "nondeterminism": "OOXML ZIP timestamps and artifact-tool object IDs can vary; refresh size/SHA-256 after regeneration."
+  },
+  "fixtures": [
+    {"id":"docx-simple","format":"docx","taxonomy":"simple","path":"docx/simple.docx","bytes":38045,"sha256":"7d5029668bf135105ade2d12f1a807b7abe718795e2e1587044c353eb8270ea5","expected":{"pages":1,"features":["body text"]},"references":[{"path":"references/docx/simple/page-1.png","dimensions":"1547x2002"},{"path":"references/docx/simple/simple.pdf","pages":1}]},
+    {"id":"docx-rich","format":"docx","taxonomy":"rich","path":"docx/rich-mixed-orientation-tracked.docx","bytes":42177,"sha256":"25519a03c772557fc4d3380ef665d756c3297774084ae792fae54c896e40228c","expected":{"pages":3,"features":["portrait-landscape-portrait sections","independent headers and footers","styled headings","real bullet list","table","original embedded image","real external hyperlink","w:ins and w:del tracked changes"]},"references":[{"path":"references/docx/rich-mixed-orientation-tracked/page-1.png","dimensions":"1547x2002"},{"path":"references/docx/rich-mixed-orientation-tracked/page-2.png","dimensions":"2002x1547"},{"path":"references/docx/rich-mixed-orientation-tracked/page-3.png","dimensions":"1547x2002"},{"path":"references/docx/rich-mixed-orientation-tracked/rich-mixed-orientation-tracked.pdf","pages":3}]},
+    {"id":"docx-edge","format":"docx","taxonomy":"stress-edge","path":"docx/edge-bounded-flow.docx","bytes":39225,"sha256":"68576b7501066afca4c1d7a032a0df71ec1834c067691a9a78adde460b0ac2ff","expected":{"pages":5,"features":["120 short paragraphs","12-column table"]},"references":[{"path":"references/docx/edge-bounded-flow/page-1.png","dimensions":"1547x2002"},{"path":"references/docx/edge-bounded-flow/page-2.png","dimensions":"1547x2002"},{"path":"references/docx/edge-bounded-flow/page-3.png","dimensions":"1547x2002"},{"path":"references/docx/edge-bounded-flow/page-4.png","dimensions":"1547x2002"},{"path":"references/docx/edge-bounded-flow/page-5.png","dimensions":"1547x2002"}]},
+    {"id":"docx-malformed","format":"docx","taxonomy":"malformed-unsupported","path":"docx/malformed-truncated.docx","bytes":768,"sha256":"4bcae4be4d4a4830d438e190579dc6da03b96dcc45ed00e562a44ff6c8ff6e94","expected":{"zipIntegrity":"fail","features":["truncated rich package; no high-expansion payload"]}},
+    {"id":"xlsx-simple","format":"xlsx","taxonomy":"simple","path":"xlsx/simple.xlsx","bytes":4041,"sha256":"e1b3844161b74e99bbcc8e279004b213444ab5ece4a5d46bd53a957c6d2d5e46","expected":{"sheets":1,"features":["typed date","currency"]},"references":[{"path":"references/xlsx/simple--Read-me.png","dimensions":"581x156"}]},
+    {"id":"xlsx-rich","format":"xlsx","taxonomy":"rich","path":"xlsx/rich.xlsx","bytes":9430,"sha256":"5bcd16a8ae7b7f39d69ad2d0c256394dcf742c45c7d7c63fd9226dc131af9b44","expected":{"sheets":3,"features":["typed dates/currency/percent","formula cells","merged title away from calculations","freeze panes","conditional formats","native chart","native image drawing","multiple sheets"],"limitation":"artifact-tool 2.8.6 did not expose hidden-sheet authoring; Supporting data is a visible substitute. Artifact-tool PNG reference omits the native image despite its valid drawing/media relationship."},"references":[{"path":"references/xlsx/rich--Overview.png","dimensions":"1908x1390"},{"path":"references/xlsx/rich--Monthly-data.png","dimensions":"510x240"},{"path":"references/xlsx/rich--Supporting-data.png","dimensions":"450x180"}]},
+    {"id":"xlsx-edge","format":"xlsx","taxonomy":"stress-edge","path":"xlsx/edge-bounded-grid.xlsx","bytes":29292,"sha256":"2360a5e2817728bf0f19cf22105f7aff9100e60e3bb052e83933b816c0fd861c","expected":{"sheets":1,"usedRange":"A1:T241","features":["240x20 bounded grid","freeze panes"]},"references":[{"path":"references/xlsx/edge-bounded-grid--Bounded-grid.png","dimensions":"2940x1230"}]},
+    {"id":"xlsx-malformed","format":"xlsx","taxonomy":"malformed-unsupported","path":"xlsx/malformed-truncated.xlsx","bytes":768,"sha256":"adf9304d103a0f91571b7b0465c04aa91fe7ff696d8d1b53d2c6951996413882","expected":{"zipIntegrity":"fail","features":["truncated rich package; no high-expansion payload"]}},
+    {"id":"pptx-simple","format":"pptx","taxonomy":"simple","path":"pptx/simple.pptx","bytes":11835,"sha256":"b2ca4107d9af9327e37c47fb28700552d2a48ced016faa1f290396bb0aa69615","expected":{"slides":1,"features":["title and subtitle"]},"references":[{"path":"references/pptx/simple--slide-01.png","dimensions":"1280x720"}]},
+    {"id":"pptx-rich","format":"pptx","taxonomy":"rich","path":"pptx/rich.pptx","bytes":21068,"sha256":"677739d54ed5f6fe2f4465e537989da1a9b17361840a84b30e9814084738eb7a","expected":{"slides":4,"features":["varied layouts","text","native shapes","original embedded image","native chart","native table","speaker notes"]},"references":[{"path":"references/pptx/rich--slide-01.png","dimensions":"1280x720"},{"path":"references/pptx/rich--slide-02.png","dimensions":"1280x720"},{"path":"references/pptx/rich--slide-03.png","dimensions":"1280x720"},{"path":"references/pptx/rich--slide-04.png","dimensions":"1280x720"}]},
+    {"id":"pptx-edge","format":"pptx","taxonomy":"stress-edge","path":"pptx/edge-bounded-deck.pptx","bytes":50629,"sha256":"a0b8db5da8b21d442b7ae6e2eb948e75c2ef2caac6e0f3676c8133c8f4ea7339","expected":{"slides":15,"features":["bounded multi-slide navigation","native shapes"]},"references":[{"path":"references/pptx/edge-bounded-deck--slide-01.png","dimensions":"1280x720"},{"path":"references/pptx/edge-bounded-deck--slide-15.png","dimensions":"1280x720"}]},
+    {"id":"pptx-malformed","format":"pptx","taxonomy":"malformed-unsupported","path":"pptx/malformed-truncated.pptx","bytes":768,"sha256":"79a47ba9c65187451f8de8b9aac21e41ce9fbf0328a8ea33971d4e3ef798eafa","expected":{"zipIntegrity":"fail","features":["truncated rich package; no high-expansion payload"]}}
+  ]
+}

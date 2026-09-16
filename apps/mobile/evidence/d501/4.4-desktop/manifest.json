@@ -1,0 +1,56 @@
+{
+  "task": "D501-4.4",
+  "status": "passed",
+  "runtime": {
+    "stackAlias": "stack302",
+    "serverAlias": "stack302-loopback",
+    "serverLoopbackPort": 6401,
+    "iosMetroAlias": "stack302-ios-metro",
+    "androidMetroAlias": "stack302-android-metro",
+    "desktopProfileAlias": "stack302-desktop-profile",
+    "desktopDebugPortAlias": "stack302-desktop-debug",
+    "d468Isolation": "preserved"
+  },
+  "participants": {
+    "commitOrBuild": "d96e809419b06588bf2e887edb22b0a39022ba7e",
+    "desktopProfile": "d501-wave10",
+    "desktopDebugPort": 19292,
+    "iosSimulator": "D501 Wave10 iPhone",
+    "androidAvd": "D501_Wave10"
+  },
+  "manualCheckpoints": {
+    "androidMarkdownToDesktopExactBytes": "passed",
+    "iosMarkdownToDesktopExactBytes": "passed",
+    "desktopMarkdownToAndroidExactBytes": "passed",
+    "desktopMarkdownToIosExactBytes": "passed",
+    "androidPlainTextToDesktopExactBytes": "passed",
+    "iosPlainTextToDesktopExactBytes": "passed",
+    "desktopPlainTextToAndroidExactBytes": "passed",
+    "desktopPlainTextToIosExactBytes": "passed",
+    "desktopEditRefreshesOpenMobileViews": "passed",
+    "mobileEditRefreshesDesktop": "passed",
+    "renameConvergesAcrossOpenClients": "passed",
+    "deleteConvergesAcrossOpenClients": "passed",
+    "discussContinuityAcrossRefresh": "passed",
+    "concurrentSaveConflictNeverSilentlyOverwrites": "passed",
+    "fixtureCleanup": "passed"
+  },
+  "comparisonEvidence": {
+    "syntheticFixtureAliases": {
+      "writerViewer": "writer-viewer-a",
+      "androidMarkdown": "android-source-a",
+      "iosMarkdown": "ios-source-a",
+      "androidPlainText": "android-plain-a",
+      "iosPlainText": "ios-plain-a"
+    },
+    "methodAndVersion": "canonical storage SHA-256/revision comparison plus live client reopen and SSE refresh; Maestro 2.6.1",
+    "secureComparisonRecordRef": "secure-operator-record:d501-final-20260808",
+    "revisionAndByteCountMetadata": "retained in secure operator record",
+    "redactedResultRefs": {
+      "desktopWriterSaveSha256": "da664e3e8b120548d781be2d040f4363ec0fb21722b45c752f4b2a62cde93eff",
+      "androidConflictSha256": "3dc9fc0a192b467efbf2ffd4e996348de30ad9d8e9f7a9a9b974a8f026c580d7",
+      "iosConflictSha256": "7535544e7b7a4822b927c5b76a5685c31eac0b040d5d2285e9e17deebeee43a8"
+    }
+  },
+  "notes": "Desktop autosave and mobile explicit-save paths converged through the canonical artifact revision/SHA contract. Concurrent changes produced explicit conflicts with local buffers preserved; no silent overwrite or force-save path was observed."
+}

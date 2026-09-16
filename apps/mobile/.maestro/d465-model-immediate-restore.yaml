@@ -1,0 +1,36 @@
+appId: ai.nautilo.app
+onFlowComplete:
+  - openLink: nautilo://settings/model-picker
+  - extendedWaitUntil:
+      visible: Choose default model
+      timeout: 30000
+  - tapOn: Search models
+  - eraseText
+  - inputText: Sol
+  - tapOn: openai · GPT-5.6 Sol (OpenAI)
+  - openLink: nautilo://settings/models
+  - extendedWaitUntil:
+      visible: Models & defaults
+      timeout: 30000
+  - assertVisible: "Model, .*GPT-5.6 Sol.*"
+---
+# Populated-default acceptance: mutate away from the recorded Sol baseline and
+# prove the row itself saves. The completion hook restores Sol on pass or fail.
+- launchApp
+- tapOn: Open menu
+- tapOn: Settings. Profile, account, and appearance
+- tapOn: Models & defaults
+- assertVisible: Models & defaults
+- tapOn: "Model, .*"
+- extendedWaitUntil:
+    visible: Choose default model
+    timeout: 30000
+- tapOn: Search models
+- eraseText
+- inputText: GLM 5.2
+- tapOn: fireworks · GLM 5.2 (Fireworks)
+- extendedWaitUntil:
+    visible: Models & defaults
+    timeout: 30000
+- assertVisible: "Model, .*GLM 5.2.*"
+- assertNotVisible: Use selected model as Agent default

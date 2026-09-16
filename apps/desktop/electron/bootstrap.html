@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  D154 / Stack 19 — bootstrap shell. Deciding live-vs-recovery before workbench loads.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nautilo</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #0a0d16;
+        color: #e8ecf4;
+        font: 13px system-ui, sans-serif;
+      }
+      .wrap {
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border: 2px solid rgba(56, 189, 248, 0.2);
+        border-top-color: #38bdf8;
+        border-radius: 50%;
+        box-shadow: 0 0 18px rgba(56, 189, 248, 0.25);
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="spinner" aria-hidden="true"></div>
+      <span style="opacity: 0.75">Starting Nautilo…</span>
+    </div>
+    <script>
+      (async function d154Bootstrap() {
+        const api = window.nautiloDesktop?.coldBoot;
+        if (!api?.getBootstrapState) {
+          console.error("[d154-bootstrap] coldBoot bridge missing");
+          return;
+        }
+        const picker = (mode, extra) => {
+          const u = new URL("./cold-boot-picker.html", window.location.href);
+          u.searchParams.set("mode", mode);
+          if (extra) {
+            for (const [k, v] of Object.entries(extra)) {
+              if (v != null) u.searchParams.set(k, String(v));
+            }
+          }
+          window.location.href = u.href;
+        };
+
+        const state = await api.getBootstrapState();
+        if (state.kind === "no-pairing") {
+          picker("no-pairing");
+          return;
+        }
+        if (state.kind === "connecting") {
+          // Main owns the in-flight observation. This shell intentionally
+          // stays local and does not turn its paint interval into a timeout.
+          return;
+        }
+        if (state.kind === "unavailable") {
+          picker("disconnected", { server: state.serverUrl });
+          return;
+        }
+        if (state.kind === "malformed") {
+          picker("malformed", { server: state.serverUrl });
+          return;
+        }
+        if (state.kind === "wrong-server") {
+          picker("wrong-server", {
+            server: state.serverUrl,
+          });
+          return;
+        }
+        // `live` is emitted only by the main-owned health/identity
+        // observation. Server URL remains main-derived, not query-derived.
+        window.location.href = `${state.serverUrl.replace(/\/+$/, "")}/`;
+      })();
+    </script>
+  </body>
+</html>

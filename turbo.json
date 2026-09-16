@@ -1,0 +1,176 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["**/.env.*local"],
+  "globalPassThroughEnv": ["TMPDIR"],
+  "tasks": {
+    "@nautilo/office-docs#transit": {
+      "dependsOn": ["^transit", "build"]
+    },
+    "@nautilo/office-docs#lint": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-docs#typecheck": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-docs#test:unit": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-slides#lint": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-slides#typecheck": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-slides#test:unit": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-core#typecheck": {
+      "dependsOn": ["transit", "^build"],
+      "outputs": []
+    },
+    "@nautilo/office-core#test:unit": {
+      "dependsOn": ["transit", "^build"],
+      "outputs": []
+    },
+    "@nautilo/office-core#lint": {
+      "dependsOn": ["transit", "^build"],
+      "outputs": []
+    },
+    "@nautilo/office-sheets#typecheck": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-sheets#test:unit": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-sheets#lint": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "mobile-web-export": {
+      "cache": false
+    },
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "lint": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/eslint.config.mjs",
+        "$TURBO_ROOT$/tsconfig.base.json",
+        "$TURBO_ROOT$/packages/message-invariants/eslint/**"
+      ],
+      "outputs": []
+    },
+    "lint:fix": {
+      "dependsOn": ["^lint:fix"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["transit"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tsconfig.base.json"],
+      "outputs": []
+    },
+    "test": {
+      "outputs": []
+    },
+    "test:unit": {
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "@nautilo/server#test:unit": {
+      "dependsOn": [
+        "transit",
+        "@nautilo/office-board#build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/first-party-apps/board/**",
+        "!$TURBO_ROOT$/packages/first-party-apps/board/engine/**",
+        "!$TURBO_ROOT$/packages/first-party-apps/board/node_modules/**",
+        "!$TURBO_ROOT$/packages/first-party-apps/board/dist/**",
+        "$TURBO_ROOT$/packaging/wafflebase/**"
+      ],
+      "outputs": []
+    },
+    "@nautilo/cli#test:unit": {
+      "dependsOn": ["transit", "@nautilo/cli#build"],
+      "outputs": []
+    },
+    "@nautilo/workbench#test:unit": {
+      "dependsOn": ["transit", "@nautilo/workbench-components#build"],
+      "outputs": []
+    },
+    "@nautilo/desktop#test:unit": {
+      "dependsOn": ["transit"],
+      "env": ["NAUTILO_TEST_FFMPEG", "NAUTILO_TEST_FFMPEG_VERSION"],
+      "outputs": []
+    },
+    "@nautilo/dev-tools#test:unit": {
+      "outputs": [],
+      "dependsOn": ["transit", "@nautilo/cli#build"]
+    },
+    "test:integration": {
+      "cache": false
+    },
+    "test:integration:quick": {
+      "cache": false
+    },
+    "clean": {
+      "cache": false
+    },
+    "db:generate": {
+      "cache": false
+    },
+    "db:push": {
+      "cache": false
+    },
+    "db:migrate": {
+      "cache": false
+    },
+    "db:dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "db:studio": {
+      "cache": false,
+      "persistent": true
+    },
+    "@nautilo/first-party-board#lint": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "@nautilo/first-party-board#typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "@nautilo/office-board#lint": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-board#typecheck": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    },
+    "@nautilo/office-board#test:unit": {
+      "dependsOn": ["transit", "build"],
+      "outputs": []
+    }
+  }
+}
