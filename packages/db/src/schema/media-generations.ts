@@ -85,6 +85,11 @@ export interface MediaGenerationReferenceVideoBinding extends MediaGenerationRef
   readonly durationSeconds: number;
 }
 
+export interface MediaGenerationReferenceAudioBinding extends MediaGenerationReferenceImageBinding {
+  readonly mimeType: "audio/mpeg" | "audio/wav" | "audio/x-wav";
+  readonly durationSeconds: number;
+}
+
 export interface MediaGenerationRequestPayload {
   readonly version: 1;
   readonly model: string;
@@ -92,6 +97,7 @@ export interface MediaGenerationRequestPayload {
   readonly lyrics?: string;
   readonly referenceImages?: readonly MediaGenerationReferenceImageBinding[];
   readonly referenceVideos?: readonly MediaGenerationReferenceVideoBinding[];
+  readonly referenceAudios?: readonly MediaGenerationReferenceAudioBinding[];
   readonly normalizedSettings: MediaGenerationNormalizedSettings;
 }
 
@@ -203,7 +209,7 @@ export const mediaGenerations = pgTable(
     check("media_generations_request_payload_shape", sql`
       jsonb_typeof(${table.requestPayload}) = 'object'
       and ${table.requestPayload} ?& array['version', 'model', 'prompt', 'normalizedSettings']
-      and ${table.requestPayload} - 'version' - 'model' - 'prompt' - 'lyrics' - 'referenceImages' - 'referenceVideos' - 'normalizedSettings' = '{}'::jsonb
+      and ${table.requestPayload} - 'version' - 'model' - 'prompt' - 'lyrics' - 'referenceImages' - 'referenceVideos' - 'referenceAudios' - 'normalizedSettings' = '{}'::jsonb
       and ${table.requestPayload}->>'version' = '1'
       and jsonb_typeof(${table.requestPayload}->'model') = 'string'
       and ${table.requestPayload}->>'model' = ${table.providerModel}
@@ -217,6 +223,10 @@ export const mediaGenerations = pgTable(
       and (not (${table.requestPayload} ? 'referenceVideos') or (
         jsonb_typeof(${table.requestPayload}->'referenceVideos') = 'array'
         and jsonb_array_length(${table.requestPayload}->'referenceVideos') between 0 and 10
+      ))
+      and (not (${table.requestPayload} ? 'referenceAudios') or (
+        jsonb_typeof(${table.requestPayload}->'referenceAudios') = 'array'
+        and jsonb_array_length(${table.requestPayload}->'referenceAudios') between 0 and 10
       ))
       and jsonb_typeof(${table.requestPayload}->'normalizedSettings') = 'object'
       and (${table.requestPayload}->'normalizedSettings') - 'durationSeconds' - 'resolution' - 'aspectRatio' - 'audioEnabled' - 'instrumental' = '{}'::jsonb

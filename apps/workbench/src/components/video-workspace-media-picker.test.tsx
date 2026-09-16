@@ -52,21 +52,64 @@ afterEach(async () => {
 });
 
 describe("VideoWorkspaceMediaPicker previews", () => {
-  test("admits only visible image/video rows and leaves audio to its honest type icon", async () => {
+  test("loads only visible rows, including actual audio waveforms without autoplay", async () => {
     installDom();
     const calls: string[] = [];
     await act(async () => render(async (artifact) => {
       calls.push(artifact.id);
-      return { url: `nautilo-media://proxy/${artifact.id}`, mediaKind: artifact.mimeType.startsWith("video/") ? "video" : "image", release: () => undefined };
+      return { url: `nautilo-media://proxy/${artifact.id}`, mediaKind: artifact.mimeType.startsWith("video/") ? "video" : artifact.mimeType.startsWith("audio/") ? "audio" : "image", waveform: { peaks: [0.1, 0.7, 0.3], samplesPerSecond: 100 }, release: () => undefined };
     }));
     expect(calls).toEqual([]);
-    expect(TestIntersectionObserver.instances).toHaveLength(2);
+    expect(TestIntersectionObserver.instances).toHaveLength(3);
     await act(async () => { TestIntersectionObserver.instances[0]!.emit(true); await Promise.resolve(); });
     expect(calls).toEqual(["image"]);
     expect(host!.textContent).toContain("Audio");
     expect(calls).not.toContain("audio");
+    await act(async () => { TestIntersectionObserver.instances[2]!.emit(true); await Promise.resolve(); });
+    expect(calls).toEqual(["image", "audio"]);
+    expect(host!.querySelector('svg[aria-label="Audio waveform"]')).not.toBeNull();
+    expect(host!.querySelector("audio")).toBeNull();
+    const previewButton = host!.querySelector<HTMLButtonElement>('button[aria-label="Preview voice.wav"]')!;
+    await act(async () => previewButton.click());
+    await act(async () => { TestIntersectionObserver.instances.at(-1)!.emit(true); await Promise.resolve(); });
+    expect(host!.querySelector('audio[controls]')).not.toBeNull();
+    expect(host!.querySelector('audio[autoplay]')).toBeNull();
     expect(host!.querySelector('video[controls]')).toBeNull();
     expect(host!.querySelector('video[autoplay]')).toBeNull();
+  });
+
+  test("audio remains playable without peaks and releases previews on leaving the picker", async () => {
+    installDom();
+    let releases = 0;
+    await act(async () => render(async () => ({ url: "nautilo-media://proxy/audio", mediaKind: "audio", release: () => { releases++; } })));
+    await act(async () => { TestIntersectionObserver.instances[2]!.emit(true); await Promise.resolve(); });
+    expect(host!.textContent).toContain("Waveform unavailable");
+    expect(host!.querySelector('svg[aria-label="Audio waveform"]')).toBeNull();
+    await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-label="Preview voice.wav"]')!.click());
+    expect(releases).toBe(1);
+    await act(async () => { TestIntersectionObserver.instances.at(-1)!.emit(true); await Promise.resolve(); });
+    expect(host!.querySelector('audio[controls]')).not.toBeNull();
+    await act(async () => root?.unmount()); root = null;
+    expect(releases).toBe(2);
+  });
+
+  test("audio-only MP4 uses its inspected waveform, Audio label and filter while retaining exact selection identity", async () => {
+    installDom();
+    const picked: WorkspaceMediaArtifact[] = [];
+    const mislabeled = { ...video, path: "media/Audio.mp4" };
+    await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[mislabeled]} labels={{}} loading={false} error={null} onSelect={a => picked.push(a)} onUpload={() => {}} onCancel={() => {}} loadPreview={async () => ({ url: "nautilo-media://proxy/audio", mediaKind: "audio", waveform: { peaks: [0.2, 0.7], samplesPerSecond: 100 }, release: () => {} })} />));
+    const button = (label: string) => [...host!.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === label)!;
+    // Unknown MP4s must remain discoverable when Audio is selected before inspection.
+    await act(async () => button("Audio").click());
+    expect(host!.querySelectorAll("li")).toHaveLength(1);
+    await act(async () => { TestIntersectionObserver.instances[0]!.emit(true); await Promise.resolve(); });
+    expect(host!.querySelector('svg[aria-label="Audio waveform"]')).not.toBeNull();
+    expect(host!.querySelector("li")!.textContent).toBe("Audio.mp4AudioPreview");
+    await act(async () => host!.querySelector<HTMLButtonElement>("li button")!.click());
+    expect(picked).toEqual([mislabeled]);
+    expect(picked[0]!.mimeType).toBe("video/mp4");
+    await act(async () => button("Videos").click());
+    expect(host!.querySelectorAll("li")).toHaveLength(0);
   });
 
   test("aborts and releases a late preview after the row unmounts", async () => {
@@ -167,4 +210,76 @@ describe("VideoWorkspaceMediaPicker previews", () => {
     await act(async () => root?.unmount());
     expect(releases).toBe(2);
   });
+});
+
+async function click(label: string) {
+  const button = [...host!.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === label || item.getAttribute("aria-label") === label);
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+}
+
+test("selection survives source, view and type changes and reuses existing Media Bin identities", async () => {
+  installDom();
+  const picks: unknown[] = [];
+  const labels = { [`${audio.artifactId}\0${audio.path}`]: "Voice guide" };
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[image, video, audio]} labels={labels} loading={false} error={null} purpose="references" multiple projectMedia={[{ id: "media_existing", label: "Opening", kind: "video", artifactId: video.artifactId, path: video.path }, { id: "media_audio", label: "Voice guide", kind: "audio", artifactId: audio.artifactId, path: audio.path }]} onSelect={() => undefined} onConfirm={selection => picks.push(selection)} onUpload={() => undefined} onCancel={() => undefined} />));
+  expect(host!.textContent).toContain("Voice guide");
+  expect(host!.textContent).toContain("MP3/WAV · 2–30 sec · max 15 MB");
+  await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${image.path}"]`)!.click());
+  await click("Media Bin");
+  await click("List view");
+  await click("Audio");
+  expect(host!.querySelector<HTMLButtonElement>(`button[title="${audio.path}"]`)).not.toBeNull();
+  await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${audio.path}"]`)!.click());
+  await click("Videos");
+  await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${video.path}"]`)!.click());
+  expect(host!.textContent).toContain("3 selected");
+  await click("Add 3 references");
+  expect(picks).toEqual([{ artifacts: [image], mediaIds: ["media_existing", "media_audio"] }]);
+});
+
+test("unsupported reference audio remains discoverable with an honest format limitation", async () => {
+  installDom();
+  const ogg = { ...audio, id: "audio-ogg", artifactId: "audio-ogg-artifact", path: "audio/voice-guide.ogg", mimeType: "audio/ogg" };
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[ogg]} labels={{}} loading={false} error={null} purpose="references" multiple onSelect={() => undefined} onConfirm={() => undefined} onUpload={() => undefined} onCancel={() => undefined} loadPreview={async () => ({ url: "nautilo-media://proxy/ogg", mediaKind: "audio", waveform: { peaks: [0.2, 0.6], samplesPerSecond: 100 }, release: () => undefined })} />));
+  expect(host!.textContent).toContain("voice-guide.ogg");
+  expect(host!.textContent).toContain("Seedance needs MP3 or WAV");
+  await act(async () => { TestIntersectionObserver.instances[0]!.emit(true); await Promise.resolve(); });
+  expect(host!.querySelector('svg[aria-label="Audio waveform"]')).not.toBeNull();
+  await click("Audio");
+  expect(host!.querySelectorAll("li")).toHaveLength(1);
+});
+
+test("computer keeps batch selection but replaces a single selection", async () => {
+  for (const multiple of [true, false]) {
+    if (!host) installDom();
+    const uploads: unknown[] = [];
+    await act(async () => root!.render(<VideoWorkspaceMediaPicker key={String(multiple)} artifacts={[image, video]} labels={{}} loading={false} error={null} purpose="references" multiple={multiple} onSelect={() => undefined} onConfirm={() => undefined} onUpload={selection => uploads.push(selection)} onCancel={() => undefined} />));
+    await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${image.path}"]`)!.click());
+    await click("Computer"); await click("Choose files…");
+    expect(uploads).toEqual([{ artifacts: multiple ? [image] : [], mediaIds: [], fromComputer: true }]);
+  }
+});
+
+test("single replacement selects only the last item; Escape and X cancel without confirmation", async () => {
+  installDom(); let cancelled = 0;
+  const picks: unknown[] = [];
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[image, video]} labels={{}} loading={false} error={null} purpose="references" multiple={false} onSelect={() => undefined} onConfirm={selection => picks.push(selection)} onUpload={() => undefined} onCancel={() => cancelled++} />));
+  for (const row of [image, video]) await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${row.path}"]`)!.click());
+  await click("Use reference");
+  expect(picks).toEqual([{ artifacts: [video], mediaIds: [] }]);
+  await act(async () => host!.querySelector('[role="dialog"]')!.dispatchEvent(new win!.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  await click("Close media picker");
+  expect(cancelled).toBe(2); expect(picks).toHaveLength(1);
+});
+
+test("revised inventory drops a stale selection and already-added media cannot be added twice", async () => {
+  installDom();
+  const props = { labels: {}, loading: false, error: null, multiple: true, onSelect: () => undefined, onConfirm: () => undefined, onUpload: () => undefined, onCancel: () => undefined };
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker {...props} artifacts={[image, video]} projectMedia={[{ id: "existing", label: "Opening", kind: "video", artifactId: video.artifactId, path: video.path }]} />));
+  expect(host!.querySelector<HTMLButtonElement>(`button[title="${video.path}"]`)!.disabled).toBe(true);
+  await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${image.path}"]`)!.click());
+  expect(host!.textContent).toContain("1 selected");
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker {...props} artifacts={[{ ...image, revision: 2 }, video]} />));
+  expect(host!.textContent).not.toContain("1 selected");
 });

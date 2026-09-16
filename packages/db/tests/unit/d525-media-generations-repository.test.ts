@@ -503,4 +503,42 @@ describe("D525 media generation repository", () => {
       "requestPayload must be an exact approved v1 request",
     );
   });
+
+  test("accepts exact audio bindings only for Seedance reference receipts", () => {
+    const referenceImages = [{ path: "references/frame.png", artifactId: "frame",
+      artifactInternalId: "11111111-1111-4111-8111-111111111111", revision: 1,
+      mimeType: "image/png", sizeBytes: 100, sha256: "a".repeat(64) }];
+    const referenceAudios = [{ path: "references/voice.wav", artifactId: "voice",
+      artifactInternalId: "22222222-2222-4222-8222-222222222222", revision: 2,
+      mimeType: "audio/x-wav" as const, sizeBytes: 1_000, sha256: "b".repeat(64), durationSeconds: 3 }];
+    const payload = { version: 1 as const, model: "seedance-2-5-reference-to-video-basic", prompt: "Use <Image 1> and <Audio 1>",
+      referenceImages, referenceAudios, normalizedSettings: { durationSeconds: 5 } };
+    expect(() => assertMediaGenerationRequestPayload(payload, payload.model)).not.toThrow();
+    expect(() => assertMediaGenerationRequestPayload({ ...payload,
+      referenceAudios: [{ ...referenceAudios[0]!, durationSeconds: 31 }] }, payload.model)).toThrow("Invalid reference audio binding");
+    expect(() => assertMediaGenerationRequestPayload({ ...payload,
+      referenceAudios: Array.from({ length: 10 }, (_, index) => ({ ...referenceAudios[0]!, path: `references/${index}.wav`, durationSeconds: 4 })) }, payload.model)).toThrow("duration exceeds");
+    expect(() => assertMediaGenerationRequestPayload({ ...payload, referenceImages: [] }, payload.model)).toThrow("Reference media missing");
+    expect(() => assertMediaGenerationRequestPayload({ ...payload, model: "seedance-2-5-text-to-video-basic" }, "seedance-2-5-text-to-video-basic")).toThrow("References require reference model");
+    const longPath = "refs/" + "a".repeat(4_087) + ".wav";
+    expect(longPath).toHaveLength(4_096);
+    expect(() => assertMediaGenerationRequestPayload({ ...payload,
+      referenceAudios: [{ ...referenceAudios[0]!, path: longPath }] }, payload.model)).not.toThrow();
+    expect(() => assertMediaGenerationRequestPayload({ ...payload,
+      referenceAudios: [{ ...referenceAudios[0]!, path: `${longPath}x` }] }, payload.model)).toThrow("Invalid immutable audio identity");
+  });
+
+  test.each([513, 4_096])("preserves canonical %i-character image and video binding paths at reservation", (length) => {
+    const imagePath = "refs/" + "a".repeat(length - 9) + ".png";
+    const videoPath = "refs/" + "v".repeat(length - 9) + ".mp4";
+    const image = { path: imagePath, artifactId: "frame", artifactInternalId: "11111111-1111-4111-8111-111111111111",
+      revision: 1, mimeType: "image/png", sizeBytes: 100, sha256: "a".repeat(64) };
+    const video = { ...image, path: videoPath, artifactId: "motion", artifactInternalId: "22222222-2222-4222-8222-222222222222",
+      mimeType: "video/mp4", durationSeconds: 3 };
+    const payload = { version: 1 as const, model: "seedance-2-5-reference-to-video-basic", prompt: "Use long references",
+      referenceImages: [image], referenceVideos: [video], normalizedSettings: { durationSeconds: 5 } };
+    expect(imagePath).toHaveLength(length);
+    expect(videoPath).toHaveLength(length);
+    expect(() => assertMediaGenerationRequestPayload(payload, payload.model)).not.toThrow();
+  });
 });

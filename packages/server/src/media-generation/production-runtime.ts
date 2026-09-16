@@ -41,6 +41,7 @@ import {
 import { warn } from "@nautilo/logger";
 import { providerAccountFingerprint } from "../lib/provider-catalog-cache";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { resolveMediaReferenceNamespaces } from "./reference-scope";
 import {
   resolveApprovedReferenceMediaUrls,
   resolveMediaGenerationReferenceRequest,
@@ -405,14 +406,16 @@ export function createProductionMediaGenerationRuntime(
   options: CreateProductionMediaGenerationRuntimeOptions,
 ): MediaGenerationApprovalRuntime {
   const db = options.db ?? getServerDirectDb();
-  const lifecycle = new VeniceMediaLifecycleAdapter({
-    apiKey: options.apiKey,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
-    resolveReferenceMediaUrls: (proof) => resolveApprovedReferenceMediaUrls(db, proof),
-  });
   const directRetrievalAdmission: VeniceMediaAdmissionPort = {
-    async queueVeniceMediaGeneration(proof) {
+    async queueVeniceMediaGeneration(proof, actor) {
+      const lifecycle = new VeniceMediaLifecycleAdapter({
+        apiKey: options.apiKey,
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
+        resolveReferenceMediaUrls: async (approved) => resolveApprovedReferenceMediaUrls(
+          db, approved, undefined, await resolveMediaReferenceNamespaces(approved, actor),
+        ),
+      });
       const accepted = await lifecycle.queueVeniceMediaGeneration(proof);
       // The first-wave models are anonymized/direct-retrieval. A signed URL
       // cannot be persisted by the current receipt schema, so accepting it
@@ -432,7 +435,8 @@ export function createProductionMediaGenerationRuntime(
     }),
     venice: directRetrievalAdmission,
     resolveScope: (actor) => resolveMediaGenerationWritableScope(db, actor),
-    resolveRequest: (scope, request) => resolveMediaGenerationReferenceRequest(db, scope, request),
+    resolveRequest: async (scope, request, actor) => resolveMediaGenerationReferenceRequest(db, scope, request, undefined,
+      request.model === "seedance-2-5-reference-to-video-basic" ? await resolveMediaReferenceNamespaces(scope, actor) : [scope.namespaceId]),
     providerAccountFingerprint: providerAccountFingerprint(options.apiKey),
   });
 }

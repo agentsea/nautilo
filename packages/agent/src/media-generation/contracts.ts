@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { validateWorkspaceLogicalPath, WORKSPACE_LOGICAL_PATH_MAX_CHARS, VENICE_REFERENCE_VIDEO_MAX_BYTES, VENICE_REFERENCE_VIDEO_SIZE_WARNING } from "@nautilo/types";
+import {
+  validateWorkspaceLogicalPath,
+  WORKSPACE_LOGICAL_PATH_MAX_CHARS,
+  VENICE_REFERENCE_AUDIO_MAX_BYTES,
+  VENICE_REFERENCE_AUDIO_SIZE_WARNING,
+  VENICE_REFERENCE_VIDEO_MAX_BYTES,
+  VENICE_REFERENCE_VIDEO_SIZE_WARNING,
+} from "@nautilo/types";
 
 export const VENICE_MEDIA_MODELS = {
   seedance: "seedance-2-5-text-to-video-basic",
@@ -46,11 +53,17 @@ const referenceImageBindingSchema = referenceImageIntentSchema.extend({
   sha256: z.string().regex(/^[a-f0-9]{64}$/u),
 });
 
-// Venice Seedance 2.5 R2V contract, verified 2026-09-08:
+// Venice Seedance 2.5 R2V image/video/audio contract, verified 2026-09-16:
 // https://docs.venice.ai/guides/media/seedance-2-0#multimodal-input-limits
 const referenceVideoBindingSchema = referenceImageBindingSchema.extend({
   mimeType: z.enum(["video/mp4", "video/quicktime"]),
   sizeBytes: z.number().int().positive().max(VENICE_REFERENCE_VIDEO_MAX_BYTES, VENICE_REFERENCE_VIDEO_SIZE_WARNING),
+  durationSeconds: z.number().finite().min(2).max(30),
+});
+
+const referenceAudioBindingSchema = referenceImageBindingSchema.extend({
+  mimeType: z.enum(["audio/mpeg", "audio/wav", "audio/x-wav"]),
+  sizeBytes: z.number().int().positive().max(VENICE_REFERENCE_AUDIO_MAX_BYTES, VENICE_REFERENCE_AUDIO_SIZE_WARNING),
   durationSeconds: z.number().finite().min(2).max(30),
 });
 
@@ -72,11 +85,13 @@ const seedanceReferenceIntentSchema = commonSchema.extend({
   audio: z.boolean().default(true),
   referenceImages: z.array(referenceImageIntentSchema).max(30).default([]),
   referenceVideos: z.array(referenceImageIntentSchema).max(10).optional(),
+  referenceAudios: z.array(referenceImageIntentSchema).max(10).optional(),
 });
 
-const seedanceReferenceBoundSchema = seedanceReferenceIntentSchema.omit({ referenceImages: true, referenceVideos: true }).extend({
+const seedanceReferenceBoundSchema = seedanceReferenceIntentSchema.omit({ referenceImages: true, referenceVideos: true, referenceAudios: true }).extend({
   referenceImages: z.array(referenceImageBindingSchema).max(30),
   referenceVideos: z.array(referenceVideoBindingSchema).max(10).optional(),
+  referenceAudios: z.array(referenceAudioBindingSchema).max(10).optional(),
 });
 
 const minimaxH3Schema = commonSchema.extend({
@@ -121,12 +136,13 @@ const intentSchema = z.discriminatedUnion("model", [
 ]);
 
 export type MediaGenerationReferenceVideoBinding = z.infer<typeof referenceVideoBindingSchema>;
+export type MediaGenerationReferenceAudioBinding = z.infer<typeof referenceAudioBindingSchema>;
 export type MediaGenerationReferenceImageBinding = z.infer<typeof referenceImageBindingSchema>;
 export type NormalizedMediaGenerationIntent = z.infer<typeof intentSchema>;
 
 export type NormalizedMediaGenerationRequest =
   | { model: typeof VENICE_MEDIA_MODELS.seedance; prompt: string; filename?: string | undefined; durationSeconds: number; aspectRatio: (typeof VIDEO_RATIOS)[number]; resolution: (typeof SEEDANCE_RESOLUTIONS)[number]; audio: boolean }
-  | { model: typeof VENICE_MEDIA_MODELS.seedanceReference; prompt: string; filename?: string | undefined; durationSeconds: number; aspectRatio: (typeof VIDEO_RATIOS)[number]; resolution: (typeof SEEDANCE_RESOLUTIONS)[number]; audio: boolean; referenceImages: MediaGenerationReferenceImageBinding[]; referenceVideos?: MediaGenerationReferenceVideoBinding[] | undefined }
+  | { model: typeof VENICE_MEDIA_MODELS.seedanceReference; prompt: string; filename?: string | undefined; durationSeconds: number; aspectRatio: (typeof VIDEO_RATIOS)[number]; resolution: (typeof SEEDANCE_RESOLUTIONS)[number]; audio: boolean; referenceImages: MediaGenerationReferenceImageBinding[]; referenceVideos?: MediaGenerationReferenceVideoBinding[] | undefined; referenceAudios?: MediaGenerationReferenceAudioBinding[] | undefined }
   | { model: typeof VENICE_MEDIA_MODELS.minimaxH3; prompt: string; filename?: string | undefined; durationSeconds: number; aspectRatio: (typeof VIDEO_RATIOS)[number]; resolution: (typeof MINIMAX_H3_RESOLUTIONS)[number] }
   | { model: typeof VENICE_MEDIA_MODELS.sonilo; prompt: string; filename?: string | undefined; durationSeconds: number }
   | { model: typeof VENICE_MEDIA_MODELS.minimaxMusic; prompt: string; filename?: string | undefined; lyrics?: string | undefined; forceInstrumental: boolean };
@@ -134,7 +150,7 @@ export type NormalizedMediaGenerationRequest =
 /** Dated fallback facts; live catalog data supersedes them when it is available. */
 export const LOCKED_VENICE_MEDIA_MODEL_FACTS = {
   [VENICE_MEDIA_MODELS.seedance]: { kind: "video", outputMime: "video/mp4", anonymized: true, audio: "configurable" },
-  [VENICE_MEDIA_MODELS.seedanceReference]: { kind: "video", outputMime: "video/mp4", anonymized: true, audio: "configurable", references: ["image", "video"] },
+  [VENICE_MEDIA_MODELS.seedanceReference]: { kind: "video", outputMime: "video/mp4", anonymized: true, audio: "configurable", references: ["image", "video", "audio"] },
   [VENICE_MEDIA_MODELS.minimaxH3]: { kind: "video", outputMime: "video/mp4", anonymized: true, audio: "forced_on" },
   [VENICE_MEDIA_MODELS.sonilo]: { kind: "music", outputMime: "audio/mp4", outputExtension: "m4a", anonymized: true, audio: "instrumental" },
   [VENICE_MEDIA_MODELS.minimaxMusic]: { kind: "music", outputMime: "audio/mpeg", outputExtension: "mp3", anonymized: true, audio: "lyrics_or_instrumental" },
@@ -156,7 +172,7 @@ function modelChoices(model: unknown): readonly string[] {
     case VENICE_MEDIA_MODELS.seedance:
       return ["duration 4–30 seconds", "480p, 720p, or 1080p", ...VIDEO_RATIOS, "audio on or off"];
     case VENICE_MEDIA_MODELS.seedanceReference:
-      return ["Up to 30 Workspace images and 10 videos (2–30 seconds each, 30 seconds total)", "duration 4–30 seconds", "480p, 720p, or 1080p", ...VIDEO_RATIOS, "audio on or off"];
+      return ["Up to 30 Workspace images, 10 videos, and 10 MP3/WAV audio references (audio and video 2–30 seconds each, 30 seconds total per kind)", "At least one image or video reference", "duration 4–30 seconds", "480p, 720p, or 1080p", ...VIDEO_RATIOS, "audio on or off"];
     case VENICE_MEDIA_MODELS.minimaxH3:
       return ["duration 5–15 seconds", "768P or 2K", ...VIDEO_RATIOS, "audio is provider-managed"];
     case VENICE_MEDIA_MODELS.sonilo:
@@ -199,6 +215,9 @@ function normalizeVideoGenerationEnvelope(input: unknown): unknown {
     }
     if (Array.isArray(normalized["referenceVideos"]) && normalized["referenceVideos"].length === 0) {
       delete normalized["referenceVideos"];
+    }
+    if (Array.isArray(normalized["referenceAudios"]) && normalized["referenceAudios"].length === 0) {
+      delete normalized["referenceAudios"];
     }
   }
   return normalized;
@@ -246,13 +265,16 @@ export function normalizeMediaGenerationRequest(input: unknown): NormalizedMedia
   throw new MediaGenerationValidationError(message, modelChoices(model));
 }
 
-function assertReferenceInputs(value: { model: string; referenceImages?: readonly unknown[] | undefined; referenceVideos?: readonly { path: string; durationSeconds?: number }[] | undefined }): void {
+function assertReferenceInputs(value: { model: string; referenceImages?: readonly unknown[] | undefined; referenceVideos?: readonly { path: string; durationSeconds?: number }[] | undefined; referenceAudios?: readonly { path: string; durationSeconds?: number }[] | undefined }): void {
   if (value.model !== VENICE_MEDIA_MODELS.seedanceReference) return;
   if (!value.referenceImages?.length && !value.referenceVideos?.length) {
     throw new MediaGenerationValidationError("Attach at least one image or video reference.");
   }
   if ((value.referenceVideos ?? []).reduce((sum, ref) => sum + (ref.durationSeconds ?? 0), 0) > 30) {
     throw new MediaGenerationValidationError("Seedance accepts at most 30 seconds of reference video in total. Choose shorter clips.");
+  }
+  if ((value.referenceAudios ?? []).reduce((sum, ref) => sum + (ref.durationSeconds ?? 0), 0) > 30) {
+    throw new MediaGenerationValidationError("Seedance accepts at most 30 seconds of reference audio in total. Choose shorter clips.");
   }
 }
 

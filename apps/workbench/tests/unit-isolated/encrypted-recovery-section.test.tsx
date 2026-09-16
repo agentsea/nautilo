@@ -178,10 +178,11 @@ describe("EncryptedRecoverySection", () => {
     };
     const view = render(<EncryptedRecoverySection readinessPort={port} />);
     const user = userEvent.setup();
-    await waitFor(() => expect(
-      view.getByRole("button", { name: "Set up recovery kit" }),
-    ).toBeTruthy());
-    fireEvent.click(view.getByRole("button", { name: "Set up recovery kit" }));
+    const setupButton = view.getByRole("button", {
+      name: "Set up recovery kit",
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(setupButton.disabled).toBe(false));
+    fireEvent.click(setupButton);
     await waitFor(() => expect(
       view.getByTestId("encrypted-recovery-mnemonic").textContent,
     ).toBe(mnemonic));

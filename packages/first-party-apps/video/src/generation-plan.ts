@@ -4,7 +4,12 @@
 // provider transport. Those are host responsibilities.
 
 import type { MediaAsset } from "./edl";
-import { VENICE_REFERENCE_VIDEO_MAX_BYTES, VENICE_REFERENCE_VIDEO_SIZE_WARNING } from "@nautilo/types";
+import {
+  VENICE_REFERENCE_AUDIO_MAX_BYTES,
+  VENICE_REFERENCE_AUDIO_SIZE_WARNING,
+  VENICE_REFERENCE_VIDEO_MAX_BYTES,
+  VENICE_REFERENCE_VIDEO_SIZE_WARNING,
+} from "@nautilo/types";
 import { referenceMentions } from "./generator-composer";
 import {
   customDirectionText,
@@ -96,7 +101,7 @@ export function generationPlanIssueMessage(issue: VideoGenerationPlanIssue): str
   switch (issue.code) {
     case "REFERENCE_UNAVAILABLE": return issue.message;
     case "CONTINUATION_REQUIRED": return "Generate the preceding scene first, or turn off Continue from previous scene.";
-    case "REFERENCE_INPUT_UNSUPPORTED": return "Use Seedance for reference images, videos, and scene continuation. MiniMax H3 is text-only here.";
+    case "REFERENCE_INPUT_UNSUPPORTED": return "Use Seedance for reference images, videos, audio, and scene continuation. MiniMax H3 is text-only here.";
     case "EMPTY_DIRECTION": return "Write a prompt before generating.";
     case "FRACTIONAL_DURATION": return "Choose a whole number of seconds.";
     default: return "Check the selected scenes and their settings.";
@@ -114,6 +119,7 @@ export type VideoGenerationPlanJob = Readonly<{
   requestedSettings: VideoGenerationRequestedSettings;
   referenceImages?: readonly { path: string }[];
   referenceVideos?: readonly { path: string }[];
+  referenceAudios?: readonly { path: string }[];
 }>;
 
 export type VideoGenerationPlanDraftV1 =
@@ -134,6 +140,10 @@ const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SHA256 = /^[a-f0-9]{64}$/u;
 const STABLE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const MAX_SAFE_SETTING_BYTES = 64;
+const VENICE_REFERENCE_AUDIO_MAX_COUNT = 10;
+const VENICE_REFERENCE_AUDIO_MIN_DURATION_SECONDS = 2;
+const VENICE_REFERENCE_AUDIO_MAX_DURATION_SECONDS = 30;
+const VENICE_REFERENCE_AUDIO_MAX_COMBINED_DURATION_SECONDS = 30;
 const MODEL_IDS = new Set<string>(Object.values(VIDEO_GENERATION_CATALOG_MODELS));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -453,6 +463,8 @@ export async function buildVideoGenerationPlanDraft(
     }
     const referenceImages: { path: string }[] = [];
     const referenceVideos: { path: string }[] = [];
+    const referenceAudios: { path: string }[] = [];
+    let knownAudioDurationSeconds = 0;
     let prompt = promptLines(normalizedBrief, shot).join("\n\n");
     const directions: string[] = [];
     const mapped = new Map<string, string>();
@@ -462,8 +474,8 @@ export async function buildVideoGenerationPlanDraft(
       const asset = context.media?.find(asset => asset.id === mediaId);
       const lineage = reference.source?.kind === "workspace-artifact" ? reference.source : asset?.source?.kind === "workspace-artifact" ? asset.source : undefined;
       const kind = reference.mediaKind ?? asset?.kind;
-      if (!lineage || (kind !== "image" && kind !== "video")) {
-        issues.push({ code: "REFERENCE_UNAVAILABLE", message: `Replace "${reference.name}" with a saved Workspace image or video.` }); continue;
+      if (!lineage || (kind !== "image" && kind !== "video" && kind !== "audio")) {
+        issues.push({ code: "REFERENCE_UNAVAILABLE", message: `Replace "${reference.name}" with a saved Workspace image, video, or MP3/WAV audio file.` }); continue;
       }
       // Saved metadata provides early feedback only. The host rechecks the
       // authorized artifact before quoting, including project-media references
@@ -472,16 +484,43 @@ export async function buildVideoGenerationPlanDraft(
         issues.push({ code: "REFERENCE_UNAVAILABLE", message: `${reference.name}: ${VENICE_REFERENCE_VIDEO_SIZE_WARNING}` });
         continue;
       }
-      const list = kind === "image" ? referenceImages : referenceVideos;
+      if (kind === "audio" && "mimeType" in lineage && !["audio/mpeg", "audio/wav", "audio/x-wav"].includes(lineage.mimeType)) {
+        issues.push({ code: "REFERENCE_UNAVAILABLE", message: `${reference.name}: Seedance audio references must be MP3 or WAV files.` });
+        continue;
+      }
+      if (kind === "audio" && "sizeBytes" in lineage && typeof lineage.sizeBytes === "number" && lineage.sizeBytes > VENICE_REFERENCE_AUDIO_MAX_BYTES) {
+        issues.push({ code: "REFERENCE_UNAVAILABLE", message: `${reference.name}: ${VENICE_REFERENCE_AUDIO_SIZE_WARNING}` });
+        continue;
+      }
+      const list = kind === "image" ? referenceImages : kind === "video" ? referenceVideos : referenceAudios;
       const key = kind + ":" + lineage.path;
       let tag = seen.get(key);
-      if (!tag) { list.push({ path: lineage.path }); tag = `<${kind === "image" ? "Image" : "Video"} ${list.length}>`; seen.set(key, tag); }
+      if (!tag) {
+        list.push({ path: lineage.path });
+        tag = `<${kind === "image" ? "Image" : kind === "video" ? "Video" : "Audio"} ${list.length}>`;
+        seen.set(key, tag);
+        if (kind === "audio" && asset?.durationSec !== undefined) {
+          if (asset.durationSec < VENICE_REFERENCE_AUDIO_MIN_DURATION_SECONDS || asset.durationSec > VENICE_REFERENCE_AUDIO_MAX_DURATION_SECONDS) {
+            issues.push({ code: "REFERENCE_UNAVAILABLE", message: `${reference.name}: Seedance audio references must be 2–30 seconds long.` });
+          }
+          knownAudioDurationSeconds += asset.durationSec;
+        }
+      }
       const token = mapping.get(reference.id);
       if (token) {
         if (mapped.has(token) && mapped.get(token) !== tag) issues.push({ code: "REFERENCE_UNAVAILABLE", message: `Reference mention ${token} is ambiguous. Replace the conflicting reference.` });
         mapped.set(token, tag);
       }
-      directions.push(`Refer to ${tag} for ${reference.role || "visual guidance"}.${reference.instruction ? " " + reference.instruction : ""}`);
+      directions.push(`Refer to ${tag} for ${reference.role || (kind === "audio" ? "audio guidance" : "visual guidance")}.${reference.instruction ? " " + reference.instruction : ""}`);
+    }
+    if (referenceAudios.length > VENICE_REFERENCE_AUDIO_MAX_COUNT) {
+      issues.push({ code: "REFERENCE_UNAVAILABLE", message: `Seedance accepts at most ${VENICE_REFERENCE_AUDIO_MAX_COUNT} audio references. Remove ${referenceAudios.length - VENICE_REFERENCE_AUDIO_MAX_COUNT} and try again.` });
+    }
+    if (knownAudioDurationSeconds > VENICE_REFERENCE_AUDIO_MAX_COMBINED_DURATION_SECONDS) {
+      issues.push({ code: "REFERENCE_UNAVAILABLE", message: "Seedance audio references may be at most 30 seconds combined. Shorten or remove audio and try again." });
+    }
+    if (referenceAudios.length > 0 && referenceImages.length + referenceVideos.length === 0) {
+      issues.push({ code: "REFERENCE_UNAVAILABLE", message: "Add at least one image or video reference before generating with audio references." });
     }
     prompt = [...directions, prompt].join("\n\n").replace(/@(Image|Video|Audio)[1-9][0-9]*/gu, token => {
       const tag = mapped.get(token);
@@ -499,7 +538,7 @@ export async function buildVideoGenerationPlanDraft(
       title: jobTitle(source, shot),
       catalogModelId: needsReferences ? VIDEO_GENERATION_CATALOG_MODELS.seedanceReference : intentJob.modelId,
       prompt,
-      ...(needsReferences ? { referenceImages, referenceVideos } : {}),
+      ...(needsReferences ? { referenceImages, referenceVideos, referenceAudios } : {}),
       requestedSettings,
     });
   }

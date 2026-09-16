@@ -248,6 +248,19 @@ describe("M185 nautiloApp bridge client (iframe side)", () => {
     await expect(request).resolves.toEqual({ kind: "queued" });
   });
 
+  test("video preparation recovery text reaches the app without host authority", async () => {
+    installNautiloAppBridgeClient(state.win as unknown as Window, { videoGeneration: true });
+    const pending = state.win.nautiloApp!.videoGeneration!.request({
+      document: { sha256: "a".repeat(64), revision: 2 }, sourceFingerprint: `sha256:${"b".repeat(64)}`,
+      job: { source: { kind: "quick-brief" }, prompt: "A scene", modelId: "venice:seedance-2-5-text-to-video-basic" },
+    });
+    const message = "A selected Workspace reference is no longer available. No generation was started.";
+    respondAsParent(state, state.capturedMessages.at(-1)!.requestId!, { ok: true, value: {
+      kind: "unavailable", code: "request_invalid", message, reviewHandle: "must-not-cross", token: "must-not-cross",
+    } });
+    await expect(pending).resolves.toEqual({ kind: "unavailable", code: "request_invalid", message });
+  });
+
   test("batch reference import preserves successes and explicit failures without host authority", async () => {
     installNautiloAppBridgeClient(state.win as unknown as Window, { videoGeneration: true });
     const asset = { artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc53", path: "refs/a.png", label: "A", mediaKind: "image", mimeType: "image/png", sizeBytes: 8 };
@@ -1346,6 +1359,28 @@ describe("M185 nautiloApp bridge client (iframe side)", () => {
     controller.abort(); const cancelMessage = state.capturedMessages.at(-1)!; expect(cancelMessage).toMatchObject({ type: "nautilo.app.media.cancel" });
     respondAsParent(state, state.capturedMessages.at(-2)!.requestId!, { ok: true, value: { kind: "cancelled" } });
     await expect(cancelled).resolves.toEqual({ kind: "cancelled" });
+  });
+
+  test("serialized picker keeps purpose grants and rejects malformed, cross-purpose and excess results", async () => {
+    new Function("window", buildNautiloAppBridgeClientScript({ mediaProxy: true }))(state.win);
+    await expect(state.win.nautiloApp!.media!.pick({ purpose: "references", multiple: true })).resolves.toEqual({ kind: "unavailable", code: "unsupported_environment" });
+    const good = { kind: "ready", imports: [], references: [], mediaIds: [], failures: [{ label: "Broken clip", code: "decode_failed" }] };
+    for (const value of [good, { ...good, url: "file:///private" }, { ...good, mediaIds: ["media_existing"] }, { ...good, failures: [{ label: "x", code: "bad", token: "private" }] }]) {
+      const pending = state.win.nautiloApp!.media!.pick({ purpose: "media", multiple: true });
+      const message = state.capturedMessages.at(-1)!;
+      expect(message).toMatchObject({ type: "nautilo.app.media.req", op: "pick", purpose: "media", multiple: true });
+      respondAsParent(state, message.requestId!, { ok: true, value });
+      await expect(pending).resolves.toEqual(value === good ? good : { kind: "unavailable", code: "invalid_response" });
+    }
+    new Function("window", buildNautiloAppBridgeClientScript({ mediaProxy: true, videoGeneration: true }))(state.win);
+    const audio = { artifactId: "123e4567-e89b-42d3-a456-426614174000", path: "references/voice.wav", label: "Voice guide", mediaKind: "audio", mimeType: "audio/wav", sizeBytes: 2048 };
+    const audioPending = state.win.nautiloApp!.media!.pick({ purpose: "references", multiple: true });
+    const audioMessage = state.capturedMessages.at(-1)!;
+    expect(audioMessage).toEqual({ type: "nautilo.app.media.req", requestId: audioMessage.requestId, op: "pick", purpose: "references", multiple: true });
+    respondAsParent(state, audioMessage.requestId!, { ok: true, value: { kind: "ready", imports: [], references: [audio], mediaIds: [], failures: [] } });
+    await expect(audioPending).resolves.toEqual({ kind: "ready", imports: [], references: [audio], mediaIds: [], failures: [] });
+    expect(JSON.stringify(audioMessage)).not.toContain(audio.path);
+    expect(JSON.stringify(audioMessage)).not.toContain(audio.artifactId);
   });
 
   test("serialized media proxy transports durable audio and image media without a generation grant", async () => {

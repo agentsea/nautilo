@@ -2,9 +2,9 @@ import { createVideoHostSessionManager, type VideoHostBinding, type VideoHostSes
 import { requestMiniAppExport } from "./mini-app-export";
 import { createAppImageAssets } from "./app-image-assets";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ActiveMiniAppMode, WorkspaceMediaArtifact } from "@nautilo/types";
+import { workspaceMediaMimeMatchesKind, type ActiveMiniAppMode, type WorkspaceMediaArtifact } from "@nautilo/types";
 import { Maximize2, MessageSquare, X, Pencil } from "lucide-react";
-import { ApiError } from "@nautilo/api-client/browser";
+import { ApiError, VideoGenerationPreparationError } from "@nautilo/api-client/browser";
 import { sendLiveAppCommand } from "./live-app-command";
 import type { MiniAppRuntimeResponse } from "@nautilo/api-client/browser";
 import type { ApplyAcceptedLiveProposalResponse, LiveDocumentVersion, MediaGenerationApproval } from "@nautilo/types";
@@ -44,6 +44,8 @@ import {
   type AppDocumentWriteSession,
   type AppTheme,
   type MiniAppDraftSeed,
+  type VideoMediaPickInput,
+  type VideoMediaPickResult,
   type VideoGenerationBridgeRequest,
   type VideoGenerationReferenceImportBridgeResult,
   type VideoGenerationReferencesImportBridgeResult,
@@ -95,7 +97,7 @@ import {
   localFileEditorSavePatchEvent,
 } from "../artifacts/workspace-document-mutation-events";
 import { VideoHostSupportNotice } from "./video-host-support-notice";
-import { VideoWorkspaceMediaPicker, workspaceMediaPickerName } from "../components/video-workspace-media-picker";
+import { VideoWorkspaceMediaPicker, type VideoWorkspaceMediaPickerProps, type VideoPickerSelection, workspaceMediaPickerName } from "../components/video-workspace-media-picker";
 
 type ArtifactTarget = Extract<OpenFileTarget, { kind: "artifact" }>;
 
@@ -320,10 +322,11 @@ function isSafeWorkspaceVideoImportLabel(value: unknown): value is string {
 }
 
 function isSafeWorkspaceReferenceMimeType(mediaKind: "image" | "video" | "audio", mimeType: unknown): mimeType is string {
-  return typeof mimeType === "string" && /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/u.test(mimeType) &&
-    ((mediaKind === "image" && ["image/png", "image/jpeg", "image/webp"].includes(mimeType)) ||
-      (mediaKind === "video" && mimeType === "video/mp4") ||
-      (mediaKind === "audio" && ["audio/mpeg", "audio/wav", "audio/mp4"].includes(mimeType)));
+  return workspaceMediaMimeMatchesKind(mediaKind, mimeType);
+}
+
+function isSeedanceAudioReferenceMimeType(mimeType: unknown): mimeType is "audio/mpeg" | "audio/wav" | "audio/x-wav" {
+  return mimeType === "audio/mpeg" || mimeType === "audio/wav" || mimeType === "audio/x-wav";
 }
 
 
@@ -366,10 +369,12 @@ function workspaceVideoReferenceFromDocument(content: string, referenceId: strin
   if (!brief) return null;
   const shared = effectiveGenerationDirectionBlocks(brief).flatMap((block) => block.kind === "references" ? block.references ?? [] : []);
   const matches = [...shared, ...brief.shots.flatMap((shot) => shot.references)].filter((reference) => reference.id === referenceId);
-  // Duplicate identities are ambiguous even when their display names agree.
-  if (matches.length !== 1) return null;
   const reference = matches[0];
   if (!reference) return null;
+  // A reference may be assigned to several scenes. Repeated assignments must
+  // agree on the media kind and complete saved lineage; names are not authority.
+  if (shared.filter(item => item.id === referenceId).length > 1 || matches.some(item =>
+    (item.mediaKind ?? "image") !== (reference.mediaKind ?? "image") || JSON.stringify(item.source) !== JSON.stringify(reference.source))) return null;
   if (reference.source?.kind === "project-media") return durableWorkspaceVideoMediaFromDocument(content, reference.source.mediaId);
   const source = reference.source;
   if (source?.kind !== "workspace-artifact" || !WORKSPACE_ARTIFACT_ID.test(source.artifactId) || !validateWorkspaceLogicalPath(source.path).ok || source.path.includes("\\") || /(?:https?:|data:|blob:|file:)/iu.test(source.path)) return null;
@@ -544,10 +549,16 @@ export function MiniAppSurface({
       if (target?.kind !== "artifact" || liveReviewBoundTargetKey(target) !== binding.targetKey) return null;
       const artifact = await apiClient.getWorkspaceArtifact(target.id, { roomId: binding.roomId });
       if (boundTargetRef.current !== target || !artifact || artifact.path !== target.path || !artifact.path.endsWith(".video.html")) return null;
-      return { projectArtifactId: artifact.artifactId, projectRevision: artifact.revision };
+      const { rooms } = await apiClient.listArtifactDiscussionRooms(artifact.id);
+      if (boundTargetRef.current !== target) return null;
+      // The open chat can differ from the saved project's attached room. Use
+      // an authorized project room; never guess among multiple attachments.
+      const roomId = rooms.find(room => room.id === binding.roomId)?.id ?? (rooms.length === 1 ? rooms[0]?.id : undefined);
+      if (!roomId) return null;
+      return { projectArtifactId: artifact.artifactId, projectRevision: artifact.revision, roomId };
     },
     issue: (binding, project) => apiClient.issueVideoHostAttestation({
-      roomId: binding.roomId, projectArtifactId: project.projectArtifactId, sourceHash: binding.sourceHash,
+      roomId: project.roomId ?? binding.roomId, projectArtifactId: project.projectArtifactId, sourceHash: binding.sourceHash,
     }),
     revoke: (token) => apiClient.revokeVideoHostAttestation(token),
   }), []);
@@ -560,7 +571,8 @@ export function MiniAppSurface({
   const videoGenerationPreviewUrlRef = useRef<string | null>(null);
   const workspaceMediaPreviewUrlsRef = useRef(new Map<string, string>());
   const workspaceMediaRequestsRef = useRef(new Set<string>());
-  const [workspaceMediaPicker, setWorkspaceMediaPicker] = useState<{ artifacts: WorkspaceMediaArtifact[]; labels: Record<string, string>; loading: boolean; error: string | null } | null>(null);
+  const [workspaceMediaPicker, setWorkspaceMediaPicker] = useState<{ artifacts: WorkspaceMediaArtifact[]; labels: Record<string, string>; loading: boolean; error: string | null; purpose?: "media" | "references"; multiple?: boolean; projectMedia?: VideoWorkspaceMediaPickerProps["projectMedia"]; onConfirm?: VideoWorkspaceMediaPickerProps["onConfirm"] } | null>(null);
+  const videoMediaPickResolveRef = useRef<((selection: VideoPickerSelection | "upload" | null) => void) | null>(null);
   const workspaceMediaPickerResolveRef = useRef<((selection: WorkspaceMediaArtifact | "upload" | null) => void) | null>(null);
   const workspaceMediaPickerAbortRef = useRef<AbortController | null>(null);
   const workspaceMediaImportEpochRef = useRef(0);
@@ -598,6 +610,9 @@ export function MiniAppSurface({
     workspaceMediaPickerAbortRef.current = null;
     setWorkspaceMediaPicker(null);
     resolve?.(selection);
+    const pickResolve = videoMediaPickResolveRef.current;
+    videoMediaPickResolveRef.current = null;
+    pickResolve?.(selection === "upload" ? "upload" : null);
     if (restoreFocus) queueMicrotask(() => iframeRef.current?.focus());
   }, []);
 
@@ -1676,7 +1691,7 @@ export function MiniAppSurface({
         shotLabel,
         briefDigest: request.sourceFingerprint,
         documentRevision: request.document.revision,
-        job: { ...coordinatorVideoJob(request), ...(job.referenceImages ? { referenceImages: [...job.referenceImages] } : {}), ...(job.referenceVideos ? { referenceVideos: [...job.referenceVideos] } : {}) },
+        job: { ...coordinatorVideoJob(request), ...(job.referenceImages ? { referenceImages: [...job.referenceImages] } : {}), ...(job.referenceVideos ? { referenceVideos: [...job.referenceVideos] } : {}), ...(job.referenceAudios ? { referenceAudios: [...job.referenceAudios] } : {}) },
       }, session.token);
       if (videoGenerationSessionRef.current !== session || boundTargetRef.current !== target) return { kind: "expired" as const };
       // The full prompt has already left the parent for D525; retain only the
@@ -1690,6 +1705,7 @@ export function MiniAppSurface({
       });
     } catch (err) {
       if (videoGenerationSessionRef.current !== session || boundTargetRef.current !== target) return { kind: "expired" as const };
+      if (err instanceof VideoGenerationPreparationError) return { kind: "unavailable" as const, code: err.code, message: err.message };
       if (err instanceof ApiError && (err.status === 401 || err.status === 403 || err.status === 409 || err.status === 410)) {
         invalidateVideoGenerationSession(true);
         return { kind: "expired" as const };
@@ -1787,8 +1803,8 @@ export function MiniAppSurface({
     const epoch = workspaceMediaImportEpochRef.current;
     const viewerKey = promotionStateRef.current.viewerKey;
     if (appId !== "nautilo-video" || runtime?.hostCapabilities?.mediaProxy !== true || target?.kind !== "artifact" ||
-        !target.roomId || !picker || !viewerKey || !workspaceMediaPickerResolveRef.current ||
-        (!artifact.mimeType.startsWith("image/") && !artifact.mimeType.startsWith("video/"))) return null;
+        !target.roomId || !picker || !viewerKey || (!workspaceMediaPickerResolveRef.current && !videoMediaPickResolveRef.current) ||
+        (!artifact.mimeType.startsWith("image/") && !artifact.mimeType.startsWith("video/") && !artifact.mimeType.startsWith("audio/"))) return null;
     const cancellation = AbortSignal.any([signal, picker.signal]);
     const isCurrent = () => !cancellation.aborted && workspaceMediaPickerAbortRef.current === picker &&
       workspaceMediaImportEpochRef.current === epoch && boundTargetRef.current === target &&
@@ -1796,12 +1812,13 @@ export function MiniAppSurface({
     if (!isCurrent()) return null;
     const preview = await openNativeWorkspacePreview(artifact, target.roomId, cancellation);
     if (!preview) return null;
-    if (!isCurrent() || preview.mediaKind !== (artifact.mimeType.startsWith("image/") ? "image" : "video")) {
+    const transportCompatible: boolean = workspaceMediaMimeMatchesKind(preview.mediaKind, artifact.mimeType);
+    if (!isCurrent() || (!transportCompatible && !(preview.mediaKind === "audio" && artifact.mimeType.startsWith("audio/")))) {
       void desktopAPI?.mediaProxy?.close(preview.revokeToken);
       return null;
     }
     workspaceMediaPreviewUrlsRef.current.set(preview.revokeToken, preview.url);
-    return { url: preview.url, mediaKind: preview.mediaKind, ...(preview.sha256 && /^[0-9a-f]{64}$/u.test(preview.sha256) ? { sha256: preview.sha256 } : {}), release: () => closeWorkspaceMediaPreview({ revokeToken: preview.revokeToken }) };
+    return { url: preview.url, mediaKind: preview.mediaKind, ...(preview.waveform ? { waveform: preview.waveform } : {}), ...(preview.sha256 && /^[0-9a-f]{64}$/u.test(preview.sha256) ? { sha256: preview.sha256 } : {}), release: () => closeWorkspaceMediaPreview({ revokeToken: preview.revokeToken }) };
   }, [appId, runtime?.hostCapabilities?.mediaProxy, openNativeWorkspacePreview, closeWorkspaceMediaPreview]);
 
   const loadReadyVideoGenerationTake = useCallback(async (takeId: string) => {
@@ -1982,7 +1999,7 @@ export function MiniAppSurface({
         return { kind: "unavailable" as const, code: "invalid_response" };
       }
       try {
-        if (!operationCurrent() || preview.mediaKind !== exact.mimeType.split("/", 1)[0]) return { kind: "unavailable" as const, code: "stale_project" };
+        if (!operationCurrent() || !workspaceMediaMimeMatchesKind(preview.mediaKind, exact.mimeType)) return { kind: "unavailable" as const, code: "stale_project" };
         const ready = { kind: "ready" as const, mediaRef: exact.path, label: workspaceMediaPickerName(exact, labels), source: { kind: "workspace-artifact" as const, artifactId: exact.artifactId, path: exact.path } };
         if (preview.mediaKind === "video") {
           if (!preview.durationSec || !preview.frameRate || !Number.isSafeInteger(preview.frameRate.numerator) || preview.frameRate.numerator <= 0 || !Number.isSafeInteger(preview.frameRate.denominator) || preview.frameRate.denominator <= 0) return { kind: "unavailable" as const, code: "invalid_response" };
@@ -2055,6 +2072,137 @@ export function MiniAppSurface({
     } catch { discard(); return unavailable("upload_unavailable"); }
     finally { workspaceMediaRequestsRef.current.delete(requestId); }
   }, [appId, runtime?.hostCapabilities?.mediaProxy]);
+
+  const pickVideoMedia = useCallback(async (input: VideoMediaPickInput): Promise<VideoMediaPickResult> => {
+    const target = boundTargetRef.current;
+    const viewerKey = promotionStateRef.current.viewerKey;
+    const unavailable = (code: string) => ({ kind: "unavailable" as const, code });
+    if (appId !== "nautilo-video" || runtime?.hostCapabilities?.mediaProxy !== true || target?.kind !== "artifact" || !target.roomId || !viewerKey) return unavailable("unsupported_environment");
+    closeWorkspaceMediaPicker(null);
+    const epoch = ++workspaceMediaImportEpochRef.current;
+    workspaceMediaImportCancelRef.current?.();
+    const current = () => workspaceMediaImportEpochRef.current === epoch && boundTargetRef.current === target && boundAppIdRef.current === appId && promotionStateRef.current.viewerKey === viewerKey;
+    const envelope = await readDocumentSession(documentSessionRef.current, target);
+    const parsed = parseVideoHtml(envelope.content);
+    if (!current() || !parsed.ok) return unavailable("stale_project");
+    const projectMedia = parsed.document.project.media.map(media => ({ id: media.id, label: media.label ?? media.id, kind: media.kind, path: media.source?.kind === "workspace-artifact" ? media.source.path : media.ref, ...(media.source?.kind === "workspace-artifact" ? { artifactId: media.source.artifactId } : {}) }));
+    const labels: Record<string, string> = {};
+    for (const media of projectMedia) if (media.artifactId) labels[`${media.artifactId}\0${media.path}`] = media.label;
+    const brief = parsed.document.project.generationBrief;
+    if (brief) for (const reference of [...effectiveGenerationDirectionBlocks(brief).flatMap(block => block.kind === "references" ? block.references ?? [] : []), ...brief.shots.flatMap(shot => shot.references)]) {
+      const source = reference.source?.kind === "project-media" ? parsed.document.project.media.find(media => reference.source?.kind === "project-media" && media.id === reference.source.mediaId)?.source : reference.source;
+      if (source?.kind === "workspace-artifact" && reference.name.trim()) labels[`${source.artifactId}\0${source.path}`] = reference.name.trim();
+    }
+    const selection = await new Promise<VideoPickerSelection | "upload" | null>(resolve => {
+      videoMediaPickResolveRef.current = resolve;
+      const controller = new AbortController();
+      workspaceMediaPickerAbortRef.current = controller;
+      const onConfirm = (picked: VideoPickerSelection) => {
+        // Detach this resolver before closing; close cancels any remaining picker.
+        videoMediaPickResolveRef.current = null;
+        closeWorkspaceMediaPicker(null, true);
+        resolve(picked);
+      };
+      const base = { labels, purpose: input.purpose, multiple: input.multiple, projectMedia, onConfirm };
+      setWorkspaceMediaPicker({ ...base, artifacts: [], loading: true, error: null });
+      void apiClient.listAllWorkspaceArtifacts({ roomId: target.roomId, signal: controller.signal }).then(({ artifacts }) => {
+        if (!current() || videoMediaPickResolveRef.current !== resolve) return;
+        setWorkspaceMediaPicker({ ...base, artifacts: artifacts.filter(a => {
+          const kind = a.mimeType.split("/")[0];
+          return (kind === "image" || kind === "video" || kind === "audio") &&
+            (isSafeWorkspaceReferenceMimeType(kind, a.mimeType) || (input.purpose === "references" && kind === "audio"));
+        }), loading: false, error: null });
+      }).catch(() => { if (current() && videoMediaPickResolveRef.current === resolve) setWorkspaceMediaPicker({ ...base, artifacts: [], loading: false, error: "Media could not be loaded. Close this picker and try again." }); });
+    });
+    if (!selection || !current()) return unavailable("cancelled");
+    const result: Extract<VideoMediaPickResult, { kind: "ready" }> = { kind: "ready", imports: [], references: [], mediaIds: [], failures: [] };
+    const accept = (data: { artifact: Omit<WorkspaceMediaArtifact, "revision">; label: string; mediaKind: "image" | "video" | "audio"; durationSec?: number; frameRate?: { numerator: number; denominator: number } }) => {
+      const a = data.artifact;
+      const safeMime = isSafeWorkspaceReferenceMimeType(data.mediaKind, a.mimeType) ||
+        (input.purpose === "references" && data.mediaKind === "audio" && isSeedanceAudioReferenceMimeType(a.mimeType));
+      if (!isSafeWorkspaceVideoImportLabel(data.label) || !WORKSPACE_ARTIFACT_ID.test(a.artifactId) || !LOGICAL_WORKSPACE_PATH.test(a.path) || !Number.isSafeInteger(a.size) || a.size <= 0 || !safeMime) return false;
+      if (input.purpose === "references") { result.references.push({ artifactId: a.artifactId, path: a.path, label: data.label, mediaKind: data.mediaKind, mimeType: a.mimeType, sizeBytes: a.size }); return true; }
+      const common = { kind: "ready" as const, mediaRef: a.path, label: data.label, source: { kind: "workspace-artifact" as const, artifactId: a.artifactId, path: a.path } };
+      if (data.mediaKind === "image") result.imports.push({ ...common, mediaKind: "image" });
+      else if (!data.durationSec || !Number.isFinite(data.durationSec)) return false;
+      else if (data.mediaKind === "audio") result.imports.push({ ...common, mediaKind: "audio", durationSec: data.durationSec });
+      else if (!data.frameRate || !Number.isSafeInteger(data.frameRate.numerator) || data.frameRate.numerator <= 0 || !Number.isSafeInteger(data.frameRate.denominator) || data.frameRate.denominator <= 0) return false;
+      else result.imports.push({ ...common, durationSec: data.durationSec, frameRate: { ...data.frameRate } });
+      return true;
+    };
+    const unattachedIds = new Set<string>();
+    try {
+    if (selection === "upload" || selection.fromComputer) {
+      const importer = input.multiple ? desktopAPI?.mediaProxy?.importWorkspaceBatch : desktopAPI?.mediaProxy?.importWorkspace;
+      if (!importer) return unavailable("unsupported_environment");
+      const requestId = crypto.randomUUID();
+      workspaceMediaRequestsRef.current.add(requestId);
+      try {
+        const response = await importer({ requestId, roomId: target.roomId });
+        if (!current()) {
+          if (response.ok) {
+            const receipts = "results" in response.data ? response.data.results : [{ ok: true as const, data: response.data }];
+            for (const entry of receipts) if (entry.ok) void apiClient.deleteWorkspaceArtifact(entry.data.artifact.id, { roomId: target.roomId }).catch(() => undefined);
+          }
+          return unavailable("stale_project");
+        }
+        if (!response.ok) return unavailable(response.error.code);
+        const entries = "results" in response.data ? response.data.results : [{ ok: true as const, data: response.data }];
+        for (const entry of entries) {
+          if (!entry.ok) { result.failures.push({ label: isSafeWorkspaceVideoImportLabel(entry.label) ? entry.label : "Selected file", code: /^[a-z_]+$/u.test(entry.error.code) ? entry.error.code : "upload_unavailable" }); continue; }
+          unattachedIds.add(entry.data.artifact.id);
+          if (!accept(entry.data)) {
+            result.failures.push({ label: isSafeWorkspaceVideoImportLabel(entry.data.label) ? entry.data.label : "Selected file", code: "unsupported_type" });
+            unattachedIds.delete(entry.data.artifact.id);
+            void apiClient.deleteWorkspaceArtifact(entry.data.artifact.id, { roomId: target.roomId }).catch(() => undefined);
+          }
+        }
+      } finally { workspaceMediaRequestsRef.current.delete(requestId); }
+    }
+    if (selection !== "upload") {
+      if (!input.multiple && selection.artifacts.length + selection.mediaIds.length > 1) return unavailable("invalid_response");
+      for (const selected of selection.artifacts) {
+        if (!current()) return unavailable("stale_project");
+        const exact = await apiClient.getWorkspaceArtifact(selected.id, { roomId: target.roomId }).catch(() => null);
+        if (!current()) return unavailable("stale_project");
+        if (!exact || exact.id !== selected.id || exact.artifactId !== selected.artifactId || exact.path !== selected.path || exact.revision !== selected.revision || exact.mimeType !== selected.mimeType || exact.size !== selected.size) { result.failures.push({ label: workspaceMediaPickerName(selected, labels), code: "changed_during_read" }); continue; }
+        const kind = exact.mimeType.split("/")[0];
+        if (kind !== "image" && kind !== "video" && kind !== "audio") continue;
+        if (input.purpose === "references" && kind === "image") { if (!accept({ artifact: exact, label: workspaceMediaPickerName(exact, labels), mediaKind: kind })) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "unsupported_type" }); continue; }
+        if (input.purpose === "references" && kind === "audio") {
+          if (!isSeedanceAudioReferenceMimeType(exact.mimeType)) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "unsupported_type" });
+          else if (!accept({ artifact: exact, label: workspaceMediaPickerName(exact, labels), mediaKind: "audio" })) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "unsupported_type" });
+          continue;
+        }
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        workspaceMediaImportCancelRef.current = cancel;
+        const preview = await openNativeWorkspacePreview(exact, target.roomId, controller.signal).catch(() => null);
+        if (workspaceMediaImportCancelRef.current === cancel) workspaceMediaImportCancelRef.current = null;
+        if (!preview) { result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "processing_unavailable" }); continue; }
+        try { if (!current()) return unavailable("stale_project"); if (!accept({ artifact: exact, label: workspaceMediaPickerName(exact, labels), mediaKind: preview.mediaKind, ...(preview.durationSec === undefined ? {} : { durationSec: preview.durationSec }), ...(preview.frameRate ? { frameRate: preview.frameRate } : {}) })) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "invalid_response" }); }
+        finally { void desktopAPI?.mediaProxy?.close(preview.revokeToken); }
+      }
+      if (selection.mediaIds.length) {
+        // Ordinary saves may advance revision while a chooser is open. Validate
+        // exact project-media identities against the latest canonical document.
+        resetDocumentReadSession(documentSessionRef.current);
+        const latest = parseVideoHtml((await readDocumentSession(documentSessionRef.current, target)).content);
+        if (!current() || !latest.ok) return unavailable("stale_project");
+        for (const id of selection.mediaIds) {
+          const old = parsed.document.project.media.find(m => m.id === id), now = latest.document.project.media.find(m => m.id === id);
+          if (input.purpose === "references" && old && now && JSON.stringify(old.source) === JSON.stringify(now.source) && old.ref === now.ref && old.kind === now.kind) result.mediaIds.push(id);
+          else result.failures.push({ label: old?.label ?? "Media Bin item", code: "stale_project" });
+        }
+      }
+    }
+    if (!current()) return unavailable("stale_project");
+    unattachedIds.clear();
+    return result;
+    } finally {
+      for (const id of unattachedIds) void apiClient.deleteWorkspaceArtifact(id, { roomId: target.roomId }).catch(() => undefined);
+    }
+  }, [appId, runtime?.hostCapabilities?.mediaProxy, closeWorkspaceMediaPicker, openNativeWorkspacePreview]);
 
   const exportVideoWorkspaceMedia = useCallback(async (input: VideoWorkspaceMediaExportInput): Promise<VideoWorkspaceMediaExportResult> => {
     const target = boundTargetRef.current;
@@ -2345,6 +2493,7 @@ export function MiniAppSurface({
         ...(appId === "nautilo-video" && runtime.hostCapabilities?.mediaProxy === true
         ? {
             onVideoWorkspaceMediaImport: importWorkspaceVideo,
+            onVideoMediaPick: pickVideoMedia,
             onVideoWorkspaceMediaExport: exportVideoWorkspaceMedia,
             ...(desktopAPI?.mediaExport?.promoteVideoProject && auth.viewer.isVerified ? {
               onVideoProjectPromotion: promoteCurrentFolderVideoProject,
@@ -2414,6 +2563,7 @@ export function MiniAppSurface({
     importVideoGenerationReference,
     importVideoGenerationReferences,
     importWorkspaceVideo,
+    pickVideoMedia,
     exportVideoWorkspaceMedia,
     promoteCurrentFolderVideoProject,
     openPromotedVideoProject,
@@ -3210,7 +3360,7 @@ export function MiniAppSurface({
           onOnce={submitVideoGenerationReview}
           onCancel={cancelVideoGenerationReview}
         />
-        {workspaceMediaPicker ? <VideoWorkspaceMediaPicker {...workspaceMediaPicker} loadPreview={loadWorkspaceMediaPickerPreview} onSelect={(artifact) => closeWorkspaceMediaPicker(artifact)} onUpload={() => closeWorkspaceMediaPicker("upload")} onCancel={() => closeWorkspaceMediaPicker(null, true)} /> : null}
+        {workspaceMediaPicker ? <VideoWorkspaceMediaPicker {...workspaceMediaPicker} loadPreview={loadWorkspaceMediaPickerPreview} onSelect={(artifact) => closeWorkspaceMediaPicker(artifact)} onUpload={(selection) => { const resolve = videoMediaPickResolveRef.current; if (resolve && selection) { videoMediaPickResolveRef.current = null; closeWorkspaceMediaPicker(null, true); resolve(selection); } else closeWorkspaceMediaPicker("upload", true); }} onCancel={() => closeWorkspaceMediaPicker(null, true)} /> : null}
         {videoGenerationPreview ? (
           <section className="absolute inset-0 z-20 grid place-items-center bg-black/70 p-6" role="dialog" aria-modal="true" aria-label="Generated take preview" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeVideoGenerationPreview(); } }}>
             <div className="max-h-full w-full max-w-4xl overflow-auto rounded-lg border border-border bg-background p-3 shadow-2xl">

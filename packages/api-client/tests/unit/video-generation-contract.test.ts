@@ -60,6 +60,27 @@ describe("Video generation parent-host contracts", () => {
     expect(videoGenerationReviewDtoV1Schema.parse(legacy)).toEqual(legacy);
   });
 
+  test("retains audio donors and their approved content without accepting transport URLs", () => {
+    const original = reviewWithReferences();
+    const reference = { index: 1, artifactId: "fixture-audio-1", label: "dialogue.mp3", durationSeconds: 4,
+      content: { sha256: "e".repeat(64), sizeBytes: 2048, mimeType: "audio/mpeg" as const } };
+    const review = { ...original, approval: { ...original.approval, preview: { ...original.approval.preview,
+      settings: { ...original.approval.preview.settings, referenceAudios: 1, referenceAudioSeconds: 4 },
+      referenceAudios: [reference] } } };
+    expect(videoGenerationReviewDtoV1Schema.parse(review)).toEqual(review);
+    for (const content of [{ ...reference.content, mimeType: "video/mp4" }, { ...reference.content, url: "https://provider.invalid/audio" }]) {
+      expect(videoGenerationReviewDtoV1Schema.safeParse({ ...review, approval: { ...review.approval,
+        preview: { ...review.approval.preview, referenceAudios: [{ ...reference, content }] } } }).success).toBe(false);
+    }
+    const request = { roomId: "room-1", projectArtifactId: "artifact-1", requestId: "request-1", shotId: "shot-1", shotLabel: "Opening",
+      briefDigest: `sha256:${"a".repeat(64)}`, documentRevision: 1,
+      job: { modelId: "venice:seedance-2-5-reference-to-video-basic" as const, prompt: "Follow <Audio 1>",
+        referenceImages: [{ path: "subject.png" }], referenceAudios: [{ path: "dialogue.mp3" }] } };
+    expect(videoGenerationPrepareRequestV1Schema.parse(request)).toEqual(request);
+    expect(videoGenerationPrepareRequestV1Schema.safeParse({ ...request, job: { ...request.job,
+      referenceAudios: [{ path: "dialogue.mp3", durationSeconds: 4 }] } }).success).toBe(false);
+  });
+
   test("rejects malformed reference fingerprints", () => {
     const review = reviewWithReferences();
     const invalidContent = [

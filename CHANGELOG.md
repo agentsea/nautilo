@@ -13,6 +13,19 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Video references use one optional **Extra instructions** field; existing role
+  guidance remains visible and editable alongside saved instructions.
+
+- Video generation references can apply to all scenes or selected scenes, with
+  previews and scope controls beside the scene list. Scene assignments and prompt
+  mentions persist across saves and scene reordering; review uses each scene's
+  own image, video, and audio references.
+
+- Video generation accepts MP3/WAV audio references from Artifacts, the Media Bin,
+  and computer uploads. Audio references retain waveform/playback previews and
+  prompt mentions, appear in paid review, and reach Seedance with validated
+  source bytes and duration. Audio donors require an image or video reference.
+
 - Mini-app editors release their live sessions across reloads and recover failed
   cleanup before subsequent agent edits. Read-only previews now tell Genie to
   use saved-document tools, and write guards no longer misidentify every editor
@@ -25,6 +38,26 @@ store update, or Desktop/Host installation.
 
 - Desktop can accept a changed server identity from a fresh development profile,
   and recovery-screen actions remain available when its URL includes recovery state.
+
+- Video generation can use references from all currently readable Workspace
+  contexts, rechecks access before submission, and shows specific preparation errors.
+
+- Video generation status follows the saved project’s authorized room instead
+  of an unrelated open chat. Saved takes remain usable when status is unavailable.
+
+- Audio-only MP4 artifacts show audio waveforms and import as audio even when
+  their stored MIME label says video. Stream inspection determines media kind.
+
+- Confirmed Video generations open a dedicated progress pane with animation,
+  timing, scene status, recovery, and the saved result. Returning to scene design
+  keeps a progress shortcut and does not cancel or resubmit the generation.
+
+- Video uses one searchable media browser for Artifacts, the Media Bin, and
+  computer uploads, including batch selection and generation references.
+  Cancel closes quietly; actionable media messages can be dismissed. Image
+  assets show thumbnails in the editor’s Media Bin as well as the picker.
+  Audio cards show their actual waveform with playback and seeking controls,
+  including waveform thumbnails and audio previews in the Add media picker.
 
 - Browser Use can carry out requested website work, including creating and
   editing content, on public or connected sites. A task does not require a

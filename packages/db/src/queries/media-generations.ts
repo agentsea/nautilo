@@ -1,6 +1,11 @@
 /** D525 durable media lifecycle repository. DB rows are canonical; callers publish notifications separately. */
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import {
+  validateWorkspaceLogicalPath,
+  VENICE_REFERENCE_AUDIO_MAX_BYTES,
+  WORKSPACE_LOGICAL_PATH_MAX_CHARS,
+} from "@nautilo/types";
 import type { DirectDatabase } from "../config/direct-database";
 import {
   mediaGenerations,
@@ -304,13 +309,17 @@ function assertNormalizedSettings(value: unknown, label: string): asserts value 
   }
 }
 
+function isCanonicalWorkspaceBindingPath(value: unknown): value is string {
+  return typeof value === "string" && value.length <= WORKSPACE_LOGICAL_PATH_MAX_CHARS && validateWorkspaceLogicalPath(value).ok;
+}
+
 /** Ensure internal resume input is closed and cannot carry provider topology or secret fields. */
 export function assertMediaGenerationRequestPayload(
   requestPayload: MediaGenerationRequestPayload,
   providerModel: string,
 ): void {
   const value: unknown = requestPayload;
-  if (!isPlainRecord(value) || !hasOnlyKeys(value, ["version", "model", "prompt", "lyrics", "referenceImages", "referenceVideos", "normalizedSettings"]) || value["version"] !== 1 ||
+  if (!isPlainRecord(value) || !hasOnlyKeys(value, ["version", "model", "prompt", "lyrics", "referenceImages", "referenceVideos", "referenceAudios", "normalizedSettings"]) || value["version"] !== 1 ||
       typeof value["model"] !== "string" || value["model"] !== providerModel || !isSafeSettingToken(value["model"]) ||
       typeof value["prompt"] !== "string" || (value["lyrics"] !== undefined && typeof value["lyrics"] !== "string")) {
     throw new Error("requestPayload must be an exact approved v1 request");
@@ -319,7 +328,7 @@ export function assertMediaGenerationRequestPayload(
   if (referenceImages !== undefined && (!Array.isArray(referenceImages) || referenceImages.length > 30 ||
       referenceImages.some((reference) => !isPlainRecord(reference) || !hasOnlyKeys(reference, [
         "path", "artifactId", "artifactInternalId", "revision", "mimeType", "sizeBytes", "sha256",
-      ]) || typeof reference["path"] !== "string" || reference["path"].length < 1 || reference["path"].length > 512 ||
+      ]) || !isCanonicalWorkspaceBindingPath(reference["path"]) ||
         typeof reference["artifactId"] !== "string" || reference["artifactId"].length < 1 || reference["artifactId"].length > 256 ||
         typeof reference["artifactInternalId"] !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(reference["artifactInternalId"]) ||
         !isPositiveSafeInteger(reference["revision"]) || typeof reference["mimeType"] !== "string" ||
@@ -337,7 +346,7 @@ export function assertMediaGenerationRequestPayload(
           typeof video["durationSeconds"] !== "number" || !Number.isFinite(video["durationSeconds"]) || video["durationSeconds"] < 2 || video["durationSeconds"] > 30 ||
           !["video/mp4", "video/quicktime"].includes(String(video["mimeType"])) ||
           !isPositiveSafeInteger(video["sizeBytes"]) || video["sizeBytes"] > 50 * 1024 * 1024) throw new Error("Invalid reference video binding");
-      if (typeof video["path"] !== "string" || video["path"].length < 1 || video["path"].length > 512 ||
+      if (!isCanonicalWorkspaceBindingPath(video["path"]) ||
           typeof video["artifactId"] !== "string" || video["artifactId"].length < 1 || video["artifactId"].length > 256 ||
           typeof video["artifactInternalId"] !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(video["artifactInternalId"]) ||
           !isPositiveSafeInteger(video["revision"]) || typeof video["sha256"] !== "string" || !/^[a-f0-9]{64}$/u.test(video["sha256"])) throw new Error("Invalid immutable video identity");
@@ -345,9 +354,26 @@ export function assertMediaGenerationRequestPayload(
     }
     if (totalVideoSeconds > 30) throw new Error("Reference video duration exceeds provider limit");
   }
+  const audios = value["referenceAudios"];
+  if (audios !== undefined) {
+    if (!Array.isArray(audios) || audios.length > 10) throw new Error("Invalid reference audio bindings");
+    let totalAudioSeconds = 0;
+    for (const audio of audios) {
+      if (!isPlainRecord(audio) || !hasOnlyKeys(audio, ["path", "artifactId", "artifactInternalId", "revision", "mimeType", "sizeBytes", "sha256", "durationSeconds"]) ||
+          typeof audio["durationSeconds"] !== "number" || !Number.isFinite(audio["durationSeconds"]) || audio["durationSeconds"] < 2 || audio["durationSeconds"] > 30 ||
+          !["audio/mpeg", "audio/wav", "audio/x-wav"].includes(String(audio["mimeType"])) ||
+          !isPositiveSafeInteger(audio["sizeBytes"]) || audio["sizeBytes"] > VENICE_REFERENCE_AUDIO_MAX_BYTES) throw new Error("Invalid reference audio binding");
+      if (!isCanonicalWorkspaceBindingPath(audio["path"]) ||
+          typeof audio["artifactId"] !== "string" || audio["artifactId"].length < 1 || audio["artifactId"].length > 256 ||
+          typeof audio["artifactInternalId"] !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(audio["artifactInternalId"]) ||
+          !isPositiveSafeInteger(audio["revision"]) || typeof audio["sha256"] !== "string" || !/^[a-f0-9]{64}$/u.test(audio["sha256"])) throw new Error("Invalid immutable audio identity");
+      totalAudioSeconds += audio["durationSeconds"];
+    }
+    if (totalAudioSeconds > 30) throw new Error("Reference audio duration exceeds provider limit");
+  }
   if (providerModel === "seedance-2-5-reference-to-video-basic" &&
       !(Array.isArray(referenceImages) && referenceImages.length) && !(Array.isArray(videos) && videos.length)) throw new Error("Reference media missing");
-  if (providerModel !== "seedance-2-5-reference-to-video-basic" && (referenceImages !== undefined || videos !== undefined)) throw new Error("References require reference model");
+  if (providerModel !== "seedance-2-5-reference-to-video-basic" && (referenceImages !== undefined || videos !== undefined || audios !== undefined)) throw new Error("References require reference model");
   assertNormalizedSettings(value["normalizedSettings"], "requestPayload.normalizedSettings");
 }
 

@@ -14,11 +14,18 @@ import {
   findArtifactByPathForNamespaces,
   type DirectDatabase,
   type MediaGenerationAdmissionProof,
+  type MediaGenerationReferenceAudioBinding,
   type MediaGenerationReferenceImageBinding,
   type MediaGenerationScope,
 } from "@nautilo/db";
 import sharp from "sharp";
-import { VENICE_REFERENCE_VIDEO_MAX_BYTES, VENICE_REFERENCE_VIDEO_SIZE_WARNING } from "@nautilo/types";
+import {
+  VENICE_REFERENCE_AUDIO_MAX_BYTES,
+  VENICE_REFERENCE_AUDIO_SIZE_WARNING,
+  VENICE_REFERENCE_VIDEO_MAX_BYTES,
+  VENICE_REFERENCE_VIDEO_SIZE_WARNING,
+} from "@nautilo/types";
+import { inspectReferenceAudio } from "./reference-audio-metadata";
 import { inspectReferenceVideo } from "./reference-video-metadata";
 
 const MAX_REFERENCE_BYTES = 30 * 1024 * 1024;
@@ -37,12 +44,12 @@ export interface MediaReferenceArtifactOperations {
 }
 
 async function confinedRead(storageUri: string): Promise<Uint8Array> {
-  if (!storageUri.startsWith("file://")) throw new MediaGenerationValidationError("Reference image is not stored locally.");
+  if (!storageUri.startsWith("file://")) throw new MediaGenerationValidationError("Reference media is not stored locally.");
   const root = await realpath(getArtifactsRoot());
   const candidate = await realpath(fileURLToPath(storageUri));
   const edge = relative(root, candidate);
   if (edge === "" || edge === ".." || edge.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || resolve(root, edge) !== candidate) {
-    throw new MediaGenerationValidationError("Reference image is outside the Workspace media root.");
+    throw new MediaGenerationValidationError("Reference media is outside the Workspace media root.");
   }
   return new Uint8Array(await readFile(candidate));
 }
@@ -125,6 +132,7 @@ export async function resolveMediaGenerationReferenceRequest(
   scope: MediaGenerationScope,
   intent: NormalizedMediaGenerationIntent,
   operations: MediaReferenceArtifactOperations = DEFAULT_OPERATIONS,
+  readableNamespaceIds: readonly string[] = [scope.namespaceId],
 ): Promise<NormalizedMediaGenerationRequest> {
   if (intent.model !== "seedance-2-5-reference-to-video-basic") {
     return normalizeMediaGenerationRequest(intent);
@@ -134,10 +142,12 @@ export async function resolveMediaGenerationReferenceRequest(
   }
   const videoBindings: NonNullable<Extract<NormalizedMediaGenerationRequest, { model: "seedance-2-5-reference-to-video-basic" }>["referenceVideos"]> = [];
   const videoDeliveries: PreparedReferenceImage[] = [];
-  const paths = [...intent.referenceImages, ...(intent.referenceVideos ?? [])].map(ref => ref.path);
+  const audioBindings: NonNullable<Extract<NormalizedMediaGenerationRequest, { model: "seedance-2-5-reference-to-video-basic" }>["referenceAudios"]> = [];
+  const audioDeliveries: PreparedReferenceImage[] = [];
+  const paths = [...intent.referenceImages, ...(intent.referenceVideos ?? []), ...(intent.referenceAudios ?? [])].map(ref => ref.path);
   if (new Set(paths).size !== paths.length) throw new MediaGenerationValidationError("Choose each reference once.");
   for (const reference of intent.referenceVideos ?? []) {
-    const artifact = await operations.findByPath({ path: reference.path, readableNamespaceIds: [scope.namespaceId] }, db);
+    const artifact = await operations.findByPath({ path: reference.path, readableNamespaceIds: [...readableNamespaceIds] }, db);
     if (!artifact || artifact.deletedAt !== null || !artifact.storageUri ||
         !["video/mp4", "video/quicktime"].includes(artifact.mimeType ?? "") ||
         !Number.isSafeInteger(artifact.size) || !artifact.size || artifact.size < 1) {
@@ -157,11 +167,47 @@ export async function resolveMediaGenerationReferenceRequest(
       sizeBytes: bytes.byteLength, sha256: sha256(bytes), durationSeconds });
     videoDeliveries.push({ mimeType: artifact.mimeType, bytes });
   }
+  for (const reference of intent.referenceAudios ?? []) {
+    const artifact = await operations.findByPath({ path: reference.path, readableNamespaceIds: [...readableNamespaceIds] }, db);
+    if (!artifact || artifact.deletedAt !== null || !artifact.storageUri ||
+        !["audio/mpeg", "audio/wav", "audio/x-wav"].includes(artifact.mimeType ?? "") ||
+        !Number.isSafeInteger(artifact.size) || !artifact.size || artifact.size < 1) {
+      throw new MediaGenerationValidationError("Choose a saved Workspace MP3 or WAV audio file as your reference.");
+    }
+    if (artifact.size > VENICE_REFERENCE_AUDIO_MAX_BYTES) {
+      throw new MediaGenerationValidationError(VENICE_REFERENCE_AUDIO_SIZE_WARNING);
+    }
+    const bytes = await operations.readBytes(artifact.storageUri);
+    if (bytes.byteLength !== artifact.size) throw new MediaGenerationValidationError("Reference audio changed during preparation.");
+    let inspected: ReturnType<typeof inspectReferenceAudio>;
+    try {
+      inspected = inspectReferenceAudio(bytes, artifact.mimeType as MediaGenerationReferenceAudioBinding["mimeType"]);
+    } catch {
+      throw new MediaGenerationValidationError("Reference audio needs readable MP3/WAV content and timing. Export a compatible clip and replace this reference.");
+    }
+    if (inspected.durationSeconds < 2 || inspected.durationSeconds > 30) {
+      throw new MediaGenerationValidationError("Each reference audio file must be 2–30 seconds. Choose a shorter clip.");
+    }
+    audioBindings.push({
+      path: reference.path,
+      artifactId: artifact.artifactId,
+      artifactInternalId: artifact.id,
+      revision: artifact.revision,
+      mimeType: artifact.mimeType as MediaGenerationReferenceAudioBinding["mimeType"],
+      sizeBytes: bytes.byteLength,
+      sha256: sha256(bytes),
+      durationSeconds: inspected.durationSeconds,
+    });
+    audioDeliveries.push({ mimeType: inspected.providerMimeType, bytes });
+  }
+  if (audioBindings.reduce((sum, binding) => sum + binding.durationSeconds, 0) > 30) {
+    throw new MediaGenerationValidationError("Seedance accepts at most 30 seconds of reference audio in total. Choose shorter clips.");
+  }
   const inspected: { binding: MediaGenerationReferenceImageBinding; delivery: PreparedReferenceImage }[] = [];
   for (const reference of intent.referenceImages) {
     const artifact = await operations.findByPath({
       path: reference.path,
-      readableNamespaceIds: [scope.namespaceId],
+      readableNamespaceIds: [...readableNamespaceIds],
     }, db);
     if (!artifact || artifact.deletedAt !== null) throw new MediaGenerationValidationError("A selected Workspace reference is no longer available.");
     assertArtifactShape(artifact);
@@ -181,11 +227,12 @@ export async function resolveMediaGenerationReferenceRequest(
       },
     });
   }
-  assertQueueSize(intent.prompt, [...inspected.map(({ delivery }) => delivery), ...videoDeliveries]);
+  assertQueueSize(intent.prompt, [...inspected.map(({ delivery }) => delivery), ...videoDeliveries, ...audioDeliveries]);
   return normalizeMediaGenerationRequest({
     ...intent,
     referenceImages: inspected.map(({ binding }) => binding),
     ...(videoBindings.length ? { referenceVideos: videoBindings } : {}),
+    ...(audioBindings.length ? { referenceAudios: audioBindings } : {}),
   });
 }
 
@@ -193,11 +240,13 @@ export async function resolveMediaGenerationReferenceRequest(
 export async function resolveApprovedReferenceMediaUrls(
   db: DirectDatabase, proof: MediaGenerationAdmissionProof,
   operations: MediaReferenceArtifactOperations = DEFAULT_OPERATIONS,
-): Promise<{ images: readonly string[]; videos: readonly string[] }> {
-  const images = await resolveApprovedReferenceImageUrls(db, proof, operations);
+  readableNamespaceIds: readonly string[] = [proof.namespaceId],
+): Promise<{ images: readonly string[]; videos: readonly string[]; audios: readonly string[] }> {
+  const images = await resolveApprovedReferenceImageUrls(db, proof, operations, readableNamespaceIds);
   const videos: string[] = [];
+  const audios: string[] = [];
   for (const binding of proof.requestPayload.referenceVideos ?? []) {
-    const artifact = await operations.findByInternalId({ internalId: binding.artifactInternalId, mutableNamespaceIds: [proof.namespaceId] }, db);
+    const artifact = await operations.findByInternalId({ internalId: binding.artifactInternalId, mutableNamespaceIds: [...readableNamespaceIds] }, db);
     if (!artifact || artifact.deletedAt !== null || !artifact.storageUri ||
         artifact.artifactId !== binding.artifactId || artifact.revision !== binding.revision ||
         artifact.mimeType !== binding.mimeType || artifact.size !== binding.sizeBytes) throw new MediaGenerationValidationError("An approved reference video changed before submission.");
@@ -206,16 +255,37 @@ export async function resolveApprovedReferenceMediaUrls(
         inspectReferenceVideo(bytes).durationSeconds !== binding.durationSeconds) throw new MediaGenerationValidationError("An approved reference video changed before submission.");
     videos.push(`data:${binding.mimeType};base64,${Buffer.from(bytes).toString("base64")}`);
   }
-  if (Buffer.byteLength(JSON.stringify({ images, videos, prompt: proof.requestPayload.prompt }), "utf8") + 16_384 > MAX_QUEUE_JSON_BYTES) {
+  for (const binding of proof.requestPayload.referenceAudios ?? []) {
+    const artifact = await operations.findByInternalId({ internalId: binding.artifactInternalId, mutableNamespaceIds: [...readableNamespaceIds] }, db);
+    if (!artifact || artifact.deletedAt !== null || !artifact.storageUri ||
+        artifact.artifactId !== binding.artifactId || artifact.revision !== binding.revision ||
+        artifact.mimeType !== binding.mimeType || artifact.size !== binding.sizeBytes) {
+      throw new MediaGenerationValidationError("An approved reference audio file changed before submission.");
+    }
+    const bytes = await operations.readBytes(artifact.storageUri);
+    let inspected: ReturnType<typeof inspectReferenceAudio>;
+    try {
+      inspected = inspectReferenceAudio(bytes, binding.mimeType);
+    } catch {
+      throw new MediaGenerationValidationError("An approved reference audio file changed before submission.");
+    }
+    if (bytes.byteLength !== binding.sizeBytes || sha256(bytes) !== binding.sha256 ||
+        inspected.durationSeconds !== binding.durationSeconds) {
+      throw new MediaGenerationValidationError("An approved reference audio file changed before submission.");
+    }
+    audios.push(`data:${inspected.providerMimeType};base64,${Buffer.from(bytes).toString("base64")}`);
+  }
+  if (Buffer.byteLength(JSON.stringify({ images, videos, audios, prompt: proof.requestPayload.prompt }), "utf8") + 16_384 > MAX_QUEUE_JSON_BYTES) {
     throw new MediaGenerationValidationError("References exceed Venice's 35 MB request limit.");
   }
-  return { images, videos };
+  return { images, videos, audios };
 }
 
 export async function resolveApprovedReferenceImageUrls(
   db: DirectDatabase,
   proof: MediaGenerationAdmissionProof,
   operations: MediaReferenceArtifactOperations = DEFAULT_OPERATIONS,
+  readableNamespaceIds: readonly string[] = [proof.namespaceId],
 ): Promise<readonly string[]> {
   const bindings = proof.requestPayload.referenceImages;
   if (proof.requestPayload.model !== "seedance-2-5-reference-to-video-basic" || !bindings) {
@@ -225,7 +295,7 @@ export async function resolveApprovedReferenceImageUrls(
   for (const binding of bindings) {
     const artifact = await operations.findByInternalId({
       internalId: binding.artifactInternalId,
-      mutableNamespaceIds: [proof.namespaceId],
+      mutableNamespaceIds: [...readableNamespaceIds],
     }, db);
     if (!artifact || artifact.deletedAt !== null) throw new MediaGenerationValidationError("An approved reference image is no longer available.");
     assertArtifactShape(artifact);

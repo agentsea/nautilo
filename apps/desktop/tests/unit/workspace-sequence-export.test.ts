@@ -22,11 +22,11 @@ const source: WorkspaceSequenceSourceBinding = {
   path: "video-imports/source.mp4", mimeType: "video/mp4", sizeBytes: 24,
 };
 const mediaBytes = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(12)]);
-function document(overrides: Partial<WorkspaceSequenceSourceBinding> = {}) {
+function document(overrides: Partial<WorkspaceSequenceSourceBinding> = {}, kind: "video" | "audio" = "video") {
   const bound = { ...source, ...overrides };
   const project = createEmptyProject(); const track = project.sequences[0]!.tracks[0]!;
-  project.media.push({ id: "media", kind: "video", ref: bound.path, lifecycle: "durable", source: { kind: "workspace-artifact", artifactId: bound.artifactId, path: bound.path } });
-  track.clips.push({ id: "clip", trackId: track.id, kind: "video", mediaId: "media", timelineStartSec: 0, durationSec: 1, props: {} });
+  project.media.push({ id: "media", kind, ref: bound.path, lifecycle: "durable", source: { kind: "workspace-artifact", artifactId: bound.artifactId, path: bound.path } });
+  track.clips.push({ id: "clip", trackId: track.id, kind, mediaId: "media", timelineStartSec: 0, durationSec: 1, props: {} });
   const content = serializeVideoHtml(createDefaultManifest(), project);
   return { content, sha: createHash("sha256").update(content).digest("hex") };
 }
@@ -62,6 +62,21 @@ describe("Workspace sequence export", () => {
     });
     expect(result).toEqual({ status: "succeeded", label: "chosen.mp4", sizeBytes: 99, warnings: [] });
     expect(snapshot.startsWith(removed)).toBe(true); expect(await fsp.access(snapshot).then(() => true, () => false)).toBe(false);
+  });
+
+  test("exports audio-only MP4 with a video/mp4 transport label without weakening stream checks", async () => {
+    const doc = document({}, "audio");
+    for (const actualKind of ["audio", "video"] as const) {
+      let published = false;
+      const result = await exportWorkspaceSequence({ documentContent: doc.content, expectedSha256: doc.sha, roomId, sources: [source] }, {
+        ffmpegPath: "/ffmpeg", fetchSource: async () => response([mediaBytes]), chooseOutput: async () => "/audio.mp4",
+        inspectSource: async () => actualKind === "audio" ? { mediaKind: "audio", mimeType: "audio/mp4", extension: "m4a", durationSec: 1 } : inspected(),
+        probeSource: async () => ({ hasVideo: false, hasAudio: true }), makeSourceTempDir: sourceRoot,
+        publish: async () => { published = true; return { status: "succeeded", label: "audio.mp4", sizeBytes: 99, warnings: [] }; },
+      });
+      expect(published).toBe(actualKind === "audio");
+      expect(result.status).toBe(actualKind === "audio" ? "succeeded" : "failed");
+    }
   });
 
   test("rejects truncated, oversized, redirected, and wrong-MIME responses without publishing", async () => {

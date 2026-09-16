@@ -9984,8 +9984,7 @@ async function workspaceMediaTransfer(e: Electron.IpcMainInvokeEvent, args: unkn
   if (!input || !isOpaqueMediaProxyId(requestId) || !isWorkspaceMediaRoom(roomId) ||
       Object.keys(input).some((key) => !["requestId", "roomId", operation === "preview" ? "artifact" : "mediaKind"].includes(key)) ||
       (operation === "preview" && !isWorkspaceMediaArtifact(artifact)) ||
-      (operation === "importBatch" && mediaKind !== "image") ||
-      (operation === "import" && mediaKind !== undefined && mediaKind !== "image" && mediaKind !== "video" && mediaKind !== "audio")) return fail("invalid_request");
+      ((operation === "import" || operation === "importBatch") && mediaKind !== undefined && mediaKind !== "image" && mediaKind !== "video" && mediaKind !== "audio")) return fail("invalid_request");
   const admittedMediaKind = mediaKind === "image" || mediaKind === "video" || mediaKind === "audio" ? mediaKind : undefined;
   const activeSession = serverSessions.active; const serverUrl = resolvedServerUrl();
   if (!mainWindow || !activeSession || !serverUrl || serverSessions.getBySender(e.sender.id) !== activeSession) return fail("unsupported_environment");
@@ -10016,13 +10015,13 @@ async function workspaceMediaTransfer(e: Electron.IpcMainInvokeEvent, args: unkn
     const deps = { serverUrl, bearer, roomId, ffmpegPath: ffmpeg.binaryPath, signal: controller.signal, isAuthorityCurrent: authorityCurrent };
     if (operation === "import" || operation === "importBatch") {
       const selection = await dialog.showOpenDialog(mainWindow, {
-        title: operation === "importBatch" ? "Add image references to Workspace" : admittedMediaKind ? `Add ${admittedMediaKind} reference to Workspace` : "Import media into Workspace",
+        title: operation === "importBatch" ? "Add media to Workspace" : admittedMediaKind ? `Add ${admittedMediaKind} reference to Workspace` : "Import media into Workspace",
         properties: operation === "importBatch" ? ["openFile", "multiSelections"] : ["openFile"],
         filters: [{ name: "Media", extensions: admittedMediaKind === "image" ? ["png", "jpg", "jpeg", "webp"] : admittedMediaKind === "audio" ? ["mp3", "wav", "m4a"] : admittedMediaKind === "video" ? ["mp4"] : ["mp4", "m4v", "m4a", "mp3", "wav", "png", "jpg", "jpeg", "webp"] }],
       });
       if (selection.canceled || !selection.filePaths[0] || !authorityCurrent() || controller.signal.aborted) return fail("cancelled");
       if (operation === "importBatch") {
-        return { ok: true as const, data: await importPickedWorkspaceMediaBatch(selection.filePaths, deps) };
+        return { ok: true as const, data: await importPickedWorkspaceMediaBatch(selection.filePaths, deps, admittedMediaKind ?? null) };
       }
       return await importPickedWorkspaceMedia(selection.filePaths[0], admittedMediaKind, deps);
     }

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { VENICE_REFERENCE_VIDEO_MAX_BYTES, VENICE_REFERENCE_VIDEO_SIZE_WARNING } from "@nautilo/types";
+import {
+  VENICE_REFERENCE_AUDIO_MAX_BYTES,
+  VENICE_REFERENCE_AUDIO_SIZE_WARNING,
+  VENICE_REFERENCE_VIDEO_MAX_BYTES,
+  VENICE_REFERENCE_VIDEO_SIZE_WARNING,
+} from "@nautilo/types";
 import {
   MediaGenerationValidationError,
   LOCKED_VENICE_MEDIA_MODEL_FACTS,
@@ -24,7 +29,7 @@ describe("media-generation request contract", () => {
   });
 
   test.each(["a".repeat(4097), "", "/refs/image.png", "refs/../image.png", "refs/\u0000image.png", "refs/image.png\n"])("rejects invalid Workspace reference path %#", (path) => {
-    for (const field of ["referenceImages", "referenceVideos"]) {
+    for (const field of ["referenceImages", "referenceVideos", "referenceAudios"]) {
       expect(() => normalizeMediaGenerationIntent({ model: VENICE_MEDIA_MODELS.seedanceReference, prompt: "Use references", [field]: [{ path }] })).toThrow();
     }
   });
@@ -40,6 +45,9 @@ describe("media-generation request contract", () => {
     const request = { model: VENICE_MEDIA_MODELS.seedanceReference, prompt: "Continue the flight", referenceImages: [], referenceVideos: [video] };
     expect(normalizeMediaGenerationRequest(request)).toMatchObject({ referenceVideos: [video] });
     expect(() => normalizeMediaGenerationRequest({ ...request, referenceVideos: [{ ...video, sizeBytes: video.sizeBytes + 1 }] })).toThrow(VENICE_REFERENCE_VIDEO_SIZE_WARNING);
+    const audio = { ...video, path: "refs/voice.wav", mimeType: "audio/wav", sizeBytes: VENICE_REFERENCE_AUDIO_MAX_BYTES };
+    expect(normalizeMediaGenerationRequest({ ...request, referenceAudios: [audio] })).toMatchObject({ referenceAudios: [audio] });
+    expect(() => normalizeMediaGenerationRequest({ ...request, referenceAudios: [{ ...audio, sizeBytes: audio.sizeBytes + 1 }] })).toThrow(VENICE_REFERENCE_AUDIO_SIZE_WARNING);
   });
 
   test("preserves all Seedance 2.5 references within its published provider limits", () => {
@@ -49,8 +57,9 @@ describe("media-generation request contract", () => {
     };
     const referenceImages = Array.from({ length: 30 }, (_, index) => ({ ...image, path: `refs/image-${index}.png` }));
     const referenceVideos = Array.from({ length: 10 }, (_, index) => ({ ...image, path: `refs/video-${index}.mp4`, mimeType: "video/mp4", durationSeconds: 3 }));
-    const request = { model: VENICE_MEDIA_MODELS.seedanceReference, prompt: "Use the ordered references.", referenceImages, referenceVideos };
-    expect(normalizeMediaGenerationRequest(request)).toMatchObject({ referenceImages, referenceVideos });
+    const referenceAudios = Array.from({ length: 10 }, (_, index) => ({ ...image, path: `refs/audio-${index}.mp3`, mimeType: "audio/mpeg", durationSeconds: 3 }));
+    const request = { model: VENICE_MEDIA_MODELS.seedanceReference, prompt: "Use the ordered references.", referenceImages, referenceVideos, referenceAudios };
+    expect(normalizeMediaGenerationRequest(request)).toMatchObject({ referenceImages, referenceVideos, referenceAudios });
     expect(toVeniceQuotePricingRequest(normalizeMediaGenerationRequest(request))).toMatchObject({ reference_video_total_duration: 30 });
     for (const invalid of [
       { ...request, referenceImages: [...referenceImages, image] },
@@ -58,6 +67,9 @@ describe("media-generation request contract", () => {
       { ...request, referenceVideos: [{ ...referenceVideos[0], durationSeconds: 31 }] },
       { ...request, referenceVideos: [{ ...referenceVideos[0], durationSeconds: 1 }] },
       { ...request, referenceVideos: referenceVideos.map((video) => ({ ...video, durationSeconds: 4 })) },
+      { ...request, referenceAudios: [...referenceAudios, referenceAudios[0]] },
+      { ...request, referenceAudios: [{ ...referenceAudios[0], durationSeconds: 31 }] },
+      { ...request, referenceAudios: referenceAudios.map((audio) => ({ ...audio, durationSeconds: 4 })) },
     ]) expect(() => normalizeMediaGenerationRequest(invalid)).toThrow(MediaGenerationValidationError);
   });
 
@@ -252,5 +264,13 @@ describe("media-generation request contract", () => {
     expect(digest).not.toBe(mediaGenerationApprovalDigest(changed, 0.12));
     const creativeDrift = normalizeMediaGenerationRequest({ model: VENICE_MEDIA_MODELS.seedance, prompt: "a fishing boat" });
     expect(digest).not.toBe(mediaGenerationApprovalDigest(creativeDrift, 0.12));
+    const referenceImage = { path: "refs/frame.png", artifactId: "frame", artifactInternalId: "11111111-1111-4111-8111-111111111111",
+      revision: 1, mimeType: "image/png", sizeBytes: 10, sha256: "a".repeat(64) };
+    const referenceAudio = { ...referenceImage, path: "refs/voice.wav", artifactId: "voice", mimeType: "audio/wav", durationSeconds: 3 };
+    const withAudio = normalizeMediaGenerationRequest({ model: VENICE_MEDIA_MODELS.seedanceReference, prompt: "a sailboat",
+      referenceImages: [referenceImage], referenceAudios: [referenceAudio] });
+    const withoutAudio = normalizeMediaGenerationRequest({ model: VENICE_MEDIA_MODELS.seedanceReference, prompt: "a sailboat",
+      referenceImages: [referenceImage] });
+    expect(mediaGenerationApprovalDigest(withAudio, 0.12)).not.toBe(mediaGenerationApprovalDigest(withoutAudio, 0.12));
   });
 });

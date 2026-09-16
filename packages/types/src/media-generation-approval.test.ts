@@ -37,6 +37,26 @@ describe("D525 media generation approval envelope", () => {
     expect(isMediaGenerationApproval({ ...value, preview: { ...value.preview, settings: { ...value.preview.settings, referenceVideoSeconds: 6 } } })).toBe(false);
     expect(isMediaGenerationApproval({ ...value, preview: { ...value.preview, referenceVideos: [{ ...value.preview.referenceVideos[0], storageUri: "file:///private" }] } })).toBe(false);
   });
+  test("audio donors remain bound to ordered content, measured duration, and a visual reference", () => {
+    const audio = { index: 1, artifactId: "public-audio", label: "dialogue.wav", durationSeconds: 4.25,
+      content: { sha256: "c".repeat(64), sizeBytes: 2048, mimeType: "audio/wav" } };
+    const preview = { ...approval.preview, model: "seedance-2-5-reference-to-video-basic",
+      settings: { ...approval.preview.settings, referenceImages: 1, referenceAudios: 1, referenceAudioSeconds: 4.25 },
+      referenceImages: [{ index: 1, artifactId: "public-image", label: "subject.png" }], referenceAudios: [audio] };
+    expect(isMediaGenerationApproval({ ...approval, preview })).toBe(true);
+    for (const reference of [
+      { ...audio, index: 2 }, { ...audio, durationSeconds: 1 }, { ...audio, durationSeconds: 31 },
+      { ...audio, storageUri: "file:///private" },
+      { ...audio, content: { ...audio.content, mimeType: "video/mp4" } },
+      { ...audio, content: { ...audio.content, url: "https://provider.invalid/audio" } },
+    ]) expect(isMediaGenerationApproval({ ...approval, preview: { ...preview, referenceAudios: [reference] } })).toBe(false);
+    for (const settings of [
+      { ...preview.settings, referenceAudios: 2 }, { ...preview.settings, referenceAudioSeconds: 5 },
+    ]) expect(isMediaGenerationApproval({ ...approval, preview: { ...preview, settings } })).toBe(false);
+    expect(isMediaGenerationApproval({ ...approval, preview: { ...preview, referenceImages: [],
+      settings: { ...approval.preview.settings, referenceAudios: 1, referenceAudioSeconds: 4.25 } } })).toBe(false);
+    expect(isMediaGenerationApproval({ ...approval, preview: { ...preview, model: approval.preview.model } })).toBe(false);
+  });
   test("accepts the exact bounded public projection", () => {
     expect(isMediaGenerationApproval(approval)).toBe(true);
     expect(isMediaGenerationApproval({

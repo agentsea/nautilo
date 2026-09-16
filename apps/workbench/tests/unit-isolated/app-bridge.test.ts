@@ -2176,6 +2176,29 @@ describe("installAppBridge", () => {
     }
   });
 
+  test("unified picker admits canonical Video audio references, gates references, and rejects cross-purpose results", async () => {
+    for (const scenario of ["valid", "audio-reference", "ungranted", "invalid-document", "cross-purpose", "single-overflow"] as const) {
+      getBytesMock.mockImplementationOnce(async () => new Blob([scenario === "invalid-document" ? "<p>Other HTML</p>" : createEmptyVideoHtml()], { type: "text/html" }));
+      const iframe = document.createElement("iframe");
+      const contentWindow = {} as Window; const posted: unknown[] = [];
+      Object.defineProperty(iframe, "contentWindow", { value: contentWindow, configurable: true });
+      contentWindow.postMessage = ((data: unknown) => posted.push(data)) as typeof contentWindow.postMessage;
+      const image = { kind: "ready", mediaKind: "image", label: "Image", mediaRef: "media/image.png", source: { kind: "workspace-artifact", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc53", path: "media/image.png" } };
+      const audio = { artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc54", path: "references/voice.wav", label: "Voice guide", mediaKind: "audio", mimeType: "audio/wav", sizeBytes: 2048 };
+      const result = { kind: "ready", imports: scenario === "single-overflow" ? [image, image] : [], references: scenario === "audio-reference" ? [audio] : [], mediaIds: scenario === "cross-purpose" ? ["media_wrong"] : [], failures: [] };
+      const picker = mock(async () => result as never);
+      const teardown = installAppBridge({ iframe, appId: "nautilo-video", mediaProxy: true, videoGeneration: scenario === "audio-reference",
+        target: artifactOpenFileTarget({ id: "row", path: "project.video.html", mimeType: "text/html", roomId: "room" }), onVideoMediaPick: picker });
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "nautilo.app.media.req", requestId: scenario, op: "pick", purpose: scenario === "ungranted" || scenario === "audio-reference" ? "references" : "media", multiple: scenario !== "single-overflow" }, source: contentWindow as unknown as MessageEventSource }));
+      await waitUntil(() => posted.length === 1);
+      expect(posted[0]).toMatchObject({ ok: true, value: scenario === "valid" || scenario === "audio-reference" ? result : { kind: "unavailable", code: scenario === "ungranted" ? "unsupported_environment" : scenario === "invalid-document" ? "invalid_document" : "invalid_response" } });
+      if (scenario === "invalid-document" || scenario === "ungranted") expect(picker).not.toHaveBeenCalled();
+      teardown();
+      // The denied grant does not consume the document read stub.
+      if (scenario === "ungranted") getBytesMock.mockReset();
+    }
+  });
+
   test("ordinary Workspace media import needs neither a generation session nor a filename suffix", async () => {
     for (const [mediaKind, metadata] of [
       ["audio", { durationSec: 3 }],

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { getNautiloApp } from "./bridge";
 import type { MediaAsset } from "./edl";
 import type { GenerationReference } from "./generation-brief";
+import { AudioWaveform } from "./AudioWaveform";
 
 /** Source inspection only: never creates a clip or changes the timeline clock. */
 export function MediaBinPreview({ asset, reference, enabled, active, timelinePlaying, onPlay }: ({ asset: MediaAsset; reference?: never } | { reference: GenerationReference; asset?: never }) & {
@@ -9,8 +10,10 @@ export function MediaBinPreview({ asset, reference, enabled, active, timelinePla
 }): ReactElement {
   const container = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const audio = useRef<HTMLAudioElement>(null);
   const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
+  const [peaks, setPeaks] = useState<readonly number[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const label = asset ? asset.label ?? asset.id : reference.name;
@@ -26,7 +29,7 @@ export function MediaBinPreview({ asset, reference, enabled, active, timelinePla
     return () => observer.disconnect();
   }, [enabled]);
   useEffect(() => {
-    setUrl(null); setFailed(false);
+    setUrl(null); setPeaks(null); setFailed(false);
     if (!enabled || !visible) return;
     const bridge = getNautiloApp()?.media;
     if (!bridge) { setFailed(true); return; }
@@ -39,16 +42,23 @@ export function MediaBinPreview({ asset, reference, enabled, active, timelinePla
       if (result.kind !== "ready") { if (!disposed) setFailed(true); return; }
       if (disposed) { release(result.revokeToken); return; }
       token = result.revokeToken;
+      setPeaks(result.waveform?.peaks ?? null);
       setUrl(result.url);
     }, () => { if (!disposed) setFailed(true); });
     return () => { disposed = true; controller.abort(); if (token) release(token); };
   }, [sourceIdentity, enabled, visible, retry]);
   useEffect(() => {
-    if (!active || timelinePlaying || !enabled || !visible) video.current?.pause();
+    if (!active || timelinePlaying || !enabled || !visible) {
+      video.current?.pause();
+      audio.current?.pause();
+    }
   }, [active, timelinePlaying, enabled, visible]);
-  return <div ref={container} className="video-media-bin-preview" role="group" aria-label={`Source preview: ${label}`}
+  return <div ref={container} className={`video-media-bin-preview${kind === "audio" ? " video-media-bin-preview--audio" : ""}`} role="group" aria-label={`Source preview: ${label}`}
     onKeyDown={(event) => event.stopPropagation()}>
-    {url && !failed && kind === "image" ? <img src={url} alt={label} draggable={false} onError={() => setFailed(true)} /> : url && !failed ? <>
+    {url && !failed && kind === "image" ? <img src={url} alt={label} draggable={false} onError={() => setFailed(true)} /> : url && !failed && kind === "audio" ? <>
+      {peaks?.length ? <AudioWaveform peaks={peaks} /> : <span>Waveform unavailable</span>}
+      <audio ref={audio} src={url} aria-label={`Preview ${label}`} controls preload="metadata" onPlay={onPlay} onError={() => setFailed(true)} />
+    </> : url && !failed ? <>
       <video ref={video} src={url} aria-label={`Preview ${label}`} muted playsInline preload="metadata" controls={active} draggable={false}
         onPlay={onPlay} onError={() => setFailed(true)} />
       {!active ? <button type="button" className="video-media-bin-preview__play" aria-label={`Play source preview: ${label}`}

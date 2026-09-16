@@ -36,7 +36,7 @@ export async function loadApprovalReference(reference: Reference, roomId: string
 }
 
 function ReferenceCard({ reference, label, kind, duration, continuation, roomId }: {
-  reference: Reference; label: string; kind: "image" | "video"; duration?: number; continuation?: boolean; roomId?: string;
+  reference: Reference; label: string; kind: "image" | "video" | "audio"; duration?: number; continuation?: boolean; roomId?: string;
 }) {
   const [preview, setPreview] = useState<{ key: string; url?: string; failed?: boolean }>();
   const key = `${reference.artifactId}:${reference.content?.sha256 ?? "unbound"}:${roomId ?? ""}`;
@@ -55,12 +55,14 @@ function ReferenceCard({ reference, label, kind, duration, continuation, roomId 
     <div className="relative flex aspect-video items-center justify-center overflow-hidden bg-black/30">
       {current?.url ? kind === "video"
         ? <video className="h-full w-full object-contain" src={current.url} controls playsInline preload="auto" aria-label={`Preview ${label}`} onError={() => setPreview({ key, failed: true })} />
-        : <img className="h-full w-full object-contain" src={current.url} alt={label} onError={() => setPreview({ key, failed: true })} />
+        : kind === "audio"
+          ? <audio className="w-[calc(100%_-_1rem)]" src={current.url} controls preload="metadata" aria-label={`Preview ${label}`} onError={() => setPreview({ key, failed: true })} />
+          : <img className="h-full w-full object-contain" src={current.url} alt={label} onError={() => setPreview({ key, failed: true })} />
         : <p role="status" className="p-3 text-center text-xs text-foreground-muted">{current?.failed ? "Preview unavailable · cancel and request a fresh quote" : "Loading reference…"}</p>}
     </div>
     <div className="p-2">
       <div className="break-words text-sm font-medium text-foreground">{label}</div>
-      <div className="text-xs text-foreground-muted">{continuation ? "Continue from this take" : kind === "video" ? "Video reference" : "Image reference"}{duration !== undefined ? ` · ${Number(duration.toFixed(2))} sec` : ""}</div>
+      <div className="text-xs text-foreground-muted">{continuation ? "Continue from this take" : kind === "video" ? "Video reference" : kind === "audio" ? "Audio reference" : "Image reference"}{duration !== undefined ? ` · ${Number(duration.toFixed(2))} sec` : ""}</div>
     </div>
   </li>;
 }
@@ -71,6 +73,7 @@ export function MediaGenerationVisualReview({ approval, presentation, roomId, te
   const { preview } = approval;
   const images = preview.referenceImages ?? [];
   const videos = preview.referenceVideos ?? [];
+  const audios = preview.referenceAudios ?? [];
   const settings = preview.settings;
   const modelLabel = ({ "seedance-2-5-text-to-video-basic": "Seedance 2.5", "seedance-2-5-reference-to-video-basic": "Seedance 2.5 · References", "minimax-h3-enhanced-text-to-video": "MiniMax H3", "sonilo-v1-1-music": "Sonilo", "minimax-music-v26": "MiniMax Music" } as Record<string, string>)[preview.model] ?? preview.model;
   const summary = [modelLabel, settings.durationSeconds === undefined ? null : `${settings.durationSeconds} sec`, settings.resolution, settings.aspectRatio,
@@ -80,12 +83,14 @@ export function MediaGenerationVisualReview({ approval, presentation, roomId, te
       <div><h3 className="font-semibold text-foreground">{presentation?.sceneName ?? `New ${preview.mediaKind}`}</h3><p className="text-sm text-foreground-muted">{summary}</p></div>
       <strong className="text-xl tabular-nums text-foreground" data-testid="media-generation-quote">{generationPrice(approval)}</strong>
     </div>
-    {images.length + videos.length > 0 ? <div>
+    {images.length + videos.length + audios.length > 0 ? <div>
       <h4 className="mb-2 text-sm font-medium text-foreground">{presentation?.continuation ? `Continuing from ${presentation.continuation.sceneName}` : "Your references"}</h4>
       <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3" data-testid="media-generation-reference-list">
         {videos.map(reference => <ReferenceCard key={`video:${reference.index}`} reference={reference} kind="video" duration={reference.durationSeconds} roomId={roomId}
           continuation={presentation?.continuation?.artifactId === reference.artifactId}
           label={friendlyReferenceName(presentation?.referenceNames[reference.artifactId] ?? reference.label, `Video reference ${reference.index}`)} />)}
+        {audios.map(reference => <ReferenceCard key={`audio:${reference.index}`} reference={reference} kind="audio" duration={reference.durationSeconds} roomId={roomId}
+          label={friendlyReferenceName(presentation?.referenceNames[reference.artifactId] ?? reference.label, `Audio reference ${reference.index}`)} />)}
         {images.map(reference => <ReferenceCard key={`image:${reference.index}`} reference={reference} kind="image" roomId={roomId}
           label={friendlyReferenceName(presentation?.referenceNames[reference.artifactId] ?? reference.label, `Image reference ${reference.index}`)} />)}
       </ul>

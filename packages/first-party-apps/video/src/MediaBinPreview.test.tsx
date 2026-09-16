@@ -18,7 +18,7 @@ afterEach(async () => {
   original.clear();
 });
 
-async function fixture(open?: NautiloAppBridge["media"]) {
+async function fixture(open?: NautiloAppBridge["media"], kind: "video" | "audio" = "video") {
   win = new Window();
   for (const [key, value] of Object.entries({ window: win, document: win.document, HTMLElement: win.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     original.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -36,7 +36,7 @@ async function fixture(open?: NautiloAppBridge["media"]) {
   } };
   const host = win.document.createElement("div"); win.document.body.append(host);
   root = createRoot(host as unknown as HTMLElement);
-  const asset = { id: "source", kind: "video" as const, ref: "source.mp4", label: "Source video" };
+  const asset = { id: "source", kind, ref: "source.mp4", label: "Source video" };
   const render = async (enabled = true, active = false, timelinePlaying = false) => act(async () => {
     root?.render(createElement(MediaBinPreview, { asset: { ...asset }, enabled, active, timelinePlaying, onPlay: () => { starts++; } }));
     await Promise.resolve();
@@ -110,4 +110,56 @@ test("saved reference previews use reference identity and retain their lease acr
   await render("Replacement", "new-cast.png");
   expect(h.requests).toHaveLength(2);
   expect(h.closed).toEqual(["lease"]);
+});
+
+
+test("audio cards render actual peaks, remain silent until played, and pause with the timeline", async () => {
+  const h = await fixture({
+    openPreview: async () => ({ kind: "ready", url: "https://media.invalid/voice.wav", revokeToken: "audio-lease", mimeType: "audio/wav", sizeBytes: 10,
+      waveform: { peaks: [0, 0.25, 1, 0.5], samplesPerSecond: 2 } }),
+    closePreview: async () => undefined,
+  } as unknown as NautiloAppBridge["media"], "audio");
+  await h.render();
+  const audio = h.host.querySelector("audio")!;
+  expect(audio).not.toBeNull();
+  expect(audio.controls).toBe(true);
+  expect(audio.autoplay).toBe(false);
+  expect(audio.muted).toBe(false);
+  expect(h.host.querySelector("video")).toBeNull();
+  expect(h.host.querySelector('[aria-label="Audio waveform"] path')?.getAttribute("d")).toContain("v60");
+  expect(h.counts().played).toBe(0);
+  await act(async () => audio.dispatchEvent(new win.Event("play")));
+  expect(h.counts().starts).toBe(1);
+  await h.render(true, true);
+  const before = h.counts().paused;
+  await h.render(true, true, true);
+  expect(h.counts().paused).toBeGreaterThan(before);
+  await h.render(false);
+  expect(h.host.querySelector("audio")).toBeNull();
+});
+
+test("saved audio references use the same waveform and playback preview", async () => {
+  const h = await fixture({
+    openPreview: async (request: unknown) => { h.requests.push(request); return { kind: "ready", url: "https://media.invalid/reference.wav", revokeToken: "reference-audio", mimeType: "audio/wav", sizeBytes: 10,
+      waveform: { peaks: [0.1, 1, 0.4], samplesPerSecond: 2 } }; },
+    closePreview: async () => undefined,
+  } as unknown as NautiloAppBridge["media"]);
+  await act(async () => {
+    root?.render(createElement(MediaBinPreview, {
+      reference: { id: "ref_audio", name: "Reference voice", mediaKind: "audio", source: { kind: "workspace-artifact", artifactId: "saved-audio", path: "voice.wav", mimeType: "audio/wav", sizeBytes: 10 } },
+      enabled: true, active: false, timelinePlaying: false, onPlay: () => undefined,
+    }));
+    await Promise.resolve();
+  });
+  expect(h.requests).toEqual([{ referenceId: "ref_audio" }]);
+  expect(h.host.querySelector('[aria-label="Audio waveform"]')).not.toBeNull();
+  expect(h.host.querySelector('audio[aria-label="Preview Reference voice"]')).not.toBeNull();
+});
+
+test("audio remains playable when waveform data is unavailable", async () => {
+  const h = await fixture(undefined, "audio");
+  await h.render();
+  expect(h.host.textContent).toContain("Waveform unavailable");
+  expect(h.host.querySelector("audio")?.controls).toBe(true);
+  expect(h.host.querySelector('[aria-label="Audio waveform"]')).toBeNull();
 });

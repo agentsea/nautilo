@@ -106,6 +106,7 @@ export interface ExactMediaGenerationQuotePort {
 export interface VeniceMediaAdmissionPort {
   queueVeniceMediaGeneration(
     proof: MediaGenerationAdmissionProof,
+    actor: MediaGenerationApprovalActorContext,
   ): Promise<VeniceAcceptedMediaWork>;
 }
 
@@ -120,6 +121,7 @@ export interface MediaGenerationServerCoreDependencies {
   readonly resolveRequest?: (
     scope: MediaGenerationScope,
     request: MediaGenerationPreparationInput["request"],
+    actor: MediaGenerationApprovalActorContext,
   ) => Promise<NormalizedMediaGenerationRequest>;
   /** One-way account discriminator, never the Venice key. */
   readonly providerAccountFingerprint: string;
@@ -201,7 +203,11 @@ function requestPayload(request: NormalizedMediaGenerationRequest): MediaGenerat
     prompt: request.prompt,
     ...("lyrics" in request && request.lyrics !== undefined ? { lyrics: request.lyrics } : {}),
     ...(request.model === "seedance-2-5-reference-to-video-basic"
-      ? { referenceImages: request.referenceImages, ...(request.referenceVideos ? { referenceVideos: request.referenceVideos } : {}) }
+      ? {
+          referenceImages: request.referenceImages,
+          ...(request.referenceVideos?.length ? { referenceVideos: request.referenceVideos } : {}),
+          ...(request.referenceAudios?.length ? { referenceAudios: request.referenceAudios } : {}),
+        }
       : {}),
     normalizedSettings: normalizedSettings(request),
   };
@@ -482,7 +488,7 @@ export function createMediaGenerationServerCore(
     let request: NormalizedMediaGenerationRequest;
     try {
       request = dependencies.resolveRequest
-        ? await dependencies.resolveRequest(scope, input.request)
+        ? await dependencies.resolveRequest(scope, input.request, actor)
         : normalizeResolvedRequest(input.request);
     } catch (error) {
       return {
@@ -678,7 +684,7 @@ export function createMediaGenerationServerCore(
     }
 
     try {
-      const accepted = await dependencies.venice.queueVeniceMediaGeneration(proof);
+      const accepted = await dependencies.venice.queueVeniceMediaGeneration(proof, actor);
       if (accepted.receiptId !== proof.receiptId || accepted.model !== proof.providerModel ||
           accepted.kind !== proof.kind || accepted.providerQueueId.trim() === "") {
         const unknown = classifyVeniceMediaFailure({ phase: "admission", transportFailure: true });

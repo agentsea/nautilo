@@ -207,10 +207,12 @@ describe("D525 prepared paid media approval", () => {
   test.each([512, 513, 4096])("Human and Genie reference paths of %i characters survive review and checkpoint replay", async (length) => {
     const imagePath = "refs/" + "a".repeat(length - 9) + ".png";
     const videoPath = imagePath.replace(/png$/, "mp4");
+    const audioPath = imagePath.replace(/png$/, "wav");
     const referenceIntent = { ...intent, model: "seedance-2-5-reference-to-video-basic" as const,
       durationSeconds: 4, resolution: "480p" as const, audio: false,
       referenceImages: [{ path: imagePath }],
       referenceVideos: [{ path: videoPath }],
+      referenceAudios: [{ path: audioPath }],
     };
     let prepares = 0;
     let submits = 0;
@@ -226,6 +228,7 @@ describe("D525 prepared paid media approval", () => {
           preparation: { ...input, request: { ...referenceIntent,
             referenceImages: [{ ...bound, path: imagePath, mimeType: "image/png" }],
             referenceVideos: [{ ...bound, artifactId: "video-public", path: videoPath, mimeType: "video/mp4", durationSeconds: 4 }],
+            referenceAudios: [{ ...bound, artifactId: "audio-public", path: audioPath, mimeType: "audio/wav", durationSeconds: 3 }],
           } }, receiptId: "mg_1234567890abcdef", quoteUsdMicros: 100_000, expiresAt: "2099-01-01T00:00:00.000Z" }) };
       },
       async submit() { submits++; throw new Error("No approval was given"); },
@@ -239,6 +242,8 @@ describe("D525 prepared paid media approval", () => {
       expect(result.prepared.preview.settings).toMatchObject({ durationSeconds: 4, resolution: "480p", audio: false });
       expect(result.prepared.preview.referenceImages?.[0]?.content).toEqual({ sha256: "a".repeat(64), sizeBytes: 100, mimeType: "image/png" });
       expect(result.prepared.preview.referenceVideos?.[0]?.content).toEqual({ sha256: "a".repeat(64), sizeBytes: 100, mimeType: "video/mp4" });
+      expect(result.prepared.preview.referenceAudios?.[0]?.content).toEqual({ sha256: "a".repeat(64), sizeBytes: 100, mimeType: "audio/wav" });
+      expect(result.prepared.preview.settings).toMatchObject({ referenceAudios: 1, referenceAudioSeconds: 3 });
       expect(isMediaGenerationApproval(mediaGenerationApprovalFromPrepared(result.prepared))).toBe(true);
       expect(isMediaGenerationPreparedApproval(JSON.parse(JSON.stringify(result.prepared)))).toBe(true);
     }
@@ -248,7 +253,7 @@ describe("D525 prepared paid media approval", () => {
     expect(isMediaGenerationApproval(mediaGenerationApprovalFromPrepared(genie.prepared))).toBe(true);
     const restored: unknown = JSON.parse(JSON.stringify(genie.prepared));
     expect(isMediaGenerationPreparedApproval(restored)).toBe(true);
-    expect(restored).toMatchObject({ request: { referenceImages: [{ path: imagePath }], referenceVideos: [{ path: videoPath }] } });
+    expect(restored).toMatchObject({ request: { referenceImages: [{ path: imagePath }], referenceVideos: [{ path: videoPath }], referenceAudios: [{ path: audioPath }] } });
     expect(verifyMediaGenerationPreparedApproval(restored, { ...actor, ...facts,
       digest: genie.prepared.binding.approvalDigest, quoteDigest: genie.prepared.binding.quoteDigest,
       receiptId: genie.prepared.binding.receiptId, revision: 1, now: new Date("2098-01-01T00:00:00.000Z") })).toBe(true);

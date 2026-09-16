@@ -26,3 +26,20 @@ export type WorkspaceMediaPreviewData = Readonly<{
   frameRate?: Readonly<{ numerator: number; denominator: number }>;
   waveform?: { peaks: number[]; samplesPerSecond: number };
 }>;
+
+/** Container compatibility only; Desktop stream inspection determines the media kind.
+ * MP4 audio/video labels are interchangeable transport hints, not stream evidence.
+ */
+export function workspaceMediaMimeMatchesKind(kind: "image" | "video" | "audio", mime: unknown): mime is string {
+  if (kind === "image") return mime === "image/png" || mime === "image/jpeg" || mime === "image/webp";
+  if (mime === "video/mp4" || mime === "audio/mp4") return true;
+  return kind === "audio" && (mime === "audio/wav" || mime === "audio/x-wav" || mime === "audio/mpeg");
+}
+
+/** Preserve exact declared MIME validation for transport; allow only equivalent container aliases after inspection. */
+export function workspaceMediaMimeMatchesInspection(declared: string, inspected: string): boolean {
+  return declared === inspected || ((declared === "video/mp4" || declared === "audio/mp4") &&
+    (inspected === "video/mp4" || inspected === "audio/mp4")) ||
+    ((declared === "audio/wav" || declared === "audio/x-wav") &&
+      (inspected === "audio/wav" || inspected === "audio/x-wav"));
+}

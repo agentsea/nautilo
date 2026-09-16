@@ -66,7 +66,8 @@ test("Edit uses a reusable Media Bin and user-managed tracks instead of fixed OP
   expect(appSource).toContain("VIDEO_MEDIA_DRAG_TYPE");
   expect(appSource).toContain("Add at playhead");
   expect(appSource).toContain("admitImportedMedia");
-  expect(appSource).toContain("Choosing and inspecting media");
+  expect(appSource).not.toContain("Choosing and inspecting media");
+  expect(appSource).toContain("Dismiss media message");
   expect(timelineSource).toContain('aria-label="Add track" title="Add a track for any clip type"');
   expect(trackSource).toContain("onPlaceMedia({ mediaId, trackId: track.id, timelineStartSec: snap.seconds })");
   expect(trackSource).not.toContain('{locked ? "LOCK" : "OPEN"}');
@@ -133,13 +134,14 @@ test("Generate is a peer workspace over the saved brief with Simple and Advanced
   expect(app).toContain('<GeneratorWorkspace project={project}');
   expect(composer).toContain('inert={!enabled} hidden={!enabled}');
   expect(composer).toContain('aria-label="Generation mode"');
-  expect(composer).toContain('aria-label="Shared references"');
+  expect(composer).toContain('aria-label="Scene references"');
   expect(composer).toContain('aria-label="Scene design"');
   expect(composer).toContain("appendGenerationShot");
   expect(composer).toContain("moveGenerationShot");
   expect(composer).toContain("duplicateGenerationShot");
   expect(composer).toContain("deleteGenerationShot");
-  expect(composer).toContain("importReference");
+  expect(composer).toContain("chooseReferences");
+  expect(composer).toContain("Add references");
   expect(composer).toContain("Camera");
   expect(composer).toContain("Motion");
   expect(app).toContain("generationPlanIssueMessage");

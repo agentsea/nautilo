@@ -3,6 +3,19 @@ import { runGenerationSequence } from "./generation-sequence";
 import type { NautiloVideoGenerationRequest } from "./bridge";
 
 const sources = [{ kind: "shot", shotId: "opening" }, { kind: "shot", shotId: "ending" }] as const;
+
+test("preparation shows the server recovery reason and never submits or continues", async () => {
+  const message = "A selected Workspace reference is no longer available. No generation was started.";
+  let count = 0;
+  const result = await runGenerationSequence({ sources, signal: new AbortController().signal, onProgress: () => undefined,
+    prepare: async source => requestFor(source as typeof sources[number]),
+    request: async () => { count++; return { kind: "unavailable", code: "request_invalid", message }; },
+    waitUntilReady: async () => { throw new Error("must not wait"); },
+  });
+  expect(result.message).toBe(message);
+  expect(result.submittedTakeIds).toEqual([]);
+  expect(count).toBe(1);
+});
 const requestFor = (source: typeof sources[number]): NautiloVideoGenerationRequest => ({
   document: { sha256: "a".repeat(64), revision: 1 }, sourceFingerprint: `sha256:${"b".repeat(64)}`,
   job: { source, modelId: "venice:seedance-2-5-text-to-video-basic", prompt: source.shotId },
