@@ -7,6 +7,8 @@ see [translation contributions](CONTRIBUTING.md#translations-and-localization).
 
 ### AI goes multiplayer.
 
+https://github.com/user-attachments/assets/a48c97b4-6e75-4d17-9c7d-6b921514eb20
+
 **Your own super agent. Your people and their Genies. You own the intelligence.**
 
 Meet your Genie: a radically customizable agent with a personality, memory,
