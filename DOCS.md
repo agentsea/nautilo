@@ -44,7 +44,6 @@ operate, package, or release the public source tree.
 - [Issue chooser configuration](.github/ISSUE_TEMPLATE/config.yml)
 - [Implementation pull-request template](.github/pull_request_template.md)
 - [Specification pull-request template](.github/PULL_REQUEST_TEMPLATE/specification.md)
-- [Public coding-agent rule](.cursor/rules/nautilo.md)
 
 ## Versioned technical documentation
 
