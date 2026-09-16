@@ -1,14 +1,12 @@
-# Video Genie parity
+# Video Genie tools
 
-Release qualification: the dated sections below are historical acceptance
-checkpoints, not a claim that each intermediate tool count or limitation is
-current. Version 0.2.2 exposes 19 tools. The final limits inventory and reviewed
-decision gate pass; remaining work is explicitly tracked in [FOLLOW_UPS.md](FOLLOW_UPS.md).
-Live test evidence does not imply production deployment or a paid retry.
+The tool schemas are defined in [app.json](app.json). This document describes
+the shared document and host contracts. Known follow-ups remain in
+[FOLLOW_UPS.md](FOLLOW_UPS.md).
 
 ## Supported document-editing contract
 
-The approved catch-up uses the existing document host, shared pure commands,
+Video uses the existing document host, shared pure commands,
 manifest approval pipeline and authored-write recovery. It does not create a
 second editor, clipboard store, media grant, generation queue or renderer.
 
@@ -50,7 +48,7 @@ Live context now includes multi-selection, range precedence, selected effect
 properties, named track protection and clean saved identity. Context can describe
 a dirty draft; saved-document inspection is not a claim to see that unsaved work.
 
-## Open-editor transport catch-up (implemented; partial live acceptance)
+## Open-editor transport
 
 `control-open-video` supplies inspect, play, pause, seek, preview-range and
 clear-range. These are transient editor controls, not edits to the project or
@@ -90,62 +88,15 @@ The regression simulates suspended animation frames and delayed timers and
 proves range completion, cleanup and no save. Browser timer throttling still
 means offscreen rendering is not a frame-accurate presentation guarantee.
 
-Experience preflight: the user asks to preview a section; Genie uses a closed
-command and the editor's existing preview/timeline, without file paths or a
-second control screen. Architecture verdict: ready with named qualification
-gates. Durable project bytes stay with the document authority; transient state
-stays in the iframe. Snapshot Video edit tools remain enabled while a transport
-session is open, unlike Writer/Design's protected live mutation contract. No new
-renderer, database, binary, provider or standing authorization is introduced.
+## Tests
 
-## Remaining parity gates
+`src/timeline-agent-parity.test.ts` covers editing operations, stale versions,
+atomic refusal and saved-document preservation. Mounted editor and host tests
+cover session identity, dirty-draft refusal, cancellation and unknown outcomes.
+These checks do not establish native dialog, decoded-media or paid-provider
+acceptance.
 
-- Complete live Moxie coverage beyond the Workspace inspect/range-preview test:
-  Current Folder, reconnect and dirty-draft refusal still require live proof.
-- Live qualification of host-bound native media import/export, cancellation,
-  frame-rate choice and reconnect recovery, implemented below. Native file/save
-  dialogs still require human selection; this is not arbitrary-path or unattended
-  filesystem automation. The old unadvertised `renderPreview`/`exportVideo`
-  handlers remain unavailable; the new path is `manage-video-media`.
-- Live qualification of generation and scene/block organization tools described
-  below. Direct source-preview control and all generator block-content editing
-  are not supplied by this increment; do not claim complete generator parity.
-- The previous copied-media/save acceptance is recorded separately in private
-  acceptance evidence: live edits, human conflicts,
-  reopen and a decoded MP4 were verified. That evidence does not qualify the
-  new transport command channel or all future effects.
-- Clip speed, independent audio crossfade and other editor features not yet
-  implemented are not made available by adding agent tools.
-
-## Verification
-
-`timeline-agent-parity.test.ts` checks all action variants against saved/reopened
-documents, schema/export coverage, pure human/effect command parity and render
-plans, hidden linked range cuts, rollback, stale versions, write conflict,
-malformed arguments and protected tracks. Mounted editor tests verify paused
-range and additive-selection context updates without saving. Server manifest
-tests verify the closed schema and unchanged authority/impact classification.
-
-Transport coverage adds pure playback planning, mounted range/play/pause/seek
-and no-save behavior, dirty/stale rejection, exact-session HTTP delivery and
-acknowledgement, host actor/app/tool/background gates, worker cancellation and
-unknown outcomes, and iframe parent/version/session/deadline fencing. The
-latest regression run passed 705 tests (3,684 assertions, 47 files);
-Server, Workbench and Video typechecks, focused lint and the Workbench production
-build passed before the offscreen fix; that fix also passed Video typecheck and
-focused lint. `limits:check` again produced no result and was interrupted to
-avoid prolonged CPU use; its qualification gate remains open. No limit baseline
-or generated inventory was changed.
-
-Only the retained populated acceptance clone was restarted for the new
-build. Health was `ok`, and its installed manifest exposes the 13 tools including
-`control-open-video`. The retained saved QA copy was reopened. Moxie discovered
-the tool through the ordinary catalogue and used one-time approvals. After the
-offscreen fix, independent media observation confirmed decoded playback for
-the selected 2–4 second range, followed by paused decoders at the final frame
-and a 4.00 second playhead. No remote CI, merge or production release is implied.
-
-## Generation continuation tools — September 8
+## Generation continuation tools
 
 - `inspect-generation` reads the saved document version, scenes, reusable
   reference IDs, Media Bin IDs and completed takes. It does not expose source
@@ -172,18 +123,7 @@ no paid submission on cancellation. Shared human/Genie visual review uses
 authenticated exact public-artifact lookup and verifies SHA-256, size and MIME
 against the quoted reference binding before displaying local object URLs.
 
-September 8 qualification for this increment: 421 Video tests, 61 shared
-contract/API/server tests, 37 Workbench review/lifecycle tests, and one isolated
-permission-scoped public-reference route test passed. Video, Types, API client,
-Agent, Server and Workbench typechecks, focused source lint, Workbench build and
-diff whitespace checks passed. Real local image and both video references
-decoded in a separate visual harness at wide and narrow widths. Only the
-retained acceptance clone was restarted; its installed manifest then had
-16 tools and instance-aware runtime verification passed. The new live Moxie
-continuation round trip and a separately approved paid continuation remain
-unverified. No new paid generation, commit, PR, merge or release was performed.
-
-## Native media and scene organization — September 8 follow-up
+## Native media and scene organization
 
 - `organize-generation` deletes or reorders scenes and direction blocks through
   the human UI's pure helpers, then performs one optimistic document write.
@@ -210,21 +150,3 @@ unverified. No new paid generation, commit, PR, merge or release was performed.
   export completion wins a late cancellation. Lost responses report unknown,
   never safe retry. After reopening, inspect canonical saved results rather than
   treating missing session receipts as proof that nothing happened.
-
-Product and architecture preflight kept the existing document, host permission, native
-dialog and renderer authorities intact. No provider, native IPC, database,
-filesystem-path bypass, persistent operation store or paid approval was added.
-
-Qualification: 479 tests across Video and the manifest/live-extension/broker
-suites passed; Video, Server and Workbench typechecks, focused lint, Video
-browser build and diff whitespace checks passed. Additional organization checks
-verify completed takes survive deleting all scenes and reopening. Mounted
-tests cover save failure, late import after refresh, uncertain export response,
-progress, rate choice, duplicate refusal, cancellation while dirty and late
-successful publication. Native media is stubbed in these tests: they do not
-prove the live OS dialogs or a real Moxie round trip.
-
-Only the retained acceptance clone was restarted from this worktree.
-Its installed 0.2.1 manifest now exposes 19 tools; instance-aware runtime
-acceptance passed. The installed app and protected default were untouched.
-No paid generation, commit, PR, merge or release occurred.

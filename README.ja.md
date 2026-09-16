@@ -4,7 +4,7 @@
 
 コードとドキュメントは現在、英語で書かれています。翻訳の PR を歓迎します。[翻訳への貢献ガイド](CONTRIBUTING.md#translations-and-localization)（英語）をご覧ください。このページは README の日本語訳です。アプリの画面やリンク先のドキュメントが日本語に対応していることを示すものではありません。
 
-<!-- Translation source: README.md; SHA-256: 9b60bbbe2574e6ca26450ce9087884705ee319256bc1591e9a256f3db66971c4 -->
+<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -104,7 +104,7 @@ Nautilo では、サーバーとデータベースをあなたが管理します
 | [Desktop](apps/desktop/README.md) | Electron クライアント、ローカルワークステーションとの連携、パッケージング。 |
 | [Mobile](apps/mobile/README.md) | React Native / Expo のモバイルクライアント。 |
 | [CLI](apps/cli/README.md) | ターミナルからのサーバーデプロイと管理。 |
-| [ファーストパーティーアプリ](packages/first-party-apps) | [Writer](packages/first-party-apps/writer) や [Design](packages/first-party-apps/design) など、同梱の創作アプリ。 |
+| [ファーストパーティーアプリ](packages/first-party-apps) | 同梱の創作アプリ：[Writer](packages/first-party-apps/writer)、[Sheets](packages/first-party-apps/spreadsheet)、[Slides](packages/first-party-apps/presentation)、[Board](packages/first-party-apps/board)、[Design](packages/first-party-apps/design)、[Video](packages/first-party-apps/video)。 |
 
 ### コアパッケージ
 

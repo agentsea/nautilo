@@ -1,7 +1,8 @@
 # @nautilo/office-board
 
 Nautilo-owned model, viewport and Miro mapper derived from Wafflebase.
-The native Nautilo Board mini-app is separate delivery work.
+The [Nautilo Board mini-app](../first-party-apps/board/README.md) owns its
+document lifecycle and user interface.
 
 Rather than fork a new scene engine, board **reuses the Slides scene engine**
 (`@nautilo/office-slides`): its element model, renderer, hit-testing, and editor
@@ -52,7 +53,7 @@ CommonJS. Use `@nautilo/office-slides/browser` separately to mount the editor.
 exported. `zoomAt` has no implicit minimum/maximum; optional bounds are explicit
 caller policy. Invalid transforms throw before changing state.
 
-See [qualification and frontend map](../../docs/office-engines/BOARD-QUALIFICATION.md),
+See [testing and mapping limitations](../../docs/office-engines/TESTING.md),
 [original hashes](../../docs/office-engines/snapshot.json) and [NOTICE](NOTICE.md).
 The parser works in Node without global DOM shims. Miro mapping is best-effort;
 live authenticated import, atomic application and complete fidelity reporting
