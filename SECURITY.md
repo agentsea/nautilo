@@ -2,9 +2,12 @@
 
 ## Reporting a vulnerability
 
-Do not open a public GitHub issue or pull request for a suspected vulnerability.
-Follow the private reporting instructions at
-[nautilo.ai/security](https://nautilo.ai/security).
+Email **[security-reports@kentauros.ai](mailto:security-reports@kentauros.ai?subject=Nautilo%20security%20report)**
+to report a suspected vulnerability privately to the Nautilo maintainers.
+We will reply by email to investigate and coordinate a fix. Do not open a public
+GitHub issue or pull request with exploit details.
+
+The [reporting page](https://nautilo.ai/security) also explains what to include.
 
 Include the smallest useful reproduction, affected version or commit, impact,
 and redacted diagnostics. Do not include real credentials, access tokens,
@@ -14,6 +17,14 @@ or complete configuration files.
 For general security guidance and self-hosting hardening, see the
 [security documentation](https://nautilo.ai/docs/security) and
 [operator hardening guide](https://nautilo.ai/docs/operator/security-hardening).
+
+## Ordinary bugs
+
+For a bug that does not expose sensitive information or enable unauthorized access,
+[file a bug report](https://github.com/agentsea/nautilo/issues/new?template=01-reproducible-defect.yml).
+If you cannot access the repository,
+[email a bug report](mailto:security-reports@kentauros.ai?subject=Nautilo%20bug%20report).
+Include your version, operating system, and steps to reproduce the problem.
 
 ## Supported versions
 
