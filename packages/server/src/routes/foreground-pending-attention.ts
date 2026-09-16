@@ -225,7 +225,11 @@ export function createProductionForegroundPendingAttention(recipients: LiveShado
     const detail = await getRoomDetailForMember(roomId, binding.humanActorId);
     if (detail === null) return { status: "unavailable" };
     const currentAgentIds = detail.members.flatMap((member) => member.kind === "agent" && member.agentId !== undefined ? [member.agentId] : []);
-    if (currentAgentIds.length === 0) return { status: "unavailable" };
+    // An accessible Human-only conversation has no Agent approvals to restore.
+    // An exact checkpoint lookup must still fail closed if its Agent left.
+    if (currentAgentIds.length === 0) return options.exact === undefined
+      ? { status: "exhausted" }
+      : { status: "unavailable" };
     const direct = currentAgentIds.length === 1
       && detail.members.filter((member) => member.kind === "user").length === 1;
     const expectedThreadIds = direct

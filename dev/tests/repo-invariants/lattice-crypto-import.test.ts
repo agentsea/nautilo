@@ -1334,6 +1334,9 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/src/routes/foreground-checkpoint-read-authority.ts -> @nautilo/lattice-bridge/server",
   "packages/server/src/routes/foreground-memory-projection-capsule.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/foreground-pending-attention.ts -> @nautilo/lattice-bridge/server",
+  // Human-only recovery tests construct the service's recipient registry;
+  // they stop before checkpoint/crypto lookup and never open database pools.
+  "packages/server/tests/unit-isolated/foreground-pending-attention-human-chat.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/unit-isolated/foreground-memory-access-object-type.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit-isolated/foreground-memory-access-object-type.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/unit-isolated/foreground-memory-projection-resume.test.ts -> @nautilo/lattice-bridge",

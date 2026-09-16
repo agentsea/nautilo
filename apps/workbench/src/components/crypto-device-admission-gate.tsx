@@ -98,7 +98,7 @@ export function CryptoDeviceAdmissionGate({
     controller: AbortController;
   } | null>(null);
   const requestGeneration = useRef(0);
-  const pendingRefresh = useRef(false);
+  const pendingRefresh = useRef<string | null>(null);
   const retryAttempt = useRef(0);
   const credentialGeneration = useRef(auth.credentialGeneration);
   const retryTimer = useRef<number | null>(null);
@@ -165,14 +165,14 @@ export function CryptoDeviceAdmissionGate({
     if (!mounted.current || reason === "transport_disconnected") return;
     const identityAtStart = accountIdentity;
     if (running.current !== null) {
-      pendingRefresh.current = true;
+      pendingRefresh.current = reason;
       return;
     }
     clearRetry();
     const request = ++requestGeneration.current;
     const controller = new AbortController();
     running.current = { identity: identityAtStart, request, controller };
-    pendingRefresh.current = false;
+    pendingRefresh.current = null;
     const stillCurrent = (): boolean => mounted.current
       && requestGeneration.current === request
       && running.current?.request === request
@@ -181,13 +181,18 @@ export function CryptoDeviceAdmissionGate({
     const policyAtStart = currentSnapshot.identity?.startsWith(`${identityAtStart}:`) === true
       ? currentSnapshot.policy
       : null;
-    settle({
-      nextState: retainedForAccount ? "reconnecting" : "checking",
-      identity: retainedForAccount && admittedIdentity !== null
-        ? admittedIdentity
-        : `${identityAtStart}:device:checking`,
-      policy: policyAtStart,
-    });
+    // Refreshing a still-admitted account must not invalidate its requests or
+    // make its editor inert. Explicit invalidations already closed the gate.
+    if (currentSnapshot.status !== "open"
+      || !currentSnapshot.identity?.startsWith(`${identityAtStart}:`)) {
+      settle({
+        nextState: retainedForAccount ? "reconnecting" : "checking",
+        identity: retainedForAccount && admittedIdentity !== null
+          ? admittedIdentity
+          : `${identityAtStart}:device:checking`,
+        policy: policyAtStart,
+      });
+    }
 
     void (async () => {
       let policy: CryptoAdmissionPolicy | null = null;
@@ -201,6 +206,15 @@ export function CryptoDeviceAdmissionGate({
           mode: status.policy.mode,
           shadowBehavior: status.policy.shadowBehavior,
         };
+        if (getCryptoAdmissionSnapshot().status === "open"
+          && (policyAtStart?.mode !== policy.mode
+            || policyAtStart.shadowBehavior !== policy.shadowBehavior)) {
+          settle({
+            nextState: "reconnecting",
+            identity: currentSnapshot.identity!,
+            policy,
+          });
+        }
         if (!status.requiresCryptoDevice) {
           clearExpiry();
           retryAttempt.current = 0;
@@ -278,6 +292,7 @@ export function CryptoDeviceAdmissionGate({
         if (
           admission.status === "admitted"
           && admission.deviceId === deviceId
+          && admission.expiresAt > Date.now()
         ) {
           clearExpiry();
           retryAttempt.current = 0;
@@ -306,6 +321,17 @@ export function CryptoDeviceAdmissionGate({
             nextMessage: "This device is no longer admitted to this server.",
           });
           return;
+        }
+        // A renewed credential needs a new proof; that does not revoke the
+        // same device's existing admission. Its original expiry timer remains
+        // active throughout. Other missing/expired admissions close access.
+        const renewingCredential = reason === "credential_changed"
+          && admission.status === "required"
+          && admission.reason === "device_admission_required"
+          && getCryptoAdmissionSnapshot().status === "open"
+          && getCryptoAdmissionSnapshot().identity === deviceIdentity;
+        if (!renewingCredential) {
+          settle({ nextState: "reconnecting", identity: deviceIdentity, policy });
         }
         const challenge = await apiClient.deviceAdmission.challenge({
           requestVersion: 1,
@@ -401,9 +427,10 @@ export function CryptoDeviceAdmissionGate({
       } finally {
         if (running.current?.request === request) {
           running.current = null;
-          if (pendingRefresh.current) {
-            pendingRefresh.current = false;
-            checkRef.current("coalesced");
+          if (pendingRefresh.current !== null) {
+            const pendingReason = pendingRefresh.current;
+            pendingRefresh.current = null;
+            checkRef.current(pendingReason);
           }
         }
       }
@@ -427,7 +454,7 @@ export function CryptoDeviceAdmissionGate({
         requestGeneration.current += 1;
         running.current.controller.abort();
       }
-      pendingRefresh.current = false;
+      pendingRefresh.current = null;
       clearRetry();
       clearExpiry();
       if (retainedForAccount && admittedIdentity !== null) {
@@ -442,7 +469,7 @@ export function CryptoDeviceAdmissionGate({
     if (reason === "device_removed_or_stale") {
       requestGeneration.current += 1;
       running.current?.controller.abort();
-      pendingRefresh.current = false;
+      pendingRefresh.current = null;
       clearRetry();
       clearExpiry();
       settle({
@@ -467,6 +494,12 @@ export function CryptoDeviceAdmissionGate({
     ) {
       return;
     }
+    // A visibility/online observation can share an active or queued check.
+    // Do not abort credential renewal or replace its pending reason with one.
+    if ((reason === "visibility_resume" || reason === "online")
+      && running.current !== null
+      && (running.current.request === requestGeneration.current
+        || pendingRefresh.current !== null)) return;
     if (running.current !== null) {
       requestGeneration.current += 1;
       running.current.controller.abort();
@@ -478,7 +511,7 @@ export function CryptoDeviceAdmissionGate({
     mounted.current = true;
     requestGeneration.current += 1;
     running.current?.controller.abort();
-    pendingRefresh.current = false;
+    pendingRefresh.current = null;
     clearRetry();
     clearExpiry();
     const initialIdentity = `${accountIdentity}:device:checking`;
@@ -498,7 +531,7 @@ export function CryptoDeviceAdmissionGate({
       mounted.current = false;
       requestGeneration.current += 1;
       running.current?.controller.abort();
-      pendingRefresh.current = false;
+      pendingRefresh.current = null;
       clearRetry();
       clearExpiry();
     };

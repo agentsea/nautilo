@@ -153,7 +153,6 @@ import { applyThreadSummarySnapshot } from "./thread-summary-snapshot";
 import { ModelFallbackStatusNotice } from "./model-fallback-notice";
 import { DeepResearchStatusNotice } from "./deep-research-status-notice";
 import { ForegroundContextStatusNotice } from "./foreground-context-status-notice";
-import { PendingAttentionRecoveryNotice } from "./pending-attention-recovery-notice";
 import { OrdinaryContentAccessRecoveryNotice } from
   "../components/content-access/ordinary-content-access-recovery";
 import { PendingContentAccessRecoveryNotice } from
@@ -2442,16 +2441,6 @@ export function NautiloRuntimeProvider({
     events: readonly PendingAttentionPreviewEvent[],
     recovered?: boolean,
   ) => void>(() => {});
-  const [pendingAttentionRecoveryRetryGeneration,
-    setPendingAttentionRecoveryRetryGeneration] = useState(0);
-  const [pendingAttentionRecoveryUnavailable, setPendingAttentionRecoveryUnavailable] =
-    useState<Readonly<{
-      roomId: string;
-      viewerKey: string;
-      viewerGeneration: number;
-      origin: string;
-      retryable: boolean;
-    }> | null>(null);
   const notificationEventListenersRef = useRef(
     new Set<(event: NotificationRuntimeEvent) => void>(),
   );
@@ -5643,7 +5632,6 @@ export function NautiloRuntimeProvider({
         });
         if (changesActivePendingAttention) {
           pendingAttentionLiveSequenceRef.current += 1;
-          setPendingAttentionRecoveryUnavailable(null);
         }
         const previewIngress = pendingAttentionPreviewIngress(
           event,
@@ -6077,7 +6065,6 @@ export function NautiloRuntimeProvider({
     const humanActorId = auth.viewer.sessionActorId;
     if (!viewerKey || !humanActorId || !activeRoomId || !clientActionSessionId
       || !pendingAttentionAuthorizationDeviceId) return;
-    setPendingAttentionRecoveryUnavailable(null);
     const controller = new AbortController();
     const recoveryGeneration = ++pendingAttentionRecoveryGenerationRef.current;
     const liveSequenceAtStart = pendingAttentionLiveSequenceRef.current;
@@ -6116,30 +6103,16 @@ export function NautiloRuntimeProvider({
           });
       if (!isCurrent()) return;
       if (result.status !== "ready") {
-        setPendingAttentionRecoveryUnavailable({
-          roomId,
-          viewerKey,
-          viewerGeneration,
-          origin,
-          retryable: !isDesktop
-            || desktopForegroundShadow?.recoverRoomPendingAttention !== undefined,
-        });
+        // Recovery is background bookkeeping, not a decision for the Human.
+        // Keep existing previews; an unavailable read is not an empty set.
         return;
       }
-      setPendingAttentionRecoveryUnavailable(null);
       reconcileCanonicalPendingAttentionPreviews(
         result.events.filter(isPendingAttentionPreviewEvent),
       );
     })().catch(() => {
-      if (isCurrent()) {
-        setPendingAttentionRecoveryUnavailable({
-          roomId,
-          viewerKey,
-          viewerGeneration,
-          origin,
-          retryable: true,
-        });
-      }
+      // Preserve existing previews on a failed background read. The next
+      // normal Room/connection recovery retries without a bookkeeping banner.
     });
 
     return () => {
@@ -6158,7 +6131,6 @@ export function NautiloRuntimeProvider({
     reconcileCanonicalPendingAttentionPreviews,
     liveShadowMessageClient,
     pendingAttentionAuthorizationDeviceId,
-    pendingAttentionRecoveryRetryGeneration,
     roomInitialHydrationState,
     serverOrigin,
     viewerKey,
@@ -7919,12 +7891,6 @@ export function NautiloRuntimeProvider({
   // A cache-backed syncing frame is safe to display but is never enough to
   // authorize a send. Keep those two admissions deliberately separate.
   const visibleMessages = initialHistoryAdmission.displayTranscript ? messages : [];
-  const showPendingAttentionRecoveryUnavailable =
-    pendingAttentionRecoveryUnavailable !== null
-    && pendingAttentionRecoveryUnavailable.roomId === activeRoomId
-    && pendingAttentionRecoveryUnavailable.viewerKey === viewerKey
-    && pendingAttentionRecoveryUnavailable.viewerGeneration === auth.viewerGeneration
-    && pendingAttentionRecoveryUnavailable.origin === serverOrigin;
 
   const runtime = useExternalStoreRuntime({
     messages: visibleMessages,
@@ -7983,19 +7949,6 @@ export function NautiloRuntimeProvider({
 
                   {foregroundContextStatus ? (
                     <ForegroundContextStatusNotice line={foregroundContextStatus.line} />
-                  ) : null}
-
-                  {showPendingAttentionRecoveryUnavailable ? (
-                    <PendingAttentionRecoveryNotice
-                      onRetry={pendingAttentionRecoveryUnavailable?.retryable === true
-                        ? () => {
-                            setPendingAttentionRecoveryUnavailable(null);
-                            setPendingAttentionRecoveryRetryGeneration(
-                              (generation) => generation + 1,
-                            );
-                          }
-                        : undefined}
-                    />
                   ) : null}
 
                   {shadowPolicyMode === "plaintext_only" &&
