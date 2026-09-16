@@ -185,7 +185,8 @@ function harness(input?: {
       },
     },
     venice: {
-      async queueVeniceMediaGeneration(proof) {
+      async queueVeniceMediaGeneration(proof, referenceActor) {
+        expect(referenceActor).toEqual(actor);
         queueCalls += 1;
         if (input?.queue) return input.queue(proof);
         return {
@@ -198,7 +199,10 @@ function harness(input?: {
       },
     },
     resolveScope: async () => scope,
-    ...(input?.resolveRequest ? { resolveRequest: input.resolveRequest } : {}),
+    ...(input?.resolveRequest ? { resolveRequest: async (_scope, _request, referenceActor) => {
+      expect(referenceActor).toEqual(actor);
+      return input.resolveRequest!();
+    } } : {}),
     providerAccountFingerprint: "a".repeat(32),
     now: () => NOW,
   });

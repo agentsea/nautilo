@@ -125,6 +125,7 @@ export async function resolveMediaGenerationReferenceRequest(
   scope: MediaGenerationScope,
   intent: NormalizedMediaGenerationIntent,
   operations: MediaReferenceArtifactOperations = DEFAULT_OPERATIONS,
+  readableNamespaceIds: readonly string[] = [scope.namespaceId],
 ): Promise<NormalizedMediaGenerationRequest> {
   if (intent.model !== "seedance-2-5-reference-to-video-basic") {
     return normalizeMediaGenerationRequest(intent);
@@ -137,7 +138,7 @@ export async function resolveMediaGenerationReferenceRequest(
   const paths = [...intent.referenceImages, ...(intent.referenceVideos ?? [])].map(ref => ref.path);
   if (new Set(paths).size !== paths.length) throw new MediaGenerationValidationError("Choose each reference once.");
   for (const reference of intent.referenceVideos ?? []) {
-    const artifact = await operations.findByPath({ path: reference.path, readableNamespaceIds: [scope.namespaceId] }, db);
+    const artifact = await operations.findByPath({ path: reference.path, readableNamespaceIds: [...readableNamespaceIds] }, db);
     if (!artifact || artifact.deletedAt !== null || !artifact.storageUri ||
         !["video/mp4", "video/quicktime"].includes(artifact.mimeType ?? "") ||
         !Number.isSafeInteger(artifact.size) || !artifact.size || artifact.size < 1) {
@@ -161,7 +162,7 @@ export async function resolveMediaGenerationReferenceRequest(
   for (const reference of intent.referenceImages) {
     const artifact = await operations.findByPath({
       path: reference.path,
-      readableNamespaceIds: [scope.namespaceId],
+      readableNamespaceIds: [...readableNamespaceIds],
     }, db);
     if (!artifact || artifact.deletedAt !== null) throw new MediaGenerationValidationError("A selected Workspace reference is no longer available.");
     assertArtifactShape(artifact);
@@ -193,11 +194,12 @@ export async function resolveMediaGenerationReferenceRequest(
 export async function resolveApprovedReferenceMediaUrls(
   db: DirectDatabase, proof: MediaGenerationAdmissionProof,
   operations: MediaReferenceArtifactOperations = DEFAULT_OPERATIONS,
+  readableNamespaceIds: readonly string[] = [proof.namespaceId],
 ): Promise<{ images: readonly string[]; videos: readonly string[] }> {
-  const images = await resolveApprovedReferenceImageUrls(db, proof, operations);
+  const images = await resolveApprovedReferenceImageUrls(db, proof, operations, readableNamespaceIds);
   const videos: string[] = [];
   for (const binding of proof.requestPayload.referenceVideos ?? []) {
-    const artifact = await operations.findByInternalId({ internalId: binding.artifactInternalId, mutableNamespaceIds: [proof.namespaceId] }, db);
+    const artifact = await operations.findByInternalId({ internalId: binding.artifactInternalId, mutableNamespaceIds: [...readableNamespaceIds] }, db);
     if (!artifact || artifact.deletedAt !== null || !artifact.storageUri ||
         artifact.artifactId !== binding.artifactId || artifact.revision !== binding.revision ||
         artifact.mimeType !== binding.mimeType || artifact.size !== binding.sizeBytes) throw new MediaGenerationValidationError("An approved reference video changed before submission.");
@@ -216,6 +218,7 @@ export async function resolveApprovedReferenceImageUrls(
   db: DirectDatabase,
   proof: MediaGenerationAdmissionProof,
   operations: MediaReferenceArtifactOperations = DEFAULT_OPERATIONS,
+  readableNamespaceIds: readonly string[] = [proof.namespaceId],
 ): Promise<readonly string[]> {
   const bindings = proof.requestPayload.referenceImages;
   if (proof.requestPayload.model !== "seedance-2-5-reference-to-video-basic" || !bindings) {
@@ -225,7 +228,7 @@ export async function resolveApprovedReferenceImageUrls(
   for (const binding of bindings) {
     const artifact = await operations.findByInternalId({
       internalId: binding.artifactInternalId,
-      mutableNamespaceIds: [proof.namespaceId],
+      mutableNamespaceIds: [...readableNamespaceIds],
     }, db);
     if (!artifact || artifact.deletedAt !== null) throw new MediaGenerationValidationError("An approved reference image is no longer available.");
     assertArtifactShape(artifact);

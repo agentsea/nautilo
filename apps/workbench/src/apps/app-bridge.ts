@@ -280,6 +280,7 @@ export type AppBridgeOptions = {
   onVideoWorkspaceMediaClosePreview?: (input: { revokeToken: string }) => Promise<void> | void;
   /** Parent-only native pick + Workspace artifact admission for bound Video. */
   onVideoWorkspaceMediaImport?: () => Promise<VideoWorkspaceMediaImportBridgeResult> | VideoWorkspaceMediaImportBridgeResult;
+  onVideoMediaPick?: (input: VideoMediaPickInput) => Promise<VideoMediaPickResult>;
   /** Parent owns the canonical project and all Workspace source resolution. */
   onVideoWorkspaceMediaExport?: (input: VideoWorkspaceMediaExportInput) => Promise<VideoWorkspaceMediaExportResult>;
   onVideoProjectPromotion?: (input: { requestId: string; sha256: string; signal: AbortSignal; onProgress: (progress: unknown) => void }) => Promise<unknown>;
@@ -494,6 +495,8 @@ type AppMediaOpenPreviewRequest = {
   op: "openPreview";
 } & ({ ref: string } | { mediaId: string } | { referenceId: string });
 
+type AppMediaPickRequest = { type: "nautilo.app.media.req"; requestId: string; op: "pick" } & VideoMediaPickInput;
+
 type AppMediaImportVideoRequest = {
   type: "nautilo.app.media.req";
   requestId: string;
@@ -542,7 +545,7 @@ export type VideoGenerationBridgeResult =
   | Readonly<{ kind: "cancelled" }>
   | Readonly<{ kind: "submission-unknown"; takeId: string }>
   | Readonly<{ kind: "expired" }>
-  | Readonly<{ kind: "unavailable"; code: string }>;
+  | Readonly<{ kind: "unavailable"; code: string; message?: string }>;
 
 type VideoGenerationSafeArtifact = Readonly<{ artifactId: string; path: string; zone: "workspace"; mime: string; bytes: number }>;
 type VideoGenerationSafeTake = Readonly<{
@@ -592,6 +595,11 @@ export type VideoWorkspaceMediaImportBridgeResult =
   ))
   | Readonly<{ kind: "unavailable"; code: string }>;
 
+export type VideoMediaPickInput = { purpose: "media" | "references"; multiple: boolean };
+export type VideoMediaPickResult =
+  | { kind: "ready"; imports: Extract<VideoWorkspaceMediaImportBridgeResult, { kind: "ready" }>[]; references: Extract<VideoGenerationReferenceImportBridgeResult, { kind: "ready" }>["asset"][]; mediaIds: string[]; failures: { label: string; code: string }[] }
+  | { kind: "unavailable"; code: string };
+
 type AppVideoGenerationRequest = VideoGenerationBridgeRequest & {
   type: "nautilo.app.video-generation.request";
 };
@@ -637,6 +645,7 @@ export type AppBridgeRequest =
   | AppAssetReadRequest
   | AppAssetCancelMessage
   | AppMediaOpenPreviewRequest
+  | AppMediaPickRequest
   | AppMediaImportVideoRequest
   | AppMediaExportRequest
   | AppMediaExportCapabilitiesRequest
@@ -1040,6 +1049,10 @@ function isMediaOpenPreviewRequest(x: Record<string, unknown>): x is AppMediaOpe
     && ["ref", "mediaId", "referenceId"].filter((key) => key in x).length === 1;
 }
 
+function isMediaPickRequest(x: Record<string, unknown>): x is AppMediaPickRequest {
+  return isClosedRecord(x, ["type", "requestId", "op", "purpose", "multiple"]) && x.type === "nautilo.app.media.req" && isNonEmptyString(x.requestId) && x.op === "pick" && (x.purpose === "media" || x.purpose === "references") && typeof x.multiple === "boolean";
+}
+
 function isMediaImportVideoRequest(x: Record<string, unknown>): x is AppMediaImportVideoRequest {
   return Object.keys(x).every((key) => key === "type" || key === "requestId" || key === "op")
     && x["type"] === "nautilo.app.media.req"
@@ -1351,6 +1364,7 @@ export function isAppBridgeRequest(x: unknown): x is AppBridgeRequest {
     isSessionResolveProposalRequest(obj) ||
     isAssetReadRequest(obj) ||
     isAssetCancelMessage(obj) ||
+    isMediaPickRequest(obj) ||
     isMediaImportVideoRequest(obj) ||
     isMediaExportRequest(obj) ||
     isMediaExportCapabilitiesRequest(obj) ||
@@ -2278,6 +2292,7 @@ export function installAppBridge(opts: AppBridgeOptions): () => void {
     mediaProxy,
     videoGeneration,
     onVideoWorkspaceMediaImport,
+    onVideoMediaPick,
     onVideoWorkspaceMediaExport,
     onVideoProjectPromotion,
     onOpenPromotedVideoProject,
@@ -3004,6 +3019,29 @@ export function installAppBridge(opts: AppBridgeOptions): () => void {
             sizeBytes: result.sizeBytes,
             revokeToken: result.revokeToken,
           } });
+          return;
+        }
+
+        if (msg.op === "pick") {
+          if (appId !== "nautilo-video" || mediaProxy !== true || !onVideoMediaPick || activeTarget?.kind !== "artifact" || (msg.purpose === "references" && videoGeneration !== true)) {
+            respond({ ok: true, value: { kind: "unavailable", code: "unsupported_environment" } }); return;
+          }
+          const admittedTarget = activeTarget;
+          resetDocumentReadSession(documentSession);
+          const envelope = await readDocumentSession(documentSession, admittedTarget);
+          if (bridgeDisposed || activeTarget !== admittedTarget || !parseVideoHtml(envelope.content).ok) {
+            respond({ ok: true, value: { kind: "unavailable", code: "invalid_document" } }); return;
+          }
+          const result = await onVideoMediaPick({ purpose: msg.purpose, multiple: msg.multiple });
+          if (bridgeDisposed || activeTarget !== admittedTarget) return;
+          const valid = result.kind === "ready" && isClosedRecord(result, ["kind", "imports", "references", "mediaIds", "failures"]) &&
+            Array.isArray(result.imports) && result.imports.every(isSafeVideoWorkspaceImportResult) &&
+            Array.isArray(result.references) && result.references.every(asset => asset.mediaKind !== "audio" && isSafeVideoGenerationReferenceImportResult({ kind: "ready", asset })) &&
+            Array.isArray(result.mediaIds) && result.mediaIds.every(id => typeof id === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(id)) &&
+            Array.isArray(result.failures) && result.failures.every(f => isClosedRecord(f, ["label", "code"]) && isSafeVideoText(f.label) && typeof f.code === "string" && /^[a-z_]+$/u.test(f.code)) &&
+            (msg.purpose === "media" ? result.references.length === 0 && result.mediaIds.length === 0 : result.imports.length === 0) &&
+            (msg.multiple || result.imports.length + result.references.length + result.mediaIds.length <= 1);
+          respond({ ok: true, value: valid ? result : { kind: "unavailable", code: result.kind === "unavailable" && /^[a-z_]+$/u.test(result.code) ? result.code : "invalid_response" } });
           return;
         }
 

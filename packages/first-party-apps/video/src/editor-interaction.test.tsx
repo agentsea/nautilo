@@ -75,6 +75,25 @@ test("Genie native import waits for selection, saves the Media Bin entry and nev
   expect(saved.sequences).toEqual(fixtureProject.sequences);
 });
 
+test("an imported image gets a Media Bin preview after saving without changing the timeline", async () => {
+  const requests: unknown[] = [];
+  const h = await receiptHarness(undefined, undefined, undefined, fixtureProject, undefined, nativeMediaStub({
+    importVideo: async () => ({ kind: "ready", mediaKind: "image", label: "Subject", mediaRef: "subject.png",
+      source: { kind: "workspace-artifact", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc53", path: "subject.png" } }),
+    openPreview: async (request) => { requests.push(request); return { kind: "ready", url: "https://media.invalid/subject.png", revokeToken: "image-lease", mimeType: "image/png", sizeBytes: 10 }; },
+  }));
+  await h.control({ action: "import-media" });
+  const saved = latestWrittenProject(h.writes);
+  const image = document.querySelector<HTMLImageElement>('.video-media-bin img[alt="Subject"]');
+  expect(image?.getAttribute("src")).toBe("https://media.invalid/subject.png");
+  expect(requests).toContainEqual({ mediaId: saved.media[0]!.id });
+  expect(saved.sequences).toEqual(fixtureProject.sequences);
+  const before = requests.length;
+  await h.emit({ type: "changed", path: "fixture.video.html" });
+  expect(document.querySelector('.video-media-bin img[alt="Subject"]')).toBe(image);
+  expect(requests).toHaveLength(before);
+});
+
 test("native import does not claim success when document save fails", async () => {
   const h = await receiptHarness(undefined, undefined, undefined, fixtureProject, undefined, nativeMediaStub({ importVideo: async () => ({ kind: "ready", mediaKind: "image", mediaRef: "subject.png", label: "Subject" }) }));
   h.bridge.document.write = async () => { throw new Error("Offline"); };
@@ -219,6 +238,36 @@ test("Simple without scenes reviews its entered duration without creating a scen
   expect(h.writes).toHaveLength(0);
 });
 
+test.each(["queued", "submission-unknown"] as const)("%s opens progress before the take index catches up, with no replay", async (kind) => {
+  let submit!: (value: { kind: "queued" | "submission-unknown"; takeId: string }) => void;
+  let requests = 0;
+  let statusReads = 0;
+  const takeId = "take_abcdefghijklmnop";
+  const h = await receiptHarness(undefined, undefined, undefined, { ...fixtureProject, generationBrief: { ...createEmptyGenerationBrief(), quickBrief: "A sphere turns" } }, {
+    request: () => { requests++; return new Promise(resolve => { submit = resolve; }); },
+    listTakes: async () => ({ kind: "ready", takes: [] }),
+    getTakeStatus: async () => { statusReads++; return { kind: "unavailable", code: "offline" }; },
+    previewTake: async () => ({ kind: "opened" }), revalidateTake: async () => { throw new Error("Not completed"); },
+  });
+  await act(async () => h.button("Generate").click());
+  await act(async () => h.button("Generate video").click());
+  for (let step = 0; step < 10 && requests === 0; step++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  expect(requests).toBe(1);
+  // Cost review alone must not replace the prompt with a running animation.
+  expect(document.querySelector('[aria-label="Generation progress"]')).toBeNull();
+  await act(async () => { submit({ kind, takeId }); await new Promise(resolve => setTimeout(resolve, 0)); });
+  const progress = document.querySelector('[aria-label="Generation progress"]');
+  expect(progress).not.toBeNull();
+  expect(document.querySelector('.generator-writing textarea')).toBeNull();
+  expect(progress!.textContent).toContain(kind === "queued" ? "Status unavailable" : "Submission could not be confirmed");
+  expect(statusReads).toBe(kind === "queued" ? 1 : 0);
+  await act(async () => h.button("Back to scene design").click());
+  expect(document.querySelector('[aria-label="Video prompt"]')).not.toBeNull();
+  await act(async () => h.button("View generation progress").click());
+  expect(requests).toBe(1);
+  expect(h.writes).toHaveLength(0);
+});
+
 test("Genie continuation requests the same one-scene review with explicit cheap settings, not payment", async () => {
   const brief = appendGenerationShot(appendGenerationShot(createEmptyGenerationBrief(), { title: "Opening", description: "A sphere" }, () => "opening"), { title: "Next", description: "Continue rotating", continueFromPrevious: true }, () => "next");
   const requests: Parameters<NonNullable<NautiloAppBridge["videoGeneration"]>["request"]>[0][] = [];
@@ -306,6 +355,7 @@ const globalKeys = [
   "PointerEvent",
   "KeyboardEvent",
   "MutationObserver",
+  "getComputedStyle",
   "IS_REACT_ACT_ENVIRONMENT",
 ] as const;
 const originalGlobals = new Map<string, PropertyDescriptor | undefined>();
@@ -323,6 +373,7 @@ function installDom(): Window {
     PointerEvent: window.PointerEvent,
     KeyboardEvent: window.KeyboardEvent,
     MutationObserver: window.MutationObserver,
+    getComputedStyle: window.getComputedStyle.bind(window),
   });
   Object.defineProperties(window.HTMLElement.prototype, {
     setPointerCapture: { configurable: true, value: () => undefined },
@@ -984,7 +1035,7 @@ describe("mounted Video editor interactions", () => {
       closePreview: () => undefined,
       exportVideo: async () => ({ kind: "unavailable", code: "unsupported_environment" }),
     };
-    await act(async () => { h.button("Import media").click(); await Promise.resolve(); });
+    await act(async () => { h.button("Add media").click(); await Promise.resolve(); });
     expect(document.querySelector("dialog")?.textContent).toContain("Match this project to your video?");
     const remember = document.querySelector('dialog input[type="checkbox"]') as HTMLInputElement;
     await act(async () => remember.click());
@@ -994,7 +1045,7 @@ describe("mounted Video editor interactions", () => {
     expect(stored["video.firstSourceRate"]).toEqual({ decision: "adopt-source-rate" });
     expect(h.writes.at(-1)).not.toContain("firstSourceRate");
     rate = 24;
-    await act(async () => { h.button("Import media").click(); await Promise.resolve(); });
+    await act(async () => { h.button("Add media").click(); await Promise.resolve(); });
     expect(document.querySelector("dialog")).toBeNull();
     await save(h.window);
     expect(latestWrittenProject(h.writes).sequences[0]!.frameRate).toEqual({ numerator: 60, denominator: 1 });
@@ -1339,7 +1390,7 @@ describe("mounted Video editor interactions", () => {
             source: { kind: "workspace-artifact" as const, artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc53", path: "video-imports/still.png" },
           };
         },
-        openPreview: async () => ({ kind: "unavailable", code: "unused" }),
+        openPreview: async () => ({ kind: "ready", url: "https://media.invalid/source", mimeType: "audio/wav", sizeBytes: 10, revokeToken: "preview", waveform: { peaks: [0, 0.5, 1, 0], samplesPerSecond: 2 } }),
         closePreview: () => undefined,
         exportVideo: async () => ({ kind: "unavailable", code: "unused" }),
       },
@@ -1353,7 +1404,7 @@ describe("mounted Video editor interactions", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    const importButton = [...document.querySelectorAll("button")].find((button) => button.textContent === "Import media") as HTMLButtonElement;
+    const importButton = [...document.querySelectorAll("button")].find((button) => button.textContent === "Add media") as HTMLButtonElement;
     await act(async () => {
       importButton.click();
       importButton.click();
@@ -1375,6 +1426,8 @@ describe("mounted Video editor interactions", () => {
       await Promise.resolve();
     });
     expect(importButton.disabled).toBe(false);
+    expect(document.querySelector(".video-media-bin audio")?.getAttribute("src")).toBe("https://media.invalid/source");
+    expect(document.querySelector('.video-media-bin [aria-label="Audio waveform"]')).not.toBeNull();
     expect(document.querySelector(".video-media-bin")?.textContent).toContain("Voiceaudio · 2.5s");
     await act(async () => { importButton.click(); await Promise.resolve(); await Promise.resolve(); });
     expect(importCalls).toBe(2);
@@ -1537,4 +1590,51 @@ describe("mounted Video editor interactions", () => {
     expect(undone.metadata?.title).toBe("External title");
     expect(undone.sequences[0]!.tracks[0]!.clips.some((entry) => entry.id === "clip-a")).toBe(true);
   });
+});
+
+test("shared picker admits and saves a batch without timeline clips, with dismissible partial failures", async () => {
+  const h = await receiptHarness(undefined, undefined, undefined, fixtureProject, undefined, nativeMediaStub({ pick: async () => ({ kind: "ready", imports: ["first", "second"].map((name, i) => ({ kind: "ready", mediaKind: "image", mediaRef: `media/${name}.png`, label: name, source: { kind: "workspace-artifact", artifactId: `48a0266d-b1c2-4ffd-9c10-2865bea8fc5${i}`, path: `media/${name}.png` } })), references: [], mediaIds: [], failures: [{ label: "Broken file", code: "decode_failed" }] }) }));
+  await h.control({ action: "import-media" });
+  await act(async () => { await Promise.resolve(); });
+  const saved = latestWrittenProject(h.writes);
+  expect(saved.media.map(asset => asset.label)).toEqual(["first", "second"]);
+  expect(saved.sequences).toEqual(fixtureProject.sequences);
+  expect(document.body.textContent).toContain("Broken file (decode_failed)");
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Dismiss media message"]')!.click());
+  expect(document.body.textContent).not.toContain("Broken file (decode_failed)");
+});
+
+test("shared picker cancellation and empty selection leave no notice and allow another import", async () => {
+  let calls = 0;
+  const h = await receiptHarness(undefined, undefined, undefined, fixtureProject, undefined, nativeMediaStub({ pick: async () => ++calls === 1 ? { kind: "unavailable", code: "cancelled" } : { kind: "ready", imports: [], references: [], mediaIds: [], failures: [] } }));
+  await h.control({ action: "import-media" });
+  expect(document.body.textContent).not.toContain("Import cancelled");
+  expect(document.querySelector('[aria-label="Dismiss media message"]')).toBeNull();
+  await h.control({ action: "import-media" });
+  expect(calls).toBe(2);
+  expect(parseMediaOperationsResult(await h.control({ action: "inspect-media" }))!.import?.stage).toBe("succeeded");
+  expect(h.writes).toHaveLength(0);
+});
+
+test("batch waits for one first-source rate decision then saves both clips only to the bin", async () => {
+  const h = await receiptHarness(undefined, undefined, undefined, createEmptyProject(), undefined, nativeMediaStub({ pick: async () => ({ kind: "ready", imports: ["first", "second"].map((name, i) => ({ kind: "ready", mediaRef: `media/${name}.mp4`, label: name, durationSec: 4, frameRate: { numerator: 60, denominator: 1 }, source: { kind: "workspace-artifact", artifactId: `48a0266d-b1c2-4ffd-9c10-2865bea8fc5${i}`, path: `media/${name}.mp4` } })), references: [], mediaIds: [], failures: [] }) }));
+  const first = parseMediaOperationsResult(await h.control({ action: "import-media" }))!;
+  expect(parseMediaOperationsResult(await h.control({ action: "inspect-media" }))!.import?.stage).toBe("awaiting-rate");
+  expect(h.writes).toHaveLength(0);
+  await h.control({ action: "choose-import-rate", operationId: first.import!.id, decision: "adopt-source-rate" });
+  const saved = latestWrittenProject(h.writes);
+  expect(saved.media).toHaveLength(2);
+  expect(saved.sequences[0]!.frameRate).toEqual({ numerator: 60, denominator: 1 });
+  expect(saved.sequences[0]!.tracks.every(track => track.clips.length === 0)).toBe(true);
+});
+
+test("cancelling the batch frame-rate question releases the import operation", async () => {
+  const h = await receiptHarness(undefined, undefined, undefined, createEmptyProject(), undefined, nativeMediaStub({ pick: async () => ({ kind: "ready", imports: [{ kind: "ready", mediaRef: "media/first.mp4", label: "first", durationSec: 4, frameRate: { numerator: 60, denominator: 1 }, source: { kind: "workspace-artifact", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc50", path: "media/first.mp4" } }], references: [], mediaIds: [], failures: [] }) }));
+  const first = parseMediaOperationsResult(await h.control({ action: "import-media" }))!;
+  expect(parseMediaOperationsResult(await h.control({ action: "inspect-media" }))!.import?.stage).toBe("awaiting-rate");
+  await h.control({ action: "cancel-import", operationId: first.import!.id });
+  expect(parseMediaOperationsResult(await h.control({ action: "inspect-media" }))!.import?.stage).toBe("cancelled");
+  expect(document.querySelector('[aria-label="Dismiss media message"]')).toBeNull();
+  expect(h.writes).toHaveLength(0);
+  expect(parseMediaOperationsResult(await h.control({ action: "import-media" }))!.import?.id).not.toBe(first.import!.id);
 });

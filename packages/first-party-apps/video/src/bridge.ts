@@ -146,7 +146,7 @@ export type NautiloVideoGenerationRequestResult =
   | Readonly<{ kind: "cancelled" }>
   | Readonly<{ kind: "submission-unknown"; takeId: string }>
   | Readonly<{ kind: "expired" }>
-  | Readonly<{ kind: "unavailable"; code: string }>;
+  | Readonly<{ kind: "unavailable"; code: string; message?: string }>;
 
 /**
  * Closed reference-import result. The logical Workspace path and public
@@ -209,6 +209,10 @@ export type NautiloVideoGenerationTakeRevalidationResult =
   | GeneratedTakeRevalidation
   | NautiloMediaUnavailable;
 
+export type NautiloMediaPickResult =
+  | { kind: "ready"; imports: NautiloVideoImportReady[]; references: Extract<NautiloVideoGenerationReferenceImportResult, { kind: "ready" }>["asset"][]; mediaIds: string[]; failures: { label: string; code: string }[] }
+  | NautiloMediaUnavailable;
+
 export interface NautiloAppBridge {
   session?: {
     onCommand(handler: (command: unknown, version: { kind: "artifact_revision"; revision: number } | { kind: "local_sha"; sha256: string }) => unknown): () => void;
@@ -251,6 +255,7 @@ export interface NautiloAppBridge {
    */
   media?: {
     getExportCapabilities?(): Promise<{ workspace: boolean }>;
+    pick?(input: { purpose: "media" | "references"; multiple: boolean }): Promise<NautiloMediaPickResult>;
     importVideo(): Promise<NautiloVideoImportReady | NautiloMediaUnavailable>;
     openPreview(
       input: NautiloVideoPreviewRequest,

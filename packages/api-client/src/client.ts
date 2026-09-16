@@ -2121,6 +2121,14 @@ export class ApiError extends Error {
   }
 }
 
+/** Safe recovery text from the video preparation boundary, before any spend. */
+export class VideoGenerationPreparationError extends ApiError {
+  constructor(readonly code: "request_invalid" | "quote_unavailable", recovery: string) {
+    super(422, recovery);
+    this.name = "VideoGenerationPreparationError";
+  }
+}
+
 /** Stable event-feed query/mutation failure returned by the server boundary. */
 export class EventFeedApiError extends ApiError {
   constructor(status: number, readonly code: EventFeedErrorCode) {
@@ -11544,6 +11552,10 @@ export class NautiloApiClient {
       body: parsed,
       schema: videoGenerationReviewDtoV1Schema,
       headers: { "X-Nautilo-Video-Host-Attestation": attestationToken },
+      statusErrors: { 422: (body) =>
+        (body["code"] === "request_invalid" || body["code"] === "quote_unavailable") && typeof body["recovery"] === "string" && body["recovery"].trim()
+          ? new VideoGenerationPreparationError(body["code"], body["recovery"])
+          : new ApiError(422, "Video generation could not be prepared.") },
       defaultErrorPrefix: "POST /api/video-generations/prepare",
     });
   }

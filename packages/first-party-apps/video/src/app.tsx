@@ -471,6 +471,7 @@ export function VideoApp(): ReactElement {
   const [receiptsEnabled, setReceiptsEnabled] = useState(true);
   const [receiptPreferenceMessage, setReceiptPreferenceMessage] = useState<string | null>(null);
   const [receiptPreferenceBusy, setReceiptPreferenceBusy] = useState(false);
+  const mediaImportRateResolveRef = useRef<((decision: FirstSourceRateDecision | null) => void) | null>(null);
   const [mediaImportStatus, setMediaImportStatus] = useState<string | null>(null);
   const [mediaImportBusy, setMediaImportBusy] = useState(false);
   const [pendingVideoImport, setPendingVideoImport] = useState<(NautiloVideoImportReady & { frameRate: { numerator: number; denominator: number } }) | null>(null);
@@ -488,6 +489,7 @@ export function VideoApp(): ReactElement {
   const [generationQuoteState, setGenerationQuoteState] = useState<GenerationQuoteState | null>(null);
   const [generatedTakeLoadState, setGeneratedTakeLoadState] = useState<GeneratedTakeLoadState>("idle");
   const [generationPollEpoch, setGenerationPollEpoch] = useState(0);
+  const [submittedGeneration, setSubmittedGeneration] = useState<{ epoch: number; summary: NautiloVideoGenerationTakeSummary } | null>(null);
   const [generatedTakeSummaries, setGeneratedTakeSummaries] = useState<readonly NautiloVideoGenerationTakeSummary[]>([]);
   const [generatedTakeStatuses, setGeneratedTakeStatuses] = useState<Record<string, NautiloVideoGenerationTakeStatus>>({});
   const [generatedTakeUnavailableIds, setGeneratedTakeUnavailableIds] = useState<readonly string[]>([]);
@@ -543,7 +545,7 @@ export function VideoApp(): ReactElement {
   const mediaExportOperationRef = useRef<MediaOperation | null>(null);
   const workspaceCopyControllerRef = useRef<AbortController | null>(null);
   const mediaImportRequestRef = useRef<{ cancelled: boolean } | null>(null);
-  useEffect(() => () => { mediaImportRequestRef.current = null; }, []);
+  useEffect(() => () => { mediaImportRequestRef.current = null; mediaImportRateResolveRef.current?.(null); mediaImportRateResolveRef.current = null; }, []);
 
   const sequence = project.sequences[0] ?? createEmptyProject().sequences[0]!;
   const savedProjectContent = autosaveRef.current?.getSavedSnapshot().content;
@@ -601,8 +603,12 @@ export function VideoApp(): ReactElement {
     document.querySelector<HTMLTextAreaElement>('[aria-label="Clip text"]')?.focus();
   }, [propertiesPanelOpen, selectedClip]);
   const generatedTakeDisplaySummaries = useMemo(
-    () => mergeGeneratedTakeSummaries(generatedTakeSummaries, project.generatedTakes),
-    [generatedTakeSummaries, project.generatedTakes],
+    () => {
+      const submitted = submittedGeneration?.epoch === documentEpochRef.current ? submittedGeneration.summary : null;
+      const summaries = submitted && !generatedTakeSummaries.some(take => take.takeId === submitted.takeId) ? [...generatedTakeSummaries, submitted] : generatedTakeSummaries;
+      return mergeGeneratedTakeSummaries(summaries, project.generatedTakes);
+    },
+    [generatedTakeSummaries, project.generatedTakes, submittedGeneration, phase],
   );
   const hasActiveGeneratedTake = useMemo(
     () => Object.entries(generatedTakeStatuses).some(([takeId, status]) => !generatedTakeUnavailableIds.includes(takeId) && generatedTakeProgressPresentation(status)?.isActive === true),
@@ -680,9 +686,15 @@ export function VideoApp(): ReactElement {
       stableContent?: string,
     ) => {
       documentEpochRef.current += 1;
+      setSubmittedGeneration(null);
+      setGeneratedTakeSummaries([]);
+      setGeneratedTakeStatuses({});
+      setGeneratedTakeUnavailableIds([]);
       mediaImportRequestRef.current = null;
       if (mediaOperationActive(mediaImportOperationRef.current)) mediaImportOperationRef.current = { ...mediaImportOperationRef.current!, stage: "unknown", code: "document_changed", stateChanged: "unknown" };
       setMediaImportBusy(false);
+      mediaImportRateResolveRef.current?.(null);
+      mediaImportRateResolveRef.current = null;
       setPendingVideoImport(null);
       manifestRef.current = document.manifest;
       projectRef.current = document.project;
@@ -1047,7 +1059,7 @@ export function VideoApp(): ReactElement {
       setGeneratedTakeSummaries(listed.takes);
       // A temporary status read must not erase the last useful card. Its id
       // stays unavailable until a later parent-owned read succeeds.
-      setGeneratedTakeStatuses((prior) => ({ ...prior, ...nextStatuses }));
+      setGeneratedTakeStatuses((prior) => ({ ...prior, ...Object.fromEntries(Object.entries(nextStatuses).filter(([id, status]) => !prior[id] || prior[id].revision <= status.revision)) }));
       const observedAtMs = Date.now();
       setGeneratedTakeElapsedObservations((prior) => {
         const next = { ...prior };
@@ -1061,7 +1073,9 @@ export function VideoApp(): ReactElement {
         }
         return next;
       });
-      setGeneratedTakeUnavailableIds(unavailableIds);
+      // A lagging index cannot clear a failed direct read of a newly
+      // acknowledged take. Only a fresh status read can reconnect that take.
+      setGeneratedTakeUnavailableIds(prior => [...new Set([...unavailableIds, ...prior.filter(id => !listedIds.has(id) && !nextStatuses[id])])]);
       setGeneratedTakeLoadState("ready");
       setGeneratedTakeStatusMessage(admissionProblem);
       if (unavailableIds.length > 0) return "retry";
@@ -1230,6 +1244,7 @@ export function VideoApp(): ReactElement {
       setCommandError("The direction changed. Generate again to review the current saved version.");
       return;
     }
+    const submittedDocumentEpoch = documentEpochRef.current;
     const briefSnapshot = JSON.stringify(projectRef.current.generationBrief ?? createEmptyGenerationBrief());
     const completedSceneTakes = new Map<string, string>();
     const controller = new AbortController();
@@ -1288,15 +1303,34 @@ export function VideoApp(): ReactElement {
         },
         request: async (request) => {
           const result = await generation.request(request);
+          if (submittedDocumentEpoch !== documentEpochRef.current) { controller.abort(); return result; }
           setGenerationQuoteState(result.kind);
+          if ((result.kind === "queued" || result.kind === "submission-unknown") && result.takeId) {
+            const takeId = result.takeId;
+            // The acknowledgement is already bound to this project. Show it
+            // immediately even when the read-only take index has not caught up.
+            setSubmittedGeneration({ epoch: submittedDocumentEpoch, summary: { takeId,
+              shotId: request.job.source.kind === "shot" ? request.job.source.shotId : "quick-brief",
+              shotLabel: request.job.shotLabel ?? "Your video", documentRevision: request.document.revision ?? 0 } });
+            setGeneratedTakeStatuses(prior => prior[takeId] ? prior : { ...prior, [takeId]: {
+              takeId, revision: 0, state: result.kind === "queued" ? "queued" : "unknown", mediaKind: "video", modelId: request.job.modelId, settings: {},
+            } });
+            setGenerationPollEpoch(epoch => epoch + 1);
+          }
           if (result.kind === "queued" && result.takeId && request.job.source.kind === "shot") completedSceneTakes.set(request.job.source.shotId, result.takeId);
           return result;
         },
         waitUntilReady: async (takeId, signal) => {
           while (!signal.aborted) {
             const response = await generation.getTakeStatus({ takeId });
-            if (response.kind !== "ready" || response.status.takeId !== takeId) throw new Error("Generation status is unavailable. Check this scene's takes before trying again.");
+            if (submittedDocumentEpoch !== documentEpochRef.current) { controller.abort(); throw new Error("The open project changed."); }
+            if (response.kind !== "ready" || response.status.takeId !== takeId) {
+              setGeneratedTakeUnavailableIds(ids => [...new Set([...ids, takeId])]);
+              throw new Error("Generation status is unavailable. Check this scene's takes before trying again.");
+            }
             const status = response.status;
+            setGeneratedTakeStatuses(prior => prior[takeId] && prior[takeId].revision > status.revision ? prior : { ...prior, [takeId]: status });
+            setGeneratedTakeUnavailableIds(ids => ids.filter(id => id !== takeId));
             if ((status.state === "ready" || status.state === "cleanup-pending") && status.artifact) {
               await refreshGeneratedTakes(() => !signal.aborted);
               return;
@@ -1326,7 +1360,8 @@ export function VideoApp(): ReactElement {
     }
   }, [autosaveState.dirty, autosaveState.lastSavedAt, autosaveState.status, clearGenerationReview, generationReview]);
 
-  const completeVideoImport = useCallback((imported: NautiloVideoImportReady, rateDecision?: FirstSourceRateDecision) => {
+  const completeVideoImport = useCallback((imported: NautiloVideoImportReady, rateDecision?: FirstSourceRateDecision, saveImmediately = true) => {
+    if (mediaImportRateResolveRef.current) { mediaImportRateResolveRef.current(rateDecision ?? null); return false; }
     const operation = mediaImportOperationRef.current;
     const updateOperation = (patch: Partial<MediaOperation>) => { if (operation && mediaImportOperationRef.current?.id === operation.id) mediaImportOperationRef.current = { ...mediaImportOperationRef.current, ...patch }; };
     const before = projectRef.current;
@@ -1346,25 +1381,24 @@ export function VideoApp(): ReactElement {
     if (!result.ok) {
       updateOperation({ stage: "failed", code: "admission_failed", stateChanged: "unknown" });
       setMediaImportStatus(`Import was not applied: ${result.error}`);
-      return;
+      return false;
     }
     const createdAsset = result.project.media.find((asset) => !before.media.some((existing) => existing.id === asset.id));
     if (!createdAsset) {
       updateOperation({ stage: "failed", code: "admission_failed", stateChanged: "unknown" });
       setMediaImportStatus("Import was not applied because the new Media Bin item could not be identified.");
-      return;
+      return false;
     }
     setPendingVideoImport(null);
-    setMediaImportStatus(imported.source
-      ? `${createdAsset.label ?? "Media"} was added to the Media Bin. Drag it to a compatible track when you are ready.`
-      : `${createdAsset.label ?? "Media"} was added to the Media Bin as a local-working Current Folder reference. Drag it to a compatible track to place it.`);
+    setMediaImportStatus(null);
     commitProject(result.project, null);
     updateOperation({ stage: "saving", stateChanged: true, mediaId: createdAsset.id, label: createdAsset.label ?? "Media" });
-    void autosaveRef.current?.saveNow().then(() => {
+    if (saveImmediately) void autosaveRef.current?.saveNow().then(() => {
       const state = autosaveRef.current?.getState();
       const saved = state && !state.dirty && state.status !== "conflict" && state.status !== "failed" && projectRef.current.media.some(asset => asset.id === createdAsset.id);
       updateOperation(saved ? { stage: "succeeded" } : { stage: "failed", code: "save_required" });
     }).catch(() => updateOperation({ stage: "failed", code: "save_required" }));
+    return true;
   }, [commitProject]);
 
   const rememberFirstSourceRate = useCallback((decision: FirstSourceRateDecision | "ask") => {
@@ -1395,43 +1429,74 @@ export function VideoApp(): ReactElement {
       setMediaImportStatus("Media import requires a supported Desktop Current Folder or Workspace host.");
       return;
     }
-    setMediaImportStatus("Choosing and inspecting media…");
+    const media = bridge.media;
+    setMediaImportStatus(null);
     const request = { cancelled: false };
     const operation = newMediaOperation("import");
     mediaImportOperationRef.current = operation;
     const updateOperation = (patch: Partial<MediaOperation>) => { if (mediaImportOperationRef.current?.id === operation.id) mediaImportOperationRef.current = { ...mediaImportOperationRef.current, ...patch }; };
     mediaImportRequestRef.current = request;
     setMediaImportBusy(true);
-    void bridge.media.importVideo().then(async (result) => {
+    void (async () => {
+      // Save current project membership before the host reads the Media Bin.
+      if (media.pick) {
+        await autosaveRef.current?.saveNow();
+        if (autosaveRef.current?.getState().dirty) throw new Error("Save required");
+      }
+      let result = media.pick ? await media.pick({ purpose: "media", multiple: true }) : await media.importVideo();
+      // Current Folder hosts retain their existing native import path.
+      if (result.kind === "unavailable" && result.code === "unsupported_environment" && media.pick && mediaImportRequestRef.current === request && !request.cancelled) result = await media.importVideo();
       if (mediaImportRequestRef.current !== request) return;
       if (request.cancelled) { updateOperation({ stage: "cancelled", stateChanged: "unknown" }); return; }
       if (result.kind !== "ready") {
         updateOperation({ stage: result.code === "cancelled" ? "cancelled" : "failed", code: /^[a-z0-9_]+$/u.test(result.code) ? result.code : "import_unavailable", stateChanged: "unknown" });
-        setMediaImportStatus(result.code === "cancelled" ? "Import cancelled. Your project was not changed." : `Import unavailable (${result.code}). Your project was not changed.`);
+        setMediaImportStatus(result.code === "cancelled" ? null : `Media could not be added (${result.code}). Try Add media again.`);
         return;
       }
-      if ((result.mediaKind ?? "video") === "video" && result.frameRate && requiresFirstSourceRateDecision(projectRef.current, result.frameRate)) {
-        const preference = await bridge.preferences?.get<{ decision?: unknown }>("video.firstSourceRate").catch(() => undefined);
-        if (mediaImportRequestRef.current !== request) return;
-        if (request.cancelled) { updateOperation({ stage: "cancelled", stateChanged: "unknown" }); return; }
-        if (preference?.decision === "adopt-source-rate" || preference?.decision === "keep-project-rate") {
-          // Revalidate at commit against the current project; a concurrent edit
-          // must never turn a remembered first-import choice into a rate change.
-          completeVideoImport(result, preference.decision);
-          return;
+      const imports = "imports" in result ? result.imports : [result];
+      const failures = "failures" in result ? result.failures : [];
+      let batchDecision: FirstSourceRateDecision | undefined;
+      let attempted = 0;
+      let admitted = 0;
+      for (const imported of imports) {
+        if (mediaImportRequestRef.current !== request || request.cancelled) return;
+        if (imported.source && projectRef.current.media.some(asset => asset.source?.kind === "workspace-artifact" && asset.source.artifactId === imported.source!.artifactId && asset.source.path === imported.source!.path)) continue;
+        if ((imported.mediaKind ?? "video") === "video" && imported.frameRate && requiresFirstSourceRateDecision(projectRef.current, imported.frameRate)) {
+          const preference = batchDecision ? { decision: batchDecision } : await bridge.preferences?.get<{ decision?: unknown }>("video.firstSourceRate").catch(() => undefined);
+          if (mediaImportRequestRef.current !== request || request.cancelled) return;
+          if (preference?.decision === "adopt-source-rate" || preference?.decision === "keep-project-rate") batchDecision = preference.decision;
+          else {
+            setPendingVideoImport(imported as NautiloVideoImportReady & { frameRate: { numerator: number; denominator: number } });
+            updateOperation({ stage: "awaiting-rate", sourceRate: imported.frameRate });
+            const decision = await new Promise<FirstSourceRateDecision | null>(resolve => { mediaImportRateResolveRef.current = resolve; });
+            mediaImportRateResolveRef.current = null;
+            setPendingVideoImport(null);
+            if (mediaImportRequestRef.current !== request) return;
+            if (!decision || request.cancelled) { updateOperation({ stage: "cancelled" }); return; }
+            batchDecision = decision;
+          }
         }
-        setPendingVideoImport(result as NautiloVideoImportReady & { frameRate: { numerator: number; denominator: number } });
-        updateOperation({ stage: "awaiting-rate", sourceRate: result.frameRate });
-        setMediaImportStatus(null);
-        return;
+        attempted++;
+        const rateDecision = imported.frameRate && requiresFirstSourceRateDecision(projectRef.current, imported.frameRate) ? batchDecision : undefined;
+        if (completeVideoImport(imported, rateDecision, false)) admitted++;
+        else failures.push({ label: imported.label, code: "admission_failed" });
       }
-      completeVideoImport(result);
-    }).catch(() => {
+      if (admitted) {
+        await autosaveRef.current?.saveNow();
+        if (mediaImportRequestRef.current !== request) return;
+        const state = autosaveRef.current?.getState();
+        const saved = state && !state.dirty && state.status !== "conflict" && state.status !== "failed";
+        updateOperation({ stage: saved && !failures.length ? "succeeded" : "failed", stateChanged: true, ...(!saved ? { code: "save_required" } : failures.length ? { code: "partial_import" } : {}) });
+      }
+      if (attempted === 0) updateOperation({ stage: failures.length ? "failed" : "succeeded", stateChanged: false, ...(failures.length ? { code: "import_unavailable" } : {}) });
+      if (failures.length) setMediaImportStatus(`Could not add ${failures.map(f => `${f.label} (${f.code})`).join(", ")}.`);
+    })().catch(() => {
       if (mediaImportRequestRef.current !== request) return;
       updateOperation({ stage: "unknown", code: "import_unconfirmed", stateChanged: "unknown" });
-      setMediaImportStatus("Import could not start. Your project was not changed; try again in a supported Desktop host.");
+      setMediaImportStatus("Import could not be completed. Check the Media Bin before trying again.");
     }).finally(() => {
       if (mediaImportRequestRef.current !== request) return;
+      if (request.cancelled) updateOperation({ stage: "cancelled" });
       mediaImportRequestRef.current = null;
       setMediaImportBusy(false);
     });
@@ -1440,14 +1505,17 @@ export function VideoApp(): ReactElement {
   const cancelMediaImport = useCallback(() => {
     const operation = mediaImportOperationRef.current;
     if (!operation) return;
+    mediaImportRateResolveRef.current?.(null);
+    mediaImportRateResolveRef.current = null;
+    setPendingVideoImport(null);
     if (mediaImportRequestRef.current) {
       mediaImportRequestRef.current.cancelled = true;
       mediaImportOperationRef.current = { ...operation, stage: "cancelling" };
-      setMediaImportStatus("Import cancelled for this project. Close the native file chooser to finish.");
+      setMediaImportStatus(null);
     } else if (pendingVideoImport) {
       setPendingVideoImport(null);
       mediaImportOperationRef.current = { ...operation, stage: "cancelled", stateChanged: "unknown" };
-      setMediaImportStatus("Import cancelled. The media was not added to this project's Media Bin.");
+      setMediaImportStatus(null);
     }
   }, [pendingVideoImport]);
 
@@ -1575,6 +1643,8 @@ export function VideoApp(): ReactElement {
         mediaImportRequestRef.current = null;
         if (mediaImportOperationRef.current) mediaImportOperationRef.current = { ...mediaImportOperationRef.current, stage: "unknown", code: "document_changed", stateChanged: "unknown" };
         setMediaImportBusy(false);
+        mediaImportRateResolveRef.current?.(null);
+        mediaImportRateResolveRef.current = null;
         setPendingVideoImport(null);
       }
       const epoch = ++changeEpoch;
@@ -1780,7 +1850,7 @@ export function VideoApp(): ReactElement {
     }
     const createdClipId = findCreatedClipId(before, result.project, input);
     commitProject(result.project, createdClipId ?? null);
-    setMediaImportStatus(`${asset.label ?? "Media"} was placed at ${request.timelineStartSec.toFixed(2)}s.`);
+    setMediaImportStatus(null);
   }, [commitProject]);
 
   const placeMediaAtPlayhead = useCallback((mediaId: string) => {
@@ -1819,7 +1889,7 @@ export function VideoApp(): ReactElement {
       const created = result.project.sequences[0]?.tracks.flatMap((entry) => entry.clips).find((clip) =>
         clip.mediaId === mediaId && !before.sequences[0]?.tracks.flatMap((entry) => entry.clips).some((existing) => existing.id === clip.id));
       commitProject(result.project, created?.id ?? null);
-      setMediaImportStatus(`${asset.label ?? "Media"} was added at the playhead.`);
+      setMediaImportStatus(null);
       return;
     }
     setCommandError(lastError);
@@ -2239,7 +2309,7 @@ export function VideoApp(): ReactElement {
           <button type="button" data-workspace="generate" aria-pressed={workspace === "generate"} onClick={openGenerateWorkspace}>Generate</button>
         </div>
         <span className="cutting-room__spacer" />
-        <button type="button" onClick={handleImportVideo} disabled={mediaImportBusy || Boolean(pendingVideoImport)} title="Import video, audio, or an image from the bound Current Folder or Workspace">Import media</button>
+        <button type="button" onClick={handleImportVideo} disabled={mediaImportBusy || Boolean(pendingVideoImport)} title="Import video, audio, or an image from the bound Current Folder or Workspace">Add media</button>
         {exportState.kind === "active" ? <button type="button" onClick={() => exportControllerRef.current?.abort()}>Cancel export</button> : <button type="button" disabled={!documentPathRef.current || !autosaveRef.current?.getSavedDocumentIdentity() || autosaveState.dirty} onClick={() => setExportDialogOpen(true)} title="Choose MP4 resolution and quality">Export video</button>}
         {workspaceCopyDestinationLabel ? workspaceCopyState.kind === "active" ? <button type="button" onClick={() => workspaceCopyControllerRef.current?.abort()}>Cancel Workspace copy</button> : <button type="button" onClick={() => void handleSaveWorkspaceCopy()} title={`Save a Workspace copy in ${workspaceCopyDestinationLabel}`}>Save a Workspace copy <small>{workspaceCopyDestinationLabel}</small></button> : null}
         <button type="button" aria-pressed={projectPanelOpen} onClick={() => setLayout((current) => togglePanelForViewport(current, "project", isNarrowViewport))}>Project</button>
@@ -2249,8 +2319,8 @@ export function VideoApp(): ReactElement {
       {phase.kind === "no-document" ? <div className="video-banner video-banner--info">No document is open. You are editing a local blank template.</div> : null}
       {autosaveState.status === "failed" && autosaveState.errorMessage ? <div className="video-banner video-banner--error">{autosaveState.errorMessage}</div> : null}
       {autosaveState.status === "conflict" ? <div className="video-banner video-banner--conflict"><span>{autosaveState.errorMessage ?? "This video document changed elsewhere. Your draft is still intact."}</span><button type="button" onClick={() => void autosaveRef.current?.reloadLatest().then((latest) => latest && loadEnvelope(latest))}>Discard draft and reload latest</button></div> : null}
-      {commandError ? <div className="video-banner video-banner--error">{commandError}</div> : null}
-      {mediaImportStatus ? <div className="video-banner video-banner--info">{mediaImportStatus}</div> : null}
+      {commandError ? <div className="video-banner video-banner--error" role="alert"><span>{commandError}</span><button type="button" aria-label="Dismiss error" onClick={() => setCommandError(null)}>×</button></div> : null}
+      {mediaImportStatus ? <div className="video-banner video-banner--info" role="status"><span>{mediaImportStatus}</span><button type="button" aria-label="Dismiss media message" onClick={() => setMediaImportStatus(null)}>×</button></div> : null}
       {exportState.kind !== "idle" ? <div className={`video-banner ${exportState.kind === "failed" ? "video-banner--error" : "video-banner--info"}`} role="status">{exportState.message}{exportState.kind === "active" && exportState.processedTimeUs !== undefined && durationSec > 0 ? ` ${Math.min(100, Math.floor(exportState.processedTimeUs / (durationSec * 10_000)))}%` : ""}</div> : null}
       {workspaceCopyState.kind !== "idle" ? <div className={`video-banner ${workspaceCopyState.kind === "failed" ? "video-banner--error" : "video-banner--info"}`} role="status">{workspaceCopyState.message}{workspaceCopyState.kind === "complete" && workspaceCopyState.canOpen ? <button type="button" onClick={() => void openWorkspaceCopy()}>Open Workspace copy</button> : null}</div> : null}
       {pendingVideoImport ? <FrameRateDialog source={pendingVideoImport.frameRate} project={sequence.frameRate} onChoose={(decision, remember) => { completeVideoImport(pendingVideoImport, decision); if (remember) rememberFirstSourceRate(decision); }} onCancel={cancelMediaImport} /> : null}
@@ -2271,7 +2341,7 @@ export function VideoApp(): ReactElement {
           {toolboxCategory === "Transitions" ? <TransitionLibrary clip={selectedClip} /> : null}
           {toolboxCategory === "Effects" ? <UnavailableEffectLibrary category="Effects" /> : null}
           <div hidden={toolboxCategory !== "Media"}>
-          <section><h2>Media Bin</h2>{project.media.length === 0 ? <div className="video-empty-state"><p>Import or generate media here, then drag it onto any timeline track.</p><div className="video-empty-state__actions"><button type="button" onClick={handleImportVideo} disabled={mediaImportBusy || Boolean(pendingVideoImport)}>Import media</button><button type="button" className="video-button--primary" onClick={openGenerateWorkspace}>Generate</button></div>{sequence.tracks.every((track) => track.clips.length === 0) ? <button type="button" onClick={loadStructuralFixture}>Load 20-clip interaction fixture</button> : null}</div> : <div className="video-media-bin">{project.media.map((asset) => <article
+          <section><h2>Media Bin</h2>{mediaImportBusy ? <p role="status">Adding media…</p> : null}{project.media.length === 0 ? <div className="video-empty-state"><p>Import or generate media here, then drag it onto any timeline track.</p><div className="video-empty-state__actions"><button type="button" onClick={handleImportVideo} disabled={mediaImportBusy || Boolean(pendingVideoImport)}>Add media</button><button type="button" className="video-button--primary" onClick={openGenerateWorkspace}>Generate</button></div>{sequence.tracks.every((track) => track.clips.length === 0) ? <button type="button" onClick={loadStructuralFixture}>Load 20-clip interaction fixture</button> : null}</div> : <div className="video-media-bin">{project.media.map((asset) => <article
             className="video-asset"
             key={asset.id}
             draggable
@@ -2279,7 +2349,7 @@ export function VideoApp(): ReactElement {
               event.dataTransfer.effectAllowed = "copy";
               event.dataTransfer.setData(VIDEO_MEDIA_DRAG_TYPE, asset.id);
             }}
-          >{asset.kind === "video" ? <MediaBinPreview asset={asset} enabled={projectPanelOpen && toolboxCategory === "Media" && workspace === "edit" && (asset.source?.kind !== "workspace-artifact" || savedMediaIds.has(asset.id))} active={sourcePreviewId === asset.id} timelinePlaying={playing} onPlay={() => { setPlaying(false); setSourcePreviewId(asset.id); }} /> : null}<strong>{asset.label ?? asset.id}</strong><span>{asset.kind}{asset.durationSec !== undefined ? ` · ${asset.durationSec}s` : ""} · {asset.lifecycle ?? "local-working"}</span><button type="button" onClick={() => placeMediaAtPlayhead(asset.id)}>Add at playhead</button></article>)}</div>}</section>
+          >{asset.kind === "video" || asset.kind === "image" || asset.kind === "audio" ? <MediaBinPreview asset={asset} enabled={projectPanelOpen && toolboxCategory === "Media" && workspace === "edit" && (asset.source?.kind !== "workspace-artifact" || savedMediaIds.has(asset.id))} active={sourcePreviewId === asset.id} timelinePlaying={playing} onPlay={() => { setPlaying(false); setSourcePreviewId(asset.id); }} /> : null}<strong>{asset.label ?? asset.id}</strong><span>{asset.kind}{asset.durationSec !== undefined ? ` · ${asset.durationSec}s` : ""} · {asset.lifecycle ?? "local-working"}</span><button type="button" onClick={() => placeMediaAtPlayhead(asset.id)}>Add at playhead</button></article>)}</div>}</section>
           <section className="cutting-room__import-settings"><h2>Import settings</h2><label>First video in a new project<select aria-label="First video frame-rate preference" value={firstSourceRate} onChange={(event) => rememberFirstSourceRate(event.currentTarget.value as FirstSourceRateDecision | "ask")}><option value="ask">Ask me</option><option value="adopt-source-rate">Match the video</option><option value="keep-project-rate">Keep the project rate</option></select></label><p>Current project: {formatFrameRate(sequence.frameRate)}</p>{ratePreferenceMessage ? <p role="status">{ratePreferenceMessage}</p> : null}</section>
           </div>
         </aside>
@@ -2299,7 +2369,7 @@ export function VideoApp(): ReactElement {
           {selectedClip ? <div className="cutting-room__properties-content" key={selectedClip.id}><div className="cutting-room__selection"><span>◆</span><div><strong>{clipDisplayName(selectedClip)}</strong><small>{selectedClip.kind} clip</small></div></div>{selectedClip.kind === "text" || selectedClip.kind === "caption" || selectedClip.kind === "callout" ? <label><span>Text</span><textarea aria-label="Clip text" rows={3} value={typeof selectedClip.props["text"] === "string" ? selectedClip.props["text"] : ""} onInput={(event) => updateSelectedText(event.currentTarget.value)} /></label> : null}<label><span>Start</span><input type="number" min="0" step="0.01" defaultValue={selectedClip.timelineStartSec} onBlur={(event) => { if (!(event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest(".cutting-room__tool-strip"))) updateSelectedStart(event.currentTarget.value); }} /></label><label><span>Duration</span><input type="number" min="0.01" step="0.01" defaultValue={selectedClip.durationSec} onBlur={(event) => { if (!(event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest(".cutting-room__tool-strip"))) updateSelectedDuration(event.currentTarget.value); }} /></label><label><span>Track</span><select value={selectedClip.trackId} onChange={(event) => updateSelectedTrack(event.currentTarget.value)}>{sequence.tracks.filter((track) => isClipKindAllowedOnTrack(selectedClip.kind, track.kind)).map((track) => <option key={track.id} value={track.id}>{trackDisplayName(track.id, track.kind)}</option>)}</select></label><div className="video-inspector__actions"><button type="button" onClick={deleteSelected}>Delete</button><button type="button" disabled={selectedClip.kind !== "video"} onClick={() => separateAudio(selectedClip.id)}>Separate audio</button></div></div> : <p className="cutting-room__empty-properties">Select a clip for contextual properties.</p>}
         </aside>
       </main>
-      <GeneratorWorkspace project={project} documentKey={`${documentEpochRef.current}:${documentPathRef.current ?? "draft"}`} savedReferenceKeys={savedReferenceKeys} savedMediaIds={savedMediaIds} enabled={workspace === "generate"} mutate={mutateGenerationBrief}
+      <GeneratorWorkspace project={project} beforePick={async () => { await autosaveRef.current?.saveNow(); return !autosaveRef.current?.getState().dirty; }} documentKey={`${documentEpochRef.current}:${documentPathRef.current ?? "draft"}`} savedReferenceKeys={savedReferenceKeys} savedMediaIds={savedMediaIds} enabled={workspace === "generate"} mutate={mutateGenerationBrief}
         onPlaceSequence={(mediaIds) => {
           const result = placeGeneratedMediaSequence(projectRef.current, mediaIds, playheadSecRef.current);
           if (!result.ok) { setCommandError(result.error); return; }
@@ -2323,7 +2393,7 @@ export function VideoApp(): ReactElement {
           {generationReview?.draft.status === "blocked" ? generationReview.draft.issues.map((issue, index) => <p key={index}>{generationPlanIssueMessage(issue)}</p>) : null}
           {generationRunMessage ? <p>{generationRunMessage}</p> : null}
           {generationReviewBusy && generationRunRef.current ? <button onClick={() => generationRunRef.current?.abort()}>Stop after current scene</button> : null}
-          {generationQuoteState ? <p>{generationQuoteState === "queued" ? "Generation started. Completed media will appear automatically." : generationQuoteState === "cancelled" ? "Generation cancelled before submission." : generationQuoteState === "submission-unknown" ? "Check this scene’s takes before generating again; submission could not be confirmed." : generationQuoteState === "expired" ? "Approval expired before submission. Generate again for a fresh review." : "The approval could not be prepared. Your prompt and media are preserved."}</p> : null}
+          {generationQuoteState && !generationRunMessage ? <p>{generationQuoteState === "queued" ? "Generation started. Completed media will appear automatically." : generationQuoteState === "cancelled" ? "Generation cancelled before submission." : generationQuoteState === "submission-unknown" ? "Check this scene’s takes before generating again; submission could not be confirmed." : generationQuoteState === "expired" ? "Approval expired before submission. Generate again for a fresh review." : "The approval could not be prepared. Your prompt and media are preserved."}</p> : null}
           {generatedTakeStatusMessage ? <p>{generatedTakeStatusMessage}</p> : null}
           {generatedTakeLoadState === "unavailable" ? <button onClick={() => setGenerationPollEpoch((epoch) => epoch + 1)}>Reconnect generated media</button> : null}
         </div>} />

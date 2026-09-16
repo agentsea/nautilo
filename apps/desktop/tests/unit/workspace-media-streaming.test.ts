@@ -59,7 +59,7 @@ describe("native Workspace media streaming", () => {
       const artifact = { ...row, path: `media/copy-${index}.png`, mimeType: "image/png", size: bytes.byteLength };
       let downloads = 0;
       const result = await stageWorkspaceMedia(artifact, deps((async (url) => {
-        if (!String(url).includes("/bytes?")) return Response.json(artifact);
+        if (!(url instanceof Request ? url.url : String(url)).includes("/bytes?")) return Response.json(artifact);
         downloads++;
         const response = new Response(new ReadableStream({ start(controller) {
           controller.enqueue(bytes.slice(0, 3)); controller.enqueue(bytes.slice(3)); controller.close();
@@ -76,6 +76,23 @@ describe("native Workspace media streaming", () => {
     }
     expect(digests[0]).toBe(digests[1]);
     expect(digests[2]).not.toBe(digests[0]);
+  });
+  test("uses inspected audio streams for a video/mp4 artifact but rejects other container mismatches", async () => {
+    for (const mimeType of ["audio/mp4", "audio/wav"] as const) {
+      const waveform = { peaks: [0.2, 0.8, 0.4], samplesPerSecond: 100 };
+      const result = await stageWorkspaceMedia(row, deps((async (url) => String(url).includes("/bytes?")
+        ? byteResponse(row.size) : Response.json(row)) as typeof fetch, {
+        inspect: async () => ({ mediaKind: "audio", mimeType, extension: mimeType === "audio/mp4" ? "m4a" : "wav", durationSec: 146.7 }),
+        waveform: async () => waveform,
+      }));
+      if (mimeType === "audio/mp4") {
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error(result.code);
+        roots.push(result.data.parentDir);
+        expect(result.data.metadata.mediaKind).toBe("audio");
+        expect(result.data.waveform).toEqual(waveform);
+      } else expect(result).toEqual({ ok: false, code: "source_inspection_unavailable" });
+    }
   });
   test("rejects stale revisions, short or long bytes, wrong MIME, inspection failure and abort", async () => {
     for (const failure of ["revision", "short", "long", "mime", "inspect", "abort"] as const) {
@@ -153,13 +170,25 @@ describe("native Workspace media streaming", () => {
     let inspection = 0;
     const image = { mediaKind: "image" as const, mimeType: "image/png" as const, extension: "png" as const };
     const result = await importPickedWorkspaceMediaBatch(sources, deps((async (_url, options) => {
-      const body = Buffer.from(await new Response(options!.body as BodyInit).arrayBuffer()).toString();
+      const body = Buffer.from(await new Response(options!.body).arrayBuffer()).toString();
       const workspacePath = body.match(/video-references\/[0-9a-f-]+\.png/u)?.[0];
       return Response.json({ ...row, path: workspacePath, mimeType: "image/png", size: 12 });
     }) as typeof fetch, { inspect: async () => ++inspection === 2 ? null : image }));
     expect(result.results.map((entry) => entry.ok ? entry.data.label : entry.label)).toEqual(["first.png", "broken.png", "third.png"]);
     expect(result.results.map((entry) => entry.ok ? "ok" : entry.error.code)).toEqual(["ok", "unsupported_type", "ok"]);
     expect(JSON.stringify(result)).not.toContain(root);
+  });
+  test("mixed batches inspect each file and preserve image and video receipts", async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "workspace-mixed-import-test-"))); roots.push(root);
+    const sources = [path.join(root, "still.png"), path.join(root, "clip.mp4")];
+    await Promise.all(sources.map(source => fs.writeFile(source, new Uint8Array(12))));
+    let index = 0;
+    const result = await importPickedWorkspaceMediaBatch(sources, deps((async (_url, options) => {
+      const body = Buffer.from(await new Response(options!.body).arrayBuffer()).toString();
+      const workspacePath = body.match(/video-(?:references|imports)\/[0-9a-f-]+\.(?:png|mp4)/u)?.[0];
+      return Response.json({ ...row, path: workspacePath, mimeType: workspacePath?.endsWith("png") ? "image/png" : "video/mp4", size: 12 });
+    }) as typeof fetch, { inspect: async () => index++ === 0 ? { mediaKind: "image", mimeType: "image/png", extension: "png" } : video }), null);
+    expect(result.results).toMatchObject([{ ok: true, data: { mediaKind: "image", label: "still.png" } }, { ok: true, data: { mediaKind: "video", label: "clip.mp4", durationSec: 1 } }]);
   });
   test("stops after a committed receipt when the originating authority changes", async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "workspace-batch-switch-test-"))); roots.push(root);
@@ -169,7 +198,7 @@ describe("native Workspace media streaming", () => {
     const image = { mediaKind: "image" as const, mimeType: "image/png" as const, extension: "png" as const };
     const result = await importPickedWorkspaceMediaBatch(sources, deps((async (_url, options) => {
       uploads++;
-      const body = Buffer.from(await new Response(options!.body as BodyInit).arrayBuffer()).toString();
+      const body = Buffer.from(await new Response(options!.body).arrayBuffer()).toString();
       const workspacePath = body.match(/video-references\/[0-9a-f-]+\.png/u)?.[0];
       current = false;
       return Response.json({ ...row, path: workspacePath, mimeType: "image/png", size: 12 });

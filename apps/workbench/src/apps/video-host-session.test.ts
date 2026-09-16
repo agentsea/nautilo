@@ -46,6 +46,27 @@ describe("createVideoHostSessionManager", () => {
     expect(revoked).toEqual([]);
   });
 
+  test("keeps the resolved project room and fences room changes during issuance", async () => {
+    let roomId = "project-room";
+    const revoked: string[] = [];
+    const manager = createVideoHostSessionManager({
+      readProject: async () => ({ ...project(1), roomId }),
+      issue: async () => ({ attestationToken: roomId, expiresAt: expiry(10_000) }),
+      revoke: async token => { revoked.push(token); }, now: () => 1000,
+    });
+    expect((await manager.get(binding))?.roomId).toBe("project-room");
+    roomId = "moved-room";
+    expect((await manager.get(binding))?.roomId).toBe("moved-room");
+    expect(revoked).toEqual(["project-room"]);
+    const racing = createVideoHostSessionManager({
+      readProject: async () => ({ ...project(1), roomId }),
+      issue: async () => { roomId = "changed-during-issue"; return { attestationToken: "raced", expiresAt: expiry(10_000) }; },
+      revoke: async token => { revoked.push(token); }, now: () => 1000,
+    });
+    expect(await racing.get(binding)).toBeNull();
+    expect(revoked).toContain("raced");
+  });
+
   test("renews on revision change and revokes the superseded token", async () => {
     let revision = 1;
     let issues = 0;

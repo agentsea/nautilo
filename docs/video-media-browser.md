@@ -1,0 +1,47 @@
+# Video media browser
+
+Approved experience: Video uses one host-owned browser for adding project media
+and generation references. The editor action is **Add media**. Simple and Advanced
+use **Add references** and **Replace reference**. Sources are **Artifacts** (media
+in the bound Workspace), **Media Bin** (the current project), and **Computer**.
+Both thumbnail and list views show readable names and previews, support search
+and media-type filters, and preserve multiple selections while browsing. A
+replacement chooses one item. Generation accepts images and videos only.
+
+Cancel, Escape, and the visible close button return to the project silently.
+Opening a chooser does not create a global status banner. Errors remain actionable
+and dismissible; dismissing a message does not cancel an operation. Actual import
+work shows local progress. Successful additions appear in their destination.
+
+The host lists and revalidates artifacts under the existing room/viewer/project
+binding. The iframe receives selected lineage and inspected metadata only, never
+unselected inventory, physical paths, preview authority, or provider credentials.
+Project changes and session changes invalidate outstanding selections. Previews
+remain lazy and release on close. Verified identical copies retain the existing
+content grouping and accessible originals. Existing project media is reused.
+
+Batch additions use canonical Video media admission and generation-reference
+mutations. Partial native failures preserve successful items and identify the
+failed items. First-source frame-rate decisions remain explicit; batches resume
+after that decision. No selection starts paid generation or changes the timeline.
+
+Qualification covers search/filter/view changes, batch selection, keyboard close
+and focus, cancellation without banners, errors and dismissal, document switching,
+preview disposal, mixed-media admission, existing Media Bin reuse, reference
+replacement, and save/reopen. No schema migration or production dependency is
+required. Older-machine adoption is a separate manual acceptance step after the
+branch is ready; development does not restart or modify that machine.
+
+## Local verification
+
+The implementation is exercised by the Video editor and composer tests, the
+host picker and MiniAppSurface tests, the serialized iframe bridge tests, and
+native streaming tests. They cover batch persistence, first-source rate adoption,
+partial failures, cancellation, exact artifact revision checks, and cleanup when
+project or viewer changes. Browser layout checks cover 1100, 736, and 360 pixel
+widths in both themes, with a fixed footer and scrollable results.
+
+Adoption needs the Workbench/Video build and the Desktop native build from this
+branch together: older Desktop code accepts image-only batches. No dependency
+was added to the server or the isolated Video app. Current Folder imports retain
+their existing native path; the three-source browser is for Workspace projects.

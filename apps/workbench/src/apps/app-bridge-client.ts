@@ -1,3 +1,4 @@
+import type { VideoMediaPickInput, VideoMediaPickResult } from "./app-bridge";
 import type { AppRecoveryRead, AppRecoveryWrite } from "./app-draft-recovery";
 import type { AppSlideTemplateLibrary } from "./app-slide-templates";
 
@@ -95,7 +96,7 @@ export type NautiloVideoGenerationRequestResult =
   | Readonly<{ kind: "cancelled" }>
   | Readonly<{ kind: "submission-unknown"; takeId: string }>
   | Readonly<{ kind: "expired" }>
-  | Readonly<{ kind: "unavailable"; code: string }>;
+  | Readonly<{ kind: "unavailable"; code: string; message?: string }>;
 
 /** Parent-curated lineage only; it is never a receipt, URL, or byte transport. */
 export type NautiloVideoGenerationTake = Readonly<{
@@ -317,6 +318,7 @@ export interface NautiloAppBridge {
   };
   media?: {
     getExportCapabilities(): Promise<{ workspace: boolean }>;
+    pick(input: VideoMediaPickInput): Promise<VideoMediaPickResult>;
     importVideo(): Promise<
       | ({ kind: "ready"; mediaRef: string; label: string;
           /** Public Workspace lineage, never a local path or byte capability. */
@@ -1276,18 +1278,7 @@ function bridgeClientInstaller(
   // Current Folder. The selector is an opaque project-local media id; the
   // parent rereads and resolves durable lineage. A generation grant is enough
   // to expose that selector, but never the Desktop import action.
-  const mediaApi = grants.mediaProxy === true || grants.videoGeneration === true
-    ? Object.freeze({
-        async getExportCapabilities(): Promise<{ workspace: boolean }> {
-          const value = await postRequest({ type: "nautilo.app.media.req", op: "exportCapabilities" });
-          if (!value || typeof value !== "object" || Array.isArray(value)) return { workspace: false };
-          const record = value as Record<string, unknown>;
-          return { workspace: Object.keys(record).every((key) => key === "workspace") && record["workspace"] === true };
-        },
-        async importVideo() {
-          if (grants.mediaProxy !== true) return { kind: "unavailable" as const, code: "unsupported_environment" };
-          const requestId = newRequestId();
-          const value = await postRequest({ type: "nautilo.app.media.req", op: "importVideo" }, requestId);
+  function parseImportedMedia(value: unknown) {
           if (!value || typeof value !== "object") return { kind: "unavailable" as const, code: "invalid_response" };
           const record = value as Record<string, unknown>;
           const mediaKind = record["mediaKind"] ?? "video";
@@ -1336,6 +1327,36 @@ function bridgeClientInstaller(
             return { ...common, mediaKind: "image" as const };
           }
           return { kind: "unavailable" as const, code: typeof record["code"] === "string" ? record["code"] : "invalid_response" };
+  }
+  const mediaApi = grants.mediaProxy === true || grants.videoGeneration === true
+    ? Object.freeze({
+        async getExportCapabilities(): Promise<{ workspace: boolean }> {
+          const value = await postRequest({ type: "nautilo.app.media.req", op: "exportCapabilities" });
+          if (!value || typeof value !== "object" || Array.isArray(value)) return { workspace: false };
+          const record = value as Record<string, unknown>;
+          return { workspace: Object.keys(record).every((key) => key === "workspace") && record["workspace"] === true };
+        },
+        async pick(input: VideoMediaPickInput): Promise<VideoMediaPickResult> {
+          if (grants.mediaProxy !== true || (input.purpose === "references" && grants.videoGeneration !== true)) return { kind: "unavailable", code: "unsupported_environment" };
+          const value = await postRequest({ type: "nautilo.app.media.req", op: "pick", ...input });
+          const bad = { kind: "unavailable" as const, code: "invalid_response" };
+          if (!value || typeof value !== "object" || Array.isArray(value)) return bad;
+          const r = value as Record<string, unknown>;
+          if (r.kind === "unavailable" && isClosedVideoRecord(r, ["kind", "code"]) && typeof r.code === "string" && /^[a-z_]+$/u.test(r.code)) return { kind: "unavailable", code: r.code };
+          if (r.kind !== "ready" || !isClosedVideoRecord(r, ["kind", "imports", "references", "mediaIds", "failures"]) || !Array.isArray(r.imports) || !Array.isArray(r.references) || !Array.isArray(r.mediaIds) || !Array.isArray(r.failures)) return bad;
+          const imports: Extract<VideoMediaPickResult, { kind: "ready" }>["imports"] = [];
+          for (const item of r.imports) { const parsed = parseImportedMedia(item); if (parsed.kind !== "ready" || !parsed.source) return bad; imports.push({ ...parsed, source: parsed.source }); }
+          const references: Extract<VideoMediaPickResult, { kind: "ready" }>["references"] = [];
+          for (const asset of r.references as unknown[]) { const parsed = parseVideoGenerationReferenceImport({ kind: "ready", asset }); if (parsed.kind !== "ready" || parsed.asset.mediaKind === "audio") return bad; references.push(parsed.asset); }
+          if (!r.mediaIds.every(id => typeof id === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(id)) || !r.failures.every(f => isClosedVideoRecord(f, ["label", "code"]) && typeof f.label === "string" && f.label.length > 0 && !/[\r\n\0]/u.test(f.label) && typeof f.code === "string" && /^[a-z_]+$/u.test(f.code))) return bad;
+          if ((input.purpose === "media" ? references.length || r.mediaIds.length : imports.length) || (!input.multiple && imports.length + references.length + r.mediaIds.length > 1)) return bad;
+          return { kind: "ready", imports, references, mediaIds: r.mediaIds as string[], failures: r.failures as { label: string; code: string }[] };
+        },
+        async importVideo() {
+          if (grants.mediaProxy !== true) return { kind: "unavailable" as const, code: "unsupported_environment" };
+          const requestId = newRequestId();
+          const value = await postRequest({ type: "nautilo.app.media.req", op: "importVideo" }, requestId);
+          return parseImportedMedia(value);
         },
         async openPreview(input: { ref: string } | { mediaId: string } | { referenceId: string }, options?: { signal?: AbortSignal }) {
           const hasRef = Boolean(input) && typeof (input as { ref?: unknown }).ref === "string";
@@ -1568,7 +1589,7 @@ function bridgeClientInstaller(
             return { kind: result["kind"] };
           }
           return result["kind"] === "unavailable" && typeof result["code"] === "string"
-            ? { kind: "unavailable", code: result["code"] }
+            ? { kind: "unavailable", code: result["code"], ...(typeof result["message"] === "string" ? { message: result["message"] } : {}) }
             : { kind: "unavailable", code: "invalid_response" };
         },
         async listTakes(): Promise<NautiloVideoGenerationTakeListResult> {

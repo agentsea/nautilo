@@ -2,7 +2,7 @@ import { reapplyHappyDomGlobals } from "../../tests/bun-dom-preload";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { useCallback, useState } from "react";
-import { ApiError } from "@nautilo/api-client/browser";
+import { ApiError, VideoGenerationPreparationError } from "@nautilo/api-client/browser";
 import { VideoHostAttestationRegistry, VIDEO_HOST_ATTESTATION_TTL_MS } from "../../../../packages/server/src/apps/video-host-attestation-registry";
 import {
   publishLiveAppProposal,
@@ -237,12 +237,14 @@ const importWorkspaceMock = mock(async (_input: unknown): Promise<any> => ({ ok:
 const importWorkspaceBatchMock = mock(async (_input: unknown): Promise<any> => ({ ok: false, error: { code: "cancelled" } }));
 const nativePreviewToken = "00000000-0000-4000-8000-000000000004";
 const nativePreviewUrl = `nautilo-media://proxy/${nativePreviewToken}`;
-const openWorkspaceMock = mock(async ({ artifact }: { artifact: { mimeType: string; size: number } }): Promise<any> => ({
+const listArtifactDiscussionRooms = mock(async (_id: string) => ({ rooms: [{ id: "room-1", label: "Project room", kind: "private" }] }));
+const workspacePreviewReceipt = async ({ artifact }: { artifact: { mimeType: string; size: number } }): Promise<any> => ({
   ok: true, data: { url: nativePreviewUrl, revokeToken: nativePreviewToken, mimeType: artifact.mimeType,
     sizeBytes: artifact.size, mediaKind: artifact.mimeType.split("/")[0],
     ...(artifact.mimeType.startsWith("image/") ? {} : { durationSec: 4.25 }),
     ...(artifact.mimeType.startsWith("video/") ? { frameRate: { numerator: 24, denominator: 1 } } : {}) },
-}));
+});
+const openWorkspaceMock = mock(workspacePreviewReceipt);
 const closeWorkspaceMock = mock(async (_token: string) => ({ ok: true, data: null }));
 const cancelWorkspaceMock = mock(async (_request: string) => ({ ok: true, data: null }));
 const startWorkspaceExportMock = mock(async (_input: unknown) => ({ ok: true as const, data: { status: "succeeded" as const, label: "cut.mp4", sizeBytes: 2048, warnings: [] } }));
@@ -331,6 +333,7 @@ mock.module("../lib/api", () => ({
     revokeLiveMiniAppSession,
     listPendingLiveProposalReviews,
     listAllWorkspaceArtifacts,
+    listArtifactDiscussionRooms,
     getWorkspaceArtifact,
     issueVideoHostAttestation,
     revokeVideoHostAttestation,
@@ -449,7 +452,10 @@ beforeEach(() => {
   fsReadFileMock.mockClear();
   importWorkspaceMock.mockReset();
   importWorkspaceBatchMock.mockReset();
-  openWorkspaceMock.mockClear();
+  listArtifactDiscussionRooms.mockReset();
+  listArtifactDiscussionRooms.mockImplementation(async () => ({ rooms: [{ id: "room-1", label: "Project room", kind: "private" }] }));
+  openWorkspaceMock.mockReset();
+  openWorkspaceMock.mockImplementation(workspacePreviewReceipt);
   closeWorkspaceMock.mockClear();
   cancelWorkspaceMock.mockClear();
   startWorkspaceExportMock.mockClear();
@@ -893,6 +899,18 @@ describe("MiniAppSurface", () => {
     return { rendered, bridge, request, target, content };
   }
 
+  test("Video preparation preserves the safe server recovery reason without submitting", async () => {
+    const h = await mountRecoveryVideo();
+    const message = "A selected Workspace reference is no longer available. No generation was started.";
+    prepareVideoGeneration.mockImplementationOnce(async () => { throw new VideoGenerationPreparationError("request_invalid", message); });
+    try {
+      let result: unknown;
+      await act(async () => { result = await h.bridge.onVideoGenerationRequest(h.request); });
+      expect(result).toEqual({ kind: "unavailable", code: "request_invalid", message });
+      expect(submitVideoGenerationTake).not.toHaveBeenCalled();
+    } finally { h.rendered.unmount(); }
+  });
+
   test("an autosaved Video revision renews the host token before prepare and rejects the stale request", async () => {
     const h = await mountRecoveryVideo();
     const renewedToken = "b".repeat(43);
@@ -1130,6 +1148,24 @@ describe("MiniAppSurface", () => {
     } finally { h.rendered.unmount(); }
   });
 
+  test.each(["single", "ambiguous"] as const)("generation resolves the project's %s room attachment instead of another open chat", async (mode) => {
+    const target = { kind: "artifact" as const, id: "artifact-row-1", path: "project.video.html", mimeType: "text/html", roomId: "unrelated-chat" };
+    listArtifactDiscussionRooms.mockImplementation(async () => ({ rooms: mode === "single"
+      ? [{ id: "project-room", label: "Project room", kind: "private" }]
+      : [{ id: "project-room", label: "Project room", kind: "private" }, { id: "another-project-room", label: "Another", kind: "private" }] }));
+    loadMiniAppRuntime.mockImplementationOnce(async () => ({ appId: "nautilo-video", sourceHash: "d".repeat(64), srcDoc: "<html></html>", hostCapabilities: { videoGeneration: true as const }, manifest: { id: "nautilo-video", name: "Video", version: "0.2.3", capabilities: {} } }));
+    const rendered = render(<MiniAppSurface appId="nautilo-video" target={target} onClose={() => {}} />);
+    try {
+      await waitFor(() => expect(installAppBridge).toHaveBeenCalled());
+      await act(async () => { await installAppBridge.mock.calls.at(-1)?.[0].onVideoGenerationListTakes(); });
+      if (mode === "single") {
+        expect(issueVideoHostAttestation).toHaveBeenCalledWith({ roomId: "project-room", projectArtifactId: "external-video-project-1", sourceHash: "d".repeat(64) });
+        expect(listVideoGenerationTakes).toHaveBeenCalledWith(expect.objectContaining({ roomId: "project-room" }));
+      } else expect(issueVideoHostAttestation).not.toHaveBeenCalled();
+      expect(submitVideoGenerationTake).not.toHaveBeenCalled();
+    } finally { rendered.unmount(); }
+  });
+
   test("issues parent-only Video host attestation and opens a once/cancel review", async () => {
     const brief = setSimpleGenerationPrompt(createEmptyGenerationBrief(), "A slow coastal flight.");
     const document = { sha256: "a".repeat(64), revision: 3 };
@@ -1217,8 +1253,8 @@ describe("MiniAppSurface", () => {
     expect(issueVideoHostAttestation).not.toHaveBeenCalled();
     const importFromComputer = async () => {
       const pending = bridge.onVideoWorkspaceMediaImport();
-      await waitFor(() => expect(rendered.getByRole("button", { name: "Upload from computer" })).toBeTruthy());
-      fireEvent.click(rendered.getByRole("button", { name: "Upload from computer" }));
+      await waitFor(() => expect(rendered.getByRole("button", { name: "Choose files…" })).toBeTruthy());
+      fireEvent.click(rendered.getByRole("button", { name: "Choose files…" }));
       return pending;
     };
     for (const kind of ["video", "image", "audio"] as const) {
@@ -1245,7 +1281,31 @@ describe("MiniAppSurface", () => {
     rendered.unmount();
   });
 
-  test("imports existing scoped Workspace media without uploading or duplicating it", async () => {
+  test("unified browser selects existing references without upload and closes cancellation quietly", async () => {
+    const target = { kind: "artifact" as const, id: "artifact-row-1", path: "project.video.html", mimeType: "text/html", roomId: "room-1" };
+    const rows = ["first", "second"].map((name, index) => ({ id: `row-${name}`, artifactId: `48a0266d-b1c2-4ffd-9c10-2865bea8fc5${index}`, path: `media/${name}.png`, mimeType: "image/png", size: 12, revision: 1 }));
+    readDocumentSession.mockImplementation(async (session: { envelope: unknown }) => { const envelope = { content: validVideoDocument(), mimeType: "text/html", path: target.path, baseSha256: "a".repeat(64), baseRevision: 1 }; session.envelope = envelope; return envelope; });
+    loadMiniAppRuntime.mockImplementationOnce(async () => ({ appId: "nautilo-video", sourceHash: "d".repeat(64), srcDoc: "<html><body></body></html>", hostCapabilities: { videoGeneration: true as const, mediaProxy: true as const }, manifest: { id: "nautilo-video", name: "Video", version: "0.2.1", fileAssociations: { extensions: [".video.html"] }, capabilities: {} } }));
+    listAllWorkspaceArtifacts.mockResolvedValueOnce({ artifacts: rows });
+    getWorkspaceArtifact.mockImplementation(async (id: string) => rows.find(row => row.id === id));
+    const rendered = render(<MiniAppSurface appId="nautilo-video" target={target} onClose={() => {}} />);
+    await waitFor(() => expect(installAppBridge).toHaveBeenCalled());
+    const bridge = installAppBridge.mock.calls.at(-1)?.[0];
+    const pending = bridge.onVideoMediaPick({ purpose: "references", multiple: true });
+    await waitFor(() => expect(rendered.getByText("first.png")).toBeTruthy());
+    fireEvent.click(rendered.getByText("first.png").closest("button")!);
+    fireEvent.click(rendered.getByText("second.png").closest("button")!);
+    fireEvent.click(rendered.getByRole("button", { name: "Add 2 references" }));
+    await expect(pending).resolves.toMatchObject({ kind: "ready", imports: [], mediaIds: [], failures: [], references: [{ label: "first.png", artifactId: rows[0]!.artifactId }, { label: "second.png", artifactId: rows[1]!.artifactId }] });
+    expect(importWorkspaceMock).not.toHaveBeenCalled(); expect(importWorkspaceBatchMock).not.toHaveBeenCalled();
+    const cancelled = bridge.onVideoMediaPick({ purpose: "media", multiple: true });
+    await waitFor(() => expect(rendered.getByRole("button", { name: "Close media picker" })).toBeTruthy());
+    fireEvent.click(rendered.getByRole("button", { name: "Close media picker" }));
+    await expect(cancelled).resolves.toEqual({ kind: "unavailable", code: "cancelled" });
+    rendered.unmount();
+  });
+
+  test.each(["video", "audio"] as const)("imports inspected %s from an existing MP4 without uploading or duplicating it", async (kind) => {
     const target = { kind: "artifact" as const, id: "artifact-row-1", path: "project.video.html", mimeType: "text/html", roomId: "room-1" };
     const media = { id: "00000000-0000-4000-8000-000000000099", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc99", path: "Media/My opening take.mp4", mimeType: "video/mp4", size: 4096, revision: 2, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", namespaceIds: [], canWrite: true };
     readDocumentSession.mockImplementation(async (session: { envelope: unknown }) => { const envelope = { content: validVideoDocument(), mimeType: "text/html", path: target.path, baseSha256: "a".repeat(64), baseRevision: 1 }; session.envelope = envelope; return envelope; });
@@ -1255,11 +1315,12 @@ describe("MiniAppSurface", () => {
     const rendered = render(<MiniAppSurface appId="nautilo-video" target={target} onClose={() => {}} />);
     await waitFor(() => expect(installAppBridge).toHaveBeenCalled());
     const bridge = installAppBridge.mock.calls.at(-1)?.[0];
+    if (kind === "audio") openWorkspaceMock.mockImplementation(async ({ artifact }) => ({ ok: true, data: { url: nativePreviewUrl, revokeToken: nativePreviewToken, mimeType: artifact.mimeType, sizeBytes: artifact.size, mediaKind: "audio", durationSec: 4.25, waveform: { peaks: [0.3, 0.8], samplesPerSecond: 100 } } }));
     const pending = bridge.onVideoWorkspaceMediaImport();
     await waitFor(() => expect(rendered.getByText("My opening take.mp4")).toBeTruthy());
     expect(rendered.queryByText("notes.txt")).toBeNull();
     fireEvent.click(rendered.getByText("My opening take.mp4").closest("button")!);
-    await expect(pending).resolves.toEqual({ kind: "ready", mediaRef: media.path, label: "My opening take.mp4", durationSec: 4.25, frameRate: { numerator: 24, denominator: 1 }, source: { kind: "workspace-artifact", artifactId: media.artifactId, path: media.path } });
+    await expect(pending).resolves.toEqual({ kind: "ready", mediaRef: media.path, label: "My opening take.mp4", durationSec: 4.25, ...(kind === "audio" ? { mediaKind: "audio" } : { frameRate: { numerator: 24, denominator: 1 } }), source: { kind: "workspace-artifact", artifactId: media.artifactId, path: media.path } });
     expect(listAllWorkspaceArtifacts).toHaveBeenCalledWith({ roomId: "room-1", signal: expect.any(AbortSignal) });
     expect(getWorkspaceArtifact).toHaveBeenCalledWith(media.id, { roomId: "room-1" });
     expect(importWorkspaceMock).not.toHaveBeenCalled();
@@ -1268,7 +1329,7 @@ describe("MiniAppSurface", () => {
     rendered.unmount();
   });
 
-  test("picker thumbnails use exact scoped native previews and revoke a late response after close", async () => {
+  test.each(["image", "audio"] as const)("picker %s previews stay scoped, carry peaks, and revoke late responses", async (kind) => {
     const observerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "IntersectionObserver");
     Object.defineProperty(globalThis, "IntersectionObserver", { configurable: true, writable: true, value: class {
       constructor(private callback: IntersectionObserverCallback) {}
@@ -1276,7 +1337,7 @@ describe("MiniAppSurface", () => {
       unobserve() {} disconnect() {}
     } });
     const target = { kind: "artifact" as const, id: "artifact-row-1", path: "project.video.html", mimeType: "text/html", roomId: "room-1" };
-    const media = { id: "00000000-0000-4000-8000-000000000099", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc99", path: "Media/Character.png", mimeType: "image/png", size: 4096, revision: 2, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", namespaceIds: [], canWrite: true };
+    const media = { id: "00000000-0000-4000-8000-000000000099", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc99", path: kind === "image" ? "Media/Character.png" : "Media/Voice.wav", mimeType: kind === "image" ? "image/png" : "audio/wav", size: 4096, revision: 2, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", namespaceIds: [], canWrite: true };
     readDocumentSession.mockImplementation(async (session: { envelope: unknown }) => { const envelope = { content: validVideoDocument(), mimeType: "text/html", path: target.path, baseSha256: "a".repeat(64), baseRevision: 1 }; session.envelope = envelope; return envelope; });
     loadMiniAppRuntime.mockImplementationOnce(async () => ({ appId: "nautilo-video", sourceHash: "d".repeat(64), srcDoc: "<html><body></body></html>", hostCapabilities: { mediaProxy: true as const }, manifest: { id: "nautilo-video", name: "Video", version: "0.2.1", fileAssociations: { extensions: [".video.html"] }, capabilities: {} } }));
     listAllWorkspaceArtifacts.mockResolvedValueOnce({ artifacts: [media] });
@@ -1290,17 +1351,25 @@ describe("MiniAppSurface", () => {
       fireEvent.click(rendered.getByRole("button", { name: "Close media picker" }));
       await expect(pending).resolves.toEqual({ kind: "unavailable", code: "cancelled" });
       expect(cancelWorkspaceMock).toHaveBeenCalledWith(openWorkspaceMock.mock.calls[0]?.[0].requestId);
-      finish({ ok: true, data: { url: nativePreviewUrl, revokeToken: nativePreviewToken, mimeType: media.mimeType, sizeBytes: media.size, mediaKind: "image" } });
+      finish({ ok: true, data: { url: nativePreviewUrl, revokeToken: nativePreviewToken, mimeType: media.mimeType, sizeBytes: media.size, mediaKind: kind, durationSec: 1 } });
       await waitFor(() => expect(closeWorkspaceMock).toHaveBeenCalledWith(nativePreviewToken));
-      expect(rendered.queryByRole("dialog", { name: "Import media" })).toBeNull();
+      expect(rendered.queryByRole("dialog", { name: "Add media" })).toBeNull();
       closeWorkspaceMock.mockClear();
       listAllWorkspaceArtifacts.mockResolvedValueOnce({ artifacts: [media] });
       openWorkspaceMock.mockImplementationOnce(async () => ({ ok: true, data: { url: nativePreviewUrl, revokeToken: nativePreviewToken, mimeType: media.mimeType, sizeBytes: media.size, mediaKind: "video", durationSec: 1 } }));
       const second = installAppBridge.mock.calls.at(-1)?.[0].onVideoWorkspaceMediaImport();
       await waitFor(() => expect(closeWorkspaceMock).toHaveBeenCalledWith(nativePreviewToken));
-      expect(rendered.getByRole("dialog", { name: "Import media" }).querySelector("img,video")).toBeNull();
+      expect(rendered.getByRole("dialog", { name: "Add media" }).querySelector("img,video")).toBeNull();
       fireEvent.click(rendered.getByRole("button", { name: "Close media picker" }));
       await expect(second).resolves.toEqual({ kind: "unavailable", code: "cancelled" });
+      if (kind === "audio") {
+        listAllWorkspaceArtifacts.mockResolvedValueOnce({ artifacts: [media] });
+        openWorkspaceMock.mockImplementationOnce(async () => ({ ok: true, data: { url: nativePreviewUrl, revokeToken: nativePreviewToken, mimeType: media.mimeType, sizeBytes: media.size, mediaKind: "audio", durationSec: 1, waveform: { peaks: [0.2, 0.9, 0.4], samplesPerSecond: 100 } } }));
+        const third = installAppBridge.mock.calls.at(-1)?.[0].onVideoWorkspaceMediaImport();
+        await waitFor(() => expect(rendered.getByRole("img", { name: "Audio waveform" })).toBeTruthy());
+        fireEvent.click(rendered.getByRole("button", { name: "Close media picker" }));
+        await expect(third).resolves.toEqual({ kind: "unavailable", code: "cancelled" });
+      }
       expect(importWorkspaceMock).not.toHaveBeenCalled();
       expect(createWorkspaceArtifact).not.toHaveBeenCalled();
     } finally {
@@ -1457,6 +1526,46 @@ describe("MiniAppSurface", () => {
     await waitFor(() => expect(issueVideoHostAttestation).toHaveBeenCalled());
     const bridge = installAppBridge.mock.calls.at(-1)?.[0];
     const importing = bridge.onVideoGenerationImportReferences({ mediaKind: "image" });
+    await waitFor(() => expect(importWorkspaceBatchMock).toHaveBeenCalledTimes(1));
+    const requestId = (importWorkspaceBatchMock.mock.calls[0]![0] as { requestId: string }).requestId;
+    if (change === "target") {
+      rendered.rerender(<MiniAppSurface appId="nautilo-video" target={{ ...target, id: "artifact-row-2", path: "next.video.html" }} onClose={() => {}} />);
+    } else {
+      testViewer = { isVerified: true, sessionUserId: "another-viewer" };
+      rendered.rerender(<MiniAppSurface appId="nautilo-video" target={target} onClose={() => {}} />);
+    }
+    finish({ ok: true, data: { results: [
+      { ok: true, data: { label: "First", mediaKind: "image", artifact: { id: "row-first", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc51", path: "video-imports/first.png", mimeType: "image/png", size: 12 } } },
+      { ok: true, data: { label: "Second", mediaKind: "image", artifact: { id: "row-second", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc52", path: "video-imports/second.png", mimeType: "image/png", size: 12 } } },
+    ] } });
+    await expect(importing).resolves.toEqual({ kind: "unavailable", code: "stale_project" });
+    await waitFor(() => {
+      expect(deleteWorkspaceArtifact).toHaveBeenCalledWith("row-first", { roomId: "room-1" });
+      expect(deleteWorkspaceArtifact).toHaveBeenCalledWith("row-second", { roomId: "room-1" });
+    });
+    expect(cancelWorkspaceMock).toHaveBeenCalledWith(requestId);
+    rendered.unmount();
+  });
+
+  test.each(["target", "auth"])("unified picker discards only newly uploaded receipts when the bound %s changes", async (change) => {
+    const target = { kind: "artifact" as const, id: "artifact-row-1", path: "project.video.html", mimeType: "text/html", roomId: "room-1" };
+    loadMiniAppRuntime.mockImplementationOnce(async () => ({
+      appId: "nautilo-video", sourceHash: "d".repeat(64), srcDoc: "<html><body></body></html>", hostCapabilities: { videoGeneration: true as const, mediaProxy: true as const },
+      manifest: { id: "nautilo-video", name: "Video", version: "0.2.1", fileAssociations: { extensions: [".video.html"] }, capabilities: {} },
+    }));
+    readDocumentSession.mockImplementation(async (session: { envelope: unknown }) => {
+      const envelope = { content: validVideoDocument(), mimeType: "text/html", path: target.path, baseSha256: "a".repeat(64), baseRevision: 1 };
+      session.envelope = envelope; return envelope;
+    });
+    let finish!: (value: any) => void;
+    importWorkspaceBatchMock.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const rendered = render(<MiniAppSurface appId="nautilo-video" target={target} onClose={() => {}} />);
+    await waitFor(() => expect(issueVideoHostAttestation).toHaveBeenCalled());
+    const bridge = installAppBridge.mock.calls.at(-1)?.[0];
+    const importing = bridge.onVideoMediaPick({ purpose: "references", multiple: true });
+    await waitFor(() => expect(rendered.getByRole("button", { name: "Computer", exact: true })).toBeTruthy());
+    fireEvent.click(rendered.getByRole("button", { name: "Computer", exact: true }));
+    fireEvent.click(rendered.getByRole("button", { name: "Choose files…", exact: true }));
     await waitFor(() => expect(importWorkspaceBatchMock).toHaveBeenCalledTimes(1));
     const requestId = (importWorkspaceBatchMock.mock.calls[0]![0] as { requestId: string }).requestId;
     if (change === "target") {
@@ -1650,7 +1759,7 @@ describe("MiniAppSurface", () => {
     let resolveUpload!: (value: ReturnType<typeof nativeReceipt>) => void;
     importWorkspaceMock.mockImplementationOnce(() => new Promise((resolve) => { resolveUpload = resolve; }));
     const importing = bridge.onVideoWorkspaceMediaImport();
-    await waitFor(() => fireEvent.click(rendered.getByRole("button", { name: "Upload from computer" })));
+    await waitFor(() => fireEvent.click(rendered.getByRole("button", { name: "Choose files…" })));
     await waitFor(() => expect(importWorkspaceMock).toHaveBeenCalledTimes(1));
     const requestId = (importWorkspaceMock.mock.calls[0]![0] as { requestId: string }).requestId;
     rendered.rerender(<MiniAppSurface appId="nautilo-video" target={{ ...target, id: "artifact-row-2", path: "next.video.html" }} onClose={() => {}} />);

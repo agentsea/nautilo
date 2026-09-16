@@ -389,6 +389,20 @@ body,
   color: white; background: linear-gradient(transparent, #0008);
 }
 .video-media-bin-preview__play span { color: white; }
+.video-media-bin-preview--audio {
+  aspect-ratio: auto;
+  min-height: 120px;
+  padding: 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  color: var(--video-text);
+  background: var(--video-subtle);
+}
+.video-audio-waveform { display: block; width: 100%; height: 64px; color: var(--video-accent); }
+.video-media-bin-preview audio { width: 100%; min-width: 0; height: 40px; }
 
 .video-track__controls {
   display: flex;
@@ -1363,3 +1377,24 @@ button:disabled {
 .video-export-dialog summary { cursor: pointer; }
 .video-export-dialog .video-export-dialog__workspace { display: flex; align-items: center; gap: .6rem; }
 @media (max-width: 480px) { .video-export-dialog__fields { grid-template-columns: 1fr; gap: 0; } }
+
+/* The submitted scene owns the right pane until the user returns to design. */
+.generator-progress--stage { margin: 0; padding: 0; border: 0; background: transparent; }
+.generator-progress--stage > header { display: grid; gap: 6px; margin-bottom: 20px; }
+.generator-progress--stage > header h3 { font-size: clamp(22px, 3vw, 28px); line-height: 1.25; }
+.generator-progress--stage > header > p:not(.generator-eyebrow) { color: var(--video-muted); }
+.generator-progress__visual { overflow: hidden; border-radius: 12px; background: #090e1b; }
+.generator-progress__visual .video-media-bin-preview { margin: 0; height: clamp(10rem, 25vw, 16rem); aspect-ratio: auto; }
+.generator-progress__still { min-height: 16rem; display: grid; align-content: center; justify-items: center; gap: 12px; color: #dedff0; }
+.generator-progress__still > span { font-size: 42px; }
+.generator-progress--stage .generator-progress__take { margin-top: 20px; display: grid; gap: 9px; }
+.generator-progress--stage .generator-progress__take strong { font-size: 18px; }
+.generator-progress--stage .generator-progress__timing { font-size: 15px; color: var(--video-text); }
+.generator-progress__steps { list-style: none; display: flex; gap: 12px; margin: 20px 0; padding: 0; font-size: 12px; color: var(--video-muted); }
+.generator-progress__steps li { flex: 1; border-bottom: 2px solid var(--video-border); padding-bottom: 9px; }
+.generator-progress__steps [data-state="done"] { color: var(--video-success); border-color: var(--video-success); }
+.generator-progress__steps [data-state="active"] { color: var(--video-accent); border-color: var(--video-accent); }
+.generator-progress__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--video-border); padding-top: 16px; margin-top: 20px; }
+.generator-progress__note { font-size: 12px; color: var(--video-muted); padding-top: 14px; }
+.generator-progress-return { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 14px; margin-bottom: 20px; border: 1px solid var(--video-border); border-radius: 9px; background: var(--video-primary-muted); }
+.generator-progress-return span { font-size: 13px; }

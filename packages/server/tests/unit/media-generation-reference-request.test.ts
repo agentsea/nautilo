@@ -44,6 +44,22 @@ async function harness() {
 }
 
 describe("Seedance reference request authority", () => {
+  test("a reference in another currently readable Workspace is bound exactly and denied if access is revoked before submit", async () => {
+    const { artifact, operations } = await harness();
+    const referenceNamespace = "import-room";
+    const ops: MediaReferenceArtifactOperations = { ...operations,
+      findByPath: async query => query.readableNamespaceIds.includes(referenceNamespace) ? artifact : null,
+      findByInternalId: async query => query.mutableNamespaceIds.includes(referenceNamespace) && query.internalId === artifact.id ? artifact : null,
+    };
+    const intent = normalizeMediaGenerationIntent({ model: "seedance-2-5-reference-to-video-basic", prompt: "Use <Image 1>", referenceImages: [{ path: artifact.path }] });
+    const namespaces = [scope.namespaceId, referenceNamespace];
+    const request = await resolveMediaGenerationReferenceRequest({} as DirectDatabase, scope, intent, ops, namespaces);
+    const proof = JSON.parse(JSON.stringify({ ...scope, requestPayload: { ...request, version: 1, normalizedSettings: {} } })) as MediaGenerationAdmissionProof;
+    expect((await resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, ops, namespaces)).images).toHaveLength(1);
+    await assert.rejects(resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, ops, [scope.namespaceId]), /no longer available/);
+    artifact.revision++;
+    await assert.rejects(resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, ops, namespaces), /changed/);
+  });
   test.each([512, 513, 4096])("resolves %i-character paths in namespace and revalidates ordered approved bytes", async (length) => {
     const { artifact, bytes, operations } = await harness();
     artifact.path = "refs/" + "a".repeat(length - 9) + ".png";

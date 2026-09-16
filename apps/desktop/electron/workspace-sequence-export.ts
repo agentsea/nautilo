@@ -1,3 +1,4 @@
+import { workspaceMediaMimeMatchesKind, workspaceMediaMimeMatchesInspection } from "@nautilo/types";
 import { createHash } from "node:crypto";
 import { normalizeVideoExportSettings, type VideoExportSettings } from "@nautilo/types";
 import * as fsp from "node:fs/promises";
@@ -44,9 +45,7 @@ export interface WorkspaceSequenceExportDependencies {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function mimeForKind(kind: "video" | "audio" | "image", mime: string): boolean {
-  return kind === "video" ? mime === "video/mp4" : kind === "audio"
-    ? mime === "audio/mp4" || mime === "audio/wav" || mime === "audio/mpeg"
-    : mime === "image/png" || mime === "image/jpeg" || mime === "image/webp";
+  return workspaceMediaMimeMatchesKind(kind, mime);
 }
 function safeSuggestedName(value: string): string {
   const cleaned = value.replace(/[\\/:*?"<>|\p{Cc}]/gu, "_").trim();
@@ -139,7 +138,7 @@ export async function exportWorkspaceSequence(input: WorkspaceSequenceExportInpu
       const inspected = await (deps.inspectSource ?? inspectMediaSource)(deps.ffmpegPath, destination, { ...(deps.signal ? { signal: deps.signal } : {}) });
       if (deps.signal?.aborted || deps.isAuthorityCurrent?.() === false) return { status: "cancelled" };
       const asset = parsed.document.project.media.find((item) => item.id === mediaId)!;
-      if (!inspected || inspected.mediaKind !== asset.kind || inspected.mimeType !== binding.mimeType) return { status: "failed", code: "unsupported_source_format" };
+      if (!inspected || inspected.mediaKind !== asset.kind || !workspaceMediaMimeMatchesInspection(binding.mimeType, inspected.mimeType)) return { status: "failed", code: "unsupported_source_format" };
       if (inspected.mediaKind !== "image" && lowered.plan.layers.some((layer) => layer.mediaId === mediaId && layer.sourceInSec + layer.durationSec > inspected.durationSec)) {
         return { status: "failed", code: "source_changed" };
       }

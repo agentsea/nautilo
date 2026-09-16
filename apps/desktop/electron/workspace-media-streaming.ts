@@ -1,3 +1,4 @@
+import { workspaceMediaMimeMatchesInspection } from "@nautilo/types";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -77,7 +78,7 @@ export async function stageWorkspaceMedia(artifact: WorkspaceMediaArtifact, deps
     if (!sameArtifact(final.artifact, artifact) || !current(deps)) return fail("source_changed");
     phase = "source_inspection_unavailable";
     const metadata = await (deps.inspect ?? inspectMediaSource)(deps.ffmpegPath, outputPath, { signal: deps.signal });
-    if (!metadata || metadata.mimeType !== artifact.mimeType) return fail("source_inspection_unavailable");
+    if (!metadata || !workspaceMediaMimeMatchesInspection(artifact.mimeType, metadata.mimeType)) return fail("source_inspection_unavailable");
     if (!current(deps)) return fail("source_changed");
     const waveform = metadata.mediaKind === "image" ? null : await (deps.waveform ?? inspectMediaWaveform)(deps.ffmpegPath, outputPath, deps.signal);
     if (!current(deps)) return fail("source_changed");
@@ -119,10 +120,11 @@ export async function importPickedWorkspaceMedia(sourcePath: string, mediaKind: 
   finally { await fs.rm(root, { recursive: true, force: true }).catch(() => undefined); }
 }
 
-/** Imports native-picked images in picker order and stops when authority is lost. */
+/** Imports native-picked media in picker order and stops when authority is lost. */
 export async function importPickedWorkspaceMediaBatch(
   sourcePaths: readonly string[],
   deps: WorkspaceMediaDependencies,
+  mediaKind: "image" | "video" | "audio" | null = "image",
 ): Promise<WorkspaceMediaBatchImportData> {
   const results: WorkspaceMediaBatchImportData["results"][number][] = [];
   for (const sourcePath of sourcePaths) {
@@ -130,7 +132,7 @@ export async function importPickedWorkspaceMediaBatch(
       results.push({ ok: false, label: path.basename(sourcePath), error: { code: "cancelled" } });
       continue;
     }
-    const result = await importPickedWorkspaceMedia(sourcePath, "image", deps);
+    const result = await importPickedWorkspaceMedia(sourcePath, mediaKind ?? undefined, deps);
     results.push(result.ok ? result : { ...result, label: path.basename(sourcePath) });
   }
   return { results };

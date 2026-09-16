@@ -1,6 +1,7 @@
 export {
   NautiloApiClient,
   ApiError,
+  VideoGenerationPreparationError,
   EventFeedApiError,
   AgentInvocationRequiredError,
   StrictShadowProtectedContentRequiredError,

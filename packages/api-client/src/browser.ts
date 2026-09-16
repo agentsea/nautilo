@@ -2,6 +2,7 @@ export * from "./schemas/memory-processor-transport";
 export {
   NautiloApiClient,
   ApiError,
+  VideoGenerationPreparationError,
   DirectHumanInteractionBlockedError,
   AgentInvocationRequiredError,
   StrictShadowProtectedContentRequiredError,

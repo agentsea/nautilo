@@ -1,7 +1,7 @@
 export type VideoHostBinding = Readonly<{
   targetKey: string; userId: string; sourceHash: string; roomId: string;
 }>;
-export type VideoHostProject = Readonly<{ projectArtifactId: string; projectRevision: number }>;
+export type VideoHostProject = Readonly<{ projectArtifactId: string; projectRevision: number; roomId?: string }>;
 export type VideoHostSession = Readonly<VideoHostBinding & VideoHostProject & {
   token: string; expiresAt: number;
 }>;
@@ -38,7 +38,7 @@ export function createVideoHostSessionManager(deps: {
       const project = await deps.readProject(binding);
       if (!isCurrent() || !project) return null;
       if (current && current.projectArtifactId === project.projectArtifactId &&
-          current.projectRevision === project.projectRevision && current.expiresAt > now()) return current;
+          current.projectRevision === project.projectRevision && current.roomId === (project.roomId ?? binding.roomId) && current.expiresAt > now()) return current;
       const issued = await deps.issue(binding, project);
       if (!isCurrent()) { revoke(issued.attestationToken); return null; }
       // The server binds the revision when it issues. A save racing issuance
@@ -48,12 +48,13 @@ export function createVideoHostSessionManager(deps: {
       catch (error) { revoke(issued.attestationToken); throw error; }
       const expiresAt = Date.parse(issued.expiresAt);
       if (!isCurrent() || !after || after.projectArtifactId !== project.projectArtifactId ||
+          (after.roomId ?? binding.roomId) !== (project.roomId ?? binding.roomId) ||
           after.projectRevision !== project.projectRevision || !Number.isFinite(expiresAt) || expiresAt <= now()) {
         revoke(issued.attestationToken);
         return null;
       }
       const prior = current;
-      current = { ...binding, ...project, token: issued.attestationToken, expiresAt };
+      current = { ...binding, ...project, roomId: project.roomId ?? binding.roomId, token: issued.attestationToken, expiresAt };
       if (prior) revoke(prior.token);
       return current;
     })();

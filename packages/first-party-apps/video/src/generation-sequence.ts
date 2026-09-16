@@ -48,7 +48,7 @@ export async function runGenerationSequence(input: {
         ? "Approval cancelled. No further scenes were submitted."
         : queued.kind === "expired"
           ? "The approval expired before submission. Generate again to review the current scene."
-          : "The approval could not be prepared. No generation was submitted. Your prompt and references are preserved; try Generate again.");
+          : queued.message || "The approval could not be prepared. No generation was submitted. Your prompt and references are preserved; try Generate again.");
       nextIndex = index + 1;
       if (!queued.takeId) return result("needs-attention", "Generation started, but this host cannot track the sequence. Completed media still appears in the Media Bin. No further scenes were submitted.");
       submittedTakeIds.push(queued.takeId);
