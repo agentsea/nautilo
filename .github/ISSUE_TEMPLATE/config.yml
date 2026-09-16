@@ -3,6 +3,6 @@ contact_links:
   - name: Nautilo support and diagnostics
     url: https://nautilo.ai/community/support
     about: Start with the relevant guide and a redacted minimal diagnostic bundle.
-  - name: Security guidance
-    url: https://nautilo.ai/security
-    about: Do not disclose vulnerabilities, credentials, or private content in a public issue.
+  - name: Report a security vulnerability privately
+    url: https://nautilo.ai/security#security
+    about: Email security-reports@kentauros.ai. Do not post exploit details or private data in a public issue.

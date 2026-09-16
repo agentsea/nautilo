@@ -181,9 +181,9 @@ demo easier.
 ## Security reports are not public proposals
 
 Do not open a public issue containing a vulnerability, exploit, credential,
-private conversation, or sensitive infrastructure detail. Follow the current
-[`SECURITY.md`](SECURITY.md) and the
-[security reporting page](https://nautilo.ai/security) before sharing details.
+private conversation, or sensitive infrastructure detail. Follow the
+[security reporting policy](SECURITY.md), or email
+[security-reports@kentauros.ai](mailto:security-reports@kentauros.ai?subject=Nautilo%20security%20report).
 Security-sensitive product design may use the proposal process only after
 disclosure risk has been removed.
 
