@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { act, cleanup, fireEvent, render, renderHook, waitFor } from "@testing-library/react";
 import type { ArtifactDto } from "@nautilo/api-client/browser";
-import type { EventFeedListOptions, EventFeedPage, RoomDetailResponse } from "@nautilo/types";
+import type { EventFeedListOptions, EventFeedPage, EventFeedPreference, RoomDetailResponse } from "@nautilo/types";
 import { reapplyHappyDomGlobals } from "../../tests/bun-dom-preload";
 
 const ROOM_ID = "22222222-2222-4222-8222-222222222222";
@@ -53,6 +53,10 @@ function artifact(id: string, path: string): ArtifactDto {
 
 let listEventFeed: (options: EventFeedListOptions) => Promise<EventFeedPage>;
 let getEventFeedUnreadCount: () => Promise<{ unreadCount: number }>;
+let preference: EventFeedPreference;
+let getEventFeedPreference: () => Promise<EventFeedPreference>;
+let setEventFeedPreference: (value: EventFeedPreference) => Promise<EventFeedPreference>;
+let wsState = "open";
 let setEventFeedReadState: (eventId: string, read: boolean) => Promise<{
   eventId: string;
   readAt: string | null;
@@ -66,6 +70,8 @@ mock.module("../lib/api", () => ({
   apiClient: {
     listEventFeed: (options: EventFeedListOptions) => listEventFeed(options),
     getEventFeedUnreadCount: () => getEventFeedUnreadCount(),
+    getEventFeedPreference: () => getEventFeedPreference(),
+    setEventFeedPreference: (value: EventFeedPreference) => setEventFeedPreference(value),
     setEventFeedReadState: (eventId: string, read: boolean) => setEventFeedReadState(eventId, read),
     markAllEventFeedRead: () => markAllEventFeedRead(),
     listDirectoryHumans: async () => [],
@@ -83,11 +89,13 @@ mock.module("../hooks/use-auth", () => ({
 }));
 
 mock.module("../adapters/runtime-contexts", () => ({
-  useWsStateContext: () => ({ state: "open", lastOpenAt: Date.now() }),
+  useWsStateContext: () => ({ state: wsState, lastOpenAt: Date.now() }),
 }));
 
 const { EventFeedProvider, useEventFeed } = await import("./event-feed-context");
 const { EventFeedPanel } = await import("./EventFeedPanel");
+const { EventFeedQuietControl } = await import("./EventFeedQuietControl");
+const { EventFeedBell } = await import("../layouts/event-feed-bell");
 const { publishEventFeedChanged } = await import("./event-feed-change-bus");
 
 function deferred<T>() {
@@ -108,6 +116,10 @@ beforeEach(() => {
   credentialGeneration = 1;
   listEventFeed = async () => ({ events: [event("event-1")], nextCursor: null });
   getEventFeedUnreadCount = async () => ({ unreadCount: 1 });
+  preference = { mode: "active" };
+  wsState = "open";
+  getEventFeedPreference = async () => preference;
+  setEventFeedPreference = async (value) => { preference = value; return value; };
   setEventFeedReadState = async (eventId, read) => ({
     eventId,
     readAt: read ? "2026-09-09T10:00:00.000Z" : null,
@@ -121,6 +133,169 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("EventFeedProvider", () => {
+  test("custom time stays open on invalid input, saves an absolute deadline, and returns focus", async () => {
+    const writes = mock(async (value: EventFeedPreference) => { preference = value; return value; });
+    setEventFeedPreference = writes;
+    const view = render(<EventFeedProvider><EventFeedQuietControl /></EventFeedProvider>);
+    fireEvent.click(view.getByRole("button", { name: "Quiet events" }));
+    const choose = await waitFor(() => {
+      const button = view.getByRole("button", { name: "Choose a time…" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(false); return button;
+    });
+    fireEvent.click(choose);
+    const input = view.getByLabelText("Resume Events");
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: "2000-01-01T12:00" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(view.getByRole("alert").textContent).toContain("future");
+    expect(writes).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "2099-01-01T12:00" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
+    expect(writes).toHaveBeenCalledWith({ mode: "snoozed", until: new Date("2099-01-01T12:00").toISOString() });
+    expect(document.activeElement).toBe(view.getByRole("button", { name: "Quiet" }));
+  });
+
+  test("Escape dismisses the menu without closing its enclosing Events drawer", async () => {
+    const closeDrawer = mock(() => {});
+    const listener = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) closeDrawer(); };
+    window.addEventListener("keydown", listener);
+    try {
+      const view = render(<EventFeedProvider><EventFeedQuietControl /></EventFeedProvider>);
+      fireEvent.click(view.getByRole("button", { name: "Quiet events" }));
+      const dialog = view.getByRole("dialog");
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      expect(view.queryByRole("dialog")).toBeNull();
+      expect(closeDrawer).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(view.getByRole("button", { name: "Quiet events" }));
+      fireEvent.click(view.getByRole("button", { name: "Quiet events" }));
+      fireEvent.pointerDown(document.body);
+      expect(view.queryByRole("dialog")).toBeNull();
+    } finally { window.removeEventListener("keydown", listener); }
+  });
+
+  test("quiet removes the numbered badge, switches to a crossed-out bell, keeps unread history, and resumes", async () => {
+    function Controls() {
+      const feed = useEventFeed();
+      return <>
+        <EventFeedBell buttonRef={{ current: null }} open onClick={() => {}}
+          unreadCount={feed.quietPreference === null ? null : feed.unreadCount} quiet={feed.quiet} />
+        <EventFeedQuietControl />
+        <EventFeedPanel onOpenRoom={() => {}} onOpenArtifact={() => {}} />
+      </>;
+    }
+    const view = render(<EventFeedProvider><Controls /></EventFeedProvider>);
+    await waitFor(() => expect(view.getByRole("button", { name: "Events, 1 unread event" }).textContent).toBe("1"));
+    fireEvent.click(view.getByRole("button", { name: "Quiet events" }));
+    fireEvent.click(view.getByRole("button", { name: "Until I turn it back on" }));
+    const bell = await waitFor(() => view.getByRole("button", { name: "Events, quiet" }));
+    expect(bell.querySelector("span")).toBeNull();
+    expect(bell.querySelector(".lucide-bell-off")).not.toBeNull();
+    expect(view.getByRole("button", { name: "Mark read" })).toBeDefined();
+    expect(view.getByText("Quiet until you resume")).toBeDefined();
+    expect(view.queryByRole("dialog", { name: "Quiet events" })).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Events, 1 unread event" }).textContent).toBe("1"));
+    expect(view.getByRole("button", { name: "Mark read" })).toBeDefined();
+  });
+
+  test("reconciles another session's preference hint without changing unread state", async () => {
+    const { result } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+    await waitFor(() => expect(result.current.quietPreference).toEqual({ mode: "active" }));
+    preference = { mode: "quiet" };
+    act(() => publishEventFeedChanged());
+    await waitFor(() => expect(result.current.quiet).toBe(true));
+    expect(result.current.unreadCount).toBe(1);
+    expect(result.current.events[0]?.readAt).toBeNull();
+  });
+
+  test("expires a timed snooze without writing preferences or marking history read", async () => {
+    const start = Date.now();
+    const until = start + 3_600_000;
+    const clock = spyOn(Date, "now").mockReturnValue(start);
+    preference = { mode: "snoozed", until: new Date(until).toISOString() };
+    const writes = mock(async (value: EventFeedPreference) => value);
+    setEventFeedPreference = writes;
+    try {
+      const { result } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+      await waitFor(() => expect(result.current.quiet).toBe(true));
+      clock.mockReturnValue(until);
+      act(() => window.dispatchEvent(new Event("focus")));
+      expect(result.current.quiet).toBe(false);
+      expect(writes).not.toHaveBeenCalled();
+      expect(result.current.unreadCount).toBe(1);
+    } finally { clock.mockRestore(); }
+  });
+
+  test("rejects duplicate clicks while saving and never claims an unconfirmed update", async () => {
+    const pending = deferred<EventFeedPreference>();
+    const writes = mock(() => pending.promise);
+    setEventFeedPreference = writes;
+    const { result } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+    await waitFor(() => expect(result.current.quietPreference).not.toBeNull());
+    let first!: Promise<boolean>;
+    act(() => { first = result.current.setQuietPreference({ mode: "quiet" }); });
+    expect(result.current.quiet).toBe(false);
+    await act(async () => expect(await result.current.setQuietPreference({ mode: "quiet" })).toBe(false));
+    pending.reject(new Error("offline"));
+    await act(async () => expect(await first).toBe(false));
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(result.current.quiet).toBe(false);
+    expect(result.current.preferenceError).toContain("Could not confirm");
+    expect(result.current.savingPreference).toBe(false);
+  });
+
+  test("reads back a committed update after a lost response", async () => {
+    setEventFeedPreference = async (value) => { preference = value; throw new Error("lost response"); };
+    const { result } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+    await waitFor(() => expect(result.current.quietPreference).not.toBeNull());
+    await act(async () => expect(await result.current.setQuietPreference({ mode: "quiet" })).toBe(false));
+    expect(result.current.quiet).toBe(true);
+    expect(result.current.preferenceError).toContain("Could not confirm");
+  });
+
+  test("does not let a preference read from a failed feed refresh undo a newer save", async () => {
+    const oldRead = deferred<EventFeedPreference>();
+    getEventFeedPreference = () => oldRead.promise;
+    listEventFeed = async () => { throw new Error("feed unavailable"); };
+    const { result } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    await act(async () => expect(await result.current.setQuietPreference({ mode: "quiet" })).toBe(true));
+    await act(async () => oldRead.resolve({ mode: "active" }));
+    expect(result.current.quiet).toBe(true);
+  });
+
+  test("fences preference responses on viewer changes and restores per-user defaults", async () => {
+    const pending = deferred<EventFeedPreference>();
+    getEventFeedPreference = () => pending.promise;
+    const { result, rerender } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+    await waitFor(() => expect(result.current.refreshing).toBe(true));
+    viewerUserId = "55555555-5555-4555-8555-555555555555";
+    viewerGeneration += 1;
+    getEventFeedPreference = async () => ({ mode: "active" });
+    rerender();
+    await waitFor(() => expect(result.current.quietPreference).toEqual({ mode: "active" }));
+    await act(async () => pending.resolve({ mode: "quiet" }));
+    expect(result.current.quiet).toBe(false);
+  });
+
+  test("preference failure keeps history available and retry recovers; disconnected changes do not write", async () => {
+    getEventFeedPreference = async () => { throw new Error("unavailable"); };
+    const writes = mock(async (value: EventFeedPreference) => value);
+    setEventFeedPreference = writes;
+    const { result, rerender } = renderHook(() => useEventFeed(), { wrapper: EventFeedProvider });
+    await waitFor(() => expect(result.current.preferenceError).not.toBeNull());
+    expect(result.current.events).toHaveLength(1);
+    expect(result.current.quietPreference).toBeNull();
+    getEventFeedPreference = async () => ({ mode: "quiet" });
+    await act(async () => result.current.refresh());
+    expect(result.current.quiet).toBe(true);
+    wsState = "closed";
+    rerender();
+    await act(async () => expect(await result.current.setQuietPreference({ mode: "active" })).toBe(false));
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   test("refreshes the already-loaded page depth without dropping older rows or resetting its cursor", async () => {
     let phase: "initial" | "refresh" = "initial";
     const firstPage = Array.from({ length: 50 }, (_, index) => event(`event-${String(index + 1).padStart(2, "0")}`));

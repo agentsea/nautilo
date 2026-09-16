@@ -1,0 +1,3 @@
+ALTER TABLE "user_notification_settings" ADD COLUMN "event_feed_quiet_mode" text DEFAULT 'active' NOT NULL;--> statement-breakpoint
+ALTER TABLE "user_notification_settings" ADD COLUMN "event_feed_quiet_until" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "user_notification_settings" ADD CONSTRAINT "user_notification_settings_event_feed_quiet_check" CHECK (("user_notification_settings"."event_feed_quiet_mode" IN ('active', 'quiet') AND "user_notification_settings"."event_feed_quiet_until" IS NULL) OR ("user_notification_settings"."event_feed_quiet_mode" = 'snoozed' AND "user_notification_settings"."event_feed_quiet_until" IS NOT NULL));

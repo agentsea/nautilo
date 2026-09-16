@@ -148,6 +148,7 @@ import { useWorkSurfaceEventTargets } from "./use-work-surface-event-target";
 import { createGenieHandoffBridge } from "../lib/genie-handoff";
 import type { MiniAppCloseReason } from "../apps/mini-app-lifecycle";
 import { EventFeedPanel } from "../event-feed/EventFeedPanel";
+import { EventFeedQuietControl } from "../event-feed/EventFeedQuietControl";
 import { useEventFeed } from "../event-feed/event-feed-context";
 import { EventFeedBell } from "./event-feed-bell";
 
@@ -1843,7 +1844,8 @@ export function WorkbenchShell() {
                 <EventFeedBell
                   buttonRef={eventFeedBellRef}
                   open={eventsOpen}
-                  unreadCount={eventFeed.unreadCount}
+                  unreadCount={eventFeed.quietPreference === null ? null : eventFeed.unreadCount}
+                  quiet={eventFeed.quiet}
                   onClick={toggleEvents}
                 />
               ) : null}
@@ -1995,7 +1997,7 @@ export function WorkbenchShell() {
           </div>
           {eventsOpen && bp !== "desktop" ? (
             <section className="absolute inset-0 z-40 bg-background" aria-label="Events">
-              <DrawerShell title="Events" onClose={closeEvents}>
+              <DrawerShell title="Events" actions={<EventFeedQuietControl />} onClose={closeEvents}>
                 <EventFeedPanel onOpenRoom={openEventRoom} onOpenArtifact={openEventArtifact} />
               </DrawerShell>
             </section>
@@ -2013,7 +2015,7 @@ export function WorkbenchShell() {
         {bp === "desktop" && trailingDrawerOpen && (
           <aside className="relative grid min-h-0 min-w-0 grid-rows-[1fr] overflow-hidden border-l border-border bg-background">
             {eventsOpen ? (
-              <DrawerShell title="Events" onClose={closeEvents}>
+              <DrawerShell title="Events" actions={<EventFeedQuietControl />} onClose={closeEvents}>
                 <EventFeedPanel onOpenRoom={openEventRoom} onOpenArtifact={openEventArtifact} />
               </DrawerShell>
             ) : (

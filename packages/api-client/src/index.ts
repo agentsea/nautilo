@@ -34,6 +34,7 @@ export type {
   EventFeedListOptions,
   EventFeedMarkAllReadResult,
   EventFeedPage,
+  EventFeedPreference,
   EventFeedReadMutationResult,
   EventFeedUnreadCount,
 } from "@nautilo/types";

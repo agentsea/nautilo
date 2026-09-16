@@ -19,6 +19,9 @@ describe("event feed client contract", () => {
     ) => {
       const url = typeof input === "string" ? input : (input as URL).toString();
       requests.push({ url, ...(init ? { init } : {}) });
+      if (url.endsWith("/preference")) return Response.json(
+        init?.method === "PUT" && typeof init.body === "string" ? JSON.parse(init.body) : { mode: "active" },
+      );
       if (url.endsWith("/unread-count")) {
         return Response.json({ unreadCount: 3 });
       }
@@ -75,6 +78,15 @@ describe("event feed client contract", () => {
       "http://127.0.0.1:9/api/event-feed?cursor=opaque&unreadOnly=true&types=room.member_joined&types=artifact.added&limit=25",
     );
     expect(requests[0]?.init?.method).toBe("GET");
+  });
+
+  test("reads and writes typed personal preferences without sending an identity", async () => {
+    const client = new NautiloApiClient("http://127.0.0.1:9");
+    client.setToken("token");
+    expect(await client.getEventFeedPreference()).toEqual({ mode: "active" });
+    expect(await client.setEventFeedPreference({ mode: "quiet" })).toEqual({ mode: "quiet" });
+    expect(requests[0]?.url).toBe("http://127.0.0.1:9/api/event-feed/preference");
+    expect(requests[1]?.init?.body).toBe('{"mode":"quiet"}');
   });
 
   test("reads count and sends explicit read-state and mark-all mutations", async () => {

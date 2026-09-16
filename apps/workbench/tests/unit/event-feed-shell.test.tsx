@@ -9,6 +9,16 @@ beforeEach(reapplyHappyDomGlobals);
 afterEach(cleanup);
 
 describe("EventFeedBell", () => {
+  test("quiet uses a crossed-out bell and omits the numbered badge regardless of unread count", () => {
+    const onClick = mock(() => {});
+    const view = render(<EventFeedBell buttonRef={{ current: null }} open={false} unreadCount={123} quiet onClick={onClick} />);
+    const bell = view.getByRole("button", { name: "Events, quiet" });
+    expect(bell.querySelector("span")).toBeNull();
+    expect(bell.querySelector(".lucide-bell-off")).not.toBeNull();
+    expect(view.queryByText("123")).toBeNull();
+    fireEvent.click(bell);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
   test("announces the full unread count and omits a zero badge", () => {
     const onClick = mock(() => {});
     const { getByRole, queryByText, rerender } = render(
@@ -58,7 +68,7 @@ describe("event-feed shell placement", () => {
   test("narrow Events overlays an inert mounted content owner", () => {
     expect(source).toContain('inert={eventsOpen && bp !== "desktop"}');
     expect(source).toContain('className="absolute inset-0 z-40 bg-background"');
-    expect(source).toContain('<DrawerShell title="Events" onClose={closeEvents}>');
+    expect(source).toContain('<DrawerShell title="Events" actions={<EventFeedQuietControl />} onClose={closeEvents}>');
   });
 
   test("Events owns trailing geometry without changing persisted collapse state", () => {
