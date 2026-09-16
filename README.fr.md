@@ -4,7 +4,7 @@
 
 Le code et la documentation sont actuellement en anglais. Les PR de traduction sont les bienvenues ; consultez le [guide de contribution aux traductions](CONTRIBUTING.md#translations-and-localization) (en anglais). Cette page traduit le README ; elle ne signifie pas que l’interface ou les documents liés sont disponibles en français.
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: 809b94c62982691a47a537080e0f1e30a7f939214d5d4376ccbe46f03536ae1b -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -21,6 +21,28 @@ Voilà Nautilo. Multi-utilisateur dès sa conception. Pour les humains et leurs 
 [Télécharger](https://nautilo.ai/download) ·
 [Packages](#explore-the-code) ·
 [Contribuer](CONTRIBUTING.md)
+
+<a id="get-started"></a>
+
+## Premiers pas
+
+Chaque client Nautilo se connecte à un serveur Nautilo. Choisissez le chemin qui vous convient :
+
+Vous découvrez Nautilo sur un Mac ? Commencez par le [démarrage rapide du déploiement local](https://nautilo.ai/docs/operator/deploy/local). Cette configuration permet d’évaluer Nautilo sur une seule machine. Pour un accès mobile ou un serveur accessible à votre équipe, choisissez une option d’hébergement ci-dessous.
+
+| Vous voulez… | Commencez ici |
+| --- | --- |
+| Rejoindre un serveur existant | [Téléchargez Nautilo](https://nautilo.ai/download), puis suivez [Installation et connexion](https://nautilo.ai/docs/use/install-and-connect) avec l’adresse de votre serveur ou votre invitation. |
+| Faire tourner votre premier serveur sur votre Mac | Suivez le [démarrage rapide du déploiement local](https://nautilo.ai/docs/operator/deploy/local), avec Docker Desktop et la CLI Nautilo signée. |
+| Donner à votre équipe un serveur dans le cloud | Utilisez le [guide de déploiement Railway](https://nautilo.ai/docs/operator/deploy/railway). |
+| Utiliser votre propre infrastructure Docker | Suivez le [guide Docker Compose](https://nautilo.ai/docs/operator/deploy/docker-compose), ou [comparez les options de déploiement](https://nautilo.ai/docs/operator/choose-a-deployment). |
+| Modifier le code | Passez à [Développer à partir du code source](#develop-from-source). |
+
+La page de téléchargement présente les options actuelles pour Desktop, le mobile et la CLI. Vous pouvez aussi ouvrir le client web de votre serveur. Desktop se connecte à votre serveur ; son installation n’installe ni le serveur ni sa base de données. Le mobile a besoin d’un serveur accessible en HTTPS.
+
+Pour un nouveau serveur, terminez la configuration du propriétaire et [ajoutez vos clés de fournisseurs](https://nautilo.ai/docs/operator/provider-keys). Personnalisez ensuite votre Genie, ouvrez une Room et apportez quelque chose que vous avez vraiment envie de faire. [Votre première heure](https://nautilo.ai/docs/use/first-hour) vous accompagne pour créer un document ensemble, le modifier vous-même et enregistrer le résultat.
+
+Nautilo est en **alpha**.
 
 ## Venez avec vos gens. Et leurs Genies.
 
@@ -44,26 +66,6 @@ Les outils disponibles dépendent du client, de l’environnement connecté, des
 
 Regardez les films sur [nautilo.ai](https://nautilo.ai), ou lancez-vous avec [Votre première heure](https://nautilo.ai/docs/use/first-hour).
 
-<a id="get-started"></a>
-
-## Premiers pas
-
-Chaque client Nautilo se connecte à un serveur Nautilo. Choisissez le chemin qui vous convient :
-
-| Vous voulez… | Commencez ici |
-| --- | --- |
-| Rejoindre un serveur existant | [Téléchargez Nautilo](https://nautilo.ai/download), puis suivez [Installation et connexion](https://nautilo.ai/docs/use/install-and-connect) avec l’adresse de votre serveur ou votre invitation. |
-| Faire tourner votre premier serveur sur votre Mac | Suivez le [démarrage rapide du déploiement local](https://nautilo.ai/docs/operator/deploy/local), avec Docker Desktop et la CLI Nautilo signée. |
-| Donner à votre équipe un serveur dans le cloud | Utilisez le [guide de déploiement Railway](https://nautilo.ai/docs/operator/deploy/railway). |
-| Utiliser votre propre infrastructure Docker | Suivez le [guide Docker Compose](https://nautilo.ai/docs/operator/deploy/docker-compose), ou [comparez les options de déploiement](https://nautilo.ai/docs/operator/choose-a-deployment). |
-| Modifier le code | Passez à [Développer à partir du code source](#develop-from-source). |
-
-La page de téléchargement présente les options actuelles pour Desktop, le mobile et la CLI. Vous pouvez aussi ouvrir le client web de votre serveur. Desktop se connecte à votre serveur ; son installation n’installe ni le serveur ni sa base de données. Le mobile a besoin d’un serveur accessible en HTTPS.
-
-Pour un nouveau serveur, terminez la configuration du propriétaire et [ajoutez vos clés de fournisseurs](https://nautilo.ai/docs/operator/provider-keys). Créez ensuite votre Genie, ouvrez une Room et apportez quelque chose que vous avez vraiment envie de faire. [Votre première heure](https://nautilo.ai/docs/use/first-hour) vous accompagne pour créer un document ensemble, le modifier vous-même et enregistrer le résultat.
-
-Nautilo est en **alpha**. Consultez l’[état des versions](https://nautilo.ai/product-release-status) pour connaître les distributions actuelles et leur disponibilité.
-
 ## Gardez les clés de votre maison
 
 Plus votre IA vous connaît, plus il importe de savoir qui contrôle cette relation. Vos habitudes de travail, vos conversations, ce que vous avez créé ensemble : tout cela prend une place croissante dans votre vie.
@@ -82,7 +84,6 @@ Les fournisseurs de modèles et d’outils connectés reçoivent les données n�
 | [Utiliser Nautilo](https://nautilo.ai/docs/use) | Découvrir les Rooms, les Genies, les outils créatifs et les usages quotidiens. |
 | [Exploiter Nautilo](https://nautilo.ai/docs/operator) | Déployer, configurer, administrer et maintenir un serveur. |
 | [Développer sur Nautilo](https://nautilo.ai/docs/build) | Comprendre l’architecture et travailler à partir du code source. |
-| [Modèle d’entités](https://nautilo.ai/docs/build/concepts/entity-model) | Comprendre les Humans, Agents, Rooms, Groups et leurs relations. |
 | [Pack de compétences](https://nautilo.ai/skills) | Trouver les guides Nautilo destinés aux assistants IA. |
 | [Principes de conception](https://nautilo.ai/principles) | Comprendre les choix qui façonnent le produit. |
 | [Index de la documentation versionnée](DOCS.md) | Trouver les contrats du code source, le packaging, les versions et les procédures d’exploitation. |

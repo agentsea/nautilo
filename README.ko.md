@@ -4,7 +4,7 @@
 
 코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
 
-<!-- Translation source: README.md; SHA-256: 0ef174a2326fa118f5d801b5d7147cd73fca94ff3a1ef5550c82979edb493bb4 -->
+<!-- Translation source: README.md; SHA-256: 809b94c62982691a47a537080e0f1e30a7f939214d5d4376ccbe46f03536ae1b -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -21,6 +21,28 @@
 [다운로드](https://nautilo.ai/download) ·
 [패키지](#explore-the-code) ·
 [기여하기](CONTRIBUTING.md)
+
+<a id="get-started"></a>
+
+## 시작하기
+
+모든 Nautilo 클라이언트는 Nautilo 서버에 연결됩니다. 상황에 맞는 방법을 고르세요.
+
+Mac에서 Nautilo를 처음 사용해 보시나요? [로컬 배포 빠른 시작](https://nautilo.ai/docs/operator/deploy/local)으로 시작하세요. 이 구성은 컴퓨터 한 대에서 평가하기 위한 것입니다. 모바일로 접속하거나 팀이 함께 접속할 서버가 필요하다면 아래의 호스팅 배포 방법을 선택하세요.
+
+| 원하는 일 | 시작할 곳 |
+| --- | --- |
+| 기존 서버에 참여하기 | [Nautilo를 다운로드](https://nautilo.ai/download)한 뒤 서버 주소나 초대장을 사용해 [설치 및 연결 안내](https://nautilo.ai/docs/use/install-and-connect)를 따르세요. |
+| Mac에서 첫 서버 실행하기 | Docker Desktop과 서명된 Nautilo CLI를 사용해 [로컬 배포 빠른 시작](https://nautilo.ai/docs/operator/deploy/local)을 따르세요. |
+| 팀을 위한 클라우드 서버 마련하기 | [Railway 배포 안내](https://nautilo.ai/docs/operator/deploy/railway)를 사용하세요. |
+| 자체 Docker 인프라에서 실행하기 | [Docker Compose 안내](https://nautilo.ai/docs/operator/deploy/docker-compose)를 따르거나 [배포 옵션을 비교](https://nautilo.ai/docs/operator/choose-a-deployment)하세요. |
+| 코드 수정하기 | [소스에서 개발하기](#develop-from-source)로 이동하세요. |
+
+다운로드 페이지에서 현재 Desktop, 모바일, CLI 옵션을 확인할 수 있습니다. 서버의 웹 클라이언트를 열어도 됩니다. Desktop은 서버에 연결하는 클라이언트입니다. Desktop을 설치해도 서버나 데이터베이스가 설치되지는 않습니다. 모바일에는 HTTPS로 접근할 수 있는 서버가 필요합니다.
+
+새 서버에서는 소유자 설정을 마치고 [제공업체 키를 추가](https://nautilo.ai/docs/operator/provider-keys)하세요. 그다음 Genie를 맞춤 설정하고 Room을 열어, 정말 만들고 싶은 것을 가져오세요. [첫 한 시간](https://nautilo.ai/docs/use/first-hour)에서 함께 문서를 만들고, 직접 편집하고, 결과를 저장하는 과정을 안내합니다.
+
+Nautilo는 **alpha** 단계입니다.
 
 ## 사람들을 데려오세요. 그들의 Genie도 함께.
 
@@ -44,26 +66,6 @@ Genie에게 누군가의 답을 받아오게 하거나, 백그라운드 작업�
 
 [nautilo.ai](https://nautilo.ai)에서 소개 영상을 보거나, [첫 한 시간](https://nautilo.ai/docs/use/first-hour)을 따라 직접 시작해 보세요.
 
-<a id="get-started"></a>
-
-## 시작하기
-
-모든 Nautilo 클라이언트는 Nautilo 서버에 연결됩니다. 상황에 맞는 방법을 고르세요.
-
-| 원하는 일 | 시작할 곳 |
-| --- | --- |
-| 기존 서버에 참여하기 | [Nautilo를 다운로드](https://nautilo.ai/download)한 뒤 서버 주소나 초대장을 사용해 [설치 및 연결 안내](https://nautilo.ai/docs/use/install-and-connect)를 따르세요. |
-| Mac에서 첫 서버 실행하기 | Docker Desktop과 서명된 Nautilo CLI를 사용해 [로컬 배포 빠른 시작](https://nautilo.ai/docs/operator/deploy/local)을 따르세요. |
-| 팀을 위한 클라우드 서버 마련하기 | [Railway 배포 안내](https://nautilo.ai/docs/operator/deploy/railway)를 사용하세요. |
-| 자체 Docker 인프라에서 실행하기 | [Docker Compose 안내](https://nautilo.ai/docs/operator/deploy/docker-compose)를 따르거나 [배포 옵션을 비교](https://nautilo.ai/docs/operator/choose-a-deployment)하세요. |
-| 코드 수정하기 | [소스에서 개발하기](#develop-from-source)로 이동하세요. |
-
-다운로드 페이지에서 현재 Desktop, 모바일, CLI 옵션을 확인할 수 있습니다. 서버의 웹 클라이언트를 열어도 됩니다. Desktop은 서버에 연결하는 클라이언트입니다. Desktop을 설치해도 서버나 데이터베이스가 설치되지는 않습니다. 모바일에는 HTTPS로 접근할 수 있는 서버가 필요합니다.
-
-새 서버에서는 소유자 설정을 마치고 [제공업체 키를 추가](https://nautilo.ai/docs/operator/provider-keys)하세요. 그다음 Genie를 만들고 Room을 열어, 정말 만들고 싶은 것을 가져오세요. [첫 한 시간](https://nautilo.ai/docs/use/first-hour)에서 함께 문서를 만들고, 직접 편집하고, 결과를 저장하는 과정을 안내합니다.
-
-Nautilo는 **alpha** 단계입니다. 현재 배포물과 이용 가능 여부는 [릴리스 상태](https://nautilo.ai/product-release-status)를 확인하세요.
-
 ## 내 집 열쇠는 내가 갖고 있어야죠
 
 AI가 당신을 잘 알게 될수록, 누가 그 관계를 통제하는지가 더 중요해집니다. 일하는 습관, 나눈 대화, 함께 만든 것들. 당신 삶에서 점점 더 큰 부분을 차지하는 것들입니다.
@@ -82,7 +84,6 @@ Nautilo는 서버와 데이터베이스의 통제권을 당신에게 줍니다. 
 | [Nautilo 사용하기](https://nautilo.ai/docs/use) | Room, Genie, 창작 도구와 일상적인 작업 흐름 익히기. |
 | [Nautilo 운영하기](https://nautilo.ai/docs/operator) | 서버 배포, 설정, 관리, 유지보수. |
 | [Nautilo 개발하기](https://nautilo.ai/docs/build) | 아키텍처를 이해하고 소스를 기반으로 개발하기. |
-| [엔티티 모델](https://nautilo.ai/docs/build/concepts/entity-model) | Human, Agent, Room, Group과 서로의 관계 이해하기. |
 | [스킬 팩](https://nautilo.ai/skills) | AI 어시스턴트를 위한 Nautilo 안내 찾기. |
 | [설계 원칙](https://nautilo.ai/principles) | 제품을 만드는 판단 이해하기. |
 | [버전 관리 문서 색인](DOCS.md) | 소스 계약, 패키징, 릴리스, 운영 절차서 찾기. |
