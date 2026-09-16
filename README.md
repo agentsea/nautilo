@@ -7,7 +7,7 @@ see [translation contributions](CONTRIBUTING.md#translations-and-localization).
 
 ### AI goes multiplayer.
 
-https://github.com/user-attachments/assets/a48c97b4-6e75-4d17-9c7d-6b921514eb20
+https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **Your own super agent. Your people and their Genies. You own the intelligence.**
 
