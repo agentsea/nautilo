@@ -5,12 +5,14 @@ import {
   eventFeedListOptionsSchema,
   eventFeedMarkAllReadResultSchema,
   eventFeedPageSchema,
+  eventFeedPreferenceSchema,
   eventFeedReadMutationResultSchema,
   eventFeedUnreadCountSchema,
   type EventFeedErrorCode,
   type EventFeedListOptions,
   type EventFeedMarkAllReadResult,
   type EventFeedPage,
+  type EventFeedPreference,
   type EventFeedReadMutationResult,
   type EventFeedUnreadCount,
   type LiveDocumentVersion,
@@ -6351,7 +6353,27 @@ export class NautiloApiClient {
     });
   }
 
-  /** M323 — fetch the authoritative unread count for the authenticated Human. */
+  /** Read personal Events attention independently of chat notification policy. */
+  async getEventFeedPreference(): Promise<EventFeedPreference> {
+    return this.request({
+      path: "/api/event-feed/preference",
+      schema: eventFeedPreferenceSchema,
+      defaultErrorPrefix: "GET /api/event-feed/preference",
+    });
+  }
+
+  async setEventFeedPreference(preference: EventFeedPreference): Promise<EventFeedPreference> {
+    return this.request({
+      method: "PUT",
+      path: "/api/event-feed/preference",
+      body: eventFeedPreferenceSchema.parse(preference),
+      schema: eventFeedPreferenceSchema,
+      statusErrors: { 400: (body) => eventFeedApiError(400, body) },
+      defaultErrorPrefix: "PUT /api/event-feed/preference",
+    });
+  }
+
+  /** Fetch the authoritative unread count, independently of attention policy. */
   async getEventFeedUnreadCount(): Promise<EventFeedUnreadCount> {
     return this.request<EventFeedUnreadCount>({
       path: "/api/event-feed/unread-count",

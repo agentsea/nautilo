@@ -49,6 +49,11 @@ export const userNotificationSettings = pgTable(
     defaultLevel: text("default_level", { enum: NOTIFICATION_LEVELS })
       .notNull()
       .default("direct"),
+    // Events attention is independent of conversational notification policy.
+    eventFeedQuietMode: text("event_feed_quiet_mode", { enum: ["active", "quiet", "snoozed"] })
+      .notNull()
+      .default("active"),
+    eventFeedQuietUntil: timestamp("event_feed_quiet_until", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -57,6 +62,10 @@ export const userNotificationSettings = pgTable(
     check(
       "user_notification_settings_level_check",
       sql`${table.defaultLevel} IN ('none', 'direct', 'all')`,
+    ),
+    check(
+      "user_notification_settings_event_feed_quiet_check",
+      sql`(${table.eventFeedQuietMode} IN ('active', 'quiet') AND ${table.eventFeedQuietUntil} IS NULL) OR (${table.eventFeedQuietMode} = 'snoozed' AND ${table.eventFeedQuietUntil} IS NOT NULL)`,
     ),
   ],
 );

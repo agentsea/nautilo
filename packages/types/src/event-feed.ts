@@ -4,6 +4,19 @@ const uuidReferenceSchema = z.string().uuid().transform((value) => value.toLower
 const artifactReferenceSchema = z.string().min(1);
 const isoTimestampSchema = z.string().datetime({ offset: true });
 
+/** Personal attention only: never changes event retention or read state. */
+export const eventFeedPreferenceSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("active") }).strict(),
+  z.object({ mode: z.literal("quiet") }).strict(),
+  z.object({ mode: z.literal("snoozed"), until: isoTimestampSchema.refine(value => Number.isFinite(Date.parse(value))) }).strict(),
+]);
+export type EventFeedPreference = z.infer<typeof eventFeedPreferenceSchema>;
+
+export function isEventFeedQuiet(preference: EventFeedPreference, now = Date.now()): boolean {
+  return preference.mode === "quiet"
+    || (preference.mode === "snoozed" && Date.parse(preference.until) > now);
+}
+
 export const eventFeedTypeSchema = z.enum([
   "room.member_joined",
   "room.member_left",

@@ -11,6 +11,14 @@ Changes on `main` after the source used for Desktop 0.14.44, plus the maintenanc
 changes recorded here. Inclusion does not assert a server deployment, Mobile
 store update, or Desktop/Host installation.
 
+### Added
+
+- Quiet Events per Human: snooze for an hour, until tomorrow, until a chosen
+  time, or until manually resumed. A crossed-out bell replaces the bell and its numbered
+  badge disappears while quiet. Event history and unread state remain available;
+  the preference follows your sessions on the same server without changing
+  anyone else's settings or chat notifications.
+
 ### Fixed
 
 - Video references use one optional **Extra instructions** field; existing role

@@ -10,8 +10,9 @@ import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSe
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
 import { createEventFeed } from "@nautilo/event-feed";
 import type { ServerEvent } from "@nautilo/types";
-import { createEventFeedStorage, listArtifactFeedRecipientUserIds } from "@nautilo/db";
+import { createEventFeedStorage, createEventFeedPreferenceStore, listArtifactFeedRecipientUserIds } from "@nautilo/db";
 import { eventFeedRoutes } from "./routes/event-feed";
+import { eventFeedPreferenceRoutes } from "./routes/event-feed-preferences";
 import { publishEventFeedChanged } from "./realtime/ws-publisher";
 import { createHumanMembershipEventProducer } from "./event-feed/membership-producer";
 import { createArtifactEventProducer } from "./event-feed/artifact-producer";
@@ -2279,6 +2280,10 @@ export async function createApp(options?: CreateAppOptions) {
   eventFeedRoutes(app, {
     feed: eventFeed,
     resolveActorNames: resolveArtifactFeedActorNames,
+  });
+  eventFeedPreferenceRoutes(app, {
+    preferences: createEventFeedPreferenceStore(getServerDirectDb()),
+    changed: publishEventFeedChanged,
   });
   pushNotificationRoutes(app);
   usersPresenceRoutes(app);

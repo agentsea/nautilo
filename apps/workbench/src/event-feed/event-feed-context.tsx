@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ArtifactDto } from "@nautilo/api-client/browser";
-import { EVENT_FEED_PAGE_SIZE, type EventFeedItem, type EventFeedPage, type RoomDetailResponse } from "@nautilo/types";
+import { EVENT_FEED_PAGE_SIZE, isEventFeedQuiet, type EventFeedPreference, type EventFeedItem, type EventFeedPage, type RoomDetailResponse } from "@nautilo/types";
 import { apiClient } from "../lib/api";
 import { useAuth } from "../hooks/use-auth";
 import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
@@ -34,6 +34,11 @@ interface MutationFailure {
 
 export interface EventFeedContextValue {
   unreadCount: number | null;
+  quietPreference: EventFeedPreference | null;
+  quiet: boolean;
+  preferenceError: string | null;
+  savingPreference: boolean;
+  setQuietPreference: (preference: EventFeedPreference) => Promise<boolean>;
   refresh: () => Promise<void>;
   events: readonly EventFeedItem[];
   filter: EventFeedFilter;
@@ -119,6 +124,13 @@ function ScopedEventFeedProvider({
   const categoryRef = useRef(category);
   categoryRef.current = category;
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
+  const [quietPreference, setQuietPreferenceState] = useState<EventFeedPreference | null>(null);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [savingPreference, setSavingPreference] = useState(false);
+  const savingPreferenceRef = useRef(false);
+  const preferenceGenerationRef = useRef(0);
+  const [now, setNow] = useState(Date.now);
+  const quiet = quietPreference !== null && isEventFeedQuiet(quietPreference, now);
   const unreadCountRef = useRef(unreadCount);
   unreadCountRef.current = unreadCount;
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -162,6 +174,69 @@ function ScopedEventFeedProvider({
       hydrationGenerationRef.current += 1;
     };
   }, []);
+
+  // Chunk long deadlines using the existing visible-session refresh interval;
+  // browser timeout overflow must never end a long snooze immediately.
+  useEffect(() => {
+    if (quietPreference?.mode !== "snoozed") return;
+    let timer: number;
+    const update = (): void => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      const remaining = Date.parse(quietPreference.until) - currentTime;
+      if (remaining > 0) timer = window.setTimeout(update, Math.min(remaining, VISIBLE_SESSION_REFRESH_INTERVAL_MS));
+    };
+    update();
+    // Visibility/focus can fire while a timer is pending: keep one timer owner.
+    const onActivation = (): void => { window.clearTimeout(timer); update(); };
+    window.addEventListener("focus", onActivation);
+    document.addEventListener("visibilitychange", onActivation);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", onActivation);
+      document.removeEventListener("visibilitychange", onActivation);
+    };
+  }, [quietPreference]);
+
+  const refreshPreference = useCallback(async (): Promise<void> => {
+    const generation = ++preferenceGenerationRef.current;
+    try {
+      const preference = await apiClient.getEventFeedPreference();
+      if (!activeRef.current || generation !== preferenceGenerationRef.current) return;
+      setQuietPreferenceState(preference);
+      setNow(Date.now());
+      setPreferenceError(null);
+    } catch {
+      if (activeRef.current && generation === preferenceGenerationRef.current) setPreferenceError("Could not refresh your Events preference.");
+    }
+  }, []);
+
+  const setQuietPreference = useCallback(async (preference: EventFeedPreference): Promise<boolean> => {
+    if (!authenticatedHuman || wsState !== "open" || savingPreferenceRef.current) return false;
+    savingPreferenceRef.current = true;
+    setSavingPreference(true);
+    setPreferenceError(null);
+    let saved = false;
+    await runRequest(async () => {
+      preferenceGenerationRef.current += 1;
+      try {
+        const result = await apiClient.setEventFeedPreference(preference);
+        if (!activeRef.current) return;
+        setQuietPreferenceState(result);
+        setNow(Date.now());
+        saved = true;
+      } catch {
+        // A lost response may follow a committed write. Reconcile before a
+        // Human retries; never claim an optimistic save or replay automatically.
+        await refreshPreference();
+        if (activeRef.current) setPreferenceError("Could not confirm the change. Check your connection and try again.");
+      } finally {
+        savingPreferenceRef.current = false;
+        if (activeRef.current) setSavingPreference(false);
+      }
+    });
+    return saved;
+  }, [authenticatedHuman, refreshPreference, runRequest, wsState]);
 
   const resolvePresentation = useCallback(async (
     sourceEvents: readonly EventFeedItem[],
@@ -223,6 +298,7 @@ function ScopedEventFeedProvider({
           ...(requestCategory === "all" ? {} : { types: [...EVENT_TYPES_BY_CATEGORY[requestCategory]] }),
         }),
         apiClient.getEventFeedUnreadCount(),
+        refreshPreference(),
       ]);
       const pages: EventFeedPage[] = [firstPage];
       let cursor = firstPage.nextCursor;
@@ -271,7 +347,7 @@ function ScopedEventFeedProvider({
         setRefreshing(false);
       }
     }
-  }, [authenticatedHuman, resolvePresentation, setPendingFirstPage, wsState]);
+  }, [authenticatedHuman, refreshPreference, resolvePresentation, setPendingFirstPage, wsState]);
 
   const performRefreshRef = useRef(performRefresh);
   performRefreshRef.current = performRefresh;
@@ -481,6 +557,11 @@ function ScopedEventFeedProvider({
 
   const value = useMemo<EventFeedContextValue>(() => ({
     unreadCount,
+    quietPreference,
+    quiet,
+    preferenceError,
+    savingPreference,
+    setQuietPreference,
     refresh,
     events,
     filter,
@@ -515,6 +596,7 @@ function ScopedEventFeedProvider({
     markAllRead, markingAllRead, mutationFailure, nextCursor, pendingFirstPage,
     reauthorizeArtifact, refresh, refreshing, roomsById, scrollTop, setCategory, setFilter, setReadState,
     showPendingNewEvents, stale, unreadCount, viewerActorId, wsState,
+    quietPreference, quiet, preferenceError, savingPreference, setQuietPreference,
   ]);
 
   return <EventFeedContext.Provider value={value}>{children}</EventFeedContext.Provider>;

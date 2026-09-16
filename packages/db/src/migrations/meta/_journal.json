@@ -2052,6 +2052,13 @@
       "when": 1789562283736,
       "tag": "0292_polite_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1789580620700,
+      "tag": "0293_certain_gabe_jones",
+      "breakpoints": true
     }
   ]
 }

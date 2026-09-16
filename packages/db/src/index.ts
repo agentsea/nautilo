@@ -1,6 +1,7 @@
 export * from "./schema/index";
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";
+export { createEventFeedPreferenceStore } from "./queries/event-feed-preferences";
 export * from "./queries/media-generations";
 export * from "./queries/connected-apps";
 export * from "./queries/legacy-photo-history";
