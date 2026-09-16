@@ -22,9 +22,9 @@ For general security guidance and self-hosting hardening, see the
 
 For a bug that does not expose sensitive information or enable unauthorized access,
 [file a bug report](https://github.com/agentsea/nautilo/issues/new?template=01-reproducible-defect.yml).
-If you cannot access the repository,
-[email a bug report](mailto:security-reports@kentauros.ai?subject=Nautilo%20bug%20report).
 Include your version, operating system, and steps to reproduce the problem.
+The security reporting mailbox is for suspected vulnerabilities only; please
+keep ordinary bug reports on GitHub.
 
 ## Supported versions
 
