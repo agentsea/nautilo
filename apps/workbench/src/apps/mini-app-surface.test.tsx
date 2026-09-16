@@ -1283,7 +1283,13 @@ describe("MiniAppSurface", () => {
 
   test("unified browser selects existing references without upload and closes cancellation quietly", async () => {
     const target = { kind: "artifact" as const, id: "artifact-row-1", path: "project.video.html", mimeType: "text/html", roomId: "room-1" };
-    const rows = ["first", "second"].map((name, index) => ({ id: `row-${name}`, artifactId: `48a0266d-b1c2-4ffd-9c10-2865bea8fc5${index}`, path: `media/${name}.png`, mimeType: "image/png", size: 12, revision: 1 }));
+    const rows = [
+      { id: "row-first", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc50", path: "media/first.png", mimeType: "image/png", size: 12, revision: 1 },
+      { id: "row-second", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc51", path: "media/second.png", mimeType: "image/png", size: 12, revision: 1 },
+      { id: "row-audio", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc52", path: "media/voice.wav", mimeType: "audio/wav", size: 12, revision: 1 },
+      { id: "row-unsupported-audio", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc53", path: "media/archive.ogg", mimeType: "audio/ogg", size: 12, revision: 1 },
+      { id: "row-x-wav", artifactId: "48a0266d-b1c2-4ffd-9c10-2865bea8fc54", path: "media/alternate.wav", mimeType: "audio/x-wav", size: 12, revision: 1 },
+    ];
     readDocumentSession.mockImplementation(async (session: { envelope: unknown }) => { const envelope = { content: validVideoDocument(), mimeType: "text/html", path: target.path, baseSha256: "a".repeat(64), baseRevision: 1 }; session.envelope = envelope; return envelope; });
     loadMiniAppRuntime.mockImplementationOnce(async () => ({ appId: "nautilo-video", sourceHash: "d".repeat(64), srcDoc: "<html><body></body></html>", hostCapabilities: { videoGeneration: true as const, mediaProxy: true as const }, manifest: { id: "nautilo-video", name: "Video", version: "0.2.1", fileAssociations: { extensions: [".video.html"] }, capabilities: {} } }));
     listAllWorkspaceArtifacts.mockResolvedValueOnce({ artifacts: rows });
@@ -1293,15 +1299,41 @@ describe("MiniAppSurface", () => {
     const bridge = installAppBridge.mock.calls.at(-1)?.[0];
     const pending = bridge.onVideoMediaPick({ purpose: "references", multiple: true });
     await waitFor(() => expect(rendered.getByText("first.png")).toBeTruthy());
+    expect(rendered.getByText("archive.ogg")).toBeTruthy();
+    expect(rendered.getByText("Seedance needs MP3 or WAV")).toBeTruthy();
     fireEvent.click(rendered.getByText("first.png").closest("button")!);
     fireEvent.click(rendered.getByText("second.png").closest("button")!);
-    fireEvent.click(rendered.getByRole("button", { name: "Add 2 references" }));
-    await expect(pending).resolves.toMatchObject({ kind: "ready", imports: [], mediaIds: [], failures: [], references: [{ label: "first.png", artifactId: rows[0]!.artifactId }, { label: "second.png", artifactId: rows[1]!.artifactId }] });
+    fireEvent.click(rendered.getByText("voice.wav").closest("button")!);
+    fireEvent.click(rendered.getByText("archive.ogg").closest("button")!);
+    fireEvent.click(rendered.getByText("alternate.wav").closest("button")!);
+    fireEvent.click(rendered.getByRole("button", { name: "Add 5 references" }));
+    await expect(pending).resolves.toEqual({ kind: "ready", imports: [], mediaIds: [], failures: [{ label: "archive.ogg", code: "unsupported_type" }], references: [
+      { label: "first.png", artifactId: rows[0]!.artifactId, path: rows[0]!.path, mediaKind: "image", mimeType: "image/png", sizeBytes: 12 },
+      { label: "second.png", artifactId: rows[1]!.artifactId, path: rows[1]!.path, mediaKind: "image", mimeType: "image/png", sizeBytes: 12 },
+      { label: "voice.wav", artifactId: rows[2]!.artifactId, path: rows[2]!.path, mediaKind: "audio", mimeType: "audio/wav", sizeBytes: 12 },
+      { label: "alternate.wav", artifactId: rows[4]!.artifactId, path: rows[4]!.path, mediaKind: "audio", mimeType: "audio/x-wav", sizeBytes: 12 },
+    ] });
     expect(importWorkspaceMock).not.toHaveBeenCalled(); expect(importWorkspaceBatchMock).not.toHaveBeenCalled();
+    expect(getWorkspaceArtifactBytesArrayBuffer).not.toHaveBeenCalled();
     const cancelled = bridge.onVideoMediaPick({ purpose: "media", multiple: true });
     await waitFor(() => expect(rendered.getByRole("button", { name: "Close media picker" })).toBeTruthy());
     fireEvent.click(rendered.getByRole("button", { name: "Close media picker" }));
     await expect(cancelled).resolves.toEqual({ kind: "unavailable", code: "cancelled" });
+    importWorkspaceBatchMock.mockResolvedValueOnce({ ok: true, data: { results: [nativeReceipt("audio", "Voice from Mac.wav")] } });
+    const computerAudio = bridge.onVideoMediaPick({ purpose: "references", multiple: true });
+    await waitFor(() => expect(rendered.getByRole("button", { name: "Computer", exact: true })).toBeTruthy());
+    fireEvent.click(rendered.getByRole("button", { name: "Computer", exact: true }));
+    fireEvent.click(rendered.getByRole("button", { name: "Choose files…", exact: true }));
+    await expect(computerAudio).resolves.toEqual({ kind: "ready", imports: [], mediaIds: [], failures: [], references: [{
+      artifactId: nativeReceipt("audio").data.artifact.artifactId,
+      path: nativeReceipt("audio").data.artifact.path,
+      label: "Voice from Mac.wav",
+      mediaKind: "audio",
+      mimeType: "audio/wav",
+      sizeBytes: 12,
+    }] });
+    expect(importWorkspaceBatchMock).toHaveBeenLastCalledWith({ requestId: expect.any(String), roomId: "room-1" });
+    expect(getWorkspaceArtifactBytesArrayBuffer).not.toHaveBeenCalled();
     rendered.unmount();
   });
 

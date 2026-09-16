@@ -45,6 +45,8 @@ export const GenerateVideoSchema = z.object({
     .describe("Seedance reference execution only. For prepare, add images in the opened workcard instead."),
   referenceVideos: referencePaths.max(10).optional()
     .describe("Seedance reference execution only. For prepare, add videos in the opened workcard instead."),
+  referenceAudios: referencePaths.max(10).optional()
+    .describe("Seedance reference execution only. Ordered MP3/WAV audio donors; for prepare, add audio in the opened workcard instead."),
   filename,
 }).strict();
 
@@ -69,13 +71,13 @@ function invalidVideoPreparation(message: string) {
 export function createGenerateVideoTool() {
   return new DynamicStructuredTool({
     name: "generate_video",
-    description: `Create a video with Venice-hosted generation models. For ordinary text-to-video and every paid execution, set action="generate"; the server validates the exact settings, quotes it, and requests Once/Deny approval. Use action="prepare" only when the user wants the Advanced/reference workcard. That no-spend call uses a useful editable prompt draft and settings without model or reference fields, then opens a workcard where the user uploads/selects, orders, and removes up to 30 images. Never require a pre-focused image and never ask the user to type a path. When the workcard continues, call this same tool with action="generate", the completed Seedance reference model request, and authoritative ordered Workspace paths; that execution enters exact-quote Once/Deny approval. Prefer Seedance 2.5 for general/latest generation; use MiniMax H3 when its 2K tier or different rendering character materially fits the request. Honor an explicit model choice; when the tradeoff matters and the user did not choose, ask. Seedance 2.5 text and reference modes support 4–30 seconds, 480p/720p/1080p, and configurable audio. Reference execution accepts up to 30 ordered Workspace image paths and up to 10 ordered Workspace video paths, with at least one image or video required. <Image 1> maps to referenceImages[0]; <Video 1> maps to referenceVideos[0], and so on. Video-only references support continuation without requiring an extra image. Public Seedance may reject person-bearing reference media. MiniMax H3 supports 5–15 seconds, 768P/2K, with provider-managed audio. ${COMMON_DESCRIPTION}`,
+    description: `Create a video with Venice-hosted generation models. For ordinary text-to-video and every paid execution, set action="generate"; the server validates the exact settings, quotes it, and requests Once/Deny approval. Use action="prepare" only when the user wants the Advanced/reference workcard. That no-spend call uses a useful editable prompt draft and settings without model or reference fields, then opens a workcard where the user uploads/selects, orders, and removes reference media. Never require a pre-focused file and never ask the user to type a path. When the workcard continues, call this same tool with action="generate", the completed Seedance reference model request, and authoritative ordered Workspace paths; that execution enters exact-quote Once/Deny approval. Prefer Seedance 2.5 for general/latest generation; use MiniMax H3 when its 2K tier or different rendering character materially fits the request. Honor an explicit model choice; when the tradeoff matters and the user did not choose, ask. Seedance 2.5 text and reference modes support 4–30 seconds, 480p/720p/1080p, and configurable audio. Reference execution accepts up to 30 ordered Workspace images, 10 videos, and 10 MP3/WAV audio donors. Each audio/video donor must be 2–30 seconds and each kind may total at most 30 seconds; at least one image or video is still required. <Image 1>, <Video 1>, and <Audio 1> map to the first item of their ordered fields. Public Seedance may reject person-bearing reference media. MiniMax H3 supports 5–15 seconds, 768P/2K, with provider-managed audio. ${COMMON_DESCRIPTION}`,
     schema: GenerateVideoSchema,
     // InvocationService intercepts this name and executes only the exact
     // checkpoint-prepared approval. A direct call has no paid authority.
     func: (args) => {
       if ("action" in args && args.action === "prepare") {
-        if (args.model !== undefined || args.referenceImages !== undefined || args.referenceVideos !== undefined) {
+        if (args.model !== undefined || args.referenceImages !== undefined || args.referenceVideos !== undefined || args.referenceAudios !== undefined) {
           return Promise.resolve(invalidVideoPreparation(
             'Advanced video preparation cannot include a generation model or reference paths. Call action="prepare" with prompt and settings only, then add references in the workcard.',
           ));

@@ -31,6 +31,7 @@ type ProofInput = {
   readonly lyrics?: string;
   readonly referenceImages?: MediaGenerationAdmissionProof["requestPayload"]["referenceImages"];
   readonly referenceVideos?: MediaGenerationAdmissionProof["requestPayload"]["referenceVideos"];
+  readonly referenceAudios?: MediaGenerationAdmissionProof["requestPayload"]["referenceAudios"];
   readonly normalizedSettings: Record<string, string | number | boolean>;
 };
 
@@ -48,6 +49,7 @@ async function admissionProof(input: ProofInput): Promise<MediaGenerationAdmissi
         ...(input.lyrics === undefined ? {} : { lyrics: input.lyrics }),
         ...(input.referenceImages === undefined ? {} : { referenceImages: input.referenceImages }),
         ...(input.referenceVideos === undefined ? {} : { referenceVideos: input.referenceVideos }),
+        ...(input.referenceAudios === undefined ? {} : { referenceAudios: input.referenceAudios }),
         normalizedSettings: input.normalizedSettings,
       },
     }],
@@ -212,6 +214,44 @@ describe("Venice media queue/retrieve/complete adapter", () => {
       audio: true,
       reference_image_urls: ["data:image/png;base64,AQID"],
     });
+  });
+
+  test("delivers approved audio donors exactly once and in approved order", async () => {
+    const proof = await admissionProof({
+      model: VENICE_MEDIA_MODELS.seedanceReference,
+      kind: "video",
+      prompt: "Use <Image 1>, <Audio 1>, then <Audio 2>.",
+      referenceImages: [{ path: "references/frame.png", artifactId: "frame", artifactInternalId: "11111111-1111-4111-8111-111111111111",
+        revision: 1, mimeType: "image/png", sizeBytes: 3, sha256: "a".repeat(64) }],
+      referenceAudios: [
+        { path: "references/voice.wav", artifactId: "voice", artifactInternalId: "22222222-2222-4222-8222-222222222222",
+          revision: 2, mimeType: "audio/x-wav", sizeBytes: 4, sha256: "b".repeat(64), durationSeconds: 3 },
+        { path: "references/rhythm.mp3", artifactId: "rhythm", artifactInternalId: "33333333-3333-4333-8333-333333333333",
+          revision: 3, mimeType: "audio/mpeg", sizeBytes: 5, sha256: "c".repeat(64), durationSeconds: 4 },
+      ],
+      normalizedSettings: { durationSeconds: 10, aspectRatio: "16:9", resolution: "720p", audioEnabled: true },
+    });
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new VeniceMediaLifecycleAdapter({
+      apiKey: "test-key",
+      resolveReferenceMediaUrls: async received => {
+        expect(received).toBe(proof);
+        return { images: ["data:image/png;base64,AQID"], videos: [],
+          audios: ["data:audio/wav;base64,BAUG", "data:audio/mpeg;base64,BwgJ"] };
+      },
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), ...(init ? { init } : {}) });
+        return Response.json({ model: VENICE_MEDIA_MODELS.seedanceReference, queue_id: "reference-audio-queue" });
+      },
+    });
+    await client.queueVeniceMediaGeneration(proof);
+    expect(requestJson(requests[0])).toMatchObject({
+      reference_image_urls: ["data:image/png;base64,AQID"],
+      reference_audio_urls: ["data:audio/wav;base64,BAUG", "data:audio/mpeg;base64,BwgJ"],
+    });
+    expect(() => toVeniceQueuePayload(proof, ["data:image/png;base64,AQID"], [], ["data:audio/mpeg;base64,BwgJ", "data:audio/wav;base64,BAUG"])).not.toThrow();
+    expect(() => toVeniceQueuePayload(proof, ["data:image/png;base64,AQID"], [], ["data:audio/mpeg;base64,BwgJ"])).toThrow("resolved");
+    expect(() => toVeniceQueuePayload(proof, ["data:image/png;base64,AQID"], [], ["data:audio/ogg;base64,BAUG", "data:audio/mpeg;base64,BwgJ"])).toThrow("resolved");
   });
 
   test("malformed acceptance and network uncertainty fence paid admission instead of yielding a retryable queue", async () => {

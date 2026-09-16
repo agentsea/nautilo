@@ -1372,6 +1372,15 @@ describe("M185 nautiloApp bridge client (iframe side)", () => {
       respondAsParent(state, message.requestId!, { ok: true, value });
       await expect(pending).resolves.toEqual(value === good ? good : { kind: "unavailable", code: "invalid_response" });
     }
+    new Function("window", buildNautiloAppBridgeClientScript({ mediaProxy: true, videoGeneration: true }))(state.win);
+    const audio = { artifactId: "123e4567-e89b-42d3-a456-426614174000", path: "references/voice.wav", label: "Voice guide", mediaKind: "audio", mimeType: "audio/wav", sizeBytes: 2048 };
+    const audioPending = state.win.nautiloApp!.media!.pick({ purpose: "references", multiple: true });
+    const audioMessage = state.capturedMessages.at(-1)!;
+    expect(audioMessage).toEqual({ type: "nautilo.app.media.req", requestId: audioMessage.requestId, op: "pick", purpose: "references", multiple: true });
+    respondAsParent(state, audioMessage.requestId!, { ok: true, value: { kind: "ready", imports: [], references: [audio], mediaIds: [], failures: [] } });
+    await expect(audioPending).resolves.toEqual({ kind: "ready", imports: [], references: [audio], mediaIds: [], failures: [] });
+    expect(JSON.stringify(audioMessage)).not.toContain(audio.path);
+    expect(JSON.stringify(audioMessage)).not.toContain(audio.artifactId);
   });
 
   test("serialized media proxy transports durable audio and image media without a generation grant", async () => {

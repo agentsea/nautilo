@@ -325,6 +325,10 @@ function isSafeWorkspaceReferenceMimeType(mediaKind: "image" | "video" | "audio"
   return workspaceMediaMimeMatchesKind(mediaKind, mimeType);
 }
 
+function isSeedanceAudioReferenceMimeType(mimeType: unknown): mimeType is "audio/mpeg" | "audio/wav" | "audio/x-wav" {
+  return mimeType === "audio/mpeg" || mimeType === "audio/wav" || mimeType === "audio/x-wav";
+}
+
 
 
 /**
@@ -1685,7 +1689,7 @@ export function MiniAppSurface({
         shotLabel,
         briefDigest: request.sourceFingerprint,
         documentRevision: request.document.revision,
-        job: { ...coordinatorVideoJob(request), ...(job.referenceImages ? { referenceImages: [...job.referenceImages] } : {}), ...(job.referenceVideos ? { referenceVideos: [...job.referenceVideos] } : {}) },
+        job: { ...coordinatorVideoJob(request), ...(job.referenceImages ? { referenceImages: [...job.referenceImages] } : {}), ...(job.referenceVideos ? { referenceVideos: [...job.referenceVideos] } : {}), ...(job.referenceAudios ? { referenceAudios: [...job.referenceAudios] } : {}) },
       }, session.token);
       if (videoGenerationSessionRef.current !== session || boundTargetRef.current !== target) return { kind: "expired" as const };
       // The full prompt has already left the parent for D525; retain only the
@@ -1806,7 +1810,8 @@ export function MiniAppSurface({
     if (!isCurrent()) return null;
     const preview = await openNativeWorkspacePreview(artifact, target.roomId, cancellation);
     if (!preview) return null;
-    if (!isCurrent() || !workspaceMediaMimeMatchesKind(preview.mediaKind, artifact.mimeType)) {
+    const transportCompatible: boolean = workspaceMediaMimeMatchesKind(preview.mediaKind, artifact.mimeType);
+    if (!isCurrent() || (!transportCompatible && !(preview.mediaKind === "audio" && artifact.mimeType.startsWith("audio/")))) {
       void desktopAPI?.mediaProxy?.close(preview.revokeToken);
       return null;
     }
@@ -2102,7 +2107,8 @@ export function MiniAppSurface({
         if (!current() || videoMediaPickResolveRef.current !== resolve) return;
         setWorkspaceMediaPicker({ ...base, artifacts: artifacts.filter(a => {
           const kind = a.mimeType.split("/")[0];
-          return (kind === "image" || kind === "video" || (input.purpose === "media" && kind === "audio")) && isSafeWorkspaceReferenceMimeType(kind, a.mimeType);
+          return (kind === "image" || kind === "video" || kind === "audio") &&
+            (isSafeWorkspaceReferenceMimeType(kind, a.mimeType) || (input.purpose === "references" && kind === "audio"));
         }), loading: false, error: null });
       }).catch(() => { if (current() && videoMediaPickResolveRef.current === resolve) setWorkspaceMediaPicker({ ...base, artifacts: [], loading: false, error: "Media could not be loaded. Close this picker and try again." }); });
     });
@@ -2110,7 +2116,9 @@ export function MiniAppSurface({
     const result: Extract<VideoMediaPickResult, { kind: "ready" }> = { kind: "ready", imports: [], references: [], mediaIds: [], failures: [] };
     const accept = (data: { artifact: Omit<WorkspaceMediaArtifact, "revision">; label: string; mediaKind: "image" | "video" | "audio"; durationSec?: number; frameRate?: { numerator: number; denominator: number } }) => {
       const a = data.artifact;
-      if (!isSafeWorkspaceVideoImportLabel(data.label) || !WORKSPACE_ARTIFACT_ID.test(a.artifactId) || !LOGICAL_WORKSPACE_PATH.test(a.path) || !Number.isSafeInteger(a.size) || a.size <= 0 || !isSafeWorkspaceReferenceMimeType(data.mediaKind, a.mimeType) || (input.purpose === "references" && data.mediaKind === "audio")) return false;
+      const safeMime = isSafeWorkspaceReferenceMimeType(data.mediaKind, a.mimeType) ||
+        (input.purpose === "references" && data.mediaKind === "audio" && isSeedanceAudioReferenceMimeType(a.mimeType));
+      if (!isSafeWorkspaceVideoImportLabel(data.label) || !WORKSPACE_ARTIFACT_ID.test(a.artifactId) || !LOGICAL_WORKSPACE_PATH.test(a.path) || !Number.isSafeInteger(a.size) || a.size <= 0 || !safeMime) return false;
       if (input.purpose === "references") { result.references.push({ artifactId: a.artifactId, path: a.path, label: data.label, mediaKind: data.mediaKind, mimeType: a.mimeType, sizeBytes: a.size }); return true; }
       const common = { kind: "ready" as const, mediaRef: a.path, label: data.label, source: { kind: "workspace-artifact" as const, artifactId: a.artifactId, path: a.path } };
       if (data.mediaKind === "image") result.imports.push({ ...common, mediaKind: "image" });
@@ -2159,6 +2167,11 @@ export function MiniAppSurface({
         const kind = exact.mimeType.split("/")[0];
         if (kind !== "image" && kind !== "video" && kind !== "audio") continue;
         if (input.purpose === "references" && kind === "image") { if (!accept({ artifact: exact, label: workspaceMediaPickerName(exact, labels), mediaKind: kind })) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "unsupported_type" }); continue; }
+        if (input.purpose === "references" && kind === "audio") {
+          if (!isSeedanceAudioReferenceMimeType(exact.mimeType)) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "unsupported_type" });
+          else if (!accept({ artifact: exact, label: workspaceMediaPickerName(exact, labels), mediaKind: "audio" })) result.failures.push({ label: workspaceMediaPickerName(exact, labels), code: "unsupported_type" });
+          continue;
+        }
         const controller = new AbortController();
         const cancel = () => controller.abort();
         workspaceMediaImportCancelRef.current = cancel;
@@ -2176,7 +2189,7 @@ export function MiniAppSurface({
         if (!current() || !latest.ok) return unavailable("stale_project");
         for (const id of selection.mediaIds) {
           const old = parsed.document.project.media.find(m => m.id === id), now = latest.document.project.media.find(m => m.id === id);
-          if (input.purpose === "references" && old && now && now.kind !== "audio" && JSON.stringify(old.source) === JSON.stringify(now.source) && old.ref === now.ref && old.kind === now.kind) result.mediaIds.push(id);
+          if (input.purpose === "references" && old && now && JSON.stringify(old.source) === JSON.stringify(now.source) && old.ref === now.ref && old.kind === now.kind) result.mediaIds.push(id);
           else result.failures.push({ label: old?.label ?? "Media Bin item", code: "stale_project" });
         }
       }

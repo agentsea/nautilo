@@ -215,11 +215,16 @@ const videoReferenceContentSchema = z.object({
   ...referenceContentBaseSchema,
   mimeType: z.enum(["video/mp4", "video/quicktime"]),
 }).strict();
+const audioReferenceContentSchema = z.object({
+  ...referenceContentBaseSchema,
+  mimeType: z.enum(["audio/mpeg", "audio/wav", "audio/x-wav"]),
+}).strict();
 const videoJobSchema = z.object({
   /** Catalog identity, resolved to the D525 provider request only by the server. */
   modelId: videoCatalogModelSchema,
   referenceImages: z.array(z.object({ path: z.string().min(1) }).strict()).max(30).optional(),
   referenceVideos: z.array(z.object({ path: z.string().min(1) }).strict()).max(10).optional(),
+  referenceAudios: z.array(z.object({ path: z.string().min(1) }).strict()).max(10).optional(),
   prompt: videoPromptSchema,
   /** These are user requests, not iframe-owned defaults or capability rules. */
   durationSeconds: positiveIntegerSchema.optional(),
@@ -244,6 +249,8 @@ const videoApprovalSchema = z.object({
       referenceImages: positiveIntegerSchema.max(30).optional(),
       referenceVideos: positiveIntegerSchema.max(10).optional(),
       referenceVideoSeconds: z.number().min(2).max(30).optional(),
+      referenceAudios: positiveIntegerSchema.max(10).optional(),
+      referenceAudioSeconds: z.number().min(2).max(30).optional(),
     }).strict(),
     referenceImages: z.array(z.object({
       index: positiveIntegerSchema,
@@ -257,6 +264,13 @@ const videoApprovalSchema = z.object({
       label: z.string(),
       durationSeconds: z.number().min(2).max(30),
       content: videoReferenceContentSchema.optional(),
+    }).strict()).max(10).optional(),
+    referenceAudios: z.array(z.object({
+      index: positiveIntegerSchema,
+      artifactId: z.string(),
+      label: z.string(),
+      durationSeconds: z.number().min(2).max(30),
+      content: audioReferenceContentSchema.optional(),
     }).strict()).max(10).optional(),
     prompt: z.object({ characterCount: positiveIntegerSchema, summary: safeStatusMessageSchema, truncated: z.boolean() }).strict(),
     quote: z.object({ currency: z.literal("USD"), amountMicros: nonNegativeIntegerSchema, display: z.string().regex(/^USD [0-9]+\.[0-9]{6}$/u) }).strict(),
@@ -296,6 +310,8 @@ export const videoGenerationSubmitDtoV1Schema = z.object({
     referenceImages: positiveIntegerSchema.max(30).optional(),
     referenceVideos: positiveIntegerSchema.max(10).optional(),
     referenceVideoSeconds: z.number().min(2).max(30).optional(),
+    referenceAudios: positiveIntegerSchema.max(10).optional(),
+    referenceAudioSeconds: z.number().min(2).max(30).optional(),
   }).strict(),
   failure: z.object({ code: z.string().min(1).max(128), message: safeStatusMessageSchema, creditsRefunded: z.boolean().optional() }).strict().optional(),
   recoveryActions: z.array(recoveryActionSchema).max(16),

@@ -37,7 +37,7 @@ const MAX_RETRIEVE_SCHEDULE_ATTEMPT = 30;
 
 export type VeniceQueuePayload =
   | { model: "seedance-2-5-text-to-video-basic"; prompt: string; duration: string; aspect_ratio: string; resolution: string; audio: boolean }
-  | { model: "seedance-2-5-reference-to-video-basic"; prompt: string; duration: string; aspect_ratio: string; resolution: string; audio: boolean; reference_image_urls?: string[]; reference_video_urls?: string[] }
+  | { model: "seedance-2-5-reference-to-video-basic"; prompt: string; duration: string; aspect_ratio: string; resolution: string; audio: boolean; reference_image_urls?: string[]; reference_video_urls?: string[]; reference_audio_urls?: string[] }
   | { model: "minimax-h3-enhanced-text-to-video"; prompt: string; duration: string; aspect_ratio: string; resolution: string }
   | { model: "sonilo-v1-1-music"; prompt: string; duration_seconds: number }
   | { model: "minimax-music-v26"; prompt: string; lyrics_prompt?: string; force_instrumental: boolean };
@@ -103,7 +103,7 @@ export interface VeniceMediaLifecycleConfig {
   readonly signedDeliveryAllowedHosts?: readonly string[];
   readonly now?: () => Date;
   /** Server-only exact Artifact resolver. Returned data URLs are used once and never persisted. */
-  readonly resolveReferenceMediaUrls?: (proof: MediaGenerationAdmissionProof) => Promise<{ images: readonly string[]; videos: readonly string[] }>;
+  readonly resolveReferenceMediaUrls?: (proof: MediaGenerationAdmissionProof) => Promise<{ images: readonly string[]; videos: readonly string[]; audios: readonly string[] }>;
   readonly resolveReferenceImageUrls?: (
     proof: MediaGenerationAdmissionProof,
   ) => Promise<readonly string[]>;
@@ -161,6 +161,7 @@ export function toVeniceQueuePayload(
   proof: MediaGenerationAdmissionProof,
   referenceImageUrls?: readonly string[],
   referenceVideoUrls?: readonly string[],
+  referenceAudioUrls?: readonly string[],
 ): VeniceQueuePayload {
   const model = proofModelOrThrow(proof);
   const { prompt, lyrics, normalizedSettings } = proof.requestPayload;
@@ -178,9 +179,11 @@ export function toVeniceQueuePayload(
       if ((!referenceImageUrls?.length && !referenceVideoUrls?.length) ||
           (referenceImageUrls?.length ?? 0) !== (proof.requestPayload.referenceImages?.length ?? 0) ||
           (referenceVideoUrls?.length ?? 0) !== (proof.requestPayload.referenceVideos?.length ?? 0) ||
-          (referenceImageUrls?.length ?? 0) > 30 || (referenceVideoUrls?.length ?? 0) > 10 ||
+          (referenceAudioUrls?.length ?? 0) !== (proof.requestPayload.referenceAudios?.length ?? 0) ||
+          (referenceImageUrls?.length ?? 0) > 30 || (referenceVideoUrls?.length ?? 0) > 10 || (referenceAudioUrls?.length ?? 0) > 10 ||
           referenceImageUrls?.some((url) => !url.startsWith("data:image/")) ||
-          referenceVideoUrls?.some((url) => !url.startsWith("data:video/"))) {
+          referenceVideoUrls?.some((url) => !url.startsWith("data:video/")) ||
+          referenceAudioUrls?.some((url) => !url.startsWith("data:audio/mpeg;base64,") && !url.startsWith("data:audio/wav;base64,"))) {
         throw new Error("reference media must be resolved by the server before queue submission");
       }
       return {
@@ -192,6 +195,7 @@ export function toVeniceQueuePayload(
         audio: booleanSetting(normalizedSettings.audioEnabled, "audio setting"),
         ...(referenceImageUrls?.length ? { reference_image_urls: [...referenceImageUrls] } : {}),
         ...(referenceVideoUrls?.length ? { reference_video_urls: [...referenceVideoUrls] } : {}),
+        ...(referenceAudioUrls?.length ? { reference_audio_urls: [...referenceAudioUrls] } : {}),
       };
     case "minimax-h3-enhanced-text-to-video":
       return {
@@ -375,11 +379,14 @@ export class VeniceMediaLifecycleAdapter {
     const model = proofModelOrThrow(proof);
     let referenceImageUrls: readonly string[] | undefined;
     let referenceVideoUrls: readonly string[] | undefined;
+    let referenceAudioUrls: readonly string[] | undefined;
     if (model === "seedance-2-5-reference-to-video-basic") {
       try {
         if (this.config.resolveReferenceMediaUrls) {
           const resolved = await this.config.resolveReferenceMediaUrls(proof);
-          referenceImageUrls = resolved.images; referenceVideoUrls = resolved.videos;
+          referenceImageUrls = resolved.images;
+          referenceVideoUrls = resolved.videos;
+          referenceAudioUrls = resolved.audios;
         } else { referenceImageUrls = await this.config.resolveReferenceImageUrls?.(proof); }
       } catch {
         throw new VeniceMediaLifecycleError(proof.receiptId, classifyVeniceMediaFailure({
@@ -388,7 +395,7 @@ export class VeniceMediaLifecycleAdapter {
         }));
       }
     }
-    const queuePayload = toVeniceQueuePayload(proof, referenceImageUrls, referenceVideoUrls);
+    const queuePayload = toVeniceQueuePayload(proof, referenceImageUrls, referenceVideoUrls, referenceAudioUrls);
     let response: Response;
     try {
       response = await this.fetchImpl(endpointUrl(queueEndpointForMedia(proof)), this.requestInit(queuePayload));

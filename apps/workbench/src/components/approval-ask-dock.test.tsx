@@ -428,11 +428,12 @@ describe("ApprovalAskDock (capability scope)", () => {
         preview: {
           mediaKind: "video",
           model: "seedance-2-5-reference-to-video-basic",
-          settings: { durationSeconds: 10, aspectRatio: "16:9", resolution: "720p", audio: true, referenceImages: 2 },
+          settings: { durationSeconds: 10, aspectRatio: "16:9", resolution: "720p", audio: true, referenceImages: 2, referenceAudios: 1, referenceAudioSeconds: 2.75 },
           referenceImages: [
             { index: 1, artifactId: "workspace-noir", label: "jeannie-noir.png" },
             { index: 2, artifactId: "workspace-light", label: "neon-light.png" },
           ],
+          referenceAudios: [{ index: 1, artifactId: "workspace-voice", label: "voice-guide.wav", durationSeconds: 2.75 }],
           prompt: { characterCount: 40, summary: "Use <Image 1> and <Image 2>.", truncated: false },
           quote: { currency: "USD", amountMicros: 1_440_000, display: "USD 1.440000" },
           spendNotice: "Approving starts a paid generation using this exact quote.",
@@ -447,8 +448,10 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(host.textContent).toContain("Seedance 2.5 · Advanced reference");
     expect(host.textContent).toContain("<Image 1>jeannie-noir.png");
     expect(host.textContent).toContain("<Image 2>neon-light.png");
+    expect(host.textContent).toContain("Audio references");
+    expect(host.textContent).toContain("<Audio 1> voice-guide.wav · 2.75s");
     expect(host.textContent).toContain("may reject references containing people");
-    expect(host.querySelectorAll('[data-testid="media-generation-reference-list"] li')).toHaveLength(2);
+    expect(host.querySelectorAll('[data-testid="media-generation-reference-list"] li')).toHaveLength(3);
     root.unmount();
     host.remove();
   });

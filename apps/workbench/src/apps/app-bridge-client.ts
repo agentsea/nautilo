@@ -1347,7 +1347,7 @@ function bridgeClientInstaller(
           const imports: Extract<VideoMediaPickResult, { kind: "ready" }>["imports"] = [];
           for (const item of r.imports) { const parsed = parseImportedMedia(item); if (parsed.kind !== "ready" || !parsed.source) return bad; imports.push({ ...parsed, source: parsed.source }); }
           const references: Extract<VideoMediaPickResult, { kind: "ready" }>["references"] = [];
-          for (const asset of r.references as unknown[]) { const parsed = parseVideoGenerationReferenceImport({ kind: "ready", asset }); if (parsed.kind !== "ready" || parsed.asset.mediaKind === "audio") return bad; references.push(parsed.asset); }
+          for (const asset of r.references as unknown[]) { const parsed = parseVideoGenerationReferenceImport({ kind: "ready", asset }); if (parsed.kind !== "ready") return bad; references.push(parsed.asset); }
           if (!r.mediaIds.every(id => typeof id === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(id)) || !r.failures.every(f => isClosedVideoRecord(f, ["label", "code"]) && typeof f.label === "string" && f.label.length > 0 && !/[\r\n\0]/u.test(f.label) && typeof f.code === "string" && /^[a-z_]+$/u.test(f.code))) return bad;
           if ((input.purpose === "media" ? references.length || r.mediaIds.length : imports.length) || (!input.multiple && imports.length + references.length + r.mediaIds.length > 1)) return bad;
           return { kind: "ready", imports, references, mediaIds: r.mediaIds as string[], failures: r.failures as { label: string; code: string }[] };

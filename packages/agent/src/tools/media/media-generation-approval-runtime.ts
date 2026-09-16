@@ -218,6 +218,8 @@ function safeSettings(request: NormalizedMediaGenerationRequest): MediaGeneratio
         ...(request.referenceImages.length ? { referenceImages: request.referenceImages.length } : {}),
         ...(request.referenceVideos?.length ? { referenceVideos: request.referenceVideos.length,
           referenceVideoSeconds: request.referenceVideos.reduce((sum, ref) => sum + ref.durationSeconds, 0) } : {}),
+        ...(request.referenceAudios?.length ? { referenceAudios: request.referenceAudios.length,
+          referenceAudioSeconds: request.referenceAudios.reduce((sum, ref) => sum + ref.durationSeconds, 0) } : {}),
       };
     case "minimax-h3-enhanced-text-to-video":
       return {
@@ -406,6 +408,10 @@ export function createMediaGenerationPreparedApproval(input: {
     ...(preparation.request.model === "seedance-2-5-reference-to-video-basic"
       ? {
           ...(preparation.request.referenceVideos?.length ? { referenceVideos: preparation.request.referenceVideos.map((reference, index) => ({
+            index: index + 1, artifactId: reference.artifactId, label: referenceLabel(reference.path), durationSeconds: reference.durationSeconds,
+            content: { sha256: reference.sha256, sizeBytes: reference.sizeBytes, mimeType: reference.mimeType },
+          })) } : {}),
+          ...(preparation.request.referenceAudios?.length ? { referenceAudios: preparation.request.referenceAudios.map((reference, index) => ({
             index: index + 1, artifactId: reference.artifactId, label: referenceLabel(reference.path), durationSeconds: reference.durationSeconds,
             content: { sha256: reference.sha256, sizeBytes: reference.sizeBytes, mimeType: reference.mimeType },
           })) } : {}),

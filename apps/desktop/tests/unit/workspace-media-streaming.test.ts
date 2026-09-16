@@ -94,6 +94,30 @@ describe("native Workspace media streaming", () => {
       } else expect(result).toEqual({ ok: false, code: "source_inspection_unavailable" });
     }
   });
+  test("stages WAV bytes declared as audio/x-wav while returning canonical WAV inspection", async () => {
+    const wavBytes = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x41, 0x56, 0x45,
+      0x66, 0x6d, 0x74, 0x20, 0x10, 0, 0, 0, 1, 0, 1, 0,
+      0x40, 0x1f, 0, 0, 0x40, 0x1f, 0, 0, 1, 0, 8, 0,
+      0x64, 0x61, 0x74, 0x61, 0, 0, 0, 0,
+    ]);
+    const artifact = { ...row, path: "references/voice.wav", mimeType: "audio/x-wav", size: wavBytes.byteLength };
+    const result = await stageWorkspaceMedia(artifact, deps((async (url) => {
+      if (!(url instanceof Request ? url.url : String(url)).includes("/bytes?")) return Response.json(artifact);
+      return new Response(wavBytes, { headers: { "content-type": "audio/x-wav" } });
+    }) as typeof fetch, {
+      inspect: async (_ffmpegPath, sourcePath) => {
+        expect(new Uint8Array(await fs.readFile(sourcePath))).toEqual(wavBytes);
+        return { mediaKind: "audio", mimeType: "audio/wav", extension: "wav", durationSec: 2 };
+      },
+      waveform: async () => ({ peaks: [0, 0.5, 1], samplesPerSecond: 100 }),
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.code);
+    roots.push(result.data.parentDir);
+    expect(result.data.metadata).toEqual({ mediaKind: "audio", mimeType: "audio/wav", extension: "wav", durationSec: 2 });
+    expect(result.data.waveform).toEqual({ peaks: [0, 0.5, 1], samplesPerSecond: 100 });
+  });
   test("rejects stale revisions, short or long bytes, wrong MIME, inspection failure and abort", async () => {
     for (const failure of ["revision", "short", "long", "mime", "inspect", "abort"] as const) {
       let metadataReads = 0;

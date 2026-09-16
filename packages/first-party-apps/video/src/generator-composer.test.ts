@@ -54,13 +54,14 @@ test("shared reference edits retain creative metadata and round-trip through the
   brief.references = [
     { id: "image1", name: "Subject", mediaKind: "image", role: "Identity", instruction: "Keep the coat", source: { kind: "project-media", mediaId: "subject" } },
     { id: "video1", name: "Movement", mediaKind: "video", source: { kind: "project-media", mediaId: "motion" } },
+    { id: "audio1", name: "Delivery", mediaKind: "audio", source: { kind: "project-media", mediaId: "voice" } },
   ];
   const edited = setSharedGenerationReferences(brief, sharedGenerationReferences(brief).filter((ref) => ref.id !== "video1"));
-  expect(sharedGenerationReferences(edited)).toEqual([{ ...brief.references[0]!, mention: "@Image1" }]);
-  expect(brief.references).toHaveLength(2);
+  expect(sharedGenerationReferences(edited)).toEqual([{ ...brief.references[0]!, mention: "@Image1" }, { ...brief.references[2]!, mention: "@Audio1" }]);
+  expect(brief.references).toHaveLength(3);
   const parsed = parseVideoHtml(serializeVideoHtml(createDefaultManifest(), { ...createEmptyProject(), generationBrief: edited }));
   expect(parsed.ok).toBe(true);
-  if (parsed.ok) expect(sharedGenerationReferences(parsed.document.project.generationBrief!)).toEqual([{ ...brief.references[0]!, mention: "@Image1" }]);
+  if (parsed.ok) expect(sharedGenerationReferences(parsed.document.project.generationBrief!)).toEqual([{ ...brief.references[0]!, mention: "@Image1" }, { ...brief.references[2]!, mention: "@Audio1" }]);
 });
 
 test("switching modes never replaces references, clips or an existing scene", () => {

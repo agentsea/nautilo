@@ -221,16 +221,33 @@ async function click(label: string) {
 test("selection survives source, view and type changes and reuses existing Media Bin identities", async () => {
   installDom();
   const picks: unknown[] = [];
-  await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[image, video, audio]} labels={{}} loading={false} error={null} purpose="references" multiple projectMedia={[{ id: "media_existing", label: "Opening", kind: "video", artifactId: video.artifactId, path: video.path }]} onSelect={() => undefined} onConfirm={selection => picks.push(selection)} onUpload={() => undefined} onCancel={() => undefined} />));
-  expect(host!.textContent).not.toContain("voice.wav");
+  const labels = { [`${audio.artifactId}\0${audio.path}`]: "Voice guide" };
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[image, video, audio]} labels={labels} loading={false} error={null} purpose="references" multiple projectMedia={[{ id: "media_existing", label: "Opening", kind: "video", artifactId: video.artifactId, path: video.path }, { id: "media_audio", label: "Voice guide", kind: "audio", artifactId: audio.artifactId, path: audio.path }]} onSelect={() => undefined} onConfirm={selection => picks.push(selection)} onUpload={() => undefined} onCancel={() => undefined} />));
+  expect(host!.textContent).toContain("Voice guide");
+  expect(host!.textContent).toContain("MP3/WAV · 2–30 sec · max 15 MB");
   await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${image.path}"]`)!.click());
   await click("Media Bin");
   await click("List view");
+  await click("Audio");
+  expect(host!.querySelector<HTMLButtonElement>(`button[title="${audio.path}"]`)).not.toBeNull();
+  await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${audio.path}"]`)!.click());
   await click("Videos");
   await act(async () => host!.querySelector<HTMLButtonElement>(`button[title="${video.path}"]`)!.click());
-  expect(host!.textContent).toContain("2 selected");
-  await click("Add 2 references");
-  expect(picks).toEqual([{ artifacts: [image], mediaIds: ["media_existing"] }]);
+  expect(host!.textContent).toContain("3 selected");
+  await click("Add 3 references");
+  expect(picks).toEqual([{ artifacts: [image], mediaIds: ["media_existing", "media_audio"] }]);
+});
+
+test("unsupported reference audio remains discoverable with an honest format limitation", async () => {
+  installDom();
+  const ogg = { ...audio, id: "audio-ogg", artifactId: "audio-ogg-artifact", path: "audio/voice-guide.ogg", mimeType: "audio/ogg" };
+  await act(async () => root!.render(<VideoWorkspaceMediaPicker artifacts={[ogg]} labels={{}} loading={false} error={null} purpose="references" multiple onSelect={() => undefined} onConfirm={() => undefined} onUpload={() => undefined} onCancel={() => undefined} loadPreview={async () => ({ url: "nautilo-media://proxy/ogg", mediaKind: "audio", waveform: { peaks: [0.2, 0.6], samplesPerSecond: 100 }, release: () => undefined })} />));
+  expect(host!.textContent).toContain("voice-guide.ogg");
+  expect(host!.textContent).toContain("Seedance needs MP3 or WAV");
+  await act(async () => { TestIntersectionObserver.instances[0]!.emit(true); await Promise.resolve(); });
+  expect(host!.querySelector('svg[aria-label="Audio waveform"]')).not.toBeNull();
+  await click("Audio");
+  expect(host!.querySelectorAll("li")).toHaveLength(1);
 });
 
 test("computer keeps batch selection but replaces a single selection", async () => {

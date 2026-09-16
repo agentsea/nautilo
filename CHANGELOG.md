@@ -13,6 +13,11 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Video generation accepts MP3/WAV audio references from Artifacts, the Media Bin,
+  and computer uploads. Audio references retain waveform/playback previews and
+  prompt mentions, appear in paid review, and reach Seedance with validated
+  source bytes and duration. Audio donors require an image or video reference.
+
 - Mini-app editors release their live sessions across reloads and recover failed
   cleanup before subsequent agent edits. Read-only previews now tell Genie to
   use saved-document tools, and write guards no longer misidentify every editor

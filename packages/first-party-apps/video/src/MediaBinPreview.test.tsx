@@ -138,6 +138,24 @@ test("audio cards render actual peaks, remain silent until played, and pause wit
   expect(h.host.querySelector("audio")).toBeNull();
 });
 
+test("saved audio references use the same waveform and playback preview", async () => {
+  const h = await fixture({
+    openPreview: async (request: unknown) => { h.requests.push(request); return { kind: "ready", url: "https://media.invalid/reference.wav", revokeToken: "reference-audio", mimeType: "audio/wav", sizeBytes: 10,
+      waveform: { peaks: [0.1, 1, 0.4], samplesPerSecond: 2 } }; },
+    closePreview: async () => undefined,
+  } as unknown as NautiloAppBridge["media"]);
+  await act(async () => {
+    root?.render(createElement(MediaBinPreview, {
+      reference: { id: "ref_audio", name: "Reference voice", mediaKind: "audio", source: { kind: "workspace-artifact", artifactId: "saved-audio", path: "voice.wav", mimeType: "audio/wav", sizeBytes: 10 } },
+      enabled: true, active: false, timelinePlaying: false, onPlay: () => undefined,
+    }));
+    await Promise.resolve();
+  });
+  expect(h.requests).toEqual([{ referenceId: "ref_audio" }]);
+  expect(h.host.querySelector('[aria-label="Audio waveform"]')).not.toBeNull();
+  expect(h.host.querySelector('audio[aria-label="Preview Reference voice"]')).not.toBeNull();
+});
+
 test("audio remains playable when waveform data is unavailable", async () => {
   const h = await fixture(undefined, "audio");
   await h.render();

@@ -57,6 +57,36 @@ describe("D378 Video generation injected routes", () => {
     }
   });
 
+  test("forwards audio paths into canonical preparation and rejects them for text-only models", async () => {
+    const app = Fastify();
+    attestedProjectRequest(app);
+    const received: unknown[] = [];
+    videoGenerationRoutes(app, {
+      attestFirstPartyVideo: async () => true,
+      async findProjectArtifact() { return project; },
+      coordinator: {
+        async prepare(input) {
+          received.push(normalizeMediaGenerationIntent(input.intent));
+          return { ok: false, code: "quote_unavailable", recovery: "No provider called by this test." };
+        },
+        async submit() { throw new Error("No paid submission expected"); },
+      },
+    });
+    try {
+      const referenceAudios = [{ path: "dialogue.wav" }];
+      const job = { ...body.job, modelId: "venice:seedance-2-5-reference-to-video-basic",
+        referenceImages: [{ path: "subject.png" }], referenceAudios };
+      const response = await app.inject({ method: "POST", url: "/api/video-generations/prepare", payload: { ...body, job } });
+      expect(response.statusCode).toBe(422);
+      expect(received).toHaveLength(1);
+      expect(received[0]).toMatchObject({ referenceAudios });
+      const invalid = await app.inject({ method: "POST", url: "/api/video-generations/prepare",
+        payload: { ...body, job: { ...body.job, referenceAudios } } });
+      expect(invalid.statusCode).toBe(400);
+      expect(received).toHaveLength(1);
+    } finally { await app.close(); }
+  });
+
   test("denies an unattested caller before parsing or provider work", async () => {
     const app = Fastify();
     attestedProjectRequest(app);

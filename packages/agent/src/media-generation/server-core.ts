@@ -203,7 +203,11 @@ function requestPayload(request: NormalizedMediaGenerationRequest): MediaGenerat
     prompt: request.prompt,
     ...("lyrics" in request && request.lyrics !== undefined ? { lyrics: request.lyrics } : {}),
     ...(request.model === "seedance-2-5-reference-to-video-basic"
-      ? { referenceImages: request.referenceImages, ...(request.referenceVideos ? { referenceVideos: request.referenceVideos } : {}) }
+      ? {
+          referenceImages: request.referenceImages,
+          ...(request.referenceVideos?.length ? { referenceVideos: request.referenceVideos } : {}),
+          ...(request.referenceAudios?.length ? { referenceAudios: request.referenceAudios } : {}),
+        }
       : {}),
     normalizedSettings: normalizedSettings(request),
   };

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { VENICE_REFERENCE_VIDEO_MAX_BYTES, VENICE_REFERENCE_VIDEO_SIZE_WARNING } from "@nautilo/types";
 import type { DirectDatabase, MediaGenerationAdmissionProof } from "@nautilo/db";
 import sharp from "sharp";
+import { referenceVbrMp3Fixture, referenceWavFixture } from "./media-generation-reference-audio-metadata.test";
 import { referenceMovieFixture } from "./reference-video-metadata.test";
 import { normalizeMediaGenerationIntent, toVeniceQuotePricingRequest } from "../../../agent/src/media-generation/contracts";
 import {
@@ -276,6 +277,78 @@ describe("Seedance reference request authority", () => {
 
     const changed = { ...operations, readBytes: async () => new Uint8Array([1, 2, 3]) };
     expect(resolveApprovedReferenceImageUrls({} as DirectDatabase, proof, changed)).rejects.toThrow("changed");
+  });
+
+  test("binds ordered audio bytes and revalidates exact content before provider delivery", async () => {
+    const { artifact: image, bytes: imageBytes } = await harness();
+    const wavBytes = referenceWavFixture(3);
+    const mp3Bytes = referenceVbrMp3Fixture();
+    const wav = { ...image, id: "66666666-6666-4666-8666-666666666666", artifactId: "audio-wav", path: "references/voice.wav",
+      mimeType: "audio/x-wav", size: wavBytes.byteLength, storageUri: "file:///test/voice.wav" };
+    const mp3 = { ...image, id: "77777777-7777-4777-8777-777777777777", artifactId: "audio-mp3", path: "references/rhythm.mp3",
+      mimeType: "audio/mpeg", size: mp3Bytes.byteLength, storageUri: "file:///test/rhythm.mp3" };
+    const artifacts = [image, wav, mp3];
+    const operations = {
+      findByPath: async ({ path, readableNamespaceIds }: { path: string; readableNamespaceIds: string[] }) =>
+        readableNamespaceIds.includes(scope.namespaceId) ? artifacts.find(item => item.path === path) ?? null : null,
+      findByInternalId: async ({ internalId: id, mutableNamespaceIds }: { internalId: string; mutableNamespaceIds: string[] }) =>
+        mutableNamespaceIds.includes(scope.namespaceId) ? artifacts.find(item => item.id === id) ?? null : null,
+      readBytes: async (uri: string) => uri === wav.storageUri ? wavBytes : uri === mp3.storageUri ? mp3Bytes : imageBytes,
+    } as unknown as MediaReferenceArtifactOperations;
+    const request = await resolveMediaGenerationReferenceRequest({} as DirectDatabase, scope,
+      normalizeMediaGenerationIntent({
+        model: "seedance-2-5-reference-to-video-basic",
+        prompt: "Use <Image 1>, <Audio 1>, then <Audio 2>.",
+        referenceImages: [{ path: image.path }],
+        referenceAudios: [{ path: wav.path }, { path: mp3.path }],
+      }), operations);
+    if (request.model !== "seedance-2-5-reference-to-video-basic") throw new Error("Expected reference model");
+    expect(request.referenceAudios).toMatchObject([
+      { path: wav.path, artifactId: wav.artifactId, mimeType: "audio/x-wav", durationSeconds: 3 },
+      { path: mp3.path, artifactId: mp3.artifactId, mimeType: "audio/mpeg" },
+    ]);
+    const proof = { ...scope, requestPayload: { ...request, version: 1, normalizedSettings: {} } } as unknown as MediaGenerationAdmissionProof;
+    const delivery = await resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, operations);
+    expect(delivery.audios).toEqual([
+      `data:audio/wav;base64,${Buffer.from(wavBytes).toString("base64")}`,
+      `data:audio/mpeg;base64,${Buffer.from(mp3Bytes).toString("base64")}`,
+    ]);
+    expect(resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, {
+      ...operations,
+      findByInternalId: async query => query.internalId === image.id ? operations.findByInternalId(query) : null,
+    })).rejects.toThrow("changed");
+    Object.assign(wav, { deletedAt: new Date() });
+    expect(resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, operations)).rejects.toThrow("changed");
+    Object.assign(wav, { deletedAt: null });
+    mp3.revision++;
+    expect(resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, operations)).rejects.toThrow("changed");
+    mp3.revision--;
+    const changedMp3 = mp3Bytes.slice(); changedMp3[changedMp3.length - 1] = changedMp3[changedMp3.length - 1]! ^ 1;
+    expect(resolveApprovedReferenceMediaUrls({} as DirectDatabase, proof, {
+      ...operations,
+      readBytes: async (uri) => uri === mp3.storageUri ? changedMp3 : operations.readBytes(uri),
+    })).rejects.toThrow("changed");
+  });
+
+  test("rejects audio MIME/content/timing mismatches and audio-only requests before quote", async () => {
+    const { artifact: image, bytes: imageBytes } = await harness();
+    const oneSecond = referenceWavFixture(1);
+    const audio = { ...image, id: "88888888-8888-4888-8888-888888888888", artifactId: "short-audio",
+      path: "references/voice.wav", mimeType: "audio/wav", size: oneSecond.byteLength, storageUri: "file:///test/voice.wav" };
+    const base = normalizeMediaGenerationIntent({ model: "seedance-2-5-reference-to-video-basic", prompt: "Use voice cadence",
+      referenceImages: [{ path: image.path }], referenceAudios: [{ path: audio.path }] });
+    const operations = {
+      findByPath: async ({ path }: { path: string }) => path === audio.path ? audio : path === image.path ? image : null,
+      findByInternalId: async () => null,
+      readBytes: async (uri: string) => uri === audio.storageUri ? oneSecond : imageBytes,
+    } as unknown as MediaReferenceArtifactOperations;
+    expect(resolveMediaGenerationReferenceRequest({} as DirectDatabase, scope, base,
+      operations)).rejects.toThrow("2–30 seconds");
+    audio.size = 4;
+    expect(resolveMediaGenerationReferenceRequest({} as DirectDatabase, scope, base,
+      { ...operations, readBytes: async (uri) => uri === audio.storageUri ? new Uint8Array([1, 2, 3, 4]) : imageBytes })).rejects.toThrow("readable MP3/WAV");
+    expect(() => normalizeMediaGenerationIntent({ model: "seedance-2-5-reference-to-video-basic", prompt: "Audio alone",
+      referenceAudios: [{ path: audio.path }] })).toThrow("image or video");
   });
 
   test("rejects person-workflow-hostile dimensions and duplicate paths before quote", async () => {

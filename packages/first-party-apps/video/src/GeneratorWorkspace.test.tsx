@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
 import { appendGenerationShot, createEmptyGenerationBrief, type GenerationBrief } from "./generation-brief";
+import { sharedGenerationReferences } from "./generator-composer";
 import type { NautiloVideoGenerationTakeStatus } from "./bridge";
 import { createEmptyProject, type VideoProject } from "./edl";
 
@@ -21,13 +22,13 @@ afterEach(async () => {
   original.clear();
 });
 
-async function fixture(importImages?: () => Promise<unknown>, simpleCompleted = false, active: boolean | "saved" = false) {
+async function fixture(importImages?: () => Promise<unknown>, simpleCompleted = false, active: boolean | "saved" = false, projectMedia: VideoProject["media"] = []) {
   win = new Window();
   for (const [key, value] of Object.entries({ window: win, document: win.document, navigator: win.navigator, getComputedStyle: win.getComputedStyle.bind(win), Event: win.Event, HTMLElement: win.HTMLElement, HTMLInputElement: win.HTMLInputElement, HTMLTextAreaElement: win.HTMLTextAreaElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     original.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   }
-  if (importImages) (win as unknown as { nautiloApp: unknown }).nautiloApp = { media: { openPreview: async () => ({ kind: "unavailable", code: "test" }), closePreview: async () => undefined, pick: async () => { const result = await importImages() as { kind: string; assets?: unknown[]; failures?: unknown[] }; return result.kind === "ready" ? { kind: "ready", imports: [], mediaIds: [], references: result.assets, failures: result.failures } : result; } } };
+  if (importImages) (win as unknown as { nautiloApp: unknown }).nautiloApp = { media: { openPreview: async () => ({ kind: "unavailable", code: "test" }), closePreview: async () => undefined, pick: async () => { const result = await importImages() as { kind: string; assets?: unknown[]; mediaIds?: string[]; failures?: unknown[] }; return result.kind === "ready" ? { kind: "ready", imports: [], mediaIds: result.mediaIds ?? [], references: result.assets ?? [], failures: result.failures ?? [] } : result; } } };
   const brief: GenerationBrief = appendGenerationShot(appendGenerationShot(createEmptyGenerationBrief(), { title: "Arrival", description: "A train reaches the station", durationSec: 4 }, () => "scene-one"), { title: "Departure", description: "The train leaves", durationSec: 6 }, () => "scene-two");
   const generated: string[][] = [];
   const placed: string[] = [];
@@ -38,13 +39,13 @@ async function fixture(importImages?: () => Promise<unknown>, simpleCompleted = 
   const host = win.document.createElement("div"); win.document.body.append(host);
   root = createRoot(host as unknown as HTMLElement);
   const Harness = () => {
-    const [project, setProject] = useState<VideoProject>(() => simpleCompleted ? { ...createEmptyProject(), generationBrief: createEmptyGenerationBrief(), media: [{ id: "saved-take", kind: "video", ref: "generated.mp4", source: { kind: "workspace-artifact", artifactId: "12345678-1234-4234-8234-123456789abc", path: "generated/take.mp4" } }], generatedTakes: [{ id: "take_generated", briefRevision: 1, mediaKind: "video", modelId: "model", settings: {}, artifact: { artifactId: "12345678-1234-4234-8234-123456789abc", path: "generated/take.mp4", zone: "workspace", mime: "video/mp4", bytes: 42 } }] } : { ...createEmptyProject(), generationBrief: brief });
+    const [project, setProject] = useState<VideoProject>(() => simpleCompleted ? { ...createEmptyProject(), generationBrief: createEmptyGenerationBrief(), media: [{ id: "saved-take", kind: "video", ref: "generated.mp4", source: { kind: "workspace-artifact", artifactId: "12345678-1234-4234-8234-123456789abc", path: "generated/take.mp4" } }], generatedTakes: [{ id: "take_generated", briefRevision: 1, mediaKind: "video", modelId: "model", settings: {}, artifact: { artifactId: "12345678-1234-4234-8234-123456789abc", path: "generated/take.mp4", zone: "workspace", mime: "video/mp4", bytes: 42 } }] } : { ...createEmptyProject(), generationBrief: brief, media: projectMedia });
     const [overrides, setOverrides] = useState<Partial<ComponentProps<typeof GeneratorWorkspace>>>({});
     updateProps = next => setOverrides(current => ({ ...current, ...next }));
     currentProject = overrides.project ?? project;
     const [documentKey, setDocumentKey] = useState("fixture-a");
     switchDocumentKey = () => setDocumentKey("fixture-b");
-    return <GeneratorWorkspace project={project} documentKey={documentKey} savedMediaIds={new Set(simpleCompleted ? ["saved-take"] : [])} enabled mutate={(change) => setProject((current) => ({ ...current, generationBrief: change(current.generationBrief ?? createEmptyGenerationBrief()) }))} onGenerate={(ids) => generated.push(ids ?? [])} onPlaceMedia={(id) => placed.push(id)} onPlaceSequence={() => undefined} onReturn={() => undefined} busy={active === true} onReconnectMedia={() => { reconnects++; }} modelControl={null} feedback={null} takes={active ? [{ takeId: "take_active", shotId: "scene-two", shotLabel: "Departure", documentRevision: 2 }] : simpleCompleted ? [{ takeId: "take_generated", shotId: "quick-brief", shotLabel: "Quick brief", documentRevision: 1 }] : []} statuses={active ? { take_active: { takeId: "take_active", revision: 1, state: active === "saved" ? "ready" : "generating", mediaKind: "video", modelId: "model", settings: {}, ...(active === "saved" ? { artifact: {artifactId:"12345678-1234-4234-8234-123456789abc",path:"generated/take.mp4",zone:"workspace" as const,mime:"video/mp4",bytes:42} } : {}) } satisfies NautiloVideoGenerationTakeStatus } : {}} unavailableIds={[]} progressForTake={() => active ? "Generation is active." : "Queued"} timingForTake={() => active ? "1m 12s elapsed · Typical time: about 2m 25s" : null} {...overrides} />;
+    return <GeneratorWorkspace project={project} documentKey={documentKey} savedMediaIds={new Set(simpleCompleted ? ["saved-take"] : projectMedia.map(media => media.id))} enabled mutate={(change) => setProject((current) => ({ ...current, generationBrief: change(current.generationBrief ?? createEmptyGenerationBrief()) }))} onGenerate={(ids) => generated.push(ids ?? [])} onPlaceMedia={(id) => placed.push(id)} onPlaceSequence={() => undefined} onReturn={() => undefined} busy={active === true} onReconnectMedia={() => { reconnects++; }} modelControl={null} feedback={null} takes={active ? [{ takeId: "take_active", shotId: "scene-two", shotLabel: "Departure", documentRevision: 2 }] : simpleCompleted ? [{ takeId: "take_generated", shotId: "quick-brief", shotLabel: "Quick brief", documentRevision: 1 }] : []} statuses={active ? { take_active: { takeId: "take_active", revision: 1, state: active === "saved" ? "ready" : "generating", mediaKind: "video", modelId: "model", settings: {}, ...(active === "saved" ? { artifact: {artifactId:"12345678-1234-4234-8234-123456789abc",path:"generated/take.mp4",zone:"workspace" as const,mime:"video/mp4",bytes:42} } : {}) } satisfies NautiloVideoGenerationTakeStatus } : {}} unavailableIds={[]} progressForTake={() => active ? "Generation is active." : "Queued"} timingForTake={() => active ? "1m 12s elapsed · Typical time: about 2m 25s" : null} {...overrides} />;
   };
   await act(async () => { root?.render(createElement(Harness)); });
   return { host, generated, placed, project: () => currentProject, update: (props: Partial<ComponentProps<typeof GeneratorWorkspace>>) => updateProps?.(props), reconnects: () => reconnects, window: win, switchDocumentKey: () => switchDocumentKey?.() };
@@ -85,6 +86,27 @@ test("batch image imports add the successful references together and keep partia
   expect(h.host.textContent).toContain("Subject");
   expect(h.host.textContent).toContain("Frame");
   expect(h.host.textContent).toContain("Could not add Broken (unavailable).");
+});
+
+test("unified reference imports keep audio and assign an Audio mention", async () => {
+  const h = await fixture(async () => ({ kind: "ready", assets: [
+    { artifactId: "artifact-image", path: "references/subject.png", label: "Subject", mediaKind: "image", mimeType: "image/png", sizeBytes: 42 },
+    { artifactId: "artifact-audio", path: "references/voice.wav", label: "Voice", mediaKind: "audio", mimeType: "audio/wav", sizeBytes: 43 },
+  ], failures: [] }));
+  await act(async () => { button(h.host, "+ Add references").click(); await Promise.resolve(); });
+  expect(h.host.textContent).toContain("@Audio1");
+  expect(sharedGenerationReferences(h.project().generationBrief!).find((reference) => reference.name === "Voice")?.mediaKind).toBe("audio");
+});
+
+test("Media Bin audio can be attached as a reference before a visual is added", async () => {
+  const media = [{ id: "voice", kind: "audio" as const, ref: "voice.wav", durationSec: 8, label: "Library voice", lifecycle: "durable" as const,
+    source: { kind: "workspace-artifact" as const, artifactId: "artifact-voice", path: "media/voice.wav" } }];
+  const h = await fixture(async () => ({ kind: "ready", assets: [], mediaIds: ["voice"], failures: [] }), false, false, media);
+  await act(async () => { button(h.host, "+ Add references").click(); await Promise.resolve(); });
+  expect(h.host.textContent).toContain("@Audio1");
+  const reference = sharedGenerationReferences(h.project().generationBrief!).find((entry) => entry.name === "Library voice");
+  expect(reference?.mediaKind).toBe("audio");
+  expect(reference?.source).toEqual({ kind: "project-media", mediaId: "voice" });
 });
 
 test("batch imports survive ordinary draft edits", async () => {

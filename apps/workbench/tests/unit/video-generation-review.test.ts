@@ -10,6 +10,7 @@ import { createEmptyProject } from "../../../../packages/first-party-apps/video/
 test("parent rebuilds exact references from saved media and refuses stale/forged creative requests", async () => {
   const brief = setSimpleGenerationPrompt(setSharedGenerationReferences(createEmptyGenerationBrief(), [
     { id: "subject", name: "Subject", mediaKind: "image", source: { kind: "workspace-artifact", artifactId: "public", path: "refs/subject.png", mimeType: "image/png", sizeBytes: 100 } },
+    { id: "voice", name: "Voice guide", mediaKind: "audio", source: { kind: "workspace-artifact", artifactId: "public-audio", path: "refs/voice.wav", mimeType: "audio/wav", sizeBytes: 1_024 } },
   ]), "Follow @Image1");
   const document = { sha256: "a".repeat(64), revision: 1 };
   const source = { kind: "quick-brief" as const };
@@ -20,7 +21,8 @@ test("parent rebuilds exact references from saved media and refuses stale/forged
   const content = serializeVideoHtml(createDefaultManifest(), { ...createEmptyProject(), generationBrief: brief });
   const result = await compileBoundVideoGenerationRequest(content, request);
   expect(result.referenceImages).toEqual([{ path: "refs/subject.png" }]);
-  expect(result.presentation).toMatchObject({ prompt: "Follow @Image1", referenceNames: { public: "Subject" } });
+  expect(result.referenceAudios).toEqual([{ path: "refs/voice.wav" }]);
+  expect(result.presentation).toMatchObject({ prompt: "Follow @Image1", referenceNames: { public: "Subject", "public-audio": "Voice guide" } });
   await rejects(compileBoundVideoGenerationRequest(content, { ...request, job: { ...request.job, prompt: "Forged prompt" } }), /changed/);
   const changed = serializeVideoHtml(createDefaultManifest(), { ...createEmptyProject(), generationBrief: setSimpleGenerationPrompt(brief, "Changed") });
   await rejects(compileBoundVideoGenerationRequest(changed, request), /changed/);

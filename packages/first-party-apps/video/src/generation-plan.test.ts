@@ -156,8 +156,8 @@ describe("Video generation plan compiler", () => {
     if (plan.status !== "blocked") return;
     expect(plan.jobs).toEqual([]);
     expect(plan.issues).toEqual([
-      { code: "REFERENCE_UNAVAILABLE", message: 'Replace "Character reference" with a saved Workspace image or video.' },
-      { code: "REFERENCE_UNAVAILABLE", message: 'Replace "Walk reference" with a saved Workspace image or video.' },
+      { code: "REFERENCE_UNAVAILABLE", message: 'Replace "Character reference" with a saved Workspace image, video, or MP3/WAV audio file.' },
+      { code: "REFERENCE_UNAVAILABLE", message: 'Replace "Walk reference" with a saved Workspace image, video, or MP3/WAV audio file.' },
     ]);
   });
 

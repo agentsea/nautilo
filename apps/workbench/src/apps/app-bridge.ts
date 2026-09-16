@@ -3036,7 +3036,7 @@ export function installAppBridge(opts: AppBridgeOptions): () => void {
           if (bridgeDisposed || activeTarget !== admittedTarget) return;
           const valid = result.kind === "ready" && isClosedRecord(result, ["kind", "imports", "references", "mediaIds", "failures"]) &&
             Array.isArray(result.imports) && result.imports.every(isSafeVideoWorkspaceImportResult) &&
-            Array.isArray(result.references) && result.references.every(asset => asset.mediaKind !== "audio" && isSafeVideoGenerationReferenceImportResult({ kind: "ready", asset })) &&
+            Array.isArray(result.references) && result.references.every(asset => isSafeVideoGenerationReferenceImportResult({ kind: "ready", asset })) &&
             Array.isArray(result.mediaIds) && result.mediaIds.every(id => typeof id === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u.test(id)) &&
             Array.isArray(result.failures) && result.failures.every(f => isClosedRecord(f, ["label", "code"]) && isSafeVideoText(f.label) && typeof f.code === "string" && /^[a-z_]+$/u.test(f.code)) &&
             (msg.purpose === "media" ? result.references.length === 0 && result.mediaIds.length === 0 : result.imports.length === 0) &&

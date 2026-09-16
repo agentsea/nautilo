@@ -36,7 +36,7 @@ export function isWorkspaceMediaArtifact(value: unknown): value is WorkspaceMedi
   const v = value as Record<string, unknown>;
   return typeof v["id"] === "string" && UUID.test(v["id"]) && typeof v["artifactId"] === "string" && UUID.test(v["artifactId"]) &&
     typeof v["path"] === "string" && !v["path"].startsWith("/") && !/[\\\p{Cc}]/u.test(v["path"]) && !v["path"].split("/").some((p) => !p || p === "." || p === "..") &&
-    typeof v["mimeType"] === "string" && ["video/mp4", "audio/mp4", "audio/wav", "audio/mpeg", "image/png", "image/jpeg", "image/webp"].includes(v["mimeType"]) &&
+    typeof v["mimeType"] === "string" && ["video/mp4", "audio/mp4", "audio/wav", "audio/x-wav", "audio/mpeg", "image/png", "image/jpeg", "image/webp"].includes(v["mimeType"]) &&
     Number.isSafeInteger(v["size"]) && (v["size"] as number) > 0 && Number.isSafeInteger(v["revision"]) && (v["revision"] as number) >= 0;
 }
 function sameArtifact(a: WorkspaceMediaArtifact | null, b: WorkspaceMediaArtifact): boolean {

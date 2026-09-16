@@ -46,7 +46,7 @@ function invalid(reply: { code(status: number): { send(body: unknown): unknown }
 function videoJobIntent(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const job = value as Record<string, unknown>;
-  if (Object.keys(job).some((key) => !["modelId", "prompt", "durationSeconds", "aspectRatio", "resolution", "audio", "referenceImages", "referenceVideos"].includes(key)) ||
+  if (Object.keys(job).some((key) => !["modelId", "prompt", "durationSeconds", "aspectRatio", "resolution", "audio", "referenceImages", "referenceVideos", "referenceAudios"].includes(key)) ||
       typeof job["modelId"] !== "string" || !VIDEO_CATALOG_MODELS.has(job["modelId"]) ||
       typeof job["prompt"] !== "string" || job["prompt"].trim().length === 0 ||
       (job["durationSeconds"] !== undefined && !Number.isSafeInteger(job["durationSeconds"])) ||
@@ -62,9 +62,9 @@ function videoJobIntent(value: unknown): Record<string, unknown> | null {
   };
   if (model === "seedance-2-5-reference-to-video-basic") {
     return { model, prompt: job["prompt"], ...requested, ...(job["audio"] === undefined ? {} : { audio: job["audio"] }),
-      referenceImages: job["referenceImages"] ?? [], ...(job["referenceVideos"] === undefined ? {} : { referenceVideos: job["referenceVideos"] }) };
+      referenceImages: job["referenceImages"] ?? [], ...(job["referenceVideos"] === undefined ? {} : { referenceVideos: job["referenceVideos"] }), ...(job["referenceAudios"] === undefined ? {} : { referenceAudios: job["referenceAudios"] }) };
   }
-  if (job["referenceImages"] !== undefined || job["referenceVideos"] !== undefined) return null;
+  if (job["referenceImages"] !== undefined || job["referenceVideos"] !== undefined || job["referenceAudios"] !== undefined) return null;
   if (model === "seedance-2-5-text-to-video-basic") {
     return { model, prompt: job["prompt"], ...requested, ...(job["audio"] === undefined ? {} : { audio: job["audio"] }) };
   }

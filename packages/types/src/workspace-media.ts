@@ -33,11 +33,13 @@ export type WorkspaceMediaPreviewData = Readonly<{
 export function workspaceMediaMimeMatchesKind(kind: "image" | "video" | "audio", mime: unknown): mime is string {
   if (kind === "image") return mime === "image/png" || mime === "image/jpeg" || mime === "image/webp";
   if (mime === "video/mp4" || mime === "audio/mp4") return true;
-  return kind === "audio" && (mime === "audio/wav" || mime === "audio/mpeg");
+  return kind === "audio" && (mime === "audio/wav" || mime === "audio/x-wav" || mime === "audio/mpeg");
 }
 
-/** Preserve exact declared MIME validation for transport; allow only MP4's two stream labels after inspection. */
+/** Preserve exact declared MIME validation for transport; allow only equivalent container aliases after inspection. */
 export function workspaceMediaMimeMatchesInspection(declared: string, inspected: string): boolean {
   return declared === inspected || ((declared === "video/mp4" || declared === "audio/mp4") &&
-    (inspected === "video/mp4" || inspected === "audio/mp4"));
+    (inspected === "video/mp4" || inspected === "audio/mp4")) ||
+    ((declared === "audio/wav" || declared === "audio/x-wav") &&
+      (inspected === "audio/wav" || inspected === "audio/x-wav"));
 }

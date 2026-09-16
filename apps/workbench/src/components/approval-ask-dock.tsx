@@ -319,6 +319,8 @@ const MEDIA_SETTING_LABELS: Record<string, string> = {
   referenceImages: "Reference images",
   referenceVideos: "Reference videos",
   referenceVideoSeconds: "Reference video seconds",
+  referenceAudios: "Audio references",
+  referenceAudioSeconds: "Reference audio seconds",
 };
 
 function mediaModelLabel(model: string): string {
@@ -375,6 +377,8 @@ function MediaGenerationTechnicalDetail({ approval }: { approval: MediaGeneratio
         ) : null}
         {preview.referenceVideos?.length ? <><dt>Reference videos</dt><dd><ol>{preview.referenceVideos.map(reference =>
           <li key={reference.index}>{`<Video ${reference.index}>`} {reference.label} · {reference.durationSeconds}s</li>)}</ol></dd></> : null}
+        {preview.referenceAudios?.length ? <><dt>Audio references</dt><dd><ol>{preview.referenceAudios.map(reference =>
+          <li key={reference.index}>{`<Audio ${reference.index}>`} {reference.label} · {reference.durationSeconds}s</li>)}</ol></dd></> : null}
         <dt>Prompt</dt>
         <dd className="min-w-0 break-words text-foreground">
           {preview.prompt.summary}

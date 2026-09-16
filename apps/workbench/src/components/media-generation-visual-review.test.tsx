@@ -9,10 +9,12 @@ import { friendlyReferenceName, generationPrice, loadApprovalReference, MediaGen
 const bytes = new TextEncoder().encode("reference bytes").buffer;
 const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const reference = { index: 1, artifactId: "public-image", label: "70e34034-61df-4abd-b8f7-5428433ecbad.png", content: { sha256: hash, sizeBytes: bytes.byteLength, mimeType: "image/png" } };
+const audioReference = { ...reference, artifactId: "public-audio", label: "mg_internal.wav", durationSeconds: 2.75, content: { ...reference.content, mimeType: "audio/wav" } };
 const approval: MediaGenerationApproval = {
   version: "media-generation-approval-v1", digest: "a".repeat(64), quoteDigest: "b".repeat(64), revision: 1, expiresAt: "2099-01-01T00:00:00Z",
   preview: { mediaKind: "video", model: "seedance-2-5-reference-to-video-basic", settings: { durationSeconds: 4, resolution: "480p", aspectRatio: "16:9", audio: false },
     referenceImages: [reference], referenceVideos: [{ ...reference, artifactId: "public-video", label: "mg_internal.mp4", durationSeconds: 4.042, content: { ...reference.content, mimeType: "video/mp4" } }],
+    referenceAudios: [audioReference],
     prompt: { characterCount: 24, summary: "Internal compiled prompt", truncated: true }, quote: { currency: "USD", amountMicros: 930_000, display: "USD 0.930000" }, spendNotice: "Approving starts paid generation." },
 };
 let win: Window;
@@ -28,7 +30,7 @@ afterAll(async () => { await win.happyDOM.cancelAsync(); win.close(); for (const
 
 function mockArtifacts() {
   const list = spyOn(apiClient, "getWorkspaceArtifactByPublicId").mockImplementation(async id => {
-    const ref = [reference, approval.preview.referenceVideos![0]!].find(item => item.artifactId === id);
+    const ref = [reference, approval.preview.referenceVideos![0]!, audioReference].find(item => item.artifactId === id);
     return ref ? { id: `db-${ref.artifactId}`, artifactId: ref.artifactId, size: ref.content!.sizeBytes, mimeType: ref.content!.mimeType } as NonNullable<Awaited<ReturnType<typeof apiClient.getWorkspaceArtifactByPublicId>>> : null;
   });
   const read = spyOn(apiClient, "getWorkspaceArtifactBytesArrayBuffer").mockResolvedValue(bytes);
@@ -50,19 +52,21 @@ test("only authenticated room-scoped bytes matching the exact quote can become a
   } finally { mocks.restore(); }
 });
 
-test("human review shows image and playable video, friendly continuation, full prompt and exact price; cleans up media", async () => {
+test("human review shows image, playable video and exact-byte audio, friendly names, duration, full prompt and price; cleans up media", async () => {
   const mocks = mockArtifacts();
   const revoke = spyOn(URL, "revokeObjectURL");
   const host = document.createElement("div"); document.body.appendChild(host);
   const root = createRoot(host);
   try {
     await act(async () => {
-      root.render(<MediaGenerationVisualReview approval={approval} roomId="room-1" presentation={{ sceneName: "Scene 2", prompt: "Keep the blue sphere turning slowly.", continuation: { artifactId: "public-video", sceneName: "Opening" }, referenceNames: { "public-video": "Opening", "public-image": "Blue sphere" } }} technicalDetails={<p>Internal diagnostics</p>} />);
+      root.render(<MediaGenerationVisualReview approval={approval} roomId="room-1" presentation={{ sceneName: "Scene 2", prompt: "Keep the blue sphere turning slowly.", continuation: { artifactId: "public-video", sceneName: "Opening" }, referenceNames: { "public-video": "Opening", "public-image": "Blue sphere", "public-audio": "Whisper guide" } }} technicalDetails={<p>Internal diagnostics</p>} />);
       await new Promise(resolve => setTimeout(resolve, 20));
     });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(host.querySelector('img[alt="Blue sphere"]')?.getAttribute("src")).toStartWith("blob:");
     expect(host.querySelector('video[aria-label="Preview Opening"]')?.hasAttribute("controls")).toBe(true);
+    expect(host.querySelector('audio[aria-label="Preview Whisper guide"]')?.hasAttribute("controls")).toBe(true);
+    expect(host.textContent).toContain("Audio reference · 2.75 sec");
     expect(host.textContent).toContain("Continuing from Opening");
     expect(host.textContent).toContain("Keep the blue sphere turning slowly.");
     expect(host.textContent).toContain("$0.93");
@@ -70,7 +74,7 @@ test("human review shows image and playable video, friendly continuation, full p
     expect(host.textContent).not.toContain("70e34034");
     expect(host.querySelector("details")?.open).toBe(false);
     await act(async () => root.unmount());
-    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(revoke).toHaveBeenCalledTimes(3);
   } finally { if (host.isConnected) host.remove(); revoke.mockRestore(); mocks.restore(); }
 });
 

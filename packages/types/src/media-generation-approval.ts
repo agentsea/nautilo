@@ -63,6 +63,7 @@ export interface MediaGenerationApprovalPreview {
     content?: MediaGenerationReferenceContent;
   }>[];
   readonly referenceVideos?: readonly Readonly<{ index: number; artifactId: string; label: string; durationSeconds: number; content?: MediaGenerationReferenceContent }>[];
+  readonly referenceAudios?: readonly Readonly<{ index: number; artifactId: string; label: string; durationSeconds: number; content?: MediaGenerationReferenceContent }>[];
   readonly prompt: MediaGenerationPromptPreview;
   readonly quote: { readonly currency: "USD"; readonly amountMicros: number; readonly display: string };
   readonly spendNotice: "Approving starts a paid generation using this exact quote.";
@@ -116,7 +117,7 @@ const MODELS = new Set<MediaGenerationApprovalModel>([
 ]);
 const DIGEST = /^[a-f0-9]{64}$/;
 const SAFE_SETTING_KEYS = new Set([
-  "durationSeconds", "aspectRatio", "resolution", "audio", "forceInstrumental", "referenceImages", "referenceVideos", "referenceVideoSeconds",
+  "durationSeconds", "aspectRatio", "resolution", "audio", "forceInstrumental", "referenceImages", "referenceVideos", "referenceVideoSeconds", "referenceAudios", "referenceAudioSeconds",
 ]);
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -147,7 +148,7 @@ function containsUrl(value: string): boolean {
   return /(?:https?:\/\/|www\.|data:|blob:)/iu.test(value);
 }
 
-function validReferenceContent(value: unknown, kind: "image" | "video"): boolean {
+function validReferenceContent(value: unknown, kind: "image" | "video" | "audio"): boolean {
   if (value === undefined) return true; // Older pending approvals have no visual binding.
   const content = record(value);
   return !!content && exactKeys(content, ["sha256", "sizeBytes", "mimeType"]) &&
@@ -155,13 +156,14 @@ function validReferenceContent(value: unknown, kind: "image" | "video"): boolean
     Number.isSafeInteger(content["sizeBytes"]) && Number(content["sizeBytes"]) > 0 &&
     typeof content["mimeType"] === "string" && (kind === "video"
       ? ["video/mp4", "video/quicktime"].includes(content["mimeType"])
+      : kind === "audio" ? ["audio/mpeg", "audio/wav", "audio/x-wav"].includes(content["mimeType"])
       : ["image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff", "image/gif", "image/heic", "image/heif"].includes(content["mimeType"]));
 }
 
 export function isMediaGenerationApprovalPreview(value: unknown): value is MediaGenerationApprovalPreview {
   const preview = record(value);
-  if (!preview || !hasOnlyKeys(preview, ["mediaKind", "model", "settings", "referenceImages", "referenceVideos", "prompt", "quote", "spendNotice"]) ||
-      ![6, 7, 8].includes(Object.keys(preview).length)) return false;
+  if (!preview || !hasOnlyKeys(preview, ["mediaKind", "model", "settings", "referenceImages", "referenceVideos", "referenceAudios", "prompt", "quote", "spendNotice"]) ||
+      ![6, 7, 8, 9].includes(Object.keys(preview).length)) return false;
   if (preview["mediaKind"] !== "video" && preview["mediaKind"] !== "music") return false;
   if (typeof preview["model"] !== "string" || !MODELS.has(preview["model"] as MediaGenerationApprovalModel)) return false;
   const settings = record(preview["settings"]);
@@ -171,8 +173,8 @@ export function isMediaGenerationApprovalPreview(value: unknown): value is Media
     if (typeof setting !== "string" && typeof setting !== "number" && typeof setting !== "boolean") return false;
     if (typeof setting === "string" && (setting.length > 32 || containsUrl(setting))) return false;
     if (key === "durationSeconds" && (!Number.isSafeInteger(setting) || (setting as number) < 1 || (setting as number) > 600)) return false;
-    if (key === "referenceVideos" && (!Number.isSafeInteger(setting) || (setting as number) < 1 || (setting as number) > 10)) return false;
-    if (key === "referenceVideoSeconds" && (typeof setting !== "number" || !Number.isFinite(setting) || setting < 2 || setting > 30)) return false;
+    if ((key === "referenceVideos" || key === "referenceAudios") && (!Number.isSafeInteger(setting) || (setting as number) < 1 || (setting as number) > 10)) return false;
+    if ((key === "referenceVideoSeconds" || key === "referenceAudioSeconds") && (typeof setting !== "number" || !Number.isFinite(setting) || setting < 2 || setting > 30)) return false;
     if (key === "referenceImages" && (!Number.isSafeInteger(setting) || (setting as number) < 1 || (setting as number) > 30)) return false;
     if ((key === "aspectRatio" || key === "resolution") &&
       (typeof setting !== "string" || !/^[A-Za-z0-9:]{1,8}$/.test(setting))) return false;
@@ -210,18 +212,30 @@ export function isMediaGenerationApprovalPreview(value: unknown): value is Media
             typeof item["label"] !== "string" || item["label"].length < 1 || item["label"].length > 160 || containsUrl(item["label"]) ||
             typeof item["durationSeconds"] !== "number" || !Number.isFinite(item["durationSeconds"]) || item["durationSeconds"] < 2 || item["durationSeconds"] > 30;
         }))) return false;
+    const audios = preview["referenceAudios"];
+    if (audios !== undefined && (!Array.isArray(audios) || audios.length < 1 || audios.length > 10 ||
+        audios.some((reference, index) => {
+          const item = record(reference);
+          return !item || !exactKeys(item, ["index", "artifactId", "label", "durationSeconds", ...(item["content"] === undefined ? [] : ["content"])]) || !validReferenceContent(item["content"], "audio") || item["index"] !== index + 1 ||
+            typeof item["artifactId"] !== "string" || item["artifactId"].length < 1 || item["artifactId"].length > 256 ||
+            typeof item["label"] !== "string" || item["label"].length < 1 || item["label"].length > 160 || containsUrl(item["label"]) ||
+            typeof item["durationSeconds"] !== "number" || !Number.isFinite(item["durationSeconds"]) || item["durationSeconds"] < 2 || item["durationSeconds"] > 30;
+        }))) return false;
     if (!referenceImages.length && !(Array.isArray(videos) && videos.length)) return false;
     if (referenceImages.length !== (settings["referenceImages"] ?? 0)) return false;
     if (Array.isArray(videos) && (videos.length !== settings["referenceVideos"] ||
         videos.reduce<number>((sum, ref: unknown) => sum + Number(record(ref)?.["durationSeconds"]), 0) !== settings["referenceVideoSeconds"])) return false;
     if (videos === undefined && (settings["referenceVideos"] !== undefined || settings["referenceVideoSeconds"] !== undefined)) return false;
-  } else if (referenceImages !== undefined || preview["referenceVideos"] !== undefined) return false;
+    if (Array.isArray(audios) && (audios.length !== settings["referenceAudios"] ||
+        audios.reduce<number>((sum, ref: unknown) => sum + Number(record(ref)?.["durationSeconds"]), 0) !== settings["referenceAudioSeconds"])) return false;
+    if (audios === undefined && (settings["referenceAudios"] !== undefined || settings["referenceAudioSeconds"] !== undefined)) return false;
+  } else if (referenceImages !== undefined || preview["referenceVideos"] !== undefined || preview["referenceAudios"] !== undefined) return false;
   const mediaKind = preview["mediaKind"];
   if ((model === "seedance-2-5-text-to-video-basic" || model === "seedance-2-5-reference-to-video-basic" || model === "minimax-h3-enhanced-text-to-video") !== (mediaKind === "video")) return false;
   const keys = Object.keys(settings).sort().join(",");
   if (model === "seedance-2-5-text-to-video-basic" && keys !== "aspectRatio,audio,durationSeconds,resolution") return false;
   if (model === "seedance-2-5-reference-to-video-basic" &&
-      Object.keys(settings).filter(key => !["referenceImages", "referenceVideos", "referenceVideoSeconds"].includes(key)).sort().join(",") !== "aspectRatio,audio,durationSeconds,resolution") return false;
+      Object.keys(settings).filter(key => !["referenceImages", "referenceVideos", "referenceVideoSeconds", "referenceAudios", "referenceAudioSeconds"].includes(key)).sort().join(",") !== "aspectRatio,audio,durationSeconds,resolution") return false;
   if (model === "minimax-h3-enhanced-text-to-video" && keys !== "aspectRatio,durationSeconds,resolution") return false;
   if (model === "sonilo-v1-1-music" && keys !== "durationSeconds") return false;
   if (model === "minimax-music-v26" && keys !== "forceInstrumental") return false;
