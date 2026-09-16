@@ -32,8 +32,8 @@ after that decision. No selection starts paid generation or changes the timeline
 Qualification covers search/filter/view changes, batch selection, keyboard close
 and focus, cancellation without banners, errors and dismissal, document switching,
 preview disposal, mixed-media admission, existing Media Bin reuse, reference
-replacement, and save/reopen. Audio reference admission adds nullable durable
-request columns through migration 0292. No new production dependency is required.
+replacement, and save/reopen. Migration 0292 extends the durable request-payload constraint to accept
+optional audio references. No new production dependency is required.
 Older-machine adoption is a separate manual acceptance step after the
 branch is ready; development does not restart or modify that machine.
 
