@@ -15,8 +15,7 @@
  * fails the build if a `mock.module(` call sneaks back into the shared dir.
  *
  * The check is anchored to the filesystem (not an allowlist), so the only way
- * to make it pass is to actually move the offending file. See
- * `.cursor/rules/test-mock-isolation.mdc`.
+ * to make it pass is to actually move the offending file.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -64,8 +63,7 @@ describe("mock.module isolation guard", () => {
         "NOT undo it), so they poison every file that loads after them and cause",
         "order-dependent green-local/red-CI failures.",
         "",
-        "Fix: move each file to tests/unit-isolated/ (own process). See",
-        ".cursor/rules/test-mock-isolation.mdc.",
+        "Fix: move each file to tests/unit-isolated/ (own process).",
         "",
         ...offenders.map((f) => `  - tests/unit/${f}`),
         "",

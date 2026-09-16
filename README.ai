@@ -175,12 +175,9 @@ Use the repository's Bun workspace and package scripts. Install with
 and workflow for its build/runtime pin. The contributor Bun pin and the
 container runtime pin can differ, so do not replace one based on the other.
 
-Start with focused checks for the changed behavior. The full repository checks
-are `bun run lint`, `bun run typecheck`, `bun run test:unit`, and
-`bun run lint:unused`. The executable CI lanes live in
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and
-[`dev/scripts/ci-gates.sh`](dev/scripts/ci-gates.sh); affected-package selection
-and invariant checks also matter. Report skips, prerequisites, and exact results.
+Start with focused tests for your changes. Run local checks with `bun run lint`,
+`bun run typecheck`, `bun run test:unit`, and `bun run lint:unused`. In your pull
+request, describe what you checked and any checks you could not run.
 
 Unit tests must not require a live database, server, provider key, or external
 service. Integration/packaged acceptance owns those dependencies separately.

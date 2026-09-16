@@ -24,7 +24,7 @@ work may keep iterating; every newly produced package must independently pass.
 
 **Binding contract:** The packaged app is a **connect-to-server client** (see
 [`PRODUCTION.md`](PRODUCTION.md), [`PACKAGING.md`](PACKAGING.md), and
-[`.cursor/rules/electron-architecture.mdc`](../../.cursor/rules/electron-architecture.mdc)).
+[repository working rules](../../AGENTS.md)).
 It does **not** ship `nautilo-server`, Postgres, Logto, Docker, DB migrations,
 native server addons, or Workbench static under `dist/workbench/` as a
 production load-bearing path — the paired **server** deployment serves

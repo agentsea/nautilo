@@ -18,7 +18,7 @@
 **Authoritative references** (read before contradicting this file):
 - [Package manifest](PACKAGE-MANIFEST.md)
 - [Packaging and artifact trust](PACKAGING.md)
-- [Workspace rule — Electron architecture](../../.cursor/rules/electron-architecture.mdc)
+- [Repository working rules](../../AGENTS.md)
 
 The historical **packaged-local** experiment (Electron spawning `bin/nautilo-server`, dynamic loopback port via child stdout, Workbench from `extraResources`, `NAUTILO_DESKTOP_MODE=local`, etc.) is **retired** — see D134 and the phase-9 record for rationale.
 
