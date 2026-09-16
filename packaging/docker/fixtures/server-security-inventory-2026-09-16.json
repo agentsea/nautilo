@@ -1,0 +1,31 @@
+{
+  "workflowRunId": 35135410942,
+  "sourceSha": "aa110c48e4da843c543791252f9bd304dc2b585d",
+  "architecture": "linux/arm64",
+  "candidateDigest": "sha256:b4992c082d5e8940d99d21e880d829c2df4853b73ee405951941b424fc8bc70e",
+  "findingTuples": [
+    ["grype", "CVE-2026-19499", "libc-bin", "2.41-12+deb13u4", "high", false],
+    ["grype", "CVE-2026-86138", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["grype", "CVE-2026-86139", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["grype", "CVE-2026-86142", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["grype", "CVE-2026-86143", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["grype", "CVE-2026-86144", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["grype", "CVE-2026-87595", "chromium-common", "152.0.7977.82-1~deb13u1", "critical", false],
+    ["grype", "CVE-2026-87595", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "critical", false],
+    ["grype", "CVE-2026-87608", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["grype", "CVE-2026-87608", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["trivy", "CVE-2026-86138", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["trivy", "CVE-2026-86139", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["trivy", "CVE-2026-86142", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["trivy", "CVE-2026-86143", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["trivy", "CVE-2026-86144", "libxml2", "2.12.7+dfsg+really2.9.14-2.1+deb13u3", "high", false],
+    ["trivy", "CVE-2026-91724", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["trivy", "CVE-2026-91724", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false],
+    ["trivy", "CVE-2026-91727", "chromium-common", "152.0.7977.82-1~deb13u1", "high", false],
+    ["trivy", "CVE-2026-91727", "chromium-headless-shell", "152.0.7977.82-1~deb13u1", "high", false]
+  ],
+  "decision": {
+    "reviewedAt": "2026-09-16T18:45:00Z",
+    "expiresAt": "2026-10-01T00:00:00Z"
+  }
+}
