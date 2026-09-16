@@ -21,7 +21,6 @@ const publicDocuments = [
   ".github/ISSUE_TEMPLATE/config.yml",
   ".github/pull_request_template.md",
   ".github/PULL_REQUEST_TEMPLATE/specification.md",
-  ".cursor/rules/nautilo.md",
   "docs/contributing/spec-template.md",
   "docs/apply-patch-runtime-boundary.md",
   "docs/crypto-browser-compatibility.md",
