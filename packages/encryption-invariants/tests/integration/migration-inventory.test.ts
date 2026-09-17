@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { inventoryDrizzleSchema } from "../../src/node/schema-inventory";
+import { MIGRATION_TREE_BASELINE } from "../../baseline/inventory-fingerprints";
 import {
   compareSchemaAndMigrationInventory,
   inventoryMigrationTree,
@@ -149,13 +150,13 @@ describe("migration inventory", () => {
     const directory = resolve(import.meta.dir, "../../../db/src/migrations");
     const inventory = inventoryMigrationTree(directory);
 
-    expect(inventory.migrations).toHaveLength(284);
-    expect(inventory.snapshots).toHaveLength(255);
+    expect(inventory.migrations).toHaveLength(MIGRATION_TREE_BASELINE.migrations);
+    expect(inventory.snapshots).toHaveLength(MIGRATION_TREE_BASELINE.snapshots);
     expect(inventory.missingSnapshotIndices).toHaveLength(29);
     expect(inventory.missingSnapshotIndices).toContain(6);
     expect(inventory.missingSnapshotIndices).toContain(118);
-    expect(inventory.latestSnapshotIndex).toBe(283);
-    expect(inventory.currentTables).toHaveLength(205);
+    expect(inventory.latestSnapshotIndex).toBe(MIGRATION_TREE_BASELINE.tip);
+    expect(inventory.currentTables).toHaveLength(206);
     expect(inventory.currentTables).toContainEqual({
       id: "db.public.session_messages",
       surface: "db",
@@ -163,8 +164,8 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(2_758);
-    expect(inventory.currentConstraints).toHaveLength(775);
+    expect(inventory.currentColumns).toHaveLength(2_769);
+    expect(inventory.currentConstraints).toHaveLength(778);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
       tableLocator: "public.actors",
@@ -176,7 +177,7 @@ describe("migration inventory", () => {
       onDelete: "cascade",
       onUpdate: "no action",
     });
-    expect(inventory.historicalCreatedTables).toHaveLength(221);
+    expect(inventory.historicalCreatedTables).toHaveLength(222);
     expect(inventory.historicalDroppedTables).toEqual([
       "public.collaboration_sessions",
       "public.grant_domain_envelope_acknowledgements",
@@ -236,7 +237,9 @@ describe("migration inventory", () => {
       sqlType: "text",
       notNull: true,
     });
-    expect(inventory.migrations.slice(-20)).toEqual([
+    // These immutable historical bytes remain pinned as new migrations append.
+    // The reviewed full-tree fingerprint covers the later tail separately.
+    expect(inventory.migrations.slice(264, 284)).toEqual([
       {
         "index": 264,
         "tag": "0264_complete_skreet",
@@ -349,7 +352,10 @@ describe("migration inventory", () => {
         "index": 282,
         "tag": "0282_content_access_receipt_immutability",
         "path": "0282_content_access_receipt_immutability.sql",
-        "sha256": "47337a4fe1ee995f371ef309e8a0253f531adc88177c96804056d569912c7c24"
+        // The new repository's initial commit adds a temporary TRIGGER grant
+        // around creation and revokes it afterward; the old-repository hash
+        // was copied into this test unchanged. No migration is edited here.
+        "sha256": "c9d57e7399b6b071b21efbd22a1dc47f0e219830eab10103efd0fb0b6bded3ca"
       },
       {
         "index": 283,
@@ -360,6 +366,12 @@ describe("migration inventory", () => {
     ]);
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
+    expect(inventory.migrations.at(-1)).toEqual({
+      index: 294,
+      tag: "0294_content_access_receipt_fk_permissions",
+      path: "0294_content_access_receipt_fk_permissions.sql",
+      sha256: "15763722647784f7cd83ed99e856fc0d91a8aa814721ef9198c1ac0f5a7f7880",
+    });
 
     const comparison = compareSchemaAndMigrationInventory(
       inventoryDrizzleSchema(nautiloSchema),

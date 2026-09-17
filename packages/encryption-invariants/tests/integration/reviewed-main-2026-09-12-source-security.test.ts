@@ -85,6 +85,9 @@ const devStackExceptionLocators = [
 const runtimeAcceptanceForwarderLocator =
   "bin/nautilo-dev/src/commands/dev-stack.ts#log_emitter:9a0075a24c1b046c:1";
 
+const extractedHostPublisherLocator =
+  "apps/desktop/scripts/publish-computer-use-host.ts#subprocess_processor:9d308207db6f249c:1";
+
 const otherBoundedLogLocators = [
   "apps/workbench/src/adapters/nautilo-runtime.tsx#log_emitter:c6d53eb0eb42455b:1",
   "apps/workbench/src/adapters/nautilo-runtime.tsx#log_emitter:c6d53eb0eb42455b:4",
@@ -113,7 +116,7 @@ async function source(path: string): Promise<string> {
 }
 
 describe("reviewed main 2026-09-12 source-alarm reconciliation", () => {
-  test("closes the exact 128 unmapped observations and every shifted ordinal occurrence", async () => {
+  test("closes the exact 127 unmapped observations and every shifted ordinal occurrence", async () => {
     const scan = await sourceScan;
     expect(scan.errors).toEqual([]);
 
@@ -127,9 +130,9 @@ describe("reviewed main 2026-09-12 source-alarm reconciliation", () => {
       return alarm;
     });
 
-    expect(MAIN_2026_09_12_UNMAPPED_SOURCE_ALARM_LOCATORS.size).toBe(128);
+    expect(MAIN_2026_09_12_UNMAPPED_SOURCE_ALARM_LOCATORS.size).toBe(127);
     expect(MAIN_2026_09_12_ORDINAL_RUN_SOURCE_LOCATORS.size).toBe(149);
-    expect(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS).toHaveLength(225);
+    expect(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS).toHaveLength(224);
     expect(inspectSourceAlarmReviews(
       ownedAlarms,
       REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
@@ -138,13 +141,17 @@ describe("reviewed main 2026-09-12 source-alarm reconciliation", () => {
     const newReviews = REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS.filter((review) =>
       MAIN_2026_09_12_UNMAPPED_SOURCE_ALARM_LOCATORS.has(review.locator)
     );
-    expect(newReviews).toHaveLength(128);
+    expect(newReviews).toHaveLength(127);
     expect(newReviews.filter((review) => review.closure === "reviewed_exclusion"))
-      .toHaveLength(70);
+      .toHaveLength(69);
     expect(newReviews.filter((review) => review.closure === "declaration"))
       .toHaveLength(27);
     expect(newReviews.filter((review) => review.closure === "baseline_debt"))
       .toHaveLength(31);
+    expect(MAIN_2026_09_12_UNMAPPED_SOURCE_ALARM_LOCATORS.has(
+      extractedHostPublisherLocator,
+    )).toBe(false);
+    expect(ownedLocators.has(extractedHostPublisherLocator)).toBe(false);
   });
 
   test("re-reviews complete identical-signature runs and supersedes only exact old locators", async () => {
@@ -156,6 +163,7 @@ describe("reviewed main 2026-09-12 source-alarm reconciliation", () => {
     expect(MAIN_2026_09_12_ORDINAL_RUN_SOURCE_LOCATORS)
       .toEqual(expectedOrdinalLocators);
     for (const locator of expectedOrdinalLocators) expect(observed.has(locator)).toBe(true);
+    expect(observed.has(extractedHostPublisherLocator)).toBe(false);
 
     expect(RETIRED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS.size).toBe(22);
     for (const locator of RETIRED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS) {

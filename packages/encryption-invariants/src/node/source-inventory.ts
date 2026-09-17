@@ -761,6 +761,21 @@ export const DEFAULT_SOURCE_SCAN_EXCLUSIONS: readonly SourceExclusion[] = [
   },
   {
     kind: "path_prefix",
+    value: "packages/first-party-apps/spreadsheet/engine",
+    reason: "Generated provenance-verified Sheets bundle output; its owned Office source is scanned separately.",
+  },
+  {
+    kind: "path_prefix",
+    value: "packages/first-party-apps/presentation/engine",
+    reason: "Generated provenance-verified Slides bundle output; its owned Office source is scanned separately.",
+  },
+  {
+    kind: "path_prefix",
+    value: "packages/first-party-apps/board/engine",
+    reason: "Generated provenance-verified Board bundle output; its first-party and owned Office source is scanned separately.",
+  },
+  {
+    kind: "path_prefix",
     value: "packages/db/src/migrations/meta",
     reason: "Generated Drizzle snapshots are handled by the schema inventory.",
   },

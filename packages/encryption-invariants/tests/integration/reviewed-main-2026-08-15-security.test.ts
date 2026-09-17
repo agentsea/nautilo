@@ -22,9 +22,16 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
       if (entry.classification !== "bounded_metadata") {
         throw new Error(`${entry.locator} must remain bounded metadata`);
       }
-      expect(entry.plaintextReason).toMatch(/content-free|writes no Record payload/);
-      expect(entry.plaintextReason).toMatch(/prompts?|source content/);
-      expect(entry.plaintextReason).toMatch(/keys?|protected representation/);
+      if (entry.locator === "public.reflection_record_semantic_work.ordinary_fallback_reason") {
+        // The later replay review adds one closed reason enum, not payload.
+        expect(entry.metadataAllowlist).toEqual(["ordinary_fallback_reason"]);
+        expect(entry.plaintextReason).toContain("contain no Record semantic payload");
+        expect(entry.plaintextReason).toContain("ordinary and protected payload representations retain their separate classifications");
+      } else {
+        expect(entry.plaintextReason).toMatch(/content-free|writes no Record payload/);
+        expect(entry.plaintextReason).toMatch(/prompts?|source content/);
+        expect(entry.plaintextReason).toMatch(/keys?|protected representation/);
+      }
     }
   });
 

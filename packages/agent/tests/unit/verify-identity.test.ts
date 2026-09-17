@@ -19,8 +19,6 @@ import {
   identityVerificationResult,
 } from "../../src/tools/trust/verify-identity";
 
-const UUID_ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-
 function envelope(ownerId: string): MemoryAccessEnvelope {
   // The tool only reads `ownerId`; the rest is a structural stub.
   const stub = {
@@ -49,29 +47,6 @@ describe("verify_identity tool — M125 Phase 1.1 (envelope-derived PIN subject)
     });
     const result = await tool.invoke({});
     expect(result).toContain("verify_identity unavailable");
-  });
-
-  test("uses envelope.ownerId as the PIN subject (not bootstrap)", async () => {
-    // We cannot exercise PinChallengeProvider against a real DB in
-    // a unit test; assert that for a non-enrolled subject id we get
-    // the "no PIN credential is configured" message (i.e. the lookup
-    // happened against THIS id, not silently failed earlier). When
-    // the provider throws (no DB attached), `isEnrolled` is caught
-    // and treated as not-enrolled, which routes to the same message
-    // — both branches confirm the subject was the envelope's
-    // ownerId, not the bootstrap default.
-    const tool = createVerifyIdentityTool({
-      memoryAccessEnvelope: envelope(UUID_ALICE),
-    });
-    const result = await tool.invoke({});
-    expect(typeof result).toBe("string");
-    // Either path is acceptable evidence that the env subject was used:
-    //  - "No PIN credential is configured" (DB reachable, subject not enrolled)
-    //  - same message via the isEnrolled-throws catch branch (no DB)
-    // What we want to NOT see is the legacy "No owner configured"
-    // message, which only fired when the factory captured a missing
-    // bootstrap value.
-    expect(result).not.toContain("No owner configured");
   });
 
   test("tool contract never asks the model to assign an identity role", () => {

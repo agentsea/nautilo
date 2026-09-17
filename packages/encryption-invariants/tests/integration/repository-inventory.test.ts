@@ -41,8 +41,8 @@ describe("actual repository coverage inventory", () => {
       errors: [],
     });
     expect(inventory.observations.length).toBeGreaterThan(1_000);
-    expect(inventory.schema.objects.filter((item) => item.kind === "table")).toHaveLength(205);
-    expect(inventory.schema.columns).toHaveLength(2_764);
+    expect(inventory.schema.objects.filter((item) => item.kind === "table")).toHaveLength(206);
+    expect(inventory.schema.columns).toHaveLength(2_775);
     expect(inventory.observations.filter((item) =>
       item.surface === "db" && item.locator === "public.session_messages"
     ).map(({ id, surface, locator }) => ({ id, surface, locator }))).toEqual([{
@@ -50,7 +50,7 @@ describe("actual repository coverage inventory", () => {
       surface: "db",
       locator: "public.session_messages",
     }]);
-    expect(inventory.dto).toHaveLength(815);
+    expect(inventory.dto).toHaveLength(820);
     expect(inventory.source.observations).toHaveLength(52);
     expect(inventory.source.alarms.length).toBeGreaterThan(2_000);
     expect(inventory.source.alarmReviews.errors).toEqual([]);

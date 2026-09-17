@@ -14,6 +14,11 @@ const databaseNames = [
   `nautilo_content_access_fresh_${runSuffix}`,
   `nautilo_content_access_populated_${runSuffix}`,
 ];
+const receiptMigrationTags = [
+  "0281_melodic_sister_grimm",
+  "0282_content_access_receipt_immutability",
+  "0294_content_access_receipt_fk_permissions",
+];
 const createdDatabases = new Set<string>();
 const createdRoles: string[] = [];
 let admin: Sql | undefined;
@@ -57,6 +62,22 @@ function migrationFixture(tags: string[], withoutTriggerRepair = false): string 
     }
   }
   return fixtureRoot;
+}
+
+async function expectDatabaseError(
+  operation: () => Promise<unknown>,
+  code: string,
+  message?: string,
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    const databaseError = error as { code?: string; message?: string };
+    expect(databaseError.code).toBe(code);
+    if (message) expect(databaseError.message).toContain(message);
+    return;
+  }
+  throw new Error(`expected database error ${code}`);
 }
 
 suite("content access trigger migration role ordering", () => {
@@ -130,29 +151,59 @@ suite("content access trigger migration role ordering", () => {
           `;
           expect(rollback[0]).toEqual({ table_exists: false, journal_rows: 0 });
         }
-        const firstTags = index === 0
-          ? ["0281_melodic_sister_grimm", "0282_content_access_receipt_immutability"]
-          : ["0281_melodic_sister_grimm"];
+        const firstTags = index === 0 ? receiptMigrationTags : ["0281_melodic_sister_grimm"];
         const firstFixture = migrationFixture(firstTags);
         try {
           await migrate(drizzle(sql), { migrationsFolder: firstFixture });
         } finally {
           rmSync(firstFixture, { recursive: true, force: true });
         }
+        const fixture = {
+          userId: `00000000-0000-4000-8000-00000000001${index}`,
+          actorId: `00000000-0000-4000-8000-00000000002${index}`,
+          memoryId: `00000000-0000-4000-8000-00000000003${index}`,
+          artifactId: `00000000-0000-4000-8000-00000000004${index}`,
+          artifactOperationId: `00000000-0000-4000-8000-00000000005${index}`,
+          memoryOperationId: `00000000-0000-4000-8000-00000000006${index}`,
+        };
+        await sql.unsafe(`
+          INSERT INTO users (id) VALUES ('${fixture.userId}');
+          INSERT INTO actors (id) VALUES ('${fixture.actorId}');
+          INSERT INTO memories (id) VALUES ('${fixture.memoryId}');
+          INSERT INTO artifacts (id) VALUES ('${fixture.artifactId}');
+          INSERT INTO content_access_operations
+            (operation_id, request_digest, requester_user_id, requester_actor_id,
+             artifact_id, outcome, changed, attached_count, detached_count, skipped_count)
+          VALUES
+            ('${fixture.artifactOperationId}', repeat('a', 64), '${fixture.userId}', '${fixture.actorId}',
+             '${fixture.artifactId}', 'applied', true, 1, 0, 0);
+          INSERT INTO content_access_operations
+            (operation_id, request_digest, requester_user_id, requester_actor_id,
+             memory_id, outcome, changed, attached_count, detached_count, skipped_count)
+          VALUES
+            ('${fixture.memoryOperationId}', repeat('b', 64), '${fixture.userId}', '${fixture.actorId}',
+             '${fixture.memoryId}', 'denied', false, 0, 0, 0);
+        `);
+
         if (index === 1) {
-          await sql.unsafe(`
-            INSERT INTO artifacts (id) VALUES ('00000000-0000-4000-8000-000000000001');
-            INSERT INTO content_access_operations
-              (operation_id, request_digest, artifact_id, outcome, changed,
-               attached_count, detached_count, skipped_count)
-            VALUES
-              ('00000000-0000-4000-8000-000000000002', repeat('a', 64),
-               '00000000-0000-4000-8000-000000000001', 'applied', true, 1, 0, 0);
-          `);
-          const upgradeFixture = migrationFixture([
-            "0281_melodic_sister_grimm",
-            "0282_content_access_receipt_immutability",
-          ]);
+          const preFixPrivileges = await sql<{ can_delete: boolean; can_update: boolean }[]>`
+            SELECT
+              has_table_privilege('nautilo', 'public.content_access_operations', 'UPDATE') AS can_update,
+              has_table_privilege('nautilo', 'public.content_access_operations', 'DELETE') AS can_delete
+          `;
+          expect(preFixPrivileges[0]).toEqual({ can_update: false, can_delete: false });
+          await expectDatabaseError(
+            () => sql`DELETE FROM users WHERE id = ${fixture.userId}`,
+            "42501",
+            "permission denied for table content_access_operations",
+          );
+          await expectDatabaseError(
+            () => sql`DELETE FROM artifacts WHERE id = ${fixture.artifactId}`,
+            "42501",
+            "permission denied for table content_access_operations",
+          );
+
+          const upgradeFixture = migrationFixture(receiptMigrationTags);
           try {
             await migrate(drizzle(sql), { migrationsFolder: upgradeFixture });
             const journalBefore = await sql`SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at`;
@@ -166,10 +217,42 @@ suite("content access trigger migration role ordering", () => {
           }
         }
 
-        const privileges = await sql<{ allowed: boolean }[]>`
-          SELECT has_table_privilege('nautilo', 'public.content_access_operations', 'TRIGGER') AS allowed
+        const privileges = await sql<{
+          can_delete: boolean;
+          can_insert: boolean;
+          can_references: boolean;
+          can_select: boolean;
+          can_trigger: boolean;
+          can_truncate: boolean;
+          can_update: boolean;
+        }[]>`
+          SELECT
+            has_table_privilege('nautilo', 'public.content_access_operations', 'SELECT') AS can_select,
+            has_table_privilege('nautilo', 'public.content_access_operations', 'INSERT') AS can_insert,
+            has_table_privilege('nautilo', 'public.content_access_operations', 'UPDATE') AS can_update,
+            has_table_privilege('nautilo', 'public.content_access_operations', 'DELETE') AS can_delete,
+            has_table_privilege('nautilo', 'public.content_access_operations', 'TRUNCATE') AS can_truncate,
+            has_table_privilege('nautilo', 'public.content_access_operations', 'REFERENCES') AS can_references,
+            has_table_privilege('nautilo', 'public.content_access_operations', 'TRIGGER') AS can_trigger
         `;
-        expect(privileges[0]?.allowed).toBe(false);
+        expect(privileges[0]).toEqual({
+          can_select: true,
+          can_insert: true,
+          can_update: true,
+          can_delete: true,
+          can_truncate: false,
+          can_references: false,
+          can_trigger: false,
+        });
+        for (const role of ["nautilo_agent", "nautilo_crypto"] as const) {
+          const denied = await sql<{ allowed: boolean }[]>`
+            SELECT has_table_privilege(
+              ${role}, 'public.content_access_operations',
+              'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+            ) AS allowed
+          `;
+          expect(denied[0]?.allowed).toBe(false);
+        }
         const triggers = await sql<{ count: number }[]>`
           SELECT count(*)::int AS count
           FROM pg_trigger
@@ -177,14 +260,38 @@ suite("content access trigger migration role ordering", () => {
             AND NOT tgisinternal
         `;
         expect(triggers[0]?.count).toBe(2);
+
+        const original = await sql`
+          SELECT operation_id, request_digest, requester_user_id, requester_actor_id,
+                 memory_id, artifact_id, outcome, changed,
+                 attached_count, detached_count, skipped_count
+          FROM content_access_operations
+          ORDER BY operation_id
+        `;
+        const hiddenUpdate = await sql<{ operation_id: string }[]>`
+          UPDATE content_access_operations SET skipped_count = skipped_count + 1
+          WHERE operation_id = ${fixture.artifactOperationId}
+          RETURNING operation_id
+        `;
+        const hiddenDelete = await sql<{ operation_id: string }[]>`
+          DELETE FROM content_access_operations
+          WHERE operation_id = ${fixture.artifactOperationId}
+          RETURNING operation_id
+        `;
+        expect([...hiddenUpdate]).toEqual([]);
+        expect([...hiddenDelete]).toEqual([]);
+        expect([...await sql`SELECT operation_id, request_digest, requester_user_id, requester_actor_id,
+          memory_id, artifact_id, outcome, changed, attached_count, detached_count, skipped_count
+          FROM content_access_operations ORDER BY operation_id`]).toEqual([...original]);
+
         if (index === 1) {
           const privileged = postgres(databaseUrl(database), { max: 1 });
           let mutationError: unknown;
           try {
-            await privileged.unsafe(`
+            await privileged`
               UPDATE content_access_operations SET skipped_count = 1
-              WHERE operation_id = '00000000-0000-4000-8000-000000000002'
-            `);
+              WHERE operation_id = ${fixture.artifactOperationId}
+            `;
           } catch (error) {
             mutationError = error;
           } finally {
@@ -193,7 +300,52 @@ suite("content access trigger migration role ordering", () => {
           expect(mutationError).toBeInstanceOf(Error);
           expect((mutationError as Error).message).toContain("Content access receipts are immutable");
         }
+
+        await admin!.unsafe("ALTER ROLE nautilo BYPASSRLS");
+        await expectDatabaseError(
+          () => sql`UPDATE content_access_operations SET skipped_count = skipped_count + 1
+            WHERE operation_id = ${fixture.artifactOperationId}`,
+          "23514",
+          "Content access receipts are immutable",
+        );
+        await expectDatabaseError(
+          () => sql`DELETE FROM content_access_operations
+            WHERE operation_id = ${fixture.artifactOperationId}`,
+          "23514",
+          "Content access receipts are immutable",
+        );
+        await expectDatabaseError(() => sql`TRUNCATE TABLE content_access_operations`, "42501");
+        expect([...await sql`SELECT operation_id, request_digest, requester_user_id, requester_actor_id,
+          memory_id, artifact_id, outcome, changed, attached_count, detached_count, skipped_count
+          FROM content_access_operations ORDER BY operation_id`]).toEqual([...original]);
+
+        if (index === 0) await admin!.unsafe("ALTER ROLE nautilo NOBYPASSRLS");
+        await sql`DELETE FROM users WHERE id = ${fixture.userId}`;
+        await sql`DELETE FROM actors WHERE id = ${fixture.actorId}`;
+        const anonymized = await sql`
+          SELECT operation_id, request_digest, requester_user_id, requester_actor_id,
+                 memory_id, artifact_id, outcome, changed,
+                 attached_count, detached_count, skipped_count
+          FROM content_access_operations
+          ORDER BY operation_id
+        `;
+        expect([...anonymized]).toEqual([...original].map((row) => ({
+          ...row,
+          requester_actor_id: null,
+          requester_user_id: null,
+        })));
+        await sql`DELETE FROM artifacts WHERE id = ${fixture.artifactId}`;
+        const afterArtifact = await sql<{ operation_id: string }[]>`
+          SELECT operation_id FROM content_access_operations ORDER BY operation_id
+        `;
+        expect([...afterArtifact]).toEqual([{ operation_id: fixture.memoryOperationId }]);
+        await sql`DELETE FROM memories WHERE id = ${fixture.memoryId}`;
+        const afterMemory = await sql<{ operation_id: string }[]>`
+          SELECT operation_id FROM content_access_operations
+        `;
+        expect([...afterMemory]).toEqual([]);
       } finally {
+        await admin!.unsafe("ALTER ROLE nautilo NOBYPASSRLS");
         await sql.end({ timeout: 5 });
       }
     });

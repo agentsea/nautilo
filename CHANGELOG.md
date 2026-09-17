@@ -21,6 +21,10 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Fresh database installations permit legitimate content-access receipt cleanup
+  when associated users or content are deleted, while retaining protection
+  against direct receipt mutation.
+
 - Video references use one optional **Extra instructions** field; existing role
   guidance remains visible and editable alongside saved instructions.
 

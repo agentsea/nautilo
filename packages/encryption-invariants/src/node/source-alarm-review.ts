@@ -4,6 +4,10 @@ import {
   REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-12-source-alarms";
+import {
+  REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS,
+  SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-main-2026-09-17-source-alarms";
 import { SOURCE_ALARM_BASELINE_REVIEWS } from "../../baseline/source-alarm-reviews";
 import {
   REVIEWED_WAVE_4_SOURCE_ALARMS,
@@ -336,7 +340,9 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
   .concat(REVIEWED_M314_SOURCE_ALARMS)
   .filter((review) => !SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS.has(review.locator))
   .concat(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS)
-  .concat(REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS);
+  .concat(REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS)
+  .filter((review) => !SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.has(review.locator))
+  .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS);
 
 const LOCATOR_PATTERN =
   /^(?<path>[^#]+)#(?<kind>[a-z_]+):(?<signature>[0-9a-f]{16}):(?<occurrence>[1-9][0-9]*)$/u;

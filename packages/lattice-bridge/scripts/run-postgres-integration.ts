@@ -6,6 +6,16 @@ import {
   buildCryptoRoleReconcilePsqlScript,
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
+import { buildEventFeedReaderRoleSql } from "../../db/src/utils/event-feed-role";
+import {
+  DISPOSABLE_RESET_CONTAINER_ENV,
+  DISPOSABLE_RESET_LABEL,
+  DISPOSABLE_RESET_PORT_ENV,
+  DISPOSABLE_RESET_TOKEN_ENV,
+  DISPOSABLE_TEMPLATE_DATABASE,
+  resetDisposablePostgresDatabase,
+  type DisposableResetUrls,
+} from "./disposable-postgres-reset";
 import { waitForFinalPostgres } from "./postgres-integration-readiness";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -17,6 +27,7 @@ const POSTGRES_IMAGE =
   ?? "pgvector/pgvector:pg17";
 const LATTICE_BACKUP_TABLES = CRYPTO_STORAGE_TABLE_NAMES;
 const requestedTestPaths = process.argv.slice(2);
+const resetToken = randomBytes(32).toString("hex");
 
 function ephemeralPassword(): string {
   return randomBytes(24).toString("hex");
@@ -136,6 +147,35 @@ function psql(
   );
 }
 
+export function provisionPrivilegedMigrationRoles(
+  executeAdminSql: typeof psql,
+): void {
+  executeAdminSql("postgres", buildEventFeedReaderRoleSql());
+}
+
+export function buildDisposableInstanceIdentitySql(): string {
+  return `
+INSERT INTO public.nautilo_instance_identity (id, instance_id)
+VALUES ('self', 'lattice-bridge-integration')
+ON CONFLICT (id) DO NOTHING;
+`.trim();
+}
+
+export function provisionDisposableInstanceIdentity(
+  executeAdminSql: typeof psql,
+): void {
+  executeAdminSql("nautilo", buildDisposableInstanceIdentitySql());
+}
+
+export function buildDisposableTemplateSql(): string {
+  return `
+CREATE DATABASE ${DISPOSABLE_TEMPLATE_DATABASE}
+  WITH TEMPLATE nautilo OWNER nautilo;
+REVOKE ALL ON DATABASE ${DISPOSABLE_TEMPLATE_DATABASE} FROM PUBLIC;
+ALTER DATABASE ${DISPOSABLE_TEMPLATE_DATABASE} ALLOW_CONNECTIONS false;
+`.trim();
+}
+
 function roleExists(): boolean {
   return run(
     "docker",
@@ -177,10 +217,7 @@ function databaseUrl(
   return url.toString();
 }
 
-function verifyCryptoBackupRestore(): void {
-  const userId = "90000000-0000-4000-8000-000000000001";
-  const actorId = "90000000-0000-4000-8000-000000000002";
-  const deviceId = "device_backup_restore_anchor";
+function seedBackupRestoreProductFixture(userId: string, actorId: string): void {
   psql("nautilo", `
     INSERT INTO users (id, name)
     VALUES ('${userId}', 'Crypto backup/restore fixture');
@@ -190,6 +227,15 @@ function verifyCryptoBackupRestore(): void {
       '${actorId}', '${userId}', 'Crypto backup/restore fixture',
       'verified', 'user'
     );
+  `);
+}
+
+function seedBackupRestoreCryptoFixture(
+  userId: string,
+  actorId: string,
+  deviceId: string,
+): void {
+  psql("nautilo", `
     INSERT INTO human_crypto_custodies (
       human_id, user_id, human_actor_id,
       initial_installation_lineage_digest, state, ever_initialized_at,
@@ -221,6 +267,18 @@ function verifyCryptoBackupRestore(): void {
       '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
     );
   `);
+}
+
+function verifyCryptoBackupRestore(
+  urls: DisposableResetUrls,
+  env: NodeJS.ProcessEnv,
+): void {
+  const userId = "90000000-0000-4000-8000-000000000001";
+  const actorId = "90000000-0000-4000-8000-000000000002";
+  const deviceId = "device_backup_restore_anchor";
+  resetDisposablePostgresDatabase(urls, env);
+  seedBackupRestoreProductFixture(userId, actorId);
+  seedBackupRestoreCryptoFixture(userId, actorId, deviceId);
   const tableArguments = LATTICE_BACKUP_TABLES.flatMap((table) => [
     "--table",
     `public.${table}`,
@@ -248,8 +306,9 @@ function verifyCryptoBackupRestore(): void {
        SET delivery_sequence_high_watermark = ${retainedClientHighWatermark},
            delivery_acknowledged_sequence = ${retainedClientHighWatermark}
      WHERE device_id = '${deviceId}';
-    TRUNCATE TABLE ${LATTICE_BACKUP_TABLES.join(", ")} CASCADE;
   `);
+  resetDisposablePostgresDatabase(urls, env);
+  seedBackupRestoreProductFixture(userId, actorId);
   psql("nautilo", dump);
   const restored = run(
     "docker",
@@ -278,10 +337,7 @@ function verifyCryptoBackupRestore(): void {
   if (restoredHighWatermark >= retainedClientHighWatermark) {
     throw new Error("crypto rollback fixture did not restore older state");
   }
-  psql("nautilo", `
-    TRUNCATE TABLE ${LATTICE_BACKUP_TABLES.join(", ")} CASCADE;
-    DELETE FROM users WHERE id = '${userId}';
-  `);
+  resetDisposablePostgresDatabase(urls, env);
 }
 
 async function main(): Promise<number> {
@@ -302,6 +358,8 @@ async function main(): Promise<number> {
       "--rm",
       "--name",
       CONTAINER_NAME,
+      "--label",
+      `${DISPOSABLE_RESET_LABEL}=${resetToken}`,
       "--publish",
       "127.0.0.1::5432",
       "--env",
@@ -350,6 +408,7 @@ async function main(): Promise<number> {
       ].join("\n"),
     );
     psql("postgres", buildCryptoRoleReconcilePsqlScript());
+    provisionPrivilegedMigrationRoles(psql);
 
     const port = mappedPostgresPort();
     const migrationUrl = databaseUrl(
@@ -369,6 +428,7 @@ async function main(): Promise<number> {
       },
     );
     psql("nautilo", buildFullCryptoTablePrivilegeReconcileSql());
+    provisionDisposableInstanceIdentity(psql);
 
     // Prove reconciliation repairs a legacy/day-two instance instead of only
     // accepting the pristine role created above.
@@ -385,24 +445,23 @@ async function main(): Promise<number> {
     psql("postgres", buildCryptoRoleReconcilePsqlScript());
     psql("nautilo", buildFullCryptoTablePrivilegeReconcileSql());
 
-    const testEnv = {
+    psql("postgres", buildDisposableTemplateSql());
+
+    const urls = Object.freeze({
+      admin: databaseUrl("postgres", credentials.postgres, port),
+      app: migrationUrl,
+      agent: databaseUrl("nautilo_agent", credentials.agent, port),
+      crypto: databaseUrl("nautilo_crypto", credentials.crypto, port),
+    });
+    const testEnv: NodeJS.ProcessEnv = {
       ...process.env,
-      LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL: databaseUrl(
-        "postgres",
-        credentials.postgres,
-        port,
-      ),
-      LATTICE_BRIDGE_TEST_DATABASE_URL: databaseUrl(
-        "nautilo_crypto",
-        credentials.crypto,
-        port,
-      ),
-      LATTICE_BRIDGE_TEST_APP_DATABASE_URL: migrationUrl,
-      LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL: databaseUrl(
-        "nautilo_agent",
-        credentials.agent,
-        port,
-      ),
+      LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL: urls.admin,
+      LATTICE_BRIDGE_TEST_DATABASE_URL: urls.crypto,
+      LATTICE_BRIDGE_TEST_APP_DATABASE_URL: urls.app,
+      LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL: urls.agent,
+      [DISPOSABLE_RESET_CONTAINER_ENV]: CONTAINER_NAME,
+      [DISPOSABLE_RESET_TOKEN_ENV]: resetToken,
+      [DISPOSABLE_RESET_PORT_ENV]: port,
     };
     const result = spawnSync(
       "bun",
@@ -422,7 +481,7 @@ async function main(): Promise<number> {
         stdio: "inherit",
       },
     );
-    if (result.status === 0) verifyCryptoBackupRestore();
+    if (result.status === 0) verifyCryptoBackupRestore(urls, testEnv);
     return result.status ?? 1;
   } catch (error) {
     try {
@@ -440,5 +499,7 @@ async function main(): Promise<number> {
   }
 }
 
-const exitCode = await main();
-process.exit(exitCode);
+if (import.meta.main) {
+  const exitCode = await main();
+  process.exit(exitCode);
+}

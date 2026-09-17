@@ -3,6 +3,17 @@ import { resolve } from "node:path";
 
 const marker = "-- CONTENT_ACCESS_OPERATIONS_AUTHORITY";
 const immutabilityMarker = "-- CONTENT_ACCESS_OPERATIONS_IMMUTABILITY";
+const fkPermissionsMarker = "-- CONTENT_ACCESS_OPERATIONS_FK_PERMISSIONS";
+
+/** FK actions run as the receipt owner, whose ordinary DML can be revoked. */
+export function finalizeContentAccessReceiptFkPermissions(migration: string): string {
+  if (migration.includes(fkPermissionsMarker)) return migration;
+  return `${migration}\n--> statement-breakpoint\n${fkPermissionsMarker}
+-- Preserve the immutable row/table guards installed by 0282. Their nested
+-- parent-absence checks admit only FK cleanup; direct mutation still fails.
+GRANT UPDATE, DELETE ON TABLE "content_access_operations" TO "nautilo";--> statement-breakpoint
+REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "content_access_operations" FROM "nautilo";\n`;
+}
 
 /** The application role has BYPASSRLS: terminal facts also need a trigger guard. */
 export function finalizeContentAccessReceiptImmutability(migration: string): string {
@@ -67,7 +78,9 @@ if (import.meta.main) {
   if (!latest) throw new Error("Migration journal is empty");
   const path = resolve(root, `${latest.tag}.sql`);
   const source = readFileSync(path, "utf8");
-  const result = process.argv.includes("--immutability")
+  const result = process.argv.includes("--fk-permissions")
+    ? finalizeContentAccessReceiptFkPermissions(source)
+    : process.argv.includes("--immutability")
     ? finalizeContentAccessReceiptImmutability(source)
     : finalizeContentAccessOperationsMigration(source);
   if (result !== source) writeFileSync(path, result);

@@ -7,7 +7,6 @@ import {
   test,
 } from "bun:test";
 import postgres from "postgres";
-import { CRYPTO_STORAGE_TABLE_NAMES } from "@nautilo/db/schema";
 import {
   LatticeCrypto,
   DeviceProviderStateVault,
@@ -42,6 +41,9 @@ import {
 import {
   createSyntheticInitialDeviceAuthorizer,
 } from "@nautilo/lattice-bridge/testing";
+import {
+  resetDisposablePostgresDatabase,
+} from "../../scripts/disposable-postgres-reset.ts";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
@@ -50,6 +52,10 @@ const adminUrl = requiredEnvironment(
   "LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL",
 );
 const cryptoUrl = requiredEnvironment("LATTICE_BRIDGE_TEST_DATABASE_URL");
+const appUrl = requiredEnvironment("LATTICE_BRIDGE_TEST_APP_DATABASE_URL");
+const agentUrl = requiredEnvironment(
+  "LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL",
+);
 
 let admin: SqlClient;
 
@@ -59,6 +65,17 @@ function requiredEnvironment(name: string): string {
     throw new Error(`${name} is required for the Postgres integration suite`);
   }
   return value;
+}
+
+async function resetDisposableDatabase(): Promise<void> {
+  await admin.end({ timeout: 1 });
+  resetDisposablePostgresDatabase({
+    admin: adminUrl,
+    app: appUrl,
+    agent: agentUrl,
+    crypto: cryptoUrl,
+  });
+  admin = postgres(adminUrl, { max: 1, prepare: false });
 }
 
 function executor(client: SqlExecutor): CryptoPostgresExecutor {
@@ -225,9 +242,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-  await admin.unsafe(
-    `TRUNCATE TABLE ${CRYPTO_STORAGE_TABLE_NAMES.join(", ")} CASCADE`,
-  );
+  await resetDisposableDatabase();
 });
 
 afterAll(async () => {
@@ -394,10 +409,7 @@ describe.serial("Postgres crypto-device admission", () => {
       }
     } finally {
       if (clientOpen) await client.end();
-      await admin.unsafe(
-        `TRUNCATE TABLE ${CRYPTO_STORAGE_TABLE_NAMES.join(", ")} CASCADE`,
-      );
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+      await resetDisposableDatabase();
     }
   }, 60_000);
 });

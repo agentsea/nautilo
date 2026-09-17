@@ -2059,6 +2059,13 @@
       "when": 1789580620700,
       "tag": "0293_certain_gabe_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1789649168048,
+      "tag": "0294_content_access_receipt_fk_permissions",
+      "breakpoints": true
     }
   ]
 }

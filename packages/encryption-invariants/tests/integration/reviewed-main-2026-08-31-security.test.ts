@@ -20,6 +20,20 @@ import { SUPERSEDED_M301_DTO_LOCATORS } from "../../baseline/reviewed-m301-dto";
 import { SUPERSEDED_D565_RELAY_DTO_LOCATORS } from "../../baseline/reviewed-d565-relay-dto";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
 
+const RELEASE_EXTRACTION_REMOVED_SOURCE_ALARM_LOCATORS = [
+  "apps/desktop/scripts/publish-computer-use-host.ts#filesystem_write:162bcab80738ba43:1",
+  "apps/desktop/scripts/publish-computer-use-host.ts#filesystem_write:fe2009f74a6d7d4f:1",
+  "apps/desktop/scripts/publish-computer-use-host.ts#filesystem_write:d26d205da85a8f86:1",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:1",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:2",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:3",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:4",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:5",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:6",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:468c68ed4723a1f2:7",
+  "apps/desktop/scripts/publish-computer-use-host.ts#log_emitter:c467686340f4efc2:1",
+] as const;
+
 describe("reviewed main 2026-08-31 encryption inventory", () => {
   test("pins the typed Computer Use request without hiding relay plaintext debt", () => {
     expect(REVIEWED_MAIN_2026_08_31_DTO_DECLARATIONS).toHaveLength(6);
@@ -94,12 +108,23 @@ describe("reviewed main 2026-08-31 encryption inventory", () => {
   });
 
   test("reviews every new sink and retains uncertain diagnostics as debt", () => {
-    expect(REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS).toHaveLength(39);
+    expect(REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS).toHaveLength(28);
+    expect(REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS.filter(
+      (review) => review.closure === "reviewed_exclusion",
+    )).toHaveLength(11);
     expect(REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS.filter(
       (review) => review.closure === "baseline_debt",
-    )).toHaveLength(4);
+    )).toHaveLength(3);
     for (const review of REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+    }
+    for (const locator of RELEASE_EXTRACTION_REMOVED_SOURCE_ALARM_LOCATORS) {
+      expect(REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS.some((review) =>
+        review.locator === locator
+      )).toBe(false);
+      expect(CURRENT_SOURCE_ALARM_REVIEWS.some((review) =>
+        review.locator === locator
+      )).toBe(false);
     }
     for (const locator of SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS.some((review) =>

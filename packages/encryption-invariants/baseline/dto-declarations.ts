@@ -5,6 +5,11 @@ import {
   SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS,
 } from "./reviewed-main-2026-09-12-dto";
 import {
+  REVIEWED_MAIN_2026_09_17_NEW_DTO_DECLARATIONS,
+  reviewedMain20260917DtoReplacements,
+  SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS,
+} from "./reviewed-main-2026-09-17-dto";
+import {
   REVIEWED_M322_DTO_DECLARATIONS,
   REVIEWED_M322_DTO_REPLACEMENTS,
   reviewedM322DtoReplacements,
@@ -6150,10 +6155,20 @@ const PRE_MAIN_2026_09_12_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...reviewedM322RepairDtoReplacements(PRE_M322_REPAIR_DTO_DECLARATIONS),
 ];
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+const PRE_MAIN_2026_09_17_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...PRE_MAIN_2026_09_12_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(entry.locator)
   ),
   ...REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
   ...REVIEWED_MAIN_2026_09_12_NEW_DTO_DECLARATIONS,
+];
+
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+  ...PRE_MAIN_2026_09_17_DTO_DECLARATIONS.filter((entry) =>
+    !SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS.has(entry.locator)
+  ),
+  ...reviewedMain20260917DtoReplacements(
+    PRE_MAIN_2026_09_17_DTO_DECLARATIONS,
+  ),
+  ...REVIEWED_MAIN_2026_09_17_NEW_DTO_DECLARATIONS,
 ];

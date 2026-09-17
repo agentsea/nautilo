@@ -15,7 +15,7 @@ describe("Drizzle schema inventory", () => {
   test("enumerates the actual Nautilo tables, columns, and existing view without a DB", () => {
     const inventory = inventoryDrizzleSchema(nautiloSchema);
 
-    expect(inventory.objects.filter((object) => object.kind === "table")).toHaveLength(205);
+    expect(inventory.objects.filter((object) => object.kind === "table")).toHaveLength(206);
     expect(inventory.objects.filter((object) => object.kind === "view")).toEqual([
       {
         id: "db.public.users_public",
@@ -28,9 +28,9 @@ describe("Drizzle schema inventory", () => {
         isExisting: true,
       },
     ]);
-    expect(inventory.columns.filter((column) => column.kind === "table")).toHaveLength(2758);
+    expect(inventory.columns.filter((column) => column.kind === "table")).toHaveLength(2769);
     expect(inventory.columns.filter((column) => column.kind === "view")).toHaveLength(6);
-    expect(inventory.constraints).toHaveLength(775);
+    expect(inventory.constraints).toHaveLength(778);
 
     expect(inventory.columns).toContainEqual({
       id: "db.public.session_messages.content",
