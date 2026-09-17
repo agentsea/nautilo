@@ -9,6 +9,9 @@ and logos remain project trademarks; the license does not imply endorsement.
 
 ## Project-created and generated assets
 
+- `assets/brand/donation-banner.svg` is original project-created vector artwork.
+  `assets/brand/donation-banner.png` is its raster export for README display.
+  Neither asset incorporates third-party illustrations or photographs.
 - Brand masters under `assets/brand/` were created for Nautilo using internal
   design work and generative-image tools. The
   [Desktop generator](apps/desktop/scripts/generate-icons.ts) derives application

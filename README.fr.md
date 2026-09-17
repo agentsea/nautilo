@@ -165,3 +165,7 @@ Lisez le [guide de contribution](CONTRIBUTING.md), explorez les [problèmes sél
 ## Licence
 
 Nautilo est [sous licence MIT](LICENSE). Consultez les [mentions des tiers](THIRD_PARTY_NOTICES.md) pour les licences et attributions des dépendances, et la [provenance des ressources](ASSET_PROVENANCE.md) pour les créations graphiques, les médias générés et les documents de test.
+
+[![Soutenez Nautilo sur GitHub Sponsors.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[Soutenez Nautilo via agentsea sur GitHub Sponsors](https://github.com/sponsors/agentsea) · Don ponctuel ou mensuel.

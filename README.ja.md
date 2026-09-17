@@ -165,3 +165,7 @@ bun run lint:unused
 ## ライセンス
 
 Nautilo は [MIT ライセンス](LICENSE)です。依存関係のライセンスと帰属表示は[サードパーティー通知](THIRD_PARTY_NOTICES.md)、アートワーク、生成メディア、文書フィクスチャの出典は[アセットの来歴](ASSET_PROVENANCE.md)を参照してください。
+
+[![GitHub Sponsors で Nautilo を支援する。](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[GitHub Sponsors の agentsea を通じて Nautilo を支援する](https://github.com/sponsors/agentsea) · 単発または毎月の支援。
