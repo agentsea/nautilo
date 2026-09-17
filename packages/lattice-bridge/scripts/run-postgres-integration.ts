@@ -6,6 +6,7 @@ import {
   buildCryptoRoleReconcilePsqlScript,
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
+import { buildEventFeedReaderRoleSql } from "../../db/src/utils/event-feed-role";
 import { waitForFinalPostgres } from "./postgres-integration-readiness";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -134,6 +135,12 @@ function psql(
     ],
     { input: script },
   );
+}
+
+export function provisionPrivilegedMigrationRoles(
+  executeAdminSql: typeof psql,
+): void {
+  executeAdminSql("postgres", buildEventFeedReaderRoleSql());
 }
 
 function roleExists(): boolean {
@@ -350,6 +357,7 @@ async function main(): Promise<number> {
       ].join("\n"),
     );
     psql("postgres", buildCryptoRoleReconcilePsqlScript());
+    provisionPrivilegedMigrationRoles(psql);
 
     const port = mappedPostgresPort();
     const migrationUrl = databaseUrl(
@@ -440,5 +448,7 @@ async function main(): Promise<number> {
   }
 }
 
-const exitCode = await main();
-process.exit(exitCode);
+if (import.meta.main) {
+  const exitCode = await main();
+  process.exit(exitCode);
+}

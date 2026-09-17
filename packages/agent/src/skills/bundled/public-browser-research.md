@@ -6,6 +6,8 @@ source: official
 version: 1
 ---
 
+# Public Browser Research
+
 Use `browse_web` when the Human requests Browser Use, or choose it yourself for public research requiring interactive search, filters, pagination, expandable content, or rendered pages. Prefer Tavily `run_web_search` and `read_webpage` for ordinary search and extraction. Complexity alone does not require a browser when extraction answers the question.
 
 Pass a verified URL and a finishable assignment with a stopping condition. No saved website account, connection setup, or website login is required. Each public operation uses an isolated anonymous browser. Existing private website sessions are never borrowed.
