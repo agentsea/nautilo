@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 
 import { CURRENT_FROZEN_BASELINE_DEBT } from "../../baseline/existing-debt";
+import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
   REVIEWED_MAIN_2026_09_12_NEW_DTO_DECLARATIONS,
@@ -25,10 +26,17 @@ describe("current-main September 12 wire review", () => {
     expect(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS).toHaveLength(13);
     expect(REVIEWED_MAIN_2026_09_12_NEW_DTO_DECLARATIONS).toHaveLength(23);
 
-    const declarations = [
+    const september12Declarations = [
       ...REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
       ...REVIEWED_MAIN_2026_09_12_NEW_DTO_DECLARATIONS,
     ];
+    const september12Locators = new Set(
+      september12Declarations.map((entry) => entry.locator),
+    );
+    const declarations = DTO_BASELINE_DECLARATIONS.filter((entry) =>
+      september12Locators.has(entry.locator)
+    );
+    expect(declarations).toHaveLength(september12Locators.size);
     const locators = new Set(declarations.map((entry) => entry.locator));
     const observations = (await discoverDtoInventory(repoRoot)).filter((entry) =>
       locators.has(entry.locator)

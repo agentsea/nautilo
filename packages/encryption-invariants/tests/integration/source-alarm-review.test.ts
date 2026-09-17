@@ -4,6 +4,10 @@ import {
   REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-12-source-alarms";
+import {
+  REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS,
+  SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-main-2026-09-17-source-alarms";
 import { REVIEWED_D581_SOURCE_ALARMS } from "../../baseline/reviewed-d581-research-continuity";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -359,7 +363,9 @@ describe("source alarm review closure", () => {
       .concat(REVIEWED_M314_SOURCE_ALARMS)
       .filter((review) => !SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS)
-      .concat(REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS));
+      .concat(REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS)
+      .filter((review) => !SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.has(review.locator))
+      .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS));
   });
 
   test("maps every exact baseline alarm to owned, release-blocking closure", () => {

@@ -23,6 +23,8 @@ import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
   SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-12-dto";
+import { SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS } from
+  "../../baseline/reviewed-main-2026-09-17-dto";
 import {
   REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS,
@@ -31,6 +33,82 @@ import { REVIEWED_MAIN_2026_09_09_PLATFORM_SOURCE_ALARMS } from
   "../../baseline/reviewed-main-2026-09-09-platform-source-alarms";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
 import { REVIEWED_M318_DTO_DECLARATIONS, SUPERSEDED_M318_DTO_LOCATORS } from "../../baseline/reviewed-m318-dto";
+
+function replaceReviewedSignature(
+  locator: string,
+  signatures: readonly string[] | undefined,
+  from: string,
+  to: string,
+): readonly string[] {
+  if (!signatures) throw new Error(`Missing reviewed signatures for ${locator}`);
+  let matches = 0;
+  const result = signatures.map((signature) => {
+    if (!signature.includes(from)) return signature;
+    matches += 1;
+    return signature.replace(from, to);
+  });
+  if (matches !== 1) {
+    throw new Error(`Ambiguous reviewed signature chain for ${locator}`);
+  }
+  return result;
+}
+
+function currentSeptember12Replacement(locator: string) {
+  const september12 = REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.find(
+    (entry) => entry.locator === locator,
+  );
+  if (!september12) {
+    throw new Error(`Missing September 12 DTO predecessor for ${locator}`);
+  }
+  if (!SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS.has(locator)) {
+    return september12;
+  }
+
+  let structuralSignatures = september12.structuralSignatures;
+  if (locator.endsWith("#AppBridgeOptions")) {
+    structuralSignatures = replaceReviewedSignature(
+      locator,
+      structuralSignatures,
+      "onVideoGenerationImportReference?:(input: { mediaKind: \"image\" | \"video\" | \"audio\" }) => Promise<VideoGenerationReferenceImportBridgeResult> | VideoGenerationReferenceImportBridgeResult;onVideoGenerationListTakes?",
+      "onVideoGenerationImportReference?:(input: { mediaKind: \"image\" | \"video\" | \"audio\" }) => Promise<VideoGenerationReferenceImportBridgeResult> | VideoGenerationReferenceImportBridgeResult;onVideoGenerationImportReferences?:(input: { mediaKind: \"image\" }) => Promise<VideoGenerationReferencesImportBridgeResult> | VideoGenerationReferencesImportBridgeResult;onVideoGenerationListTakes?",
+    );
+    structuralSignatures = replaceReviewedSignature(
+      locator,
+      structuralSignatures,
+      "onVideoHostLayout?:(input: { enabled: boolean }) => Promise<void> | void;onVideoProjectPromotion?",
+      "onVideoHostLayout?:(input: { enabled: boolean }) => Promise<void> | void;onVideoMediaPick?:(input: VideoMediaPickInput) => Promise<VideoMediaPickResult>;onVideoProjectPromotion?",
+    );
+    structuralSignatures = replaceReviewedSignature(
+      locator,
+      structuralSignatures,
+      "onVideoWorkspaceMediaOpenPreview?:(input: { mediaId: string; signal: AbortSignal })",
+      "onVideoWorkspaceMediaOpenPreview?:(input: ({ mediaId: string } | { referenceId: string }) & { signal: AbortSignal })",
+    );
+  } else if (locator.endsWith("#AppBridgeRequest")) {
+    structuralSignatures = replaceReviewedSignature(
+      locator,
+      structuralSignatures,
+      "|{mediaId:string}|{ref:string}&{op:\"openPreview\"",
+      "|{mediaId:string}|{ref:string}|{referenceId:string}&{op:\"openPreview\"",
+    );
+    structuralSignatures = replaceReviewedSignature(
+      locator,
+      structuralSignatures,
+      "|{mediaKind:\"audio\"|\"image\"|\"video\";op:\"importReference\";requestId:string;type:\"nautilo.app.video-generation.req\"}",
+      "|{mediaKind:\"audio\"|\"image\"|\"video\";op:\"importReference\"}|{mediaKind:\"image\";op:\"importReferences\"}&{requestId:string;type:\"nautilo.app.video-generation.req\"}|{multiple:boolean;purpose:\"media\"|\"references\"}&{op:\"pick\";requestId:string;type:\"nautilo.app.media.req\"}",
+    );
+  } else if (locator.endsWith("/pending-attention")) {
+    structuralSignatures = replaceReviewedSignature(
+      locator,
+      structuralSignatures,
+      "quote:{amountMicros:number;currency:\"USD\";display:string};referenceImages?:",
+      "quote:{amountMicros:number;currency:\"USD\";display:string};referenceAudios?:{artifactId:string;content?:{mimeType:string;sha256:string;sizeBytes:number};durationSeconds:number;index:number;label:string}[];referenceImages?:",
+    );
+  } else {
+    throw new Error(`Unreviewed September 17 successor for ${locator}`);
+  }
+  return { ...september12, structuralSignatures };
+}
 
 describe("reviewed main 2026-09-03 encryption inventory", () => {
   test("classifies every reviewed current coverage coordinate exactly once", () => {
@@ -61,7 +139,7 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
     for (const declaration of REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS) {
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === declaration.locator))
-          .toEqual(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((entry) => entry.locator === declaration.locator));
+          .toEqual([currentSeptember12Replacement(declaration.locator)]);
         continue;
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(declaration.locator)) {
@@ -86,7 +164,7 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
     for (const locator of SUPERSEDED_MAIN_2026_09_03_DTO_LOCATORS) {
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === locator))
-          .toEqual(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((entry) => entry.locator === locator));
+          .toEqual([currentSeptember12Replacement(locator)]);
         continue;
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(locator)) {

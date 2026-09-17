@@ -4,14 +4,24 @@ import { resolve } from "node:path";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
 import { RAW_DATABASE_WRITER_DEBT } from "../../baseline/raw-database-writer-debt";
 import {
+  RETIRED_MAIN_2026_08_14_LANDING_RAW_DATABASE_WRITER_LOCATORS,
+} from "../../baseline/reviewed-main-2026-08-14-landing";
+import {
   REVIEWED_WAVE_4_SOURCE_ALARMS,
   SUPERSEDED_WAVE_0_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-wave-4-source-alarms";
+import {
+  RETIRED_M223_RAW_DATABASE_WRITER_LOCATORS,
+} from "../../baseline/retired-m223-query-writers";
+import {
+  RETIRED_MEMORY_EMBEDDING_RAW_DATABASE_WRITER_LOCATORS,
+} from "../../baseline/retired-memory-embedding-provenance-query-writers";
 import {
   CURRENT_SOURCE_ALARM_REVIEWS,
   inspectSourceAlarmReviews,
 } from "../../src/node/source-alarm-review";
 import { scanSourceAlarms } from "../../src/node/source-inventory";
+import { rawDatabaseWriterDebtId } from "../../src/raw-database-writer-debt";
 
 const evidencePath =
   "packages/encryption-invariants/tests/integration/wave-4-security-decisions.test.ts";
@@ -59,14 +69,41 @@ const reviewedMetadata = [
   },
 ] as const;
 
-const reviewedMemoryWriterLocators = [
-  "packages/agent/src/store/memory-store.ts#executeAtomicProjectionMemoryInTx:raw_sql:insert:public.memories:1",
-] as const;
-
 const retiredMemoryWriterLocators = [
-  "packages/agent/src/store/memory-store.ts#executeAtomicProjectionMemoryInTx:raw_sql:insert:public.memory_namespaces:1",
-  "packages/agent/src/store/memory-store.ts#forceCreateMemoryWithDb:raw_sql:insert:public.memories:1",
-  "packages/agent/src/store/memory-store.ts#forceCreateMemoryWithDb:raw_sql:insert:public.memory_namespaces:1",
+  {
+    locator:
+      "packages/agent/src/store/memory-store.ts#executeAtomicProjectionMemoryInTx:raw_sql:insert:public.memories:1",
+    retirement: RETIRED_MEMORY_EMBEDDING_RAW_DATABASE_WRITER_LOCATORS,
+    frozenDebtLocator:
+      "packages/agent/src/store/memory-store.ts#saveMemoryWithDb:raw_sql:insert:public.memories:1",
+    retainsBoundaryLink: true,
+  },
+  {
+    locator:
+      "packages/agent/src/store/memory-store.ts#executeAtomicProjectionMemoryInTx:raw_sql:insert:public.memory_namespaces:1",
+    retirement: RETIRED_M223_RAW_DATABASE_WRITER_LOCATORS,
+    frozenDebtLocator:
+      "packages/agent/src/store/memory-store.ts#attachMemoryToNamespaceWithDb:raw_sql:insert:public.memory_namespaces:1",
+    retainsBoundaryLink: false,
+  },
+  {
+    locator:
+      "packages/agent/src/store/memory-store.ts#forceCreateMemoryWithDb:raw_sql:insert:public.memories:1",
+    retirement:
+      RETIRED_MAIN_2026_08_14_LANDING_RAW_DATABASE_WRITER_LOCATORS,
+    frozenDebtLocator:
+      "packages/agent/src/store/memory-store.ts#saveMemoryWithDb:raw_sql:insert:public.memories:1",
+    retainsBoundaryLink: false,
+  },
+  {
+    locator:
+      "packages/agent/src/store/memory-store.ts#forceCreateMemoryWithDb:raw_sql:insert:public.memory_namespaces:1",
+    retirement:
+      RETIRED_MAIN_2026_08_14_LANDING_RAW_DATABASE_WRITER_LOCATORS,
+    frozenDebtLocator:
+      "packages/agent/src/store/memory-store.ts#attachMemoryToNamespaceWithDb:raw_sql:insert:public.memory_namespaces:1",
+    retainsBoundaryLink: false,
+  },
 ] as const;
 
 const reviewedM230RebuildWriterLocators = [
@@ -113,29 +150,34 @@ describe("Wave 4 database security decisions", () => {
     expect(link?.reason).toContain("user-authored Room-label plaintext boundary");
   });
 
-  test("keeps new raw Memory writers blocked until the Memory bridge exists", () => {
-    for (const locator of reviewedMemoryWriterLocators) {
+  test("retires replaced raw Memory writers without erasing frozen debt", () => {
+    for (const {
+      locator,
+      retirement,
+      frozenDebtLocator,
+      retainsBoundaryLink,
+    } of retiredMemoryWriterLocators) {
+      expect(retirement.has(locator)).toBe(true);
       expect(RAW_DATABASE_WRITER_DEBT.some(
         (candidate) => candidate.locator === locator,
-      )).toBe(true);
-      const link = BASELINE_REGISTRY.reviewedDebtLinks?.find(
+      )).toBe(false);
+      const boundaryLink = BASELINE_REGISTRY.reviewedDebtLinks?.find(
         (candidate) => candidate.locator === locator,
       );
-      expect(link).toMatchObject({
-        surface: "db",
-        owner: "packages/agent",
-        testEvidence: [evidencePath],
-      });
-      expect(link?.targetDebtIds).toHaveLength(1);
-      expect(link?.reason).toContain("same frozen Memory");
-    }
-    for (const locator of retiredMemoryWriterLocators) {
-      expect(RAW_DATABASE_WRITER_DEBT.some(
-        (candidate) => candidate.locator === locator,
-      )).toBe(false);
-      expect(BASELINE_REGISTRY.reviewedDebtLinks?.some(
-        (candidate) => candidate.locator === locator,
-      )).toBe(false);
+      if (retainsBoundaryLink) {
+        expect(boundaryLink).toMatchObject({
+          surface: "db",
+          owner: "packages/agent",
+          targetDebtIds: [rawDatabaseWriterDebtId(frozenDebtLocator)],
+          testEvidence: [evidencePath],
+        });
+      } else {
+        expect(boundaryLink).toBeUndefined();
+      }
+      expect(BASELINE_REGISTRY.debt.some(
+        (candidate) =>
+          candidate.id === rawDatabaseWriterDebtId(frozenDebtLocator),
+      )).toBe(true);
     }
   });
 
@@ -240,10 +282,20 @@ describe("Wave 4 source-alarm security decisions", () => {
 
     const inspection = inspectSourceAlarmReviews(inventory.alarms);
     expect(inspection.errors).toEqual([]);
+    expect(inspection.reviews).toHaveLength(CURRENT_SOURCE_ALARM_REVIEWS.length);
+    expect(new Set(inspection.reviews.map((review) => review.locator))).toEqual(
+      new Set(CURRENT_SOURCE_ALARM_REVIEWS.map((review) => review.locator)),
+    );
     expect(inspection.counts).toEqual({
-      declaration: 801,
-      baselineDebt: 2157,
-      reviewedExclusion: 384,
+      declaration: CURRENT_SOURCE_ALARM_REVIEWS.filter(
+        (review) => review.closure === "declaration",
+      ).length,
+      baselineDebt: CURRENT_SOURCE_ALARM_REVIEWS.filter(
+        (review) => review.closure === "baseline_debt",
+      ).length,
+      reviewedExclusion: CURRENT_SOURCE_ALARM_REVIEWS.filter(
+        (review) => review.closure === "reviewed_exclusion",
+      ).length,
       unmapped: 0,
     });
     expect(

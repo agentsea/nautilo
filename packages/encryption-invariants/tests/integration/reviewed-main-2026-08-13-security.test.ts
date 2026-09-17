@@ -12,6 +12,13 @@ import {
   SUPERSEDED_MAIN_2026_08_13_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-08-13-source-alarms";
 
+const EXTRACTED_CLI_NATIVE_BUILD_LOCATORS = [
+  "apps/cli/scripts/compile-standalone-native.ts#filesystem_write:2790ab8c9df48097:1",
+  "apps/cli/scripts/compile-standalone-native.ts#subprocess_processor:2884eff8d491bf99:1",
+  "apps/cli/scripts/compile-standalone-native.ts#subprocess_processor:ebb2e3ae3b7fac5e:1",
+  "apps/cli/scripts/compile-standalone-native.ts#temporary_storage:b66e16ae19d1bbfd:1",
+] as const;
+
 describe("reviewed 2026-08-13 main encryption boundaries", () => {
   test("keeps Human rollout identity and credential handoffs on exact frozen debt", () => {
     const linkedLocators = new Set(
@@ -65,9 +72,14 @@ describe("reviewed 2026-08-13 main encryption boundaries", () => {
     const runtimeDebt = REVIEWED_MAIN_2026_08_13_SOURCE_ALARMS.filter(
       (review) => review.closure === "baseline_debt",
     );
-    expect(exclusions).toHaveLength(11);
+    expect(exclusions).toHaveLength(7);
     expect(exclusions.every((review) => review.locator.includes("/scripts/")))
       .toBe(true);
+    for (const locator of EXTRACTED_CLI_NATIVE_BUILD_LOCATORS) {
+      expect(REVIEWED_MAIN_2026_08_13_SOURCE_ALARMS.some((review) =>
+        review.locator === locator
+      )).toBe(false);
+    }
     expect(runtimeDebt).toHaveLength(48);
     expect(runtimeDebt.every((review) =>
       !review.locator.includes("/scripts/")

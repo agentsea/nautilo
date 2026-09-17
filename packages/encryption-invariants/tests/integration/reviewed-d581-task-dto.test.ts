@@ -6,6 +6,7 @@ import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
 import { D581_TASK_RESPONSE_SIGNATURES, reviewedD581TaskDtoReplacements } from "../../baseline/reviewed-d581-task-dto";
 import { REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS } from "../../baseline/reviewed-main-2026-09-12-dto";
+import { SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS } from "../../baseline/reviewed-main-2026-09-17-dto";
 import { auditDtoDeclarations, discoverHttpDtoInventory } from "../../src/node/dto-inventory";
 
 const root = resolve(import.meta.dir, "../../../..");
@@ -15,16 +16,32 @@ test("D581 Task DTO snapshots match current producers and preserve existing plai
   expect(locators).toHaveLength(4);
   const observed = (await discoverHttpDtoInventory(root)).filter((entry) => locators.includes(entry.locator));
   const declarations = DTO_BASELINE_DECLARATIONS.filter((entry) => locators.includes(entry.locator));
-  const reviewedCurrentReplacements = REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((entry) => locators.includes(entry.locator));
+  const reviewedSeptember12Replacements = REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((entry) => locators.includes(entry.locator));
   expect(observed).toHaveLength(4);
-  expect(reviewedCurrentReplacements.map((entry) => entry.locator)).toEqual([
+  expect(reviewedSeptember12Replacements.map((entry) => entry.locator)).toEqual([
     "http:request_response:GET /api/tasks/pending-attention",
   ]);
+  expect(SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS.has(
+    "http:request_response:GET /api/tasks/pending-attention",
+  )).toBe(true);
   expect(auditDtoDeclarations({ observations: observed, declarations }).ok).toBe(true);
   for (const declaration of declarations) {
-    const reviewedCurrent = reviewedCurrentReplacements.find((entry) => entry.locator === declaration.locator);
-    if (reviewedCurrent) {
-      expect(declaration).toEqual(reviewedCurrent);
+    const reviewedSeptember12 = reviewedSeptember12Replacements.find((entry) => entry.locator === declaration.locator);
+    if (reviewedSeptember12) {
+      const reviewedSignatures = reviewedSeptember12.structuralSignatures;
+      if (!reviewedSignatures) {
+        throw new Error(`Missing September 12 DTO signatures for ${declaration.locator}`);
+      }
+      const expectedSeptember17 = {
+        ...reviewedSeptember12,
+        structuralSignatures: reviewedSignatures.map(
+          (signature) => signature.replace(
+            "quote:{amountMicros:number;currency:\"USD\";display:string};referenceImages?:",
+            "quote:{amountMicros:number;currency:\"USD\";display:string};referenceAudios?:{artifactId:string;content?:{mimeType:string;sha256:string;sizeBytes:number};durationSeconds:number;index:number;label:string}[];referenceImages?:",
+          ),
+        ),
+      };
+      expect(declaration).toEqual(expectedSeptember17);
       expect(declaration.structuralSignatures).not.toContain(D581_TASK_RESPONSE_SIGNATURES[declaration.locator]);
     } else {
       expect(declaration.structuralSignatures).toContain(D581_TASK_RESPONSE_SIGNATURES[declaration.locator]);
