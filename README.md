@@ -1,11 +1,15 @@
 # Nautilo
 
+<div align="center">
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 Code and documentation are currently in English. Translation PRs are welcome;
 see [translation contributions](CONTRIBUTING.md#translations-and-localization).
 
 ### AI goes multiplayer.
+
+</div>
 
 https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
@@ -218,3 +222,7 @@ Nautilo is [MIT licensed](LICENSE). See
 [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses and
 attribution, and [asset provenance](ASSET_PROVENANCE.md) for artwork, generated
 media, and document fixtures.
+
+[![Keep the future open. The open, organization-level harness for everyone needs your support. Support Nautilo on GitHub Sponsors.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[Support Nautilo through agentsea on GitHub Sponsors](https://github.com/sponsors/agentsea) · One-time or monthly.

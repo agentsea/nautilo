@@ -1,5 +1,7 @@
 # Nautilo
 
+<div align="center">
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 Le code et la documentation sont actuellement en anglais. Les PR de traduction sont les bienvenues ; consultez le [guide de contribution aux traductions](CONTRIBUTING.md#translations-and-localization) (en anglais). Cette page traduit le README ; elle ne signifie pas que l’interface ou les documents liés sont disponibles en français.
@@ -8,6 +10,8 @@ Le code et la documentation sont actuellement en anglais. Les PR de traduction s
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
+
+</div>
 
 https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
@@ -161,3 +165,7 @@ Lisez le [guide de contribution](CONTRIBUTING.md), explorez les [problèmes sél
 ## Licence
 
 Nautilo est [sous licence MIT](LICENSE). Consultez les [mentions des tiers](THIRD_PARTY_NOTICES.md) pour les licences et attributions des dépendances, et la [provenance des ressources](ASSET_PROVENANCE.md) pour les créations graphiques, les médias générés et les documents de test.
+
+[![Soutenez Nautilo sur GitHub Sponsors.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[Soutenez Nautilo via agentsea sur GitHub Sponsors](https://github.com/sponsors/agentsea) · Don ponctuel ou mensuel.
