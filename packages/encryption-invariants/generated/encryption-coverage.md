@@ -39,7 +39,7 @@ Baseline debt blocks applicable release claims.
 | source | Alarm baseline debt | 2146 |
 | source | Reviewed alarm exclusions | 406 |
 | source | Unmapped alarms | 0 |
-| source | Scan exclusions | 13 |
+| source | Scan exclusions | 16 |
 | schema | Objects | 207 |
 | schema | Tables | 206 |
 | schema | Views | 1 |

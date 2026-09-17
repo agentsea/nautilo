@@ -139,6 +139,14 @@ describe("M220 source inventory alarm scanner", () => {
       "packages/lattice-crypto-extra/live.ts",
       "apps/desktop/scratch/ignored.ts",
       "apps/desktop/scratchpad/live.ts",
+      "packages/first-party-apps/spreadsheet/engine/browser.js",
+      "packages/first-party-apps/spreadsheet/engine/browser.cjs",
+      "packages/first-party-apps/spreadsheet/engine/node.js",
+      "packages/first-party-apps/spreadsheet/engine/node.cjs",
+      "packages/first-party-apps/spreadsheet/engine-extra/live.ts",
+      "packages/first-party-apps/presentation/engine/browser.js",
+      "packages/first-party-apps/board/engine/main.js",
+      "packages/office-sheets/src/live.ts",
       "packages/demo/ignored.test.ts",
       "packages/demo/live.ts",
     ];
@@ -156,7 +164,9 @@ describe("M220 source inventory alarm scanner", () => {
     expect(result.alarms.map((alarm) => alarm.path)).toEqual([
       "apps/desktop/scratchpad/live.ts",
       "packages/demo/live.ts",
+      "packages/first-party-apps/spreadsheet/engine-extra/live.ts",
       "packages/lattice-crypto-extra/live.ts",
+      "packages/office-sheets/src/live.ts",
       "packages/tests-extra/live.ts",
     ]);
   });
