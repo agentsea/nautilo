@@ -2,8 +2,8 @@
 
 > Mechanical focus map for Codex/developers. It routes investigation; it does not decide whether any packet is legitimate.
 
-- Primary packets: 5115
-- Linked primary sites: 5787
+- Primary packets: 5117
+- Linked primary sites: 5789
 - New or uncovered packets: 0
 - Reusable semantic-loss and producer junctions: 12
 - Mechanical policy-family references: 351
@@ -431,7 +431,7 @@ Same-value/name relationships are navigation cues only. Inspect every listed rel
 | apps/desktop | 131 |
 | packages/server | 113 |
 | packages/lattice-crypto | 78 |
-| packages/agent | 72 |
+| packages/agent | 74 |
 | bin/nautilo-dev | 54 |
 | scripts/security-test-env | 53 |
 | packages/db | 49 |
