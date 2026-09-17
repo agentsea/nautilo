@@ -8,7 +8,7 @@ const readJson = (path: string): unknown => JSON.parse(readFileSync(join(import.
 type FindingTuple = ["grype" | "trivy", string, string, string, "high" | "critical", boolean];
 
 describe("September 16 server scanner inventory", () => {
-  test("binds every new high/critical tuple exactly without wildcarding", () => {
+  test("binds every retained high/critical tuple to its current exact decision", () => {
     const fixture = readJson("fixtures/server-security-inventory-2026-09-16.json") as {
       workflowRunId: number;
       sourceSha: string;
@@ -29,6 +29,10 @@ describe("September 16 server scanner inventory", () => {
 
     expect(fixture.workflowRunId).toBe(35135410942);
     expect(fixture.sourceSha).toBe("aa110c48e4da843c543791252f9bd304dc2b585d");
+    expect(fixture.decision).toEqual({
+      reviewedAt: "2026-09-16T18:45:00Z",
+      expiresAt: "2026-10-01T00:00:00Z",
+    });
     expect(fixture.findingTuples).toHaveLength(19);
     for (const [scanner, advisoryId, packageName, installedVersion, severity] of fixture.findingTuples) {
       const matches = parsed.exceptions.filter((entry) =>
@@ -39,8 +43,13 @@ describe("September 16 server scanner inventory", () => {
         && entry.observedBy.includes(scanner)
       );
       expect(matches).toHaveLength(1);
-      expect(matches[0]!.reviewedAt).toBe(fixture.decision.reviewedAt);
-      if (advisoryId !== "CVE-2026-19499") expect(matches[0]!.expiresAt).toBe(fixture.decision.expiresAt);
+      if (advisoryId === "CVE-2026-19499") {
+        expect(matches[0]!.reviewedAt).toBe(fixture.decision.reviewedAt);
+        expect(matches[0]!.expiresAt).toBe("2026-10-16T00:00:00Z");
+      } else {
+        expect(matches[0]!.reviewedAt).toBe("2026-09-17T00:00:00Z");
+        expect(matches[0]!.expiresAt).toBe("2026-11-15T00:00:00Z");
+      }
     }
   });
 });
