@@ -104,6 +104,10 @@ store update, or Desktop/Host installation.
 
 ### Changed
 
+- The bundled `/intro` library uses the updated 87-second hero and chat film
+  with speaker cues, and includes Browser Use and the revised Video Kung Fu
+  walkthrough. Older remote catalogs cannot replace this newer bundled set.
+
 - Provider model choices refresh after credentials are saved without discarding
   unsaved settings. Deep Research now honors configured role output budgets,
   propagates cancellation to model calls, and reports exhausted supervisor

@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "catalogVersion": "2026.09.07.1",
-  "publishedAt": "2026-09-07T19:46:43Z",
+  "catalogVersion": "2026.09.17.1",
+  "publishedAt": "2026-09-17T14:00:00Z",
   "entries": [
     {
       "id": "launch-hero",
       "asset": {
         "provider": "bunny-storage",
-        "key": "explainers/2026.09.07.1/nautilo-hero-landscape-hq.mp4",
+        "key": "launch/2026-09/f4755eddac0c5e3eeed122bee3719d297c450e8429ab35e25917ea045d6283f6/launch-hero.mp4",
         "format": "mp4",
-        "contentSha256": "4957994be5c8a6a6e2b8b0ea66df5706fe8b0cc92471d51a5f2331e2c089f713",
-        "byteLength": 45839568
+        "contentSha256": "f4755eddac0c5e3eeed122bee3719d297c450e8429ab35e25917ea045d6283f6",
+        "byteLength": 60234231
       },
-      "title": "Nautilo: The Co-Creative Revolution",
-      "summary": "A 70-second introduction to people and their Genies working together across chat, documents, apps, coding, and mobile.",
-      "description": "A 70-second introduction to people and their Genies working together across chat, documents, apps, coding, and mobile.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "title": "AI Goes Multiplayer",
+      "summary": "An 87-second introduction to people and their agents (we call them Genies) sharing Rooms, creating together, controlling coding agents, and continuing on mobile.",
+      "description": "An 87-second introduction to people and their agents (we call them Genies) sharing Rooms, creating together, controlling coding agents, and continuing on mobile.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
       "tags": [
         "launch",
         "overview",
@@ -32,22 +32,22 @@
           ]
         }
       ],
-      "durationSeconds": 70,
-      "publishedAt": "2026-09-07",
+      "durationSeconds": 87,
+      "publishedAt": "2026-09-15",
       "captionsAvailable": true
     },
     {
       "id": "launch-01-chat",
       "asset": {
         "provider": "bunny-storage",
-        "key": "explainers/2026.09.07.1/nautilo-01-chat-captioned-neon-hq.mp4",
+        "key": "launch/2026-09/631ba5f2017b92e3b80565249c4bf3e013e1d14ffe6e942551190afad6e82c47/launch-chat.mp4",
         "format": "mp4",
-        "contentSha256": "8703e635a81d1d37ca4b5c9ae40d07e0b65b676638cd852d6394d4af9b131554",
-        "byteLength": 55686699
+        "contentSha256": "631ba5f2017b92e3b80565249c4bf3e013e1d14ffe6e942551190afad6e82c47",
+        "byteLength": 54285009
       },
       "title": "Multi-User, Multi-Genie Chat",
-      "summary": "Follow a shared conversation as people ask their Genies about earlier work and invite another Genie to contribute.",
-      "description": "Follow a shared conversation as people ask their Genies about earlier work and invite another Genie to contribute.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "summary": "Talk naturally in a shared Room. Smart Routing wakes the right Genie automatically. Speaker cues identify the human and Genies before the demo shows manual control.",
+      "description": "Talk naturally in a shared Room. Smart Routing wakes the right Genie automatically. Speaker cues identify the human and Genies before the demo shows manual control.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
       "tags": [
         "launch",
         "multi-user",
@@ -67,7 +67,7 @@
         }
       ],
       "durationSeconds": 103,
-      "publishedAt": "2026-09-07",
+      "publishedAt": "2026-09-15",
       "captionsAvailable": true
     },
     {
@@ -514,6 +514,73 @@
       ],
       "durationSeconds": 104,
       "publishedAt": "2026-09-07",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-14-browser-use",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "launch/2026-09/80c61b83d5648b9ef0a2ca3818864c16a7a3a1c7b4ca27bc7f2516668a7246f6/launch-browser-use.mp4",
+        "format": "mp4",
+        "contentSha256": "80c61b83d5648b9ef0a2ca3818864c16a7a3a1c7b4ca27bc7f2516668a7246f6",
+        "byteLength": 35217739
+      },
+      "title": "Browser Use: Your Login. Her Legwork.",
+      "summary": "Connect a website and tell your Genie what you need. Watch her work inside Nautilo or let her work behind the scenes.",
+      "description": "Connect a website and tell your Genie what you need. Watch her work inside Nautilo or let her work behind the scenes.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "browser-use",
+        "connected-websites",
+        "automation",
+        "background-work"
+      ],
+      "toolReferences": [
+        {
+          "name": "run_website_task",
+          "tags": [
+            "browser-use",
+            "connected-websites",
+            "automation"
+          ]
+        }
+      ],
+      "durationSeconds": 102,
+      "publishedAt": "2026-09-08",
+      "captionsAvailable": true
+    },
+    {
+      "id": "launch-15-video-kung-fu",
+      "asset": {
+        "provider": "bunny-storage",
+        "key": "launch/2026-09/691c5a9f062475836a3da64c524932a51a68731ceb115b947f4570b19eee4fdb/launch-video-kung-fu.mp4",
+        "format": "mp4",
+        "contentSha256": "691c5a9f062475836a3da64c524932a51a68731ceb115b947f4570b19eee4fdb",
+        "byteLength": 122797070
+      },
+      "title": "Video Kung Fu: Your Final Cut",
+      "summary": "Show your Genie what needs to change, choose a new reference, generate a new take in Nautilo, and take the timeline controls to make your final cut.",
+      "description": "Show your Genie what needs to change, choose a new reference, generate a new take in Nautilo, and take the timeline controls to make your final cut.\n\nMusic: “Neon (No Melody Alt Mix)” by Scott Buckley, www.scottbuckley.com.au, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Music edited with cuts, volume adjustments, and fades.",
+      "tags": [
+        "launch",
+        "video",
+        "video-generation",
+        "video-editing",
+        "timeline",
+        "co-creation"
+      ],
+      "toolReferences": [
+        {
+          "name": "generate_video",
+          "tags": [
+            "video",
+            "video-generation",
+            "video-editing"
+          ]
+        }
+      ],
+      "durationSeconds": 136,
+      "publishedAt": "2026-09-16",
       "captionsAvailable": true
     }
   ]

@@ -8,6 +8,16 @@ the server/container image and served Workbench bundle, and the mobile
 application. It is an attribution record, not a statement that Nautilo is
 affiliated with, sponsored by, or endorsed by any listed project.
 
+## Streamed explainer music
+
+Nautilo's explainer films use edited cues from
+["Neon (No Melody Alt Mix)" by Scott Buckley](https://www.scottbuckley.com.au/library/neon/),
+licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
+The cues include cuts, volume adjustments and fades. Film descriptions retain
+this attribution. These MP4s are streamed separately, not bundled into the
+release artifacts below; their exact media hashes are recorded in the
+[explainer catalog](packages/agent/src/media/explainer-catalog/seed/catalog.json).
+
 ## How this inventory is bounded and verified
 
 Release paths, rather than the development checkout, define this notice.

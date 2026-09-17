@@ -20,8 +20,8 @@ import type { RemoteExplainerCatalogConfig } from "../../src/media/explainer-cat
 
 const POINTER_URL = OFFICIAL_EXPLAINER_CATALOG_URL;
 const POINTER_ENV = "NAUTILO_EXPLAINER_CATALOG_POINTER_URL";
-const SEED_VERSION = "2026.09.07.1";
-const SEED_PUBLISHED_AT = "2026-09-07T19:46:43Z";
+const SEED_VERSION = "2026.09.17.1";
+const SEED_PUBLISHED_AT = "2026-09-17T14:00:00Z";
 
 function parseResponse(raw: string) {
   return ExplainerCatalogListResultSchema.parse(JSON.parse(raw) as unknown);
@@ -57,8 +57,8 @@ function makeTestKey(): {
 function remoteManifest(): ExplainerCatalog {
   return ExplainerCatalogSchema.parse({
     version: 1,
-    catalogVersion: "2026.09.08.1",
-    publishedAt: "2026-09-08T10:00:00Z",
+    catalogVersion: "2026.09.18.1",
+    publishedAt: "2026-09-18T10:00:00Z",
     entries: [
       {
         id: "remote-onboarding-walkthrough",
@@ -75,7 +75,7 @@ function remoteManifest(): ExplainerCatalog {
         tags: ["remote", "onboarding"],
         toolReferences: [{ name: "regenerate_soul", category: "settings", tags: ["onboarding"] }],
         durationSeconds: 55,
-        publishedAt: "2026-09-08",
+        publishedAt: "2026-09-18",
         captionsAvailable: true,
       },
     ],
@@ -217,7 +217,7 @@ describe("find_explainer", () => {
 
     expect(result.source).toBe("remote");
     expect(result.stale).toBe(false);
-    expect(result.catalogVersion).toBe("2026.09.08.1");
+    expect(result.catalogVersion).toBe("2026.09.18.1");
     expect(result.items[0]).toMatchObject({
       id: "remote-onboarding-walkthrough",
       title: "Remote Onboarding Walkthrough",
@@ -318,7 +318,7 @@ describe("find_explainer", () => {
     const recorder: FetchFn = (u, init) => {
       fetches.push(init ? { url: u, init } : { url: u });
       if (u === OFFICIAL_EXPLAINER_CATALOG_URL) {
-        return Promise.resolve(jsonResponse({ catalogVersion: "2026.09.08.1" }));
+        return Promise.resolve(jsonResponse({ catalogVersion: "2026.09.18.1" }));
       }
       return Promise.resolve(jsonResponse("not found", { status: 404 }));
     };

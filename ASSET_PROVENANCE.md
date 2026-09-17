@@ -92,6 +92,22 @@ byte-equivalent public upstream snapshot recorded in the manifest. This closes
 the exact upstream-byte identification gap; it does not reconstruct the original
 download history or constitute a separate rights-clearance claim.
 
+## Streamed explainer films
+
+The [bundled explainer catalog](packages/agent/src/media/explainer-catalog/seed/catalog.json)
+records the immutable media keys, SHA-256 hashes and byte lengths of the Nautilo
+launch films. The MP4 files are streamed from the official media origin rather
+than checked into this repository. The refreshed hero, chat, Browser Use and
+Video Kung Fu entries reuse the published website films. Other entries retain
+their existing verified media identities.
+
+The films include edited cues from Scott Buckley's
+["Neon (No Melody Alt Mix)"](https://www.scottbuckley.com.au/library/neon/),
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Each film's catalog description retains the music attribution and editing
+notice. This music retains its own license, independently of the source-code
+MIT license.
+
 ## Record scope
 
 This is the repository's category-level asset provenance record. Checked-in

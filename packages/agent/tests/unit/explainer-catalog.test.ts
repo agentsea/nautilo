@@ -63,10 +63,10 @@ describe("D416 Phase 1 — local explainer catalog", () => {
     expect(detail).not.toHaveProperty("playbackUrl");
   });
 
-  test("seed matches the canonical 2026.09.07.1 signed-source release", () => {
-    expect(localExplainerCatalog.catalogVersion).toBe("2026.09.07.1");
-    expect(localExplainerCatalog.publishedAt).toBe("2026-09-07T19:46:43Z");
-    expect(localExplainerCatalog.entries).toHaveLength(14);
+  test("seed includes the refreshed September launch films", () => {
+    expect(localExplainerCatalog.catalogVersion).toBe("2026.09.17.1");
+    expect(localExplainerCatalog.publishedAt).toBe("2026-09-17T14:00:00Z");
+    expect(localExplainerCatalog.entries).toHaveLength(16);
     for (const entry of localExplainerCatalog.entries) {
       expect(entry.asset.provider).toBe("bunny-storage");
       expect(entry.asset.format).toBe("mp4");
@@ -77,18 +77,26 @@ describe("D416 Phase 1 — local explainer catalog", () => {
 
   test("launch discovery includes every film, starts with the hero, and excludes retired films", () => {
     const result = searchLocalExplainerCatalog({ query: "launch", pageSize: 20 });
-    expect(result.total).toBe(14);
-    expect(result.items).toHaveLength(14);
+    expect(result.total).toBe(16);
+    expect(result.items).toHaveLength(16);
     expect(result.hasMore).toBe(false);
     expect(result.items[0]?.id).toBe("launch-hero");
     expect(result.items.some((entry) => entry.id === "launch-13-android-mobile")).toBe(true);
     for (const entry of localExplainerCatalog.entries) {
-      expect(entry.asset.key).toStartWith("explainers/2026.09.07.1/");
       expect(entry.captionsAvailable).toBe(true);
     }
     for (const retiredId of ["multi-user-multi-agent-chat", "third-party-app-control", "co-create-in-writer", "adaptive-teacher-mode", "agent-delegation", "customize-your-genie"]) {
       expect(resolveLocalExplainerDetail(retiredId)).toBeUndefined();
     }
+  });
+
+  test("discovers Browser Use and Video Kung Fu through their product tools", () => {
+    expect(searchLocalExplainerCatalog({ tool: { name: "run_website_task", tags: [] } })
+      .items[0]?.id).toBe("launch-14-browser-use");
+    expect(searchLocalExplainerCatalog({ query: "timeline", tool: { name: "generate_video", tags: [] } })
+      .items[0]?.id).toBe("launch-15-video-kung-fu");
+    expect(resolveLocalExplainerDetail("launch-hero")?.durationSeconds).toBe(87);
+    expect(resolveLocalExplainerDetail("launch-15-video-kung-fu")?.durationSeconds).toBe(136);
   });
 
   test("rejects malformed catalog manifests", () => {
@@ -209,8 +217,8 @@ describe("D416 Phase 1 — local explainer catalog", () => {
     const secondPage = searchLocalExplainerCatalog({ page: 2, pageSize: 2 });
 
     expect(firstPage.items).toHaveLength(2);
-    expect(firstPage.catalogVersion).toBe("2026.09.07.1");
-    expect(firstPage.total).toBe(14);
+    expect(firstPage.catalogVersion).toBe("2026.09.17.1");
+    expect(firstPage.total).toBe(16);
     expect(firstPage.hasMore).toBe(true);
     expect(secondPage.items).toHaveLength(2);
     expect(secondPage.hasMore).toBe(true);
@@ -246,13 +254,13 @@ const MODEL_DOMAIN = "nautilo-model-catalog-v1";
 
 /** A minimal valid explainer manifest distinct from the checked-in seed. */
 function manifestPayload(
-  catalogVersion = "2026.09.08.1",
+  catalogVersion = "2026.09.18.1",
   id = "remote-demo",
 ): ExplainerCatalog {
   return ExplainerCatalogSchema.parse({
     version: 1,
     catalogVersion,
-    publishedAt: "2026-09-08T10:00:00Z",
+    publishedAt: "2026-09-18T10:00:00Z",
     entries: [
       {
         id,
@@ -269,7 +277,7 @@ function manifestPayload(
         tags: ["remote", "demo"],
         toolReferences: [{ name: "find_voice", category: "settings", tags: ["remote"] }],
         durationSeconds: 42,
-        publishedAt: "2026-09-08",
+        publishedAt: "2026-09-18",
         captionsAvailable: true,
       },
     ],
@@ -345,7 +353,7 @@ function makeHarness(
     maxBytes?: number;
   } = {},
 ): Harness {
-  const version = "2026.09.08.1";
+  const version = "2026.09.18.1";
   const manifestUrl = `https://media.nautilo.ai/catalog/catalog-${version}.json`;
   const defaultManifest = manifestPayload(version);
   const { pointer: defaultPointer, immutableBody: defaultBody } = buildSignedRelease(
@@ -393,12 +401,12 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
     expect(result.source).toBe("remote-fresh");
     expect(result.stale).toBe(false);
     expect(result.originUrl).toBe(POINTER_URL);
-    expect(result.catalogVersion).toBe("2026.09.08.1");
+    expect(result.catalogVersion).toBe("2026.09.18.1");
     expect(result.catalog.entries[0]?.id).toBe("remote-demo");
     expect(result.fetchedAt).toBe(new Date(0).toISOString());
     expect(h.fetches.map((f) => f.url)).toEqual([
       "https://media.nautilo.ai/catalog/latest.json",
-      "https://media.nautilo.ai/catalog/catalog-2026.09.08.1.json",
+      "https://media.nautilo.ai/catalog/catalog-2026.09.18.1.json",
     ]);
   });
 
@@ -422,12 +430,12 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
     expect(result.source).toBe("checked-in-fallback");
     expect(result.reason).toContain("older than the bundled release");
     expect(result.catalog.catalogVersion).toBe(localExplainerCatalog.catalogVersion);
-    expect(result.catalog.entries).toHaveLength(14);
+    expect(result.catalog.entries).toHaveLength(16);
     expect(result.catalog.entries.some((entry) => entry.id === "customize-your-genie")).toBe(false);
   });
 
   test("accepts the same bundled release and compares revision numbers numerically", async () => {
-    for (const version of [localExplainerCatalog.catalogVersion, "2026.09.07.10"]) {
+    for (const version of [localExplainerCatalog.catalogVersion, "2026.09.17.10"]) {
       const { pointer, immutableBody } = buildSignedRelease(manifestPayload(version), key);
       const h = makeHarness(key);
       h.setFetch(async (url) => jsonResponse(url === POINTER_URL ? pointer : immutableBody));
@@ -437,10 +445,25 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
     }
   });
 
+  test("the previous September catalog cannot restore the old hero or hide the new films", async () => {
+    const older = manifestPayload("2026.09.07.1", "launch-hero");
+    const { pointer, immutableBody } = buildSignedRelease(older, key);
+    const h = makeHarness(key, { pointer, immutableBody });
+    h.setFetch(async (url) => jsonResponse(url === POINTER_URL ? pointer : immutableBody));
+    const result = await createRemoteExplainerCatalogLoader(h.config).get();
+
+    expect(result.source).toBe("checked-in-fallback");
+    expect(result.reason).toContain("older than the bundled release");
+    expect(result.catalog.entries.find((entry) => entry.id === "launch-hero"))
+      .toEqual(resolveLocalExplainerDetail("launch-hero"));
+    expect(result.catalog.entries.some((entry) => entry.id === "launch-14-browser-use")).toBe(true);
+    expect(result.catalog.entries.some((entry) => entry.id === "launch-15-video-kung-fu")).toBe(true);
+  });
+
   test("rejects a tampered immutable artifact (SHA-256 mismatch) and falls back to seed", async () => {
     const manifest = manifestPayload();
     const { pointer } = buildSignedRelease(manifest, key);
-    const tampered = `${JSON.stringify({ ...manifest, publishedAt: "2026-09-08T11:00:00Z" })}\n`;
+    const tampered = `${JSON.stringify({ ...manifest, publishedAt: "2026-09-18T11:00:00Z" })}\n`;
     const h = makeHarness(key, { pointer, immutableBody: tampered });
     const loader = createRemoteExplainerCatalogLoader(h.config);
 
@@ -479,7 +502,7 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
   test("falls back to seed when the trusted registry is empty (official production until Phase 8)", async () => {
     const manifest = manifestPayload();
     const { pointer, immutableBody } = buildSignedRelease(manifest, key);
-    const manifestUrl = `https://media.nautilo.ai/catalog/catalog-2026.09.08.1.json`;
+    const manifestUrl = `https://media.nautilo.ai/catalog/catalog-2026.09.18.1.json`;
     const loader = createRemoteExplainerCatalogLoader({
       catalogPointerUrl: POINTER_URL,
       ttlMs: 1000,
@@ -519,8 +542,8 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
 
   test("rejects a malformed pointer (extra/missing fields, bad version) and falls back to seed", async () => {
     for (const bad of [
-      { catalogVersion: "2026.09.08.1", artifactSha256: "a".repeat(64), signature: Buffer.from(new Uint8Array(64)).toString("base64"), signingKeyId: "test-key-1", extra: "evil" },
-      { catalogVersion: "2026.09.08.1", artifactSha256: "a".repeat(64), signingKeyId: "test-key-1" },
+      { catalogVersion: "2026.09.18.1", artifactSha256: "a".repeat(64), signature: Buffer.from(new Uint8Array(64)).toString("base64"), signingKeyId: "test-key-1", extra: "evil" },
+      { catalogVersion: "2026.09.18.1", artifactSha256: "a".repeat(64), signingKeyId: "test-key-1" },
       { catalogVersion: "bad-version", artifactSha256: "a".repeat(64), signature: Buffer.from(new Uint8Array(64)).toString("base64"), signingKeyId: "test-key-1" },
       "not-an-object",
     ]) {
@@ -534,7 +557,7 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
 
   test("rejects an unsigned one-field pointer and falls back to seed", async () => {
     // The old unsigned `{ catalogVersion }` pointer must be rejected.
-    const h = makeHarness(key, { pointer: { catalogVersion: "2026.09.08.1" } });
+    const h = makeHarness(key, { pointer: { catalogVersion: "2026.09.18.1" } });
     const loader = createRemoteExplainerCatalogLoader(h.config);
     const result = await loader.get();
     expect(result.source).toBe("checked-in-fallback");
@@ -551,12 +574,12 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
   });
 
   test("rejects a pointer/manifest catalogVersion mismatch and falls back to seed", async () => {
-    const mismatched = manifestPayload("2026.09.08.2");
+    const mismatched = manifestPayload("2026.09.18.2");
     const mismatchedBody = `${JSON.stringify(mismatched)}\n`;
     const artifactSha256 = createHash("sha256").update(mismatchedBody, "utf8").digest("hex");
-    const payload = canonicalExplainerCatalogSigningPayload("2026.09.08.1", artifactSha256);
+    const payload = canonicalExplainerCatalogSigningPayload("2026.09.18.1", artifactSha256);
     const badPointer = {
-      catalogVersion: "2026.09.08.1",
+      catalogVersion: "2026.09.18.1",
       artifactSha256,
       signature: key.signPayload(payload),
       signingKeyId: key.signingKeyId,
@@ -571,7 +594,7 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
 
   test("rejects a schema-invalid manifest and falls back to seed", async () => {
     const h = makeHarness(key, {
-      immutableBody: `${JSON.stringify({ version: 999, catalogVersion: "2026.09.08.1", publishedAt: "2026-09-08T10:00:00Z", entries: [] })}\n`,
+      immutableBody: `${JSON.stringify({ version: 999, catalogVersion: "2026.09.18.1", publishedAt: "2026-09-18T10:00:00Z", entries: [] })}\n`,
     });
     const loader = createRemoteExplainerCatalogLoader(h.config);
     const result = await loader.get();
@@ -606,7 +629,7 @@ describe("D429 Phase 7.4.1 — signed pointer + immutable artifact explainer loa
     now = 10_000;
     const result = await loader.get();
     expect(result.source).toBe("remote-stale");
-    expect(result.catalog.catalogVersion).toBe("2026.09.08.1");
+    expect(result.catalog.catalogVersion).toBe("2026.09.18.1");
   });
 
   test("falls back to seed when remote fails and no cache exists (bootstrap)", async () => {
@@ -763,10 +786,10 @@ describe("D429 Phase 7.4 — runtime explainer catalog seam", () => {
       catalog: localExplainerCatalog,
       source: "remote-fresh",
       stale: false,
-      fetchedAt: "2026-09-08T00:00:00.000Z",
+      fetchedAt: "2026-09-18T00:00:00.000Z",
       originUrl: OFFICIAL_EXPLAINER_CATALOG_URL,
       reason: "",
-      catalogVersion: "2026.09.08.1",
+      catalogVersion: "2026.09.18.1",
     })).toEqual({ source: "remote", stale: false });
     expect(mapExplainerCatalogProvenance({
       catalog: localExplainerCatalog,
@@ -798,7 +821,7 @@ describe("D429 Phase 7.4 — runtime explainer catalog seam", () => {
   test("runtime seam never fetches a URL other than the resolved official pointer + derived manifest", async () => {
     const key = makeTestKey();
     const { pointer, immutableBody } = buildSignedRelease(manifestPayload(), key);
-    const manifestUrl = "https://media.nautilo.ai/catalog/catalog-2026.09.08.1.json";
+    const manifestUrl = "https://media.nautilo.ai/catalog/catalog-2026.09.18.1.json";
     const fetches: string[] = [];
     configureRuntimeExplainerCatalog({
       remoteConfig: {

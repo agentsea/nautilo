@@ -64,8 +64,8 @@ function makeTestKey(): {
 function remoteManifest(): ExplainerCatalog {
   return ExplainerCatalogSchema.parse({
     version: 1,
-    catalogVersion: "2026.09.08.1",
-    publishedAt: "2026-09-08T12:00:00Z",
+    catalogVersion: "2026.09.18.1",
+    publishedAt: "2026-09-18T12:00:00Z",
     entries: [
       {
         id: "remote-direct-mp4",
@@ -82,7 +82,7 @@ function remoteManifest(): ExplainerCatalog {
         tags: ["remote", "playback"],
         toolReferences: [{ name: "find_voice", category: "settings", tags: ["remote"] }],
         durationSeconds: 48,
-        publishedAt: "2026-09-08",
+        publishedAt: "2026-09-18",
         captionsAvailable: false,
       },
     ],
@@ -268,7 +268,7 @@ describe("play_explainer", () => {
   test("rejects an unsigned remote pointer and falls back to seed (no silent spoof)", async () => {
     // Unsigned one-field pointer — the loader rejects it and falls back to seed.
     const recorder: FetchFn = (url) => {
-      if (url === POINTER_URL) return Promise.resolve(jsonResponse({ catalogVersion: "2026.09.08.1" }));
+      if (url === POINTER_URL) return Promise.resolve(jsonResponse({ catalogVersion: "2026.09.18.1" }));
       return Promise.resolve(jsonResponse("not found", { status: 404 }));
     };
     configureRuntimeExplainerCatalog({
