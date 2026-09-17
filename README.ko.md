@@ -1,5 +1,7 @@
 # Nautilo
 
+<div align="center">
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
@@ -8,6 +10,8 @@
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
+
+</div>
 
 https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 

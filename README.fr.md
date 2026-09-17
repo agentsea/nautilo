@@ -1,5 +1,7 @@
 # Nautilo
 
+<div align="center">
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 Le code et la documentation sont actuellement en anglais. Les PR de traduction sont les bienvenues ; consultez le [guide de contribution aux traductions](CONTRIBUTING.md#translations-and-localization) (en anglais). Cette page traduit le README ; elle ne signifie pas que l’interface ou les documents liés sont disponibles en français.
@@ -8,6 +10,8 @@ Le code et la documentation sont actuellement en anglais. Les PR de traduction s
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
+
+</div>
 
 https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 

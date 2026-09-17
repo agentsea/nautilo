@@ -1,5 +1,7 @@
 # Nautilo
 
+<div align="center">
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
@@ -8,6 +10,8 @@
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
+
+</div>
 
 https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
