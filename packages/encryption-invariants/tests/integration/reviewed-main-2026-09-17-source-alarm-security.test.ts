@@ -21,20 +21,20 @@ const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const sourceScan = scanSourceAlarms({ repoRoot: repositoryRoot });
 
 describe("current-main 2026-09-17 source alarm review", () => {
-  test("reconciles the exact 40 new and 15 stale locators without new alarm debt", async () => {
+  test("reconciles the exact 41 new and 15 stale locators without new alarm debt", async () => {
     const scan = await sourceScan;
     const inspection = inspectSourceAlarmReviews(scan.alarms);
 
     expect(scan.errors).toEqual([]);
     expect(inspection.errors).toEqual([]);
-    expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS).toHaveLength(40);
+    expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS).toHaveLength(41);
     expect(SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.size).toBe(15);
     expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.filter((review) =>
       review.closure === "baseline_debt"
     )).toEqual([]);
     expect(new Set(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.map((review) =>
       review.locator
-    )).size).toBe(40);
+    )).size).toBe(41);
 
     for (const review of REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
@@ -64,7 +64,7 @@ describe("current-main 2026-09-17 source alarm review", () => {
     )).toBe(true);
     expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.filter((review) =>
       review.closure === "reviewed_exclusion"
-    )).toHaveLength(37);
+    )).toHaveLength(38);
 
     const semanticIds = new Set(SOURCE_DECLARATIONS.map((entry) => entry.id));
     expect(declarations.slice(1).map((review) =>
@@ -87,7 +87,16 @@ describe("current-main 2026-09-17 source alarm review", () => {
   });
 
   test("pins the reviewed producer boundaries behind the classifications", async () => {
-    const [plan, sequence, restore, backup, protection, preferences, board] =
+    const [
+      plan,
+      sequence,
+      restore,
+      backup,
+      protection,
+      preferences,
+      board,
+      disposableReset,
+    ] =
       await Promise.all([
         readFile(resolve(repositoryRoot, "apps/cli/src/commands/artifacts-relocate.ts"), "utf8"),
         readFile(resolve(repositoryRoot, "apps/desktop/electron/sequence-export-host.ts"), "utf8"),
@@ -96,6 +105,7 @@ describe("current-main 2026-09-17 source alarm review", () => {
         readFile(resolve(repositoryRoot, "bin/nautilo-dev/src/lib/protected-durable-instance.ts"), "utf8"),
         readFile(resolve(repositoryRoot, "packages/server/src/routes/event-feed-preferences.ts"), "utf8"),
         readFile(resolve(repositoryRoot, "packages/first-party-apps/board/scripts/capture-preview.ts"), "utf8"),
+        readFile(resolve(repositoryRoot, "packages/lattice-bridge/scripts/disposable-postgres-reset.ts"), "utf8"),
       ]);
 
     expect(plan).toContain("constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600");
@@ -110,6 +120,26 @@ describe("current-main 2026-09-17 source alarm review", () => {
       .toHaveLength(3);
     expect(preferences).not.toContain("warn(error");
     expect(board).toContain("no account, instance, or persisted user data");
+    expect(disposableReset).toContain('spawnSync("docker", [...args]');
+    expect(disposableReset.match(/dockerOutput\(\[/gu)).toHaveLength(4);
+    expect(disposableReset).toContain(
+      'container?.startsWith("nautilo-lattice-bridge-test-")',
+    );
+    expect(disposableReset).toContain('/^[0-9a-f]{64}$/.test(token)');
+    expect(disposableReset).toContain('/^[0-9]+$/.test(port)');
+    expect(disposableReset).toContain('url.hostname !== "127.0.0.1"');
+    expect(disposableReset).toContain('url.pathname !== "/nautilo"');
+    expect(disposableReset).toContain("label !== authority.token");
+    expect(disposableReset).toContain('running !== "true"');
+    expect(disposableReset).toContain("mapping.endsWith(`:${authority.port}`)");
+    expect(disposableReset).toContain("DROP DATABASE nautilo WITH (FORCE)");
+    expect(disposableReset).toContain(
+      "WITH TEMPLATE ${DISPOSABLE_TEMPLATE_DATABASE} OWNER nautilo",
+    );
+    expect(disposableReset).not.toMatch(
+      /DISABLE\s+TRIGGER|session_replication_role/iu,
+    );
+    expect(disposableReset).not.toContain("result.stderr");
   });
 
   test("fails closed when a replacement is omitted or a retired locator returns", async () => {

@@ -76,5 +76,15 @@ describe("September 17 incremental coverage review", () => {
     expect(preferences).toContain('"event_feed_quiet_until" IS NULL');
     expect(preferences).toContain("= 'snoozed'");
     expect(preferences).toContain('"event_feed_quiet_until" IS NOT NULL');
+    const receiptPermissions = await migration(
+      "0294_content_access_receipt_fk_permissions.sql",
+    );
+    expect(receiptPermissions).toContain(
+      'GRANT UPDATE, DELETE ON TABLE "content_access_operations" TO "nautilo"',
+    );
+    expect(receiptPermissions).toContain(
+      'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "content_access_operations" FROM "nautilo"',
+    );
+    expect(receiptPermissions).not.toContain("GRANT TRUNCATE");
   });
 });

@@ -366,6 +366,12 @@ describe("migration inventory", () => {
     ]);
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
+    expect(inventory.migrations.at(-1)).toEqual({
+      index: 294,
+      tag: "0294_content_access_receipt_fk_permissions",
+      path: "0294_content_access_receipt_fk_permissions.sql",
+      sha256: "15763722647784f7cd83ed99e856fc0d91a8aa814721ef9198c1ac0f5a7f7880",
+    });
 
     const comparison = compareSchemaAndMigrationInventory(
       inventoryDrizzleSchema(nautiloSchema),

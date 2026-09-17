@@ -182,16 +182,35 @@ describe("reviewed main 2026-09-12 database encryption inventory", () => {
     ]) {
       expect(columns).not.toContain(forbidden);
     }
-    const migration = readFileSync(
+    const immutabilityMigration = readFileSync(
       join(
         repositoryRoot,
         "packages/db/src/migrations/0282_content_access_receipt_immutability.sql",
       ),
       "utf8",
     );
-    expect(migration).toContain("Content access receipts are immutable");
-    expect(migration).toContain("BEFORE UPDATE OR DELETE");
-    expect(migration).toContain("BEFORE TRUNCATE");
+    expect(immutabilityMigration).toContain("Content access receipts are immutable");
+    expect(immutabilityMigration).toContain("IF TG_OP = 'TRUNCATE' OR pg_trigger_depth() < 2 THEN");
+    expect(immutabilityMigration).toContain("BEFORE UPDATE OR DELETE");
+    expect(immutabilityMigration).toContain("BEFORE TRUNCATE");
+    expect(immutabilityMigration).toContain("NOT EXISTS (SELECT 1 FROM public.users");
+    expect(immutabilityMigration).toContain("NOT EXISTS (SELECT 1 FROM public.actors");
+
+    const permissionsMigration = readFileSync(
+      join(
+        repositoryRoot,
+        "packages/db/src/migrations/0294_content_access_receipt_fk_permissions.sql",
+      ),
+      "utf8",
+    );
+    expect(permissionsMigration).toContain(
+      'GRANT UPDATE, DELETE ON TABLE "content_access_operations" TO "nautilo"',
+    );
+    expect(permissionsMigration).toContain(
+      'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "content_access_operations" FROM "nautilo"',
+    );
+    expect(permissionsMigration).not.toContain("GRANT TRUNCATE");
+    expect(permissionsMigration).not.toContain("CREATE OR REPLACE FUNCTION");
   });
 
   test("pins the closed versions, fallback fingerprints, waits, and model ids", () => {

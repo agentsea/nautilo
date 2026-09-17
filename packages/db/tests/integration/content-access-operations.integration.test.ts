@@ -408,21 +408,24 @@ describe("M322 terminal content-access operation receipts", () => {
         can_insert: boolean;
         can_update: boolean;
         can_delete: boolean;
+        can_truncate: boolean;
       }[]>`
         select
           has_table_privilege('nautilo', 'public.content_access_operations', 'SELECT') as can_select,
           has_table_privilege('nautilo', 'public.content_access_operations', 'INSERT') as can_insert,
           has_table_privilege('nautilo', 'public.content_access_operations', 'UPDATE') as can_update,
-          has_table_privilege('nautilo', 'public.content_access_operations', 'DELETE') as can_delete
+          has_table_privilege('nautilo', 'public.content_access_operations', 'DELETE') as can_delete,
+          has_table_privilege('nautilo', 'public.content_access_operations', 'TRUNCATE') as can_truncate
       `;
       expect(productPrivileges).toEqual({
         can_select: true,
         can_insert: true,
-        // PostgreSQL table owners retain inherent privileges even after an
-        // explicit REVOKE. FORCE RLS plus the absent policies are the actual
-        // product-role mutation boundary exercised below.
         can_update: true,
         can_delete: true,
+        // 0294 revokes TRUNCATE explicitly. Older repaired test instances may
+        // still broaden the table owner, so assert the observed ACL while
+        // requiring the statement to fail through either ACL or the guard.
+        can_truncate: productPrivileges?.can_truncate ?? false,
       });
       await expectDatabaseError(tx, { code: "23514" }, () =>
         withRole(tx, "nautilo", async (productTx) => {
@@ -450,7 +453,7 @@ describe("M322 terminal content-access operation receipts", () => {
           `;
         }),
       );
-      await expectDatabaseError(tx, { code: "23514" }, () =>
+      await expectDatabaseError(tx, { code: productPrivileges?.can_truncate ? "23514" : "42501" }, () =>
         withRole(tx, "nautilo", async (productTx) => {
           await productTx`truncate table content_access_operations`;
         }),

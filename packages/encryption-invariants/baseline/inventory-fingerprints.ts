@@ -1,16 +1,17 @@
 export const SOURCE_ALARM_BASELINE = {
-  "count": 3345,
-  "sha256": "6e57bf7a7732985ac6ef02e20943bc53e4055981e266757414588a618b5f9c53"
+  "count": 3346,
+  "sha256": "3d3380bd78547e1af953b3c7af70f13265e61234a53f38e6e27b50e40da187c5"
 } as const;
 
 // Reviewed public-browser receipt constraints (0289–0291), scoped media
-// references (0292), and content-free Events preferences (0293); see the
-// September 17 coverage regression test. No applied migration was edited.
+// references (0292), content-free Events preferences (0293), and the exact
+// content-access receipt FK-cleanup permissions (0294); see the September 17
+// coverage regression test. No applied migration was edited.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 294,
-  "snapshots": 265,
-  "tip": 293,
-  "sha256": "0a0ad6c04b9acdfd80a66b760306a3c69670fe7a9175a46a61ed128dbc9976c9"
+  "migrations": 295,
+  "snapshots": 266,
+  "tip": 294,
+  "sha256": "2b6366e15c5cd2b023bef84e574e8c652867f57e098ae9635fde0e2bcf0b2800"
 } as const;
 
 /**

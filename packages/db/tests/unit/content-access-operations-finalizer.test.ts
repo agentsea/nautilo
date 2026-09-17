@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { finalizeContentAccessOperationsMigration, finalizeContentAccessReceiptImmutability } from "../../scripts/finalize-content-access-operations";
+import { finalizeContentAccessOperationsMigration, finalizeContentAccessReceiptImmutability, finalizeContentAccessReceiptFkPermissions } from "../../scripts/finalize-content-access-operations";
 
 describe("content access terminal receipt migration privileges", () => {
+  test("restores only FK cleanup DML without replacing immutability guards", () => {
+    const source = "-- generated custom migration";
+    const finalized = finalizeContentAccessReceiptFkPermissions(source);
+    expect(finalizeContentAccessReceiptFkPermissions(finalized)).toBe(finalized);
+    expect(finalized.startsWith(source)).toBe(true);
+    expect(finalized).toContain('GRANT UPDATE, DELETE ON TABLE "content_access_operations" TO "nautilo"');
+    expect(finalized).toContain('REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "content_access_operations" FROM "nautilo"');
+    expect(finalized).not.toMatch(/DISABLE|DROP|CREATE OR REPLACE|BYPASSRLS|GRANT ALL/);
+    expect(finalized).not.toContain('TO "nautilo_agent"');
+    expect(finalized).not.toContain('TO "nautilo_crypto"');
+  });
   test("guards direct mutation despite BYPASSRLS while retaining exact FK cleanup", () => {
     const finalized = finalizeContentAccessReceiptImmutability("-- generated custom migration");
     expect(finalizeContentAccessReceiptImmutability(finalized)).toBe(finalized);

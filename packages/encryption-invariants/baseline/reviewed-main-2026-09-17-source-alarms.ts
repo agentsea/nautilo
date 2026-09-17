@@ -141,6 +141,12 @@ export const REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS: readonly SourceAlarmReview[
     "exclusion.main-2026-09-17.recorded-main-git-inspection",
     "This exact developer safety helper runs local Git read commands over commit, index, migration and approval-receipt bytes. It has no network, product-runtime, Human-content or retained subprocess boundary.",
   ),
+  exclusion(
+    "packages/lattice-bridge/scripts/disposable-postgres-reset.ts#subprocess_processor:9c159d8b5ad5f7ee:1",
+    "packages/lattice-bridge",
+    "exclusion.main-2026-09-17.lattice-disposable-postgres-reset",
+    "This exact test-harness subprocess invokes only fixed Docker inspect, port and exec verbs after validating a nonce-bound disposable container name and label, its localhost port mapping, and four fixed database roles. Its fixed psql input recreates only the harness-owned nautilo database from the harness template, never disables triggers, and receives no product payload, protected content, credential value or caller-supplied SQL.",
+  ),
   declaration(
     "deploy/compose-driver/src/artifact-relocation-backup.ts#subprocess_processor:a1bfc61b41ebbc7e:1",
     "deploy/compose-driver",

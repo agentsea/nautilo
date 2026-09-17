@@ -34,20 +34,20 @@ Baseline debt blocks applicable release claims.
 | Scanner | Metric | Value |
 |---|---|---:|
 | source | Semantic declarations | 52 |
-| source | Alarms | 3345 |
-| source | Alarm fingerprint | `6e57bf7a7732985ac6ef02e20943bc53e4055981e266757414588a618b5f9c53` |
+| source | Alarms | 3346 |
+| source | Alarm fingerprint | `3d3380bd78547e1af953b3c7af70f13265e61234a53f38e6e27b50e40da187c5` |
 | source | Alarm baseline debt | 2146 |
-| source | Reviewed alarm exclusions | 405 |
+| source | Reviewed alarm exclusions | 406 |
 | source | Unmapped alarms | 0 |
 | source | Scan exclusions | 13 |
 | schema | Objects | 207 |
 | schema | Tables | 206 |
 | schema | Views | 1 |
 | schema | Columns | 2775 |
-| migrations | Files | 294 |
-| migrations | Snapshots | 265 |
-| migrations | Tail index | 293 |
-| migrations | Tree fingerprint | `0a0ad6c04b9acdfd80a66b760306a3c69670fe7a9175a46a61ed128dbc9976c9` |
+| migrations | Files | 295 |
+| migrations | Snapshots | 266 |
+| migrations | Tail index | 294 |
+| migrations | Tree fingerprint | `2b6366e15c5cd2b023bef84e574e8c652867f57e098ae9635fde0e2bcf0b2800` |
 | migrations | Current tables | 206 |
 | migrations | Current columns | 2769 |
 | migrations | Historical created tables | 222 |

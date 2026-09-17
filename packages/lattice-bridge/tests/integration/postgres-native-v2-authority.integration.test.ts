@@ -30,6 +30,7 @@ import {
   conversationSharedAgentShadowExecutionInputs,
   conversationSharedAgentShadowOperations,
   roomEventRollups,
+  roomJournalState,
   reflectionRecords,
   reflectionRecordPayloadRepresentations,
   reflectionRecordPayloadRepresentationHeads,
@@ -1374,6 +1375,15 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           ordinaryText,
           expectedPolicyRevision: reversePolicy.revision,
         });
+      // Reverse restoration needs the current Journal generation, not just a
+      // rollup row. A missing authority fixture must still fail closed.
+      expect(await restoreRollup(reverseRollupText)).toBe("conflict");
+      await adminDatabase.insert(roomJournalState).values({
+        roomId,
+        extractorVersion: "integration-journal",
+        rebuildGeneration: reverseRollupSource.selection.rebuildGeneration,
+        historicalBackfillStatus: "not_needed",
+      });
       expect(await restoreRollup(reverseRollupText)).toBe("restored");
       expect(await restoreRollup(reverseRollupText)).toBe("replayed");
       expect(await restoreRollup("conflicting rollup body")).toBe("conflict");

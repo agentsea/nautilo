@@ -159,6 +159,10 @@ import {
 import {
   createRecoveryRotationFixture,
 } from "../fixtures/recovery-rotation-fixture.ts";
+import {
+  DISPOSABLE_RESET_TOKEN_ENV,
+  resetDisposablePostgresDatabase,
+} from "../../scripts/disposable-postgres-reset.ts";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
@@ -245,10 +249,15 @@ async function cryptoStorage(
   }
 }
 
-async function truncateCryptoStorage(): Promise<void> {
-  await admin.unsafe(
-    `TRUNCATE TABLE ${CRYPTO_STORAGE_TABLE_NAMES.join(", ")} CASCADE`,
-  );
+async function resetDisposableDatabase(): Promise<void> {
+  await admin.end({ timeout: 1 });
+  resetDisposablePostgresDatabase({
+    admin: adminUrl,
+    app: appUrl,
+    agent: agentUrl,
+    crypto: cryptoUrl,
+  });
+  admin = sqlClient(adminUrl, 2);
 }
 
 function canonicalObjectPayload(id: string): Uint8Array {
@@ -458,7 +467,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-  await truncateCryptoStorage();
+  await resetDisposableDatabase();
 });
 
 afterAll(async () => {
@@ -466,6 +475,106 @@ afterAll(async () => {
 });
 
 describe.serial("Postgres lattice storage integration", () => {
+  test("recreates populated and empty disposable databases from the migrated template", async () => {
+    const userId = randomUUID();
+    const actorId = randomUUID();
+    const deviceId = `device_cleanup_${randomUUID()}`;
+    try {
+      await admin.unsafe(
+        `INSERT INTO users (id, name)
+         VALUES ($1, 'Crypto cleanup fixture')`,
+        [userId],
+      );
+      await admin.unsafe(
+        `INSERT INTO actors (
+           id, owner_id, display_name, trust_state, kind
+         ) VALUES (
+           $1, $2, 'Crypto cleanup fixture', 'verified', 'user'
+         )`,
+        [actorId, userId],
+      );
+      await admin.unsafe(
+        `INSERT INTO human_crypto_custodies (
+           human_id, user_id, human_actor_id,
+           initial_installation_lineage_digest, state, ever_initialized_at,
+           first_device_id, current_recovery_generation,
+           current_recovery_public_key_digest, revision,
+           last_transition_audit_ref, created_at, updated_at
+         ) VALUES (
+           $1, $2, $3, decode(repeat('11', 32), 'hex'), 'active', now(),
+           $4, 1, decode(repeat('22', 32), 'hex'), 1,
+           'audit_crypto_cleanup_fixture', now(), now()
+         )`,
+        [actorId, userId, actorId, deviceId],
+      );
+      await admin.unsafe(
+        `INSERT INTO human_crypto_devices (
+           device_id, human_id, user_id, human_actor_id, client_kind,
+           installation_lineage_digest, device_generation,
+           signing_public_key, encryption_public_key, public_fingerprint,
+           state, authorization_kind, recovery_generation,
+           authorization_evidence_digest, key_package_generation,
+           key_package_count, delivery_sequence_high_watermark,
+           delivery_acknowledged_sequence, revision, created_at, activated_at
+         ) VALUES (
+           $1, $2, $3, $4, 'browser', decode(repeat('33', 32), 'hex'), 1,
+           decode(repeat('44', 32), 'hex'), decode(repeat('55', 65), 'hex'),
+           decode(repeat('66', 32), 'hex'), 'active', 'first_bootstrap', 1,
+           decode(repeat('77', 32), 'hex'), 0, 0, 0, 0, 1, now(), now()
+         )`,
+        [deviceId, actorId, userId, actorId],
+      );
+
+      expect(() => resetDisposablePostgresDatabase({
+        admin: adminUrl,
+        app: appUrl,
+        agent: agentUrl,
+        crypto: cryptoUrl,
+      }, {
+        ...process.env,
+        [DISPOSABLE_RESET_TOKEN_ENV]: "b".repeat(64),
+      })).toThrow("reset label does not match authority");
+      const [stillPopulated] = await admin.unsafe<{ count: number }[]>(
+        `SELECT count(*)::integer AS count
+           FROM human_crypto_devices
+          WHERE device_id = $1`,
+        [deviceId],
+      );
+      expect(stillPopulated?.count).toBe(1);
+
+      await resetDisposableDatabase();
+      await resetDisposableDatabase();
+
+      const [remaining] = await admin.unsafe<{
+        instanceId: string;
+        users: number;
+        actors: number;
+        custodies: number;
+        devices: number;
+      }[]>(
+        `SELECT
+           (SELECT instance_id FROM nautilo_instance_identity
+             WHERE id = 'self') AS "instanceId",
+           (SELECT count(*)::integer FROM users WHERE id = $1) AS users,
+           (SELECT count(*)::integer FROM actors WHERE id = $2) AS actors,
+           (SELECT count(*)::integer FROM human_crypto_custodies
+             WHERE human_id = $3) AS custodies,
+           (SELECT count(*)::integer FROM human_crypto_devices
+             WHERE device_id = $4) AS devices`,
+        [userId, actorId, actorId, deviceId],
+      );
+      expect(remaining).toEqual({
+        instanceId: "lattice-bridge-integration",
+        users: 0,
+        actors: 0,
+        custodies: 0,
+        devices: 0,
+      });
+    } finally {
+      await resetDisposableDatabase();
+    }
+  });
+
   test("reconciles the exact role, policy, and table privilege boundary", async () => {
     const roles = await admin.unsafe<{
       rolname: string;
@@ -1905,8 +2014,7 @@ describe.serial("Postgres lattice storage integration", () => {
       ]);
     } finally {
       await client.end();
-      await truncateCryptoStorage();
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+      await resetDisposableDatabase();
     }
   });
 
@@ -2014,8 +2122,7 @@ describe.serial("Postgres lattice storage integration", () => {
       }]);
     } finally {
       await Promise.all([firstClient.end(), secondClient.end()]);
-      await truncateCryptoStorage();
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+      await resetDisposableDatabase();
     }
   });
 
@@ -2113,8 +2220,7 @@ describe.serial("Postgres lattice storage integration", () => {
       }]);
     } finally {
       await client.end();
-      await truncateCryptoStorage();
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+      await resetDisposableDatabase();
     }
   });
 
@@ -2884,8 +2990,7 @@ describe.serial("Postgres lattice storage integration", () => {
       });
     } finally {
       await client.end();
-      await truncateCryptoStorage();
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+      await resetDisposableDatabase();
     }
   });
 
@@ -3502,13 +3607,7 @@ describe.serial("Postgres lattice storage integration", () => {
       firstVault.destroy();
       targetVault.destroy();
       await client.end();
-      await truncateCryptoStorage();
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
-      if (createdIdentity) {
-        await admin.unsafe(
-          `DELETE FROM nautilo_instance_identity WHERE id = 'self'`,
-        );
-      }
+      await resetDisposableDatabase();
     }
   }, 120_000);
 
@@ -3659,8 +3758,7 @@ describe.serial("Postgres lattice storage integration", () => {
       );
     } finally {
       await client.end();
-      await truncateCryptoStorage();
-      await admin.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+      await resetDisposableDatabase();
     }
   });
 
@@ -4116,11 +4214,7 @@ describe.serial("Postgres lattice storage integration", () => {
       });
     } finally {
       await restarted.end();
-      await truncateCryptoStorage();
-      await admin.unsafe(
-        `DELETE FROM users WHERE id IN ($1, $2)`,
-        [aliceUserId, charlieUserId],
-      );
+      await resetDisposableDatabase();
     }
   }, 120_000);
 });
