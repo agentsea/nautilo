@@ -165,3 +165,7 @@ bun run lint:unused
 ## 许可证
 
 Nautilo 采用 [MIT 许可证](LICENSE)。依赖项的许可证与署名请参阅[第三方声明](THIRD_PARTY_NOTICES.md)；美术资源、生成媒体和文档测试素材的来源请参阅[资源来源说明](ASSET_PROVENANCE.md)。
+
+[![通过 GitHub Sponsors 支持 Nautilo。](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[通过 GitHub Sponsors 上的 agentsea 支持 Nautilo](https://github.com/sponsors/agentsea) · 一次性或按月赞助。

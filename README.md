@@ -222,3 +222,7 @@ Nautilo is [MIT licensed](LICENSE). See
 [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses and
 attribution, and [asset provenance](ASSET_PROVENANCE.md) for artwork, generated
 media, and document fixtures.
+
+[![Keep the future open. The open, organization-level harness for everyone needs your support. Support Nautilo on GitHub Sponsors.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[Support Nautilo through agentsea on GitHub Sponsors](https://github.com/sponsors/agentsea) · One-time or monthly.

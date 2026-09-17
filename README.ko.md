@@ -165,3 +165,7 @@ bun run lint:unused
 ## 라이선스
 
 Nautilo는 [MIT 라이선스](LICENSE)로 제공됩니다. 의존성 라이선스와 저작자 표시는 [제3자 고지](THIRD_PARTY_NOTICES.md)를, 아트워크, 생성 미디어, 문서 테스트 데이터의 출처는 [에셋 출처](ASSET_PROVENANCE.md)를 참고하세요.
+
+[![GitHub Sponsors에서 Nautilo를 후원하세요.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[GitHub Sponsors의 agentsea를 통해 Nautilo 후원하기](https://github.com/sponsors/agentsea) · 일회성 또는 월간 후원.

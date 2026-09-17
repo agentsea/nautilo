@@ -165,3 +165,7 @@ Lee la [guía de contribución](CONTRIBUTING.md), explora los [problemas selecci
 ## Licencia
 
 Nautilo tiene [licencia MIT](LICENSE). Consulta los [avisos de terceros](THIRD_PARTY_NOTICES.md) para las licencias y atribuciones de las dependencias, y la [procedencia de los recursos](ASSET_PROVENANCE.md) para las ilustraciones, los medios generados y los documentos de prueba.
+
+[![Apoya Nautilo en GitHub Sponsors.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
+
+[Apoya Nautilo a través de agentsea en GitHub Sponsors](https://github.com/sponsors/agentsea) · Aportación única o mensual.
