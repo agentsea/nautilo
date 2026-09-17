@@ -80,7 +80,11 @@ function expectLatestD581TaskReplacement(
     candidate.locator === predecessor.locator
   );
   expect(current).toHaveLength(1);
-  const response = current[0]?.structuralSignatures?.find((signature) =>
+  const currentDeclaration = current[0];
+  if (!currentDeclaration?.structuralSignatures) {
+    throw new Error(`Missing current Task signatures for ${predecessor.locator}`);
+  }
+  const response = currentDeclaration.structuralSignatures.find((signature) =>
     signature.startsWith("response.body:{activity?:")
   );
   expect(response).toContain(REFERENCE_AUDIO_SIGNATURE_FRAGMENT);
@@ -88,13 +92,14 @@ function expectLatestD581TaskReplacement(
     (candidate) => candidate.locator === predecessor.locator,
   );
   expect(september12).toBeDefined();
+  if (!september12) throw new Error(`Missing September 12 predecessor for ${predecessor.locator}`);
   expect({
-    ...current[0],
-    structuralSignatures: current[0]?.structuralSignatures?.map((signature) =>
+    ...currentDeclaration,
+    structuralSignatures: currentDeclaration.structuralSignatures.map((signature) =>
       signature.replace(REFERENCE_AUDIO_SIGNATURE_FRAGMENT, "")
     ),
   }).toEqual(september12);
-  expect(september12?.arbitraryPayloads).toEqual(predecessor.arbitraryPayloads);
+  expect(september12.arbitraryPayloads).toEqual(predecessor.arbitraryPayloads);
 }
 
 describe("reviewed main 2026-08-29 encryption inventory", () => {
