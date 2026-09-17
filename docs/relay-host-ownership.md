@@ -1,8 +1,8 @@
 # Relay host ownership map
 
-This is D565's post-rebase ownership record as of 2026-09-03. It describes the
-landed CUA foundation plus Stack 394's private Desktop-managed Relay Host. It
-is a current-state document, not a proposal for a generic plugin process.
+This document describes the shared Relay library, Desktop-managed Relay Host,
+and Electron execution authority. The Host is a private child process, not a
+generic plugin service.
 
 ## Decision
 
@@ -14,7 +14,7 @@ Nautilo now has three deliberately different Relay boundaries:
 - Electron consumes that child over inherited pipes and supplies fixed
   Desktop-owned authority and execution ports.
 - `bin/nautilo-relay` remains the independently operated headless consumer of
-  the same library; its Human device-pairing and service lifecycle are D135.
+  the same library, with its own device-pairing and service lifecycle.
 
 For the Desktop path, the private child is the sole process that constructs
 `RelayClient`. `RelayClient` remains the one logical owner of WebSocket
@@ -33,7 +33,7 @@ Server / Agent
         │ authenticated Relay protocol
         ▼
 nautilo-relay-host / RelayClient         headless nautilo-relay
-  Desktop WebSocket lifecycle             independent D135 consumer
+  Desktop WebSocket lifecycle             independent CLI consumer
   registration + cancellation
   capability revision + topology
         │ private inherited pipes
@@ -41,18 +41,13 @@ nautilo-relay-host / RelayClient         headless nautilo-relay
 Electron authority/composition root
   local authorities + fixed handlers
         │
-        ├── managed Computer Use Host (landed D516)
+        ├── managed Computer Use Host
         └── future earned capability-family Hosts, not arbitrary plugins
 ```
 
 This is a transport/process separation, not a claim that every local executor
-left Electron. Against recorded base `30574756a5`, the former 7,901-line
-`apps/desktop/electron/relay.ts` is now 3,793 lines, while 5,156 lines of fixed
-Desktop dispatch implementation live in named `relay-dispatch/` modules. The
-child and its private protocol add 963 lines. Line counts are not an acceptance
-criterion, but they make the boundary honest: the Relay WebSocket lifecycle is
-out of Electron and the monolith is materially smaller; Desktop authority and
-UI/native adapters remain local by design. Large executor families such as
+left Electron. Fixed Desktop dispatch lives in `relay-dispatch/` modules;
+Desktop authority and UI/native adapters remain local by design. Large executor families such as
 local shell may earn their own signed Host later under the rule below. Small or
 UI-bound adapters do not become processes merely to reduce an Electron file.
 
@@ -108,7 +103,7 @@ The following deliberately remain outside that session:
 | BrowserView/CDP and visible Browser authority | Electron main/renderer owners | Visible application surface lifetime |
 | Filesystem grants, profiles, Current Folder, protected-path policy | Existing Electron stores/controllers | Durable/local authority lifetime |
 | Document mutation/journal/commit coordination | Existing document owners | Exact local mutation transaction lifetime |
-| Computer Use grant, route, broker, managed runtime | D516 Electron owners | Server/installation/grant/Host generations, not Relay-session storage |
+| Computer Use grant, route, broker, managed runtime | Electron Computer Use authorities | Server/installation/grant/Host generations, not Relay-session storage |
 
 ## Capability publication
 
@@ -130,7 +125,7 @@ Two security-sensitive lanes run before the closed 14-family router:
 1. `security_scan` uses its dedicated coordinator and cannot inherit generic
    roots, sandbox, or shell authority.
 2. `executionClass: "computer_use"` requires the exact server-minted Desktop
-   Automation binding and the injected D516 dispatcher. Relay recognizes no
+   Automation binding and the injected Computer Use dispatcher. Relay recognizes no
    public Computer Use tool name or Cua operation.
 
 The fixed router then executes this compile-time order:
@@ -153,9 +148,9 @@ The fixed router then executes this compile-time order:
 Handlers are a closed tuple. They cannot register dynamically, download code,
 or grant authority. There is no legacy Desktop/Peekaboo handler.
 
-## Landed Computer Use boundary
+## Computer Use boundary
 
-D516 is now a concrete example of the right capability-family split:
+Computer Use separates semantic validation from transport and local authority:
 
 ```text
 Agent catalogue and contract schemas
@@ -214,26 +209,9 @@ handler. The only remaining source mention is a strict legacy local-state
 decoder so older policy bytes can be recognized and migrated without reviving
 the provider.
 
-## What D565 still must finish
+## Workstation authority
 
-The code split, CUA rebase, invariant migration, development Electron journey,
-packaged-resource verification, protected signing/notarization, and
-same-fixture performance receipt are complete. Candidate
-`4a6cb2241d641c69d57b2c8d8ec1fb1a6ca2a5b3` passed exact artifact identity,
-canonical-install verification, the atomic signed readiness gate, and the
-corrected Ready-to-work Off → On path. Remaining work is deliberately narrow:
-
-- after the contained workstation-identity fix lands safely, rebase and resolve
-  its direct `relay.ts`/workstation-test overlap without returning provider or
-  credential implementation to the Relay composition root;
-- mint the resulting combined exact commit and run the final installed-app
-  Electron Relay/tool/security/cancel/crash/recovery/handoff matrix;
-- complete the direct Moxie Computer Use semantic loop rather than treating
-  signed readiness as semantic acceptance;
-- restore and reverify the recorded stable production app; and
-- complete the final predecessor/scope audit and reconcile the issue dashboard.
-
-The current D574 policy direction is compatible: Ready-to-work retains
+Ready-to-work retains
 contained workstation tools and supported identity, while Direct Mac changes
 containment only. A raw credential in arbitrary shell environment is not an
 acceptable implementation of that contract. Exact-value output redaction does
@@ -243,7 +221,7 @@ arrive through a narrow Desktop-owned broker/module (and ultimately the earned
 Local Execution Host boundary below), with no raw credential exposed to the
 model-controlled shell.
 
-Headless pairing/service qualification remains D135. Browser/mobile pairing is
+Headless pairing and service behavior need their own tests. Browser/mobile pairing is
 separate surface acceptance and cannot substitute for the Electron journey.
 
 ## Follow-on rule for independently updateable executors
@@ -268,7 +246,7 @@ separate follow-on should define one Managed Local Execution Host:
 Raw shell is always arbitrary-process, high-risk, and non-replay-safe; neither
 catalogue nor Host self-description can downgrade that security floor.
 
-Reuse D516's generic artifact-lifecycle primitives—signature/digest admission,
+Reuse the Computer Use Host's artifact-lifecycle primitives—signature/digest admission,
 immutable version roots, health checks, atomic activation, last-known-good,
 rollback, and generation fencing—but use a dedicated Local Execution protocol.
 Do not reuse Computer Use wire semantics and do not invent a universal Host or

@@ -1,6 +1,6 @@
 # Crypto browser compatibility
 
-## Live Shadow Message milestone (M282)
+## Live Shadow Messages
 
 Chromium is the supported Browser engine for the first live Shadow Message
 milestone.

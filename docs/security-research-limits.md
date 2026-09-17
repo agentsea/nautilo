@@ -17,7 +17,7 @@ observations and decisions. It does not certify the quality of an LLM audit.
 | Record-kind filter cardinality | Derived protocol constraint | The maximum derives from the canonical enum, including `review_unit`; the old literal nine is removed. This does not limit record count. |
 | Checkpoint open IDs | Removed | The remaining canonical 20-ID maximum was arbitrary for a durable continuation pointer. Both provider and canonical schemas now admit the complete pointer list. |
 | Accumulated evidence and counterevidence references | Removed | A live valid request with 20 citations plus two existing links failed only after the ledger combined them. Provider and stored record schemas now retain all accumulated references; restart, write replay, targeted reload and final appendix preserve the complete graph. |
-| Citation requests and acknowledgement batches: 20 citations per call | Temporary debt; separate request framing | The existing request batch remains, with explicit successive-update recovery. Its value is not established by provider/platform authority. It no longer limits accumulated record links; replay returns only the exact invocation's minted batch. D563 owns deriving or removing this retained request magnitude; D580 removes the aggregate ceiling and proves complete continuation. |
+| Citation requests and acknowledgement batches: 20 citations per call | Temporary debt; separate request framing | The existing request batch remains, with explicit successive-update recovery. Its value is not established by provider/platform authority. It no longer limits accumulated record links; replay returns only the exact invocation's minted batch. The per-request magnitude still needs to be derived or removed; accumulated links have no aggregate ceiling and remain retrievable through continuation. |
 | Authored note fields: former 2,000 characters and newline rejection | Removed as arbitrary | GLM7's 2,475-character substantive note was rejected and its correction hidden from the model. No provider or storage authority justified forcing knowledge into separate records. Shared provider/durable schemas now preserve full multiline text through append, update, restart, exact retrieval and export; focused tests cross 9 KB. |
 | Scanner explanations: former 1,000-character slice and 2,000-character schema maximum | Removed as arbitrary | Trivy titles and Semgrep explanations were silently shortened before persistence. Raw JSON lived only in scratch storage and was deleted after the probe suite, so the remainder had no recovery path. Full normalized scanner prose now survives observation admission, restart, result pages and final export. Gitleaks still discards matched secret values and reports only redacted attribution. |
 | Repository-map mutations: former 32 sections | Removed as arbitrary | A complete plan may contain more than 32 behaviors or sections. The 40-section ledger regression preserves all entries through restart and retrieval and proves an unfinished section outside the status preview still prevents finalization. Only the compact status preview retains 32 entries, with total and omitted counts. |
@@ -30,7 +30,7 @@ diagnostic `error.continuation` and inventory `reason`; it no longer applies to
 research notes or scanner explanations. Inventory reasons are closed generated
 phrases and recognized format names, with no omitted source prose. The diagnostic
 maximum has no established provider/storage authority or field continuation and
-remains named D563 debt. The same applies to remaining 240-character error/cancel
+remains unresolved technical debt. The same applies to remaining 240-character error/cancel
 framing, 512-character trusted tool-call identity framing and optional
 500-character citation search hints. Their schema rejection is explicit, but
 that does not make them lossless or justify their magnitude. Optional search
@@ -193,7 +193,7 @@ does not become Task progress copy or visible token output.
 
 This corrects false idle termination while reasoning is arriving; it does not
 extend or justify the existing 60,000/180,000 ms values. The first-progress and
-idle boundaries remain explicitly reviewed **temporary debt** under D563,
+idle boundaries remain explicitly reviewed **temporary debt**,
 with no provider SLA, catalogue authority or measured-policy claim. A silent
 provider can still hit that legacy boundary. An optional caller absolute
 deadline is unchanged. Attempt termination aborts the provider and preserves
@@ -205,10 +205,9 @@ cannot resume; fresh fallback/retry and durable ledger recovery are separate.
 The deterministic scout supports named numeric boundaries, reduction and
 paging sinks, schemas, comparisons and timers in its listed source languages.
 It does not prove semantic authority, resolve every package export, inspect
-runtime-only values, or understand arbitrary generated/binary syntax. In this
-run it did not emit a primary packet for the format-prefix allocation,
-checkpoint projection, or exact-run progress coalescer; these paths were read
-manually instead of being treated as absent.
+runtime-only values, or understand arbitrary generated/binary syntax. Inspect
+format-prefix allocations, checkpoint projection, and progress coalescing
+directly; a missing scanner finding does not establish that a boundary is safe.
 
 ## Evidence and remaining debt
 

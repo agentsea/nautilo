@@ -28,6 +28,8 @@ Notes remains deferred. [Board](../../packages/first-party-apps/board/README.md)
 and [Slides](../../packages/first-party-apps/presentation/README.md) are bundled
 mini-apps; no upstream backend service is included.
 See [testing](TESTING.md) for engine, browser and packaged-image checks.
+The [interface study](board-interface.md) is a standalone design reference,
+not the installed Board app. Engine adaptations are recorded in [CHANGES.md](CHANGES.md).
 The Slides native Genie authoring contract and responsibility boundaries are in
 [SLIDES-GENIE-AUTHORING.md](SLIDES-GENIE-AUTHORING.md).
 
@@ -48,9 +50,9 @@ Package build success is not product acceptance. Human and Genie editing,
 save/reopen, both document surfaces, palette readability and packaged lifecycle
 must qualify before Sheets is called ready. Deployment is a separate action.
 
-## Named engine debt retained for this delivery
+## Known engine limitations
 
-D411-ENGINE-BULK-RANGES: the inherited checkbox and border implementations
+**Bulk ranges:** the inherited checkbox and border implementations
 materialize selected cells. Their temporary 50,000-cell guards have no valid
 policy authority; a measured 60,000-cell in-memory case completes in roughly
 140 ms. Removing those guards alone would still permit full-grid allocation.
@@ -61,7 +63,7 @@ representation, preserving formula exceptions, serialization and one undo unit.
 These cutoffs must be removed through that redesign, not treated as permanent.
 Borders are not exposed by the current Nautilo toolbar or Genie tools.
 
-D411-ENGINE-PRESENCE: the inherited 10,000-axis extension guard suppresses dense
+**Peer presence:** the inherited 10,000-axis extension guard suppresses dense
 selection anchors beyond existing coverage. Canonical cell selection and data
 remain intact, but upstream peer range shape and insertion stability can degrade
 to an active-cell coordinate. Nautilo Sheets does not expose upstream peer

@@ -1,56 +1,34 @@
 # Mobile documents, media, and saving originals
 
-## Status
+## Scope
 
-`APPROVED FOR IMPLEMENTATION` — maintainer-approved scope; qualification and release evidence remain required.
-
-## Published problem
-
-- Public problem: [Mobile as a first-class place to live and work](https://nautilo.ai/community/problems).
-- Proposal issue URL: publication authorized; linked in the spec-only pull request.
-- Direction: In progress / Help welcome. The product maintainer approved this scoped specification and implementation on 2026-09-07.
+This design specifies Mobile document previews, media inspection, and saving
+originals. It is a contributor specification, not a store-release announcement.
+See the [Mobile guide](https://nautilo.ai/docs/use/mobile) for user instructions
+and [Mobile source](../../../apps/mobile/README.md) for build information.
 
 ## Outcome
 
 A signed-in person can open their authorized document, inspect an image, watch a video, or save/share its original from Mobile Files or the appropriate conversation entry point. They return to the same conversation/file position. A failed preview never traps a downloadable original.
 
-## Verified current state
+## Requirements
 
-Historical characterization baseline: `95b16456d0f5ee17d856ab747e5628b166fcdbcb`. The table preserves the pre-implementation gaps that motivated the approved work; it is not current implementation status.
+The requirements distinguish intended behavior from the compatibility and
+consistency limitations described below.
 
-| Surface | Current evidence |
-| --- | --- |
-| Active viewer loading | `apps/mobile/src/app/files/artifact/[id].tsx:161` calls `fetchAggregateArtifactBytes`; aggregate browsing does not choose a discussion Room (`features/files-discussion/artifact-discussion.ts:73`). |
-| Classification | `apps/mobile/src/lib/artifact-bytes.ts:105` accepts exact `.html` + `text/html` as Writer; other HTML is unsupported; no video kind. |
-| Native original transport | `apps/mobile/src/lib/artifact-byte-download.native.ts:5` uses native file download with authorization and AbortSignal. |
-| Writer rendering | `apps/mobile/src/features/artifacts/artifact-writer-preview-model.ts:36` accepts paragraphs/headings/flat lists, not tables or nested lists. |
-| Canonical Writer | `packages/writer-proposal-core/src/writer-html.ts:166` parses the manifest and JSON document; the serializer can emit an empty HTML body (`:147`). Source-body-only viewing is therefore insufficient. |
-| Existing static preview | `packages/first-party-apps/writer/src/office-document.ts:281` builds semantic HTML; its list builder (`:247`) and resource hydration need explicit compatibility work before shared reuse. |
-| Images | `apps/mobile/src/app/files/artifact/[id].tsx:739` uses a ScrollView image branch; `components/message-bubble.tsx:261` renders attachment thumbnails. |
-| Native handoff | `apps/mobile/src/lib/artifact-file-handoff.native.ts:9` invokes `expo-sharing`, not a dedicated destination-save operation. |
-| Existing server primitives | `packages/server/src/routes/workspace-artifacts.ts:674` supplies authorized metadata; `:837` supplies authorized bytes and range responses. |
-| Distinct attachments | `apps/mobile/src/hooks/use-room-chat-controller.ts:179` constructs message-attachment sources; these are not automatically Artifact IDs. |
-| Native foundation | `apps/mobile/package.json` pins Expo 57, FileSystem, Sharing, Gesture Handler and Reanimated; `modules/nautilo-share-handoff/expo-module.config.json` demonstrates local native-module registration. Video/media-library/native WebView are not installed Mobile dependencies. |
-
-Authorized follow-up inspection confirmed the reported file is canonical Writer (102 blocks), and current native clients visibly render its title, body and two embedded PNGs without modifying the source. A separate synthetic native fixture preserved static text/table/nested lists, suppressed script/event/frame/form/refresh behavior, disclosed missing resources, and required confirmation before handing a link to Safari/Chrome; return restored the same signed-in file. This does not claim full-content/layout/accessibility, network-exfiltration/cookie/bridge, malformed-input breadth or stale-session coverage.
-
-## Proposed requirements
-
-Requirements below were approved by the product maintainer on 2026-09-07. Named technical unknowns remain implementation/qualification obligations, not permission to bypass safety or silently drop scope.
-
-1. **R1 Documents:** readable canonical Writer and static HTML, including headings, text styling, tables, nested lists, links and embedded PNG/JPEG/GIF data images. Preserve meaningful content and reading order; linked/relative or otherwise unsupported resources receive a visible notice and Save original fallback. Full source-bound linked/relative resource resolution is follow-up F2, not a tester-release claim. Saving retains the untouched source. Read-only does not claim full editor/layout parity.
+1. **R1 Documents:** readable canonical Writer and static HTML, including headings, text styling, tables, nested lists, links and embedded PNG/JPEG/GIF data images. Preserve meaningful content and reading order; linked/relative or otherwise unsupported resources receive a visible notice and Save original fallback. Full source-bound linked/relative resource resolution is separate work, not guaranteed by this design. Saving retains the untouched source. Read-only does not claim full editor/layout parity.
 2. **R2 Images:** natural-aspect full-screen view from Files and image attachments; pinch, enlarged pan, double-tap zoom/reset, accessible equivalents and reliable back/close. Derive zoom geometry from actual image and viewport; do not invent a replacement universal zoom ceiling.
 3. **R3 Video:** supported native codecs, play/pause/seek/sound/full-screen controls; no autoplay with sound. Pause on leaving and coordinate with voice/audio focus. Unsupported or failed media retains Save file recovery.
 4. **R4 Originals:** Save file… in file-list/viewer actions and preview failure on both platforms; independent of renderer and editing permission, subject to canonical read/export authority. Preserve bytes and filename/extension. iOS additionally exposes Share…. Do not infer recipient delivery from opening a sharing sheet.
-5. **R5 Native destinations:** iOS Files export picker and Android system Create Document save; iOS Share…; supported images/videos can Save to Photos/Gallery with minimum permissions. Android tester delivery uses Save file → Android Files. Direct Android Share is follow-up F1 because chooser return is not recipient completion. No extra account, cloud-storage setup or custom file manager.
+5. **R5 Native destinations:** iOS Files export picker and Android system Create Document save; iOS Share…; supported images/videos can Save to Photos/Gallery with minimum permissions. Android uses Save file → Android Files. Direct Android Share is outside this scope because chooser return is not recipient completion. No extra account, cloud-storage setup or custom file manager.
 6. **R6 Recovery:** truthful loading/preparation, progress where available, cancel, retry, denial/unavailable state and return context. Unknown progress is indeterminate, never a fabricated percentage. No partial file represented as success or automatic full-app reset.
 7. **R7 Authority:** separate authorized source identity, disposable local bytes, reader projection and explicitly exported copy. Fence stale completions by source/session/revision; revoke/dispose app-managed media when canonical access loss is observed. No credential exposure to document markup or external share targets.
 8. **R8 Compatibility:** reuse design tokens, preserve Markdown editing/PDF and discussion behavior, support compact screens/accessibility/reduced motion and current orientation policy. Artifact and message-attachment authorities stay separate; paired-workstation files are not silently treated as server Artifacts.
-9. **R9 Delivery:** qualify source/native clients, merge reviewed exact-head CI under merge authorization, reserve fresh version/build counters and publish signed TestFlight/internal-testing candidates. Prove actual tester installation and physical-phone behavior. Public submission is excluded until a later explicit go.
+9. **R9 Delivery:** test the source and native clients, then verify the resulting signed builds on physical devices before release. A passing unit test does not establish native destination behavior.
 
 ## Constraints and non-goals
 
-Maintainer clarification (2026-09-08): HTML here is an authenticated server Artifact within the server's trust boundary, not an arbitrary web page. Preserve document layout and authored static CSS where possible. Reading authorization does not grant script execution, native device access or ambient authenticated network authority. This replaces the initial proposal to discard all source CSS; resource isolation and explicit fidelity notices remain required.
+HTML here is an authenticated server Artifact, not an arbitrary web page. Preserve document layout and authored static CSS where possible. Reading authorization does not grant script execution, native device access or ambient authenticated network authority. Resource isolation and explicit fidelity notices remain required.
 
 No arbitrary interactive HTML, new rich editor, all-codec transcoder, casting, background media player, download-manager/offline-sync service, new server/storage entity or model call. No change to global encryption-admission recovery. No cache presented as a user export. No source file conversion or remote document mutation to make Mobile display it.
 
@@ -82,7 +60,7 @@ No entity or relationship is added. Human authorization stays server-owned; Room
 - Extract a pure static Writer renderer into an existing browser-safe shared package, rather than importing first-party app UI into Mobile. Parse the canonical envelope first; render the actual payload with nested-list/table/image support, safe inline style and link projection, escaped text/attributes and visible diagnostics. Preserve existing consumers until parity is proved. Unknown styling must retain its text and disclose fidelity loss, not reject or silently omit the block.
 - Parse generic HTML with a maintained structural parser, not regex substitutions. Generate a closed semantic document from allowed elements/attributes/styles. Drop executable behavior, not meaningful text silently. No source-script execution or raw authenticated page embedding.
 - Propose a native read-only WebView only for generated, isolated document markup, conditional on dependency approval and platform isolation qualification. Disable script, DOM storage, native messaging and general file/content access; no authenticated base URL/cookies. Apply restrictive CSP. Safe tapped external links leave only through an explicit native navigation handler; page-initiated navigation is denied. Verify actual platform behavior, not prop names alone.
-- Embedded PNG/JPEG/GIF raster data is validated before presentation. Unresolved relative, linked, remote, SVG and other unsupported resources show a visible placeholder/notice with Save original fallback; they are never turned into credential-bearing requests. F2 tracks a future reviewed resolver contract for source-bound linked/relative references. Do not inject active/resource-bearing formats raw.
+- Embedded PNG/JPEG/GIF raster data is validated before presentation. Unresolved relative, linked, remote, SVG and other unsupported resources show a visible placeholder/notice with Save original fallback; they are never turned into credential-bearing requests. Source-bound linked/relative references require a separate resolver contract. Do not inject active/resource-bearing formats raw.
 - Reuse Gesture Handler + Reanimated for image geometry/gestures. Full-screen viewer owns only fit/scale/offset and contextual return.
 - Prefer Expo Video as a thin native player, not a custom decoder. Initial proposal: native-download to a scoped file with visible preparation/cancel, then local playback/seeking. This avoids making remote range-token/revision behavior a prerequisite; it delays first playback until the download completes. Direct remote streaming is a separate option if its compatibility proof is completed before approval.
 - Use one narrow local native export module: iOS document export/cancel callback; Android Create Document result followed by streamed write/close and error cleanup. Only trusted app-generated temporary source files are eligible. No arbitrary native filesystem API exposed to untrusted content.
@@ -111,7 +89,7 @@ Mobile: `features/files-discussion/artifact-discussion.ts`, `lib/artifact-byte-d
 
 Shared: existing `writer-proposal-core` or an already browser-safe reader package for pure document generation; do not add a new service. Inspect canonical image/table schema before selecting the exact package seam. Existing first-party Writer consumers change only if shared extraction requires tested parity.
 
-Server: no D582 save/storage rewrite remains in scope. The maintainer withdrew the exact-revision extension; preserve existing persistence and bytes APIs. See the rollback boundary below.
+Server: preserve existing persistence and bytes APIs. An exact-revision download extension is outside this scope; see the download-consistency boundary below.
 
 ## Failure, recovery, and rollback
 
@@ -125,7 +103,7 @@ Server: no D582 save/storage rewrite remains in scope. The maintainer withdrew t
 | Destination cancelled | No Saved toast; return to same viewer. |
 | Destination write/storage failure | Error with Retry/choose another destination; partial write cleaned if provider permits, otherwise explicit residual warning. |
 | Save completed | Saved filename only after platform completion; optional Open if supported. OS/provider acceptance is not a guarantee cloud sync has finished. |
-| iOS Share handed off | Native share flow; do not label delivery to recipient successful without evidence. Android direct Share is F1; use Save file → Android Files in this release. |
+| iOS Share handed off | Native share flow; do not label delivery to recipient successful without evidence. Android uses Save file → Android Files; direct Share is outside this scope. |
 | Identity/source changed | Cancel/fence attempt, discard late UI results and release owned bytes. |
 
 Preserve prior signed binary as rollback. No canonical document migration or server-side content rewrite. A failed newer viewer can offer original save; it must not silently downgrade authorization.
@@ -165,12 +143,12 @@ No external SaaS integration. Native file providers and media libraries own thei
 ## Verification
 
 - Characterization: existing active-loader, Writer and convergence tests at exact baseline; keep legacy helper coverage separately identified.
-- Documents: canonical envelope/body-empty fixtures; tables/spans/nested cell blocks; mixed nested lists; inline styles and links, including unknown styling; inline PNG/JPEG/GIF data images; general HTML; explicit unknowns and unavailable-resource notices with Save fallback. Hostile markup, navigation, resource and credential-isolation probes on native WebView. Measure source-to-decoded/DOM/raster expansion before fixing reader budgets. Linked/relative resolution belongs to F2.
+- Documents: canonical envelope/body-empty fixtures; tables/spans/nested cell blocks; mixed nested lists; inline styles and links, including unknown styling; inline PNG/JPEG/GIF data images; general HTML; explicit unknowns and unavailable-resource notices with Save fallback. Hostile markup, navigation, resource and credential-isolation probes on native WebView. Measure source-to-decoded/DOM/raster expansion before fixing reader budgets. Linked/relative resolution needs separate verification.
 - Sources: Artifact and message attachment separately; scope/revision/account/server switch, denied/missing/revoked, protected denied/admitted/expired, interruption and cleanup. Verify original export byte hashes, duplicate names, cancellation and full-storage outcomes.
 - Images: real two-finger pinch/pan and double-tap on iOS/Android; portrait/landscape-shaped large sources, accessible controls and return position.
 - Video: real supported/unsupported codecs, preparation, seek/audio/full-screen, audio-focus/voice coexistence, leaving/background/retry and source loss. Measure actual startup time/memory for representative files.
 - Packaging: native modules/config/dependency inventory, fresh native clients and existing mobile-web export compatibility. Run appropriate lint/typecheck/unit/unused/limits gates, exact-head CI and scoped review before merge.
-- Delivery: 0.1.2 is verified consumed. The release owner selects the marketing version before reservation. Allocate new monotonic build IDs only after that decision; then require release notes/ledger, both tester tracks truly available, actual installed version proof, real-phone media/save and relay pairing acceptance. Do not submit a production release.
+- Delivery: verify the exact signed build installed on each platform and test real-device media/save behavior. Follow the [release procedure](../../../RELEASE.md) for version allocation and publication.
 
 ## Delivery slices
 
@@ -186,15 +164,6 @@ The spec/proposal and low-level adapters are enabling work, not user delivery mi
 
 Mobile product/engineering maintainers own presentation, native package drift, tests and tester qualification; document/trust maintainers review shared rendering and source authority. Confirm named reviewers during scoped approval. Store-facing wording and final public submission retain explicit product approval.
 
-## Maintainer decision
-
-_Implementation and specification publication approved by the product maintainer on 2026-09-07._
-
-- Decision: `APPROVED FOR IMPLEMENTATION`
-- Approved scope: R1–R9 and the staged tester-only delivery described here; specification publication authorized. Production release still requires separate approval.
-- Required revisions: Resolve and prove the named technical contracts in implementation; return any material expansion or weakened safety/visible capability to review. Approval is not evidence that device behavior, original-file reproduction or immutable acquisition is already proved.
-- Approval expiry or revalidation trigger: source/authorization changes, native dependency/API changes, material renderer/media scope change.
-
 ## Primary platform references
 
 - [Expo SDK 57](https://docs.expo.dev/versions/v57.0.0/)
@@ -205,12 +174,18 @@ _Implementation and specification publication approved by the product maintainer
 - [Android document saving](https://developer.android.com/training/data-storage/shared/documents-files)
 
 
-## Download consistency boundary — maintainer rollback, 2026-09-08
+## Download consistency boundary
 
-**R10 is WITHDRAWN, not deferred or conditionally approved.** The maintainer directed rollback of the exact-database-revision download extension and its save/storage expansion. Do not restore it from earlier commits, reviews, or test results.
+This design does not add an immutable exact-revision download endpoint,
+per-save object retention, or a server storage rewrite. Existing persistence,
+authorization, and coordinated history remain authoritative.
 
-- Remove the new original endpoint, capability flag, shared replacement adapters and extra per-save object retention introduced for Mobile.
-- Preserve existing server/agent/database persistence, canonical authorization and pre-existing coordinated history. This rollback does not delete user data or claim to repair older storage-lifecycle debt.
-- Preserve Mobile reader/media/native Save and attachment access/cleanup work. Original acquisition uses the existing authorized bytes API with metadata, source/session and access rechecks. These detect ordinary races; they do **not** prove a snapshot or exact revision.
-- A bounded, on-demand stable-file snapshot is a possible follow-up, not an implemented or qualified replacement. It needs a narrow reviewed contract, writer-coordination proof, temporary-storage/concurrency admission and cancellation/crash cleanup. Do not substitute unchecked copying, a whole-download database lock, permanent per-edit copies, or an automatic retry loop.
-- No retain-copies tester exception or garbage-collection implementation is approved. The withdrawn design and its cleanup gate are removed from this Mobile release. Remaining download consistency qualification stays explicit in task 2.1.1; do not mark it solved by this rollback.
+Mobile acquires original bytes through the existing authorized API, with
+metadata, source/session, and access rechecks. Those checks detect ordinary
+races; they do **not** prove a snapshot or exact revision during a concurrent
+write. Save must not be described as an immutable-revision guarantee.
+
+A future stable-file snapshot needs its own writer-coordination contract,
+storage/concurrency admission, and cancellation/crash cleanup. Unchecked copying,
+a whole-download database lock, permanent per-edit copies, and automatic retry
+are not substitutes for that contract.
