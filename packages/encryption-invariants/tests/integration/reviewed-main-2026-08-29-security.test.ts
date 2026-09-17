@@ -93,12 +93,12 @@ function expectLatestD581TaskReplacement(
   );
   expect(september12).toBeDefined();
   if (!september12) throw new Error(`Missing September 12 predecessor for ${predecessor.locator}`);
-  expect({
+  expect(september12).toEqual({
     ...currentDeclaration,
     structuralSignatures: currentDeclaration.structuralSignatures.map((signature) =>
       signature.replace(REFERENCE_AUDIO_SIGNATURE_FRAGMENT, "")
     ),
-  }).toEqual(september12);
+  });
   expect(september12.arbitraryPayloads).toEqual(predecessor.arbitraryPayloads);
 }
 
