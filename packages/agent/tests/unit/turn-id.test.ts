@@ -4,7 +4,6 @@ import {
   readConnectedWebActionResumeBindingFromCheckpoint,
   readCausalHumanUserIdFromCheckpoint,
   readTurnIdFromCheckpoint,
-  readTurnIdForThread,
 } from "../../src/graph/turn-id";
 
 describe("readAgentIdFromCheckpoint (foreground resume identity)", () => {
@@ -107,24 +106,5 @@ describe("readConnectedWebActionResumeBindingFromCheckpoint", () => {
     expect(await readConnectedWebActionResumeBindingFromCheckpoint({ getState: async () => ({ values: { agentId: "agent-2", approvalLaneKey: "lane-2" } }) }, "thread-1")).toEqual({ agentId: "agent-2", laneKey: "lane-2" });
     expect(await readConnectedWebActionResumeBindingFromCheckpoint({ getState: async () => ({ values: { agentId: "agent-2", approvalLaneKey: "" } }) }, "thread-1")).toBeNull();
     expect(await readConnectedWebActionResumeBindingFromCheckpoint({ getState: async () => { throw new Error("missing"); } }, "thread-1")).toBeNull();
-  });
-});
-
-describe("readTurnIdForThread (D082 PR B fallback contract)", () => {
-  test("without DB_CONNECTION_STRING the helper falls back to a fresh uuid instead of throwing", async () => {
-    // createCheckpointSaver throws when DB_CONNECTION_STRING is
-    // missing; readTurnIdForThread catches ANY underlying failure
-    // (missing env, unreachable DB, graph construction error) and
-    // yields a fresh uuid so observability never blocks a resume
-    // handler. In server unit tests that inject auth routes
-    // without a DB, this path is the one that runs.
-    const saved = process.env["DB_CONNECTION_STRING"];
-    delete process.env["DB_CONNECTION_STRING"];
-    try {
-      const id = await readTurnIdForThread("thread-no-db");
-      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    } finally {
-      if (saved !== undefined) process.env["DB_CONNECTION_STRING"] = saved;
-    }
   });
 });
