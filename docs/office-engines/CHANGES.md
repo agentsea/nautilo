@@ -115,19 +115,14 @@ editor screenshot. See [testing](TESTING.md) for repeatable checks.
   tails use signed format coordinates with a separate Shift snap proximity range.
 - Small-table resizing preserves no-move gestures and positive subpixel cells
   within adjacent boundaries, removing the invented ten-pixel minimum.
-- All 143 previously unreviewed limit findings are assessed. The ledger passes
-  with 4,997 observations: 959 reviewed and 4,038 unchanged frozen legacy.
-  The 21 named shape/IME findings are resolved: twelve live observations now
-  derive from verified guide authority, and nine obsolete observations are removed.
-  No legacy admission was used.
 - Directional arrow callouts now use the checked-in DrawingML frame/sibling guide
   chain for both paint and drag. Circular, curved and U-turn arrow handle domains
   are likewise derived from the preset geometry. Raw imported
   adjustments remain stored without paint-time normalization.
 - The IME browser diagnostic takes its readiness duration from the caller and
   cleans up controlled browser children and its listener on every exit path.
-  Thirteen policy tests cover controlled cleanup; real Playwright acceptance was
-  not run in this pass.
+  Policy tests cover controlled cleanup; browser interaction requires separate
+  browser tests.
 - Charts now render native horizontal bars, signed stacked line/area series,
   sparse gaps, explicit value-axis bounds and category-axis crossing. Import,
   model validation and export reject equal, inverted or unrepresentable axes.
@@ -142,9 +137,7 @@ editor screenshot. See [testing](TESTING.md) for repeatable checks.
 
 ## Owned Docs / Writer intake — 2026-09-11
 
-Docs is imported from reviewed Nautilo checkpoint
-`182b804441a4130a394820df73a714b694152566`, package tree
-`085c0df19858e8abeb6b63149e0d7c88d603ac7c`. It retains the complete source,
+The owned Docs package retains the upstream source,
 tests, spell dictionaries and their licenses. The existing Core tree is reused.
 The reviewed slice includes recursive table, clipboard, IME/draft, layout,
 style, image and export corrections developed during Office qualification.
@@ -271,8 +264,8 @@ Current app and conversion behavior is documented in the
   or removes data. `check:model-schema` verifies generated files without mutation.
 - App-owned JSON Pointer transactions expose preserved native fields, with
   deterministic identity/resource/geometry helpers and existing canonical save
-  authority. [Authoring design](SLIDES-GENIE-AUTHORING.md) records the preflight
-  and qualification boundary; this does not imply a product release.
+  authority. [Authoring design](SLIDES-GENIE-AUTHORING.md) explains the
+  app-owned tools and their validation boundary.
 
 ### Writer integration follow-up
 

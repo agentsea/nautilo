@@ -61,9 +61,9 @@ legacy migration recognizes missing lease metadata with its initialization
 sentinel, seeds eligible names at age zero, and marks the lease state
 initialized. A deliberately empty initialized lease list is not migrated again.
 
-This residency feature does not own runtime binding lifecycle. D437 remains
-the authority for runtime-binding expiry, stale-plan recovery, and a relay
-changing mid-turn; a retained schema never bypasses those live checks.
+This residency feature does not own runtime-binding expiry, stale-plan recovery,
+or a relay changing mid-turn. A retained schema never bypasses those live
+admission checks.
 
 ## Inventory and classification
 

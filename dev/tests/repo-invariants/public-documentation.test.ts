@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "../../..");
@@ -22,6 +22,7 @@ const publicDocuments = [
   ".github/pull_request_template.md",
   ".github/PULL_REQUEST_TEMPLATE/specification.md",
   "docs/contributing/spec-template.md",
+  "docs/README.md",
   "docs/apply-patch-runtime-boundary.md",
   "docs/crypto-browser-compatibility.md",
   "docs/genie-application-bridge.md",
@@ -37,6 +38,18 @@ const publicDocuments = [
   "apps/desktop/PRODUCTION.md",
   "apps/desktop/PACKAGING.md",
 ] as const;
+
+function markdownFiles(directory: string): string[] {
+  return readdirSync(resolve(root, directory), { withFileTypes: true }).flatMap((entry) => {
+    const relativePath = `${directory}/${entry.name}`;
+    return entry.isDirectory()
+      ? markdownFiles(relativePath)
+      : entry.isFile() && entry.name.endsWith(".md") ? [relativePath] : [];
+  });
+}
+
+const technicalDocuments = markdownFiles("docs");
+const checkedDocuments = [...new Set<string>([...publicDocuments, ...technicalDocuments])];
 
 const forbiddenPrivateReference =
   /(?:nautilo-docs|github\.com\/agentsea\/nautilo-docs|\/Users\/|https:\/\/nautilo\.dev)/i;
@@ -75,7 +88,7 @@ describe("public documentation inventory", () => {
   });
 
   test("public documents do not depend on private workspace paths or the retired domain", () => {
-    for (const relativePath of publicDocuments) {
+    for (const relativePath of checkedDocuments) {
       expect(read(relativePath), relativePath).not.toMatch(
         forbiddenPrivateReference,
       );
@@ -83,7 +96,7 @@ describe("public documentation inventory", () => {
   });
 
   test("repository-relative Markdown links resolve inside the public checkout", () => {
-    for (const relativePath of publicDocuments.filter((path) =>
+    for (const relativePath of checkedDocuments.filter((path) =>
       path.endsWith(".md"),
     )) {
       for (const rawTarget of repositoryLinks(read(relativePath))) {
@@ -98,5 +111,21 @@ describe("public documentation inventory", () => {
         ).toBe(true);
       }
     }
+  });
+
+  test("technical docs do not carry private planning IDs or session diaries", () => {
+    for (const relativePath of technicalDocuments) {
+      expect(read(relativePath), relativePath).not.toMatch(
+        /\b(?:D\d{3}|M\d{3}|Stack \d+)\b|not run in this pass|Implemented in the feature worktree|Evidence is retained locally|Product experience preflight:/,
+      );
+    }
+  });
+
+  test("the directory landing page points readers to official guides", () => {
+    const landing = read("docs/README.md");
+    for (const route of ["/docs/use", "/docs/operator", "/docs/build"]) {
+      expect(landing).toContain(`https://nautilo.ai${route}`);
+    }
+    expect(landing).toContain("content/docs/");
   });
 });

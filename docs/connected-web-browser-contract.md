@@ -5,7 +5,7 @@ is intentionally a contract between Nautilo's server runtime and Browser Use,
 not a promise that every browser control works on every site.
 
 Browser Use V4 hosted Agent runs remain the default delegated driver. Direct
-CDP control for connected-account operations is a secondary mode Moxie may choose or enter by
+CDP control for connected-account operations is a secondary mode the Genie may choose or enter by
 takeover. Both live behind one supervised operation and one Human-facing card;
 neither exposes provider topology or an unrestricted browser surface.
 
@@ -76,8 +76,8 @@ lifecycle rules.
 | Lane | Use | Nautilo authority | Genie contract |
 | --- | --- | --- | --- |
 | Hosted V4 Agent | Public or protected research and user-authorized website tasks | Creates, cursor-observes, steers, and cancels a run; public mode omits the profile, account mode uses the owned saved profile | `browse_web`, `read_connected_web_account` or `run_website_task`, plus `manage_connected_web_operation`; never provider coordinates |
-| Standalone V4 Browser | Human sign-in/takeover and Moxie direct control | Creates, watches, and explicitly stops the browser session | No model access to CDP or live-view capabilities |
-| `agent-browser` attached to the managed browser | Deterministic Moxie-selected interaction | Starts one dedicated server-side process with an ephemeral validated CDP WSS capability | Familiar semantic browser operations routed through a sealed Connected Website binding, not a raw MCP profile |
+| Standalone V4 Browser | Human sign-in/takeover and direct Genie control | Creates, watches, and explicitly stops the browser session | No model access to CDP or live-view capabilities |
+| `agent-browser` attached to the managed browser | Deterministic Genie-selected interaction | Starts one dedicated server-side process with an ephemeral validated CDP WSS capability | Familiar semantic browser operations routed through a sealed Connected Website binding, not a raw MCP profile |
 
 No lane grants a Genie credentials, MFA codes, cookies, profile data, a
 live-view URL, a CDP URL, or a provider API key.
@@ -122,7 +122,7 @@ stop, including its billing/refund effect, in its
    events. It wakes the exact initiating Genie for meaningful progress,
    authentication/Human attention, suspected loop/no progress, requested
    check, ambiguity, or terminal state. Raw provider events remain untrusted.
-4. Moxie may inspect, continue, check later, steer, take direct control,
+4. The Genie may inspect, continue, check later, steer, take direct control,
    release, or stop. Session queue `interrupt` is best-effort and does not
    accept `model` or `maxCostUsd`; until live qualification proves budget
    inheritance, steering cancels/fences the run and explicitly creates a
@@ -251,7 +251,7 @@ explicitly closes direct-control resources.
    the same capability host.
 3. For a Human login, Nautilo uses the existing one-shot navigator to land the
    initial page and closes its socket before credentials are entered. For
-   direct Moxie control, Nautilo supplies the validated WSS URL only
+   direct Genie control, Nautilo supplies the validated WSS URL only
    to one dedicated `agent-browser` CLI/daemon process. It must not be shared
    with another request, user, tab session, or process.
 4. Process exit, CDP disconnect, task cancellation, and UI closure are not
@@ -376,11 +376,11 @@ generalize to another protected flow.
 | Live probe | Initial path | Allowed outcome |
 | --- | --- | --- |
 | Read-only navigation, search, and extraction on a saved profile | Hosted V4 Agent | Hosted-V4 pass; otherwise Human takeover or unsupported |
-| Fill/type/select/check/keyboard and normal submit | Hosted V4 Agent or Moxie direct | Hosted or direct pass; otherwise Human takeover/unsupported |
-| Popup/new-tab, iframe, and JavaScript-dialog actions | Hosted V4 Agent or Moxie direct | Hosted or direct pass, Human takeover, or unsupported |
+| Fill/type/select/check/keyboard and normal submit | Hosted V4 Agent or direct Genie control | Hosted or direct pass; otherwise Human takeover/unsupported |
+| Popup/new-tab, iframe, and JavaScript-dialog actions | Hosted V4 Agent or direct Genie control | Hosted or direct pass, Human takeover, or unsupported |
 | Explicit Workspace input and requested browser/Workspace output | Hosted V4 Agent plus Workspace APIs | Hosted-V4 pass or unsupported; no host-path substitute |
-| HTML drag/drop | Hosted V4 Agent or Moxie direct | Hosted pass, direct element-drag pass, Human takeover, or unsupported |
-| Slider, canvas, map, or coordinate-only control | Hosted V4 Agent or Moxie direct | Hosted pass, direct mouse-sequence pass, Human takeover, or unsupported |
+| HTML drag/drop | Hosted V4 Agent or direct Genie control | Hosted pass, direct element-drag pass, Human takeover, or unsupported |
+| Slider, canvas, map, or coordinate-only control | Hosted V4 Agent or direct Genie control | Hosted pass, direct mouse-sequence pass, Human takeover, or unsupported |
 | Login, MFA, CAPTCHA, passkey, or a dangerous, irreversible, ambiguous or out-of-scope action | Human checkpoint | Human intervention or a precise stopped/partial result; never a silent direct-control fallback |
 
 Every direct run requires all of: an authorized saved profile; a Browser

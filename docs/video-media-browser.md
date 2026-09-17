@@ -1,6 +1,6 @@
 # Video media browser
 
-Approved experience: Video uses one host-owned browser for adding project media
+Video uses one host-owned browser for adding project media
 and generation references. The editor action is **Add media**. Simple and Advanced
 use **Add references** and **Replace reference**. Sources are **Artifacts** (media
 in the bound Workspace), **Media Bin** (the current project), and **Computer**.
@@ -34,8 +34,6 @@ and focus, cancellation without banners, errors and dismissal, document switchin
 preview disposal, mixed-media admission, existing Media Bin reuse, reference
 replacement, and save/reopen. Migration 0292 extends the durable request-payload constraint to accept
 optional audio references. No new production dependency is required.
-Older-machine adoption is a separate manual acceptance step after the
-branch is ready; development does not restart or modify that machine.
 
 ## Local verification
 
@@ -46,7 +44,6 @@ partial failures, cancellation, exact artifact revision checks, and cleanup when
 project or viewer changes. Browser layout checks cover 1100, 736, and 360 pixel
 widths in both themes, with a fixed footer and scrollable results.
 
-Adoption needs the Workbench/Video build and the Desktop native build from this
-branch together: older Desktop code accepts image-only batches. No dependency
-was added to the server or the isolated Video app. Current Folder imports retain
-their existing native path; the three-source browser is for Workspace projects.
+Mixed-media selection requires compatible Workbench/Video and Desktop native
+builds: older Desktop code accepts image-only batches. Current Folder imports
+retain their native path; the three-source browser is for Workspace projects.

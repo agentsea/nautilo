@@ -47,6 +47,8 @@ operate, package, or release the public source tree.
 
 ## Versioned technical documentation
 
+- [`docs/README.md`](docs/README.md) — technical documentation by topic and
+  the boundary between source contracts and website guides
 - [`docs/apply-patch-runtime-boundary.md`](docs/apply-patch-runtime-boundary.md)
 - [`docs/crypto-browser-compatibility.md`](docs/crypto-browser-compatibility.md)
 - [`docs/connected-web-browser-contract.md`](docs/connected-web-browser-contract.md)
@@ -58,7 +60,20 @@ operate, package, or release the public source tree.
 - [`docs/progressive-tool-activation.md`](docs/progressive-tool-activation.md)
 - [`docs/relay-host-ownership.md`](docs/relay-host-ownership.md) — relay
   transport, Desktop-session, CUA Host, fixed-handler, process-cache, and
-  Electron-authority ownership after the D565 guarded rebase.
+  Electron-authority ownership.
+- [`docs/background-authorization-transport.md`](docs/background-authorization-transport.md)
+- [`docs/encryption-data-operation-ownership.md`](docs/encryption-data-operation-ownership.md)
+- [`docs/mobile-time-and-workspace-sharing.md`](docs/mobile-time-and-workspace-sharing.md)
+- [`docs/security-research-limits.md`](docs/security-research-limits.md)
+- [`docs/quiet-events.md`](docs/quiet-events.md)
+- [`docs/video-generation-recovery.md`](docs/video-generation-recovery.md)
+- [`docs/video-media-browser.md`](docs/video-media-browser.md)
+- [`docs/contributing/ci.md`](docs/contributing/ci.md)
+
+Office-engine maintenance, tests, and design references are indexed in the
+[Office engines README](docs/office-engines/README.md). The
+[Mobile document/media proposal](docs/contributing/proposals/mobile-document-media-save.md)
+describes design scope and limitations, not store availability.
 
 ## Deployment and operations
 

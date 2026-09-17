@@ -132,7 +132,8 @@ means they are not npm publication targets. See the
 [owned-engine maintenance and qualification record](docs/office-engines/README.md).
 Writer uses the owned Docs browser and Node exports. Slides has a packaged
 mini-app enabled on fresh installs; upgrades preserve the Human's preference.
-Board has its own bundled mini-app and reuses the owned Slides canvas engine.
+Board has its own bundled mini-app and owned Board engine, with shared
+Slides/Docs editor components.
 Notes remains deferred.
 
 Writer, Sheets, Slides, Board, Design, and Video integrate with Nautilo's app/document

@@ -10,6 +10,8 @@
 
 Remote catalogue updates are metadata-only. They may refresh labels, descriptions, menu paths, and discovery terms for the installed target set; they cannot add routes, selectors, focus behavior, native handlers, capabilities, or mutations.
 
-Mobile has no D513 target adapter yet. Do not add a Mobile mapping, deep link, or automatic presentation here; that work is explicitly deferred to Phase 7 after RC1 qualification. TUI is retired and receives no compatibility work.
+This target adapter is for Workbench, shared by Desktop and the browser client.
+It does not supply Mobile navigation or deep links. A Mobile adapter needs its
+own installed-target mapping and availability tests. TUI is retired.
 
 `launch_customization` remains the canonical consent-gated typed recovery producer. `guide_user` is the separate semantic discovery and presentation tool; do not merge those responsibilities. The retired sentinel, listener, dialog, route prose, and duplicate presentation paths remain absent.

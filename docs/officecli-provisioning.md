@@ -1,10 +1,10 @@
 # OfficeCLI binary provisioning and checksum policy
 
-**Status:** Shipped. Binary is **provisioned at build/dev-start, never committed
-to git** (M203). Runtime + provisioning helpers live in `@nautilo/config/officecli`.
+The binary is **provisioned at build/dev-start, never committed to git**.
+Runtime and provisioning helpers live in `@nautilo/config/officecli`.
 
 OfficeCLI is the headless `.docx/.xlsx/.pptx` engine behind the `officecli` agent
-tool (D372/D391/D396) and the Writer `import-docx` / `export-docx` app tools. This
+tool and the Writer `import-docx` / `export-docx` app tools. This
 document describes how the pinned binary is provisioned and integrity-checked.
 
 ## Decision summary
@@ -12,8 +12,8 @@ document describes how the pinned binary is provisioned and integrity-checked.
 | Topic | Decision |
 |---|---|
 | **Where binaries live** | `packages/server/vendor/officecli/<platform-key>/officecli` (`.exe` on Windows) |
-| **Committed to git?** | **No** (M203). A `.gitignore` in that tree ignores `*/officecli` + `*/officecli.exe`. Only `manifest.json`, `.version`, and `SHA256SUMS` are tracked. |
-| **How it gets there** | Provisioned by `dev/scripts/vendor-officecli.ts <platform-key>` — fetch + verify sha256 + install. dev-stack runs this for the host key at start; Docker runs it for `linux-x64` at build. |
+| **Committed to git?** | **No**. A `.gitignore` in that tree ignores `*/officecli` + `*/officecli.exe`. Only metadata and checksums are tracked. |
+| **How it gets there** | Provisioned by `dev/scripts/vendor-officecli.ts <platform-key>` — fetch + verify sha256 + install. dev-stack selects the host platform; Docker selects the image target architecture. Desktop has its own provisioner described below. |
 | **Manifest** | `packages/server/vendor/officecli/manifest.json` — local pin (per-platform sha256 + `url` for the vendor script). |
 | **Integrity** | sha256 hex (lowercase, 64 chars) of raw binary bytes; optional `sizeMin` guard (~1MB). |
 | **Version pin** | Semver in `manifest.officecli.version`; `.version` stamp file drives idempotent vendor-script / dev-stack-preflight freshness. |
@@ -35,17 +35,14 @@ The canonical module is **`@nautilo/config/officecli`**
 It is a node-only subpath (imports `node:child_process` / `node:fs`) — do NOT add
 it to the config barrel (`src/index.ts`), which must stay browser-safe.
 
-> Historical note: this doc previously pointed at
-> `packages/server/src/officecli-provisioning.ts`. That module was relocated to
-> `@nautilo/config/officecli` (D396 Wave 2a) so both `@nautilo/agent` and
-> `@nautilo/server` can import it without flipping the server→agent dependency
-> edge.
+Both `@nautilo/agent` and `@nautilo/server` import the shared module without
+introducing an agent-to-server dependency.
 
 ## File layout
 
 ```
 packages/server/vendor/officecli/
-  .gitignore             # M203 — ignores */officecli + */officecli.exe (binaries never committed)
+  .gitignore             # ignores */officecli + */officecli.exe
   manifest.json          # pinned version + per-platform sha256 + url (tracked)
   .version               # copy of manifest.officecli.version (freshness stamp; tracked)
   SHA256SUMS             # provenance record (tracked)
@@ -98,7 +95,7 @@ the binary. It is:
   tool self-gates via `officeCliAvailable()`.
 - Provisions only the **host** platform key.
 
-**Desktop Electron (`bun run dev-stack --electron`)** — M206 adds a separate,
+**Desktop Electron (`bun run dev-stack --electron`)** uses a separate,
 fail-closed preflight via `ensureDesktopOfficeCliProvisioned(repoRoot)` that runs
 **after the server is healthy and before Electron starts**. It provisions
 `apps/desktop/vendor/officecli` (darwin-arm64 + darwin-x64) through
@@ -115,7 +112,7 @@ Server-side provisioning above is unchanged and still non-fatal.
 platform key aligned with the container's runtime arch so `officeCliAvailable()`
 finds it and the `officecli` tool registers (an arm64 image that vendored
 `linux-x64` would hide the tool). The image ships a verified binary; nothing
-depends on a committed one. (Fuller multi-arch story: ISSUE-M201.)
+depends on a committed one.
 
 ### Manual
 
@@ -132,25 +129,28 @@ bun run officecli:verify                  # verify the vendored tree, print OFFI
 | `OFFICECLI_VENDOR_ROOT` | Override the vendor directory (absolute or repo-relative). Default: `packages/server/vendor/officecli`. |
 | `OFFICECLI_SKIP_UPDATE` | Forced to `1` by `buildOfficeCliEnv()` — pinned bytes must not self-mutate. |
 
-## Zone routing (M203)
+## Zone routing
 
 The `officecli` tool supports `zone: "workspace" | "current" | "absolute" | "home"
-| "scratch"`. The binary **always runs server-side**; for `current` / `absolute`
-the relay is used only as the byte-I/O transport (the same M174 `selectFileBackend`
-seam the unified `file` tool uses):
+| "scratch"`. Execution follows the file's location:
 
-1. Read the input bytes from the user's machine via `RelayFileBackend.readFile`.
-2. Run OfficeCLI on the server against a staged temp copy.
-3. Write the produced bytes back via `RelayFileBackend.writeFileAtomic` (with a
-   `RelayFsChangeEvent` for the `current` zone so open editors / the Files tab
-   refresh).
+- **Workspace, home, scratch:** the server runs OfficeCLI against server-owned
+  files under the corresponding authority.
+- **Current Folder and absolute local paths:** the server dispatches one
+  structured Office operation through the Desktop relay. Desktop runs its
+  provisioned OfficeCLI and owns local file access and document mutation.
+  The server does not stage local Office document bytes or execute OfficeCLI
+  for these zones.
 
-`current` / `absolute` writes require a connected v2 relay. In-place overwrite =
-omit `out` or pass `out === path`; a distinct `out` writes a new file
-(zero-clobber on the input). No relay ⇒ a clear "connect your desktop relay"
-error, never a silent server-local write. There is no new relay execution class
-and no desktop bundling of OfficeCLI. Workspace zone follows the same rule
-(`out` omitted/`out === path` → update existing artifact; else mint new).
+Local operations require the selected Desktop connection and applicable file
+grants. An unavailable relay produces an error, never a server-local fallback.
+Omitting `out`, or using the input path, updates the existing document; a
+distinct `out` requests a separate output. Workspace updates retain the
+existing artifact identity; separate outputs create new artifacts.
+
+The routing implementation is
+[`officecli.ts`](../packages/agent/src/tools/office/officecli.ts), through
+`isRelayZone` and `dispatchLocalOfficeCli`.
 
 ## TypeScript API (`@nautilo/config/officecli`)
 
@@ -174,9 +174,3 @@ and no desktop bundling of OfficeCLI. Workspace zone follows the same rule
 | Not executable (unix) | `BINARY_NOT_EXECUTABLE` | `chmod +x` |
 | Size below `sizeMin` | `SIZE_TOO_SMALL` | Re-vendor; likely truncated |
 | sha256 mismatch | `CHECKSUM_MISMATCH` (linux/win refuse; darwin tolerates codesign drift) | Re-vendor / update manifest |
-
-## Out of scope
-
-- Docker multi-arch / `TARGETARCH`-aware vendoring → ISSUE-M201.
-- Rewriting git history to purge the previously-committed ~33 MB blob (it remains
-  in history; only the working-tree copy is removed + ignored going forward).

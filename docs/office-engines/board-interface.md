@@ -1,6 +1,7 @@
 # Nautilo Board interface study
 
-Status: interactive design study, 2026-09-13. This is not an installed mini-app.
+This standalone prototype explores Board layout and interaction. For the
+installed app and its tests, see the [Board README](../../packages/first-party-apps/board/README.md).
 
 Open [the interactive mock](board-interface.html). Its edits stay in the current
 tab; it has no canonical file, network service, autosave receipt, or connected Genie.
@@ -9,10 +10,8 @@ tab; it has no canonical file, network service, autosave receipt, or connected G
 ## Upstream evidence
 
 Upstream **does provide an implemented Board interface**, not just an engine.
-At `13b487d9b5fbb913d9b387c82d912322021cbce4`, the full recursive Git tree
-was returned without truncation. No Board-specific raster screenshot, SVG mock,
-or Figma file was found by Board/screenshot/mockup filename inspection. This is
-not a claim about untracked design files or assets outside the repository.
+The references below are pinned to upstream revision
+`13b487d9b5fbb913d9b387c82d912322021cbce4`.
 
 - [Board design](https://github.com/wafflebase/wafflebase/blob/13b487d9b5fbb913d9b387c82d912322021cbce4/docs/design/board/board.md)
 - [Editing parity design](https://github.com/wafflebase/wafflebase/blob/13b487d9b5fbb913d9b387c82d912322021cbce4/docs/design/board/board-editing-parity.md)
@@ -28,7 +27,7 @@ some now-implemented toolbar functions future work.
 
 ## Experience decision
 
-**Product experience preflight: SALVAGEABLE.** The upstream editor is a useful reference;
+The upstream editor is a useful reference;
 Nautilo needs a coherent native journey and a layout that stays legible in an
 embedded panel. Build on the owned scene engine, preserving useful controls.
 
@@ -73,19 +72,19 @@ The HTML implements in-tab creation, movement, text/style editing, connections,
 image selection, undo/redo, pan/zoom, palette switch, overview and blank state.
 It deliberately uses an independent illustrative DOM scene so it can be reviewed
 without a server. This is disposable interaction evidence, **not a replacement
-scene engine or a future persistence layer**. The production implementation uses
-owned Slides/editor behavior and replaces this demo state.
+scene engine or a future persistence layer**. The installed Board uses the
+owned Board engine and shared editor components rather than this demo state.
 
 No native undo/persistence/recovery/Genie acceptance is claimed from this mock.
 The full upstream shape picker, grid snapping, resizing, freehand, multi-selection,
 real minimap navigation, image asset persistence and production accessibility
 remain part of engine/surface qualification.
 
-## Architectural preflight
+## Integration design
 
-**Ready with named qualification gates.** Main already owns the scene engine's
-viewport transform and overlay seam. Board intake and native adaptation remain.
-No new database, collaboration service, public fork, or npm publisher is needed.
+The prototype illustrates the ownership boundaries below. The installed app's
+current implementation lives in `packages/first-party-apps/board` and
+`packages/office-board`; this study is not its implementation-status record.
 
 | State                              | Owner and reconstruction                                                        |
 | ---------------------------------- | ------------------------------------------------------------------------------- |

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Nautilo will ship a narrowly maintained extraction of the Codex patch grammar
+Nautilo uses a narrowly maintained extraction of the Codex patch grammar
 and matching logic, not the upstream `apply_patch` standalone.  The model-facing
 tool is the provider-compatible structured object `{ patch: string }`; the value
 is the preserved Codex UTF-8 patch envelope.  Trusted authority (root, actor,
@@ -70,20 +70,22 @@ The v1 binary is a fixed-cwd, stdin/stdout JSON runtime with
 
 ### Current extraction result boundary
 
-Task 0.1.2 emits a lower-level native engine report: planned operations,
+The native engine emits a lower-level report: planned operations,
 per-operation `applied`/`not_applied`/`unknown` state, an applied destination
 prefix, an explicit partial flag, and a closed `parse`/`context`/`execution`
 failure kind whenever the operation is rejected. The free-form native error
 remains diagnostic-only; the failure kind is the authoritative input to safe,
 stable host error classification. A move remains one operation carrying
 its source and destination; it is not represented as a delete plus write.
-This is not yet the locked `ApplyPatchChildExecutionReport` or public result
-contract. Phase 1.3 owns the constrained process wrapper; Phase 3.1/3.2 own
-trusted preflight, pre/post reconciliation, operation counts, per-path result
-translation, byte accounting, bounded diffs, revisions, and public-result
-normalization. The extraction therefore does not yet claim caps, sandboxing,
-canonical identity/TOCTOU protection, conflict/overwrite-byte preflight, or
-revision/event behavior.
+This native report is not the public result contract. The
+[process wrapper](../packages/agent/src/tools/apply-patch/process-wrapper.ts)
+validates the native response and executes through a supplied sandbox adapter.
+The host is responsible for trusted preflight, pre/post reconciliation,
+operation counts, per-path translation, byte accounting, diffs, revisions,
+and public-result normalization through the
+[shared contract](../packages/agent/src/tools/apply-patch/contract.ts).
+The extracted grammar alone provides no filesystem authority, sandboxing,
+identity or TOCTOU protection, conflict/overwrite-byte admission, or events.
 
 ## Apache-2.0 obligations
 
