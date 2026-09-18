@@ -41,9 +41,6 @@ import {
   readPreparedConversationCryptoRevision,
 } from "@nautilo/lattice-bridge";
 import {and, eq, inArray, or, sql} from "drizzle-orm";
-import {drizzle} from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import * as schema from "@nautilo/db/schema";
 import {rooms, roomMembers, namespaces, nautiloInstanceIdentity, cryptoObjects,
  objectCryptoAccessHeads, objectCryptoAccessManifests, objectCryptoNamespaceEnvelopes,
  encryptionTransitionHistoryReadAdmissions, humanCryptoDevices, messageBackfillToolContexts, users, actors, agents, profiles, channelIdentities, credentials, groupMembers,
@@ -398,11 +395,8 @@ describe.serial("M314 production Message backfill protocol", () => {
   test.each(["group", "open"] as const)(
     "%s Rooms use real admission, waiting, publication, reader and ack for both key classes",
     async (roomKind) => {
-      const url = process.env["LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL"];
-    if (!url) throw new Error("Explicit disposable integration admin database is required");
-    const admin = postgres(url, {max: 1, prepare: false});
-    const db = drizzle(admin, {schema});
     const fx = await setupOwnerAppFixture({suiteName: "m313a", withDefaultAgentGraph: true});
+    const db = fx.db;
     const seated = await seatPeerUser(fx.db, {suiteName: "m313b", groupType: "owners"});
     const verifierSeated = await seatPeerUser(fx.db, {suiteName: "m313c", groupType: "owners"});
     const thirdSeated = await seatPeerUser(fx.db, {suiteName: "m313d", groupType: "owners"});
@@ -1131,7 +1125,6 @@ describe.serial("M314 production Message backfill protocol", () => {
       await verifier.cleanup();
       await third.cleanup();
       await fx.cleanup();
-      await admin.end();
     }
     },
     120_000,
