@@ -161,6 +161,19 @@ describe("D418 migration 0100 — populated system-managed Groups replay", () =>
           }
           if (!workstationRole) throw new Error("workstation role missing");
 
+          // The capability catalogue is populated after migrations, so a
+          // migration-only scratch DB may not retain this historical row.
+          // Recreate it inside the rolled-back transaction to model the
+          // populated pre-0100 state exercised by this replay.
+          await tx`
+            INSERT INTO capabilities (slug, description, category)
+            VALUES (
+              'use_workstation_profiles',
+              'Activate a profile',
+              'devices'
+            )
+            ON CONFLICT (slug) DO NOTHING
+          `;
           const [capability] = await tx<{ id: string }[]>`
             SELECT id FROM capabilities
             WHERE slug = 'use_workstation_profiles'
