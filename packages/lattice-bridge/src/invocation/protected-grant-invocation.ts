@@ -312,48 +312,6 @@ export async function createProtectedInvocationRecipient(input: Readonly<{
   });
 }
 
-/**
- * Admit an externally generated ephemeral HPKE pair into the same opaque
- * recipient boundary. A self-seal/open proof rejects substituted or malformed
- * pairs before the private scalar enters process-local custody.
- */
-export async function authenticateProtectedInvocationRecipientKeyPair(input: Readonly<{
-  readonly crypto: LatticeCrypto;
-  readonly recipientAgentId: AgentId;
-  readonly recipientKeyId: string;
-  readonly publicKey: Uint8Array;
-  readonly privateKey: Uint8Array;
-}>): Promise<ProtectedInvocationRecipient> {
-  if (!isPortableText(input.recipientAgentId)) {
-    throw new TypeError("Protected invocation recipient Agent id is invalid");
-  }
-  if (!isPortableText(input.recipientKeyId)) {
-    throw new TypeError("Protected invocation recipient key id is invalid");
-  }
-  const challenge = input.crypto.randomBytes(32);
-  let sealed: Uint8Array | undefined;
-  let opened: Uint8Array | null | undefined;
-  try {
-    sealed = await input.crypto.sealTo(input.publicKey, challenge);
-    opened = await input.crypto.openSealed(input.privateKey, sealed);
-    if (
-      opened === null
-      || opened.length !== challenge.length
-      || opened.some((byte, index) => byte !== challenge[index])
-    ) throw new TypeError("Protected invocation recipient key pair is invalid");
-    const recipient = Object.freeze({
-      recipientAgentId: input.recipientAgentId,
-      recipientKeyId: input.recipientKeyId,
-    }) as ProtectedInvocationRecipient;
-    recipientSecrets.set(recipient, { privateKey: input.privateKey.slice() });
-    return recipient;
-  } finally {
-    challenge.fill(0);
-    sealed?.fill(0);
-    opened?.fill(0);
-  }
-}
-
 /** Admit a fresh externally generated Runtime HPKE pair into opaque custody. */
 export async function authenticateForegroundRuntimeRecipientKeyPair(input: Readonly<{
   readonly crypto: LatticeCrypto;

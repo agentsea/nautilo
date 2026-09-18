@@ -55,19 +55,11 @@ describe("reviewed main 2026-08-22 encryption inventory", () => {
     }
   });
 
-  test("links the compatibility session insert to the frozen session boundary", () => {
-    expect(REVIEWED_MAIN_2026_08_22_DEBT_LINKS).toHaveLength(7);
-    const sessionLink = REVIEWED_MAIN_2026_08_22_DEBT_LINKS.find((link) =>
+  test("retains Room wire links after retiring the compatibility session writer", () => {
+    expect(REVIEWED_MAIN_2026_08_22_DEBT_LINKS).toHaveLength(6);
+    expect(REVIEWED_MAIN_2026_08_22_DEBT_LINKS.some((link) =>
       link.locator.includes("#inspectProductCandidate:")
-    );
-    expect(sessionLink?.targetDebtIds).toEqual([
-      "debt.db.public.sessions.agent_id",
-      "debt.db.public.sessions.channel",
-      "debt.db.public.sessions.id",
-      "debt.db.public.sessions.room_id",
-      "debt.db.public.sessions.thread_id",
-    ]);
-    expect(BASELINE_REGISTRY.reviewedDebtLinks).toContainEqual(sessionLink);
+    )).toBe(false);
     const namedRoomLinks = REVIEWED_MAIN_2026_08_22_DEBT_LINKS.filter((link) =>
       link.surface === "wire"
     );

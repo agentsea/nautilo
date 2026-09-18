@@ -3,8 +3,6 @@ import { describe, expect, test } from "bun:test";
 import {
   LatticeCrypto,
   accessRevision,
-  agentId,
-  agentRuntimeGeneration,
   authorizationRevision,
   cryptoDeviceId,
   cryptoDomainId,
@@ -22,13 +20,10 @@ import {
 
 import {
   BACKGROUND_AUTHORIZATION_DEVICE_CREDENTIAL_TTL_MS,
-  fulfillAgentBackgroundAuthorizationRequest,
   fulfillProcessorBackgroundAuthorizationRequest,
   verifyCurrentBackgroundAuthorizationDeviceResponse,
-  type AgentBackgroundAuthorizationDeviceAuthority,
   type BackgroundAuthorizationDeviceAuthority,
   type BackgroundAuthorizationDeviceRequest,
-  type ExpectedAgentBackgroundAuthorizationResponse,
   type ExpectedProcessorBackgroundAuthorizationResponse,
 } from "../../src/index.ts";
 
@@ -52,15 +47,14 @@ function deterministicCrypto(seed = 1): LatticeCrypto {
 
 async function descriptor(
   crypto: LatticeCrypto,
-  kind: "processor" | "agent",
 ): Promise<BackgroundWorkDescriptorV1> {
   const recipient = await crypto.generateEncryptionKeyPair();
   recipient.privateKey.fill(0);
   const common = {
     formatVersion: 1 as const,
-    requestId: `response-${kind}-request`,
+    requestId: "response-processor-request",
     recipientGeneration: 3,
-    workId: `${kind}-work`,
+    workId: "processor-work",
     namespaceId: namespaceId("namespace-room-1"),
     domainId: cryptoDomainId("domain-room-1"),
     source: {
@@ -68,7 +62,7 @@ async function descriptor(
       generation: 1,
       fingerprint: new Uint8Array(32).fill(0x41),
     },
-    inputObjectIds: [objectId(`${kind}-input-1`)],
+    inputObjectIds: [objectId("processor-input-1")],
     outputObjectIds: [],
     outputObjectMetadata: [],
     maximumInputObjectCount: 1,
@@ -78,27 +72,13 @@ async function descriptor(
     expectedDomainEpoch: domainEpoch(7),
     expectedNamespaceAccessRevision: accessRevision(11),
     expectedPolicyRevision: authorizationRevision(13),
-    recipientKeyId: `${kind}-recipient-key-3`,
+    recipientKeyId: "processor-recipient-key-3",
     recipientPublicKey: recipient.publicKey,
     issuedAt: NOW,
     notBefore: NOW,
     expiresAt: NOW + BACKGROUND_AUTHORIZATION_DEVICE_CREDENTIAL_TTL_MS,
-    idempotencyId: `${kind}-idempotency-1`,
+    idempotencyId: "processor-idempotency-1",
   };
-  if (kind === "agent") {
-    return {
-      ...common,
-      workKind: "task.execute",
-      subject: {
-        kind: "agent",
-        agentId: agentId("agent-genie"),
-        runtimeGeneration: agentRuntimeGeneration(9),
-        authorizationRevision: authorizationRevision(13),
-      },
-      purpose: "task.execute",
-      operations: ["decrypt"],
-    };
-  }
   const outputId = objectId("journal-event-1");
   return {
     ...common,
@@ -153,20 +133,6 @@ function expectedProcessor(
   };
 }
 
-function expectedAgent(
-  crypto: LatticeCrypto,
-  work: BackgroundWorkDescriptorV1,
-): ExpectedAgentBackgroundAuthorizationResponse {
-  return {
-    kind: "agent",
-    requestId: work.requestId,
-    recipientGeneration: work.recipientGeneration,
-    descriptorHash: backgroundWorkDescriptorDigestV1(crypto, work),
-    recipientKeyId: work.recipientKeyId,
-    recipientPublicKey: work.recipientPublicKey,
-  };
-}
-
 function processorAuthority(
   crypto: LatticeCrypto,
   work: BackgroundWorkDescriptorV1,
@@ -198,48 +164,10 @@ function processorAuthority(
   };
 }
 
-function agentAuthority(
-  crypto: LatticeCrypto,
-  work: BackgroundWorkDescriptorV1,
-): AgentBackgroundAuthorizationDeviceAuthority {
-  if (work.subject.kind !== "agent") {
-    throw new Error("Agent fixture requires Agent work");
-  }
-  const issuer = crypto.generateSigningKeyPair();
-  return {
-    humanId: humanId("human-alice"),
-    humanState: "active",
-    deviceId: cryptoDeviceId("device-alice-browser"),
-    deviceHumanId: humanId("human-alice"),
-    deviceState: "active",
-    deviceAuthorizationRevision: authorizationRevision(17),
-    deviceSigningPublicKey: issuer.publicKey,
-    deviceSigningPrivateKey: issuer.privateKey,
-    namespaceId: work.namespaceId,
-    namespaceState: "active",
-    membershipHumanId: humanId("human-alice"),
-    membershipState: "active",
-    namespaceParticipants: [
-      humanId("human-alice"),
-      humanId("human-bob"),
-    ],
-    namespaceAccessRevision: work.expectedNamespaceAccessRevision,
-    policyRevision: work.expectedPolicyRevision,
-    domainId: work.domainId,
-    domainState: "active",
-    domainEpoch: work.expectedDomainEpoch,
-    agentId: work.subject.agentId,
-    agentState: "active",
-    runtimeGeneration: work.subject.runtimeGeneration,
-    agentAuthorizationRevision: work.subject.authorizationRevision,
-    aiRoot: new Uint8Array(32).fill(0xb7),
-  };
-}
-
 describe("current background authorization response verifier", () => {
   test("accepts one exact processor response and returns only durable public evidence", async () => {
     const crypto = deterministicCrypto();
-    const work = await descriptor(crypto, "processor");
+    const work = await descriptor(crypto);
     const authority = processorAuthority(crypto, work);
     const fulfillment =
       await fulfillProcessorBackgroundAuthorizationRequest({
@@ -324,50 +252,9 @@ describe("current background authorization response verifier", () => {
     expect(JSON.stringify(verified)).not.toContain("encryptedSecret");
   });
 
-  test("accepts an unchanged Agent GrantV2 under its exact request envelope", async () => {
-    const crypto = deterministicCrypto(2);
-    const work = await descriptor(crypto, "agent");
-    const authority = agentAuthority(crypto, work);
-    const fulfillment =
-      await fulfillAgentBackgroundAuthorizationRequest({
-        crypto,
-        request: request(crypto, work),
-        resolveCurrentAuthority: () => authority,
-      });
-
-    const verified =
-      await verifyCurrentBackgroundAuthorizationDeviceResponse({
-        crypto,
-        expected: expectedAgent(crypto, work),
-        responseBytes: fulfillment.responseBytes,
-        now: NOW,
-        resolveCurrentIssuingDevicePublicKey: () =>
-          authority.deviceSigningPublicKey,
-      });
-
-    expect(verified).toMatchObject({
-      kind: "agent",
-      requestId: work.requestId,
-      recipientGeneration: work.recipientGeneration,
-      recipientKeyId: work.recipientKeyId,
-      issuingHumanId: authority.humanId,
-      issuingDeviceId: authority.deviceId,
-      namespaceId: work.namespaceId,
-      domainId: work.domainId,
-      workId: work.workId,
-      workKind: work.workKind,
-      purpose: work.purpose,
-      subject: work.subject,
-    });
-    expect(verified.responseHash).toEqual(fulfillment.responseHash);
-    expect(verified.credentialHash).toEqual(fulfillment.grantHash);
-    expect("signerAuthorization" in verified).toBe(false);
-    expect(JSON.stringify(verified)).not.toContain("encryptedSecret");
-  });
-
-  test("fails closed on family confusion, request substitution, stale authority, and signer tampering", async () => {
+  test("fails closed on request substitution, stale authority, and signer tampering", async () => {
     const crypto = deterministicCrypto(3);
-    const processorWork = await descriptor(crypto, "processor");
+    const processorWork = await descriptor(crypto);
     const processor = processorAuthority(crypto, processorWork);
     const processorFulfillment =
       await fulfillProcessorBackgroundAuthorizationRequest({
@@ -375,17 +262,6 @@ describe("current background authorization response verifier", () => {
         request: request(crypto, processorWork),
         resolveCurrentAuthority: () => processor,
       });
-    const agentWork = await descriptor(crypto, "agent");
-
-    expect(verifyCurrentBackgroundAuthorizationDeviceResponse({
-      crypto,
-      expected: expectedAgent(crypto, agentWork),
-      responseBytes: processorFulfillment.responseBytes,
-      now: NOW,
-      resolveCurrentIssuingDevicePublicKey: () =>
-        processor.deviceSigningPublicKey,
-    })).rejects.toThrow();
-
     expect(verifyCurrentBackgroundAuthorizationDeviceResponse({
       crypto,
       expected: {

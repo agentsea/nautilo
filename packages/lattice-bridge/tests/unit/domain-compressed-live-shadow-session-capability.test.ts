@@ -43,6 +43,45 @@ const entries = Object.freeze(["domain-1", "domain-2"].map((grantDomainId) =>
 ));
 
 describe("Domain-compressed live Shadow session capability", () => {
+  test("keeps foreground Runtime identity independent of the selected Agent", () => {
+    const capability = createDomainCompressedLiveShadowSessionCapability({
+      description: {
+        authorizationId: "runtime-authorization",
+        subjectHumanId: "human-1",
+        issuingDeviceId: "device-1",
+        recipientKind: "nautilo_foreground_runtime",
+        browserSessionId: "browser-session-1",
+        topLevelRoomId: "room-1",
+        recipientKeyId: "runtime-key-1",
+        policyRevision: 1,
+        hostAuthorizationRevision: 1,
+        namespaceIds: description.namespaceIds,
+        grantDomainIds: description.grantDomainIds,
+        issuedAt: 1_000,
+        expiresAt: 301_000,
+        authorizationDigest: new Uint8Array(32).fill(7),
+      },
+      entries,
+    });
+    const inspected = inspectDomainCompressedLiveShadowSessionCapability(
+      capability,
+    );
+
+    expect(inspected).toMatchObject({
+      recipientKind: "nautilo_foreground_runtime",
+      browserSessionId: "browser-session-1",
+      topLevelRoomId: "room-1",
+    });
+    expect(inspected === null ? true : "recipientAgentId" in inspected)
+      .toBeFalse();
+    expect(inspected === null ? true : "agentAuthorizationRevision" in inspected)
+      .toBeFalse();
+    expect(inspected === null ? true : "agentRuntimeGeneration" in inspected)
+      .toBeFalse();
+
+    destroyDomainCompressedLiveShadowSessionCapability(capability);
+  });
+
   test("lends detached key copies and wipes retained authority on destroy", async () => {
     const capability = createDomainCompressedLiveShadowSessionCapability({
       description,

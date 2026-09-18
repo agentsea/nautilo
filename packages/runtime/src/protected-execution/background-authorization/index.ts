@@ -121,25 +121,3 @@ export {
   type PlanDarkBackgroundSyntheticWorkInput,
   type RunDarkBackgroundSyntheticWorkInput,
 } from "./dark-background-family-adapter";
-
-export {
-  ProtectedAgentMemoryBackgroundCoordinator,
-  ProtectedAgentMemoryBackgroundRecipientRegistry,
-  planProtectedAgentMemoryBackgroundDescriptor,
-  protectedAgentMemoryBackgroundWorkIdentity,
-  type ProtectedAgentMemoryBackgroundCapabilityPort,
-  type ProtectedAgentMemoryBackgroundDescriptorFacts,
-  type ProtectedAgentMemoryBackgroundDescriptorPlan,
-  type ProtectedAgentMemoryBackgroundReviewOptions,
-  type ProtectedAgentMemoryBackgroundRunResult,
-} from "./protected-agent-memory-background";
-
-export {
-  enqueueProtectedAgentMemoryBackgroundEntrypoint,
-  enqueueProtectedAgentMemoryExitFlush,
-  type ProtectedAgentMemoryBackgroundEnqueueResult,
-  type ProtectedAgentMemoryBackgroundEntrypointComposition,
-  type ProtectedAgentMemoryBackgroundEntrypointId,
-  type ProtectedAgentMemoryBackgroundEntrypointInput,
-  type ProtectedAgentMemoryBackgroundRequestPlanner,
-} from "./protected-agent-memory-background-entrypoints";

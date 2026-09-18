@@ -214,31 +214,6 @@ const REVIEWED_CLASSIFICATIONS = [
   },
   {
     "surface": "db",
-    "locator": "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##planForegroundSession:raw_sql:insert:public.conversation_shadow_turn_agent_signers:1",
-    "classification": "bounded_metadata"
-  },
-  {
-    "surface": "db",
-    "locator": "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##planForegroundSession:raw_sql:insert:public.conversation_shadow_turn_operations:1",
-    "classification": "bounded_metadata"
-  },
-  {
-    "surface": "db",
-    "locator": "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##planForegroundSession:raw_sql:update:public.conversation_shadow_turn_plan_attempts:1",
-    "classification": "bounded_metadata"
-  },
-  {
-    "surface": "db",
-    "locator": "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##planForegroundSession:raw_sql:update:public.conversation_shared_agent_shadow_executions:1",
-    "classification": "bounded_metadata"
-  },
-  {
-    "surface": "db",
-    "locator": "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##planForegroundSession:raw_sql:update:public.conversation_shared_agent_shadow_executions:2",
-    "classification": "bounded_metadata"
-  },
-  {
-    "surface": "db",
     "locator": "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##planGrantDomain:raw_sql:insert:public.conversation_shadow_turn_agent_signers:1",
     "classification": "bounded_metadata"
   },

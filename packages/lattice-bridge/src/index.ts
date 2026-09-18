@@ -518,9 +518,6 @@ export type {
 } from "./identity/product-ids.ts";
 export {
   authenticateForegroundRuntimeRecipientKeyPair,
-  authenticateProtectedInvocationRecipientKeyPair,
-  createProtectedInvocationRecipient,
-  createProtectedInvocationCapability,
   destroyProtectedInvocationCapability,
   destroyProtectedInvocationRecipient,
   executeProtectedGrantCapabilityOperation,
@@ -973,42 +970,11 @@ export type {
   ResolveCurrentBackgroundAuthorizationDeviceAuthority,
 } from "./device/background-authorization-responder.ts";
 export {
-  fulfillAgentBackgroundAuthorizationRequest,
-} from "./device/agent-background-authorization-responder.ts";
-export type {
-  AgentBackgroundAuthorizationDeviceAuthority,
-  AgentBackgroundAuthorizationDeviceAuthorityContext,
-  AgentBackgroundAuthorizationDeviceFulfillment,
-  ResolveCurrentAgentBackgroundAuthorizationDeviceAuthority,
-} from "./device/agent-background-authorization-responder.ts";
-export {
-  AGENT_BACKGROUND_AUTHORIZATION_DEVICE_FULFILLMENT_FORMAT_VERSION_V2,
-  AGENT_BACKGROUND_AUTHORIZATION_DEVICE_REQUEST_FORMAT_VERSION_V2,
-  fulfillAgentBackgroundAuthorizationRequestV2,
-} from "./device/agent-background-authorization-responder-v2.ts";
-export type {
-  AgentBackgroundAuthorizationDeviceAuthorityContextV2,
-  AgentBackgroundAuthorizationDeviceAuthorityV2,
-  AgentBackgroundAuthorizationDeviceFulfillmentV2,
-  AgentBackgroundAuthorizationDevicePublicAuthorityV2,
-  AgentBackgroundAuthorizationDeviceRequestV2,
-  AgentBackgroundAuthorizationDomainAuthorityV2,
-  AgentBackgroundAuthorizationDomainPublicAuthorityV2,
-  AgentBackgroundAuthorizationNamespaceAuthorityV2,
-  ResolveCurrentAgentBackgroundAuthorizationDeviceAuthorityV2,
-} from "./device/agent-background-authorization-responder-v2.ts";
-export {
-  verifyCurrentAgentBackgroundAuthorizationDeviceResponseV2,
-} from "./device/agent-background-authorization-response-verifier-v2.ts";
-export type {
-  ExpectedAgentBackgroundAuthorizationResponseV2,
-  ResolveCurrentAgentBackgroundAuthorizationDevicePublicAuthorityV2,
-  VerifiedAgentBackgroundAuthorizationDeviceResponseV2,
-  VerifyCurrentAgentBackgroundAuthorizationDeviceResponseInputV2,
-} from "./device/agent-background-authorization-response-verifier-v2.ts";
-export {
   verifyCurrentBackgroundAuthorizationDeviceResponse,
 } from "./device/background-authorization-response-verifier.ts";
+export type {
+  VerifiedAgentBackgroundAuthorizationDeviceResponseV2,
+} from "./device/agent-background-authorization-response-verifier-v2.ts";
 export type {
   BackgroundAuthorizationCurrentIssuerContext,
   ExpectedAgentBackgroundAuthorizationResponse,

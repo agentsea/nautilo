@@ -334,7 +334,7 @@ export function EncryptionTransitionCard() {
                   choice: "fully_encrypted",
                   label: "Fully Encrypted mode",
                   description:
-                    "Store only encrypted copies for supported content. Browser and Desktop chats and memories are supported. Public rooms, subtasks, artifacts, and mobile are unsupported. Existing plaintext is not erased. The only plaintext exceptions are Custom Soul and authored Skills. This mode is unstable—do not use it yet.",
+                    "Store only encrypted copies for supported content. Browser and Desktop chats and memories, including public Rooms, are supported. Subtasks, artifacts, and mobile are unsupported. Existing plaintext is not erased. The only plaintext exceptions are Custom Soul and authored Skills. This mode is unstable—do not use it yet.",
                   tone: "border-error/50 bg-error/10",
                 },
               ] as const

@@ -7,17 +7,12 @@ import type {
   PostgresJsBridgeRow,
   PostgresJsBridgeScalar,
 } from "@nautilo/db";
-import { createPostgresJsCanonicalBridgeConnection } from "@nautilo/db";
 import {
   cryptoDomainProviderHeads,
   cryptoDomains,
-  cryptoObjects,
   encryptionTransitionPolicy,
   namespaceDomainKeyBindings,
   namespaceDomainKeyHeads,
-  objectCryptoAccessHeads,
-  objectCryptoAccessManifests,
-  objectCryptoNamespaceEnvelopes,
   sessionMessages,
   sessionMessageCryptoRevisions,
   roomMembers,
@@ -29,28 +24,16 @@ import {
   conversationSharedAgentShadowExecutions,
   conversationSharedAgentShadowExecutionInputs,
   conversationSharedAgentShadowOperations,
-  roomEventRollups,
-  roomJournalState,
-  reflectionRecords,
-  reflectionRecordPayloadRepresentations,
-  reflectionRecordPayloadRepresentationHeads,
-  reflectionRecordPublications,
-  reflectionRecordAuthorityProjections,
-  reflectionRecordAuthorityAlternatives,
 } from "@nautilo/db";
 import {
   accessRevision,
-  agentId as cryptoAgentId,
-  agentRuntimeGeneration,
   authorizationRevision,
   cryptoDeviceId,
   cryptoDomainId,
   DeviceProviderStateVault,
-  deriveAgentRuntimeObjectSignerPublic,
   domainNamespaceGenerationHeadDigest,
   domainNamespaceRetainedAuthoritySetDigest,
   encodeHumanDeviceGroupHead,
-  encryptedObjectWriteRecord,
   generateDomainKey,
   humanId,
   humanAiReadableLiveShadowExecutionInputSetDigest,
@@ -59,9 +42,6 @@ import {
   LatticeCrypto,
   namespaceGeneration,
   namespaceId,
-  objectId,
-  persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis,
-  prepareDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis,
   prepareDomainKeyAccessRequest,
   prepareDomainKeyAcknowledgement,
   prepareDomainKeyHead,
@@ -69,37 +49,23 @@ import {
   prepareDomainKeyRecipientEnvelope,
   prepareDomainNamespaceBundle,
   unixTimestamp,
-  wrapObjectDekForNamespace,
 } from "@nautilo/lattice-crypto";
 import {
   decodeHumanAiReadableLiveShadowMessagePlanV1,
-  decodeLiveShadowMessagePlanV4,
   destroyDomainKeyAccessRequestV2,
   destroyDomainKeyHeadV2,
   destroyDomainKeyRecipientAuthorizationV2,
   destroyDomainKeyRecipientEnvelopeV2,
-  encodeEncryptedPayloadV2,
   encodeLiveShadowMessagePlanV4,
-  encodeNamespaceObjectEnvelopeV2,
-  parseDomainForegroundAuthorizationPlanV2,
   decodeHumanAiReadableLiveShadowMessagePlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
-  createPostgresDomainKeyV2LiveShadowCurrentAuthority,
-  createPostgresConversationCryptoCompletion,
-  bindConversationProductCanonicalTransactionRunner,
-  PostgresConversationProductStore,
-  LiveShadowRecipientRegistry,
   PostgresDomainKeyAuthorityRepository,
   PostgresHumanDeviceGroupRepository,
   PostgresHumanPeerLiveShadowPlanner,
-  PostgresLiveShadowTurnPlanner,
-  PostgresLatticeStorage,
   PostgresNamespaceProductAuthority,
   PostgresSharedAgentLiveShadowPlanner,
   createPostgresForegroundAgentSignerResolver,
-  restorePostgresForegroundJournalOrdinary,
-  restorePostgresForegroundRecordOrdinary,
   verifyCryptoPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
 import { and, eq, like, sql } from "drizzle-orm";
@@ -107,15 +73,6 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@nautilo/db/schema";
 import postgres from "postgres";
 import { sharedHistoryExecution } from "../fixtures/room-history-shared-execution.ts";
-import { destroyProtectedInvocationRecipient, encodeMessagePayloadV2,
-  conversationExistingRepresentationRepairIdentityDigest,
-  createDormantConversationShadowRepository } from "@nautilo/lattice-bridge";
-import { createForegroundExistingMessageWriteAuthorization } from
-  "../../src/server/message/foreground-message-history-repair.ts";
-import { prepareForegroundRuntimeExistingMessageCryptoRevision } from
-  "../../src/message/agent-conversation-crypto.ts";
-import { readPreparedConversationCryptoRevisionSnapshot } from
-  "../../src/message/conversation-prepared-revision.ts";
 import { verifyConversationProductPostgresHandle } from
   "../../src/server/message/postgres-conversation-product-store.ts";
 import {
@@ -283,11 +240,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
     const roomId = randomUUID();
     const deviceId = `electron-${randomUUID()}`;
     const secondDeviceId = `browser-${randomUUID()}`;
-    const agentObjectId = `m305-agent-${randomUUID()}`;
-    let repairObjectId = `message:v2:existing-repair-${randomUUID()}`;
-    let repairMessageId: number | null = null;
-    let reverseRecordId: string | null = null;
-    let reverseRollupId: string | null = null;
     let primaryFailure: unknown;
     const capacityPrefix = randomUUID();
     const capacityDomainPrefix = `m315-capacity:${capacityPrefix}:`;
@@ -449,7 +401,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         productConnection,
       );
 
-      const recipients = new LiveShadowRecipientRegistry(() => now);
       const input = Object.freeze({
         authority: Object.freeze({ userId, humanActorId }),
         roomId,
@@ -942,562 +893,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           now: now + 9,
         }),
       }))?.status).toBe("published");
-      const v2Planner = new PostgresLiveShadowTurnPlanner(
-        productConnection,
-        restrictedConnection,
-        crypto,
-        recipients,
-        {
-          serverId: v2ServerId,
-          resolveReadableNamespaces: async () => [namespaceValue],
-          foregroundAuthorizations: { inspectReusable: () => null },
-        },
-      );
-      const v2ClientActionSessionId = `electron-v2-action-${randomUUID()}`;
-      const v2Turn = await v2Planner.plan({
-        ...input,
-        clientActionSessionId: v2ClientActionSessionId,
-        idempotencyKey: `send-domain-v2-${randomUUID()}`,
-        now: now + 9,
-      });
-      expect(v2Turn.status).toBe("planned");
-      if (v2Turn.status !== "planned") {
-        throw new Error("M301 V2 live Shadow turn plan missing");
-      }
-      const v2TurnPlan = decodeLiveShadowMessagePlanV4(v2Turn.planBytes);
-      expect(v2TurnPlan.grantDomainId).toBe(v2DomainId);
-      // M305 A1/A2/A3 regression: the exact retained-set commitment emitted
-      // by a clean native V2 Electron-first bootstrap is also the authority
-      // coordinate consumed by Browser/Desktop Agent-output keyring opening.
-      expect(v2TurnPlan.namespaceHeadDigest).toEqual(v2RetainedDigest);
-      expect(v2TurnPlan.namespacePublicationDigest).toEqual(v2RetainedDigest);
-      expect(v2TurnPlan.namespacePublicationSetDigest).toEqual(
-        v2RetainedDigest,
-      );
-      expect(v2TurnPlan.namespaceAudienceFingerprint).toEqual(
-        v2RetainedDigest,
-      );
-      const agentRuntime = Object.freeze({
-        agentId: cryptoAgentId(agentId),
-        keyClass: "runtime" as const,
-        generation: agentRuntimeGeneration(1),
-        key: new Uint8Array(32).fill(0x71),
-      });
-      const agentSigner = deriveAgentRuntimeObjectSignerPublic(
-        crypto,
-        agentRuntime,
-      );
-      const agentPayloadBytes = encodeEncryptedPayloadV2({
-        formatVersion: 2,
-        context: {
-          objectId: objectId(agentObjectId),
-          keyClass: "ai",
-          objectType: "nautilo-message-v2",
-          createdAt: unixTimestamp(now + 9),
-        },
-        ciphertext: new Uint8Array(64).fill(0x72),
-      });
-      const agentEnvelopeBytes = encodeNamespaceObjectEnvelopeV2(
-        wrapObjectDekForNamespace(
-          crypto,
-          v2GenerationKey,
-          {
-            objectId: objectId(agentObjectId),
-            namespaceId: namespaceId(namespaceValue),
-            keyClass: "ai",
-            keyGeneration: namespaceGeneration(0),
-            bindingRevisionAtWrap: accessRevision(
-              v2BundlePlan.namespaceAccessRevision,
-            ),
-          },
-          new Uint8Array(32).fill(0x73),
-        ),
-      );
-      const agentPrepared =
-        prepareDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis(
-          crypto,
-          {
-            objectId: agentObjectId,
-            payloadHash: crypto.hash(agentPayloadBytes),
-            envelopeBytes: [agentEnvelopeBytes],
-            operationId: `m305-agent-operation-${randomUUID()}`,
-            grant: {
-              grantId: `m305-agent-grant-${randomUUID()}`,
-              grantHash: digest(0x74),
-              recipientKeyId: `m305-agent-recipient-${randomUUID()}`,
-            },
-            namespace: {
-              namespaceId: namespaceValue,
-              accessRevision: v2BundlePlan.namespaceAccessRevision,
-              keyGeneration: 0,
-              headDigest: v2RetainedDigest,
-              publicationDigest: v2RetainedDigest,
-              publicationSetDigest: v2RetainedDigest,
-              audienceFingerprint: v2RetainedDigest,
-            },
-            agentAuthorizationRevision: 1,
-            runtime: agentRuntime,
-            signerKeyId: agentSigner.principal.signerKeyId,
-            signerPublicKey: agentSigner.publicKey,
-          },
-        );
-      const agentStorage = new PostgresLatticeStorage(
-        await verifyCryptoPostgresHandle(restrictedConnection),
-      );
-      await agentStorage.putObject(
-        encryptedObjectWriteRecord(agentPayloadBytes),
-      );
-      const resolveAgentWrite = (context: typeof agentPrepared.authority) =>
-        Object.freeze({
-          context,
-          grantAuthorized: true as const,
-          namespaceAuthorized: true as const,
-          agentAuthorized: true as const,
-          hostAllowsOperation: true as const,
-          currentRuntime: Object.freeze({
-            agentId: agentRuntime.agentId,
-            authorizationRevision: authorizationRevision(1),
-            runtimeGeneration: agentRuntime.generation,
-          }),
-          signerPublicKey: agentSigner.publicKey.slice(),
-        });
-      // Foreground Grant/runtime admission is ephemeral; the storage CAS
-      // rechecks the current native Namespace head, not legacy registry rows.
-      expect(
-        await persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis({
-          crypto,
-          storage: agentStorage,
-          prepared: agentPrepared,
-          resolveCurrentAuthorization: resolveAgentWrite,
-        }),
-      ).toBe("applied");
-      expect(
-        await persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis({
-          crypto,
-          storage: agentStorage,
-          prepared: agentPrepared,
-          resolveCurrentAuthorization: resolveAgentWrite,
-        }),
-      ).toBe("duplicate");
-      agentRuntime.key.fill(0);
-      agentSigner.publicKey.fill(0);
-      agentPayloadBytes.fill(0);
-      agentEnvelopeBytes.fill(0);
-      expect(v2TurnPlan.authorization.disposition).toBe(
-        "authorization_required",
-      );
-      if (v2TurnPlan.authorization.disposition !== "authorization_required") {
-        throw new Error("M301 V2 foreground authorization plan missing");
-      }
-      const v2ForegroundPlan = parseDomainForegroundAuthorizationPlanV2(
-        v2TurnPlan.authorization.authorizationPlanBytes,
-      );
-      expect(v2ForegroundPlan?.domains).toHaveLength(1);
-      expect(v2ForegroundPlan?.domains[0]?.domainId).toBe(v2DomainId);
-      const v2CurrentAuthority =
-        await createPostgresDomainKeyV2LiveShadowCurrentAuthority({
-          product: productConnection,
-          restricted: restrictedConnection,
-          crypto,
-          serverId: v2ServerId,
-          plan: v2TurnPlan,
-          representationMode: "shadow_encryption",
-          resolveReadableNamespaces: async () => [namespaceValue],
-        });
-      expect(v2CurrentAuthority).not.toBeNull();
-      expect(await v2CurrentAuthority?.verifyCurrentPlan()).toBe(true);
-      // The accepted signed/sealed grant and its public plan are different
-      // byte contracts. Repair admission must compare the former's digest.
-      const acceptedGrantDigest = digest(0xb1);
-      const entityContext = {
-        ...agentPrepared.authority,
-        purpose: "persist-device-wrapped-live-shadow-agent-object-access-genesis-set" as const,
-        operationId: v2TurnPlan.operationId,
-        grantId: v2ForegroundPlan!.authorizationId,
-        grantHash: acceptedGrantDigest,
-        recipientKeyId: v2ForegroundPlan!.recipientKeyId,
-        agentId: v2TurnPlan.recipientAgentId,
-        agentAuthorizationRevision: v2TurnPlan.agentAuthorizationRevision,
-        runtimeGeneration: v2TurnPlan.agentRuntimeGeneration,
-        signerKeyId: v2TurnPlan.agentSignerKeyId,
-        namespaces: [{
-          namespaceId: namespaceValue,
-          accessRevision: v2TurnPlan.namespaceAccessRevision,
-          keyGeneration: v2TurnPlan.namespaceKeyGeneration,
-          domainId: v2TurnPlan.grantDomainId,
-          domainKeyGeneration: v2TurnPlan.grantDomainKeyGeneration,
-          domainAuthorizationRevision:
-            v2TurnPlan.grantDomainAuthorizationRevision,
-          domainHeadDigest: v2TurnPlan.grantDomainHeadDigest,
-          headDigest: v2TurnPlan.namespaceHeadDigest,
-          publicationDigest: v2TurnPlan.namespacePublicationDigest,
-          publicationSetDigest: v2TurnPlan.namespacePublicationSetDigest,
-          audienceFingerprint: v2TurnPlan.namespaceAudienceFingerprint,
-        }],
-        envelopes: [agentPrepared.authority.envelope],
-      };
-      expect(await v2CurrentAuthority?.resolveCurrentForegroundEntityObjectWrite(
-        entityContext,
-      )).toBeNull();
-      await admin.unsafe(
-        `UPDATE conversation_shadow_turn_operations
-            SET human_request_digest = $2, human_request_bytes = $3,
-                grant_digest = $4, plan_bytes = $5
-          WHERE operation_id = $1`,
-        [v2TurnPlan.operationId, digest(0xb2), new Uint8Array([1]), acceptedGrantDigest, v2Turn.planBytes],
-      );
-      expect(await v2CurrentAuthority?.resolveCurrentForegroundEntityObjectWrite(
-        entityContext,
-      )).not.toBeNull();
-      expect(await v2CurrentAuthority?.resolveCurrentForegroundEntityObjectWrite({
-        ...entityContext,
-        grantHash: v2TurnPlan.authorization.authorizationPlanDigest,
-      })).toBeNull();
-      expect(await v2CurrentAuthority?.resolveCurrentForegroundEntityObjectWrite({
-        ...entityContext,
-        grantHash: digest(0xb3),
-      })).toBeNull();
-
-      // Existing Message siblings are not new live-append rows. Their v3
-      // publication must use the same native entity authority as other repairs.
-      const recipient = recipients.take({
-        operationId: v2TurnPlan.operationId,
-        clientActionSessionId: v2ClientActionSessionId,
-        actorId: humanActorId,
-      });
-      expect(recipient).not.toBeNull();
-      if (recipient === null || v2CurrentAuthority === null) throw new Error("repair runtime absent");
-      destroyProtectedInvocationRecipient(recipient.recipient);
-      recipient.publicKey.fill(0);
-      const repairRuntime = recipients.takeAgentRuntime(v2TurnPlan.operationId);
-      expect(repairRuntime).not.toBeNull();
-      if (repairRuntime === null) throw new Error("repair signer absent");
-      const repairProductHandle = await verifyConversationProductPostgresHandle(
-        connection(agentProduct, { userId, agentId }),
-      );
-      const repairCanonicalConnection = createPostgresJsCanonicalBridgeConnection(
-        drizzle(agentProduct, { schema }),
-      );
-      const repairCanonical = bindConversationProductCanonicalTransactionRunner(repairProductHandle, {
-        transaction: (callback, options) => repairCanonicalConnection.transaction(async (transaction, executor) => {
-          await transaction.execute(sql`SELECT set_config('app.current_user_id', ${userId}, true), set_config('app.current_agent_id', ${agentId}, true)`);
-          return callback(transaction, executor);
-        }, options),
-      });
-      const recordRepairProductHandle =
-        await verifyConversationProductPostgresHandle(productConnection);
-      const recordRepairCanonicalConnection =
-        createPostgresJsCanonicalBridgeConnection(
-          drizzle(product, { schema }),
-        );
-      const recordRepairCanonical =
-        bindConversationProductCanonicalTransactionRunner(
-          recordRepairProductHandle,
-          {
-            transaction: (callback, options) =>
-              recordRepairCanonicalConnection.transaction(
-                async (transaction, executor) => {
-                  await transaction.execute(sql`
-                    SELECT set_config(
-                      'app.current_user_id', ${userId}, true
-                    ), set_config(
-                      'app.current_agent_id', ${agentId}, true
-                    )
-                  `);
-                  return callback(transaction, executor);
-                },
-                options,
-              ),
-          },
-        );
-      const repairProduct = new PostgresConversationProductStore(
-        repairProductHandle,
-        repairCanonical,
-      );
-      const [ordinaryMessage] = await admin.unsafe<{ id: number }[]>(
-        `INSERT INTO session_messages (session_id, role, content, created_at)
-         VALUES ($1, 'user', 'Synthetic existing history', $2) RETURNING id`,
-        [v2TurnPlan.sessionId, new Date(now).toISOString()],
-      );
-      if (ordinaryMessage === undefined) throw new Error("repair source absent");
-      repairMessageId = ordinaryMessage.id;
-      const ordinaryPayload = { role: "user" as const, content: "Synthetic existing history" };
-      const repairAllocation = await repairProduct.allocateExistingRepresentation({
-        publisher: { kind: "foreground_runtime", agentId },
-        sessionId: v2TurnPlan.sessionId,
-        messageId: ordinaryMessage.id,
-        revision: 0,
-        operationId: `integration-repair:${ordinaryMessage.id}`,
-        expectedNamespaceId: namespaceValue,
-        expectedAuthorRole: "user",
-        expectedAuthorHumanTurnId: null,
-        expectedSessionAgentId: agentId,
-        requestDigest: crypto.hash(encodeMessagePayloadV2(ordinaryPayload)),
-        repairIdentityDigest: conversationExistingRepresentationRepairIdentityDigest({
-          sessionId: v2TurnPlan.sessionId, messageId: ordinaryMessage.id, revision: 0,
-          namespaceId: namespaceValue, authorRole: "user",
-          authorityFingerprint: v2TurnPlan.namespacePublicationSetDigest,
-          policyRevision: v2TurnPlan.policyRevision,
-        }),
-      });
-      expect(repairAllocation.status).toBe("allocated");
-      if (repairAllocation.status !== "allocated") throw new Error("repair receipt absent");
-      repairObjectId = repairAllocation.lifecycle.cryptoObjectId;
-      const repairAuthority = {
-        namespaceId: namespaceValue,
-        namespaceAccessRevision: v2TurnPlan.namespaceAccessRevision,
-        namespaceKeyGeneration: v2TurnPlan.namespaceKeyGeneration,
-        domainId: v2TurnPlan.grantDomainId,
-        domainKeyGeneration: v2TurnPlan.grantDomainKeyGeneration,
-        domainAuthorizationRevision: v2TurnPlan.grantDomainAuthorizationRevision,
-        domainHeadDigest: v2TurnPlan.grantDomainHeadDigest,
-        namespaceHeadDigest: v2TurnPlan.namespaceHeadDigest,
-        namespacePublicationDigest: v2TurnPlan.namespacePublicationDigest,
-        namespacePublicationSetDigest: v2TurnPlan.namespacePublicationSetDigest,
-        namespaceAudienceFingerprint: v2TurnPlan.namespaceAudienceFingerprint,
-      };
-      const resolveRepairWrite = createForegroundExistingMessageWriteAuthorization({
-        authority: repairAuthority,
-        resolveCurrentAuthorization: v2CurrentAuthority.resolveCurrentForegroundEntityObjectWrite,
-      });
-      const repairDek = crypto.randomBytes(32);
-      const repairPrepared = prepareForegroundRuntimeExistingMessageCryptoRevision({
-        crypto,
-        objectId: repairObjectId,
-        payload: ordinaryPayload,
-        createdAt: now,
-        objectDek: repairDek,
-        namespace: {
-          ...entityContext.namespaces[0]!,
-          aiKey: v2GenerationKey,
-        },
-        operationId: v2TurnPlan.operationId,
-        grant: {
-          grantId: entityContext.grantId,
-          grantHash: acceptedGrantDigest,
-          recipientKeyId: entityContext.recipientKeyId,
-        },
-        runtime: repairRuntime,
-        signerKeyId: v2TurnPlan.agentSignerKeyId,
-        signerPublicKey: v2TurnPlan.agentSignerPublicKey,
-        agentAuthorizationRevision: v2TurnPlan.agentAuthorizationRevision,
-        resolveCurrentAuthorization: resolveRepairWrite,
-      });
-      repairDek.fill(0);
-      const repairSnapshot = readPreparedConversationCryptoRevisionSnapshot(repairPrepared);
-      if (repairSnapshot.kind !== "agent-v3-device-wrapped-live-shadow") throw new Error("expected repair v3");
-      expect(await v2CurrentAuthority.resolveCurrentAgentObjectWrite(repairSnapshot.value.access.authority)).toBeNull();
-      expect(await resolveRepairWrite({
-        ...repairSnapshot.value.access.authority, grantHash: digest(0xb4),
-      })).toBeNull();
-      expect(await createForegroundExistingMessageWriteAuthorization({
-        authority: { ...repairAuthority, domainHeadDigest: digest(0xb5) },
-        resolveCurrentAuthorization: v2CurrentAuthority.resolveCurrentForegroundEntityObjectWrite,
-      })(repairSnapshot.value.access.authority)).toBeNull();
-      const repairConversation = createDormantConversationShadowRepository({
-        product: repairProduct,
-        crypto: createPostgresConversationCryptoCompletion({
-          handle: await verifyCryptoPostgresHandle(restrictedConnection),
-          crypto,
-          resolveCurrentWriteAuthorization: () => null,
-          resolveHistoricalSigner: () => null,
-          resolveLiveShadowAgentSigner: (principal) =>
-            principal.agentId === v2TurnPlan.recipientAgentId
-                && principal.runtimeGeneration === v2TurnPlan.agentRuntimeGeneration
-                && principal.signerKeyId === v2TurnPlan.agentSignerKeyId
-              ? v2TurnPlan.agentSignerPublicKey.slice() : null,
-        }),
-      });
-      expect(await repairConversation.completeRevision({
-        messageId: ordinaryMessage.id,
-        expectedRevision: 0,
-        parityStatus: "server_verified",
-        prepared: repairPrepared,
-        publicationPolicy: {
-          expectedRevision: originalPolicy.revision + 1,
-          representation: "ordinary_and_protected",
-        },
-        repairPublication: {
-          publisherKind: "foreground_runtime",
-          publisherId: v2TurnPlan.agentSignerKeyId,
-          attestationDigest: crypto.hash(repairSnapshot.value.access.manifestBytes),
-        },
-      })).toMatchObject({ status: "mapped", cryptoObjectId: repairObjectId });
-      expect((await repairProduct.getRevision(ordinaryMessage.id, 0))?.lifecycle)
-        .toMatchObject({ disposition: "mapped", completion: "complete", authorRole: "user" });
-      reverseRollupId = randomUUID();
-      const reverseRollupCreatedAt = new Date(now + 10);
-      const reverseRollupText = "Authenticated protected rollup body";
-      await adminDatabase.insert(roomEventRollups).values({ id: reverseRollupId,
-        roomId, throughEventSequence: 1, content: null, sourceEventCount: 1,
-        modelId: "integration-model", compactorVersion: "m318-reverse-v1",
-        cryptoObjectId: repairObjectId, createdAt: reverseRollupCreatedAt });
-      const [reversePolicy] = await adminDatabase.select({ revision: encryptionTransitionPolicy.revision })
-        .from(encryptionTransitionPolicy).where(eq(encryptionTransitionPolicy.id, "server"));
-      if (reversePolicy === undefined) throw new Error("reverse policy absent");
-      const reverseRollupSource = Object.freeze({
-        representationMode: "ordinary-and-protected" as const,
-        kind: "rollup" as const,
-        logicalId: reverseRollupId,
-        objectType: "room_event_rollup",
-        existingObjectId: repairObjectId,
-        createdAt: reverseRollupCreatedAt.getTime(),
-        plaintextBytes: null,
-        accessNamespaceIds: Object.freeze([namespaceValue]),
-        representationGeneration: 1,
-        ordinaryRepresentationGeneration: null,
-        authorityProjectionGeneration: null,
-        ordinaryText: null,
-        selection: Object.freeze({
-          kind: "rollup" as const,
-          rebuildGeneration: 1,
-          binding: Object.freeze({
-            rollupId: reverseRollupId,
-            roomId,
-            namespaceId: namespaceValue,
-            throughEventSequence: 1,
-            sourceEventCount: 1,
-            modelId: "integration-model",
-            compactorVersion: "m318-reverse-v1",
-            createdAt: reverseRollupCreatedAt.toISOString(),
-          }),
-          protectedMapping: Object.freeze({
-            status: "mapped" as const,
-            cryptoObjectId: repairObjectId,
-          }),
-        }),
-      });
-      const restoreRollup = (ordinaryText: string) =>
-        restorePostgresForegroundJournalOrdinary({
-          canonical: repairCanonical,
-          source: reverseRollupSource,
-          objectId: repairObjectId,
-          ordinaryText,
-          expectedPolicyRevision: reversePolicy.revision,
-        });
-      // Reverse restoration needs the current Journal generation, not just a
-      // rollup row. A missing authority fixture must still fail closed.
-      expect(await restoreRollup(reverseRollupText)).toBe("conflict");
-      await adminDatabase.insert(roomJournalState).values({
-        roomId,
-        extractorVersion: "integration-journal",
-        rebuildGeneration: reverseRollupSource.selection.rebuildGeneration,
-        historicalBackfillStatus: "not_needed",
-      });
-      expect(await restoreRollup(reverseRollupText)).toBe("restored");
-      expect(await restoreRollup(reverseRollupText)).toBe("replayed");
-      expect(await restoreRollup("conflicting rollup body")).toBe("conflict");
-      const [restoredRollup] = await adminDatabase.select({ content: roomEventRollups.content,
-        createdAt: roomEventRollups.createdAt,
-        throughEventSequence: roomEventRollups.throughEventSequence,
-      }).from(roomEventRollups).where(eq(roomEventRollups.id, reverseRollupId));
-      expect(restoredRollup).toEqual({ content: reverseRollupText,
-        createdAt: reverseRollupCreatedAt, throughEventSequence: 1 });
-      reverseRecordId = `m318-record-${randomUUID()}`;
-      const reverseRecordBytes = new TextEncoder().encode(
-        '{"payloadKind":"reflection_record","payloadVersion":1}',
-      );
-      await adminDatabase.transaction(async (txDb) => {
-        await txDb.insert(reflectionRecords).values({ recordId: reverseRecordId!, lifecycle: "current",
-          structuralHeight: 2, producerPolicyVersion: "m318-integration", processingGeneration: 1,
-          createdAt: reverseRollupCreatedAt, updatedAt: reverseRollupCreatedAt });
-        await txDb.insert(reflectionRecordPayloadRepresentations).values({ recordId: reverseRecordId!,
-          representation: "protected", representationGeneration: 1, payloadVersion: 1,
-          plaintextPayloadBytes: null, cryptoObjectId: repairObjectId, createdAt: reverseRollupCreatedAt });
-        await txDb.insert(reflectionRecordPayloadRepresentationHeads).values({ recordId: reverseRecordId!,
-          representation: "protected", currentRepresentationGeneration: 1, updatedAt: reverseRollupCreatedAt });
-        await txDb.insert(reflectionRecordPublications).values({ publicationId: `m318-publication-${randomUUID()}`,
-          recordId: reverseRecordId!, representation: "protected", representationGeneration: 1,
-          payloadVersion: 1, requestCommitment: digest(0xc1), publicationBindingRef: `m318-binding-${randomUUID()}`,
-          cryptoObjectId: repairObjectId, state: "complete", attemptCount: 0,
-          cryptoCompletedAt: reverseRollupCreatedAt, productAttachedAt: reverseRollupCreatedAt,
-          completedAt: reverseRollupCreatedAt, createdAt: reverseRollupCreatedAt, updatedAt: reverseRollupCreatedAt });
-        await txDb.insert(reflectionRecordAuthorityProjections).values({ recordId: reverseRecordId!,
-          projectionGeneration: 1, sourceChangeGeneration: 1, processingState: "current",
-          audienceSetCommitment: digest(0xc2), current: true,
-          computedAt: reverseRollupCreatedAt, updatedAt: reverseRollupCreatedAt });
-        await txDb.insert(reflectionRecordAuthorityAlternatives).values({ recordId: reverseRecordId!,
-          projectionGeneration: 1, alternativeOrdinal: 0, accessNamespaceId: namespaceValue,
-          includesPublicBoundary: false, alternativeCommitment: digest(0xc3) });
-      });
-      const reverseRecordSource = Object.freeze({
-        recordRef: reverseRecordId, expectedStatement: null,
-        representationMode: "ordinary-and-protected" as const,
-        lifecycle: "current" as const, structuralHeight: 2,
-        processingGeneration: 1, existingObjectId: repairObjectId,
-        accessNamespaceIds: Object.freeze([namespaceValue]),
-        ordinaryRepresentationGeneration: 1, representationGeneration: 1,
-        authorityProjectionGeneration: 1,
-        createdAt: reverseRollupCreatedAt.getTime(), plaintextBytes: null,
-      });
-      const restoreRecord = (payloadBytes: Uint8Array) =>
-        restorePostgresForegroundRecordOrdinary({
-          canonical: recordRepairCanonical,
-          source: reverseRecordSource, objectId: repairObjectId, payloadBytes,
-          expectedPolicyRevision: reversePolicy.revision });
-      expect(await restoreRecord(reverseRecordBytes)).toBe("restored");
-      expect(await restoreRecord(reverseRecordBytes)).toBe("replayed");
-      expect(await restoreRecord(new Uint8Array([9]))).toBe("conflict");
-      expect(await restorePostgresForegroundRecordOrdinary({
-        canonical: recordRepairCanonical,
-        source: { ...reverseRecordSource, authorityProjectionGeneration: 2 },
-        objectId: repairObjectId, payloadBytes: reverseRecordBytes,
-        expectedPolicyRevision: reversePolicy.revision })).toBe("conflict");
-      const [restoredRecord] = await adminDatabase.select({
-        plaintextPayloadBytes: reflectionRecordPayloadRepresentations.plaintextPayloadBytes,
-        createdAt: reflectionRecordPayloadRepresentations.createdAt,
-      }).from(reflectionRecordPayloadRepresentations).where(and(
-        eq(reflectionRecordPayloadRepresentations.recordId, reverseRecordId),
-        eq(reflectionRecordPayloadRepresentations.representation, "ordinary"),
-      ));
-      expect(restoredRecord?.plaintextPayloadBytes).toEqual(reverseRecordBytes);
-      expect(restoredRecord?.createdAt).toEqual(reverseRollupCreatedAt);
-      const repairHistoryProduct = await verifyConversationProductPostgresHandle(productConnection);
-      const repairedHistory = createPostgresRoomHistoryShadowProjection({
-        product: repairHistoryProduct, crypto: agentStorage,
-        resolveForegroundAgentSigner: createPostgresForegroundAgentSignerResolver({
-          product: repairHistoryProduct, crypto,
-        }),
-        resolveAuthority: createCurrentDomainKeyRoomHistoryAuthorityResolver({
-          product: productConnection,
-          productAuthority: new PostgresNamespaceProductAuthority(productConnection),
-          domainKeys: v2Repository,
-        }),
-      });
-      expect(await repairedHistory({
-        subjectUserId: userId, subjectHumanId: humanActorId, readerDeviceId: deviceId,
-        roomId, selectedCoordinates: [{
-          sessionId: v2TurnPlan.sessionId, messageId: ordinaryMessage.id,
-          editRevision: 0, role: "user", logicalMessageKey: `row:${ordinaryMessage.id}`,
-        }],
-      })).toMatchObject({
-        status: "ready", selectedCount: 1, eligibleCount: 1,
-        records: [{ kind: "existing_representation",
-          protectedMessage: {
-            projection: { role: "user", sourceUserId: userId },
-            protectedPayload: { status: "encrypted", cryptoObjectId: repairObjectId },
-          },
-          repair: {
-            publisherSignerKeyId: v2TurnPlan.agentSignerKeyId,
-            publisherSigningPublicKeyBase64url: Buffer.from(v2TurnPlan.agentSignerPublicKey).toString("base64url"),
-            attestationDigestBase64url: Buffer.from(crypto.hash(repairSnapshot.value.access.manifestBytes)).toString("base64url"),
-          } }],
-      });
-      repairRuntime.key.fill(0);
-      v2CurrentAuthority?.destroy();
-      expect(
-        await createPostgresDomainKeyV2LiveShadowCurrentAuthority({
-          product: productConnection,
-          restricted: restrictedConnection,
-          crypto,
-          serverId: v2ServerId,
-          plan: v2TurnPlan,
-          representationMode: "shadow_encryption",
-          resolveReadableNamespaces: async () => [namespaceValue],
-          now: () => v2ForegroundPlan!.deadlineAt,
-        }),
-      ).toBeNull();
-
       const additionalCapacityDomains = LATTICE_LIMITS.agentGrantDomains - 1;
       const recipientPublicKeyDigest = crypto.hash(encryption.publicKey);
       const capacityNamespaceRows = await admin.begin(async (tx) => {
@@ -1770,15 +1165,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         entry.headDigest.fill(0);
         entry.activeNamespaceBindingSetDigest.fill(0);
       });
-      const [v2TurnRow] = await admin.unsafe<{
-        namespace_authority_scheme: string;
-      }[]>(
-        `SELECT namespace_authority_scheme
-           FROM conversation_shadow_turn_operations
-          WHERE operation_id = $1`,
-        [v2TurnPlan.operationId],
-      );
-      expect(v2TurnRow?.namespace_authority_scheme).toBe("domain_key_v2");
       if (topology === "public") {
         await adminCleanupDatabase.update(rooms).set({ kind: "open" }).where(eq(rooms.id, roomId));
         expect(await namespaceProduct.withCurrentPrivateRoom({
@@ -1866,8 +1252,11 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           keyClass: "ai", authorRole: "user", allocationRequestDigest: digest(0x73),
           appendIdempotencyKey: `history:${v2SharedPlan.operationId}`,
         });
+        const historyProduct = await verifyConversationProductPostgresHandle(
+          productConnection,
+        );
         const history = createPostgresRoomHistoryShadowProjection({
-          product: await verifyConversationProductPostgresHandle(productConnection),
+          product: historyProduct,
           resolveAuthority: createCurrentDomainKeyRoomHistoryAuthorityResolver({
             product: productConnection,
             productAuthority: new PostgresNamespaceProductAuthority(productConnection),
@@ -1893,7 +1282,7 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         });
         const retainedExecution = sharedHistoryExecution(crypto, {
           operationId: `history-execution:${randomUUID()}`,
-          sessionId: v2TurnPlan.sessionId, roomId, namespaceId: namespaceValue,
+          sessionId: v2SharedPlan.sessionId, roomId, namespaceId: namespaceValue,
           humanId: humanActorId, deviceId, agentId,
           createdAt: now, generation: v2SharedPlan.namespaceKeyGeneration,
           accessRevision: v2SharedPlan.namespaceAccessRevision,
@@ -1938,7 +1327,7 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           }).where(eq(conversationSharedAgentShadowOperations.operationId, plan.operationId));
         }
         const retainedCommon = {
-          policyRevision: v2SharedPlan.policyRevision, sessionId: v2TurnPlan.sessionId,
+          policyRevision: v2SharedPlan.policyRevision, sessionId: v2SharedPlan.sessionId,
           roomId, invokingHumanId: humanActorId, invokingDeviceId: deviceId,
           authorizationDeviceId: deviceId, clientActionSessionId: "history-action",
           inputCount: retainedInputs.length, inputSetDigest, state: "authorized" as const,
@@ -1959,7 +1348,7 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
             agentSignerPublicKey: retainedPlan.agentSignerPublicKey,
           });
           const retainedSigner = createPostgresForegroundAgentSignerResolver({
-            product: repairHistoryProduct,
+            product: historyProduct,
             crypto,
           });
           const resolvedRetainedSigner = await retainedSigner({
@@ -1980,16 +1369,16 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           const selected = [];
           for (const [index, role] of (["assistant", "tool"] as const).entries()) {
             const [message] = await adminCleanupDatabase.insert(sessionMessages).values({
-              sessionId: v2TurnPlan.sessionId, role, content: "shared output fixture",
+              sessionId: v2SharedPlan.sessionId, role, content: "shared output fixture",
               ...(role === "assistant" ? { toolCalls: JSON.stringify([{
                 id: "history-tool", name: "lookup", args: {},
               }]) } : { toolName: "lookup" }),
             }).returning({ id: sessionMessages.id });
             if (message === undefined) throw new Error("Missing history output fixture");
-            selected.push({ sessionId: v2TurnPlan.sessionId, messageId: message.id,
+            selected.push({ sessionId: v2SharedPlan.sessionId, messageId: message.id,
               editRevision: 0, role, logicalMessageKey: `row:${message.id}` });
             await adminCleanupDatabase.insert(sessionMessageCryptoRevisions).values({
-              sessionId: v2TurnPlan.sessionId, messageId: message.id, editRevision: 0,
+              sessionId: v2SharedPlan.sessionId, messageId: message.id, editRevision: 0,
               roomId, namespaceIdAtAllocation: namespaceValue,
               cryptoObjectId: `history-output:${message.id}`, objectIdScheme: "live_shadow_v1",
               sharedAgentShadowExecutionId: retainedExecution.plan.operationId,
@@ -2029,7 +1418,7 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         const successfulInvocationId = `m314-subthread-invocation:${randomUUID()}`;
         const rejectedInvocationId = `m314-subthread-rejected:${randomUUID()}`;
         const [threadRoot] = await adminCleanupDatabase.insert(sessionMessages).values({
-          sessionId: v2TurnPlan.sessionId,
+          sessionId: v2SharedPlan.sessionId,
           role: "user",
           content: "M314 public Subthread execution anchor",
           humanTurnId: `turn-${randomUUID()}`,
@@ -2708,16 +2097,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
       }).where(eq(encryptionTransitionPolicy.id, "server"))
         .returning({ revision: encryptionTransitionPolicy.revision });
       if (fullPolicy === undefined) throw new Error("Full policy missing");
-      const fullTurnInput = { ...input,
-        clientActionSessionId: `full-action-${randomUUID()}`,
-        idempotencyKey: `full-turn-${randomUUID()}`, now: now + 14 };
-      const fullTurn = await v2Planner.plan(fullTurnInput);
-      expect(fullTurn.status).toBe("planned");
-      if (fullTurn.status !== "planned") throw new Error("Full turn plan missing");
-      expect(fullTurn.representationMode).toBe("full_encryption");
-      const decodedFullTurn = decodeLiveShadowMessagePlanV4(fullTurn.planBytes);
-      expect(decodedFullTurn.policyRevision).toBe(fullPolicy.revision);
-
       const fullSharedInput = { authority: input.authority, roomId,
         clientDeviceId: deviceId,
         idempotencyKey: `full-shared-${randomUUID()}`, now: now + 14 };
@@ -2768,9 +2147,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
       await adminDatabase.update(encryptionTransitionPolicy).set({ mode: "shadow_encryption",
         revision: sql`${encryptionTransitionPolicy.revision} + 1`, updatedAt: sql`CURRENT_TIMESTAMP`,
       }).where(eq(encryptionTransitionPolicy.id, "server"));
-      expect(await v2Planner.plan(fullTurnInput)).toEqual({
-        status: "unavailable", reason: "reservation_unavailable",
-      });
       expect(await v2SharedPlanner.plan(fullSharedInput)).toEqual({
         status: "unavailable", authorizationScheme: "human_ai_readable_v1",
         reason: "reservation_unavailable",
@@ -3569,20 +2945,19 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         revision: sql`${encryptionTransitionPolicy.revision} + 1`, updatedAt: sql`CURRENT_TIMESTAMP`,
       }).where(eq(encryptionTransitionPolicy.id, "server"));
       let plaintextKeyCallbacks = 0;
-      const plaintextPlanner = new PostgresLiveShadowTurnPlanner(
+      const plaintextPlanner = new PostgresSharedAgentLiveShadowPlanner(
         productConnection,
         Object.freeze({ ...restrictedConnection,
           query: async () => { throw new Error("Plaintext queried crypto"); } }),
         crypto,
-        recipients,
+        async () => {
+          plaintextKeyCallbacks += 1;
+          return [namespaceValue];
+        },
         { serverId: v2ServerId,
-          resolveReadableNamespaces: async () => {
-            plaintextKeyCallbacks += 1;
-            return [namespaceValue];
-          },
-          foregroundAuthorizations: { inspectReusable: () => null } },
+        },
       );
-      expect(await plaintextPlanner.plan({ ...fullTurnInput,
+      expect(await plaintextPlanner.plan({ ...input,
         idempotencyKey: `plaintext-${randomUUID()}` })).toEqual({
           status: "disabled", mode: "plaintext_only",
         });
@@ -3620,44 +2995,6 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
       secondEncryption.privateKey.fill(0);
       recovery.privateKey.fill(0);
       membershipVault?.destroy();
-      if (repairMessageId !== null) {
-        await adminCleanupDatabase.delete(sessionMessageCryptoRevisions)
-          .where(eq(sessionMessageCryptoRevisions.messageId, repairMessageId));
-        await adminCleanupDatabase.delete(sessionMessages)
-          .where(eq(sessionMessages.id, repairMessageId));
-      }
-      if (reverseRecordId !== null) {
-        await adminCleanupDatabase.update(reflectionRecords).set({
-          disposition: "purged", updatedAt: new Date(),
-        }).where(eq(reflectionRecords.recordId, reverseRecordId));
-        // Reflection publications are immutable receipts. Canonical purge
-        // preserves the Record and its receipt/dependency graph; a disposable
-        // integration database owns their eventual physical teardown.
-      }
-      if (reverseRollupId !== null) {
-        await adminCleanupDatabase.delete(roomEventRollups)
-          .where(eq(roomEventRollups.id, reverseRollupId));
-      }
-      await adminCleanupDatabase.delete(objectCryptoAccessHeads)
-        .where(eq(objectCryptoAccessHeads.objectId, repairObjectId));
-      await adminCleanupDatabase.delete(objectCryptoNamespaceEnvelopes)
-        .where(eq(objectCryptoNamespaceEnvelopes.objectId, repairObjectId));
-      await adminCleanupDatabase.delete(objectCryptoAccessManifests)
-        .where(eq(objectCryptoAccessManifests.objectId, repairObjectId));
-      await adminCleanupDatabase.delete(cryptoObjects)
-        .where(eq(cryptoObjects.objectId, repairObjectId));
-      await adminCleanupDatabase
-        .delete(objectCryptoAccessHeads)
-        .where(eq(objectCryptoAccessHeads.objectId, agentObjectId));
-      await adminCleanupDatabase
-        .delete(objectCryptoNamespaceEnvelopes)
-        .where(eq(objectCryptoNamespaceEnvelopes.objectId, agentObjectId));
-      await adminCleanupDatabase
-        .delete(objectCryptoAccessManifests)
-        .where(eq(objectCryptoAccessManifests.objectId, agentObjectId));
-      await adminCleanupDatabase
-        .delete(cryptoObjects)
-        .where(eq(cryptoObjects.objectId, agentObjectId));
       await adminCleanupDatabase
         .delete(namespaceDomainKeyHeads)
         .where(
