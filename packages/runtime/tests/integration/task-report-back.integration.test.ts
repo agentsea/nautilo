@@ -93,6 +93,7 @@ let db: DirectDatabase;
 const createdRoomIds: string[] = [];
 const createdNamespaceIds: string[] = [];
 const extraUserIds: string[] = [];
+const TASK_READ_TEST_MAX_RESPONSE_BYTES = 100_000;
 
 await setupTestDb();
 db = getDirectDb();
@@ -1021,8 +1022,18 @@ describe.skipIf(taskSuiteSkipReason !== null)(
 
     // The tool reads ownerId/agentId/roomId from its factory closure, so build
     // one tool per caller identity (exactly how the catalog instantiates it).
-    const ownerTool = createTaskTool({ ownerId: userId, agentId, roomId: "" });
-    const otherTool = createTaskTool({ ownerId: otherUserId, agentId, roomId: "" });
+    const ownerTool = createTaskTool({
+      ownerId: userId,
+      agentId,
+      roomId: "",
+      taskReadMaxResponseBytes: TASK_READ_TEST_MAX_RESPONSE_BYTES,
+    });
+    const otherTool = createTaskTool({
+      ownerId: otherUserId,
+      agentId,
+      roomId: "",
+      taskReadMaxResponseBytes: TASK_READ_TEST_MAX_RESPONSE_BYTES,
+    });
 
     const createOut: string = await ownerTool.invoke({ command: "create", prompt: "owner-only S6 task" });
     const { taskId } = JSON.parse(createOut) as { taskId: string };

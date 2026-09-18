@@ -44,9 +44,6 @@ import {
   deviceAdmissionChallengeFromDto,
   deviceAdmissionProofToDto,
 } from "@nautilo/lattice-bridge";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import * as schema from "@nautilo/db/schema";
 import { setupOwnerAppFixture } from "../helpers/app-fixture";
 import {
   seedBackfillDevice,
@@ -140,13 +137,7 @@ async function admitDevice(input: Readonly<{
 describe("/ws — open-room self-join fan-out (M124 scenario 18)", () => {
   test("a Full-mode peer join carries the public Room's protected convergence hint", async () => {
     const fx = await setupOwnerAppFixture({ suiteName: "rjws" });
-    const adminUrl = process.env["LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL"];
-    if (!adminUrl) {
-      await fx.cleanup();
-      throw new Error("Explicit disposable integration admin database is required");
-    }
-    const adminClient = postgres(adminUrl, { max: 1, prepare: false });
-    const adminDb = drizzle(adminClient, { schema });
+    const adminDb = fx.db;
     const crypto = new LatticeCrypto();
     const restricted = createPostgresJsBridgeConnection(getSharedDirectCryptoDb());
     const devices: BackfillDeviceCustodyFixture[] = [];
@@ -311,7 +302,6 @@ describe("/ws — open-room self-join fan-out (M124 scenario 18)", () => {
         if (peerActorId) await fx.db.delete(actors).where(eq(actors.id, peerActorId));
         await fx.db.delete(users).where(eq(users.id, peerUserId));
       }
-      await adminClient.end();
       await fx.cleanup();
     }
   });

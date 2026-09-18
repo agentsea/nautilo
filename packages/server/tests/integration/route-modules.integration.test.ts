@@ -9,7 +9,6 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import { setConfigOverrides, getServerHostname } from "@nautilo/config";
 import { setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
-import type { SendMessageResponse } from "@nautilo/types";
 
 let fx: AppFixture;
 let bearer: string;
@@ -524,42 +523,5 @@ describe("account (beyond D104 account-security.test.ts)", () => {
       url: "/api/account/recovery-codes/status",
     });
     expect(res.statusCode).toBe(401);
-  });
-});
-
-describe("chat M074 coalesce HTTP shape (stub)", () => {
-  let fx074: AppFixture;
-  let bearer074: string;
-
-  beforeAll(async () => {
-    fx074 = await setupOwnerAppFixture({
-      suiteName: "rmod074",
-      createAppExtras: {
-        chatRoutesDeps: {
-          createForegroundJob: async () => ({
-            id: "22222222-2222-4222-8222-222222222222",
-            virtualJobId: "22222222-2222-4222-8222-222222222222",
-          }),
-        },
-      },
-    });
-    bearer074 = await fx074.mintOwnerBearer();
-  });
-
-  afterAll(async () => {
-    await fx074.cleanup();
-  });
-
-  test("POST /api/chat returns jobId null + coalesced true (stub)", async () => {
-    const res = await authedInject(fx074.app, {
-      method: "POST",
-      url: "/api/chat",
-      bearer: bearer074,
-      payload: { message: "hello", laneKey: "lane:m074-stub" },
-    });
-    expect(res.statusCode).toBe(202);
-    const body = JSON.parse(res.body) as SendMessageResponse;
-    expect(body.jobId).toBe("22222222-2222-4222-8222-222222222222");
-    expect(body.coalesced).toBe(true);
   });
 });

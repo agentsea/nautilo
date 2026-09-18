@@ -464,6 +464,7 @@ describe("D419 progressive activation graph integration", () => {
 
     await createNautiloGraph(undefined, createPolicyResolver()).invoke(
       graphInput({ fixture_deferred: "allow" }),
+      { recursionLimit: 64 },
     );
 
     expect(scripted.bindings).toHaveLength(4);

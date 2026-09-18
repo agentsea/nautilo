@@ -10,6 +10,7 @@ import {
   sessionMessages,
   sql,
   subthreadNotificationParticipants,
+  userNotificationSettings,
   users,
   type DirectDatabase,
 } from "@nautilo/db";
@@ -299,6 +300,11 @@ describe("M236 authoritative notification state", () => {
       )
       .returning({ id: users.id });
     tracker.userIds.push(...noiseUsers.map((user) => user.id));
+    // Keep both repeatedly joined preference relations large enough for their
+    // indexed paths to be cost-effective under the planner assertion below.
+    await db.insert(userNotificationSettings).values(
+      noiseUsers.map((user) => ({ userId: user.id })),
+    );
     await db.insert(subthreadNotificationParticipants).values(
       noiseUsers.map((user) => ({
         subthreadRoomId: childRoom,
@@ -308,6 +314,7 @@ describe("M236 authoritative notification state", () => {
       })),
     );
     await db.execute(sql`ANALYZE subthread_notification_participants`);
+    await db.execute(sql`ANALYZE user_notification_settings`);
 
     const plans: unknown[] = [];
     let serviceExecuteCalls = 0;
