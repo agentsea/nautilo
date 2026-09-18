@@ -578,7 +578,7 @@ test("open Writer artifact keeps structural preparation gated while content uses
   }
 });
 
-test("Design create action supplies trusted coordinator context and retries idempotently", async () => {
+test("Design create action supplies trusted artifact context and rejects an exclusive-create replay", async () => {
   const env = envFor({
     agentId: agent1Id,
     readable: [nsPrivate],
@@ -612,27 +612,61 @@ test("Design create action supplies trusted coordinator context and retries idem
       targetSurface: "workspace",
       filename,
     });
-    const replay = await host.document.createFromAction("new-design", {
-      targetSurface: "workspace",
-      filename,
-    });
-    expect(first).toEqual({
+    expect(first).toMatchObject({
       target: { surface: "workspace", path: filename },
       displayPath: filename,
       opened: false,
     });
-    expect(replay).toEqual(first);
-    const row = await findArtifactByPathForNamespaces({
+    const rowBeforeReplay = await findArtifactByPathForNamespaces({
       path: filename,
       readableNamespaceIds: [nsPrivate],
     });
-    expect(row).not.toBeNull();
-    expect(await getArtifactNamespaces(row!.id)).toEqual([nsPrivate]);
-    const mutations = await db
-      .select({ id: workspaceDocumentMutations.id, turnId: workspaceDocumentMutations.turnId })
+    expect(rowBeforeReplay).not.toBeNull();
+    const namespacesBeforeReplay = await getArtifactNamespaces(rowBeforeReplay!.id);
+    expect(namespacesBeforeReplay).toEqual([nsPrivate]);
+    const contentBeforeReplay = expectDispatchString(await dispatchFileCommand(
+      { command: "read", zone: "workspace", path: filename },
+      ctxWith(env, turnId),
+    ));
+    const mutationsBeforeReplay = await db
+      .select({ id: workspaceDocumentMutations.id })
       .from(workspaceDocumentMutations)
-      .where(eq(workspaceDocumentMutations.turnId, turnId));
-    expect(mutations).toHaveLength(1);
+      .where(eq(workspaceDocumentMutations.turnId, turnId))
+      .orderBy(workspaceDocumentMutations.id);
+
+    let replayFailure: unknown;
+    try {
+      await host.document.createFromAction("new-design", {
+        targetSurface: "workspace",
+        filename,
+      });
+    } catch (error) {
+      replayFailure = JSON.parse((error as Error).message);
+    }
+    expect(replayFailure).toMatchObject({
+      ok: false,
+      code: "destination_exists",
+      stateChanged: false,
+      retrySafe: false,
+      recoveryActions: ["choose_another_filename", "inspect_existing_document"],
+    });
+
+    const rowAfterReplay = await findArtifactByPathForNamespaces({
+      path: filename,
+      readableNamespaceIds: [nsPrivate],
+    });
+    expect(rowAfterReplay).toEqual(rowBeforeReplay);
+    expect(await getArtifactNamespaces(rowAfterReplay!.id)).toEqual(namespacesBeforeReplay);
+    expect(expectDispatchString(await dispatchFileCommand(
+      { command: "read", zone: "workspace", path: filename },
+      ctxWith(env, turnId),
+    ))).toBe(contentBeforeReplay);
+    const mutationsAfterReplay = await db
+      .select({ id: workspaceDocumentMutations.id })
+      .from(workspaceDocumentMutations)
+      .where(eq(workspaceDocumentMutations.turnId, turnId))
+      .orderBy(workspaceDocumentMutations.id);
+    expect(mutationsAfterReplay).toEqual(mutationsBeforeReplay);
   } finally {
     await deleteArtifactAtPath(filename, agent1Id, [nsPrivate]);
   }
