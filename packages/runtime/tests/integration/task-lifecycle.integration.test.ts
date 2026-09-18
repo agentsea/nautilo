@@ -42,7 +42,12 @@ import type { ServerEvent } from "@nautilo/types";
 import { eventBus } from "../../src/event-bus";
 import { jobManager } from "../../src/job-manager";
 import { TaskObserver } from "../../src/tasks/task-observer";
-import { pauseTask, stopTask, unpauseTask } from "../../src/tasks/lifecycle";
+import {
+  pauseTask,
+  stopTask,
+  unpauseTask,
+  type TaskLifecycleJobManager,
+} from "../../src/tasks/lifecycle";
 import { reportBackTaskCompletion } from "../../src/tasks/report-back";
 import { setTaskRunDb } from "../../src/tasks/task-runtime-context";
 import {
@@ -197,14 +202,16 @@ describe("M147 — task lifecycle (stub graph, real PG)", () => {
       thread: `subagent:task:queued-stop:${cryptoId()}`,
       withJob: false,
     });
-    const abortCalls: string[] = [];
+    const abortCalls: Array<Parameters<TaskLifecycleJobManager["abortJob"]>> = [];
     const res = await stopTask(
-      { db, jobManager: { abortJob: (jobId) => (abortCalls.push(jobId), true) } },
+      { db, jobManager: { abortJob: (...args) => (abortCalls.push(args), true) } },
       taskId,
     );
 
     expect(res).toMatchObject({ ok: true, status: "cancelled" });
-    expect(abortCalls).toEqual([]);
+    expect(abortCalls).toEqual([
+      ["", "stop", { taskId, taskRunId: runId }],
+    ]);
     expect((await getTaskById(db, taskId))?.status).toBe("cancelled");
     expect((await getTaskRuns(db, taskId)).find((run) => run.id === runId)?.status).toBe("cancelled");
   });
