@@ -5,16 +5,28 @@
  * `getFederatedIdForActor` resolves (no `mock.module("@nautilo/trust")` —
  * Bun globals leak across files in one process).
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, mock, test, beforeAll, afterAll } from "bun:test";
 import type { PolicyResolver, RuntimePolicyContext } from "@nautilo/trust";
 import { ensureDatabase } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 
 import { createApp } from "../../src/app";
+import { generateMiniAppAgentToolName } from "../../src/apps/app-manifest";
 import { setupOwnerAppFixture, type AppFixture } from "../integration/helpers/app-fixture";
 
 const AGENT_ID = "33333333-3333-4333-8333-333333333333";
 const ROOM_ID = "44444444-4444-4444-8444-444444444444";
+const WRITER_MANIFEST = JSON.parse(
+  readFileSync(
+    resolve(import.meta.dirname, "../../../first-party-apps/writer/app.json"),
+    "utf8",
+  ),
+) as { version: string; agent: { tools: Array<{ id: string }> } };
+const WRITER_AGENT_TOOL_NAMES = WRITER_MANIFEST.agent.tools.map((tool) =>
+  generateMiniAppAgentToolName("nautilo-writer", tool.id),
+);
 
 let fx: AppFixture | null = null;
 
@@ -159,12 +171,18 @@ describe("createApp route/runtime wiring", () => {
     const manifest = body["manifest"] as Record<string, unknown>;
     expect(manifest["id"]).toBe("nautilo-writer");
     expect(manifest["name"]).toBe("Writer");
-    expect(manifest["version"]).toBe("1.5.0");
-    expect(body["agentToolsBuild"]).toMatchObject({
+    expect(manifest["version"]).toBe(WRITER_MANIFEST.version);
+    const agentToolsBuild = body["agentToolsBuild"] as {
+      status: string;
+      toolCount: number;
+      toolNames: string[];
+    };
+    expect(agentToolsBuild).toMatchObject({
       status: "ok",
-      toolCount: 24,
+      toolCount: WRITER_AGENT_TOOL_NAMES.length,
     });
-    expect((body["agentToolsBuild"] as { toolNames: string[] }).toolNames).toContain(
+    expect(agentToolsBuild.toolNames).toEqual(WRITER_AGENT_TOOL_NAMES);
+    expect(agentToolsBuild.toolNames).toContain(
       "app_nautilo_writer__inspect_document",
     );
     expect(authed.headers["content-type"]).toContain("application/json");
