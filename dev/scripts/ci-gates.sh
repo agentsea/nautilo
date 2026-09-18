@@ -52,7 +52,11 @@ run_gate() {
       run_cmd query-inventory bun run db:query-inventory:check
       ;;
     limit-invariants)
-      run_cmd limit-invariants bun run limits:check
+      if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        run_cmd limit-invariants bun run --cwd packages/limit-invariants check:ci --base "${LIMIT_REVIEW_BASE:?exact base required}" --head "${LIMIT_REVIEW_HEAD:?exact head required}" --repository "${GITHUB_REPOSITORY:?repository required}"
+      else
+        run_cmd limit-invariants bun run limits:check
+      fi
       ;;
     lint-unused)
       run_cmd lint-unused bun run lint:unused

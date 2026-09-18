@@ -111,10 +111,13 @@ or concurrency ceiling.
 
 Run `bun run limits:check` when adding or changing a production/operator
 boundary. Investigate producer-to-consumer behavior and record the evidenced
-decision in the checked-in limit inventory/decision ledger. Scanner output is
-an observation, not a policy decision. If an external review skill is available,
-it can assist; it is not required to access the public repository's checks.
-Surface unresolved policy choices rather than inventing authority.
+decision in local, ignored `*.limit-audit.*` files. Never commit audit inventories,
+decision ledgers, generated reports, or `*.agent-notes.*` working notes. Public
+CI compares source revisions and requires an exact-commit `limit-policy-reviewed`
+status for new or changed limits; maintainers publish it with the limit package
+`review` command only after the strict local check passes. Scanner output is an observation,
+not a policy decision. Surface unresolved policy choices rather than inventing
+authority. See [limit tooling](packages/limit-invariants/README.md) for commands.
 
 Partial results must disclose completeness and continuation. Termination must
 preserve truthful state, cleanup, and safe recovery.

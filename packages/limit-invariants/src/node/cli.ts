@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { access, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { LegacyLimitDebt } from "../model";
 import {
   checkRegistry,
@@ -18,20 +18,13 @@ import {
   renderScout,
 } from "./registry";
 import { scanRepositoryWithEvidence } from "./scanner";
+import { ensureLimitAuditDirectories, limitAuditPaths, readRequiredLimitAudit } from "./storage";
 
 type Command = "inventory" | "report" | "check" | "scout" | "admit-legacy" | "shrink-legacy";
 
 const packageRoot = resolve(import.meta.dir, "../..");
 const defaultRepositoryRoot = resolve(packageRoot, "../..");
-const paths = {
-  inventory: join(packageRoot, "baseline/limit-inventory.jsonl"),
-  decisions: join(packageRoot, "baseline/reviewed-limit-decisions.jsonl"),
-  legacy: join(packageRoot, "baseline/legacy-unreviewed.jsonl"),
-  legacyLock: join(packageRoot, "baseline/legacy-lock.json"),
-  matrix: join(packageRoot, "generated/limit-matrix.md"),
-  scout: join(packageRoot, "generated/limit-scout.jsonl"),
-  investigationMap: join(packageRoot, "generated/investigation-map.md"),
-};
+const paths = limitAuditPaths(packageRoot);
 
 function usage(): never {
   process.stderr.write("Usage: bun src/node/cli.ts <inventory|report|check|scout|admit-legacy|shrink-legacy> [--root PATH]\n");
@@ -48,11 +41,11 @@ function argumentsFor(argv: readonly string[]): { command: Command; repositoryRo
 }
 
 async function readDecisions() {
-  return parseDecisions(await readFile(paths.decisions, "utf8"));
+  return parseDecisions(await readRequiredLimitAudit(paths.decisions, "reviewed decision"));
 }
 
 async function readLegacy() {
-  return parseLegacyDebt(await readFile(paths.legacy, "utf8"));
+  return parseLegacyDebt(await readRequiredLimitAudit(paths.legacy, "legacy debt"));
 }
 
 async function writeProjection(input: {
@@ -62,8 +55,7 @@ async function writeProjection(input: {
   readonly legacy: readonly LegacyLimitDebt[];
   readonly writeInventory: boolean;
 }): Promise<void> {
-  await mkdir(join(packageRoot, "baseline"), { recursive: true });
-  await mkdir(join(packageRoot, "generated"), { recursive: true });
+  await ensureLimitAuditDirectories(paths);
   if (input.writeInventory) await writeFile(paths.inventory, renderInventory(input.observations), "utf8");
   await writeFile(paths.investigationMap, renderInvestigationMap({
     observations: input.observations,
@@ -78,8 +70,28 @@ async function writeProjection(input: {
   }), "utf8");
 }
 
+/** Run the strict semantic gate against the private local evidence for one exact source tree. */
+export async function runLimitCheck(repositoryRoot: string): Promise<number> {
+  const [{ observations }, decisions, legacy, committedInventory, legacyLock] = await Promise.all([
+    scanRepositoryWithEvidence(resolve(repositoryRoot), { lanes: ["primary"] }),
+    readDecisions(),
+    readLegacy(),
+    readRequiredLimitAudit(paths.inventory, "inventory").then(parseInventory),
+    readRequiredLimitAudit(paths.legacyLock, "legacy lock").then(parseLegacyLock),
+  ]);
+  const result = checkRegistry({ current: observations, committedInventory, decisions, legacy, legacyLock });
+  if (!result.ok) {
+    process.stderr.write(`Limit invariant check failed (${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}):\n`);
+    for (const error of result.errors) process.stderr.write(`- ${error}\n`);
+    return 1;
+  }
+  process.stdout.write(`Limit invariant check passed: observations=${result.observations} reviewed=${result.reviewed} legacy=${result.legacy}\n`);
+  return 0;
+}
+
 async function run(): Promise<number> {
   const { command, repositoryRoot } = argumentsFor(process.argv.slice(2));
+  if (command === "check") return runLimitCheck(repositoryRoot);
   if (command === "admit-legacy") {
     try {
       await access(paths.legacyLock);
@@ -91,7 +103,7 @@ async function run(): Promise<number> {
   const scan = await scanRepositoryWithEvidence(repositoryRoot, { lanes: command === "scout" ? ["scout"] : ["primary"] });
   const { observations, linksByLocator } = scan;
   if (command === "scout") {
-    await mkdir(join(packageRoot, "generated"), { recursive: true });
+    await ensureLimitAuditDirectories(paths);
     await writeFile(paths.scout, renderScout(scan), "utf8");
     process.stdout.write(`Wrote non-blocking wide scout: ${observations.length} mechanically grouped leads\n`);
     return 0;
@@ -152,25 +164,7 @@ async function run(): Promise<number> {
     return 0;
   }
 
-  const [committedInventory, legacyLock, committedMatrix, committedInvestigationMap] = await Promise.all([
-    readFile(paths.inventory, "utf8").then(parseInventory),
-    readFile(paths.legacyLock, "utf8").then(parseLegacyLock),
-    readFile(paths.matrix, "utf8"),
-    readFile(paths.investigationMap, "utf8"),
-  ]);
-  const result = checkRegistry({ current: observations, committedInventory, decisions, legacy, legacyLock });
-  const expectedMatrix = renderMatrix({ observations, decisions, legacy });
-  const expectedInvestigationMap = renderInvestigationMap({ observations, decisions, legacy, linksByLocator });
-  const errors = [...result.errors];
-  if (committedMatrix !== expectedMatrix) errors.push("generated limit matrix is stale; run limits:report and review the diff");
-  if (committedInvestigationMap !== expectedInvestigationMap) errors.push("generated investigation map is stale; run limits:report and review the diff");
-  if (errors.length > 0) {
-    process.stderr.write(`Limit invariant check failed (${errors.length} issue${errors.length === 1 ? "" : "s"}):\n`);
-    for (const error of errors) process.stderr.write(`- ${error}\n`);
-    return 1;
-  }
-  process.stdout.write(`Limit invariant check passed: observations=${result.observations} reviewed=${result.reviewed} legacy=${result.legacy}\n`);
-  return 0;
+  throw new Error("Unhandled limit invariant command");
 }
 
 if (import.meta.main) {
