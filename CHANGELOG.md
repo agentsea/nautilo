@@ -21,6 +21,11 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Desktop shell commands honor replacement folder grants without being blocked by
+  superseded revocation history. Narrower restrictions and protected paths remain
+  enforced. Folder changes reach outgoing messages immediately, and delayed
+  startup reads no longer restore an older folder selection.
+
 - Fresh database installations permit legitimate content-access receipt cleanup
   when associated users or content are deleted, while retaining protection
   against direct receipt mutation.
