@@ -12,8 +12,6 @@ const LIVE_SHADOW_NEGATIVE_EVIDENCE = [
 const CONTENT_FREE_DATABASE_LOCATORS = [
   "packages/lattice-bridge/src/server/message/postgres-live-shadow-client-verification.ts#verifyAndRecordLiveShadowClientVerification:raw_sql:update:public.conversation_shadow_turn_operations:1",
   "packages/lattice-bridge/src/server/message/postgres-live-shadow-client-verification.ts#verifyAndRecordLiveShadowClientVerification:raw_sql:update:public.conversation_shadow_turn_operations:2",
-  "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##beginAttempt:raw_sql:insert:public.conversation_shadow_turn_plan_attempts:1",
-  "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts##recordAttemptUnavailable:raw_sql:update:public.conversation_shadow_turn_plan_attempts:1",
   "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts#bindJob:raw_sql:update:public.conversation_shadow_turn_operations:1",
   "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts#plan:raw_sql:insert:public.conversation_shadow_turn_agent_signers:1",
   "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts#plan:raw_sql:insert:public.conversation_shadow_turn_operations:1",
@@ -203,28 +201,7 @@ export const REVIEWED_MAIN_2026_08_22_COVERAGE_ENTRIES:
   ];
 
 export const REVIEWED_MAIN_2026_08_22_DEBT_LINKS:
-  readonly ReviewedDebtLink[] = [{
-    id: "link.db.main-2026-08-22.live-shadow-session-compatibility",
-    surface: "db",
-    locator:
-      "packages/lattice-bridge/src/server/message/postgres-live-shadow-turn-plan.ts#inspectProductCandidate:raw_sql:insert:public.sessions:1",
-    owner: "packages/lattice-bridge",
-    targetDebtIds: [
-      "debt.db.public.sessions.agent_id",
-      "debt.db.public.sessions.channel",
-      "debt.db.public.sessions.id",
-      "debt.db.public.sessions.room_id",
-      "debt.db.public.sessions.thread_id",
-    ],
-    reason:
-      "The compatibility path creates the same ordinary Session row already frozen by Wave 0 and adds no live-shadow payload, protected bytes, credential, or new content-bearing field.",
-    testEvidence: [REVIEW_EVIDENCE],
-    crossBoundaryProjection: {
-      fields: ["agent_id", "channel", "id", "room_id", "thread_id"],
-      rationale:
-        "The raw INSERT is a second representation of the existing public.sessions boundary and writes exactly its frozen routing coordinates.",
-    },
-  }, ...([
+  readonly ReviewedDebtLink[] = [...([
     [
       "http:accepted_arbitrary:packages/types/src/api.ts#ChatSearchConversationHit",
       "debt.wire.http.request.response.get.api.rooms.id.7993e",

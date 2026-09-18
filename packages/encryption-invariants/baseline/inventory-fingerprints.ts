@@ -32,13 +32,15 @@ export const MIGRATION_TREE_BASELINE = {
 // packages/db/src/queries/event-feed-preferences.ts. It validates the closed
 // enum/timestamp pair and changes only those columns plus updatedAt; executable
 // recording-transport tests prove it leaves chat policy and feed state alone.
+// Retiring the persona-addressed foreground issuer removes four inserts and
+// four updates; no writer or plaintext exception is added.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1384,
-  "insert": 470,
-  "update": 725,
+  "count": 1376,
+  "insert": 466,
+  "update": 721,
   "delete": 172,
   "unresolved": 17,
-  "sha256": "7a048b6b67164ddf1c9a198428521d64c3f6e01f1811c0cb895aeb93cc10dbd1"
+  "sha256": "a51a0edda2a847a7d613fbf147ea536c2ab0e6b5f04a0c749e72c354d8a19e7e"
 } as const;
 
 /**

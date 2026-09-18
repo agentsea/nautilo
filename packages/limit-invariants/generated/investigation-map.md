@@ -2,8 +2,8 @@
 
 > Mechanical focus map for Codex/developers. It routes investigation; it does not decide whether any packet is legitimate.
 
-- Primary packets: 5115
-- Linked primary sites: 5787
+- Primary packets: 5113
+- Linked primary sites: 5785
 - New or uncovered packets: 0
 - Reusable semantic-loss and producer junctions: 12
 - Mechanical policy-family references: 351

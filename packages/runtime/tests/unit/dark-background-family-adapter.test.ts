@@ -33,9 +33,6 @@ const AGENT_SUBJECT = Object.freeze({
 
 function plan(
   entrypointId:
-    | "memory.review.main"
-    | "memory.review.fork"
-    | "memory.exit_flush"
     | "task.dispatch.now"
     | "task.dispatch.one_shot"
     | "task.dispatch.recurring"
@@ -43,7 +40,7 @@ function plan(
     | "task.dispatch.retry"
     | "task.execute"
     | "task.resume.unpause"
-    | "task.resume.approval" = "memory.review.main",
+    | "task.resume.approval" = "task.execute",
 ): DarkBackgroundSyntheticPlan {
   return planDarkBackgroundSyntheticWork({
     entrypointId,
@@ -120,16 +117,6 @@ function agentCredential(
 }
 
 describe("Wave 10 dark background-family adapters", () => {
-  test("Wave 12 replaces every Memory synthetic adapter with real protected work", () => {
-    expect(DARK_BACKGROUND_ENTRYPOINT_INVENTORY
-      .filter((entrypoint) => entrypoint.entrypointId.startsWith("memory."))
-      .map((entrypoint): string => entrypoint.adapterStatus)).toEqual([
-        "protected_adapter",
-        "protected_adapter",
-        "protected_adapter",
-      ]);
-  });
-
   test("keeps every inventory row grounded in its real source anchor", () => {
     const repositoryRoot = resolve(import.meta.dir, "../../../..");
     for (const entrypoint of DARK_BACKGROUND_ENTRYPOINT_INVENTORY) {
@@ -143,25 +130,6 @@ describe("Wave 10 dark background-family adapters", () => {
 
   test("grounds every supported real entrypoint and records unresolved Job/await-reply gaps without inventing actors", () => {
     expect(DARK_BACKGROUND_ENTRYPOINT_INVENTORY).toEqual([
-      expect.objectContaining({
-        entrypointId: "memory.review.main",
-        workKind: "memory.review",
-        purpose: "memory.review",
-        subjectKind: "agent",
-        deferredOwningWave: "wave12_memory",
-      }),
-      expect.objectContaining({
-        entrypointId: "memory.review.fork",
-        workKind: "memory.review",
-        purpose: "memory.review",
-        subjectKind: "agent",
-      }),
-      expect.objectContaining({
-        entrypointId: "memory.exit_flush",
-        productionCaller: "absent",
-        workKind: "memory.exit_flush",
-        subjectKind: "agent",
-      }),
       expect.objectContaining({
         entrypointId: "task.dispatch.now",
         workKind: "task.dispatch",
@@ -223,11 +191,6 @@ describe("Wave 10 dark background-family adapters", () => {
     ]);
 
     expect(new Set(DARK_BACKGROUND_ENTRYPOINT_INVENTORY
-      .filter((entrypoint) => entrypoint.entrypointId.startsWith("memory."))
-      .map((entrypoint) => entrypoint.deferredOwningWave))).toEqual(
-        new Set(["wave12_memory"]),
-      );
-    expect(new Set(DARK_BACKGROUND_ENTRYPOINT_INVENTORY
       .filter((entrypoint) =>
         entrypoint.entrypointId.startsWith("task.")
         || entrypoint.entrypointId.startsWith("job.")
@@ -237,7 +200,7 @@ describe("Wave 10 dark background-family adapters", () => {
       );
   });
 
-  test("maps every supported Memory and Task seam to an Agent subject and strict content-free coordinates", () => {
+  test("maps every supported Task seam to an Agent subject and strict content-free coordinates", () => {
     for (const entrypoint of DARK_BACKGROUND_ENTRYPOINT_INVENTORY) {
       if (entrypoint.adapterStatus !== "synthetic_adapter") continue;
       const value = plan(entrypoint.entrypointId);

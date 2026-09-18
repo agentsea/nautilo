@@ -3,7 +3,10 @@ import { accessRevision, agentId, authorizationRevision, cryptoDeviceId, humanId
   namespaceGeneration, namespaceId, unixTimestamp } from "@nautilo/lattice-crypto";
 import { encodeHumanAiReadableLiveShadowMessagePlanV1, encodeHumanPeerLiveShadowMessagePlanV1,
   encodeSharedAgentLiveShadowMessagePlanV1 } from "@nautilo/lattice-crypto/wire";
-import { createProductionLiveShadowMessageComposition } from "../../src/routes/live-shadow-message-composition";
+import {
+  createProductionLiveShadowMessageComposition,
+  selectLiveShadowTurnPlan,
+} from "../../src/routes/live-shadow-message-composition";
 
 const NOW = 1_800_000_000_000;
 const USER = "10000000-0000-4000-8000-000000000318";
@@ -66,5 +69,130 @@ describe("prepared Message policy entrance", () => {
     expect(result).toEqual({ status: "ordinary_fallback", operationId: "m318_policy_send",
       reason: "authority_stale", messageId: null });
     expect(policyReads).toBe(1);
+  });
+});
+
+describe("live Shadow planner selection", () => {
+  const input = Object.freeze({
+    authority: Object.freeze({ userId: USER, humanActorId: HUMAN }),
+    roomId: ROOM,
+    clientActionSessionId: SESSION,
+    clientDeviceId: "policy-device",
+    idempotencyKey: "policy-selection",
+    now: NOW,
+  });
+
+  test("returns a supported shared plan without consulting the peer planner", async () => {
+    const planned = Object.freeze({
+      status: "planned" as const,
+      planBytes: new Uint8Array([6]),
+    });
+    let peerCalls = 0;
+
+    expect(await selectLiveShadowTurnPlan(input, {
+      shared: async () => planned,
+      humanPeer: async () => {
+        peerCalls++;
+        return Object.freeze({
+          status: "planned" as const,
+          planBytes: new Uint8Array([99]),
+        });
+      },
+    })).toBe(planned);
+    expect(peerCalls).toBe(0);
+  });
+
+  test("uses the Human-only peer planner for the version-1 topology miss", async () => {
+    const peerPlan = Object.freeze({
+      status: "planned" as const,
+      planBytes: new Uint8Array([7]),
+    });
+    const calls: string[] = [];
+
+    expect(await selectLiveShadowTurnPlan({ ...input, requestVersion: 1 }, {
+      shared: async () => {
+        calls.push("shared");
+        return Object.freeze({
+          status: "ineligible" as const,
+          reason: "room_topology_unsupported" as const,
+        });
+      },
+      humanPeer: async () => {
+        calls.push("human_peer");
+        return peerPlan;
+      },
+    })).toBe(peerPlan);
+    expect(calls).toEqual(["shared", "human_peer"]);
+  });
+
+  test("does not route a version-2 topology miss to the version-1 peer planner", async () => {
+    const ineligible = Object.freeze({
+      status: "ineligible" as const,
+      reason: "room_topology_unsupported" as const,
+    });
+    let peerCalls = 0;
+
+    expect(await selectLiveShadowTurnPlan({ ...input, requestVersion: 2 }, {
+      shared: async () => ineligible,
+      humanPeer: async () => {
+        peerCalls++;
+        return Object.freeze({
+          status: "planned" as const,
+          planBytes: new Uint8Array([8]),
+        });
+      },
+    })).toBe(ineligible);
+    expect(peerCalls).toBe(0);
+  });
+
+  test.each([
+    Object.freeze({
+      status: "unavailable" as const,
+      authorizationScheme: "human_ai_readable_v1" as const,
+      reason: "policy_unavailable" as const,
+    }),
+    Object.freeze({
+      status: "unavailable" as const,
+      authorizationScheme: "human_ai_readable_v1" as const,
+      reason: "recipient_sync_required" as const,
+    }),
+    Object.freeze({
+      status: "unavailable" as const,
+      authorizationScheme: "human_ai_readable_v1" as const,
+      reason: "namespace_unavailable" as const,
+      requiredNamespaceIds: Object.freeze([NAMESPACE]),
+    }),
+    Object.freeze({ status: "disabled" as const, mode: "plaintext_only" as const }),
+  ])("preserves shared unavailability without trying another issuer: %j", async (result) => {
+    let peerCalls = 0;
+
+    expect(await selectLiveShadowTurnPlan(input, {
+      shared: async () => result,
+      humanPeer: async () => {
+        peerCalls++;
+        return Object.freeze({
+          status: "planned" as const,
+          planBytes: new Uint8Array([9]),
+        });
+      },
+    })).toBe(result);
+    expect(peerCalls).toBe(0);
+  });
+
+  test("propagates a shared planner failure without trying the peer planner", async () => {
+    const failure = new Error("shared planner failed");
+    let peerCalls = 0;
+
+    expect(selectLiveShadowTurnPlan(input, {
+      shared: () => Promise.reject(failure),
+      humanPeer: async () => {
+        peerCalls++;
+        return Object.freeze({
+          status: "planned" as const,
+          planBytes: new Uint8Array([10]),
+        });
+      },
+    })).rejects.toBe(failure);
+    expect(peerCalls).toBe(0);
   });
 });

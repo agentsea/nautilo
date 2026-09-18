@@ -100,6 +100,8 @@ import {
   verifyAndRecordLiveShadowClientVerification,
   recoverPostgresLiveShadowTurn,
   recoverPostgresPublishedHumanMessage,
+  type HumanPeerLiveShadowPlanResult,
+  type SharedAgentLiveShadowPlanResult,
   type LiveShadowClientVerificationInput,
   type LiveShadowClientVerificationResult,
   type LiveShadowHumanAdmissionResult,
@@ -3464,18 +3466,10 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     protectedEdit,
     plan: async (input: LiveShadowTurnPlanInput) => {
       const admittedPolicy = await loadRuntimePolicy();
-      const humanAiReadable = await getSharedAgentPlanner().plan(input);
-      const planned = (
-        input.requestVersion === 2
-        || humanAiReadable.status !== "ineligible"
-        || humanAiReadable.reason !== "room_topology_unsupported"
-      ) ? humanAiReadable : await (async () => {
-        const legacyAgent = await getPlanner().plan(input);
-        return legacyAgent.status === "ineligible"
-            && legacyAgent.reason === "room_topology_unsupported"
-          ? getHumanPeerPlanner().plan(input)
-          : legacyAgent;
-      })();
+      const planned = await selectLiveShadowTurnPlan(input, {
+        shared: (request) => getSharedAgentPlanner().plan(request),
+        humanPeer: (request) => getHumanPeerPlanner().plan(request),
+      });
       if (planned.status !== "planned") return planned;
       const policy = await loadRuntimePolicy();
       if (
@@ -4483,4 +4477,21 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       }
     },
   });
+}
+
+/** Select a supported planner without introducing another recipient authority. */
+export async function selectLiveShadowTurnPlan(
+  input: LiveShadowTurnPlanInput,
+  planners: Readonly<{
+    shared: (input: LiveShadowTurnPlanInput) => Promise<SharedAgentLiveShadowPlanResult>;
+    humanPeer: (input: LiveShadowTurnPlanInput) => Promise<HumanPeerLiveShadowPlanResult>;
+  }>,
+): Promise<SharedAgentLiveShadowPlanResult | HumanPeerLiveShadowPlanResult> {
+  const shared = await planners.shared(input);
+  if (
+    input.requestVersion === 2
+    || shared.status !== "ineligible"
+    || shared.reason !== "room_topology_unsupported"
+  ) return shared;
+  return planners.humanPeer(input);
 }

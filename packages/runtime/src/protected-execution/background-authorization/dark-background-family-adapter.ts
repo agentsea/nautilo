@@ -23,13 +23,9 @@ export const DARK_BACKGROUND_DEFAULT_PENDING_DELAY_MS = 30_000;
 export const DARK_BACKGROUND_MAX_PENDING_DELAY_MS = 5 * 60_000;
 
 export type DarkBackgroundDeferredOwningWave =
-  | "wave12_memory"
-  | "wave14_agent_task_job_content";
+  "wave14_agent_task_job_content";
 
 export type DarkBackgroundSyntheticEntrypointId =
-  | "memory.review.main"
-  | "memory.review.fork"
-  | "memory.exit_flush"
   | "task.dispatch.now"
   | "task.dispatch.one_shot"
   | "task.dispatch.recurring"
@@ -45,21 +41,6 @@ export type DarkBackgroundInventoryOnlyEntrypointId =
   | "job.background.deep_research";
 
 export type DarkBackgroundEntrypointInventory =
-  | Readonly<{
-    readonly entrypointId:
-      | "memory.review.main"
-      | "memory.review.fork"
-      | "memory.exit_flush";
-    readonly adapterStatus: "protected_adapter";
-    readonly sourcePath: string;
-    readonly sourceAnchor: string;
-    readonly productionCaller: "present" | "absent";
-    readonly actorClassification: "configured_agent";
-    readonly subjectKind: "agent";
-    readonly workKind: "memory.review" | "memory.exit_flush";
-    readonly purpose: "memory.review" | "memory.exit_flush";
-    readonly deferredOwningWave: "wave12_memory";
-  }>
   | Readonly<{
     readonly entrypointId: DarkBackgroundSyntheticEntrypointId;
     readonly adapterStatus: "synthetic_adapter";
@@ -89,8 +70,7 @@ export type DarkBackgroundEntrypointInventory =
 
 /**
  * Grounded Wave 10 inventory. These are synthetic adapters, not production
- * wiring. In particular, the Memory helpers run on behalf of the configured
- * Agent that completed the turn; they are not neutral processors.
+ * wiring.
  *
  * Two real gaps remain intentionally unadapted:
  * - await-reply resume has no distinct closed work-kind in the v1 protocol;
@@ -99,42 +79,6 @@ export type DarkBackgroundEntrypointInventory =
  *   here would invent authority.
  */
 export const DARK_BACKGROUND_ENTRYPOINT_INVENTORY = Object.freeze([
-  {
-    entrypointId: "memory.review.main",
-    adapterStatus: "protected_adapter",
-    sourcePath: "packages/runtime/src/protected-execution/background-authorization/protected-agent-memory-background-entrypoints.ts",
-    sourceAnchor: "export function enqueueProtectedAgentMemoryBackgroundEntrypoint",
-    productionCaller: "absent",
-    actorClassification: "configured_agent",
-    subjectKind: "agent",
-    workKind: "memory.review",
-    purpose: "memory.review",
-    deferredOwningWave: "wave12_memory",
-  },
-  {
-    entrypointId: "memory.review.fork",
-    adapterStatus: "protected_adapter",
-    sourcePath: "packages/runtime/src/protected-execution/background-authorization/protected-agent-memory-background-entrypoints.ts",
-    sourceAnchor: "export function enqueueProtectedAgentMemoryBackgroundEntrypoint",
-    productionCaller: "absent",
-    actorClassification: "configured_agent",
-    subjectKind: "agent",
-    workKind: "memory.review",
-    purpose: "memory.review",
-    deferredOwningWave: "wave12_memory",
-  },
-  {
-    entrypointId: "memory.exit_flush",
-    adapterStatus: "protected_adapter",
-    sourcePath: "packages/agent/src/memory/exit-flush.ts",
-    sourceAnchor: "export async function runExitFlush",
-    productionCaller: "absent",
-    actorClassification: "configured_agent",
-    subjectKind: "agent",
-    workKind: "memory.exit_flush",
-    purpose: "memory.exit_flush",
-    deferredOwningWave: "wave12_memory",
-  },
   {
     entrypointId: "task.dispatch.now",
     adapterStatus: "synthetic_adapter",
