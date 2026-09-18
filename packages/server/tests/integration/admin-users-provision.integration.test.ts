@@ -181,10 +181,28 @@ describe("direct member provisioning", () => {
       expect((await getAccountSecurityRowByUserId(fx.db, memberId))?.requiresPasswordChange)
         .toBe(false);
     } finally {
-      if (memberId) await fx.db.delete(users).where(eq(users.id, memberId));
-      await fx.cleanup();
-      if (priorSecret === undefined) delete process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"];
-      else process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"] = priorSecret;
+      try {
+        if (memberId) {
+          const bearer = await fx.mintOwnerBearer();
+          const deleted = await authedInject(fx.app, {
+            method: "DELETE",
+            url: `/api/admin/users/${memberId}`,
+            bearer,
+          });
+          expect(deleted.statusCode).toBe(200);
+          expect(JSON.parse(deleted.body)).toMatchObject({ ok: true });
+        }
+      } finally {
+        try {
+          await fx.cleanup();
+        } finally {
+          if (priorSecret === undefined) {
+            delete process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"];
+          } else {
+            process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"] = priorSecret;
+          }
+        }
+      }
     }
   });
 });

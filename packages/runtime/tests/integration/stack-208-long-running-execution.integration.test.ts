@@ -330,17 +330,14 @@ describe("Stack 208 P3 — no-progress breaker (stub LLM, real PG)", () => {
       expect(jobMessage).not.toContain("no_progress");
       expect(jobMessage.length).toBeGreaterThan(0);
 
-      // C5: the tools node throws before the fourth result state commits,
-      // so the checkpointed streak reflects count=3 (correctiveTurnIssued
-      // true) — the 4th failure's state update never lands. Assert the
-      // streak is bounded and the corrective flag is set, via the
-      // transcript: exactly 3 file.read error ToolMessages persist (the
-      // 4th was built but the throw prevented the merge).
+      // C5: the fourth failure is committed through the ordinary transcript /
+      // checkpoint path together with the pending-stop marker. The following
+      // pre-model node raises before a fifth model invocation can begin.
       const messages = await getTranscriptMessages(threadId);
       const fileToolMessages = messages.filter(
         (m) => m.role === "tool" && m.toolName === "file",
       );
-      expect(fileToolMessages.length).toBe(3);
+      expect(fileToolMessages.length).toBe(4);
       // The persisted error content is the documented no-file error string
       // the cloud workspace `read` handler returns for a missing artifact
       // (`Error: No workspace artifact found at "<path>" …`); it stays in
@@ -370,12 +367,12 @@ describe("Stack 208 P3 — ephemeral thread cleanup (stub LLM, real PG)", () => 
     // `taskRunExecutor` calls `deleteEphemeralCheckpointThread` on the
     // completed ephemeral thread. Assert zero rows across
     // checkpoints/blobs/writes for that thread and that the canonical
-    // room bot thread is retained.
+    // strict-DM Room thread is retained.
     const createdRoomIds: string[] = [];
     const createdNamespaceIds: string[] = [];
     const createdUserActorIds: string[] = [];
 
-    async function createCallingRoom(label: string): Promise<{ roomId: string; botThread: string }> {
+    async function createCallingRoom(label: string): Promise<{ roomId: string; roomThread: string }> {
       const ts = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       const [ns] = await db
         .insert(namespaces)
@@ -390,31 +387,31 @@ describe("Stack 208 P3 — ephemeral thread cleanup (stub LLM, real PG)", () => 
       createdUserActorIds.push(userActor!.id);
 
       const roomId = randomUUID();
+      const roomThread = `room:${roomId}`;
       await db.insert(rooms).values({
         id: roomId,
         ownerId: userId,
         type: "private",
         label,
-        graphThreadId: `room:${roomId}`,
+        graphThreadId: roomThread,
         namespaceId: ns!.id,
         humanActorIds: [userActor!.id],
       });
       createdRoomIds.push(roomId);
       await db.insert(roomMembers).values({ roomId, actorId: userActor!.id, roomRole: "admin" });
       await db.insert(roomMembers).values({ roomId, actorId: agentActorId, roomRole: "member" });
-      const botThread = `room:${roomId}:bot:${agentId}`;
       await ensureSession({
-        threadId: botThread,
+        threadId: roomThread,
         ownerId: userId,
         personaId: "owner",
         roomId,
         agentId,
       });
-      return { roomId, botThread };
+      return { roomId, roomThread };
     }
 
     try {
-      const { roomId, botThread } = await createCallingRoom("ephemeral-cleanup");
+      const { roomId, roomThread } = await createCallingRoom("ephemeral-cleanup");
 
       // One response for the task run; extras for the woken reply turn.
       const stub = createStubProvider({
@@ -490,9 +487,9 @@ describe("Stack 208 P3 — ephemeral thread cleanup (stub LLM, real PG)", () => 
       expect(ephemeralCounts.blobs).toBe(0);
       expect(ephemeralCounts.writes).toBe(0);
 
-      // D2: the canonical room bot thread is retained (the wake turn ran
-      // on it and compaction keeps exactly one surviving checkpoint).
-      const roomCounts = await waitForCheckpointCountAtMost(db, botThread, 1, 15_000);
+      // D2: this strict DM's canonical Room thread is retained (the wake turn
+      // ran on it and compaction keeps exactly one surviving checkpoint).
+      const roomCounts = await waitForCheckpointCountAtMost(db, roomThread, 1, 15_000);
       expect(roomCounts.checkpoints).toBeGreaterThanOrEqual(1);
 
       await obs.stop();

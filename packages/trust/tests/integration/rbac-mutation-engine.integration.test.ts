@@ -56,6 +56,30 @@ function deps(auditSink: (payload: RbacAuditEventInput) => void = (p) => recorde
   });
 }
 
+async function cleanupCustomAccess(roleSlug: string, groupType: string): Promise<void> {
+  const [groupRow] = await db
+    .select({ id: groups.id })
+    .from(groups)
+    .where(eq(groups.type, groupType))
+    .limit(1);
+  if (groupRow) {
+    await db.delete(groupMembers).where(eq(groupMembers.groupId, groupRow.id));
+    await db.delete(groups).where(eq(groups.id, groupRow.id));
+    const groupIndex = createdGroupIds.indexOf(groupRow.id);
+    if (groupIndex >= 0) createdGroupIds.splice(groupIndex, 1);
+  }
+  const [roleRow] = await db
+    .select({ id: roles.id })
+    .from(roles)
+    .where(eq(roles.slug, roleSlug))
+    .limit(1);
+  if (roleRow) {
+    await db.delete(roles).where(eq(roles.id, roleRow.id));
+    const roleIndex = createdRoleIds.indexOf(roleRow.id);
+    if (roleIndex >= 0) createdRoleIds.splice(roleIndex, 1);
+  }
+}
+
 beforeAll(async () => {
   bootstrapTestDbInstance();
   await ensureDatabase();
@@ -103,11 +127,9 @@ beforeAll(async () => {
   // delegable cap (everything except the two Owner-only nondelegable caps),
   // so a test user seated in `admins` can administer custom Roles/Groups.
   const capSeeds = [
-    { slug: "use_terminal", description: "Terminal", category: "devices" },
+    { slug: "use_workstation", description: "Workstation", category: "devices" },
     { slug: "control_browser", description: "Browser", category: "devices" },
     { slug: "control_desktop", description: "Desktop", category: "devices" },
-    { slug: "use_workstation_profiles", description: "Activate a profile", category: "devices" },
-    { slug: "use_high_impact_tools", description: "High impact tools", category: "tools" },
     { slug: "manage_members", description: "Manage members", category: "administration" },
     { slug: "manage_groups", description: "Manage groups", category: "administration" },
     { slug: "manage_roles", description: "Manage roles", category: "administration" },
@@ -206,7 +228,7 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
     const preview = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug, label: "QA", capabilities: ["use_terminal"] },
+      operation: { kind: "role.create", slug, label: "QA", capabilities: ["use_workstation"] },
     });
     expect(preview.ok).toBe(true);
     expect(preview.auditPreview.kind).toBe("rbac_role_created");
@@ -215,7 +237,7 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
     const apply = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug, label: "QA", capabilities: ["use_terminal"] },
+      operation: { kind: "role.create", slug, label: "QA", capabilities: ["use_workstation"] },
       fingerprint: preview.fingerprint,
     });
     expect(apply.applied).toBe(true);
@@ -366,7 +388,7 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
       .insert(approvalChallenges)
       .values({
         groupId: groupRow.id,
-        requiredCapability: "use_terminal",
+        requiredCapability: "use_workstation",
         requestedBy: ownerUserId,
         action: "test",
         eligibleApprovers: [],
@@ -397,23 +419,22 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
   });
 
   test("W3.2.13 membership removal where another Group preserves a cap => UNCHANGED, not removed", async () => {
-    // Create a custom Role + Group granting use_terminal + control_browser,
-    // seat the member in it AND in the canonical `members` Group (which
-    // grants use_workstation_profiles + use_high_impact_tools). Removing
-    // the member from the custom Group must drop only the custom caps; the
-    // Member caps are preserved by `members` → UNCHANGED.
+    // The canonical Member bundle already grants use_workstation. Removing
+    // this custom membership must preserve that capability while dropping
+    // the custom administrative capability.
     const roleSlug = `src-role-${ts}`;
     const groupType = `custom:src-${ts}`;
+    try {
     const rp = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: roleSlug, label: "SRC", capabilities: ["use_terminal", "control_browser"] },
+      operation: { kind: "role.create", slug: roleSlug, label: "SRC", capabilities: ["use_workstation", "manage_roles"] },
     });
     expect(rp.ok).toBe(true);
     const ra = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: roleSlug, label: "SRC", capabilities: ["use_terminal", "control_browser"] },
+      operation: { kind: "role.create", slug: roleSlug, label: "SRC", capabilities: ["use_workstation", "manage_roles"] },
       fingerprint: rp.fingerprint,
     });
     expect(ra.applied).toBe(true);
@@ -462,45 +483,33 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
     });
     expect(rp2.ok).toBe(true);
     expect(rp2.affectedUserDelta?.userId).toBe(memberUserId);
-    // The custom caps are genuinely removed (no other source grants them).
-    expect(rp2.affectedUserDelta?.removed).toEqual(["control_browser", "use_terminal"]);
+    expect(rp2.affectedUserDelta?.removed).toEqual(["manage_roles"]);
     expect(rp2.affectedUserDelta?.added).toEqual([]);
-    // The Member-bundle caps are preserved by the canonical `members` Group →
-    // UNCHANGED. Assert the property robustly against the real (large) Member
-    // bundle rather than hardcoding it: the two custom caps must NOT appear
-    // in unchanged, and a known Member cap must.
     const unchanged = rp2.affectedUserDelta?.unchanged ?? [];
-    expect(unchanged).toContain("use_workstation_profiles");
-    expect(unchanged).not.toContain("control_browser");
-    expect(unchanged).not.toContain("use_terminal");
-    // Clean up this test's custom Group + Role now so it cannot pollute the
-    // later shared-edit / composite tests (which create their own groups and
-    // rely on the member NOT also holding these caps via a leftover group).
-    await db.delete(groupMembers).where(eq(groupMembers.groupId, groupRow!.id));
-    await db.delete(groups).where(eq(groups.id, groupRow!.id));
-    await db.delete(roles).where(eq(roles.id, roleRow!.id));
-    const gidx = createdGroupIds.indexOf(groupRow!.id);
-    if (gidx >= 0) createdGroupIds.splice(gidx, 1);
-    const ridx = createdRoleIds.indexOf(roleRow!.id);
-    if (ridx >= 0) createdRoleIds.splice(ridx, 1);
+    expect(unchanged).toContain("use_workstation");
+    expect(unchanged).not.toContain("manage_roles");
+    } finally {
+      await cleanupCustomAccess(roleSlug, groupType);
+    }
   });
 
   test("W3.2.13 shared Permission-set edit enumerates affected Humans with true deltas", async () => {
-    // Self-contained: create a custom Role + Group granting use_terminal +
-    // control_browser, seat the member (also in canonical `members`), then
-    // edit the Role bundle and assert the member's affectedUserDeltas row.
+    // Self-contained: one capability is held only through the custom Role,
+    // while both capabilities in the edited bundle are already held through
+    // the canonical Member Role.
     const roleSlug = `edit-role-${ts}`;
     const groupType = `custom:edit-${ts}`;
+    try {
     const rp = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: roleSlug, label: "EDIT", capabilities: ["use_terminal", "control_browser"] },
+      operation: { kind: "role.create", slug: roleSlug, label: "EDIT", capabilities: ["use_workstation", "manage_roles"] },
     });
     expect(rp.ok).toBe(true);
     const ra = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: roleSlug, label: "EDIT", capabilities: ["use_terminal", "control_browser"] },
+      operation: { kind: "role.create", slug: roleSlug, label: "EDIT", capabilities: ["use_workstation", "manage_roles"] },
       fingerprint: rp.fingerprint,
     });
     expect(ra.applied).toBe(true);
@@ -530,46 +539,37 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
       .values({ groupId: groupRow!.id, userId: memberUserId, grantedBy: ownerActorId })
       .onConflictDoNothing({ target: [groupMembers.groupId, groupMembers.userId] });
 
-    // Edit the Role bundle: drop control_browser, add use_high_impact_tools.
+    // Drop the custom-only capability and add another Member capability.
     const sp = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.set_capabilities", roleId: roleRow!.id, capabilities: ["use_terminal", "use_high_impact_tools"] },
+      operation: { kind: "role.set_capabilities", roleId: roleRow!.id, capabilities: ["use_workstation", "control_browser"] },
     });
     expect(sp.ok).toBe(true);
     const memberDelta = (sp.affectedUserDeltas ?? []).find((d) => d.userId === memberUserId);
     expect(memberDelta).toBeDefined();
-    expect(memberDelta!.added).toEqual([]); // use_high_impact_tools already held via `members`
-    expect(memberDelta!.removed).toEqual(["control_browser"]);
-    // Robust against the real (large) Member bundle: control_browser is
-    // gone, use_terminal is preserved (still granted by the edited Role),
-    // and a known Member cap is preserved.
+    expect(memberDelta!.added).toEqual([]);
+    expect(memberDelta!.removed).toEqual(["manage_roles"]);
     const unchanged = memberDelta!.unchanged;
-    expect(unchanged).toContain("use_terminal");
-    expect(unchanged).toContain("use_workstation_profiles");
-    expect(unchanged).not.toContain("control_browser");
-    // Clean up this test's custom Group + Role so it cannot pollute the
-    // later composite test (which asserts the member genuinely gains
-    // use_terminal + control_browser via the new composite Group).
-    await db.delete(groupMembers).where(eq(groupMembers.groupId, groupRow!.id));
-    await db.delete(groups).where(eq(groups.id, groupRow!.id));
-    await db.delete(roles).where(eq(roles.id, roleRow!.id));
-    const gidx = createdGroupIds.indexOf(groupRow!.id);
-    if (gidx >= 0) createdGroupIds.splice(gidx, 1);
-    const ridx = createdRoleIds.indexOf(roleRow!.id);
-    if (ridx >= 0) createdRoleIds.splice(ridx, 1);
+    expect(unchanged).toContain("use_workstation");
+    expect(unchanged).toContain("control_browser");
+    expect(unchanged).not.toContain("manage_roles");
+    } finally {
+      await cleanupCustomAccess(roleSlug, groupType);
+    }
   });
 
   test("W3.2.14 composite shared_access.create creates Role+Group+edge+members atomically with one audit event", async () => {
     const roleSlug = `cmp-role-${ts}`;
     const groupType = `custom:cmp-${ts}`;
+    try {
     const beforeAuditCount = recordedAudit.length;
     const preview = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
       operation: {
         kind: "shared_access.create",
-        role: { slug: roleSlug, label: "CMP", capabilities: ["use_terminal", "control_browser"] },
+        role: { slug: roleSlug, label: "CMP", capabilities: ["manage_groups", "manage_roles"] },
         group: { groupType, label: "CMPG", ownerUserId: ownerUserId },
         memberUserIds: [memberUserId, memberUserId, ownerUserId],
       },
@@ -578,19 +578,19 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
     expect(preview.auditPreview.kind).toBe("rbac_shared_access_created");
     // De-duped member count in the audit preview.
     expect((preview.auditPreview as { memberCount: number }).memberCount).toBe(2);
-    // The owner already holds use_terminal + control_browser (Admin), so
+    // The owner already holds both administration capabilities (Admin), so
     // the owner's delta is all-UNCHANGED; the member genuinely gains both.
     const ownerDelta = (preview.affectedUserDeltas ?? []).find((d) => d.userId === ownerUserId);
     expect(ownerDelta?.added).toEqual([]);
     const memberDelta = (preview.affectedUserDeltas ?? []).find((d) => d.userId === memberUserId);
-    expect(memberDelta?.added).toEqual(["control_browser", "use_terminal"]);
+    expect(memberDelta?.added).toEqual(["manage_groups", "manage_roles"]);
 
     const apply = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
       operation: {
         kind: "shared_access.create",
-        role: { slug: roleSlug, label: "CMP", capabilities: ["use_terminal", "control_browser"] },
+        role: { slug: roleSlug, label: "CMP", capabilities: ["manage_groups", "manage_roles"] },
         group: { groupType, label: "CMPG", ownerUserId: ownerUserId },
         memberUserIds: [memberUserId, memberUserId, ownerUserId],
       },
@@ -616,6 +616,9 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
     // Both initial memberships exist (de-duped).
     const members = await db.select().from(groupMembers).where(eq(groupMembers.groupId, groupRow!.id));
     expect(members.map((m) => m.userId).sort()).toEqual([memberUserId, ownerUserId].sort());
+    } finally {
+      await cleanupCustomAccess(roleSlug, groupType);
+    }
   });
 
   test("W3.2.14 composite validation failure leaves no partial Role/Group/membership", async () => {
@@ -718,7 +721,7 @@ describe("Stack 195 W3.2 — preview/apply engine (real DB)", () => {
       actorActorId: ownerActorId,
       operation: {
         kind: "shared_access.create",
-        role: { slug: `peer-${ts}`, label: "P", capabilities: ["use_terminal"] },
+        role: { slug: `peer-${ts}`, label: "P", capabilities: ["use_workstation"] },
         group: { groupType: `custom:peer-${ts}`, label: "PG", ownerUserId: peer.id },
         memberUserIds: [peer.id],
       },
@@ -735,13 +738,13 @@ describe("Stack 195 W3.2.14 — shared_access.assign_existing (real DB)", () => 
     const rp = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: roleSlug, label: "ASG", capabilities: ["use_terminal", "control_browser"] },
+      operation: { kind: "role.create", slug: roleSlug, label: "ASG", capabilities: ["use_workstation", "control_browser"] },
     });
     expect(rp.ok).toBe(true);
     const ra = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: roleSlug, label: "ASG", capabilities: ["use_terminal", "control_browser"] },
+      operation: { kind: "role.create", slug: roleSlug, label: "ASG", capabilities: ["use_workstation", "control_browser"] },
       fingerprint: rp.fingerprint,
     });
     expect(ra.applied).toBe(true);
@@ -751,7 +754,7 @@ describe("Stack 195 W3.2.14 — shared_access.assign_existing (real DB)", () => 
 
     // A FRESH Human for this test's initial member, so leftover memberships
     // from earlier composite tests (which seat `memberUserId` in a
-    // use_terminal+control_browser group) cannot make the assign_existing
+    // use_workstation+control_browser group) cannot make the assign_existing
     // delta all-UNCHANGED. The fresh user holds nothing today.
     const [freshMember] = await db
       .insert(users)
@@ -786,13 +789,13 @@ describe("Stack 195 W3.2.14 — shared_access.assign_existing (real DB)", () => 
     expect((preview.auditPreview as { roleSlug: string }).roleSlug).toBe(roleSlug);
     expect(
       [...(preview.auditPreview as { capabilities: readonly string[] }).capabilities].sort(),
-    ).toEqual(["control_browser", "use_terminal"]);
+    ).toEqual(["control_browser", "use_workstation"]);
     // The owner already holds both caps (Admin), so the owner's delta is
     // all-UNCHANGED; the fresh member genuinely gains both.
     const ownerDelta = (preview.affectedUserDeltas ?? []).find((d) => d.userId === ownerUserId);
     expect(ownerDelta?.added).toEqual([]);
     const memberDelta = (preview.affectedUserDeltas ?? []).find((d) => d.userId === freshMember.id);
-    expect(memberDelta?.added).toEqual(["control_browser", "use_terminal"]);
+    expect(memberDelta?.added).toEqual(["control_browser", "use_workstation"]);
 
     const apply = await applyOperation(deps(), {
       actorUserId: ownerUserId,
@@ -864,19 +867,19 @@ describe("Stack 195 W3.2.14 — shared_access.assign_existing (real DB)", () => 
 
   test("assign_existing does NOT require manage_roles (manager with groups+members but not roles succeeds)", async () => {
     // Create a custom manager Role bundling manage_groups + manage_members +
-    // use_terminal (NOT manage_roles), and a custom Group seating a peer in it.
+    // use_workstation (NOT manage_roles), and a custom Group seating a peer in it.
     const mgrRoleSlug = `asg-mgr-${ts}`;
     const mgrGroupType = `custom:asg-mgr-${ts}`;
     const mrp = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: mgrRoleSlug, label: "MGR", capabilities: ["manage_groups", "manage_members", "use_terminal"] },
+      operation: { kind: "role.create", slug: mgrRoleSlug, label: "MGR", capabilities: ["manage_groups", "manage_members", "use_workstation"] },
     });
     expect(mrp.ok).toBe(true);
     const mra = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: mgrRoleSlug, label: "MGR", capabilities: ["manage_groups", "manage_members", "use_terminal"] },
+      operation: { kind: "role.create", slug: mgrRoleSlug, label: "MGR", capabilities: ["manage_groups", "manage_members", "use_workstation"] },
       fingerprint: mrp.fingerprint,
     });
     expect(mra.applied).toBe(true);
@@ -899,19 +902,19 @@ describe("Stack 195 W3.2.14 — shared_access.assign_existing (real DB)", () => 
     const [mgrGroup] = await db.select({ id: groups.id }).from(groups).where(eq(groups.type, mgrGroupType)).limit(1);
     if (mgrGroup) createdGroupIds.push(mgrGroup.id);
 
-    // Create an existing custom Permission set bundling only use_terminal
+    // Create an existing custom Permission set bundling only use_workstation
     // (which the peer manager holds) so the peer has authority over it.
     const existingRoleSlug = `asg-existing-${ts}`;
     const erp = await previewOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: existingRoleSlug, label: "EXIST", capabilities: ["use_terminal"] },
+      operation: { kind: "role.create", slug: existingRoleSlug, label: "EXIST", capabilities: ["use_workstation"] },
     });
     expect(erp.ok).toBe(true);
     const era = await applyOperation(deps(), {
       actorUserId: ownerUserId,
       actorActorId: ownerActorId,
-      operation: { kind: "role.create", slug: existingRoleSlug, label: "EXIST", capabilities: ["use_terminal"] },
+      operation: { kind: "role.create", slug: existingRoleSlug, label: "EXIST", capabilities: ["use_workstation"] },
       fingerprint: erp.fingerprint,
     });
     expect(era.applied).toBe(true);
@@ -919,7 +922,7 @@ describe("Stack 195 W3.2.14 — shared_access.assign_existing (real DB)", () => 
     if (existingRole) createdRoleIds.push(existingRole.id);
 
     // Peer: seated ONLY in the manager group → holds manage_groups +
-    // manage_members + use_terminal, but NOT manage_roles.
+    // manage_members + use_workstation, but NOT manage_roles.
     const [peer] = await db
       .insert(users)
       .values({

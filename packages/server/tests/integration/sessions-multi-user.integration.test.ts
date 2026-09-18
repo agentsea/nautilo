@@ -28,7 +28,10 @@ import { authedInject } from "./helpers/request-helpers";
 let fx: AppFixture;
 
 beforeAll(async () => {
-  fx = await setupOwnerAppFixture({ suiteName: "sess-mu" });
+  fx = await setupOwnerAppFixture({
+    suiteName: "sess-mu",
+    withDefaultAgentGraph: true,
+  });
 });
 
 afterAll(async () => {
@@ -122,21 +125,8 @@ describe("sessions multi-user (Logto JWT)", () => {
 });
 
 describe("sessions multi-user — ownership member vs alien room", () => {
-  let fxg: AppFixture;
-
-  beforeAll(async () => {
-    fxg = await setupOwnerAppFixture({
-      suiteName: "sess-mug",
-      withDefaultAgentGraph: true,
-    });
-  });
-
-  afterAll(async () => {
-    if (!fxg) return;
-    await fxg.cleanup();
-  });
-
   test("member sees own latest session; cannot load owner's room transcript (404)", async () => {
+    const fxg = fx;
     const roomId = fxg.defaultRoomId;
     const ogId = fxg.defaultOwnershipGroupId;
     if (!roomId || !ogId) throw new Error("graph");
@@ -236,6 +226,7 @@ describe("sessions multi-user — ownership member vs alien room", () => {
   });
 
   test("ownership peer in default room can list rooms and load room detail", async () => {
+    const fxg = fx;
     const roomId = fxg.defaultRoomId;
     const ogId = fxg.defaultOwnershipGroupId;
     if (!roomId || !ogId) throw new Error("graph");

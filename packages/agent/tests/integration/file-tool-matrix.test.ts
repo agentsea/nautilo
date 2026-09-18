@@ -78,8 +78,10 @@ const MATRIX_CASES: MatrixCase[] = [
     },
     args: () => ({ command: "read", path: join(workspace, "matrix-read.txt"), zone: "absolute" }),
     assert: async (out) => {
-      expect(out).toContain("line1");
-      expect(out).toContain("line2");
+      expect(JSON.parse(out)).toMatchObject({
+        command: "read",
+        content: "line1\nline2\n",
+      });
     },
   },
   {
@@ -209,7 +211,10 @@ describe("file tool dispatch matrix (M067D)", () => {
     const out = expectDispatchString(
       await dispatchFileCommand({ command: "read", path: p, zone: "absolute" }, ctxForTurn(turnId)),
     );
-    expect(out.trim()).toBe("absolute ok");
+    expect(JSON.parse(out)).toMatchObject({
+      command: "read",
+      content: "absolute ok",
+    });
   });
 
   for (const row of MATRIX_CASES) {

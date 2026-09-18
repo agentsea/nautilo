@@ -16,7 +16,7 @@ import { createTestUser, createTestRoom, getDirectDb, closeDirectDb } from "./he
 
 // This suite mutates only its UUID-scoped synthetic fixture on the approved clone.
 const instanceId = process.env["NAUTILO_INSTANCE_ID"]?.trim();
-if (!instanceId || !/(?:^|[-_])(test|qa|cruft)(?:$|[-_])/iu.test(instanceId)) throw new Error("M319 integration requires an explicit test, qa, or cruft instance");
+if (!instanceId || !/(?:^|[-_])(tests?|qa|cruft)(?:$|[-_])/iu.test(instanceId)) throw new Error("M319 integration requires an explicit test, tests, qa, or cruft instance");
 const db = getDirectDb();
 let userId = "";
 let agentId = "";
