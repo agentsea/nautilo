@@ -4,6 +4,11 @@ import { extname, join, relative } from "node:path";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 
+type Workflow = {
+  permissions?: Record<string, string>;
+  jobs: Record<string, { permissions?: Record<string, string> }>;
+};
+
 type RootPackage = {
   scripts?: Record<string, string>;
 };
@@ -50,7 +55,10 @@ describe("limit-invariant wiring", () => {
     expect(gates).toContain("run_cmd limit-invariants bun run limits:check");
     expect(gates).toMatch(/lint\)\s+run_gate lint-eslint\s+run_gate test-invariants\s+run_gate query-inventory\s+run_gate limit-invariants\s+run_gate lint-unused/u);
     expect(hooks).toContain("name: limit-invariants\n            run: bash dev/scripts/ci-gates.sh limit-invariants");
-    expect(workflow).toContain("name: Limit invariants\n        run: bash dev/scripts/ci-gates.sh limit-invariants");
+    expect(gates).toContain("run_cmd limit-invariants bun run --cwd packages/limit-invariants check:ci --base");
+    expect(workflow).toContain("LIMIT_REVIEW_BASE: ${{ github.event.pull_request.base.sha }}");
+    expect(workflow).toContain("LIMIT_REVIEW_HEAD: ${{ github.event.pull_request.head.sha }}");
+    expect(workflow).toContain("run: bash dev/scripts/ci-gates.sh limit-invariants");
   });
 
   test("developer-only package is absent from product imports and Genie skill registration", async () => {
@@ -100,5 +108,28 @@ describe("limit-invariant wiring", () => {
     ]));
     expect(scenarios.cases.every((item) => item.requiredReview.length !== 0 && item.forbiddenShortcut.trim() !== "")).toBe(true);
     expect(scenarios.cases.every((item) => item.expected.classification.trim() !== "" && item.expected.disposition.trim() !== "")).toBe(true);
+  });
+});
+
+describe("ordinary CI token permissions", () => {
+  test("grants source read access and no job-level write exceptions", async () => {
+    const source = await readFile(
+      join(repositoryRoot, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+    const workflow = Bun.YAML.parse(source) as Workflow;
+
+    expect(workflow.permissions).toEqual({ contents: "read" });
+    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+      if (jobName === "lint") {
+        // The limit check reads a maintainer's exact-commit status; CI cannot post one.
+        expect(job.permissions).toEqual({ contents: "read", statuses: "read" });
+        continue;
+      }
+      expect(
+        job.permissions,
+        `${jobName} must not widen the ordinary CI workflow token`,
+      ).toBeUndefined();
+    }
   });
 });

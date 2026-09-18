@@ -67,6 +67,9 @@ jobs:
 
   lint:
     name: Lint (eslint + invariant inventories + knip)
+    permissions:
+      contents: read
+      statuses: read
     needs: prepare-bun-cache
     runs-on: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
@@ -78,6 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2
 
       - name: Ensure exact pull request base is available
@@ -109,6 +113,10 @@ jobs:
         run: bash dev/scripts/ci-gates.sh query-inventory
 
       - name: Limit invariants
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LIMIT_REVIEW_BASE: ${{ github.event.pull_request.base.sha }}
+          LIMIT_REVIEW_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash dev/scripts/ci-gates.sh limit-invariants
 
       - name: Unused exports (knip)

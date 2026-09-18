@@ -54,10 +54,10 @@ setup*.toml
 !**/templates/*.toml
 !**/*.example.toml
 
-# operator / bootstrap secrets (D112 Phase 13)
+# Operator / bootstrap secrets
 # Real concern: never commit an env-file holding bootstrap PINs, admin
 # passwords, provider API keys, etc. These two file-name rules cover it.
-# (D112 §13 originally also had `**/operator-secrets/` as a directory-
+# A broad `**/operator-secrets/` directory-
 # level belt-and-suspenders rule, but with the new `@nautilo/operator-secrets`
 # package at `packages/operator-secrets/` it created a conflict that
 # `!`-negations couldn't reliably resolve across all tools that read
@@ -99,8 +99,22 @@ apps/desktop/vendor/*
 # Describes emergent de-facto structure, not intended design — never commit.
 .codeboarding/
 
-# D431 local-only, generated OOXML transport/capacity packages.
+# Local-only, generated OOXML transport/capacity packages.
 apps/workbench/tests/fixtures/ooxml/capacity/
 
-# D490 raw exact-image reports are CI/release artifacts, not source inputs.
+# Raw exact-image reports are CI/release artifacts, not source inputs.
 /packaging/docker/evidence/source-*/
+
+# Local-only agent audits and working notes. These files may contain private
+# review evidence and must never enter public source history.
+*.limit-audit.*
+*.agent-notes.*
+
+# Retired limit-audit names, kept ignored after their tracked copies are removed.
+/packages/limit-invariants/baseline/legacy-lock.json
+/packages/limit-invariants/baseline/legacy-unreviewed.jsonl
+/packages/limit-invariants/baseline/limit-inventory.jsonl
+/packages/limit-invariants/baseline/reviewed-limit-decisions.jsonl
+/packages/limit-invariants/generated/investigation-map.md
+/packages/limit-invariants/generated/limit-matrix.md
+/packages/limit-invariants/generated/limit-scout.jsonl

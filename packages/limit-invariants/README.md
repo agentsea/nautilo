@@ -10,8 +10,9 @@ The scanner is deliberately dumb. It reports deterministic source facts,
 parser-grounded extraction confidence, and transparent mechanical priority
 cues. It never infers authority, legitimacy, classification, approval, or
 remediation. The `limit-preflight` Codex skill performs the semantic
-investigation and either records an evidence-backed reviewed decision or
-surfaces the unresolved decision to the user.
+investigation and either records an evidence-backed reviewed decision in the
+local audit workspace or surfaces the unresolved decision to the user. Audit
+evidence is private working material and is ignored by Git.
 
 ## Commands
 
@@ -22,6 +23,7 @@ bun run limits:inventory
 bun run limits:report
 bun run limits:check
 bun run limits:scout
+bun run --cwd packages/limit-invariants review --repository agentsea/nautilo --head <exact-40-character-sha>
 ```
 
 `limits:inventory` regenerates mechanically grouped primary investigation
@@ -29,7 +31,24 @@ packets and the matrix projection. Each packet gives one producer/literal
 anchor, every linked site, exact expressions, effects, and ordering reasons;
 it is not a verdict. `limits:report` regenerates the human matrix.
 `limits:check` fails for new, changed, removed, stale, duplicated, malformed,
-or uncovered primary packets and for stale matrix output.
+or uncovered primary packets. It requires the local inventory, reviewed
+decisions, frozen legacy debt, and legacy lock; missing evidence fails closed.
+The matrix and investigation map are local non-authoritative reports, so their
+freshness does not control the semantic check.
+
+Public CI independently scans the exact pull-request base and HEAD source trees.
+Unchanged or removed observations need no private evidence. Every new or changed
+observation requires the strict local semantic check against the ignored audit
+files and a successful `limit-policy-reviewed` status bound to that exact HEAD
+commit. Merging source never admits new legacy debt or carries approval to a
+different fingerprint.
+
+`review` is the maintainer-only exact-commit publication step. It
+requires an explicit GitHub `owner/name`, a full commit SHA, a matching
+`origin`, and a worktree with no tracked or non-ignored untracked changes. It
+runs the strict local check, verifies the same clean HEAD again, then publishes
+only the generic `limit-policy-reviewed` success status. Failures and private
+audit contents are never posted.
 
 `limits:scout` writes a non-blocking wide-scout projection for generic measured
 comparisons and scheduling timers. Test, fixture, generated, migration, and
@@ -64,20 +83,24 @@ cannot absorb a new or changed observation.
 1. Run `bun run limits:inventory` and inspect the factual diff.
 2. Invoke the canonical `limit-preflight` skill to trace the complete
    producer-to-consumer behavior and its real authority.
-3. Add or update a row in `baseline/reviewed-limit-decisions.jsonl` only when
-   the evidence supports the classification and disposition. If it does not,
-   surface the decision to the user.
+3. Add or update a row in
+   `baseline/reviewed-limit-decisions.limit-audit.jsonl` only when the evidence
+   supports the classification and disposition. If it does not, surface the
+   decision to the user.
 4. Remove the matching legacy row with `shrink-legacy`, regenerate the report,
    and run `bun run limits:check`.
 
 There is no permanent `approved arbitrary` state. A local literal, comment,
 configuration knob, test, or existing ledger row is not policy authority.
 
-## Baseline and measured cost
+## Local audit workspace
 
-The checked-in baseline records primary investigation packets, not every
-boundary-shaped syntax site. Frozen legacy packets remain visible and unable
-to grow through ordinary commands; frozen does not mean approved or safe.
+The local `baseline/*.limit-audit.*` files record primary investigation packets,
+not every boundary-shaped syntax site. Generated reports use the same suffix in
+`generated/`. Both directories stay in the package for familiar command paths,
+but the evidence files are ignored and must never be committed. Frozen legacy
+packets remain visible and unable to grow through ordinary commands; frozen
+does not mean approved or safe.
 The non-blocking scout can broaden an investigation without turning every
 counter comparison, timer scheduler, or test fixture into a demanded review.
 
@@ -85,10 +108,3 @@ The scanner adds no internal timeout, candidate cap, file-size ceiling, or
 concurrency clamp. Record full-scan wall time, memory, packet/site counts, and
 repeat-run hashes whenever the discovery contract materially changes; keep the
 required full scan only while the measured cost fits the invariant lane.
-
-The schema-v2 baseline was measured on 2026-08-27 in the feature worktree: two
-complete inventory runs took 7.10 s and 7.14 s, each produced 4,320 primary
-packets linking 4,824 sites, and produced identical inventory, focus-map, and
-matrix SHA-256 hashes. A separate full check took 8.06 s with 476,725,248 bytes
-maximum resident set size. The agent-facing focus map routes first to 17 named
-semantic-loss junctions; none of these counts are semantic verdicts.
