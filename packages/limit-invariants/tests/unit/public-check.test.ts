@@ -159,7 +159,7 @@ describe("public limit companion", () => {
     expect(result).toMatchObject({ ...expected, reviewedStatusRequired: true });
   });
 
-  test("reads every status page and the latest matching context wins", async () => {
+  test("reads every status page and the latest case-insensitive matching context wins", async () => {
     const repo = await repository("export const PAYLOAD_LIMIT = 10;\n", "export const PAYLOAD_LIMIT = 20;\n");
     const requests: string[] = [];
     const firstPage = Array.from({ length: 100 }, (_, index) => index === 0
@@ -171,7 +171,7 @@ describe("public limit companion", () => {
       head: repo.head,
       repository: REPOSITORY,
       token: TOKEN,
-    }, { fetch: pages([firstPage, [status(repo.head, "failure", "2026-09-18T11:00:00Z", 500)]], requests) }));
+    }, { fetch: pages([firstPage, [status(repo.head, "failure", "2026-09-18T11:00:00Z", 500, "Limit-Policy-Reviewed")]], requests) }));
     expect(message).toContain("Latest limit-policy-reviewed status");
     expect(message).toContain("is failure");
     expect(message).toContain("added=0 changed=1 unchanged=0 removed=0");

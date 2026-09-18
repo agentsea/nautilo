@@ -135,7 +135,7 @@ async function requireExactHeadReview(
       throw new Error(`GitHub status lookup returned malformed status items for exact HEAD ${head}.`);
     }
     const pageStatuses = payload;
-    matching.push(...pageStatuses.filter((status) => status.context === REVIEW_CONTEXT));
+    matching.push(...pageStatuses.filter((status) => typeof status.context === "string" && status.context.toLowerCase() === REVIEW_CONTEXT));
     if (pageStatuses.length < 100) break;
   }
   const latest = latestStatus(matching);
