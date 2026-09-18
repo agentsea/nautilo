@@ -120,9 +120,9 @@ describe("Stack 195 W3.1.3 — access-control read endpoints (raw API)", () => {
         expect(memberSelf.statusCode).toBe(200);
         const memberSelfBody = JSON.parse(memberSelf.body) as EffectiveAccessBody;
         expect(memberSelfBody.highestRole).toBe("member");
-        // Member holds use_workstation_profiles (canonical member entitlement).
+        // Member holds use_workstation (canonical member entitlement).
         const memberWsl = memberSelfBody.capabilities.find(
-          (c) => c.slug === "use_workstation_profiles",
+          (c) => c.slug === "use_workstation",
         )!;
         expect(memberWsl.granted).toBe(true);
         expect(
@@ -194,7 +194,7 @@ describe("Stack 195 W3.1.3 — access-control read endpoints (raw API)", () => {
         expect(ownerCat.statusCode).toBe(200);
         const catBody = JSON.parse(ownerCat.body) as CatalogueBody;
         // Server-truth capabilities in stable order.
-        expect(catBody.capabilities.map((c) => c.slug)).toContain("use_workstation_profiles");
+        expect(catBody.capabilities.map((c) => c.slug)).toContain("use_workstation");
         // Canonical ladder roles present and marked system.
         const memberRole = catBody.roles.find((r) => r.slug === "member");
         expect(memberRole).toBeDefined();

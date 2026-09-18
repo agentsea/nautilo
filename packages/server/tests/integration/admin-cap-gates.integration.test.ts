@@ -48,16 +48,14 @@ describe("admin capability gates (D219 S2)", () => {
         url: "/api/rooms/manageable",
         bearer: member.bearer,
       });
-    expect(roomsForMember.statusCode).toBe(200);
-    const memberRoomsBody = JSON.parse(roomsForMember.body) as { rooms: Array<{ id: string }> };
-    // The canonical `member` Role bundle INCLUDES `manage_rooms` (only
-    // `manage_agents`, the meta-admin caps, and approvals are stripped at
-    // member/superuser tiers — see seed-trust-personal.ts MEMBER_REMOVES).
-    // So a member legitimately sees manageable rooms; room visibility is
-    // NOT a tier differentiator here. The real ladder gates that DO differ
-    // are `/api/invites` (member 403 above) and `/api/agents` (member can't
-    // see the agent below — `manage_agents` IS stripped at this tier).
-    expect(memberRoomsBody.rooms.some((r) => r.id === fx.defaultRoomId)).toBe(true);
+      expect(roomsForMember.statusCode).toBe(200);
+      const memberRoomsBody = JSON.parse(roomsForMember.body) as {
+        rooms: Array<{ id: string }>;
+      };
+      // D543 separates ordinary Room creation from server-wide Room
+      // administration. Members may manage Rooms they own or administer, but
+      // cannot see the fixture owner's private Room in this picker.
+      expect(memberRoomsBody.rooms.some((r) => r.id === fx.defaultRoomId)).toBe(false);
 
       // `/api/agents` returns ALL agents only to callers with the
       // `manage_agents` capability; everyone else sees only their OWN
