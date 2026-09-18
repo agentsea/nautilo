@@ -91,6 +91,26 @@ function parseToolResult(value: unknown): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function rejectProposal(
+  registry: LiveMiniAppSessionRegistry,
+  sessionId: string,
+  result: Record<string, unknown>,
+): void {
+  const review = result["__nautiloLiveReview"];
+  if (!review || typeof review !== "object" || !("proposalId" in review)) {
+    throw new Error("proposal result did not include review identity");
+  }
+  const proposalId = (review as { proposalId?: unknown }).proposalId;
+  if (typeof proposalId !== "string") {
+    throw new Error("proposal result included an invalid review identity");
+  }
+  expect(registry.completeProposalReview({
+    sessionId,
+    proposalId,
+    outcome: "rejected",
+  }).ok).toBe(true);
+}
+
 beforeAll(async () => {
   fixtureRoot = await mkdtemp(join(tmpdir(), "nautilo-d386-fixture-"));
   process.env["NAUTILO_ARTIFACTS_ROOT"] = join(fixtureRoot, "artifacts");
@@ -237,6 +257,7 @@ describe("D386 real Writer preflight", () => {
         { kind: "format-block", blockId: "block-1" },
       ],
     });
+    rejectProposal(registry, sessionId, shortenedWithProperties);
 
     const ambiguous = parseToolResult(await edit!.invoke({
       sessionToken: token,
@@ -314,6 +335,7 @@ describe("D386 real Writer preflight", () => {
         "proposalId" in liveReview &&
         typeof liveReview.proposalId === "string",
     ).toBe(true);
+    rejectProposal(registry, sessionId, proposal);
 
     for (const operations of [
       [
@@ -325,11 +347,13 @@ describe("D386 real Writer preflight", () => {
         { kind: "replace", blockId: "block-1", scope: { kind: "locator", handle: located["locatorHandle"] }, text: "fixed" },
       ],
     ]) {
-      expect(parseToolResult(await edit!.invoke({
+      const independentProposal = parseToolResult(await edit!.invoke({
         sessionToken: token,
         documentVersion: { kind: "artifact_revision", revision: persistedBefore.revision },
         operations,
-      }))).toMatchObject({ ok: true, status: "proposal_ready" });
+      }));
+      expect(independentProposal).toMatchObject({ ok: true, status: "proposal_ready" });
+      rejectProposal(registry, sessionId, independentProposal);
     }
 
     const conflict = parseToolResult(await edit!.invoke({
