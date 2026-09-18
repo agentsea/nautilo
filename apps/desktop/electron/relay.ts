@@ -389,7 +389,7 @@ interface AuthenticatedDesktopTopology {
   readonly capabilityRevision: number;
 }
 
-/** D516's exact current Electron relay topology.  This is not a grant. */
+/** exact current Electron relay topology.  This is not a grant. */
 export interface ComputerUseDispatchRuntime {
   readonly instanceId: string;
   readonly humanUserId: string;
@@ -448,7 +448,7 @@ export type ComputerUseOwnedWorkFence =
   | { readonly kind: "installation_epoch_reset"; readonly installationEpoch: string; readonly grantGeneration: number };
 
 /**
- * D516 revocation fence.  An installation-epoch reset follows corrupt or
+ * revocation fence.  An installation-epoch reset follows corrupt or
  * foreign bytes, so the prior epoch is unknowable: every owned Computer use
  * operation must be aborted.  Exact revocation can remain narrowly scoped.
  */
@@ -471,7 +471,7 @@ export function getActiveStructuredSshRuntime(): StructuredSshDispatchRuntime | 
 
 
 /**
- * D418 — minimal surface the relay needs from the main-process
+ * minimal surface the relay needs from the main-process
  * `ActiveWorkstationProfileController` to advertise the active profile
  * binding. The controller remains the sole owner of profile state; the
  * relay only reads the redacted advisory snapshot.
@@ -481,7 +481,7 @@ export interface RelayWorkstationProfileSnapshotProvider {
 }
 
 /**
- * D418 task 3.2.1 (B5) — minimal surface the relay needs from the
+ * minimal surface the relay needs from the
  * main-process `ActiveWorkstationProfileController` to source the COMPLETE
  * active-profile network policy for a plan-bound shell dispatch. Distinct from
  * {@link RelayWorkstationProfileSnapshotProvider}: the snapshot is the redacted
@@ -497,7 +497,7 @@ export interface RelayWorkstationProfileNetworkPolicyProvider {
 }
 
 /**
- * D418 task 3.2.1 (B5) — the shared main-process
+ * the shared main-process
  * `ActiveWorkstationProfileController` implements BOTH the redacted snapshot
  * provider and the complete network-policy provider. `StartRelayOptions` types
  * it as the snapshot provider (the wire-advertisement surface); this helper
@@ -520,7 +520,7 @@ export function asRelayWorkstationProfileNetworkPolicyProvider(
 }
 
 /**
- * D418 — resolves the active-profile advertisement for the capability
+ * resolves the active-profile advertisement for the capability
  * builder. Returns `undefined` when no provider is bound or the provider
  * has no active profile, so the relay OMITS `workstationProfileSnapshot`
  * rather than advertising a partial or misleading binding. A provider that
@@ -541,7 +541,7 @@ export async function resolveDesktopProfileAdvertisement(
 }
 
 /**
- * D418 — return the existing stable desktop relay id without creating one.
+ * return the existing stable desktop relay id without creating one.
  *
  * Grant creation must bind to the same persisted id that `startRelay` uses,
  * but it must not manufacture relay identity before the relay has been
@@ -552,7 +552,7 @@ export function getPersistedDesktopRelayId(): string | null {
   return readPersistedRelayId(desktopRelayIdentityFilePath());
 }
 
-// ── D418 — local desktop-filesystem-grant authority resolution ────────────────────
+// ── local desktop-filesystem-grant authority resolution ────────────────────
 //
 // A dispatch may carry an optional `desktopFilesystemGrantRequest` (protocol v6).
 // That field is an UNTRUSTED server mirror: its `requestedRoot`, policy
@@ -562,7 +562,7 @@ export function getPersistedDesktopRelayId(): string | null {
 // identity immediately before use, authorizes the concrete operation via
 // `guardDesktopFilesystemOperation`, and enforces the protected-path policy. Only the
 // validated root(s) — plus explicit baseline authorities — become filesystem
-// authority; the server's `allowedRoots` are dropped for the D418 path.
+// authority; the server's `allowedRoots` are dropped for the local grant path.
 
 /** Minimal live-grant store surface the resolver depends on (see `DesktopFilesystemGrantStore.list`). */
 export interface DesktopFilesystemGrantAuthorityStore {
@@ -653,7 +653,7 @@ export function createDesktopFilesystemGrantAuthorityResolver(
 
   return async function resolve(input) {
     const { request } = input;
-    // No envelope means no D418 authority has been requested. In particular,
+    // No envelope means no local grant authority has been requested. In particular,
     // never turn the local grant list into authority merely because it exists.
     if (request === undefined) return { ok: true, hasAuthority: false, roots: [] };
     // Untrusted mirror: an undeterminable concrete operation must never default
@@ -832,7 +832,7 @@ export function createDesktopFilesystemGrantAuthorityResolver(
   };
 }
 
-// ── D418 — local Current Folder shell authority ────────────────────────────
+// ── local Current Folder shell authority ────────────────────────────
 //
 // A profile session intentionally binds only its compiled policy-pack grants.
 // Once the plan binding itself has been locally revalidated, its exact Current
@@ -959,10 +959,10 @@ export function createLocalShellWorkspaceAuthorityResolver(
     }
 
     // An explicit *durable* grant containing the Current Folder constrains the
-    // transient baseline. Inspect history as well as active records: a revoked,
-    // expired, foreign, or identity-less most-specific grant is a denial, not a
-    // reason to fall through to baseline authority. Policy-pack grants remain
-    // profile roots rather than duplicate project grants.
+    // transient baseline. Keep the most-specific scope even when it only has
+    // history, so revocation cannot fall back to a broader grant or baseline.
+    // An active explicit grant at that same scope can restore access. Policy-pack
+    // grants remain profile roots rather than duplicate project grants.
     const containingDurable = listed.data.grants.filter((item) =>
       item.grant.lifetime === "durable" &&
       isPathWithinDesktopFilesystemGrantRoot(item.grant.canonicalRoot, workspace),
@@ -976,13 +976,16 @@ export function createLocalShellWorkspaceAuthorityResolver(
     );
     if (decisiveDurable.length > 0) {
       const now = new Date();
-      for (const item of decisiveDurable) {
-        const grant = item.grant;
+      const active = decisiveDurable.filter(({ grant, status }) =>
+        status === "active" && grant.revokedAt === undefined &&
+        (grant.expiresAt === undefined || Date.parse(grant.expiresAt) > now.getTime()),
+      );
+      if (active.length === 0) {
+        return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED" };
+      }
+      for (const { grant } of active) {
         const subject = grant.subject;
         if (
-          item.status !== "active" ||
-          grant.revokedAt !== undefined ||
-          (grant.expiresAt !== undefined && Date.parse(grant.expiresAt) <= now.getTime()) ||
           subject.userId !== options.expectedSubject.userId ||
           subject.instanceId !== options.expectedSubject.instanceId ||
           subject.relayId !== options.expectedSubject.relayId ||
@@ -996,6 +999,23 @@ export function createLocalShellWorkspaceAuthorityResolver(
         const identity = await revalidateIdentity(grant.filesystemIdentity);
         if (!identity.ok) {
           return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH" };
+        }
+      }
+      for (const historical of decisiveDurable) {
+        if (active.includes(historical)) continue;
+        const old = historical.grant;
+        // Revocation is per grant ID. It must not revoke an independently
+        // active grant at the exact same root and complete subject, regardless
+        // of creation order. A broader or foreign grant is not a replacement.
+        const replaced = active.some(({ grant }) =>
+          grant.canonicalRoot === old.canonicalRoot &&
+          grant.subject.userId === old.subject.userId &&
+          grant.subject.instanceId === old.subject.instanceId &&
+          grant.subject.relayId === old.subject.relayId &&
+          grant.subject.agentScope === old.subject.agentScope,
+        );
+        if (!replaced) {
+          return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED" };
         }
       }
       return { ok: true, workspace };
@@ -1052,7 +1072,7 @@ export function createLocalShellWorkspaceAuthorityResolver(
   };
 }
 
-// ── D418 task 3.1.3b — plan-bound shell-binding local revalidation ──────────
+// ── plan-bound shell-binding local revalidation ──────────
 //
 // A generic `run_shell` dispatch may carry an optional `workstationShellBinding`
 // (protocol v7). The envelope is an UNTRUSTED server mirror of the plan binding
@@ -1107,7 +1127,7 @@ export type WorkstationShellBindingRevalidationResult =
   | { readonly ok: false; readonly code: WorkstationShellBindingRevalidationFailureCode };
 
 /**
- * D418 task 3.2.1 (B5) — the resolver-level resolution: the pure revalidation
+ * the resolver-level resolution: the pure revalidation
  * result PLUS the complete network policy sourced from the Electron-main
  * active profile and converted to the wire/sandbox shape. The network policy
  * is ALWAYS present on a successful resolution (the resolver fails closed when
@@ -1146,7 +1166,7 @@ export interface WorkstationShellBindingAuthorityResolverOptions {
   /** This relay's last successfully advertised capability revision. */
   readonly getCapabilityRevision: () => number;
   /**
-   * D440 Phase 1 — Electron's live selected Current Folder. A profile-bound
+   * Electron's live selected Current Folder. A profile-bound
    * resolver without this provider fails closed; non-profile dispatches never
    * invoke this resolver and retain baseline compatibility.
    */
@@ -1154,7 +1174,7 @@ export interface WorkstationShellBindingAuthorityResolverOptions {
   /** The shared main-process active-profile snapshot provider. */
   readonly profileProvider: RelayWorkstationProfileSnapshotProvider;
   /**
-   * D418 task 3.2.1 (B5) — the shared main-process active-profile NETWORK
+   * the shared main-process active-profile NETWORK
    * POLICY provider. The resolver sources the complete active-profile network
    * policy from here and converts it into the sandbox envelope's
    * `networkPolicy`, REPLACING the server's value. When omitted or unavailable
@@ -1296,7 +1316,7 @@ export function revalidateWorkstationShellBinding(
 }
 
 /**
- * D418 task 3.2.1 (B5) — convert the Electron-main active profile's complete
+ * convert the Electron-main active profile's complete
  * `ProfileNetworkPolicy` into the sandbox/wire `RelayNetworkPolicy` that the
  * per-turn shell sandbox envelope carries. The conversion is STRICT:
  *   - `host`     → `{ mode: "host" }` (exact).
@@ -1424,7 +1444,7 @@ export function createWorkstationShellBindingAuthorityResolver(
       }
     }
 
-    // D418 task 3.2.1 (B5) — source the COMPLETE network policy from the
+    // source the COMPLETE network policy from the
     // Electron-main active profile and convert it to the sandbox/wire shape.
     // The server's sandboxProfile.config.networkPolicy is never authority
     // here; the local profile is the sole source. Fail closed when the
@@ -1458,7 +1478,7 @@ export function createWorkstationShellBindingAuthorityResolver(
 }
 
 /**
- * D418 durable desktop-grant subject scope. This means any Genie agent acting
+ * durable desktop-grant subject scope. This means any Genie agent acting
  * for this already-bound desktop user, instance, and relay. It is not an
  * unbound wildcard: userId, instanceId, and relayId are all exact-match
  * subject fields enforced by the local resolver.
@@ -1466,7 +1486,7 @@ export function createWorkstationShellBindingAuthorityResolver(
 export const DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE = "all_owned_agents";
 
 /**
- * Startup wiring seam for D418 local authority. Production uses the actual
+ * Startup wiring seam for local authority. Production uses the actual
  * Electron instance/grant-state paths; tests may supply only the local-store
  * and path/identity inputs needed to exercise this construction without
  * Electron or a persisted instance file.
@@ -1546,7 +1566,7 @@ export interface BuildDesktopFilesystemGrantSnapshotOptions {
 }
 
 /**
- * D418 — build the advisory active-grant snapshot from the SAME local
+ * build the advisory active-grant snapshot from the SAME local
  * `DesktopFilesystemGrantStore` the production resolver reads. The snapshot is
  * discovery data only and NEVER authority: the relay-local resolver reloads the
  * live store, revalidates subject/policy/lifetime/identity, and decides every
@@ -1605,7 +1625,7 @@ export async function buildDesktopFilesystemGrantSnapshot(
   };
 }
 
-// ── D418 task 3.2.1 — compile the canonical protected-path policy into the
+// ── compile the canonical protected-path policy into the
 // per-turn sandbox envelope for a plan-bound `run_shell` dispatch ──────────
 //
 // When a `workstationShellBinding` is revalidated, the sandbox's read/write
@@ -1624,7 +1644,7 @@ export async function buildDesktopFilesystemGrantSnapshot(
 // /etc/passwd for name resolution). The category allowlist below selects
 // the home-relative secret/credential stores + Nautilo state + caller
 // roots — exactly the "protected even if a parent directory has been
-// granted" set from the D418 issue doc (SSH/GPG/cloud credentials, browser
+// granted" set in the protected-path policy (SSH/GPG/cloud credentials, browser
 // and password-manager profiles, Keychains, Nautilo data/vault/audit).
 // System paths stay gated by the sandbox's own base system-path allowlist.
 
@@ -1721,7 +1741,7 @@ function createGuardedShellScratch(): { readonly workspace: string; readonly pro
  * `protectedPaths` are relay-derived. The shell still runs sandboxed via
  * the single `spawnSandboxed` path — there is no unsandboxed fallback.
  *
- * D418 task 3.2.1 (B5) — the envelope's `networkPolicy` is REPLACED, not
+ * the envelope's `networkPolicy` is REPLACED, not
  * preserved, with the complete network policy sourced from the
  * Electron-main active profile (converted by
  * `profileNetworkPolicyToRelayNetworkPolicy`). The server's
@@ -1851,7 +1871,7 @@ export async function resolveWorkstationRelativeCwd(input: {
       error: "Workstation cwd must be a non-empty relative directory path.",
     };
   }
-  // Preserve D486's security invariant: a server-provided host path is never
+  // Preserve security invariant: a server-provided host path is never
   // authority. Absolute values are ignored and execution remains bound to
   // Electron's selected Current Folder; only relative values can select a
   // contained child directory.
@@ -1935,32 +1955,32 @@ export interface DispatchHandlerOptions {
   readonly probeRipgrep?: typeof probeDesktopRipgrep;
   readonly onFsChange?: ((event: RelayFsChangeEvent) => void) | undefined;
   readonly relayId?: string | undefined;
-  /** D560 Electron-owned security-research authority; absent means unavailable. */
+  /** Electron-owned security-research authority; absent means unavailable. */
   readonly securityScanCoordinator?: DesktopSecurityScanCoordinator | undefined;
   /**
-   * D500 — Electron-local structured SSH authority. The relay receives only
+   * Electron-local structured SSH authority. The relay receives only
    * a strict binding and exact public request fields; this runtime reloads the
    * local grant/trust state and invokes the fixed OpenSSH broker. It has no
    * relationship to Current Folder or the generic shell/sandbox paths.
    */
   readonly structuredSsh?: StructuredSshDispatchRuntime | undefined;
   /**
-   * D516 Electron-local final authority and semantic provider dispatcher.
+   * Electron-local final authority and semantic provider dispatcher.
    * The relay client has already parsed and topology-checked the binding;
    * this callback revalidates the durable local grant before any effect.
    */
   readonly computerUseDispatch?: ((
     invocation: ComputerUseHostInvocation,
   ) => Promise<ComputerUseHostDispatchResult>) | undefined;
-  /** D448 private-staging seam into the sole Desktop mutation coordinator. */
+  /** private-staging seam into the sole Desktop mutation coordinator. */
   readonly commitDesktopApplyPatch?: CommitDesktopApplyPatch | undefined;
-  /** D448 agent OfficeCLI's staged binary postimage commit seam. */
+  /** agent OfficeCLI's staged binary postimage commit seam. */
   readonly commitDesktopOfficeCli?: CommitDesktopOfficeCli | undefined;
-  /** D448 ordinary agent local-file content commit seam. */
+  /** ordinary agent local-file content commit seam. */
   readonly commitDesktopAgentContent?: CommitDesktopAgentContent | undefined;
-  /** D448 structural agent local-file commit seam. */
+  /** structural agent local-file commit seam. */
   readonly commitDesktopAgentStructural?: CommitDesktopAgentStructural | undefined;
-  /** D448 canonical local history restore commit seam. */
+  /** canonical local history restore commit seam. */
   readonly commitDesktopHistoryRestore?: CommitDesktopHistoryRestore | undefined;
   /** Test seam for the structured OfficeCLI runner used by local dispatch. */
   readonly officeRun?: import("@nautilo/config/officecli").OfficeCreateRunFn | undefined;
@@ -1970,20 +1990,20 @@ export interface DispatchHandlerOptions {
     preparation: ApplyPatchDispatchPreparation,
   ) => ApplyPatchTrustedIdentity | undefined | Promise<ApplyPatchTrustedIdentity | undefined>;
   /**
-   * D418 — injected local authority resolver for dispatches carrying a
+   * injected local authority resolver for dispatches carrying a
    * `desktopFilesystemGrantRequest`. When absent, any such dispatch fails closed:
    * the server envelope can never create filesystem authority on its own.
    */
   readonly desktopFilesystemGrantAuthority?: DesktopFilesystemGrantAuthorityResolver | undefined;
   /**
-   * D418 task 3.1.3b — injected local authority resolver for `run_shell`
+   * injected local authority resolver for `run_shell`
    * dispatches carrying a `workstationShellBinding`. When absent, any such
    * dispatch fails closed (`WORKSTATION_SHELL_BINDING_UNCONFIGURED`): the
    * server envelope can never create filesystem authority on its own.
    */
   readonly workstationShellBindingAuthority?: WorkstationShellBindingAuthorityResolver | undefined;
   /**
-   * D418 task 3.2.1 — the canonical protected-path policy the relay compiles
+   * the canonical protected-path policy the relay compiles
    * into the per-turn sandbox envelope as deny-overrides after allows. When
    * a plan-bound shell binding is revalidated, the dispatch handler rebuilds
    * the sandbox envelope LOCALLY so its read/write roots derive from the
@@ -2019,7 +2039,7 @@ export interface DispatchHandlerOptions {
    */
   readonly localShellWorkspaceAuthority?: LocalShellWorkspaceAuthorityResolver | undefined;
   /**
-   * D418 local authority-boundary correction — the shared main-process
+   * local authority-boundary correction — the shared main-process
    * active-profile snapshot provider (the SAME controller the capability
    * builder reads). When wired, the dispatch handler refuses a generic
    * `run_shell` that carries no `workstationShellBinding` while a locally
@@ -2038,7 +2058,7 @@ export interface DispatchHandlerOptions {
     | ((signal?: AbortSignal) => Promise<string | null>)
     | undefined;
   /**
-   * D440 Phase 3 — test seam for the typed GitBroker the `run_shell` git
+   * test seam for the typed GitBroker the `run_shell` git
    * variant constructs. Production leaves this undefined so the relay uses
    * the real `GitBroker` with the fixed `/usr/bin/git` executable; tests
    * inject a fake so the authority flow + disposition return path can be
@@ -2046,7 +2066,7 @@ export interface DispatchHandlerOptions {
    */
   readonly createGitBroker?: RunShellGitBrokerFactory | undefined;
   /**
-   * D440 live acceptance — all independently revalidated local grants that
+   * live acceptance — all independently revalidated local grants that
    * carry both create/modify and delete authority. Structured Git keeps its
    * repository pinned to the binding's Current Folder, but sibling worktree
    * targets may use these separately reviewed exact roots.
@@ -2056,7 +2076,7 @@ export interface DispatchHandlerOptions {
   readonly runWorkstationShell?: ((request: {
     readonly command: string;
     readonly cwd: string;
-    /** Set only after D538's Electron-owned live-session verification. */
+    /** Set only after Electron-owned live-session verification. */
     readonly consentMode?: "verified_uncontained_session" | undefined;
     /** Canonical Electron-selected Current Folder; never server-supplied. */
     readonly workspacePath?: string | undefined;
@@ -2068,9 +2088,9 @@ export interface DispatchHandlerOptions {
     readonly onStderrChunk?: ((chunk: Buffer) => void) | undefined;
   }) => Promise<RelayDispatchResult>) | undefined;
   /**
-   * D538's Electron-owned pre-spawn check. The server never supplies this
+   * Electron-owned pre-spawn check. The server never supplies this
    * fact: it verifies the relay-local owner tuple against the exact current
-   * Desktop status before the existing D486 host runner is entered.
+   * Desktop status before the existing host runner is entered.
    */
   readonly verifyUncontainedHostCommands?: ((binding: {
     readonly instanceId: string;
@@ -2078,9 +2098,9 @@ export interface DispatchHandlerOptions {
     readonly relayId: string;
     readonly desktopSessionId: string | null;
   }) => Promise<boolean>) | undefined;
-  /** D502 private, bounded Desktop-local continuation authority. */
+  /** private, bounded Desktop-local continuation authority. */
   readonly runShellOutputArtifactStore?: RunShellOutputArtifactStore | undefined;
-  /** D504 private, bounded Electron-local semantic page continuation store. */
+  /** private, bounded Electron-local semantic page continuation store. */
   readonly browserPageSnapshotStore?: BrowserPageSnapshotStore | undefined;
   /** Session-local media transfer owner; standalone handlers receive an isolated fallback. */
   readonly mediaSessions?: MediaSessionsPort | undefined;
@@ -2093,13 +2113,13 @@ export interface DispatchHandlerOptions {
   /** Candidate-session late-work fence; omitted by standalone handlers. */
   readonly settleBoundWork?: (<T>(work: Promise<T>) => Promise<T>) | undefined;
   /**
-   * D458 — explicit Human mobile selection. The callback is owned by Electron
+   * explicit Human mobile selection. The callback is owned by Electron
    * main so the relay/server never become Current Folder state owners.
    */
   readonly selectCurrentFolder?: CurrentFolderSelectPort | undefined;
-  /** D319 — opaque, directory-only paired-phone location picker. */
+  /** opaque, directory-only paired-phone location picker. */
   readonly pairedFilesystemDirectory?: PairedFilesystemDirectoryPort | undefined;
-  /** D497 — Electron-owned, process-local exact-folder adoption authority. */
+  /** Electron-owned, process-local exact-folder adoption authority. */
   readonly currentFolderAdoption?: CurrentFolderAdoptionPort | undefined;
   /** Ask the renderer to mount Browser and await manager-confirmed controllability. */
   readonly ensureBrowserSurface?: ((request: {
@@ -2278,7 +2298,7 @@ export function makeDispatchHandler(
     req: RelayDispatchRequest,
     signal?: AbortSignal,
   ): Promise<RelayDispatchResult> {
-    // D560 deliberately has no server-provided root, sandbox, or shell
+    // Security research has no server-provided root, sandbox, or shell
     // authority. A parsed security_scan envelope is dispatched before every
     // generic lane; malformed envelopes fail closed here as well.
     if (req.toolName === "security_scan") {
@@ -2332,7 +2352,7 @@ export function makeDispatchHandler(
     let sandbox: Sandbox | null = null;
 
     const prepareLowerDispatch = async (): Promise<LowerDispatchPreparation> => {
-      // D418 — resolve validated local authority ONCE for every request that
+      // resolve validated local authority ONCE for every request that
       // reaches the lower dispatch chain. The server envelope is an untrusted
       // mirror; only locally revalidated roots reach the adapters below.
       const applyPatchPreflight = preflightApplyPatch(req);
@@ -2841,7 +2861,7 @@ export function deriveStructuredSshServerBindingId(
   }
 }
 
-/** D516 local storage namespace for one canonical selected server origin. */
+/** local storage namespace for one canonical selected server origin. */
 export function deriveComputerUseServerBindingId(serverUrl: string): string | null {
   try {
     const url = new URL(serverUrl);
@@ -2887,7 +2907,7 @@ export interface StartRelayOptions {
    * structured SSH execution.
    */
   structuredSshAppDataDirectory?: string | undefined;
-  /** Explicit Electron app-owned directory for D560 durable security research. */
+  /** Explicit Electron app-owned directory for durable security research. */
   securityResearchDataDirectory?: string | undefined;
   /**
    * Electron-owned redacted local Computer use snapshot; never a grant. The
@@ -2904,7 +2924,7 @@ export interface StartRelayOptions {
   onComputerUseTopologyChange?: ((
     refreshRelayCapabilities: (reason?: string) => Promise<boolean>,
   ) => void | Promise<void>) | undefined;
-  /** D516 Electron-main-owned semantic dispatcher over the durable local store. */
+  /** Electron-main-owned semantic dispatcher over the durable local store. */
   computerUseDispatch?: DispatchHandlerOptions["computerUseDispatch"];
   googleOAuthStatusToken?: string | undefined;
   googleOAuthClientPath?: string | undefined;
@@ -2912,7 +2932,7 @@ export interface StartRelayOptions {
   onStatusChange?: ((status: RelayStatus) => void) | undefined;
   onFsChange?: ((event: RelayFsChangeEvent) => void) | undefined;
   /**
-   * D418 prerequisite — the single main-process grant authority, shared with
+   * prerequisite — the single main-process grant authority, shared with
    * the IPC handlers. When provided, the relay's authority resolver and
    * advisory snapshot builder read this same source (durable grants plus the
    * in-memory overlay) instead of constructing a separate relay-local store
@@ -2920,7 +2940,7 @@ export interface StartRelayOptions {
    */
   desktopFilesystemGrantAuthority?: DesktopFilesystemGrantSnapshotStore | undefined;
   /**
-   * D418 — the single main-process active-profile controller, shared with
+   * the single main-process active-profile controller, shared with
    * the relay so the capability builder advertises the controller's strict,
    * redacted `RelayWorkstationProfileSnapshot` (desktop-agent profile only).
    * The relay never constructs its own profile store; it reads the SAME
@@ -2928,38 +2948,38 @@ export interface StartRelayOptions {
    * Omitted by tests / the headless relay, which never bind a profile.
    */
   workstationProfileController?: RelayWorkstationProfileSnapshotProvider | undefined;
-  /** D448 Phase 3 pre-spawn snapshot + post-attempt reconciliation seam. */
+  /** pre-spawn snapshot + post-attempt reconciliation seam. */
   commitDesktopApplyPatch?: CommitDesktopApplyPatch | undefined;
-  /** D448 agent OfficeCLI's staged binary postimage commit seam. */
+  /** agent OfficeCLI's staged binary postimage commit seam. */
   commitDesktopOfficeCli?: CommitDesktopOfficeCli | undefined;
-  /** D448 ordinary agent local-file content commit seam. */
+  /** ordinary agent local-file content commit seam. */
   commitDesktopAgentContent?: CommitDesktopAgentContent | undefined;
-  /** D448 structural agent local-file commit seam. */
+  /** structural agent local-file commit seam. */
   commitDesktopAgentStructural?: CommitDesktopAgentStructural | undefined;
-  /** D448 canonical local history restore commit seam. */
+  /** canonical local history restore commit seam. */
   commitDesktopHistoryRestore?: CommitDesktopHistoryRestore | undefined;
   /** Source of authenticated owner/agent/turn identity absent from v9. */
   resolveApplyPatchTrustedIdentity?: DispatchHandlerOptions["resolveApplyPatchTrustedIdentity"] | undefined;
   /** Electron-owned, consent-gated real workstation executor. */
   runWorkstationShell?: DispatchHandlerOptions["runWorkstationShell"];
-  /** D538 local status/binding verifier for uncontained host commands. */
+  /** local status/binding verifier for uncontained host commands. */
   verifyUncontainedHostCommands?: DispatchHandlerOptions["verifyUncontainedHostCommands"];
   /**
-   * D453 v8: optional, Electron-owned Codex host only. No supervisor/runtime
+   * optional, Electron-owned Codex host only. No supervisor/runtime
    * is manufactured here; absent or not-ready ports leave the capability off.
    */
   codexHostPort?: RelayCodexHostPort | undefined;
-  /** D452 v13 readiness-only Hermes ACP host; no execution route exists yet. */
+  /** readiness-only Hermes ACP host; no execution route exists yet. */
   acpHostPort?: RelayAcpHostPort | undefined;
-  /** D452 v17 Electron-owned parked Claude account/catalog discovery host. */
+  /** Electron-owned parked Claude account/catalog discovery host. */
   claudeConnectionHostPort?: RelayClaudeConnectionHostPort | undefined;
-  /** D452 v18 Electron-owned Current-Folder Claude execution host. */
+  /** Electron-owned Current-Folder Claude execution host. */
   claudeExecutionHostPort?: RelayClaudeExecutionHostPort | undefined;
-  /** Electron-main Current Folder selection and refresh seam for D458 mobile. */
+  /** Electron-main Current Folder selection and refresh seam for mobile. */
   selectCurrentFolder?: DispatchHandlerOptions["selectCurrentFolder"];
   /** Electron-owned opaque paired-directory browser/selection authority. */
   pairedFilesystemDirectory?: DispatchHandlerOptions["pairedFilesystemDirectory"];
-  /** Electron-main exact-folder preparation/commit seam for D497. */
+  /** Electron-main exact-folder preparation/commit seam. */
   currentFolderAdoption?: DispatchHandlerOptions["currentFolderAdoption"];
   /** Electron-main → renderer seam used by cold-start browser_open. */
   ensureBrowserSurface?: DispatchHandlerOptions["ensureBrowserSurface"];
@@ -3005,7 +3025,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     claudeExecutionHostPort: options.claudeExecutionHostPort,
   });
 
-  // D458: Workspace and Current Folder are distinct local surfaces. The
+  // Workspace and Current Folder are distinct local surfaces. The
   // Workspace is provisioned by Electron before relay boot and is the safe
   // baseline for ordinary paired-mobile work. Current Folder is optional and
   // only augments the local jail when the Human has actually selected one.
@@ -3025,7 +3045,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     ...(initialCurrentFolder !== undefined ? { allowedRoots: [initialCurrentFolder] } : {}),
   });
 
-  // D060 Sprint 1 G5.4.c — report paths so the server\u0027s Policy
+  // report paths so the server\u0027s Policy
   // Resolver can build a sandboxProfile scoped to THIS machine.
   const userHome = os.homedir();
   const dataDir = path.join(userHome, ".nautilo");
@@ -3104,7 +3124,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   );
   const hueCaps = await openHueRuntimeCapabilities();
   const officeCaps = await officeRuntimeCapabilities();
-  // D448: advertise only after the packaged/source-owned Darwin binary passes
+  // advertise only after the packaged/source-owned Darwin binary passes
   // exact manifest, architecture, integrity, and version/provenance handshake.
   // Unsupported, headless and old peers omit this optional capability.
   const applyPatchRuntime = resolveElectronApplyPatchDesktopRuntime({
@@ -3113,7 +3133,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     devVendorRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "vendor"),
   });
 
-  // D384 Phase 5 (5.1.1b) — stable relay id + relay-side MCP host so the
+  // stable relay id + relay-side MCP host so the
   // desktop app hosts the user's LOCAL MCPs (keyless-first; the manager's
   // default resolver reads env passthrough on this host).
   //
@@ -3159,7 +3179,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       }
     }
   }
-  // D418 protocol v7 — one desktop session id per main-process launch, minted
+  // protocol v7 — one desktop session id per main-process launch, minted
   // outside startRelay (idempotent helper) so reconnects reuse the same id and
   // the server can bind capability updates to this exact session.
   const desktopSessionId = mintDesktopSessionId();
@@ -3169,13 +3189,13 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // binding fails closed without introducing a second revision owner.
   const getSessionAcknowledgedCapabilityRevision = (): number =>
     sessionClient?.getAcknowledgedCapabilityRevision() ?? -1;
-  // D418 prerequisite — use the shared main-process authority when the caller
+  // prerequisite — use the shared main-process authority when the caller
   // (the Electron main process) provides one, so the resolver and snapshot
   // builder read the SAME durable + overlay source as the IPC handlers. The
   // fallback constructs a bare durable store for tests / the headless relay,
   // which never carry overlay grants.
   const desktopFilesystemGrantInstanceId = resolveInstance().instanceId;
-  // D500 — the local broker runtime also owns the sole readiness probe used by
+  // the local broker runtime also owns the sole readiness probe used by
   // the strict, secret-free relay capability projection below.
   const structuredSshServerBindingId = deriveStructuredSshServerBindingId(
     options.serverUrl,
@@ -3225,7 +3245,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
         agentScope: DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE,
       },
     });
-  // D418 — capture the shared active-profile snapshot provider from the
+  // capture the shared active-profile snapshot provider from the
   // single main-process controller BEFORE constructing the shell-binding
   // authority. Consumed directly from `options.workstationProfileController`
   // (not the module global) so a fresh `startRelay` constructs the resolver
@@ -3235,7 +3255,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // SAME controller the main process owns so there are no duplicate stores.
   // Null for the headless relay / tests that never bind a profile controller.
   const workstationProfileProvider = options.workstationProfileController ?? null;
-  // D418 task 3.1.3b — build the plan-bound shell-binding authority resolver
+  // build the plan-bound shell-binding authority resolver
   // from the SAME live grant store + shared active-profile controller the
   // grant-authority resolver reads, bound to this relay's identity + the
   // tracked capability revision. The dispatch handler revalidates a
@@ -3251,7 +3271,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
           getCapabilityRevision: getSessionAcknowledgedCapabilityRevision,
           getCurrentFolder: () => currentFolderPathProvider?.(),
           profileProvider: workstationProfileProvider,
-          // D418 task 3.2.1 (B5) — source the COMPLETE active-profile network
+          // source the COMPLETE active-profile network
           // policy from the SAME shared controller (it implements both the
           // snapshot + network-policy provider surfaces). The resolver
           // converts it and the dispatch handler REPLACES the server envelope's
@@ -3273,7 +3293,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
           },
         })
       : undefined;
-  // D418 task 3.2.1 — compile the canonical protected-path policy once per
+  // compile the canonical protected-path policy once per
   // relay launch from the SAME `(home, platform, nautiloRoots)` inputs the
   // grant-authority resolver uses, and thread it into the dispatch handler.
   // When a plan-bound shell binding is revalidated, the handler rebuilds the
@@ -3405,7 +3425,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ),
       ...officeCaps,
       canRunShell: true,
-      // D373 — this Electron relay hosts the PTY pool (terminal-host.ts),
+      // this Electron relay hosts the PTY pool (terminal-host.ts),
       // so it advertises terminal capability; the standalone relay does not.
       canUseTerminal: true,
       ...(peekAgentHandoffSession() !== null
@@ -3413,7 +3433,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
         : {}),
       canReadStructuredSshOutput: true,
       ...nonComputerUseCapabilities,
-      // D458: named roots are server-private registration metadata for exact
+      // named roots are server-private registration metadata for exact
       // host resolution. They are deliberately excluded from remote presence
       // projection and are never execution authority without local checks.
       workspaceRoot,
@@ -3428,12 +3448,12 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       userHome,
       dataDir,
       toolsBin,
-      // D418 — advisory active-grant discovery hint (desktop relay only; the
+      // advisory active-grant discovery hint (desktop relay only; the
       // headless relay never advertises this). Omitted when the store is
       // unavailable so the server sees "no advisory snapshot" rather than a
       // partial one. Still advisory: the local resolver decides final authority.
       ...(snapshot ? { desktopFilesystemGrantSnapshot: snapshot } : {}),
-      // D418 — advisory Workstation Profile binding snapshot (desktop relay
+      // advisory Workstation Profile binding snapshot (desktop relay
       // only). Redacted, non-secret profile state from the shared
       // main-process controller. Omitted when no profile is bound or the
       // controller is unavailable so the server sees "no binding" rather
@@ -3556,14 +3576,14 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       // operations. Returning undefined preserves their fail-closed contract
       // instead of silently mutating/running in Genie Workspace.
       getLocalWorkspacePath: () => currentFolderPathProvider?.(),
-      // D486 raw workstation execution is distinct from Current-Folder-bound
+      // raw workstation execution is distinct from Current-Folder-bound
       // operations: it may use the always-present visible Genie Workspace
       // when no optional Current Folder is selected.
       workstationWorkspacePath: workspaceRoot,
       ...(localShellWorkspaceAuthority !== undefined
         ? { localShellWorkspaceAuthority }
         : {}),
-      // D418 local authority-boundary correction — the dispatch handler
+      // local authority-boundary correction — the dispatch handler
       // refuses an unbound generic run_shell while the shared
       // main-process controller reports a locally authoritative active
       // profile (and on lookup failure). Same provider the capability
@@ -3722,7 +3742,7 @@ export function getRelayStatus(): RelayStatus {
 }
 
 /**
- * D418 protocol v7 — rebuild this relay's full advertised capability state
+ * protocol v7 — rebuild this relay's full advertised capability state
  * from local state and push it to the server via the atomic
  * `relay:update-capabilities` transport, WITHOUT a stop/start reconnect.
  *

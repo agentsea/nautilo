@@ -1,5 +1,5 @@
 /**
- * D418 task 3.2.1 — desktop relay compiles the revalidated policy-pack
+ * desktop relay compiles the revalidated policy-pack
  * grant roots + canonical protected-path policy into the per-turn sandbox
  * envelope for a planned generic `run_shell` dispatch.
  *
@@ -56,6 +56,8 @@ import type {
 } from "../../electron/relay";
 import { prepareLocalDispatchPolicy } from "../../electron/relay-dispatch/local-dispatch-policy";
 import { resolveContainedWorkstationIdentityProjection } from "../../electron/relay-dispatch/workstation-identity";
+import { DesktopFilesystemGrantStore } from "../../electron/desktop-filesystem-grants/store";
+import { captureDesktopFilesystemGrantRootIdentity } from "../../electron/desktop-filesystem-grants/identity";
 
 // `../../electron/relay` transitively imports `./paths`, which imports the
 // Electron `app`. Under `bun test` (no Electron runtime) that module throws
@@ -103,7 +105,7 @@ function grant(
   } = {},
 ): { grant: DesktopFilesystemGrant; status: "active" | "revoked" | "expired" } {
   const {
-    root = "/Users/test/profile-root",
+    root = "/path/to/profile-root",
     access = ["execute", "read"] as readonly DesktopFilesystemAccessOperation[],
     status = "active",
     ...rest
@@ -277,14 +279,14 @@ function mkTmp(prefix: string): string {
   return canonicalize(mkdtempSync(join(tmpdir(), prefix)));
 }
 
-describe("D574 — contained workstation identity projection", () => {
+describe("contained workstation identity projection", () => {
   test("projects a github.com-scoped credential helper and keeps HOME implicit", async () => {
     const home = mkTmp("relay-workstation-identity-");
     const ghConfigDir = join(home, ".config", "gh");
     mkdirSync(ghConfigDir, { recursive: true });
     writeFileSync(join(ghConfigDir, "hosts.yml"), "github.com: {}\n");
 
-    const token = "ghp_contained_test_token_1234567890";
+    const token = "fixture-provider-credential";
     const projection = await resolveContainedWorkstationIdentityProjection(
       home,
       async () => token,
@@ -432,7 +434,7 @@ describe("request-local dispatch policy cleanup", () => {
 // selectSandboxProtectedPaths — curation
 // ---------------------------------------------------------------------------
 
-describe("D418 3.2.1 — selectSandboxProtectedPaths curation", () => {
+describe("selectSandboxProtectedPaths curation", () => {
   test("returns empty when no policy is configured", () => {
     expect(selectSandboxProtectedPaths(undefined)).toEqual([]);
   });
@@ -519,7 +521,7 @@ describe("D418 3.2.1 — selectSandboxProtectedPaths curation", () => {
 // buildShellBindingSandboxEnvelope — envelope rebuild
 // ---------------------------------------------------------------------------
 
-describe("D418 3.2.1 — buildShellBindingSandboxEnvelope", () => {
+describe("buildShellBindingSandboxEnvelope", () => {
   test("writablePaths derive only from locally revalidated write grants", () => {
     const profileRoot = mkTmp("relay-env-root-");
     const env = buildShellBindingSandboxEnvelope(
@@ -636,13 +638,84 @@ describe("D418 3.2.1 — buildShellBindingSandboxEnvelope", () => {
   });
 });
 
-describe("D418 — local Current Folder shell authority", () => {
+describe("local Current Folder shell authority", () => {
   const subject = {
     userId: USER,
     instanceId: INSTANCE,
     relayId: RELAY,
     agentScope: AGENT_SCOPE,
   };
+
+  test.each([false, true])("a replacement grant supersedes revoked history regardless of record order (%s)", async (reverse) => {
+    const root = mkTmp("relay-replaced-grant-");
+    const revoked = grant("old", {
+      root, lifetime: "durable", status: "revoked",
+      revokedAt: "2026-07-12T12:00:00.000Z",
+    });
+    const replacement = grant("replacement", {
+      root, lifetime: "durable", origin: "user_picker",
+      createdAt: "2026-07-12T13:00:00.000Z",
+      access: ["read", "create_modify", "execute"],
+      filesystemIdentity: { realRoot: root },
+    });
+    const records = reverse ? [replacement, revoked] : [revoked, replacement];
+    const options = {
+      store: makeStore(records), expectedSubject: subject,
+      protectedPathPolicy: buildProtectedPathPolicy({ homeDir: mkTmp("relay-replaced-home-"), platform: process.platform }),
+    };
+    expect(await createLocalShellWorkspaceAuthorityResolver(options)(root)).toEqual({ ok: true, workspace: root });
+    // Reconstructing the resolver models a fresh relay session: recovery must
+    // come from durable authority, not process-local cached permission.
+    expect(await createLocalShellWorkspaceAuthorityResolver(options)(root)).toEqual({ ok: true, workspace: root });
+  });
+
+  test.each(["revoked", "expired"] as const)("an independent active grant survives %s of a duplicate at the same scope", async (status) => {
+    const root = mkTmp("relay-grant-history-");
+    const historical = grant("old", {
+      root, lifetime: "durable", status,
+      ...(status === "revoked" ? { revokedAt: "2026-07-12T12:00:00.000Z" } : { expiresAt: "2026-07-12T12:00:00.000Z" }),
+    });
+    const active = grant("active", {
+      root, lifetime: "durable", access: ["read", "create_modify", "execute"],
+      filesystemIdentity: { realRoot: root },
+    });
+    const records = [historical, active];
+    const resolver = createLocalShellWorkspaceAuthorityResolver({
+      store: makeStore(records), expectedSubject: subject,
+      protectedPathPolicy: buildProtectedPathPolicy({ homeDir: mkTmp("relay-history-home-"), platform: process.platform }),
+    });
+    expect(await resolver(root)).toEqual({ ok: true, workspace: root });
+    records[1] = { ...active, grant: { ...active.grant, createdAt: "2026-07-12T13:00:00.000Z" } };
+    expect(await resolver(root)).toEqual({ ok: true, workspace: root });
+    records.splice(1);
+    expect(await resolver(root)).toEqual({ ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED" });
+  });
+
+  test.each(["narrower", "read-only", "foreign", "identity"] as const)("replacing history preserves %s restrictions", async (restriction) => {
+    const root = mkTmp("relay-grant-restriction-");
+    const project = join(root, "project");
+    mkdirSync(project);
+    const records = [
+      grant("old", {
+        root: restriction === "narrower" ? project : root,
+        lifetime: "durable", status: "revoked", revokedAt: "2026-07-12T12:00:00.000Z",
+      }),
+      grant("replacement", {
+        root, lifetime: "durable", createdAt: "2026-07-12T13:00:00.000Z",
+        access: restriction === "read-only" ? ["read", "execute"] : ["read", "create_modify", "execute"],
+        subject: restriction === "foreign" ? { ...subject, relayId: "other-relay" } : subject,
+        filesystemIdentity: { realRoot: restriction === "identity" ? join(root, "missing") : root },
+      }),
+    ];
+    const resolver = createLocalShellWorkspaceAuthorityResolver({
+      store: makeStore(records), expectedSubject: subject,
+      protectedPathPolicy: buildProtectedPathPolicy({ homeDir: mkTmp("relay-restriction-home-"), platform: process.platform }),
+    });
+    expect(await resolver(project)).toEqual({
+      ok: false,
+      code: restriction === "identity" ? "WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH" : "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED",
+    });
+  });
 
   test("authorizes a Current Folder through a containing durable grant", async () => {
     const parent = mkTmp("relay-current-parent-");
@@ -783,7 +856,7 @@ describe("D418 — local Current Folder shell authority", () => {
 // makeDispatchHandler — envelope augmentation wiring
 // ---------------------------------------------------------------------------
 
-describe("D418 3.2.1 — makeDispatchHandler envelope augmentation", () => {
+describe("makeDispatchHandler envelope augmentation", () => {
   const savedLdPreload = process.env["LD_PRELOAD"];
   beforeEach(() => {
     delete process.env["LD_PRELOAD"];
@@ -875,7 +948,7 @@ describe("D418 3.2.1 — makeDispatchHandler envelope augmentation", () => {
     });
 
     let captured: RelaySandboxProfile | undefined;
-    const projectedToken = "ghp_dispatch_test_token_1234567890";
+    const projectedToken = "fixture-provider-credential";
     const handler = makeDispatchHandler(guard, {
       relayId: RELAY,
       workstationShellBindingAuthority: resolver({ grants }),
@@ -1082,14 +1155,14 @@ describe("D418 3.2.1 — makeDispatchHandler envelope augmentation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D418 protected-shell enforcement — a bound run_shell denies a protected
+// protected-shell enforcement — a bound run_shell denies a protected
 // .ssh sentinel under sandbox-exec (deny-overrides after allows). This live
 // Seatbelt proof is macOS-only; Linux containment is covered by bubblewrap
 // tests in packages/sandbox.
 // ---------------------------------------------------------------------------
 
 if (process.platform === "darwin") {
-describe("D418 protected-shell — bound run_shell denies a protected .ssh sentinel", () => {
+describe("protected-shell — bound run_shell denies a protected .ssh sentinel", () => {
   const savedLdPreload = process.env["LD_PRELOAD"];
   beforeEach(() => {
     delete process.env["LD_PRELOAD"];
@@ -1135,6 +1208,73 @@ describe("D418 protected-shell — bound run_shell denies a protected .ssh senti
     });
   }
 
+  test("durable grant replacement survives relay restart and folder changes with real sandboxed execution", async () => {
+    const root = mkTmp("relay-durable-shell-");
+    try {
+      const first = join(root, "first");
+      const second = join(root, "second");
+      mkdirSync(first);
+      mkdirSync(second);
+      const identity = await captureDesktopFilesystemGrantRootIdentity(root);
+      if (!identity.ok) throw new Error("fixture root is unavailable");
+      let now = new Date("2026-07-12T12:00:00.000Z");
+      const filePath = join(root, "grants.json");
+      const openStore = () => new DesktopFilesystemGrantStore({ instanceId: INSTANCE, filePath, clock: () => now });
+      let store = openStore();
+      const makeGrant = (id: string) => grant(id, {
+        root, lifetime: "durable", origin: "user_picker", createdAt: now.toISOString(),
+        access: ["read", "create_modify", "execute"], filesystemIdentity: identity.filesystemIdentity,
+      }).grant;
+      expect((await store.create({ userId: USER, grant: makeGrant("old") })).ok).toBe(true);
+      expect((await store.revoke({ userId: USER, grantId: "old" })).ok).toBe(true);
+      now = new Date("2026-07-12T13:00:00.000Z");
+      expect((await store.create({ userId: USER, grant: makeGrant("replacement") })).ok).toBe(true);
+      const policy = buildProtectedPathPolicy({ homeDir: join(root, "home"), platform: process.platform });
+      const expectedSubject = { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE };
+      let currentFolder = first;
+      const createHandler = () => makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: root }), {
+        relayId: RELAY,
+        getLocalWorkspacePath: () => currentFolder,
+        localShellWorkspaceAuthority: createLocalShellWorkspaceAuthorityResolver({ store, expectedSubject, protectedPathPolicy: policy }),
+        workstationShellBindingAuthority: createWorkstationShellBindingAuthorityResolver({
+          store: makeStore([grant("grant-1", { root, access: ["read", "execute"] })]),
+          expectedSubject, expectedRelayId: RELAY, expectedDesktopSessionId: DESKTOP,
+          getCapabilityRevision: () => 5, getCurrentFolder: () => currentFolder,
+          profileProvider: makeProfileProvider(profileSnapshot()),
+          networkPolicyProvider: makeNetworkPolicyProvider(ISOLATED_NETWORK_POLICY),
+        }),
+        protectedPathPolicy: policy,
+        createSandbox: async (envelope) => makeEnvelopeSandbox(envelope as RelaySandboxProfile),
+      });
+      for (const selected of [first, second, first]) {
+        currentFolder = selected;
+        store = openStore();
+        const handler = createHandler();
+        const result = await handler(mkRequest({
+          args: { command: "printf 'shell-ok' > marker.txt; cat marker.txt; pwd" },
+          workstationShellBinding: binding({ currentFolder }),
+        }));
+        expect(result.status).toBe("ok");
+        if (result.status === "ok") {
+          expect(result.result).toMatchObject({ exitCode: 0 });
+          expect((result.result as { stdout: string }).stdout).toContain(`shell-ok${currentFolder}`);
+        }
+      }
+      // A command admitted for the previous folder still fails before execution.
+      expect(await createHandler()(mkRequest({ workstationShellBinding: binding({ currentFolder: second }) }))).toMatchObject({
+        status: "error", errorCode: "CURRENT_FOLDER_MISMATCH",
+      });
+      now = new Date("2026-07-12T14:00:00.000Z");
+      expect((await store.revoke({ userId: USER, grantId: "replacement" })).ok).toBe(true);
+      store = openStore();
+      expect(await createHandler()(mkRequest({ workstationShellBinding: binding({ currentFolder }) }))).toMatchObject({
+        status: "error", errorCode: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a bound run_shell cannot read a protected .ssh sentinel (deny-overrides win)", async () => {
     const profileRoot = mkTmp("relay-ssh-deny-root-");
     const home = mkTmp("relay-ssh-deny-home-");
@@ -1174,7 +1314,7 @@ describe("D418 protected-shell — bound run_shell denies a protected .ssh senti
     );
 
     // The protected .ssh sentinel must be denied — never exit 0 with the
-    // secret. D502 represents every started process as a canonical receipt,
+    // secret. Every started process is represented as a canonical receipt,
     // so sandbox-exec denial is a successful relay result with a nonzero
     // process exit rather than a transport error.
     expect(r.status).toBe("ok");
@@ -1231,10 +1371,10 @@ describe("D418 protected-shell — bound run_shell denies a protected .ssh senti
 }
 
 // ---------------------------------------------------------------------------
-// D418 B5 — profile network policy → relay network policy conversion
+// profile network policy → relay network policy conversion
 // ---------------------------------------------------------------------------
 
-describe("D418 B5 — profileNetworkPolicyToRelayNetworkPolicy", () => {
+describe("profileNetworkPolicyToRelayNetworkPolicy", () => {
   test("maps host mode exactly", () => {
     const r = profileNetworkPolicyToRelayNetworkPolicy({ mode: "host", allow: [] });
     expect(r).toEqual({ ok: true, relay: { mode: "host" } });
@@ -1251,7 +1391,7 @@ describe("D418 B5 — profileNetworkPolicyToRelayNetworkPolicy", () => {
       allow: [
         { id: "h", kind: "host", value: "api.example.com" },
         { id: "d", kind: "domain", value: "registry.npmjs.org" },
-        { id: "c", kind: "cidr", value: "10.0.0.0/8" },
+        { id: "c", kind: "cidr", value: "192.0.2.0/24" },
       ],
     });
     expect(r).toEqual({
@@ -1261,7 +1401,7 @@ describe("D418 B5 — profileNetworkPolicyToRelayNetworkPolicy", () => {
         allow: [
           { type: "domain", host: "api.example.com" },
           { type: "domain", host: "registry.npmjs.org" },
-          { type: "cidr", cidr: "10.0.0.0/8" },
+          { type: "cidr", cidr: "192.0.2.0/24" },
         ],
       },
     });
@@ -1283,10 +1423,10 @@ describe("D418 B5 — profileNetworkPolicyToRelayNetworkPolicy", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D418 B5 — buildShellBindingSandboxEnvelope REPLACES the server network policy
+// buildShellBindingSandboxEnvelope REPLACES the server network policy
 // ---------------------------------------------------------------------------
 
-describe("D418 B5 — buildShellBindingSandboxEnvelope network replacement", () => {
+describe("buildShellBindingSandboxEnvelope network replacement", () => {
   test("REPLACES the server network policy with the locally sourced one", () => {
     const base = baseEnvelope("/tmp");
     base.config.networkPolicy = { mode: "host" };
@@ -1334,10 +1474,10 @@ describe("D418 B5 — buildShellBindingSandboxEnvelope network replacement", () 
 });
 
 // ---------------------------------------------------------------------------
-// D418 B5 — shell-binding resolver sources + returns the local network policy
+// shell-binding resolver sources + returns the local network policy
 // ---------------------------------------------------------------------------
 
-describe("D418 B5 — shell-binding resolver network policy sourcing", () => {
+describe("shell-binding resolver network policy sourcing", () => {
   test("a successful resolution carries the locally sourced network policy", async () => {
     const grants = [grant("grant-1")];
     const resolve = createWorkstationShellBindingAuthorityResolver({
@@ -1452,10 +1592,10 @@ describe("D418 B5 — shell-binding resolver network policy sourcing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D418 B5 — makeDispatchHandler wires the local network policy into the envelope
+// makeDispatchHandler wires the local network policy into the envelope
 // ---------------------------------------------------------------------------
 
-describe("D418 B5 — makeDispatchHandler envelope network wiring", () => {
+describe("makeDispatchHandler envelope network wiring", () => {
   const savedLdPreload = process.env["LD_PRELOAD"];
   beforeEach(() => {
     delete process.env["LD_PRELOAD"];
@@ -1553,7 +1693,7 @@ describe("D418 B5 — makeDispatchHandler envelope network wiring", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D418 local authority-boundary correction — under an active local profile a
+// local authority-boundary correction — under an active local profile a
 // bound run_shell executes inside a sandbox that denies a protected .ssh
 // sentinel (deny-overrides win) while an unprotected workspace file stays
 // readable. Mirrors the live failure (`head -c 1 ~/.ssh/config`) that escaped
@@ -1562,7 +1702,7 @@ describe("D418 B5 — makeDispatchHandler envelope network wiring", () => {
 // ---------------------------------------------------------------------------
 
 if (process.platform === "darwin") {
-describe("D418 local authority-boundary correction — active profile + valid binding live sandbox", () => {
+describe("local authority-boundary correction — active profile + valid binding live sandbox", () => {
   const savedLdPreload = process.env["LD_PRELOAD"];
   beforeEach(() => {
     delete process.env["LD_PRELOAD"];
