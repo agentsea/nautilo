@@ -104,8 +104,9 @@ the delegated goal and constraints.
 When the complete list exceeds the model's catalogued Choice capacity, Jev
 screens groups in parallel using the same observation and goal. Each group
 nominates one action or explicitly abstains. Further screening rounds run only
-when the nominees still exceed capacity with the two control choices reserved.
-One final Choice selects among the nominees, re-observation and Genie handback;
+when the nominees still exceed capacity with all control choices reserved.
+One final Choice selects among the nominees, re-observation, completion-ready,
+missing visual evidence and general Genie handback;
 screening never executes an action. This is model-guided elimination for this
 decision, so an incorrect nomination can discard the right action. The full
 candidate set remains local, and a fresh observation rebuilds it. Existing
@@ -172,10 +173,13 @@ Existing tool authority governs each proposed action.
 `NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT` is a positive integer, initially
 `2`. It is captured at the initial handoff for the turn, so a live config change
 does not silently rewrite checkpointed recovery policy. A known stale observation
-or recoverable Choice failure counts once and obtains fresh evidence. An
-unchanged AX/URL/ref observation counts once; changed material permits another
-choice without clearing earlier errors, even while a declared milestone is still
-pending. Milestones provide positive evidence rather than exhaustively naming
+or recoverable Choice failure counts once and obtains fresh evidence. A
+repeated state/action/result transition counts once, including cycles through
+alternating visible states. Different actions can legitimately leave the same
+AX/URL/ref text unchanged, so their first transitions do not count as failures.
+Explicit re-observation with unchanged evidence still counts once. New transitions
+permit another choice without clearing earlier errors, even while a declared
+milestone is still pending. Milestones provide positive evidence rather than exhaustively naming
 every intermediate state. Continually changing page content can
 therefore continue until Genie handoff, cancellation or the existing graph
 budget; this detector alone does not establish goal progress or bound such loops. Tool success, confidence,
@@ -196,10 +200,16 @@ After input, the next snapshot first checks rendered page readiness and the
 focused control's busy/autocomplete state. A short combobox grace allows delayed
 responses to begin; it is a settling heuristic, not task verification. Existing
 cancellation, operation timeout and fresh pre-action comparison still apply.
-Choice history distinguishes stale proposals rejected before input from failed
-interactions. The decision model can reconsider the same intent using fresh
+Choice history retains protected exact error content and distinguishes stale
+proposals rejected before input from failed interactions. The decision model can reconsider the same intent using fresh
 candidates without treating an unexecuted proposal as an uncertain effect.
-For similar pickers that reuse ambiguous labels, the Genie can delegate typing
-and selection for one semantic target, verify it, then delegate the next with
-only the needed values. This uses ordinary plan handoffs rather than a new
-workflow mechanism or a fixed one-field limit.
+Delegate the whole routine outcome, including successive dialogs, selections
+and confirmation, with exact named values supplied once. Split only when actual
+ambiguity or missing information prevents continuation. Resolve that gap and
+redelegate the remaining work. Completion-ready always requires independent
+Genie verification. Missing visual evidence is a separate handoff; connected
+direct control must remain on its own operation because it has no screenshot
+or coordinate command. Transition history stores only digests, at most one per
+successful action and observation already retained in canonical message history,
+and clears them on a verified milestone or repaired episode. Older checkpoints
+without transition evidence retain the prior unchanged-observation checks.

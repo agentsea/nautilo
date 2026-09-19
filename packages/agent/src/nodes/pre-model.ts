@@ -271,7 +271,7 @@ export function projectBrowserHandoffForProvider(
   if (decision?.phase !== "handoff" || !decision.reason || decision.reason === "ordinary_genie_control") {
     return { messages, projected: false };
   }
-  const supervision = browserDecisionHandoffContent(decision.reason);
+  const supervision = browserDecisionHandoffContent(decision.reason, decision.target);
   const fallback = (): { messages: BaseMessage[]; projected: boolean } => {
     const alreadyPresent = messages.some((message) => SystemMessage.isInstance(message)
       && typeof message.content === "string" && message.content === supervision);

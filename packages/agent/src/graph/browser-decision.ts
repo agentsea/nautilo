@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { NautiloState } from "../agent/state";
+import { BROWSER_DECISION_CONTROL_IDS } from "./browser-choice";
 import { resolveGraphExecutionPolicy } from "./execution-policy";
 
 const text = z.string().refine((value) => value.trim().length > 0).describe("Non-blank text");
@@ -41,7 +43,7 @@ export const browserDecisionPlanSchema = z.object({
     z.object({ kind: z.literal("reload") }),
     z.object({ kind: z.literal("open"), url: z.url().refine((value) => ["https:", "http:"].includes(new URL(value).protocol)) }),
   ])).nonempty().default([{ kind: "click_observed" }]).describe("Omit to discover clicks from every fresh observation. Include click_observed with reusable keyboard, scrolling, selection or other ordinary browser action templates when needed. Exact arguments come from the Genie; semantic targets are resolved afresh."),
-  progress: z.array(conditionSchema).default([]).describe("Optional known milestones. Omit when future page text is unknown; unchanged observations still trigger supervision."),
+  progress: z.array(conditionSchema).default([]).describe("Optional known milestones. Omit when future page text is unknown; repeated state/action/result transitions and unchanged explicit polling still trigger supervision."),
   success: z.array(conditionSchema).default([]).describe("Optional completion hints evaluated against the fresh observation. Matches are evidence, not stop conditions or proof of completion; the decision model assesses the whole goal before returning to the Genie for independent verification. Omit instead of guessing future page text."),
 });
 export type BrowserDecisionPlan = z.infer<typeof browserDecisionPlanSchema>;
@@ -192,6 +194,10 @@ export interface BrowserDecisionState {
     readonly progressSeen: readonly string[];
     /** Whether the next fresh observation must count absence of new progress. */
     readonly assessNextObservation: boolean;
+    /** Hash of the preceding state/action; no duplicate snapshot or typed values. */
+    readonly pendingTransition?: string | null;
+    /** One hash per distinct successful transition since the last milestone or repair. */
+    readonly transitionsSeen?: readonly string[];
   };
 }
 export type BrowserDecisionCandidate = {
@@ -209,7 +215,7 @@ export function browserConditionMatches(
 
 export function browserDecisionCandidates(plan: BrowserDecisionPlan, observation: BrowserDecisionObservation, maxChoices: number):
   { candidates: BrowserDecisionCandidate[]; reason: null } | { candidates: []; reason: string } {
-  if (!Number.isSafeInteger(maxChoices) || maxChoices < 3) {
+  if (!Number.isSafeInteger(maxChoices) || maxChoices < BROWSER_DECISION_CONTROL_IDS.length + 1) {
     return { candidates: [], reason: "decision_capacity_cannot_fit_action_and_controls" };
   }
   // This bounds observed-state decisions, not the effects/navigation of an admitted click.
@@ -286,7 +292,9 @@ export function browserDecisionCandidates(plan: BrowserDecisionPlan, observation
   if (candidates.length === 0) return { candidates: [], reason: "no_planned_target_requires_genie" };
   candidates.push(
     { id: "reobserve", description: "Observe again because the page is still changing; do not repeat an uncertain action.", call: { name: "browser_snapshot", args: {} } },
-    { id: "defer_to_genie", description: "The next step needs visual information that is absent from the text observation, so the Genie must inspect a screenshot; or the goal is already reached and needs independent verification; or uncertainty, ambiguity, conflicting evidence or scope requires the Genie.", call: null },
+    { id: "completion_ready", description: "The whole delegated goal appears reached in the current evidence. Return to the Genie for independent verification; this does not declare success.", call: null },
+    { id: "needs_visual_evidence", description: "The intended target or state is not identified by the text observation. The Genie must inspect a screenshot or supply visual grounding; clicking the center of a canvas or surrounding container cannot identify an item inside it.", call: null },
+    { id: "defer_to_genie", description: "Uncertainty, ambiguity, conflicting evidence, missing information or changed scope requires Genie reasoning before another action.", call: null },
   );
   // Keep the complete action domain. Oversized sets are screened by Choice
   // against this same observation before one final action is proposed.
@@ -365,6 +373,10 @@ function materialEvidenceKey(observation: BrowserDecisionObservation | null): st
   });
 }
 
+function evidenceDigest(value: unknown): string {
+  return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
 function interventionReason(cause: string, count: number, limit: number): string {
   return `browser_decision_intervention_required cause=${cause} count=${count} limit=${limit}`;
 }
@@ -381,6 +393,7 @@ export function recordBrowserDecisionEvent(
     ...decision.recovery,
     consecutiveEvents,
     assessNextObservation: false,
+    pendingTransition: null,
   };
   return consecutiveEvents >= decision.recovery.interventionAt
     ? {
@@ -415,22 +428,33 @@ function settleFreshObservation(
         interventionAt: decision.recovery.interventionLimit,
         progressSeen,
         assessNextObservation: false,
+        pendingTransition: null,
+        transitionsSeen: [],
       },
     };
   }
+  const transition = decision.recovery.pendingTransition
+    ? evidenceDigest([decision.recovery.pendingTransition, materialEvidenceKey(observation)]) : null;
+  const seen = decision.recovery.transitionsSeen ?? [];
   const observed = {
     ...decision,
     phase: "decide" as const,
     observation,
     pending: null,
     reason: null,
-    recovery: { ...decision.recovery, progressSeen, assessNextObservation: false },
+    recovery: { ...decision.recovery, progressSeen, assessNextObservation: false,
+      pendingTransition: null,
+      ...(transition ? { transitionsSeen: seen.includes(transition) ? seen : [...seen, transition] } : {}),
+    },
   };
   // Milestones are positive evidence, not an exhaustive list of intermediate
   // states. A changed observation permits another choice even when a declared
   // milestone is still pending. It does not clear prior errors; only a newly
-  // verified milestone does that. Unchanged evidence consumes the budget.
-  const noProgress = materialEvidenceKey(decision.observation) === materialEvidenceKey(observation);
+  // verified milestone does that. Different actions may legitimately leave text
+  // unchanged. Repeated state/action/result transitions detect both no-ops and
+  // cycles; explicit polling and legacy checkpoints retain unchanged-state checks.
+  const noProgress = transition ? seen.includes(transition)
+    : materialEvidenceKey(decision.observation) === materialEvidenceKey(observation);
   return decision.recovery.assessNextObservation && noProgress
     ? recordBrowserDecisionEvent(observed, "no_verified_progress", "decide")
     : observed;
@@ -527,7 +551,10 @@ export function settleBrowserDecision(
       ...base,
       phase: "observe",
       reason: null,
-      recovery: { ...base.recovery!, assessNextObservation: true },
+      recovery: { ...base.recovery!, assessNextObservation: true,
+        pendingTransition: evidenceDigest([materialEvidenceKey(base.observation),
+          call.name === "control_connected_web_operation" ? call.args["command"] : { name: call.name, args: call.args }]),
+      },
     };
   }
   const observation = browserObservationFromResult(result.name, result.content);
@@ -564,6 +591,8 @@ export function settleBrowserDecision(
           interventionAt: currentRecovery!.consecutiveEvents + currentRecovery!.interventionLimit,
           progressSeen,
           assessNextObservation: false,
+          pendingTransition: null,
+          transitionsSeen: [],
         },
       };
     }
@@ -579,7 +608,10 @@ export function settleBrowserDecision(
   return settleFreshObservation(base, observation);
 }
 
-export function browserDecisionHandoffContent(reason: string): string {
+export function browserDecisionHandoffContent(reason: string, target?: ConnectedBrowserDecisionTarget): string {
+  if (reason === "completion_ready") return "Routine browser control reports that the whole delegated goal appears reached. Independently verify the latest page and action evidence before declaring success. If work remains, supply the corrected remaining goal and delegate again.";
+  if (reason === "needs_visual_evidence" && target?.kind === "connected_web") return "Routine browser control needs visual evidence that this connected browser observation does not provide. Keep the same operation and control epoch. Connected direct control has no screenshot or coordinate command; do not switch to the unrelated embedded browser. Use current operation management to inspect its state or request Human assistance when needed. Resume routine delegation only after the target or information is resolved.";
+  if (reason === "needs_visual_evidence") return "Routine browser control needs visual evidence: the text observation does not identify the intended target or state. Inspect a screenshot using the existing browser tools, resolve the missing target or information, then delegate the remaining routine work. Do not guess an interior target from the center of a canvas or container.";
   // An older checkpoint may have stopped on a literal completion-hint match.
   if (reason === "plan_success_already_true" || reason === "success_evidence_requires_genie_verification") {
     return "Routine browser control previously stopped on a completion-hint match. That match is not proof that the goal was reached. Inspect the latest observation, independently verify the outcome, and delegate any remaining routine work. You need not supply completion predicates. Do not blindly replay an uncertain action.";

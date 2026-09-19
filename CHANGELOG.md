@@ -39,6 +39,11 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Routine browser delegation now preserves complete goals and exact error evidence,
+  distinguishes completion and visual handoffs, and detects repeated action cycles
+  without treating different actions on unchanged text as automatic failures.
+  The shared behavior applies to embedded and connected direct browser control.
+
 - Desktop shell commands honor replacement folder grants without being blocked by
   superseded revocation history. Narrower restrictions and protected paths remain
   enforced. Folder changes reach outgoing messages immediately, and delayed

@@ -482,7 +482,7 @@ function settleToolsNode(
         null) })]
     : browserDecision?.phase === "handoff" && browserDecision.reason && !projectableBrowserHandoff
     && browserDecision.reason !== "ordinary_genie_control"
-    ? [new SystemMessage({ id: `browser-handoff:${randomUUID()}`, content: browserDecisionHandoffContent(browserDecision.reason) })] : [];
+    ? [new SystemMessage({ id: `browser-handoff:${randomUUID()}`, content: browserDecisionHandoffContent(browserDecision.reason, browserDecision.target) })] : [];
   return {
     messages: mergeMessagesPreservingInvariants(messagesWithResults, browserHandoff),
     approvedToolCalls: remainingToolCalls,

@@ -4,7 +4,8 @@ const NONE_IN_GROUP = {
   id: "none_in_group",
   description: "None of this group's actions is an appropriate next step. Other groups may contain the right action; this does not declare the task complete.",
 };
-const CONTROL_IDS = new Set(["reobserve", "defer_to_genie"]);
+export const BROWSER_DECISION_CONTROL_IDS = ["reobserve", "defer_to_genie", "completion_ready", "needs_visual_evidence"] as const;
+const CONTROL_IDS = new Set<string>(BROWSER_DECISION_CONTROL_IDS);
 
 /** Screening never executes actions. All rounds share the original observation. */
 export async function chooseBrowserAction(
@@ -12,7 +13,8 @@ export async function chooseBrowserAction(
   maxChoices: number,
   choose: (input: ChoiceInput) => Promise<ChoiceResult>,
 ): Promise<ChoiceResult & { choiceCalls: number; screeningRounds: number }> {
-  if (!Number.isSafeInteger(maxChoices) || maxChoices < CONTROL_IDS.size + 1) {
+  const controls = input.choices.filter(({ id }) => CONTROL_IDS.has(id));
+  if (!Number.isSafeInteger(maxChoices) || maxChoices < 3 || maxChoices <= controls.length) {
     throw new ChoiceRequestError("invalid_request");
   }
   let choiceCalls = 0;
@@ -39,8 +41,8 @@ export async function chooseBrowserAction(
   };
   let finalists = input.choices;
   if (finalists.length > maxChoices) {
-    const controls = input.choices.filter(({ id }) => CONTROL_IDS.has(id));
-    if (controls.length !== CONTROL_IDS.size || input.choices.some(({ id }) => id === NONE_IN_GROUP.id)) {
+    if (!controls.some(({ id }) => id === "reobserve") || !controls.some(({ id }) => id === "defer_to_genie")
+      || input.choices.some(({ id }) => id === NONE_IN_GROUP.id)) {
       throw new ChoiceRequestError("invalid_request");
     }
     let nominees = input.choices.filter(({ id }) => !CONTROL_IDS.has(id));

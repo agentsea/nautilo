@@ -25,6 +25,14 @@ page evidence, then consumes the observation before dispatch. Changed evidence
 requires another observation; an uncertain effect returns to the Genie without
 automatic replay. Cancellation propagates to the command process. The Genie
 verifies completion and can resume a corrected routine segment after recovery.
+Delegate complete routine outcomes with every user constraint; ordinary dialogs
+and page changes do not require separate one-click plans. Completion-ready,
+missing visual evidence and general uncertainty are distinct handoffs. A visual
+handoff stays on this operation: connected direct control does not expose a
+screenshot or coordinate command and must not switch to an embedded browser.
+Repeated state/action/result transitions, including cycles, consume the existing
+intervention budget; different actions with unchanged text do not automatically
+count as failures. Verified milestones reset the budget and transition evidence.
 
 Only current and preceding structured observations stay expanded in the model
 prompt. Older canonical receipts remain retrievable with `historyToolCallId`;

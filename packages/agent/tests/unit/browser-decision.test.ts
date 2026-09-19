@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { NautiloState } from "../../src/agent/state";
 import {
   browserDecisionCandidates,
+  browserDecisionHandoffContent,
   browserDecisionPlanError,
   browserDecisionPlanSchema,
   currentBrowserDecision,
@@ -160,7 +161,7 @@ describe("browser decision policy", () => {
       [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID);
     if (!settled) throw new Error("expected admitted plan");
     const fresh = observation({ refs: { e17: { role: "combobox", name: "Hex code" } } });
-    const built = browserDecisionCandidates(settled.plan, fresh, 4);
+    const built = browserDecisionCandidates(settled.plan, fresh, 6);
     expect(built.reason).toBeNull();
     expect(built.candidates[1]?.call).toEqual({ name: "browser_type", args: { ref: "@e17", text: supplied, clear: true } });
     expect(JSON.parse(built.candidates[1]!.description)).toMatchObject({ valueName: "background color", role: "combobox", name: "Hex code" });
@@ -181,7 +182,7 @@ describe("browser decision policy", () => {
     ]);
     const overCapacity = browserDecisionCandidates(valuePlan, fresh, 9);
     expect(overCapacity.reason).toBeNull();
-    expect(overCapacity.candidates).toHaveLength(10);
+    expect(overCapacity.candidates).toHaveLength(12);
   });
 
   test("supplied-value choices do not duplicate an identical exact typing template", () => {
@@ -212,7 +213,7 @@ describe("browser decision policy", () => {
     expect(browserDecisionCandidates(
       accepted,
       observation({ pageUrl: "http://127.0.0.1:9460/results" }),
-      4,
+      6,
     ).reason).toBeNull();
 
     const snapshot = call("snapshot-root-origins", "browser_snapshot", {
@@ -266,7 +267,7 @@ describe("browser decision policy", () => {
       expect(settled?.plan).not.toHaveProperty("ignoredPlanField");
       expect(settled?.plan.actions[0]).not.toHaveProperty("ignoredActionField");
       if (!settled?.observation) throw new Error("expected a settled observation");
-      const candidates = browserDecisionCandidates(settled.plan, settled.observation, 3);
+      const candidates = browserDecisionCandidates(settled.plan, settled.observation, 5);
       expect(candidates.reason).toBeNull();
       if (candidates.reason !== null) throw new Error("expected a minimal-plan action candidate");
       expect(candidates.candidates[0]?.call).toEqual({ name: "browser_click", args: { ref: "@e1" } });
@@ -337,7 +338,7 @@ describe("browser decision policy", () => {
   });
 
   test("covers every exact normalized role/name action plus observe and defer", () => {
-    const built = browserDecisionCandidates(plan, observation(), 4);
+    const built = browserDecisionCandidates(plan, observation(), 6);
 
     expect(built).toEqual({
       reason: null,
@@ -360,6 +361,8 @@ describe("browser decision policy", () => {
           description: "Observe again because the page is still changing; do not repeat an uncertain action.",
           call: { name: "browser_snapshot", args: {} },
         },
+        { id: "completion_ready", description: expect.any(String) as string, call: null },
+        { id: "needs_visual_evidence", description: expect.any(String) as string, call: null },
         {
           id: "defer_to_genie",
           description: expect.any(String) as string,
@@ -370,7 +373,7 @@ describe("browser decision policy", () => {
 
     expect(browserDecisionCandidates(plan, observation({
       refs: { e1: { role: "button", name: "open details" } },
-    }), 4)).toEqual({ candidates: [], reason: "no_planned_target_requires_genie" });
+    }), 6)).toEqual({ candidates: [], reason: "no_planned_target_requires_genie" });
   });
 
   test("maps the ordinary browser controls with exact arguments and fresh semantic refs", () => {
@@ -402,7 +405,7 @@ describe("browser decision policy", () => {
     const built = browserDecisionCandidates(expandedPlan, observation({ refs }), 255);
     expect(built.reason).toBeNull();
     if (built.reason !== null) throw new Error("expected expanded browser candidates");
-    expect(built.candidates.slice(0, -2).map(({ call }) => call)).toEqual([
+    expect(built.candidates.slice(0, -4).map(({ call }) => call)).toEqual([
       { name: "browser_press", args: { key: "Control+Alt+Shift+K" } },
       { name: "browser_press", args: { key: "Home" } },
       { name: "browser_hover", args: { ref: "@e10" } },
@@ -429,7 +432,7 @@ describe("browser decision policy", () => {
       from: { role: "listitem", name: "Source" },
       to: { role: "listitem", name: "Destination" },
     }));
-    expect(built.candidates.slice(-2).map(({ id }) => id)).toEqual(["reobserve", "defer_to_genie"]);
+    expect(built.candidates.slice(-4).map(({ id }) => id)).toEqual(["reobserve", "completion_ready", "needs_visual_evidence", "defer_to_genie"]);
 
     const remapped = browserDecisionCandidates(expandedPlan, observation({ refs: {
       e90: refs.e10, e91: refs.e11, e92: refs.e12, e93: refs.e13, e94: refs.e14,
@@ -472,7 +475,7 @@ describe("browser decision policy", () => {
       e7: { role: "link", name: "New result introduced after planning" },
       e8: { role: "treeitem", name: "Unlisted control role" },
     } });
-    const candidates = browserDecisionCandidates(observedPlan, dynamic, 4);
+    const candidates = browserDecisionCandidates(observedPlan, dynamic, 6);
     expect(candidates.reason).toBeNull();
     if (candidates.reason !== null) throw new Error("expected dynamic observed candidates");
     expect(candidates.candidates.slice(0, 2).map((candidate) => candidate.call)).toEqual([
@@ -503,9 +506,9 @@ describe("browser decision policy", () => {
       e7: { role: "link", name: "First dynamic result" },
       e8: { role: "treeitem", name: "Second dynamic result" },
       e9: { role: "tab", name: "Third dynamic result" },
-    } }), 4);
+    } }), 6);
     expect(overCapacity.reason).toBeNull();
-    expect(overCapacity.candidates).toHaveLength(5);
+    expect(overCapacity.candidates).toHaveLength(7);
   });
 
   test("fails closed on an ambiguous exact target", () => {
@@ -525,12 +528,12 @@ describe("browser decision policy", () => {
   });
 
   test("preserves the complete candidate set instead of truncating it to the model cap", () => {
-    const full = browserDecisionCandidates(plan, observation(), 4);
+    const full = browserDecisionCandidates(plan, observation(), 6);
     expect(full.reason).toBeNull();
     if (full.reason !== null) throw new Error("expected full candidate set");
-    expect(full.candidates).toHaveLength(4);
+    expect(full.candidates).toHaveLength(6);
 
-    const overCapacity = browserDecisionCandidates(plan, observation(), 3);
+    const overCapacity = browserDecisionCandidates(plan, observation(), 5);
     expect(overCapacity.reason).toBeNull();
     expect(overCapacity.candidates).toEqual(full.candidates);
   });
@@ -546,7 +549,7 @@ describe("browser decision policy", () => {
     expect(matchedEvidence.reason).toBeNull();
     if (matchedEvidence.reason !== null) throw new Error("expected advisory completion evidence");
     expect(matchedEvidence.candidates.map(({ id }) => id)).toEqual([
-      "action_0", "action_1", "reobserve", "defer_to_genie",
+      "action_0", "action_1", "reobserve", "completion_ready", "needs_visual_evidence", "defer_to_genie",
     ]);
 
     expect(browserDecisionCandidates(plan, observation({
@@ -556,8 +559,8 @@ describe("browser decision policy", () => {
     const noDeclaredCompletion = browserDecisionCandidates({ ...plan, success: [] }, observation(), 255);
     expect(noDeclaredCompletion.reason).toBeNull();
     if (noDeclaredCompletion.reason !== null) throw new Error("expected Genie verification defer candidate");
-    const defer = noDeclaredCompletion.candidates.at(-1);
-    expect(defer?.id).toBe("defer_to_genie");
+    const defer = noDeclaredCompletion.candidates.find(({ id }) => id === "completion_ready");
+    expect(defer?.id).toBe("completion_ready");
     expect(defer?.description).toContain("independent verification");
     expect(defer?.call).toBeNull();
   });
@@ -691,7 +694,7 @@ describe("browser decision settlement", () => {
       phase: "observe",
       pending: null,
       reason: null,
-      recovery: { ...waiting.recovery!, assessNextObservation: true },
+      recovery: { ...waiting.recovery!, assessNextObservation: true, pendingTransition: expect.stringMatching(/^[a-f0-9]{64}$/) as string },
     });
 
     for (const changed of [
@@ -1174,6 +1177,65 @@ describe("browser decision settlement", () => {
   });
 });
 
+describe("sustained browser recovery", () => {
+  test("visual handoff respects the connected driver's authority and available controls", () => {
+    const content = browserDecisionHandoffContent("needs_visual_evidence", {
+      kind: "connected_web", operationId: "operation-1", controlEpoch: 3,
+    });
+    expect(content).toContain("same operation and control epoch");
+    expect(content).toContain("no screenshot or coordinate command");
+    expect(content).toContain("do not switch to the unrelated embedded browser");
+    expect(content).not.toContain("Inspect a screenshot");
+  });
+
+  function round(previous: BrowserDecisionState, kind: string, args: Record<string, unknown>, next: BrowserDecisionObservation): BrowserDecisionState {
+    const route = (id: string, name: string, values: Record<string, unknown>) => previous.target
+      ? call(id, "control_connected_web_operation", { operationId: previous.target.operationId,
+        expectedControlEpoch: previous.target.controlEpoch, command: { kind: name.slice("browser_".length), ...values } })
+      : call(id, name, values);
+    const action = route("action", `browser_${kind}`, args);
+    const waiting = { ...previous, phase: "waiting" as const, pending: { call: action,
+      browserSessionId: previous.observation!.browserSessionId, observationId: previous.observation!.observationId } };
+    const acted = settleBrowserDecision(state({ browserDecision: waiting }), [action],
+      [successfulResult(action, JSON.stringify({ ok: true }))], [], JEV_ID)!;
+    const snapshot = route("snapshot", "browser_snapshot", {});
+    const observing = { ...acted, phase: "waiting" as const, pending: { call: snapshot,
+      browserSessionId: next.browserSessionId, observationId: null } };
+    return settleBrowserDecision(state({ browserDecision: observing }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(previous.target ? { ok: true, observation: next } : next))], [], JEV_ID)!;
+  }
+
+  for (const target of [undefined, { kind: "connected_web" as const, operationId: "operation-1", controlEpoch: 3 }]) {
+    const driver = target ? "connected" : "embedded";
+    test(`${driver}: distinct actions with unchanged text continue; repeated ineffective transitions intervene`, () => {
+      let current = decision({ ...(target ? { target } : {}), plan: { ...plan, progress: [] } });
+      current = round(current, "click", { ref: "@e1" }, observation({ observationId: "fresh-1" }));
+      current = round(current, "click", { ref: "@e2" }, observation({ observationId: "fresh-2" }));
+      expect(current).toMatchObject({ phase: "decide", recovery: { consecutiveEvents: 0 } });
+      current = round(current, "click", { ref: "@e1" }, observation({ observationId: "fresh-3" }));
+      expect(current).toMatchObject({ phase: "decide", recovery: { consecutiveEvents: 1 } });
+      current = round(current, "click", { ref: "@e1" }, observation({ observationId: "fresh-4" }));
+      expect(current).toMatchObject({ phase: "handoff", recovery: { consecutiveEvents: 2 } });
+      expect(current.reason).toContain("no_verified_progress");
+    });
+
+    test(`${driver}: detects alternating state cycles, and verified progress resets transition evidence`, () => {
+      const first = observation({ snapshot: "First page" });
+      const second = observation({ snapshot: "Second page" });
+      let current = decision({ ...(target ? { target } : {}), observation: first, plan: { ...plan, progress: [{ kind: "snapshot_contains", text: "Milestone" }] } });
+      current = round(current, "click", { ref: "@e1" }, second);
+      current = round(current, "back", {}, first);
+      expect(current.recovery?.consecutiveEvents).toBe(0);
+      current = round(current, "click", { ref: "@e1" }, second);
+      expect(current.recovery?.consecutiveEvents).toBe(1);
+      const cycle = round(current, "back", {}, first);
+      expect(cycle.phase).toBe("handoff");
+      const progressed = round(current, "click", { ref: "@e2" }, observation({ snapshot: "Milestone" }));
+      expect(progressed).toMatchObject({ phase: "decide", recovery: { consecutiveEvents: 0, transitionsSeen: [] } });
+    });
+  }
+});
+
 describe("browser decision node", () => {
   let priorOpenRouterKey: string | undefined;
 
@@ -1189,6 +1251,23 @@ describe("browser decision node", () => {
     if (priorOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorOpenRouterKey;
     invalidateRuntimeConfigCache();
+  });
+
+  test.each(["completion_ready", "needs_visual_evidence"])("returns explicit %s without any browser mutation", async (selectedId) => {
+    const snapshot = call("snapshot-handoff", "browser_snapshot", { decisionPlan: plan });
+    const messages = [new AIMessage({ content: "", tool_calls: [snapshot] }), successfulResult(snapshot, JSON.stringify(observation()))];
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        expect(input.choices.some(({ id }) => id === selectedId)).toBe(true);
+        return { selectedId, requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+          usage: { inputTokens: 1, outputTokens: 1, actualCostUsd: 0 } };
+      },
+    });
+    const update = await node(state({ messages }), { signal: new AbortController().signal });
+    expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: selectedId, pending: null });
+    expect(update.messages).toBeUndefined();
+    const projected = projectBrowserHandoffForProvider(messages, state({ messages, browserDecision: update.browserDecision ?? null }));
+    expect(projected.messages.at(-1)?.content).toContain(selectedId === "completion_ready" ? "Independently verify" : "Inspect a screenshot");
   });
 
   test("uses the accounted Choice seam and proposes rather than approves the selected call", async () => {
@@ -1222,6 +1301,8 @@ describe("browser decision node", () => {
         { id: "action_0", description: JSON.stringify(plan.actions[0]) },
         { id: "action_1", description: REDACTED_TYPE_DESCRIPTION },
         { id: "reobserve" },
+        { id: "completion_ready" },
+        { id: "needs_visual_evidence" },
         { id: "defer_to_genie" },
       ],
     });
@@ -1371,6 +1452,8 @@ describe("browser decision node", () => {
     expect(received?.choices).toEqual([
       { id: "action_0", description: JSON.stringify({ kind: "press", key: exactKey }) },
       { id: "reobserve", description: expect.any(String) as string },
+      { id: "completion_ready", description: expect.any(String) as string },
+      { id: "needs_visual_evidence", description: expect.any(String) as string },
       { id: "defer_to_genie", description: expect.any(String) as string },
     ]);
     expect(proposedToolCall(update)).toMatchObject({ name: "browser_press", args: { key: exactKey } });
@@ -1515,7 +1598,7 @@ describe("browser decision node", () => {
     expect(requests.slice(0, 2).every(({ choices }) => choices.at(-1)?.id === "none_in_group")).toBe(true);
     expect(new Set(requests.slice(0, 2).flatMap(({ choices }) => choices.slice(0, -1).map(({ id }) => id))).size).toBe(430);
     expect(requests[2]?.choices.map(({ id }) => id)).toEqual([
-      "action_172", "action_344", "reobserve", "defer_to_genie",
+      "action_172", "action_344", "reobserve", "completion_ready", "needs_visual_evidence", "defer_to_genie",
     ]);
     expect(update.browserDecision).toMatchObject({ phase: "waiting" });
     expect(proposedToolCall(update)).toMatchObject({
@@ -1819,6 +1902,7 @@ describe("browser decision node", () => {
     });
     if (!firstUpdate.browserDecision) throw new Error("expected a pending stale action");
     const staleResult = failedResult(staleCall, "browser_observation_stale");
+    staleResult.content = JSON.stringify({ error: "The dialog changed before input; fresh observation required", browserRequestSent: false });
     const afterStale = settleBrowserDecision(
       state({ browserDecision: firstUpdate.browserDecision }),
       [staleCall], [staleResult], [], JEV_ID,
@@ -1850,7 +1934,7 @@ describe("browser decision node", () => {
     }), { signal: controller.signal });
     expect(choiceInputs).toHaveLength(2);
     expect((choiceInputs[1]?.state as Record<string, unknown>)["recentActions"]).toEqual([
-      { action: REDACTED_TYPE_DESCRIPTION, status: "not_executed_stale" },
+      { action: REDACTED_TYPE_DESCRIPTION, status: "not_executed_stale", evidence: staleResult.content },
     ]);
     expect(proposedToolCall(retryUpdate)).toMatchObject({
       name: "browser_type",
