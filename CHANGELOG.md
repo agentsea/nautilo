@@ -17,14 +17,14 @@ store update, or Desktop/Host installation.
   control through Browser Use. It reuses the browser decision loop, verifies
   fresh observations against the exact operation and control epoch, and returns
   uncertain effects to the Genie without replay. Hosted and ordinary control
-  remain available without a decision-model key.
+  remain available when no eligible decision model is runnable.
 
-- Opt-in Jev browser decisions through OpenRouter. Genies can delegate routine
+- Automatic Jev browser decisions through eligible catalog models. Genies can delegate routine
   clicks, exact text, keyboard input and other existing browser controls using
   fresh observations, with normal permissions and usage accounting. Larger
   candidate sets use parallel screening before the final choice. Uncertainty or
   repeated lack of progress returns control to the Genie, which verifies the
-  outcome. Delegation appears only when its configured model is available;
+  outcome. Delegation appears only when catalog, credential and account-policy checks find a runnable model;
   ordinary browser control remains available without Jev.
 - Catalog support for decision workloads and optional visual-grounding metadata,
   keeping decision models separate from chat-model selection.

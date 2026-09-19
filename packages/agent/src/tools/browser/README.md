@@ -1,10 +1,9 @@
 # Routine browser decisions
 
-The embedded browser uses the ordinary Genie/tool graph unless the operator sets
-`NAUTILO_BROWSER_DECISION_MODEL=openrouter:typesafe/jev-1.13`. The model must be an
-available catalogued OpenRouter Choice model, with normal provider credentials.
-Catalog presence does not activate this path. Without the opt-in or a usable
-decision model, ordinary Genie browser control remains available. See
+The embedded browser automatically selects an eligible catalogued Choice model
+when its provider credential and account policy permit it. Catalog, credential,
+and policy checks use the same runtime sources as other models. When no eligible
+decision model is runnable, ordinary Genie browser control remains available. See
 [catalog compatibility](../../config/model-catalog/README.md) for reader behavior.
 
 ## Local qualification
@@ -22,7 +21,6 @@ repository root, start the isolated server with:
 
 ```bash
 BUN_OPTIONS="--preload=$(pwd)/dev/fixtures/browser-decision/bundled-catalog.ts" \
-NAUTILO_BROWSER_DECISION_MODEL=openrouter:typesafe/jev-1.13 \
 bun run server:start --instance browser-review
 ```
 
@@ -35,9 +33,9 @@ bun dev/fixtures/browser-decision/server.ts --port 9471
 
 Open `http://127.0.0.1:9471/` in Desktop's internal browser and ask the Genie to
 find the cheapest in-stock blue mug and report its detail-page SKU without buying
-anything. Verify the result independently. Repeat with
-`NAUTILO_BROWSER_DECISION_MODEL=""` after restarting the server to check the
-ordinary loop. Keep the same orchestrator model for that comparison. Also check
+anything. Verify the result independently. To compare the ordinary loop, use a
+disposable instance whose normal credential or account policy makes no eligible
+Choice model runnable. Keep the same orchestrator model for that comparison. Also check
 recovery after a page change and browser operation while Desktop is backgrounded.
 
 Remove the preload for normal signed-catalog operation. These commands do not

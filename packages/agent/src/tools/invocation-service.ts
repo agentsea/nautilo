@@ -1,5 +1,6 @@
 import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
+import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
 import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
@@ -1094,11 +1095,10 @@ export function createNautiloToolInvocationSession(
     state.model || runtimeConfig.nautilo_model,
   );
 
-  // / §2.1 — shared engaged-skill set for this turn's tool
+  // Shared engaged-skill set for this turn's tool
   // execution. Seeded from checkpointed state; `view_skill` engages, `eject`
   // clears. Persisted back below so the next pre-model rebuild re-injects only
-  // the still-engaged bodies (graph-state, no Skill-Focus table — see
-  // STACK-80-PHASE-0-DECISIONS.md Decision 1).
+  // the still-engaged bodies from graph state.
   const engagedSkills = createEngagedSkillsHandle(state.engagedSkillNames ?? []);
   const isGuest = state.actorRole === "guest";
   const activatedToolNames = selectedActivatedToolNamesForActor(
@@ -1560,7 +1560,7 @@ export function createNautiloToolInvocationSession(
           }
         } else if (policy.executor === "relay") {
           const relayResult = await executeViaRelayRaw(tc, policy, state, {
-            toolCallId,
+            toolCallId, fullEncryptionOnly,
             // provenance must retain the actual Task-selected model.
             // `requestedModelId` is only a capability-projection fallback and
             // can name a built-in candidate that the Task never selected.
@@ -1579,6 +1579,7 @@ export function createNautiloToolInvocationSession(
                 denial,
                 toolCallId,
                 config?.signal,
+                fullEncryptionOnly,
               );
               if (approvedRetry.ok) {
                 if ("multimodal" in approvedRetry) {
@@ -3335,6 +3336,8 @@ async function executeViaRelayRaw(
     readonly toolCallId?: string;
     /** Enclosing graph/job cancellation authority. */
     readonly signal?: AbortSignal;
+    /** Trusted live account policy, never model arguments. */
+    readonly fullEncryptionOnly?: boolean;
     /** Already selected catalog model; only used for the private envelope. */
     readonly resolvedModelId?: string;
   } = {},
@@ -4283,8 +4286,8 @@ async function executeViaRelayRaw(
           return { ok: false, errorMessage: browserDecisionPlanError(null, "decision_plan_requires_singleton",
             "Send browser_snapshot with decisionPlan as its own tool call, after preceding tools finish. No browser request was sent for this delegation; other calls in the batch may execute normally.") };
         }
-        if (!fromRuntimeConfig().nautilo_browser_decision_model.trim()) {
-          return { ok: false, errorMessage: "Routine browser decisions are not enabled. Omit decisionPlan and use ordinary browser tools; no browser request was sent." };
+        if (!resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly })) {
+          return { ok: false, errorMessage: "Routine browser decisions are unavailable. Omit decisionPlan and use ordinary browser tools; no browser request was sent." };
         }
       }
       // Model-visible plans remain in the graph; only server-owned bindings cross the relay.
@@ -4302,7 +4305,7 @@ async function executeViaRelayRaw(
       if (pending && pending.call.id === (opts.toolCallId ?? tc.id)) {
         if (decision?.phase !== "waiting" || pending.call.name !== tc.name
           || JSON.stringify(pending.call.args) !== JSON.stringify(tc.args)
-          || fromRuntimeConfig().nautilo_browser_decision_model.trim() !== decision.modelId
+          || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly }, decision.modelId)
           || (relayDispatchArgs["_requiredSession"] !== undefined
             && relayDispatchArgs["_requiredSession"] !== pending.browserSessionId)) {
           return { ok: false, errorMessage: "Browser decision binding changed; return to the Genie for fresh observation." };
@@ -4707,6 +4710,7 @@ async function handleNetworkApprovalAndRetry(
   denial: ApprovalAskNetworkContext,
   toolCallId?: string,
   signal?: AbortSignal,
+  fullEncryptionOnly?: boolean,
 ): Promise<RelayDispatchOutcome> {
   const payload = {
     type: "approval_ask" as const,
@@ -4744,6 +4748,7 @@ async function handleNetworkApprovalAndRetry(
     extraNetworkAllowRules: [denial.suggestedRule as NetworkAllowRule],
     ...(toolCallId !== undefined ? { toolCallId } : {}),
     ...(signal ? { signal } : {}),
+    ...(fullEncryptionOnly === undefined ? {} : { fullEncryptionOnly }),
   });
 }
 

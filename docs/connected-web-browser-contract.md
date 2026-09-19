@@ -11,7 +11,7 @@ neither exposes provider topology or an unrestricted browser surface.
 
 ### Routine decisions during direct control
 
-When a configured, eligible decision model and its credential are available,
+When the catalog, provider credential and account policy expose an eligible decision model,
 `control_connected_web_operation` exposes `decisionPlan` on a standalone
 `command: {kind: "snapshot"}` call. The Genie supplies the goal and exact named
 typing values, then the existing browser decision graph observes, chooses and
@@ -30,7 +30,7 @@ Only current and preceding structured observations stay expanded in the model
 prompt. Older canonical receipts remain retrievable with `historyToolCallId`;
 historical refs never authorize current input. Error receipts stay intact.
 
-Without a runnable decision model the optional plan and its prompt guidance
+When those runtime checks find no runnable decision model, the optional plan and its prompt guidance
 disappear; ordinary semantic commands and hosted runs retain their existing
 paths. This applies to connected-account direct control. Anonymous public
 operations retain the hosted driver and cannot take direct control.

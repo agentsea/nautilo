@@ -157,7 +157,7 @@ export async function dispatchControlConnectedWebOperation(
       || episode.target?.kind !== "connected_web" || episode.target.operationId !== args.operationId
       || episode.target.controlEpoch !== args.expectedControlEpoch
       || pending.call.name !== call?.name || JSON.stringify(pending.call.args) !== JSON.stringify(call?.args)
-      || resolveBrowserDecisionModel(context)?.id !== episode.modelId
+      || resolveBrowserDecisionModel(context, episode.modelId) === null
       || !context?.signal || context.signal.aborted) {
       return JSON.stringify({ ok: false, code: "conflict", browserFailure: "browser_authority_lost", detail: "Browser decision binding changed. Inspect current operation before continuing.", recovery: "none" });
     }

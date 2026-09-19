@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
-import { invalidateRuntimeConfigCache, setConfigOverrides } from "@nautilo/config";
 import { z } from "zod";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import type { NautiloState } from "../../src/agent/state";
@@ -105,17 +104,14 @@ describe("connected browser decisions", () => {
   beforeEach(() => {
     priorKey = process.env["OPENROUTER_API_KEY"];
     process.env["OPENROUTER_API_KEY"] = "synthetic-connected-decision-test";
-    setConfigOverrides({ nautilo_browser_decision_model: JEV_ID });
     configureRuntimeModelCatalog({ catalogPointerUrl: null });
   });
 
   afterEach(() => {
     resetConnectedWebAccountReadToolRuntimeForTests();
     resetRuntimeModelCatalog();
-    setConfigOverrides({});
     if (priorKey === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorKey;
-    invalidateRuntimeConfigCache();
   });
 
   test("the dynamic tool carries trusted observe and act authority through one connected episode", async () => {
@@ -306,7 +302,7 @@ describe("connected browser decisions", () => {
     expect(unknown?.pending).toBeNull();
   });
 
-  test("missing configuration or credentials hides decisionPlan while preserving ordinary commands", () => {
+  test("missing credentials or protected policy hides decisionPlan while preserving ordinary commands", () => {
     const context = { turnId: "turn-connected", fullEncryptionOnly: false };
     const enabled = createControlConnectedWebOperationTool(context);
     expect(JSON.stringify(z.toJSONSchema(enabled.schema))).toContain('"decisionPlan"');
@@ -318,8 +314,7 @@ describe("connected browser decisions", () => {
     expect(noKey.schema.safeParse({ operationId: OPERATION_ID, expectedControlEpoch: 7, command: { kind: "click", ref: "@e1" } }).success).toBe(true);
 
     process.env["OPENROUTER_API_KEY"] = "synthetic-connected-decision-test";
-    setConfigOverrides({ nautilo_browser_decision_model: "" });
-    const disabled = createControlConnectedWebOperationTool(context);
+    const disabled = createControlConnectedWebOperationTool({ ...context, fullEncryptionOnly: true });
     expect(JSON.stringify(z.toJSONSchema(disabled.schema))).not.toContain('"decisionPlan"');
   });
 

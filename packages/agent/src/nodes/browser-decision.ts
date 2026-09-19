@@ -1,15 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { fromRuntimeConfig } from "@nautilo/config";
 import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
 import type { NautiloState } from "../agent/state";
-import { resolveCatalogModel } from "../config/resolved-catalog";
+import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { runWithUsageContext } from "../usage/usage-context";
 import { chooseBrowserAction } from "../graph/browser-choice";
 import {
   invokeChoice,
-  resolveChoiceDriver,
   ChoiceRequestError,
   type ChoiceInput,
   type ChoiceResult,
@@ -65,10 +63,8 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
     if (!config?.signal || config.signal.aborted) return handoff(state, decision, "run_signal_unavailable_or_cancelled");
     const runSignal = config.signal;
     if (state.noProgressPendingCorrection || state.noProgressPendingStop || state.approvalDenied) return handoff(state, decision, "existing_run_intervention");
-    if (fromRuntimeConfig().nautilo_browser_decision_model.trim() !== decision.modelId) return handoff(state, decision, "decision_opt_in_changed");
-    const model = resolveCatalogModel(decision.modelId);
-    if (!model || model.availability !== "selectable" || model.workload !== "decision"
-      || !resolveChoiceDriver(model.provider) || !model.decision?.operations.includes("choice")) {
+    const model = resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: false }, decision.modelId);
+    if (!model?.decision) {
       return handoff(state, decision, "decision_model_unavailable");
     }
     const observation = decision.observation;

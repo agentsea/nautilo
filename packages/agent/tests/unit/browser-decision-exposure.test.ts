@@ -1,37 +1,28 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ToolCatalog } from "@nautilo/catalog";
-import { invalidateRuntimeConfigCache, setConfigOverrides } from "@nautilo/config";
 import { z } from "zod";
+import * as resolvedCatalog from "../../src/config/resolved-catalog";
 import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { resolveToolsForExposure } from "../../src/nodes/pre-model";
-import { createBrowserSnapshotTool } from "../../src/tools/browser/browser-snapshot";
+import { createBrowserSnapshotTool, resolveBrowserDecisionModel } from "../../src/tools/browser/browser-snapshot";
 import { registerAllTools } from "../../src/tools/register-all";
 import { buildSystemPrompt } from "../../src/prompts/templates";
 
-const JEV_ID = "openrouter:typesafe/jev-1.13";
 const context = { turnId: "browser-exposure-test", fullEncryptionOnly: false };
 
 describe("live browser decision exposure", () => {
   let priorKey: string | undefined;
-  let priorModel: string | undefined;
 
   beforeEach(() => {
     priorKey = process.env["OPENROUTER_API_KEY"];
-    priorModel = process.env["NAUTILO_BROWSER_DECISION_MODEL"];
     process.env["OPENROUTER_API_KEY"] = "synthetic-exposure-test";
-    delete process.env["NAUTILO_BROWSER_DECISION_MODEL"];
-    setConfigOverrides({ nautilo_browser_decision_model: JEV_ID });
     configureRuntimeModelCatalog({ catalogPointerUrl: null });
   });
 
   afterEach(() => {
     resetRuntimeModelCatalog();
-    setConfigOverrides({});
     if (priorKey === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorKey;
-    if (priorModel === undefined) delete process.env["NAUTILO_BROWSER_DECISION_MODEL"];
-    else process.env["NAUTILO_BROWSER_DECISION_MODEL"] = priorModel;
-    invalidateRuntimeConfigCache();
   });
 
   function expectHidden(tool = createBrowserSnapshotTool(context)) {
@@ -56,12 +47,36 @@ describe("live browser decision exposure", () => {
   });
 
   test.each(["", "openrouter:missing-decision-model", "openai:gpt-5.6-sol"])(
-    "disabled, unknown, and chat configuration cannot expose a decision route: %s",
+    "an absent, unknown, or non-decision exact binding cannot expose a decision route: %s",
     (modelId) => {
-      setConfigOverrides({ nautilo_browser_decision_model: modelId });
-      expectHidden();
+      expect(resolveBrowserDecisionModel(context, modelId)).toBeNull();
     },
   );
+
+  test("selects the first eligible implemented decision row in signed catalog order", () => {
+    const eligible = resolvedCatalog.listResolvedCatalogModels().filter((row) => row.workload === "decision"
+      && row.decision?.operations.length === 1 && row.decision.operations[0] === "choice");
+    expect(eligible.length).toBeGreaterThan(0);
+    expect(resolveBrowserDecisionModel(context)?.id).toBe(eligible[0]?.id);
+    expect(resolveBrowserDecisionModel(context, eligible[0]?.id)?.id).toBe(eligible[0]?.id);
+  });
+
+  test("uses catalog order while skipping non-decision and unimplemented decision routes", () => {
+    const actual = resolvedCatalog.listResolvedCatalogModels().find((row) => row.workload === "decision");
+    if (!actual) throw new Error("expected a catalogued decision row");
+    const selected = { ...actual, id: "openrouter:synthetic/non-jev-choice", displayName: "Synthetic Choice" };
+    const unsupportedProvider = { ...actual, id: "synthetic:unimplemented-choice", provider: "synthetic" };
+    const chat = { ...actual, id: "openrouter:synthetic/chat", workload: "chat" as const, decision: null };
+    const list = spyOn(resolvedCatalog, "listResolvedCatalogModels")
+      .mockReturnValue([chat, unsupportedProvider, selected, actual]);
+    try {
+      expect(resolveBrowserDecisionModel(context)?.id).toBe(selected.id);
+      expect(resolveBrowserDecisionModel(context, unsupportedProvider.id)).toBeNull();
+      expect(resolveBrowserDecisionModel(context, selected.id)?.id).toBe(selected.id);
+    } finally {
+      list.mockRestore();
+    }
+  });
 
   test("the actual catalog binding favors Jev only while eligible and preserves ordinary controls", () => {
     const catalog = new ToolCatalog();
