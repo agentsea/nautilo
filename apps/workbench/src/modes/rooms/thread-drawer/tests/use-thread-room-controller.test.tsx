@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { ApiError } from "@nautilo/api-client/browser";
 import { reapplyHappyDomGlobals } from "../../../../../tests/bun-dom-preload";
 import type { ThreadDetailResponse } from "@nautilo/types";
 import {
@@ -23,13 +24,37 @@ const detail: ThreadDetailResponse = {
 function createApi(): ThreadRoomApi & Record<string, ReturnType<typeof mock>> {
   return {
     getThreadDetail: mock(async () => detail),
+    getRoom: mock(async () => ({
+      id: "child-a",
+      label: "Thread",
+      type: "group",
+      graphThreadId: "graph-child-a",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      kind: "subthread" as const,
+      parentRoomId: "parent-a",
+      threadRootMessageId: 42,
+      conductorMode: "standard" as const,
+      members: [],
+    })),
     readRoomMessages: mock(async () => ({ messages: [] })),
+    readRoomMessagesAround: mock(async () => ({
+      target: { messageId: "42", createdAt: "2026-01-01T00:00:00.000Z" },
+      messages: [detail.anchor],
+      includedToolCallCompanion: false,
+      hasOlder: false,
+      hasNewer: false,
+    })),
     getRoomActiveJobs: mock(async () => ({ jobIds: ["job-a"] })),
     sendRoomMessage: mock(async () => ({ messageId: 99, jobId: "job-a" })),
     stopRoom: mock(async () => ({ stopped: true })),
     markRoomRead: mock(async () => ({ marked: 0 })),
   };
 }
+
+const threadCoordinates = {
+  parentRoomId: "parent-a",
+  anchorMessageId: 42,
+} as const;
 
 describe("useThreadRoomController", () => {
   beforeEach(() => {
@@ -41,11 +66,13 @@ describe("useThreadRoomController", () => {
   test("hydrates canonical child state without marking it read until the surface asks", async () => {
     const api = createApi();
     const { result } = renderHook(() => useThreadRoomController({
-      roomId: "child-a", visible: true, connected: true, api,
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
     }));
 
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
     expect(api.getThreadDetail).toHaveBeenCalledWith("child-a");
+    expect(api.getRoom).not.toHaveBeenCalled();
+    expect(api.readRoomMessagesAround).not.toHaveBeenCalled();
     expect(api.readRoomMessages).toHaveBeenCalledWith("child-a");
     expect(api.markRoomRead).not.toHaveBeenCalled();
     await act(async () => {
@@ -54,10 +81,178 @@ describe("useThreadRoomController", () => {
     expect(api.markRoomRead).toHaveBeenCalledWith("child-a");
   });
 
+  test("hydrates a protected anchor through the shared around-message operation", async () => {
+    const api = createApi();
+    api.getThreadDetail.mockRejectedValueOnce(new ApiError(
+      409,
+      "Protected Subthread anchor hydration is not supported",
+    ));
+    api.readRoomMessagesAround.mockResolvedValueOnce({
+      target: { messageId: "42", createdAt: "2026-01-01T00:00:00.000Z" },
+      messages: [{
+        ...detail.anchor,
+        content: "protected root",
+        replyCount: 3,
+        lastReplyAt: "2026-01-01T00:03:00.000Z",
+        summaryRevision: 7,
+      }],
+      includedToolCallCompanion: false,
+      hasOlder: true,
+      hasNewer: true,
+    });
+    const { result } = renderHook(() => useThreadRoomController({
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
+    }));
+
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+    expect(api.getRoom).toHaveBeenCalledWith("child-a");
+    expect(api.readRoomMessagesAround).toHaveBeenCalledWith({
+      roomId: "parent-a",
+      messageId: "42",
+    });
+    expect(result.current.state.anchor).toMatchObject({
+      id: "42",
+      content: "protected root",
+      replyCount: 3,
+      summaryRevision: 7,
+    });
+    expect(result.current.state.detail?.summary).toEqual({
+      replyCount: 3,
+      lastReplyAt: "2026-01-01T00:03:00.000Z",
+      summaryRevision: 7,
+    });
+  });
+
+  test("fails closed when protected child coordinates do not match the open drawer", async () => {
+    const api = createApi();
+    api.getThreadDetail.mockRejectedValueOnce(new ApiError(
+      409,
+      "Protected Subthread anchor hydration is not supported",
+    ));
+    api.getRoom.mockResolvedValueOnce({
+      ...(await api.getRoom("child-a")),
+      parentRoomId: "different-parent",
+    });
+    api.getRoom.mockClear();
+    const { result } = renderHook(() => useThreadRoomController({
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
+    }));
+
+    await waitFor(() => expect(result.current.state.phase).toBe("error"));
+    expect(result.current.state.error).toBe(
+      "Protected thread coordinates do not match the requested conversation.",
+    );
+    expect(api.readRoomMessagesAround).not.toHaveBeenCalled();
+  });
+
+  test("fails closed when protected history omits or duplicates the exact anchor", async () => {
+    for (const messages of [[], [detail.anchor, detail.anchor]]) {
+      const api = createApi();
+      api.getThreadDetail.mockRejectedValueOnce(new ApiError(
+        409,
+        "Protected Subthread anchor hydration is not supported",
+      ));
+      api.readRoomMessagesAround.mockResolvedValueOnce({
+        target: { messageId: "42", createdAt: "2026-01-01T00:00:00.000Z" },
+        messages,
+        includedToolCallCompanion: false,
+        hasOlder: false,
+        hasNewer: false,
+      });
+      const { result, unmount } = renderHook(() => useThreadRoomController({
+        roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
+      }));
+
+      await waitFor(() => expect(result.current.state.phase).toBe("error"));
+      expect(result.current.state.error).toBe("Protected thread anchor is unavailable.");
+      unmount();
+    }
+  });
+
+  test("fails closed when protected reconciliation withholds the exact anchor", async () => {
+    const api = createApi();
+    api.getThreadDetail.mockRejectedValueOnce(new ApiError(
+      409,
+      "Protected Subthread anchor hydration is not supported",
+    ));
+    api.readRoomMessagesAround.mockResolvedValueOnce({
+      target: { messageId: "42", createdAt: "2026-01-01T00:00:00.000Z" },
+      messages: [{
+        ...detail.anchor,
+        content: "Encrypted history is unavailable on this device.",
+        historyUnavailable: true,
+      }],
+      includedToolCallCompanion: false,
+      hasOlder: false,
+      hasNewer: false,
+    });
+    const { result } = renderHook(() => useThreadRoomController({
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
+    }));
+
+    await waitFor(() => expect(result.current.state.phase).toBe("error"));
+    expect(result.current.state.error).toBe("Protected thread anchor is unavailable.");
+  });
+
+  test("ignores a protected hydration completion after switching child Rooms", async () => {
+    let resolveOldRoom!: (room: Awaited<ReturnType<ThreadRoomApi["getRoom"]>>) => void;
+    const oldRoom = new Promise<Awaited<ReturnType<ThreadRoomApi["getRoom"]>>>((resolve) => {
+      resolveOldRoom = resolve;
+    });
+    const api = createApi();
+    api.getThreadDetail.mockImplementation(async (roomId: string) => {
+      if (roomId === "child-a") throw new ApiError(
+        409,
+        "Protected Subthread anchor hydration is not supported",
+      );
+      return {
+        parentRoomId: "parent-b",
+        subthreadRoomId: "child-b",
+        anchor: { id: "84", role: "user", content: "new root", createdAt: "2026-01-02T00:00:00.000Z" },
+        summary: { replyCount: 0, lastReplyAt: null, summaryRevision: 0 },
+      };
+    });
+    api.getRoom.mockImplementation(async (roomId: string) => {
+      if (roomId === "child-a") return oldRoom;
+      throw new Error("unexpected room lookup");
+    });
+    const { result, rerender } = renderHook(
+      ({ roomId, parentRoomId, anchorMessageId }) => useThreadRoomController({
+        roomId,
+        parentRoomId,
+        anchorMessageId,
+        visible: true,
+        connected: true,
+        api,
+      }),
+      { initialProps: { roomId: "child-a", parentRoomId: "parent-a", anchorMessageId: 42 } },
+    );
+
+    rerender({ roomId: "child-b", parentRoomId: "parent-b", anchorMessageId: 84 });
+    await waitFor(() => expect(result.current.state.roomId).toBe("child-b"));
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+    resolveOldRoom({
+      id: "child-a",
+      label: "Old thread",
+      type: "group",
+      graphThreadId: "graph-child-a",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      kind: "subthread",
+      parentRoomId: "parent-a",
+      threadRootMessageId: 42,
+      conductorMode: "standard",
+      members: [],
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(result.current.state.roomId).toBe("child-b");
+    expect(result.current.state.anchor?.content).toBe("new root");
+  });
+
   test("reconnect rehydrates and explicit stop targets only the child", async () => {
     const api = createApi();
     const { result, rerender } = renderHook(
-      ({ connected }) => useThreadRoomController({ roomId: "child-a", visible: true, connected, api }),
+      ({ connected }) => useThreadRoomController({ roomId: "child-a", ...threadCoordinates, visible: true, connected, api }),
       { initialProps: { connected: false } },
     );
     expect(api.getThreadDetail).not.toHaveBeenCalled();
@@ -73,7 +268,7 @@ describe("useThreadRoomController", () => {
     const api = createApi();
     api.sendRoomMessage.mockRejectedValueOnce(new Error("offline"));
     const { result, rerender } = renderHook(
-      ({ roomId }) => useThreadRoomController({ roomId, visible: true, connected: true, api }),
+      ({ roomId }) => useThreadRoomController({ roomId, ...threadCoordinates, visible: true, connected: true, api }),
       { initialProps: { roomId: "child-a" as string | null } },
     );
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
@@ -98,7 +293,7 @@ describe("useThreadRoomController", () => {
     setCurrentFolder("/Users/casey/Projects/kentauros", "relay-casey");
     setWorkspacePath("/Users/casey/Documents/Nautilo");
     const { result } = renderHook(() => useThreadRoomController({
-      roomId: "child-a", visible: true, connected: true, api,
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
     }));
 
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
@@ -117,7 +312,7 @@ describe("useThreadRoomController", () => {
     setCurrentFolder("/Users/casey/Projects/kentauros", "relay-casey");
     setWorkspacePath("/Users/casey/Documents/Nautilo");
     const { result } = renderHook(() => useThreadRoomController({
-      roomId: "child-a", visible: true, connected: true, api,
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
     }));
 
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
@@ -138,7 +333,7 @@ describe("useThreadRoomController", () => {
   test("uses a fresh file-context snapshot for every child send while the drawer stays open", async () => {
     const api = createApi();
     const { result } = renderHook(() => useThreadRoomController({
-      roomId: "child-a", visible: true, connected: true, api,
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
     }));
 
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
@@ -165,7 +360,7 @@ describe("useThreadRoomController", () => {
 
   test("allows a later explicit child read after inbound child data", async () => {
     const api = createApi();
-    const { result } = renderHook(() => useThreadRoomController({ roomId: "child-a", visible: true, connected: true, api }));
+    const { result } = renderHook(() => useThreadRoomController({ roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api }));
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
     await act(async () => {
       await result.current.markRead();
@@ -185,7 +380,7 @@ describe("useThreadRoomController", () => {
   test("refuses an explicit read while hidden and permits it once visible", async () => {
     const api = createApi();
     const { result, rerender } = renderHook(
-      ({ visible }) => useThreadRoomController({ roomId: "child-a", visible, connected: true, api }),
+      ({ visible }) => useThreadRoomController({ roomId: "child-a", ...threadCoordinates, visible, connected: true, api }),
       { initialProps: { visible: false } },
     );
     await waitFor(() => expect(result.current.state.phase).toBe("ready"));
@@ -220,7 +415,7 @@ describe("useThreadRoomController", () => {
       </ThreadRoomEventRouterContext.Provider>
     );
     const { result, unmount } = renderHook(
-      () => useThreadRoomController({ roomId: "child-a", visible: true, connected: true, api }),
+      () => useThreadRoomController({ roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api }),
       { wrapper },
     );
 

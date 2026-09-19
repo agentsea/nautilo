@@ -272,7 +272,7 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
     })).rejects.toThrow("protected reservation unavailable");
     expect(runtime.publishMessages([
       new AIMessage({ content: "Full confidential sentinel" }),
-    ])).rejects.toThrow("protected publication unavailable");
+    ])).rejects.toThrow("protected reservation unavailable");
     expect(runtime.toolBoundary.protectAssistantToolCall(new AIMessage({
       content: "",
       tool_calls: [{ id: "full:call", name: "search", args: { query: "secret" } }],
@@ -594,6 +594,67 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
     expect(opened).not.toBeNull();
     expect(durable.status).toBe("protected");
     expect(publications).toBe(1);
+  });
+
+  test("joins an in-flight stream reservation before tool and durable publication", async () => {
+    let releaseReservation!: () => void;
+    const blocked = new Promise<void>((resolve) => { releaseReservation = resolve; });
+    const reservations: LiveShadowAgentPublishedMessage["reservation"][] = [];
+    const used: LiveShadowAgentPublishedMessage["reservation"][] = [];
+    const allocate = (authorRole: "assistant" | "tool") => {
+      const reservation = Object.freeze({
+        messageId: 100 + reservations.length,
+        transcriptOrdinal: 2 + reservations.length,
+        authorRole,
+      }) as LiveShadowAgentPublishedMessage["reservation"];
+      reservations.push(reservation);
+      return reservation;
+    };
+    const session: LiveShadowAgentTurnSession = {
+      ...throwingSession({}).session,
+      reserveAssistantStream: async () => {
+        const reservation = allocate("assistant");
+        await blocked;
+        return { status: "protected", value: { reservation, startBytes: new Uint8Array([1]) } };
+      },
+      publishMessage: async (request) => {
+        const reservation = request.reservation ?? allocate(
+          request.payload.role === "tool" ? "tool" : "assistant",
+        );
+        used.push(reservation);
+        return { status: "protected", value: {
+          reservation,
+          policyRevision: 9,
+          ordinaryPayloadBytes: new Uint8Array([1]),
+          openedPayload: request.payload,
+          protectedMessage: {} as ProtectedMessageDtoV2,
+          durableEventDigest: new Uint8Array(32),
+          streamEvidence: null,
+        } };
+      },
+    };
+    const runtime = createLiveShadowAgentRuntimeTurn(session);
+    const start = runtime.reserveAssistantStream({ assistantMessageKey: "first", createdAt: 1 });
+    const call = () => new AIMessage({ content: "", tool_calls: [
+      { id: "reserved-call", name: "get_current_time", args: {} },
+    ] });
+    const toolGate = runtime.toolBoundary.protectAssistantToolCall(call());
+    const durableGate = runtime.publishMessages([call()]);
+    await Promise.resolve();
+    expect(used).toHaveLength(0);
+    releaseReservation();
+    expect(await start).not.toBeNull();
+    expect(await toolGate).not.toBeNull();
+    expect((await durableGate).status).toBe("protected");
+    expect(used).toEqual([reservations[0]!]);
+    expect(reservations).toHaveLength(1);
+
+    // The durable gate consumes that stream, so later output gets new ordinals.
+    await runtime.publishMessages([new ToolMessage({ content: "UTC", tool_call_id: "reserved-call" })]);
+    await runtime.reserveAssistantStream({ assistantMessageKey: "final", createdAt: 2 });
+    await runtime.publishMessages([new AIMessage({ content: "Done" })]);
+    expect(used.map((reservation) => reservation.transcriptOrdinal)).toEqual([2, 3, 4]);
+    expect(reservations).toEqual(used);
   });
 
   test("keeps protecting long transcripts after the bounded dedupe cache fills", async () => {

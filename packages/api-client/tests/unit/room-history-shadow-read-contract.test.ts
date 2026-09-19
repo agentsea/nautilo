@@ -89,6 +89,7 @@ function readySidecar() {
       },
     }],
     signerEvidence: [],
+    terminalExecutions: [],
     acknowledgement: {
       status: "required",
       tokenBase64url: "dG9rZW4",
@@ -164,6 +165,48 @@ describe("Room history Shadow-read HTTP contract", () => {
       ...value,
       eligibleCount: 2,
     }).success).toBeFalse();
+  });
+
+  test("closes terminal summaries to selected Human inputs and stable execution identities", () => {
+    const value = readySidecar();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 27, executionId: "execution:cancelled", classification: "cancelled" },
+        { messageId: 27, executionId: "execution:lost", classification: "process_lost" },
+      ],
+    }).success).toBeTrue();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 28, executionId: "execution:foreign", classification: "cancelled" },
+      ],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 27, executionId: "execution:same", classification: "cancelled" },
+        { messageId: 27, executionId: "execution:same", classification: "process_lost" },
+      ],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 27, executionId: "execution:bad", classification: "deadline_expired" },
+      ],
+    }).success).toBeFalse();
+  });
+
+  test("keeps plaintext history sidecars unchanged", () => {
+    expect(roomHistoryShadowReadResponseV1Schema.parse({
+      responseVersion: 1,
+      status: "disabled",
+      mode: "plaintext_only",
+    })).toEqual({
+      responseVersion: 1,
+      status: "disabled",
+      mode: "plaintext_only",
+    });
   });
 
   test("accepts an optional retained Human signing key only at the exact wire size", () => {

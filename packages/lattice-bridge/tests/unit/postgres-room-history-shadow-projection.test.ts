@@ -36,6 +36,7 @@ import {
   createPostgresRoomHistoryShadowProjection,
   createCurrentHumanDomainKeyRoomHistoryAuthorityResolver,
   createCurrentDomainKeyRoomHistoryAuthorityResolver,
+  selectRoomHistoryTerminalExecutions,
   type RoomHistoryDomainKeyV2Authority,
   type RoomHistorySelectedCoordinate,
   type RoomHistoryShadowProjectionRecord,
@@ -352,6 +353,7 @@ async function subject(
         publicationSetDigestBase64url: DIGEST, audienceFingerprintBase64url: DIGEST,
       } : null,
     }),
+    resolveTerminalExecutions: async () => [],
     crypto: {
       getObject: async (objectId) => {
         cryptoReads.push(`object:${objectId}`);
@@ -381,6 +383,55 @@ async function subject(
 }
 
 describe("M275 selected Room-history Shadow projection", () => {
+  test("maps only selected Human inputs to closed cancellation and process-loss summaries", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [
+        {
+          selection_ordinal: 0,
+          id: 11,
+          execution_id: "execution:cancelled",
+          sequence: 1,
+          state: "fallback",
+          terminal_reason: "agent_agent_input_cancelled",
+        },
+        {
+          selection_ordinal: 0,
+          id: 11,
+          execution_id: "execution:restart",
+          sequence: 2,
+          state: "failed",
+          terminal_reason: "process_lost",
+        },
+      ],
+    ]);
+    const product = await verifyConversationProductPostgresHandle(connection);
+    const result = await selectRoomHistoryTerminalExecutions(product, {
+      roomId: ROOM_ID,
+      selectedCoordinates: [
+        coordinate(11),
+        coordinate(12, { role: "assistant" }),
+      ],
+    });
+
+    expect(result).toEqual([
+      { messageId: 11, executionId: "execution:cancelled", classification: "cancelled" },
+      { messageId: 11, executionId: "execution:restart", classification: "process_lost" },
+    ]);
+    expect(connection.queries[1]?.statement).toContain(
+      'from "conversation_shared_agent_shadow_execution_inputs"',
+    );
+    expect(connection.queries[1]?.statement).toContain(
+      'inner join "conversation_shared_agent_shadow_executions"',
+    );
+    expect(connection.queries[1]?.parameters).toContain(ROOM_ID);
+    expect(connection.queries[1]?.parameters).toContain(SESSION_ID);
+    expect(connection.queries[1]?.parameters).toContain(11);
+    expect(connection.queries[1]?.parameters).not.toContain(12);
+    expect(connection.queries[1]?.parameters).toContain("agent_agent_input_cancelled");
+    expect(connection.queries[1]?.statement).not.toContain("final_causal_event_digest");
+  });
+
   test("inspects verified generation-zero metadata and selects the newest rewrap", async () => {
     const crypto = new LatticeCrypto(seededRng(320_001));
     const signer = crypto.generateSigningKeyPair();

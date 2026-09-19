@@ -17,6 +17,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   reconcileRoomHistoryShadowPayloads,
+  reconcileFetchedRoomHistoryPage,
   restoreSessionMessages,
 } from "../../src/adapters/session-rehydrate";
 import { runShellRenderer } from "../../src/components/tool-card/renderers/run-shell";
@@ -107,6 +108,91 @@ describe("restoreSessionMessages — D426 root summaries", () => {
         summaryRevision: 7,
       },
     });
+  });
+});
+
+describe("restoreSessionMessages — durable terminal execution notices", () => {
+  test("attaches authenticated cold-load outcomes only to their selected Human input", async () => {
+    const messages: HydrationRow[] = [
+      { id: "27", role: "user", content: "Stop this", logicalMessageKey: "logical:27" },
+      { id: "28", role: "user", content: "Keep this", logicalMessageKey: "logical:28" },
+    ];
+    const reconciled = await reconcileFetchedRoomHistoryPage(
+      "40000000-0000-4000-8000-000000000275",
+      messages,
+      {
+        responseVersion: 1,
+        status: "ready",
+        operationId: "history:terminal",
+        clientRequestKey: "history:terminal:request",
+        selectedCoordinateDigestBase64url: "A".repeat(43),
+        selectedCount: 2,
+        selectedCoordinates: [
+          { sessionId: "41000000-0000-4000-8000-000000000275", messageId: 27,
+            editRevision: 0, role: "user", logicalMessageKey: "logical:27" },
+          { sessionId: "41000000-0000-4000-8000-000000000275", messageId: 28,
+            editRevision: 0, role: "user", logicalMessageKey: "logical:28" },
+        ],
+        eligibleCount: 1,
+        authority: {
+          scheme: "domain_key_v2", keyClass: "ai", subjectHumanId: "human:one",
+          readerDeviceId: "device:browser", readerDeviceSigningKeyGeneration: 1,
+          hostAuthorizationRevision: 1, policyRevision: 1,
+          roomId: "40000000-0000-4000-8000-000000000275",
+          namespaceId: "42000000-0000-4000-8000-000000000275",
+          namespaceAccessRevision: 0, namespaceCurrentGeneration: 1,
+          namespaceHeadDigestBase64url: "A".repeat(43), domainId: "domain:one",
+          domainKeyGeneration: 1, domainAuthorizationRevision: 1,
+          domainHeadDigestBase64url: "A".repeat(43), namespaceBundleRevision: 1,
+          namespaceBundleDigestBase64url: "A".repeat(43),
+        },
+        records: [{
+          coordinate: {
+            sessionId: "41000000-0000-4000-8000-000000000275", messageId: 27,
+            editRevision: 0, role: "user", logicalMessageKey: "logical:27",
+          },
+          shadowOperationId: "turn:27",
+          shadowTranscriptOrdinal: 1,
+          ordinaryPayloadBytesBase64url: "e30",
+          retainedGeneration: {
+            namespaceGeneration: 1, accessRevision: 0,
+            headDigestBase64url: "A".repeat(43),
+            publicationDigestBase64url: "A".repeat(43),
+            publicationSetDigestBase64url: "A".repeat(43),
+            audienceFingerprintBase64url: "A".repeat(43),
+          },
+          protectedMessage: {
+            dtoVersion: 2,
+            projection: {
+              messageId: "27", logicalMessageKey: "logical:27",
+              sessionId: "41000000-0000-4000-8000-000000000275",
+              roomId: "40000000-0000-4000-8000-000000000275",
+              namespaceId: "42000000-0000-4000-8000-000000000275",
+              role: "user", createdAt: "2026-08-23T12:00:00.000Z", editRevision: 0,
+            },
+            protectedPayload: { status: "pending", reason: "shadow_pending" },
+          },
+        }],
+        signerEvidence: [],
+        terminalExecutions: [
+          { messageId: 27, executionId: "execution:cancelled", classification: "cancelled" },
+          { messageId: 27, executionId: "execution:lost", classification: "process_lost" },
+        ],
+        acknowledgement: { status: "already_recorded" },
+      },
+      {
+        createIntent: () => ({ requestVersion: 1, clientRequestKey: "unused" }),
+        reconcile: async ({ messages: selected }) => selected,
+      },
+      { protectedAttempt: true },
+    );
+    const restored = restoreSessionMessages(reconciled);
+
+    expect(restored[0]?.metadata?.custom?.terminalExecutions).toEqual([
+      { messageId: 27, executionId: "execution:cancelled", classification: "cancelled" },
+      { messageId: 27, executionId: "execution:lost", classification: "process_lost" },
+    ]);
+    expect(restored[1]?.metadata?.custom).not.toHaveProperty("terminalExecutions");
   });
 });
 

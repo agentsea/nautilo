@@ -695,6 +695,8 @@ export const conversationSharedAgentShadowExecutionInputs = pgTable(
       .on(table.executionId, table.inputOrdinal),
     uniqueIndex("uq_conversation_shared_agent_shadow_execution_inputs_operation")
       .on(table.executionId, table.humanOperationId),
+    index("idx_shared_agent_execution_inputs_message")
+      .on(table.messageId, table.executionId),
     check(
       "conversation_shared_agent_shadow_execution_inputs_shape",
       sql`${table.inputOrdinal} > 0 and ${table.messageId} > 0`,

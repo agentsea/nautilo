@@ -1038,6 +1038,18 @@ export interface MessageArtifactOpenRef {
   sizeBytes: number;
 }
 
+/**
+ * Content-free durable outcome for one protected Agent execution associated
+ * with a Human history row. The stable execution id distinguishes multi-Agent
+ * outcomes for the same input without making any claim about other mapped
+ * output that may also exist.
+ */
+export interface RoomHistoryTerminalExecutionSummary {
+  messageId: number;
+  executionId: string;
+  classification: "cancelled" | "process_lost";
+}
+
 /** D124 / D300 — row shape for `GET /api/rooms/:id/messages`. */
 export interface RoomMessageDto {
   id: string;

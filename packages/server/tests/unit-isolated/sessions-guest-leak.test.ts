@@ -432,6 +432,7 @@ describe("sessions endpoint — thread_id convention independence", () => {
       expect(getRoomMessagesAcrossMemberSessions).not.toHaveBeenCalled();
       expect(getRoomMessagesAcrossMemberSessionsWithSelection)
         .toHaveBeenCalledTimes(1);
+      expect(getRoomDetailForMember).toHaveBeenCalledWith(ROOM_ID, "owner-user");
       expect(projectRoomHistoryShadowRead).toHaveBeenCalledWith(
         expect.objectContaining({
           roomId: ROOM_ID,
@@ -440,6 +441,22 @@ describe("sessions endpoint — thread_id convention independence", () => {
           selectedCoordinates: [expect.objectContaining({ messageId: 1 })],
         }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects a non-member before selected history or terminal sidecar projection", async () => {
+    getRoomDetailForMember.mockResolvedValueOnce(null);
+    const app = makeApp("guest", "other-user", { shadowRead: true });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/rooms/${ROOM_ID}/messages?beforeId=9&beforeCreatedAt=2026-01-01T00:00:09.000Z&limit=50&shadowReadVersion=1&shadowReadRequestKey=history%3Aprivate&shadowReadDeviceId=device%3Abrowser`,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(getRoomMessagesAcrossMemberSessionsWithSelection).not.toHaveBeenCalled();
+      expect(projectRoomHistoryShadowRead).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

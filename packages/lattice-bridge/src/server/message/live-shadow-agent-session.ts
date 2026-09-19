@@ -207,6 +207,7 @@ export interface LiveShadowAgentTurnSession {
 }
 
 type ReservationState = {
+  readonly streamSettlement: { promise: Promise<void>; resolve(): void };
   readonly token: LiveShadowAgentMessageReservation;
   readonly allocation: ConversationAllocatedRevision;
   readonly createdAt: number;
@@ -341,6 +342,7 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
   ): void => {
     if (terminalFailure !== null) return;
     terminalFailure = unavailable(stage, reason);
+    for (const state of ownedStates) state.streamSettlement.resolve();
     input.onTerminalFailure?.(stage, reason);
   };
 
@@ -417,6 +419,7 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
       objectDek,
       envelopeBytes,
       assistantMessageKey,
+      streamSettlement: Promise.withResolvers<void>(),
       startBytes: null,
       streamStartDigest: null,
       previousFrameHash: ZERO_HASH.slice(),
@@ -661,6 +664,7 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
           state.terminalFrameDigest = sealed.frameHash.slice();
           state.terminalStreamedTextDigest = streamedTextDigest!.slice();
           state.terminalPayloadDigest = input.crypto.hash(finalPayloadBytes!);
+          state.streamSettlement.resolve();
         }
         sealed.frame.streamStartDigest.fill(0);
         sealed.frame.previousFrameHash.fill(0);
@@ -716,6 +720,28 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
         );
         if (reserved.status !== "protected") return reserved;
         state = reserved.value;
+      }
+      if (state.startBytes !== null && state.terminalFrameDigest === null) {
+        // The Tool consumer can reach publication before the independent event
+        // reader seals the terminal frame. Do not commit a stream without its
+        // final payload and transcript evidence.
+        const signal = input.authorizationSignal;
+        const onAbort = () => fail("agent_input", "protected_unavailable");
+        const timeout = setTimeout(
+          () => fail("agent_input", "deadline_expired"),
+          Math.max(0, authorizationDeadlineAt - now()),
+        );
+        timeout.unref?.();
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted === true) onAbort();
+        try {
+          await state.streamSettlement.promise;
+        } finally {
+          clearTimeout(timeout);
+          signal?.removeEventListener("abort", onAbort);
+        }
+        const inactiveAfterStream = active<LiveShadowAgentPublishedMessage>();
+        if (inactiveAfterStream !== null) return inactiveAfterStream;
       }
       if (state.published !== null) {
         const expected = encodeMessagePayloadV2(request.payload);
@@ -1015,6 +1041,7 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
       destroyed = true;
       sharedAgentPlanBytes?.fill(0);
       for (const state of ownedStates) {
+        state.streamSettlement.resolve();
         state.reservationDigest.fill(0);
         state.objectDek.fill(0);
         state.envelopeBytes.fill(0);

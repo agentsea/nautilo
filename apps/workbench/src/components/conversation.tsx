@@ -41,6 +41,10 @@ import remarkGfm from "remark-gfm";
 import { FileText, Mic, Paperclip, SendHorizontal, Loader2, Square, X } from "lucide-react";
 import { HumanMessageContent } from "./human-message-content";
 import {
+  TerminalExecutionNotices,
+  terminalExecutionsFromMessageMetadata,
+} from "./terminal-execution-notice";
+import {
   createBrowserPageDraftDispatcher,
   type GenieHandoffBridge,
 } from "../lib/genie-handoff";
@@ -3514,6 +3518,9 @@ function Message({
   const artifactOpenRefs = useMessage((state) => {
     return artifactOpenRefsFromMessageMetadata(state.metadata);
   });
+  const terminalExecutions = useMessage((state) => {
+    return terminalExecutionsFromMessageMetadata(state.metadata);
+  });
   const sendFailureReason = useMessage((state) => {
     const c = (state.metadata as { custom?: { sendFailureReason?: unknown } })?.custom;
     return typeof c?.sendFailureReason === "string" && c.sendFailureReason.trim().length > 0
@@ -4073,6 +4080,7 @@ function Message({
                 </>
               )}
               <MessageArtifactOpenCards artifacts={artifactOpenRefs} />
+              <TerminalExecutionNotices summaries={terminalExecutions} />
               {sendFailed ? (
                 <div className="mt-1 text-xs text-foreground-muted">
                   Didn't get through
