@@ -13,6 +13,10 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Admin Models now lists catalog models across workloads with providers,
+  capabilities (including decision choice and visual grounding), and current
+  server availability. Decision models stay separate from chat selectors.
+
 - Routine Jev delegation for connected websites already under direct Genie
   control through Browser Use. It reuses the browser decision loop, verifies
   fresh observations against the exact operation and control epoch, and returns
