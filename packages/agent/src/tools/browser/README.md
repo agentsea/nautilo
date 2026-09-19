@@ -1,30 +1,27 @@
 # Routine browser decisions
 
-The embedded browser uses the ordinary Genie/tool graph unless the operator sets
-`NAUTILO_BROWSER_DECISION_MODEL=openrouter:typesafe/jev-1.13`. The model must be an
-available catalogued OpenRouter Choice model, with normal provider credentials.
-Catalog presence does not activate this path. Without the opt-in or a usable
-decision model, ordinary Genie browser control remains available. See
+The embedded browser automatically selects an eligible catalogued Choice model
+when its provider credential and account policy permit it. Catalog, credential,
+and policy checks use the same runtime sources as other models. When no eligible
+decision model is runnable, ordinary Genie browser control remains available. See
 [catalog compatibility](../../config/model-catalog/README.md) for reader behavior.
 
 ## Local qualification
 
 Use a disposable development instance with Desktop connected and the OpenRouter
-key configured through its normal credential setup. Until the signed catalog
-release includes the decision model, an older remote catalog can replace this
-checkout's bundled candidate. The fixture preload selects the bundled catalog
-through the existing runtime configuration seam; it does not bypass signature
-verification or change the production default.
-
-Stop that disposable server first if it is already running: `server:start`
-adopts a running process and does not apply new environment settings. From the
-repository root, start the isolated server with:
+key configured through its normal credential setup. Check the admin model
+catalog for the Jev decision row and its availability. No decision-model
+environment switch is needed. Start the isolated server normally:
 
 ```bash
-BUN_OPTIONS="--preload=$(pwd)/dev/fixtures/browser-decision/bundled-catalog.ts" \
-NAUTILO_BROWSER_DECISION_MODEL=openrouter:typesafe/jev-1.13 \
 bun run server:start --instance browser-review
 ```
+
+For offline bundled-catalog qualification only, the fixture preload
+`dev/fixtures/browser-decision/bundled-catalog.ts` disables remote refresh through
+the existing runtime seam. It is not required for normal signed-catalog use and
+does not publish a catalog. Stop the disposable server before changing a preload;
+`server:start` adopts an already-running process.
 
 Use the name of an existing disposable instance in place of `browser-review`.
 Start the local fixture separately:
@@ -35,13 +32,12 @@ bun dev/fixtures/browser-decision/server.ts --port 9471
 
 Open `http://127.0.0.1:9471/` in Desktop's internal browser and ask the Genie to
 find the cheapest in-stock blue mug and report its detail-page SKU without buying
-anything. Verify the result independently. Repeat with
-`NAUTILO_BROWSER_DECISION_MODEL=""` after restarting the server to check the
-ordinary loop. Keep the same orchestrator model for that comparison. Also check
+anything. Verify the result independently. To compare the ordinary loop, use a
+disposable instance whose normal credential or account policy makes no eligible
+Choice model runnable. Keep the same orchestrator model for that comparison. Also check
 recovery after a page change and browser operation while Desktop is backgrounded.
 
-Remove the preload for normal signed-catalog operation. These commands do not
-publish a catalog or enable the decision route for other instances.
+These commands do not publish a catalog or enable the decision route for other instances.
 
 ## Delegation and recovery
 

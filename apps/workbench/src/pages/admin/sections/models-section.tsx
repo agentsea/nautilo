@@ -9,9 +9,10 @@ import { isSelectableModel, mergeModelRows } from "../../../lib/model-availabili
 import { useCan } from "../../../hooks/use-can";
 import { Button } from "../../settings/ui";
 import { modelHasReasoningCapability } from "../../settings/sections/model-browser-helpers";
+import { ModelCatalogTable } from "./model-catalog-table";
 
 /**
- * D281 — server-wide model config (§5.13 Models). Reads/writes
+ * Server-wide model config. Reads/writes
  * `/api/admin/server-models`. View requires `read_server_settings`; saving
  * requires `manage_server_operations`. Changes take effect live (DB-backed; no
  * restart).
@@ -44,6 +45,7 @@ function mergeProviderAvailability(
 ): ServerModelConfig {
   return {
     ...current,
+    catalogModels: refreshed.catalogModels,
     effectiveEmbeddingModel: refreshed.effectiveEmbeddingModel,
     embeddingSelectionPending: refreshed.embeddingSelectionPending,
     embeddingModels: refreshed.embeddingModels,
@@ -431,6 +433,7 @@ export function ModelsSection() {
           <p className="text-sm text-[var(--error)]">{loadError}</p>
         ) : draft ? (
           <div className="space-y-6">
+            <ModelCatalogTable models={config?.catalogModels} />
             {!canManage ? (
               <p className="rounded-md border border-border/60 bg-background-element/50 px-3 py-2 text-xs text-foreground-muted">
                 Read-only — you need <code>manage_server_operations</code> to change

@@ -13,15 +13,17 @@ store update, or Desktop/Host installation.
 
 ### Added
 
-- Opt-in Jev browser decisions through OpenRouter. Genies can delegate routine
+- Automatic Jev browser decisions through OpenRouter. Genies can delegate routine
   clicks, exact text, keyboard input and other existing browser controls using
   fresh observations, with normal permissions and usage accounting. Larger
   candidate sets use parallel screening before the final choice. Uncertainty or
   repeated lack of progress returns control to the Genie, which verifies the
-  outcome. Delegation appears only when its configured model is available;
+  outcome. Delegation appears when an eligible model and activated credentials are available;
   ordinary browser control remains available without Jev.
 - Catalog support for decision workloads and optional visual-grounding metadata,
   keeping decision models separate from chat-model selection.
+- Read-only admin model catalog with providers, capabilities, and current server
+  availability, including decision models without adding them to chat selectors.
 
 - Quiet Events per Human: snooze for an hour, until tomorrow, until a chosen
   time, or until manually resumed. A crossed-out bell replaces the bell and its numbered

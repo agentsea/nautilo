@@ -1176,14 +1176,10 @@ describe("browser decision settlement", () => {
 
 describe("browser decision node", () => {
   let priorOpenRouterKey: string | undefined;
-  let priorDecisionModel: string | undefined;
 
   beforeEach(() => {
     priorOpenRouterKey = process.env["OPENROUTER_API_KEY"];
-    priorDecisionModel = process.env["NAUTILO_BROWSER_DECISION_MODEL"];
     process.env["OPENROUTER_API_KEY"] = "or-test";
-    delete process.env["NAUTILO_BROWSER_DECISION_MODEL"];
-    setConfigOverrides({ nautilo_browser_decision_model: JEV_ID });
     configureRuntimeModelCatalog({ catalogPointerUrl: null });
   });
 
@@ -1192,8 +1188,6 @@ describe("browser decision node", () => {
     setConfigOverrides({});
     if (priorOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorOpenRouterKey;
-    if (priorDecisionModel === undefined) delete process.env["NAUTILO_BROWSER_DECISION_MODEL"];
-    else process.env["NAUTILO_BROWSER_DECISION_MODEL"] = priorDecisionModel;
     invalidateRuntimeConfigCache();
   });
 
@@ -2144,7 +2138,7 @@ describe("browser decision node", () => {
     }
   });
 
-  test("changed configuration and unavailable catalog credentials fail before Choice", async () => {
+  test("live credential revocation invalidates the episode before Choice", async () => {
     let choiceCalls = 0;
     const node = createBrowserDecisionNode({
       fullEncryptionOnlyForState: () => false,
@@ -2155,21 +2149,6 @@ describe("browser decision node", () => {
     });
     const signal = new AbortController().signal;
 
-    setConfigOverrides({ nautilo_browser_decision_model: "" });
-    const disabled = await node(state(), { signal });
-    expect(disabled).toMatchObject({
-      browserDecision: { phase: "handoff", reason: "decision_opt_in_changed" },
-    });
-    const disabledHandoff = disabled.messages?.at(-1);
-    expect(SystemMessage.isInstance(disabledHandoff)).toBe(true);
-    if (!SystemMessage.isInstance(disabledHandoff) || typeof disabledHandoff.content !== "string") {
-      throw new Error("expected text supervisor handoff");
-    }
-    expect(disabledHandoff.content).toContain("decision_opt_in_changed");
-    expect(disabledHandoff.content).toContain("Inspect the latest tool evidence");
-    expect(disabledHandoff.content).toContain("Do not blindly replay an uncertain action");
-
-    setConfigOverrides({ nautilo_browser_decision_model: JEV_ID });
     delete process.env["OPENROUTER_API_KEY"];
     const unavailable = await node(state(), { signal });
     expect(unavailable).toMatchObject({

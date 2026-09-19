@@ -1,4 +1,4 @@
-import { fromRuntimeConfig } from "@nautilo/config";
+import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { browserDecisionHandoffContent, browserDecisionPlanError, browserHandoffToolResultIndex, interpretBrowserDecisionPlanArgs, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
@@ -223,16 +223,16 @@ async function executeToolsNode(
         throw new Error("Computer Use reads returned incompatible invocation state");
       }
       return settleToolsNode(state, plan.calls, completions.map((value) => value.message),
-        snapshot, toolCalls.slice(plan.calls.length));
+        snapshot, toolCalls.slice(plan.calls.length), protectedComposition.fullEncryptionOnly === true);
     }
     const completion = await invokeToolCall(state, plan.calls[0]!, config, protectedComposition);
-    return settleToolsNode(state, plan.calls, [completion.message], completion.snapshot, toolCalls.slice(1));
+    return settleToolsNode(state, plan.calls, [completion.message], completion.snapshot, toolCalls.slice(1), protectedComposition.fullEncryptionOnly === true);
   }
   // Unknown, mutation and Human-interrupting tools retain one call per graph
   // checkpoint. A durable read task is never used for an at-most-once effect.
   const [nextCall] = await protectAssistantCalls(state, [first], protectedComposition);
   const completion = await invokeToolCall(state, nextCall!, config, protectedComposition);
-  return settleToolsNode(state, [nextCall!], [completion.message], completion.snapshot, toolCalls.slice(1));
+  return settleToolsNode(state, [nextCall!], [completion.message], completion.snapshot, toolCalls.slice(1), protectedComposition.fullEncryptionOnly === true);
 }
 
 async function protectAssistantCalls(
@@ -402,6 +402,7 @@ function settleToolsNode(
   results: readonly ToolMessage[],
   snapshot: NautiloToolInvocationSnapshot,
   remainingToolCalls: ApprovedToolCall[],
+  fullEncryptionOnly: boolean,
 ): Partial<NautiloState> {
   const executionPolicy = resolveGraphExecutionPolicy();
   // Calls are checkpointed individually, but no-progress rounds belong to
@@ -467,7 +468,8 @@ function settleToolsNode(
       remainingToolCallIds.has(toolCallId),
     ),
   );
-  const browserDecision = settleBrowserDecision(state, executedCalls, results, remainingToolCalls, fromRuntimeConfig().nautilo_browser_decision_model.trim());
+  const decisionModel = resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly });
+  const browserDecision = settleBrowserDecision(state, executedCalls, results, remainingToolCalls, decisionModel?.id ?? "");
   const requestedBrowserDelegation = executedCalls.some((call) => call.name === "browser_snapshot"
     && interpretBrowserDecisionPlanArgs(call.args ?? {}).requestedDelegation);
   const messagesWithResults = mergeMessagesPreservingInvariants(state.messages, [...results]);

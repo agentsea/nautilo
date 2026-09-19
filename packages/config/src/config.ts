@@ -154,8 +154,6 @@ const runtimeModelSchema = {
   nautilo_flush_model: z.string().default(MODEL_DEFAULTS.flush),
   nautilo_reviewer_model: z.string().default(MODEL_DEFAULTS.reviewer),
   nautilo_web_search_model: z.string().default(MODEL_DEFAULTS.webSearch),
-  /** Optional browser-action decision model; empty preserves ordinary browser routing. */
-  nautilo_browser_decision_model: z.string().default(""),
   /** Recoverable/no-progress events between Genie interventions; not a provider retry, time, or step limit. */
   nautilo_browser_decision_intervention_limit: z.number().int().positive().default(2),
   /** vision-capable chat model id for summarizing images when the user's model is text-only */
@@ -821,11 +819,7 @@ function readTextOnlyImagePolicyEnv(env: Env): "unsupported" | "vision_summary" 
 }
 
 function readModelsFromEnv(source: RuntimeSource, env: Env): Record<string, unknown> {
-  // These are operator/runtime controls. `normalizeUserConfig` materializes
-  // the model default and intervention limit even when a user config omits
-  // them, so source-first precedence would silently suppress a dev-stack or
-  // packaged operator environment opt-in (and an explicit empty model rollback).
-  const browserDecisionModel = env["NAUTILO_BROWSER_DECISION_MODEL"];
+  // This operator/runtime control overrides the materialized user-config default.
   const browserDecisionInterventionLimit = env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
   return {
     nautilo_model: source?.nautilo_model ?? env["NAUTILO_MODEL"],
@@ -836,10 +830,6 @@ function readModelsFromEnv(source: RuntimeSource, env: Env): Record<string, unkn
     nautilo_flush_model: source?.nautilo_flush_model ?? env["NAUTILO_FLUSH_MODEL"],
     nautilo_reviewer_model: source?.nautilo_reviewer_model ?? env["NAUTILO_REVIEWER_MODEL"],
     nautilo_web_search_model: source?.nautilo_web_search_model ?? env["NAUTILO_WEB_SEARCH_MODEL"],
-    nautilo_browser_decision_model:
-      browserDecisionModel !== undefined
-        ? browserDecisionModel
-        : source?.nautilo_browser_decision_model,
     nautilo_browser_decision_intervention_limit:
       browserDecisionInterventionLimit !== undefined
         ? Number(browserDecisionInterventionLimit)

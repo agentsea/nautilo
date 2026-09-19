@@ -1,5 +1,6 @@
+import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { setConfigOverrides } from "@nautilo/config";
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -63,7 +64,13 @@ import { setOrdinaryHostResolver } from "../../src/runtime/ordinary-host-resolve
 import { getRequiredOrdinaryHostContext } from "../../src/runtime/ordinary-host-dispatch-context";
 import { describeResearchContextIndex, describeResearchContextMessage } from "../../src/tools/security/research-context";
 
+let initialOpenRouterKey: string | undefined;
+beforeEach(() => { initialOpenRouterKey = process.env["OPENROUTER_API_KEY"]; });
+
 afterEach(() => {
+  if (initialOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
+  else process.env["OPENROUTER_API_KEY"] = initialOpenRouterKey;
+  resetRuntimeModelCatalog();
   setAgentEventSink(null);
   setRelayRegistry(null);
   setOrdinaryHostResolver(null);
@@ -1358,7 +1365,8 @@ describe("Nautilo tool invocation service", () => {
     const invoke = (input: NautiloToolInvocationCall) => createNautiloToolInvocationSession(
       createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
     ).invoke(input);
-    setConfigOverrides({ nautilo_browser_decision_model: "openrouter:typesafe/jev-1.13" });
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
     try {
       expect((await invoke(rawCall)).status).toBe("success");
       expect(dispatched).toEqual([{}]);
@@ -1380,10 +1388,10 @@ describe("Nautilo tool invocation service", () => {
       }
       expect(dispatched).toHaveLength(3);
 
-      setConfigOverrides({ nautilo_browser_decision_model: "" });
+      delete process.env["OPENROUTER_API_KEY"];
       const disabled = await invoke(rawCall);
       expect(disabled.status).toBe("error");
-      expect(disabled.content).toContain("Routine browser decisions are not enabled");
+      expect(disabled.content).toContain("Routine browser decisions are unavailable");
       expect(dispatched).toHaveLength(3);
     } finally {
       setConfigOverrides({});
@@ -1551,7 +1559,8 @@ describe("Nautilo tool invocation service", () => {
           browserSessionId: "browser-1", observationId: "observation-1" },
       },
     });
-    setConfigOverrides({ nautilo_browser_decision_model: "openrouter:typesafe/jev-1.13" });
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
     try {
       const invoke = (input = invocation) => createNautiloToolInvocationSession(
         createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
@@ -1561,7 +1570,7 @@ describe("Nautilo tool invocation service", () => {
       expect(dispatched).toEqual([{ ref: "@e1", _requiredSession: "browser-1", _requiredObservationId: "observation-1" }]);
       expect((await invoke({ ...invocation, args: { ref: "@e2" } })).status).toBe("error");
       expect(dispatched).toHaveLength(1);
-      setConfigOverrides({ nautilo_browser_decision_model: "" });
+      delete process.env["OPENROUTER_API_KEY"];
       expect((await invoke()).status).toBe("error");
       expect(dispatched).toHaveLength(1);
       invocationState.browserDecision = null;
@@ -1610,10 +1619,10 @@ describe("Nautilo tool invocation service", () => {
         _requiredObservationId: "forged",
       }));
       expect(disabled.status).toBe("error");
-      expect(disabled.content).toContain("Routine browser decisions are not enabled");
+      expect(disabled.content).toContain("Routine browser decisions are unavailable");
       expect(disabled.content).toContain("no browser request was sent");
       expect(dispatched).toHaveLength(2);
-      setConfigOverrides({ nautilo_browser_decision_model: "openrouter:typesafe/jev-1.13" });
+      process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
       expect((await invoke(call("browser_snapshot", {
         decisionPlan: validDecisionPlan,
         _requiredSession: "forged",

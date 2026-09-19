@@ -561,7 +561,7 @@ describe("the current implementation — signed pointer + immutable artifact loa
       "https://media.nautilo.ai/models/latest.json?v=2",
       "https://media.nautilo.ai/models/latest.json#section",
       "https://127.0.0.1/models/latest.json",
-      "https://10.0.0.1/models/latest.json",
+      "https://[fc00::1]/models/latest.json", // Synthetic IPv6 unique-local address.
       "https://[::1]/models/latest.json",
     ]) {
       expect(() =>
@@ -648,7 +648,7 @@ describe("the current implementation/7.3 — runtime seam, reconciliation, and c
 
   function configureRemote(manifest: ModelCatalog, now = 0): void {
     const { pointer, immutableBody } = buildSignedRelease(manifest, key);
-    const manifestUrl = `https://media.nautilo.ai/models/catalog-${manifest.catalogVersion}.json`;
+    const manifestUrl = `https://media.nautilo.ai/models/v4/catalog-${manifest.catalogVersion}.json`;
     configureRuntimeModelCatalog({
       remoteConfig: {
         ttlMs: 1000,
@@ -667,7 +667,7 @@ describe("the current implementation/7.3 — runtime seam, reconciliation, and c
   }
 
   test("ships the verified official pointer URL", () => {
-    expect(OFFICIAL_MODEL_CATALOG_POINTER_URL).toBe("https://media.nautilo.ai/models/latest.json");
+    expect(OFFICIAL_MODEL_CATALOG_POINTER_URL).toBe("https://media.nautilo.ai/models/v4/latest.json");
   });
 
   test("Zod contract represents reviewed xai, together, and gateway routing classes", () => {

@@ -5,7 +5,7 @@ import {
   toWire,
   type ServerModelsRouteDeps,
 } from "../../src/routes/server-models";
-import { resolveRetainedModels } from "@nautilo/agent";
+import { configureRuntimeModelCatalog, resetRuntimeModelCatalog, listResolvedCatalogModels, resolveRetainedModels } from "@nautilo/agent";
 import {
   __resetServerModelConfigCache,
   primeServerModelConfigCache,
@@ -261,6 +261,67 @@ describe("server-models toWire", () => {
 });
 
 describe("server-models route authorization, partial writes, and audit", () => {
+  test("catalog visibility uses read permission and returns no metadata to unauthenticated viewers", async () => {
+    const call = routeHarness({ getCapabilities: async () => [] });
+    expect(await call("GET", requestBase)).toEqual({ status: 401, body: { error: "Authentication required" } });
+    expect(await call("GET", { ...requestBase, sessionUserId: "viewer" }))
+      .toEqual({ status: 403, body: { error: "admin only" } });
+  });
+
+  test("catalog inventory includes decision models and live missing-credential reasons without admitting them for chat", async () => {
+    const previous = process.env["OPENROUTER_API_KEY"];
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    try {
+      delete process.env["OPENROUTER_API_KEY"];
+      const call = routeHarness({
+        getCapabilities: async () => ["read_server_settings"],
+        getDb: () => ({}) as never,
+        getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+        getConfig: async () => modelConfig,
+        refreshConfigCache: async () => null,
+        getEffectiveEmbeddingModel: () => null,
+        getActiveEmbeddingSelection: () => null,
+        listMediaModels,
+        getEffectiveMediaModel: () => null,
+      });
+      const read = async () => {
+        const result = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+        expect(result.status).toBe(200);
+        return (result.body as { catalogModels: Array<Record<string, unknown>> }).catalogModels;
+      };
+      const rows = await read();
+      expect(rows.map((row) => row["id"]))
+        .toEqual(listResolvedCatalogModels({ includeUnavailable: true }).map((row) => row.id));
+      const decision = rows.find((row) => row["id"] === "openrouter:typesafe/jev-1.13");
+      expect(decision).toMatchObject({
+        provider: "openrouter", workload: "decision", availability: "missing_credentials",
+        unavailableReason: "OpenRouter credential is not configured",
+        decision: { operations: ["choice"] },
+        features: { visualGrounding: null },
+      });
+      expect(Object.keys(decision!).sort()).toEqual([
+        "id", "displayName", "provider", "workload", "availability", "unavailableReason",
+        "input", "output", "features", "decision",
+      ].sort());
+      const grounded = listResolvedCatalogModels({ includeUnavailable: true }).find((row) => row.features.visualGrounding === true);
+      expect(grounded).toBeDefined();
+      expect(rows.find((row) => row["id"] === grounded!.id)).toMatchObject({ features: { visualGrounding: true } });
+
+      process.env["OPENROUTER_API_KEY"] = "synthetic-catalog-test";
+      expect((await read()).find((row) => row["id"] === decision!["id"]))
+        .toMatchObject({ availability: "selectable" });
+      expect(resolveRetainedModels([String(decision!["id"])], { purpose: "chat-tools" })[0]?.availability)
+        .not.toBe("selectable");
+      delete process.env["OPENROUTER_API_KEY"];
+      expect((await read()).find((row) => row["id"] === decision!["id"]))
+        .toMatchObject({ availability: "missing_credentials" });
+    } finally {
+      if (previous === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = previous;
+      resetRuntimeModelCatalog();
+    }
+  });
+
   test("requires manage_server_operations even when the caller is not an Agent owner", async () => {
     const call = routeHarness({
       getCapabilities: async () => ["read_server_settings"],

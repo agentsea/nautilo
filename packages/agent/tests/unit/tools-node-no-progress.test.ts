@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { setConfigOverrides } from "@nautilo/config";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { ToolCatalog, clearToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { z } from "zod";
@@ -13,7 +12,6 @@ import {
 } from "../../src/tools/invocation-service";
 
 afterEach(() => {
-  setConfigOverrides({});
   setRelayRegistry(null);
   clearToolCatalog();
 });
@@ -22,9 +20,6 @@ test("reports the exact contract when a requested browser delegation cannot star
   const catalog = new ToolCatalog();
   registerAllTools(catalog);
   initToolCatalog(catalog);
-  setConfigOverrides({
-    nautilo_browser_decision_model: "openrouter:typesafe/jev-1.13",
-  });
 
   let dispatches = 0;
   setRelayRegistry({
