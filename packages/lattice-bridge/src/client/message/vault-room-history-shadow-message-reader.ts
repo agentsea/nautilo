@@ -242,6 +242,7 @@ export type RoomHistoryShadowSignerEvidenceTransportV1 =
     readonly planBytesBase64url: string;
     readonly requestBytesBase64url: string;
     readonly requestDigestBase64url: string;
+    readonly committerDeviceSigningPublicKeyBase64url?: string | undefined;
   }>
   | Readonly<{
     /** Accepted server execution authority, not a portable Human signature. */
@@ -1377,10 +1378,22 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
               const base = profile.baseProfile.baseProfile;
               const sharedPlans = new Map<string, ReturnType<typeof decodeLiveShadowMessagePlanV4>>();
               const humanPlaintextCommitments = new Map<string, Uint8Array>();
+              const humanSigners = new Map<string, Readonly<{
+                deviceId: string; hostAuthorizationRevision: number; publicKey: Uint8Array;
+              }>>();
               const conflictingSharedPlans = new Set<string>();
+              const seenHumanEvidence = new Set<string>();
               for (const evidence of request.signerEvidence) {
                 if (evidence.kind === "human_ai_readable_live_shadow_request_v1"
                   || evidence.kind === "human_ai_readable_live_shadow_request_v2") {
+                  if (seenHumanEvidence.has(evidence.operationId)) {
+                    humanSigners.get(evidence.operationId)?.publicKey.fill(0);
+                    humanSigners.delete(evidence.operationId);
+                    humanPlaintextCommitments.get(evidence.operationId)?.fill(0);
+                    humanPlaintextCommitments.delete(evidence.operationId);
+                    continue;
+                  }
+                  seenHumanEvidence.add(evidence.operationId);
                   let planBytes: Uint8Array | undefined;
                   let requestBytes: Uint8Array | undefined;
                   let requestDigest: Uint8Array | undefined;
@@ -1401,6 +1414,8 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                     decoded = decodeHumanAiReadableLiveShadowMessageRequest(requestBytes);
                     signingPublicKey = decoded.committerDeviceId === base.deviceId
                       ? base.signingPublicKey.slice()
+                      : evidence.committerDeviceSigningPublicKeyBase64url !== undefined
+                      ? fromBase64url("Retained Human signing key", evidence.committerDeviceSigningPublicKeyBase64url)
                       : await input.resolveTrustedDeviceSigningPublicKey({
                       deviceId: decoded.committerDeviceId,
                       hostAuthorizationRevision: decoded.hostAuthorizationRevision,
@@ -1440,6 +1455,12 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                       && plan.namespaceId === request.authority.namespaceId;
                     planDigest.fill(0);
                     if (!coordinatesMatch) continue;
+                    humanSigners.get(evidence.operationId)?.publicKey.fill(0);
+                    humanSigners.set(evidence.operationId, {
+                      deviceId: verified.committerDeviceId,
+                      hostAuthorizationRevision: verified.hostAuthorizationRevision,
+                      publicKey: signingPublicKey.slice(),
+                    });
                     humanPlaintextCommitments.set(
                       evidence.operationId,
                       verified.plaintextPayloadDigest.slice(),
@@ -1822,8 +1843,13 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                   try {
                     if (decodedManifest.formatVersion === 2) {
                       const base = profile.baseProfile.baseProfile;
-                      humanSignerPublicKey =
-                        decodedManifest.committerDeviceId === base.deviceId
+                      const retainedSigner = record.shadowOperationFamily === "shared_human"
+                        ? humanSigners.get(record.shadowOperationId) : undefined;
+                      humanSignerPublicKey = retainedSigner !== undefined
+                        && retainedSigner.deviceId === decodedManifest.committerDeviceId
+                        && retainedSigner.hostAuthorizationRevision === decodedManifest.hostAuthorizationRevision
+                        ? retainedSigner.publicKey.slice()
+                        : decodedManifest.committerDeviceId === base.deviceId
                           && decodedManifest.hostAuthorizationRevision
                             <= base.trustedHostAuthorizationRevision
                         ? base.signingPublicKey.slice()
@@ -2079,6 +2105,7 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                 for (const signer of liveSigners.values()) {
                   signer.signerPublicKey.fill(0);
                 }
+                for (const signer of humanSigners.values()) signer.publicKey.fill(0);
                 for (const commitment of humanPlaintextCommitments.values()) {
                   commitment.fill(0);
                 }

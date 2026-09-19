@@ -29,6 +29,7 @@ const roomHistoryShadowSignerEvidenceV1Schema = z.discriminatedUnion("kind", [
     planBytesBase64url: base64url.max(350_000),
     requestBytesBase64url: base64url.max(699_052),
     requestDigestBase64url: sha256,
+    committerDeviceSigningPublicKeyBase64url: sha256.optional(),
   }).strict(),
   z.object({
     // Accepted server execution authority, not a portable Human signature.

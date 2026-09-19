@@ -143,3 +143,51 @@ describe("M301 foreground Agent execution result wiring", () => {
     }
   });
 });
+
+
+test("shutdown keeps all local teardown in finally when process-loss persistence rejects", async () => {
+  const source = await Bun.file(join(
+    import.meta.dir, "../../src/routes/live-shadow-message-composition.ts",
+  )).text();
+  const start = source.indexOf("    shutdown: async () => {");
+  const end = source.indexOf("\n    },", start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const shutdown = source.slice(start, end);
+  const finalizer = shutdown.match(/\} finally \{([\s\S]*)\n {6}\}\s*$/u)?.[1];
+  expect(finalizer).toBeDefined();
+  for (const cleanup of [
+    "pendingAttention?.close();",
+    "foregroundAuthorizations.close();",
+    "clearTimeout(waiter.timer);",
+    "waiter.resolve(null);",
+    "sharedAgentAuthorizationWaiters.clear();",
+    "destroySharedAgentAcceptedAuthorization(executionId, accepted);",
+    "sharedAgentAcceptedAuthorizations.clear();",
+    "runtimeInvocationAuthorizationWaiters.clear();",
+    "destroyRuntimeInvocationAcceptedAuthorization(accepted);",
+    "runtimeInvocationAcceptedAuthorizations.clear();",
+    "retained.bytes.fill(0);",
+    "agentPlans.clear();",
+    "dispatches.clear();",
+  ]) expect(finalizer).toContain(cleanup);
+  expect(shutdown.slice(0, shutdown.indexOf("} finally {"))).toContain("await Promise.allSettled([");
+  // Preserve the persistence rejection after cleanup; shutdown must not swallow it.
+  expect(shutdown).not.toContain("catch");
+  expect(finalizer).not.toContain("return");
+});
+
+
+test("planned protected cancellation records exact process loss before shutdown hooks", async () => {
+  const source = await Bun.file(join(
+    import.meta.dir, "../../src/routes/live-shadow-message-composition.ts",
+  )).text();
+  const start = source.indexOf("onTerminalFailure: (stage, reason) => {");
+  const end = source.indexOf("const settled = Promise.withResolvers<void>();", start);
+  const terminal = source.slice(start, end);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  expect(terminal).toContain('reason === "process_lost"');
+  expect(terminal).toContain("recordProcessLoss([input.operationId], Date.now())");
+  expect(terminal).toContain("recordExecutionUnavailable({");
+});

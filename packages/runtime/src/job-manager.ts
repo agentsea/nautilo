@@ -1945,7 +1945,7 @@ export class JobManager {
             );
           }
         }
-        await job.cancel(PLANNED_SHUTDOWN_CANCELLATION_REASON);
+        await job.cancel(PLANNED_SHUTDOWN_CANCELLATION_REASON, "process_lost");
       }),
     );
 

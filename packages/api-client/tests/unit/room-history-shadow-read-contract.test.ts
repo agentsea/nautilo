@@ -166,6 +166,35 @@ describe("Room history Shadow-read HTTP contract", () => {
     }).success).toBeFalse();
   });
 
+  test("accepts an optional retained Human signing key only at the exact wire size", () => {
+    const value = readySidecar();
+    const evidence = {
+      kind: "human_ai_readable_live_shadow_request_v2" as const,
+      operationId: "turn:shared-human",
+      planBytesBase64url: "AQ",
+      requestBytesBase64url: "Ag",
+      requestDigestBase64url: DIGEST,
+    };
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      signerEvidence: [{
+        ...evidence,
+        committerDeviceSigningPublicKeyBase64url: DIGEST,
+      }],
+    }).success).toBeTrue();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      signerEvidence: [{
+        ...evidence,
+        committerDeviceSigningPublicKeyBase64url: "A".repeat(42),
+      }],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      signerEvidence: [evidence],
+    }).success).toBeTrue();
+  });
+
   test("preserves mixed-class authorities as one combined ready sidecar", () => {
     const value = readySidecar();
     const authorities = [

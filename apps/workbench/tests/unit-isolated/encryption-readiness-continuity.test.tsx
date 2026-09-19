@@ -1,8 +1,18 @@
 import "../bun-dom-preload";
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 
-let viewer = { isVerified: true, staleWhoami: false, sessionUserId: "qa-user", sessionActorId: "qa-human" };
+let viewer: {
+  isVerified: boolean;
+  staleWhoami: boolean;
+  sessionUserId: string | null;
+  sessionActorId: string | null;
+} = {
+  isVerified: true,
+  staleWhoami: false,
+  sessionUserId: "qa-user",
+  sessionActorId: "qa-human",
+};
 const createClient = mock(() => ({
   inspect: async () => ({ status: "active" }),
   deviceAdmissionDeviceId: async () => "qa-device",
@@ -23,6 +33,15 @@ function Probe() {
   observed = useEncryptionReadinessClient();
   return null;
 }
+beforeEach(() => {
+  viewer = {
+    isVerified: true,
+    staleWhoami: false,
+    sessionUserId: "qa-user",
+    sessionActorId: "qa-human",
+  };
+  createClient.mockClear();
+});
 afterEach(() => cleanup());
 
 test("same-account stale whoami retains custody, but account change and logout do not", () => {
@@ -41,7 +60,37 @@ test("same-account stale whoami retains custody, but account change and logout d
   view.rerender(<EncryptionReadinessProvider><Probe /></EncryptionReadinessProvider>);
   expect(observed === original).toBe(false);
   expect(createClient).toHaveBeenCalledTimes(2);
-  viewer = { ...viewer, isVerified: false };
+  viewer = { ...viewer, sessionUserId: null, sessionActorId: null };
   view.rerender(<EncryptionReadinessProvider><Probe /></EncryptionReadinessProvider>);
   expect(observed).toBeUndefined();
+});
+
+test("a resolved Guest retains device readiness without acquiring verification", () => {
+  viewer = {
+    isVerified: false,
+    staleWhoami: false,
+    sessionUserId: "guest-user",
+    sessionActorId: "guest-human",
+  };
+
+  render(<EncryptionReadinessProvider><Probe /></EncryptionReadinessProvider>);
+
+  expect(observed).toBeDefined();
+  expect(createClient).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  { sessionUserId: null, sessionActorId: "guest-human" },
+  { sessionUserId: "guest-user", sessionActorId: null },
+])("does not construct readiness without both canonical Human ids", (coordinates) => {
+  viewer = {
+    isVerified: false,
+    staleWhoami: false,
+    ...coordinates,
+  };
+
+  render(<EncryptionReadinessProvider><Probe /></EncryptionReadinessProvider>);
+
+  expect(observed).toBeUndefined();
+  expect(createClient).not.toHaveBeenCalled();
 });

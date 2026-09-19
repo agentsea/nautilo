@@ -12,6 +12,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   decodeHumanAiReadableLiveShadowMessagePlan,
+  decodeHumanAiReadableLiveShadowMessageRequest,
 } from "@nautilo/lattice-crypto";
 import {
   decodeLiveShadowMessagePlanV4,
@@ -151,6 +152,7 @@ export type RoomHistorySignerEvidenceTransportV1 =
     readonly planBytesBase64url: string;
     readonly requestBytesBase64url: string;
     readonly requestDigestBase64url: string;
+    readonly committerDeviceSigningPublicKeyBase64url?: string | undefined;
   }>
   | Readonly<{
     /** Server-retained accepted execution authority, not a Human signature. */
@@ -1871,8 +1873,7 @@ export function createPostgresRoomHistoryShadowProjection(
       .filter(({ row }) => !isExistingRepresentation(row)
         && !isHumanEditedRepresentation(row)
         && (row["role"] === "assistant" || row["role"] === "tool"
-          || (operationFamily(row) === "shared_human"
-            && (protectedOnly || row["content"] == null))))
+          || operationFamily(row) === "shared_human"))
       .map(({ row }) => {
         const operationId = operationIdFor(row);
         return [operationId, row] as const;
@@ -1900,6 +1901,60 @@ export function createPostgresRoomHistoryShadowProjection(
             selectedCount: input.selectedCoordinates.length, eligibleCount: eligible.length,
           });
         }
+        let humanRequest;
+        try {
+          humanRequest = decodeHumanAiReadableLiveShadowMessageRequest(requestBytes);
+        } catch {
+          return Object.freeze({ status: "unavailable" as const,
+            reason: "projection_corrupt" as const,
+            selectedCount: selected.length, eligibleCount: eligible.length });
+        }
+        const coordinatesMatch = humanRequest.operationId === operationId
+          && humanPlan.operationId === operationId
+          && bytesEqual(sha256(planBytes), humanRequest.planDigest)
+          && humanPlan.formatVersion === humanRequest.formatVersion
+          && humanRequest.namespaceId === namespaceId
+          && humanRequest.roomId === input.roomId
+          && humanRequest.subjectHumanId === row["source_human_id"]
+          && humanRequest.sessionId === row["session_id"]
+          && humanRequest.messageId === Number(row["message_id"])
+          && humanRequest.revision === Number(row["edit_revision"])
+          && humanPlan.subjectHumanId === humanRequest.subjectHumanId
+          && humanPlan.committerDeviceId === humanRequest.committerDeviceId
+          && humanPlan.committerDeviceSigningKeyGeneration === humanRequest.committerDeviceSigningKeyGeneration
+          && humanPlan.hostAuthorizationRevision === humanRequest.hostAuthorizationRevision
+          && humanPlan.roomId === humanRequest.roomId
+          && humanPlan.sessionId === humanRequest.sessionId
+          && humanPlan.humanMessageId === humanRequest.messageId
+          && humanPlan.namespaceId === humanRequest.namespaceId
+          && humanPlan.namespaceAccessRevision === humanRequest.namespaceAccessRevision
+          && humanPlan.namespaceKeyGeneration === humanRequest.namespaceKeyGeneration
+          && humanPlan.transcriptOrdinal === humanRequest.transcriptOrdinal;
+        let signer: Awaited<ReturnType<ResolveRoomHistoryHumanEditedRepresentationAuthority>> | undefined;
+        try {
+          if (!coordinatesMatch) return Object.freeze({ status: "unavailable" as const,
+            reason: "projection_corrupt" as const,
+            selectedCount: selected.length, eligibleCount: eligible.length });
+          signer = await options.resolveHumanEditedRepresentationAuthority?.({
+            subjectHumanId: input.subjectHumanId,
+            readerDeviceId,
+            namespaceId,
+            keyClass: "ai",
+            generation: humanRequest.namespaceKeyGeneration,
+            accessRevision: humanRequest.namespaceAccessRevision,
+            authorHumanId: humanRequest.subjectHumanId,
+            committerDeviceId: humanRequest.committerDeviceId,
+            committerHostAuthorizationRevision: humanRequest.hostAuthorizationRevision,
+          });
+          if (signer?.status === "ready"
+            && signer.headDigestBase64url !== base64url(humanRequest.namespaceHeadDigest)) {
+            signer = undefined;
+          }
+        } finally {
+          for (const value of Object.values(humanRequest)) {
+            if (value instanceof Uint8Array) value.fill(0);
+          }
+        }
         const kind = humanPlan.formatVersion === 2
           ? "human_ai_readable_live_shadow_request_v2" as const
           : "human_ai_readable_live_shadow_request_v1" as const;
@@ -1910,6 +1965,10 @@ export function createPostgresRoomHistoryShadowProjection(
         signerEvidence.push(Object.freeze({
           kind,
           operationId,
+          ...(signer?.status === "ready" ? {
+            committerDeviceSigningPublicKeyBase64url:
+              signer.committerDeviceSigningPublicKeyBase64url,
+          } : {}),
           planBytesBase64url: Buffer.from(planBytes).toString("base64url"),
           requestBytesBase64url: Buffer.from(requestBytes).toString("base64url"),
           requestDigestBase64url: Buffer.from(requestDigest).toString("base64url"),

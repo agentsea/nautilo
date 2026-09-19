@@ -34,13 +34,16 @@ export const MIGRATION_TREE_BASELINE = {
 // recording-transport tests prove it leaves chat policy and feed state alone.
 // Retiring the persona-addressed foreground issuer removes four inserts and
 // four updates; no writer or plaintext exception is added.
+// Protected execution recovery adds one typed lifecycle-only quarantine update.
+// Its exact execution-state and publication guards are covered by the shared-Agent
+// planner and conversation product-store unit suites; it never writes content.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1376,
+  "count": 1377,
   "insert": 466,
-  "update": 721,
+  "update": 722,
   "delete": 172,
   "unresolved": 17,
-  "sha256": "a51a0edda2a847a7d613fbf147ea536c2ab0e6b5f04a0c749e72c354d8a19e7e"
+  "sha256": "9ee70550efead50646cba282ac614fc9786c15fa3930fd88bbbaa9a9125d851a"
 } as const;
 
 /**

@@ -87,7 +87,9 @@ export type LiveShadowAgentSessionFailureReason =
   | "protected_unavailable"
   | "integrity_failure"
   | "parity_mismatch"
-  | "deadline_expired";
+  | "deadline_expired"
+  | "cancelled"
+  | "process_lost";
 
 export type LiveShadowAgentSessionResult<Value> =
   | Readonly<{ status: "protected"; value: Value }>

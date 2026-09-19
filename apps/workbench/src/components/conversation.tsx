@@ -212,6 +212,7 @@ import { useNotificationState } from "../notifications/notification-state-contex
 import {
   type PendingRoomReply,
   useRoomComposerDraftStore,
+  useRoomComposerSendPending,
   useRoomPendingReply,
 } from "../contexts/room-composer-draft-context";
 import { useAuth } from "../hooks/use-auth";
@@ -261,6 +262,11 @@ import { AskUserPicker } from "./composer/AskUserPicker";
 import { ModelSwitcher } from "./composer/ModelSwitcher";
 import { resolveRoomModelAgentTarget } from "./composer/room-model-agent-target";
 import { hasStoppableRoomTask } from "./composer/composer-stop-state";
+import { ComposerSendButton } from "./composer/ComposerSendButton";
+import {
+  ownsSubmittedComposerPresentation,
+  sendIfComposerPresentationCurrent,
+} from "./composer/composer-send-ownership";
 import { useTaskState } from "../contexts/task-state/task-state-context";
 import {
   clearAskUserPicker,
@@ -2021,6 +2027,7 @@ function Composer({
   const { response: profileResponse } = useProfile();
   const focus = useRoomFocusContext();
   const activeRoomId = roomNav.activeRoomId;
+  const roomComposerSendPending = useRoomComposerSendPending(activeRoomId);
   const workspaceArtifacts = useWorkspaceArtifacts();
   const resolveContextualFocusedResources = useCallback(
     async (): Promise<readonly ChatFocusedResourceRef[]> => {
@@ -2368,7 +2375,11 @@ function Composer({
   );
   const focusedResourcesRef = useRef(focusedResources);
   focusedResourcesRef.current = focusedResources;
-  const composerSendInFlightRef = useRef(false);
+  const unboundComposerSendInFlightRef = useRef(false);
+  const [unboundComposerSendPending, setUnboundComposerSendPending] = useState(false);
+  const composerSendPending = activeRoomId
+    ? roomComposerSendPending
+    : unboundComposerSendPending;
   const composerPresentationMountedRef = useRef(false);
   useLayoutEffect(() => {
     composerPresentationMountedRef.current = true;
@@ -2433,19 +2444,24 @@ function Composer({
   /** Bypass assistant-ui Send/Enter when `isRunning && !queue` (external-store defaults queue=false). */
   const canSubmitComposer =
     canSend &&
+    !composerSendPending &&
     (composerText.trim().length > 0 || attachments.length > 0 || focusedResources.length > 0);
 
   const submitComposer = useCallback(async () => {
-    if (!canSubmitComposer || composerSendInFlightRef.current) return;
+    if (!canSubmitComposer) return;
     const submittedRoomId = activeRoomId;
     const providerAttemptId = submittedRoomId
       ? roomComposerDrafts.beginSend(submittedRoomId)
       : null;
     if (submittedRoomId && providerAttemptId === null) return;
+    if (!submittedRoomId) {
+      if (unboundComposerSendInFlightRef.current) return;
+      unboundComposerSendInFlightRef.current = true;
+      setUnboundComposerSendPending(true);
+    }
     // D528 policy: only this local intent (never a generic run-start event)
     // may move a reader from history back to the live edge.
     reply?.returnToLatest();
-    composerSendInFlightRef.current = true;
     const projectedMentions = projectHumanMentionDirectives(
       composerText,
       roomMembers,
@@ -2464,43 +2480,57 @@ function Composer({
     const cleanupComposer = (): void => {
       if (composerCleaned) return;
       composerCleaned = true;
-      // Post-submit cleanup. The `setHasText(false)` step inside the
-      // helper is load-bearing for the mic-button gate (`showMic =
-      // speech.isSupported && !hasText`) — see
-      // `composer-post-submit.ts` module header. Pinned by
-      // `composer-post-submit.test.ts` regression suite; the helper
-      // exists so this never silently regresses again.
-      void applyComposerPostSubmit(
-        { sent: true, activeRoomId: submittedRoomId },
-        {
-          resetComposerRuntime: () => composerRuntime.reset(),
-          resetHasText: setHasText,
-        },
-      );
+      const stillOwnsPresentation = ownsSubmittedComposerPresentation({
+        mounted: composerPresentationMountedRef.current,
+        activeRoomId: activeRoomIdRef.current,
+        submittedRoomId,
+      });
+      if (stillOwnsPresentation) {
+        // Post-submit cleanup. The `setHasText(false)` step inside the
+        // helper is load-bearing for the mic-button gate (`showMic =
+        // speech.isSupported && !hasText`) — see
+        // `composer-post-submit.ts` module header. Pinned by
+        // `composer-post-submit.test.ts` regression suite; the helper
+        // exists so this never silently regresses again.
+        void applyComposerPostSubmit(
+          { sent: true, activeRoomId: submittedRoomId },
+          {
+            resetComposerRuntime: () => composerRuntime.reset(),
+            resetHasText: setHasText,
+          },
+        );
+      }
       if (submittedRoomId) {
         roomComposerDrafts.clear(submittedRoomId);
-        // The focused-resource ref store remains the authority for attachments
-        // and chips; clear only this sent Room's composition snapshot.
-        restoreFocusedResources([]);
-        composerTextRef.current = "";
-        focusedResourcesRef.current = [];
+        if (stillOwnsPresentation) {
+          // The focused-resource ref store remains the authority for attachments
+          // and chips; clear only this sent Room's composition snapshot.
+          restoreFocusedResources([]);
+          composerTextRef.current = "";
+          focusedResourcesRef.current = [];
+        }
       }
     };
     try {
       const contextualFocusedResources = await resolveContextualFocusedResources();
-      const sent = await voice.sendText(text, {
-        // Clear synchronously with the optimistic bubble. Delaying this until
-        // HTTP success lets an old A attempt reset the shared B composer after
-        // a room switch or center/rail remount.
-        onOptimisticUserMessage: cleanupComposer,
-        ...(replyTargetId !== undefined ? { replyToMessageId: replyTargetId } : {}),
-        ...(projectedMentions.mentionedHumanUserIds.length > 0
-          ? {
-              mentionedHumanUserIds:
-                projectedMentions.mentionedHumanUserIds,
-            }
-          : {}),
-        ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
+      const sent = await sendIfComposerPresentationCurrent({
+        isMounted: () => composerPresentationMountedRef.current,
+        getActiveRoomId: () => activeRoomIdRef.current,
+        submittedRoomId,
+        send: () => voice.sendText(text, {
+          // Clear synchronously with the optimistic bubble. Delaying this until
+          // HTTP success lets an old A attempt reset the shared B composer after
+          // a room switch or center/rail remount.
+          onOptimisticUserMessage: cleanupComposer,
+          ...(replyTargetId !== undefined ? { replyToMessageId: replyTargetId } : {}),
+          ...(projectedMentions.mentionedHumanUserIds.length > 0
+            ? {
+                mentionedHumanUserIds:
+                  projectedMentions.mentionedHumanUserIds,
+              }
+            : {}),
+          ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
+        }),
       });
       if (sent) {
         if (!composerCleaned) cleanupComposer();
@@ -2556,9 +2586,13 @@ function Composer({
         }
       }
     } finally {
-      composerSendInFlightRef.current = false;
       if (submittedRoomId && providerAttemptId !== null) {
         roomComposerDrafts.finishSend(submittedRoomId, providerAttemptId);
+      } else {
+        unboundComposerSendInFlightRef.current = false;
+        if (composerPresentationMountedRef.current) {
+          setUnboundComposerSendPending(false);
+        }
       }
     }
   }, [
@@ -2962,7 +2996,7 @@ function Composer({
           <SendHorizontal className="h-3.5 w-3.5" />
           <span>Send</span>
         </button>
-      ) : showMic ? (
+      ) : showMic && !composerSendPending ? (
         <button
           type="button"
           onClick={handleMicToggle}
@@ -2973,16 +3007,12 @@ function Composer({
           <Mic className="h-4 w-4" />
         </button>
       ) : (
-        <button
-          type="button"
+        <ComposerSendButton
           disabled={!canSubmitComposer}
-          title={sendDisabledTitle}
-          aria-label="Send message"
-          onClick={() => void submitComposer()}
-          className="mb-0.5 shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-[var(--on-primary)] hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
-        >
-          <SendHorizontal className="h-4 w-4" aria-hidden />
-        </button>
+          pending={composerSendPending}
+          disabledTitle={sendDisabledTitle}
+          onSend={() => void submitComposer()}
+        />
       )}
           </div>
         </div>

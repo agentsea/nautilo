@@ -21,6 +21,11 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Browser shared-room history verifies retained Human signer evidence for other
+  participants. Cancelled protected turns and graceful shutdown close unpublished
+  reservations and prevent late publication. Pending sends show progress, and
+  authenticated Guests can reach the workspace with their existing permissions.
+
 - Desktop shell commands honor replacement folder grants without being blocked by
   superseded revocation history. Narrower restrictions and protected paths remain
   enforced. Folder changes reach outgoing messages immediately, and delayed
