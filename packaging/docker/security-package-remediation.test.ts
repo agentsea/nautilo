@@ -7,6 +7,15 @@ const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, pat
 const historical = read("fixtures/server-vulnerability-exceptions-2026-09-11.json");
 const current = read("server-vulnerability-exceptions.input.json");
 const bootstrap = read("bootstrap-vulnerability-policy.input.json");
+const supersededChromiumAdvisories = new Set([
+  "CVE-2026-87644",
+  "CVE-2026-87646",
+  "CVE-2026-87648",
+  "CVE-2026-87650",
+  "CVE-2026-87654",
+  "CVE-2026-91724",
+  "CVE-2026-91727",
+]);
 const review = read("fixtures/debian-security-review-2026-09-13.json") as {
   packages: { package: string; previousVersion: string; candidates: Record<string, { version: string }[]>;
     advisories: { id: string; status: string; fixedVersion: string | null }[] }[];
@@ -32,6 +41,8 @@ describe("Debian 13 security update and exception retirement", () => {
           expect(a.fixedVersion).toBeTruthy();
           expect(matches).toEqual([]);
           fixed++;
+        } else if (p.package.startsWith("chromium-") && supersededChromiumAdvisories.has(a.id)) {
+          expect(matches).toEqual([]);
         } else {
           expect(matches.length).toBeGreaterThan(0);
         }
@@ -49,7 +60,10 @@ describe("Debian 13 security update and exception retirement", () => {
     expect(floors.size).toBe(7);
     for (const entry of current.exceptions) {
       const p = review.packages.find((p) => p.package === entry.packageName)!;
-      expect(entry.installedVersion).toBe(floors.get(entry.packageName) ?? p.previousVersion);
+      const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
+        ? "153.0.8010.47-2~deb13u1"
+        : (floors.get(entry.packageName) ?? p.previousVersion);
+      expect(entry.installedVersion).toBe(expectedVersion);
     }
     for (const policy of [current, bootstrap]) {
       expect(() => parseVulnerabilityPolicy(JSON.stringify({ version: 1, ...policy, binding: {
