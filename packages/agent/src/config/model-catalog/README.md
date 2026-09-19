@@ -11,17 +11,16 @@ claims. Versions 1–3 keep their existing validation rules.
 
 ## Reader compatibility
 
-The current shared pointer serves v3 readers. Publishing the canonical v4 source
-there would make those readers reject it and retain their validated last-known-good
-catalog, or their bundled fallback if none exists.
+The reader uses `https://media.nautilo.ai/models/v4/latest.json`. Older clients
+keep using `https://media.nautilo.ai/models/latest.json` for the v3 view. Both
+feeds use the same canonical catalog source and existing signature contract.
 
-Before releasing v4, the private publisher must derive two signed views from the
-same canonical source: a v3 projection on the existing shared pointer and the full
-v4 artifact on a version-specific pointer used by v4 readers. The projection omits
-decision rows and fields unknown to v3, including `features.visualGrounding`; it is
-an automatic publication transform, never a second authored catalog. That publisher
-transform and pointer rollout are not implemented or published yet, so old clients
-will receive continuing catalog updates only after the projection release exists.
+The private publisher generates the v3 view by omitting decision rows and fields
+unknown to v3, including `features.visualGrounding`. This is a publication
+transform, never a second authored catalog. Each view has its own signed hash
+and immutable artifact; both artifacts are verified before either pointer moves.
+Reader source changes do not themselves publish either feed. Until its feed is
+published, a reader retains its validated last-known-good or bundled fallback.
 
 The current reader uses the existing signature, artifact hash, strict schema, and
 last-known-good path for v4 too. Invalid signatures or payloads never replace the
