@@ -186,7 +186,7 @@ export function createInteractiveBrowserDispatchHandler(
     if (requiredObservationId !== null && (!boundObservation || boundObservation.observationId !== requiredObservationId)) {
       return browserFailure("browser_observation_stale", "The browser observation was consumed or superseded. Take a fresh snapshot before choosing an action.");
     }
-    if (boundObservation && !browserToolMayMutate(request.toolName)) {
+    if (boundObservation && !browserToolMayMutate(request.toolName) && request.toolName !== "browser_read") {
       return browserFailure("browser_authority_lost", "This action is outside the admitted routine browser contract.");
     }
     // Every mutation attempt consumes the observation, including ordinary Genie actions.
@@ -347,6 +347,21 @@ export function createInteractiveBrowserDispatchHandler(
         throw new BrowserDispatchFailure("browser_observation_invalid", "The browser did not return a complete structured observation. Return to the Genie for inspection.");
       }
     };
+    const navigationObservation = async (result: string) => {
+      try {
+        const observation = await readSnapshot();
+        latestObservation = observation;
+        return { navigation: { execution: "executed", result }, observation };
+      } catch (error) {
+        assertLive();
+        if (error instanceof BrowserDispatchFailure && error.code !== "browser_observation_invalid") throw error;
+        return { navigation: { execution: "executed", result }, observationFailure: {
+          code: "browser_observation_invalid",
+          detail: error instanceof Error ? error.message : String(error),
+          recovery: "Navigation completed. Request a fresh browser_snapshot; do not repeat navigation to repair observation.",
+        } };
+      }
+    };
     if (request.toolName === "browser_snapshot") {
       const observation = await readSnapshot();
       latestObservation = observation;
@@ -354,7 +369,7 @@ export function createInteractiveBrowserDispatchHandler(
     }
     if (boundObservation !== null) {
       if (requiredSession !== boundObservation.browserSessionId || session !== boundObservation.browserSessionId
-        || !browserToolMayMutate(request.toolName)) {
+        || !browserToolMayMutate(request.toolName) && request.toolName !== "browser_read") {
         return browserFailure("browser_authority_lost", "The proposed action no longer matches its browser session.");
       }
       // The queue serializes snapshot/ref-map replacement and the following mutation.
@@ -395,7 +410,7 @@ export function createInteractiveBrowserDispatchHandler(
       assertLive();
       return {
         handled: true,
-        result: { status: "ok", result: `Browser ${navigationAction} completed` },
+        result: { status: "ok", result: await navigationObservation(`Browser ${navigationAction} completed`) },
       };
     }
 
@@ -744,7 +759,8 @@ export function createInteractiveBrowserDispatchHandler(
           result: { status: "ok", result: BROWSER_EMPTY_DOM_TEXT_HINT },
         };
       }
-      return { handled: true, result: { status: "ok", result: trimmed } };
+      const navigated = request.toolName === "browser_open" || navigationAction !== null;
+      return { handled: true, result: { status: "ok", result: navigated ? await navigationObservation(trimmed) : trimmed } };
     } catch (error) {
       return {
         handled: true,

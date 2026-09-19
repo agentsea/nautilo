@@ -166,3 +166,39 @@ describe("exact browser history retrieval", () => {
     expect(afterLive.originals.get("history-call")).toBe(historyResult);
   });
 });
+
+function readPage(callId: string, content: string) {
+  return new ToolMessage({ name: "browser_read_page", tool_call_id: callId, status: "success",
+    content: JSON.stringify({ finalUrl: `https://example.test/${callId}`, title: callId, content,
+      blocks: [{ kind: "paragraph", text: content }], failure: "none", totalCharacters: content.length,
+      remainingCharacters: 17, eof: false, truncated: true, diagnostics: ["partial"],
+      continuation: { reference: "opaque", offsetCharacters: content.length } }) });
+}
+
+test("older page reads retain source and completeness metadata with exact conversation retrieval", () => {
+  const old = readPage("first-product", "Exact price $123.45. ".repeat(500));
+  const current = readPage("second-product", "Exact price $234.56.");
+  const targeted = new ToolMessage({ name: "browser_read_page", tool_call_id: "find", status: "success",
+    content: JSON.stringify({ operation: "find", matches: [{ text: "$123.45", offset: 12 }] }) });
+  const failed = new ToolMessage({ name: "browser_read_page", tool_call_id: "failed", status: "success",
+    content: JSON.stringify({ ...JSON.parse(old.content as string), failure: "evaluation-error" }) });
+  const projected = projectBrowserHistory([old, targeted, failed, current]);
+  expect(compacted(projected.messages[0]!)).toMatchObject({ finalUrl: "https://example.test/first-product",
+    title: "first-product", remainingCharacters: 17, eof: false, truncated: true, diagnostics: ["partial"],
+    retrieve: { tool: "browser_snapshot", args: { historyToolCallId: "first-product" } } });
+  expect((projected.messages[0] as ToolMessage).content.length).toBeLessThan((old.content as string).length);
+  expect(projected.messages.slice(1)).toEqual([targeted, failed, current]);
+  expect(projected.originals.get("first-product")).toBe(old);
+  expect((JSON.parse(readBrowserHistory([old, current], "first-product")!) as { result: unknown }).result).toEqual(JSON.parse(old.content as string));
+  expect(readBrowserHistory([old, old], "first-product")).toBeNull();
+});
+
+test("navigation snapshots project stale refs without losing the exact execution receipt", () => {
+  const navigation = { execution: "executed", result: "Opened requested URL" };
+  const opened = new ToolMessage({ name: "browser_open", tool_call_id: "open", status: "success",
+    content: JSON.stringify({ navigation, observation: JSON.parse(observation("session", 0)) as unknown }) });
+  const messages = [opened, snapshot("baseline", "session", 1), snapshot("current", "session", 2)];
+  expect(compacted(projectBrowserHistory(messages).messages[0]!)).toMatchObject({ navigation,
+    retrieve: { tool: "browser_snapshot", args: { historyToolCallId: "open" } } });
+  expect((JSON.parse(readBrowserHistory(messages, "open")!) as { observation: { observationId: string } }).observation.observationId).toBe("observation-session-0");
+});

@@ -39,6 +39,14 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Browser decision screening splits text-heavy candidate batches when the provider
+  reports context overflow. It preserves all candidates and reports irreducible
+  capacity errors without implying that a browser action was executed.
+
+- Routine browser decisions use the owning native dropdown to select observed
+  options and preserve completed delegation evidence through later verification.
+  Recovery guidance returns remaining routine work to delegation after repair.
+
 - Browser decisions distinguish different supplied text values for the same
   field, allowing repeated-entry tasks to stay in one routine delegation.
 
@@ -156,6 +164,11 @@ store update, or Desktop/Host installation.
   for approval of the same command.
 
 ### Changed
+
+- Browser navigation returns fresh controls when available; routine delegation
+  reuses exact named inputs, reports missing arguments, and can gather element
+  text. During an active turn, older full-page reads remain exactly retrievable
+  while their contents are omitted from subsequent model prompts.
 
 - Provider model choices refresh after credentials are saved without discarding
   unsaved settings. Deep Research now honors configured role output budgets,

@@ -83,6 +83,11 @@ function normalizeBrowserRef(ref: string): string {
   return /^e\d+$/i.test(ref) ? `@${ref}` : ref;
 }
 
+/** Quote one value for agent-browser's batch command-string parser. */
+function quoteAgentBrowserBatchValue(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 const BROWSER_GET_WHAT = new Set(["box", "value", "attr", "html", "title", "url"]);
 
 export const browserArgvPrefix = (cfgPath: string, session: string) =>
@@ -172,6 +177,17 @@ function agentBrowserArgvWithPrefix(
     }
     case "browser_press": {
       const key = requireStringArg(args, "key", toolName);
+      if (args["ref"] !== undefined) {
+        const ref = normalizeBrowserRef(requireStringArg(args, "ref", toolName));
+        return [
+          ...prefix,
+          "--json",
+          "batch",
+          "--bail",
+          `focus ${quoteAgentBrowserBatchValue(ref)}`,
+          `press ${quoteAgentBrowserBatchValue(key)}`,
+        ];
+      }
       return [...prefix, "press", key];
     }
     case "browser_back":

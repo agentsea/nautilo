@@ -84,7 +84,10 @@ describe("browser_press tool", () => {
     const tool = createBrowserPressTool();
     expect(tool.name).toBe("browser_press");
     expect(tool.schema.shape.key).toBeDefined();
+    expect(tool.schema.shape.ref).toBeDefined();
     expect(tool.schema.safeParse({ key: "Enter" }).success).toBe(true);
+    expect(tool.schema.safeParse({ key: "Enter", ref: "@e5" }).success).toBe(true);
+    expect(tool.schema.safeParse({ key: "Enter", ref: "#search" }).success).toBe(false);
     expect(tool.schema.safeParse({}).success).toBe(false);
   });
 
@@ -322,7 +325,7 @@ describe("browser tools catalog registration", () => {
   test("text browser tools carry scanInvisibleUnicode:strip through catalog metadata", () => {
     // Regression: the metadata projection (toMetadata) must preserve this flag,
     // or nodes/tools.ts can't strip zero-width chars and live web reads get
-    // BLOCKED (D336 — Google Docs is full of U+200B).
+    // blocked when document content includes U+200B.
     for (const name of [
       "browser_snapshot",
       "browser_click",

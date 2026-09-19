@@ -147,3 +147,43 @@ describe("browser choice screening", () => {
     }
   });
 });
+
+test("subdivides text-heavy screening groups without dropping any original candidate or state", async () => {
+  const request = input(430);
+  const accepted = new Set<string>();
+  const selected = await chooseBrowserAction(request, 255, async candidate => {
+    expect(candidate.state).toBe(request.state);
+    if (candidate.choices.length > 100) throw new ChoiceRequestError("context_length_exceeded", 400);
+    const actions = candidate.choices.filter(c => c.id.startsWith("action_"));
+    if (candidate.choices.at(-1)?.id === "none_in_group") for (const action of actions) accepted.add(action.id);
+    const winner = actions.find(c => c.id === "action_429") ?? actions[0];
+    return result(winner?.id ?? "defer_to_genie");
+  });
+  expect(accepted.size).toBe(430);
+  expect(selected.selectedId).toBe("action_429");
+  expect(request.choices.find(c => c.id === selected.selectedId)).toBeDefined();
+});
+
+test("recovers a final request that fits the count bound but exceeds context", async () => {
+  const request = input(20);
+  const accepted = new Set<string>();
+  const selected = await chooseBrowserAction(request, 255, async candidate => {
+    if (candidate.choices.length > 8) throw new ChoiceRequestError("context_length_exceeded", 400);
+    const actions = candidate.choices.filter(c => c.id.startsWith("action_"));
+    for (const action of actions) accepted.add(action.id);
+    return result((actions.find(c => c.id === "action_19") ?? actions[0])!.id);
+  });
+  expect(accepted.size).toBe(20);
+  expect(selected.selectedId).toBe("action_19");
+});
+
+test("stops and aborts sibling work when even a singleton with the state cannot fit", async () => {
+  let calls = 0;
+  const failure = await chooseBrowserAction(input(8), 255, async candidate => {
+    calls++;
+    if (candidate.signal.aborted) throw new ChoiceRequestError("cancelled");
+    throw new ChoiceRequestError("context_length_exceeded", 400);
+  }).catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "context_length_exceeded" });
+  expect(calls).toBeLessThanOrEqual(16);
+});

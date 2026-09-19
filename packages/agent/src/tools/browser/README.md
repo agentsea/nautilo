@@ -127,8 +127,9 @@ the existing usage recorder.
 Only goal, constraints, complete AX text and descriptions of the candidate
 operations go to Choice. Confirmed routine action descriptions and outcome
 status from the current delegation are reused from graph history, so the model
-can avoid repeating ineffective actions. Protected exact error evidence is retained;
-successful raw tool results are not duplicated in this history. Supplied typing
+can avoid repeating ineffective actions. Protected exact error evidence and
+successful delegated element reads are retained as evidence for the next choice.
+Supplied typing
 text, keyboard combinations and native selection values are included in candidate
 descriptions so Choice can distinguish actions and their confirmed history.
 Replacing all typing text with a generic placeholder would make different entries

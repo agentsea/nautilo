@@ -3355,7 +3355,7 @@ async function executeViaRelayRaw(
     }
     const content = readBrowserHistory(state.messages, source);
     return content === null
-      ? { ok: false, errorMessage: "browser_history_unavailable: No unique successful snapshot with that tool-call ID is retained in this conversation. No other conversation was searched and no browser request was sent. A fresh snapshot can show only the current page." }
+      ? { ok: false, errorMessage: "browser_history_unavailable: No unique successful browser observation or page read with that tool-call ID is retained in this conversation. No other conversation was searched and no browser request was sent. A fresh snapshot can show only the current page." }
       : { ok: true, rawContent: content };
   }
   if (!_relayRegistry) {

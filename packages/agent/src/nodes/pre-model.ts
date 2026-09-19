@@ -262,8 +262,46 @@ function normalizeMessagesForProvider(messages: BaseMessage[]): BaseMessage[] {
   });
 }
 
-/** Append trusted runtime supervision only to the provider clone of its exact browser receipt. */
+/** Project durable handoffs at their original receipts, even after ordinary verification. */
 export function projectBrowserHandoffForProvider(
+  messages: BaseMessage[],
+  state: NautiloState,
+): { messages: BaseMessage[]; projected: boolean } {
+  const decision = currentBrowserDecision(state);
+  let currentRecorded = false;
+  const replacements = new Map<number, ToolMessage>();
+  const projectedEvents = new Set<number>();
+  for (const [eventIndex, event] of messages.entries()) {
+    if (!SystemMessage.isInstance(event) || typeof event.content !== "string") continue;
+    const binding = event.additional_kwargs["nautilo_browser_handoff"] as
+      { turnId?: unknown; toolCallId?: unknown; toolName?: unknown } | undefined;
+    if (!binding) continue;
+    if (decision && binding.turnId === decision.turnId && decision.reason
+      && event.content === browserDecisionHandoffContent(decision.reason, decision.target, decision)) currentRecorded = true;
+    if (typeof binding.toolCallId !== "string" || typeof binding.toolName !== "string") continue;
+    const matches = messages.flatMap((message, index) => ToolMessage.isInstance(message)
+      && message.tool_call_id === binding.toolCallId ? [index] : []);
+    if (matches.length !== 1 || matches[0]! >= eventIndex) continue;
+    const index = matches[0]!;
+    const source = replacements.get(index) ?? messages[index];
+    if (!ToolMessage.isInstance(source) || source.name !== binding.toolName || typeof source.content !== "string") continue;
+    replacements.set(index, new ToolMessage({
+      ...source,
+      content: `${source.content}\n\n[Runtime browser supervision]\n${event.content}`,
+    }));
+    projectedEvents.add(eventIndex);
+  }
+  const projected = replacements.size > 0;
+  const retained = projected ? messages.flatMap((message, index) => projectedEvents.has(index)
+    ? [] : [replacements.get(index) ?? message]) : messages;
+  if (currentRecorded) return { messages: retained, projected };
+  // Older checkpoints may have the active handoff only in execution state.
+  const legacy = projectCurrentBrowserHandoffForProvider(retained, state);
+  return { messages: legacy.messages, projected: projected || legacy.projected };
+}
+
+/** Compatibility projection for handoffs recorded before durable receipt binding. */
+function projectCurrentBrowserHandoffForProvider(
   messages: BaseMessage[],
   state: NautiloState,
 ): { messages: BaseMessage[]; projected: boolean } {
@@ -271,7 +309,7 @@ export function projectBrowserHandoffForProvider(
   if (decision?.phase !== "handoff" || !decision.reason || decision.reason === "ordinary_genie_control") {
     return { messages, projected: false };
   }
-  const supervision = browserDecisionHandoffContent(decision.reason, decision.target);
+  const supervision = browserDecisionHandoffContent(decision.reason, decision.target, decision);
   const fallback = (): { messages: BaseMessage[]; projected: boolean } => {
     const alreadyPresent = messages.some((message) => SystemMessage.isInstance(message)
       && typeof message.content === "string" && message.content === supervision);
