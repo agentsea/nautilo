@@ -6,6 +6,14 @@ import type {
   LiveShadowAgentSessionFailureStage,
   LiveShadowAgentTurnSession,
 } from "@nautilo/lattice-bridge/server";
+import { createLiveShadowAgentTurnSession } from "@nautilo/lattice-bridge/server";
+import {
+  agentId,
+  agentRuntimeGeneration,
+  authorizationRevision,
+  deriveAgentRuntimeObjectSignerPublic,
+  LatticeCrypto,
+} from "@nautilo/lattice-crypto";
 import {
   LiveShadowToolProtectionRequiredError,
   LiveShadowToolProtectionTerminalError,
@@ -97,6 +105,111 @@ function throwingSession(input: Readonly<{
     destroy: () => undefined,
   });
   return Object.freeze({ session, failures });
+}
+
+function realStreamSessionFixture() {
+  const now = Date.now();
+  const crypto = new LatticeCrypto();
+  const runtime = {
+    agentId: "40000000-0000-4000-8000-000000000001",
+    generation: 4,
+    keyClass: "runtime",
+    key: new Uint8Array(32).fill(0x36),
+  } as never;
+  const signer = deriveAgentRuntimeObjectSignerPublic(crypto, runtime);
+  const state = {
+    failures: [] as Array<Readonly<{
+      stage: LiveShadowAgentSessionFailureStage;
+      reason: LiveShadowAgentSessionFailureReason;
+    }>>,
+    ordinals: [] as number[],
+    writes: [] as string[],
+  };
+  const session = createLiveShadowAgentTurnSession({
+    crypto,
+    plan: {
+      deadlineAt: now + 60_000,
+      operationId: "runtime-stream-race",
+      policyRevision: 7,
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000001",
+      namespaceId: "30000000-0000-4000-8000-000000000001",
+      namespaceHeadDigest: new Uint8Array(32).fill(0x31),
+      namespacePublicationDigest: new Uint8Array(32).fill(0x32),
+      namespacePublicationSetDigest: new Uint8Array(32).fill(0x33),
+      namespaceAudienceFingerprint: new Uint8Array(32).fill(0x34),
+      agentAuthorizationRevision: 5,
+      recipientAgentId: "40000000-0000-4000-8000-000000000001",
+      agentSignerKeyId: signer.principal.signerKeyId,
+      agentSignerPublicKey: signer.publicKey,
+      hostAuthorizationRevision: 9,
+    } as never,
+    causalHumanUserId: "runtime-stream-race-human",
+    product: {
+      reserveLiveShadowAgent: async (request: { transcriptOrdinal: number }) => {
+        state.ordinals.push(request.transcriptOrdinal);
+        return {
+          status: "reserved",
+          allocation: {
+            status: "allocated",
+            messageId: 500 + request.transcriptOrdinal,
+            revision: 0,
+            roomId: "20000000-0000-4000-8000-000000000001",
+            namespaceId: "30000000-0000-4000-8000-000000000001",
+            keyClass: "ai",
+            authorRole: "assistant",
+            cryptoObjectId: `message:runtime-stream-race:${request.transcriptOrdinal}`,
+          },
+          createdAt: now,
+        };
+      },
+      publishReservedLiveShadowAgent: async () => {
+        state.writes.push("publish");
+        return { status: "allocated" };
+      },
+      recordLiveShadowAgentEvidence: async () => {
+        state.writes.push("evidence");
+        return "applied";
+      },
+    } as never,
+    conversation: {
+      completeRevision: async () => {
+        state.writes.push("complete");
+        return { status: "mapped" };
+      },
+    } as never,
+    namespace: {
+      namespaceId: "30000000-0000-4000-8000-000000000001",
+      accessRevision: 2,
+      headDigest: new Uint8Array(32).fill(0x31),
+      publicationDigest: new Uint8Array(32).fill(0x32),
+      publicationSetDigest: new Uint8Array(32).fill(0x33),
+      audienceFingerprint: new Uint8Array(32).fill(0x34),
+      keyGeneration: 3,
+      aiKey: new Uint8Array(32).fill(0x35),
+    },
+    runtime,
+    grantId: "runtime-stream-race-grant",
+    grantDigest: new Uint8Array(32).fill(0x37),
+    recipientKeyId: "runtime-stream-race-recipient",
+    authorizationDeadlineAt: now + 60_000,
+    resolveCurrentDeviceWrappedAgentObjectAuthorization: (context) => ({
+      context,
+      grantAuthorized: true,
+      namespaceAuthorized: true,
+      agentAuthorized: true,
+      hostAllowsOperation: true,
+      currentRuntime: {
+        agentId: agentId("40000000-0000-4000-8000-000000000001"),
+        authorizationRevision: authorizationRevision(5),
+        runtimeGeneration: agentRuntimeGeneration(4),
+      },
+      signerPublicKey: signer.publicKey.slice(),
+    }),
+    now: () => now,
+    onTerminalFailure: (stage, reason) => state.failures.push({ stage, reason }),
+  });
+  return { session, state };
 }
 
 describe("live Shadow Agent Runtime fallback boundary", () => {
@@ -655,6 +768,65 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
     await runtime.publishMessages([new AIMessage({ content: "Done" })]);
     expect(used.map((reservation) => reservation.transcriptOrdinal)).toEqual([2, 3, 4]);
     expect(reservations).toEqual(used);
+  });
+
+  test("does not reuse a prior stream for a later non-stream tool call", async () => {
+    const { session, state } = realStreamSessionFixture();
+    try {
+      const runtime = createLiveShadowAgentRuntimeTurn(session, {
+        mode: "shadow_encryption",
+        shadowBehavior: "strict",
+        revision: 7,
+      });
+      const first = new AIMessage({
+        content: "",
+        tool_calls: [{ id: "first-call", name: "search", args: { query: "first" } }],
+      });
+      expect(await runtime.reserveAssistantStream({
+        assistantMessageKey: "assistant:runtime-stream-race:0",
+        createdAt: Date.now(),
+      })).not.toBeNull();
+      expect(await runtime.sealAssistantStreamChunk({
+        assistantMessageKey: "assistant:runtime-stream-race:0",
+        ordinaryChunk: new Uint8Array(),
+        done: true,
+        finalMessage: first,
+      })).not.toBeNull();
+      expect(await runtime.toolBoundary.protectAssistantToolCall(first)).not.toBeNull();
+
+      // LangChain runs the graph concurrently with the outer streamEvents
+      // consumer. A later tool-only assistant Message has no token stream and
+      // can enter this boundary before that consumer reaches the preceding
+      // Message's durable gate. It must allocate its own non-stream ordinal
+      // rather than reuse the still-retained, already-published prior stream.
+      const second = new AIMessage({
+        content: "",
+        tool_calls: [{ id: "second-call", name: "search", args: { query: "second" } }],
+      });
+      expect(await runtime.toolBoundary.protectAssistantToolCall(second)).not.toBeNull();
+      const durable = await runtime.publishMessages([
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "first-call", name: "search", args: { query: "first" } }],
+        }),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "second-call", name: "search", args: { query: "second" } }],
+        }),
+      ]);
+      expect(durable.status).toBe("protected");
+      expect(durable.protectedMessages.map((message) =>
+        message.reservation.transcriptOrdinal
+      )).toEqual([2, 3]);
+      expect(state.failures).toEqual([]);
+      expect(state.ordinals).toEqual([2, 3]);
+      expect(state.writes).toEqual([
+        "publish", "complete", "evidence",
+        "publish", "complete", "evidence",
+      ]);
+    } finally {
+      session.destroy();
+    }
   });
 
   test("keeps protecting long transcripts after the bounded dedupe cache fills", async () => {

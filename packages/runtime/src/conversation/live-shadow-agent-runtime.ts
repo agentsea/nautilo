@@ -378,12 +378,18 @@ export function createLiveShadowAgentRuntimeTurn(
       try {
         // Tool consumption may overtake the awaited stream allocation. Join that
         // allocation before publishing, so both gates use one transcript ordinal.
-        const stream = Array.from(streams.values()).at(-1);
-        const reservation = stream === undefined ? undefined : (await stream)?.reservation;
+        const stream = Array.from(streams.entries()).at(-1);
+        const reservation = stream === undefined
+          ? undefined
+          : (await stream[1])?.reservation;
         const result = await publish(message, "tool_call", reservation);
         if (result.status !== "protected") {
           return null;
         }
+        if (
+          stream !== undefined
+          && reservation === result.value.reservation
+        ) streams.delete(stream[0]);
         return openedMessage(result.value.openedPayload, message) as AIMessage;
       } catch (error) {
         if (

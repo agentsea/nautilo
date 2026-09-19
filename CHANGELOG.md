@@ -26,6 +26,11 @@ store update, or Desktop/Host installation.
   reservations and prevent late publication. Pending sends show progress, and
   authenticated Guests can reach the workspace with their existing permissions.
 
+- Protected history remains compatible with open Browser tabs across server
+  upgrades. Sequential protected tool calls no longer reuse a previously
+  published stream reservation. Capabilityless tools retain their explicitly
+  required PIN approval instead of falling back to ordinary confirmation.
+
 - Desktop shell commands honor replacement folder grants without being blocked by
   superseded revocation history. Narrower restrictions and protected paths remain
   enforced. Folder changes reach outgoing messages immediately, and delayed

@@ -9445,6 +9445,7 @@ export class NautiloApiClient {
         options.shadowRead,
       );
       params.set("shadowReadVersion", String(intent.requestVersion));
+      params.set("shadowReadMetadataVersion", "1");
       params.set("shadowReadRequestKey", intent.clientRequestKey);
       if (intent.readerDeviceId !== undefined) {
         params.set("shadowReadDeviceId", intent.readerDeviceId);
@@ -9523,7 +9524,7 @@ export class NautiloApiClient {
     });
     return this.request<RoomHistoryShadowReadResponseV1>({
       method: "POST",
-      path: `/api/rooms/${encodeURIComponent(options.roomId)}/messages/shadow-read`,
+      path: `/api/rooms/${encodeURIComponent(options.roomId)}/messages/shadow-read?shadowReadMetadataVersion=1`,
       auth: "session-fresh",
       body,
       schema: roomHistoryShadowReadResponseV1Schema,
@@ -9551,7 +9552,7 @@ export class NautiloApiClient {
   ): Promise<MessageBackfillSourceResponse> {
     return this.request({
       method: "POST",
-      path: "/api/message-backfill/source",
+      path: "/api/message-backfill/source?shadowReadMetadataVersion=1",
       auth: "session-fresh",
       body: messageBackfillClaimRequestSchema.parse(input),
       schema: messageBackfillSourceResponseSchema,
@@ -9698,14 +9699,26 @@ export class NautiloApiClient {
     if (options.shadowRead !== undefined) {
       const intent = roomHistoryShadowReadIntentV1Schema.parse(options.shadowRead);
       params.set("shadowReadVersion", String(intent.requestVersion));
+      params.set("shadowReadMetadataVersion", "1");
       params.set("shadowReadRequestKey", intent.clientRequestKey);
       if (intent.readerDeviceId !== undefined) params.set("shadowReadDeviceId", intent.readerDeviceId);
     }
     const qs = params.toString();
-    return this.request<RoomMessagesAroundPage & Readonly<{ shadowEncryption?: RoomHistoryShadowReadResponseV1 }>>({
+    const response = await this.request<RoomMessagesAroundPage & Readonly<{ shadowEncryption?: unknown }>>({
       path: `/api/rooms/${encodeURIComponent(options.roomId)}/messages/${encodeURIComponent(options.messageId)}/around${qs ? `?${qs}` : ""}`,
       defaultErrorPrefix: `GET /api/rooms/${options.roomId}/messages/${options.messageId}/around`,
     });
+    const { shadowEncryption, ...ordinary } = response;
+    return {
+      ...ordinary,
+      ...(shadowEncryption === undefined
+        ? {}
+        : {
+          shadowEncryption: roomHistoryShadowReadResponseV1Schema.parse(
+            shadowEncryption,
+          ),
+        }),
+    };
   }
 
   /** M065 — list rooms for the signed-in owner (`GET /api/rooms`). */

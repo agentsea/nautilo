@@ -64,6 +64,7 @@ describe("Message backfill HTTP methods", () => {
   test("uses current-session transport and preserves exact request bodies", async () => {
     const requests: Array<Readonly<{
       path: string;
+      search: string;
       method: string;
       authorization: string | null;
       body: unknown;
@@ -74,6 +75,7 @@ describe("Message backfill HTTP methods", () => {
         : target instanceof URL ? target.href : target.url);
       requests.push({
         path: url.pathname,
+        search: url.search,
         method: init?.method ?? "GET",
         authorization: new Headers(init?.headers).get("authorization"),
         body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
@@ -138,6 +140,10 @@ describe("Message backfill HTTP methods", () => {
       ["POST", "/api/message-backfill/ack"],
       ["GET", "/api/message-backfill/progress"],
     ]);
+    expect(requests.find(({ path }) => path.endsWith("/source"))?.search)
+      .toBe("?shadowReadMetadataVersion=1");
+    expect(requests.filter(({ path }) => !path.endsWith("/source"))
+      .every(({ search }) => search === "")).toBeTrue();
     expect(requests.every(({ authorization }) => authorization === "Bearer session-token"))
       .toBeTrue();
     expect(requests.every(({signal}) => signal === controller.signal)).toBeTrue();

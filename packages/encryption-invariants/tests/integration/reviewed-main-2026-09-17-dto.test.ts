@@ -15,7 +15,7 @@ const repoRoot = resolve(import.meta.dir, "../../../..");
 
 describe("current-main September 17 DTO review", () => {
   test("matches all changed and new structural snapshots", async () => {
-    expect(SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS.size).toBe(18);
+    expect(SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS.size).toBe(21);
     expect(REVIEWED_MAIN_2026_09_17_NEW_DTO_DECLARATIONS).toHaveLength(5);
 
     const reviewedLocators = new Set([
@@ -31,12 +31,12 @@ describe("current-main September 17 DTO review", () => {
       (observation) => reviewedLocators.has(observation.locator),
     );
 
-    expect(declarations).toHaveLength(23);
+    expect(declarations).toHaveLength(26);
     expect(auditDtoDeclarations({ observations, declarations })).toEqual({
       ok: true,
       counts: {
-        observations: 23,
-        declarations: 23,
+        observations: 26,
+        declarations: 26,
         arbitraryPayloads: declarations.reduce(
           (count, declaration) => count + declaration.arbitraryPayloads.length,
           0,
@@ -113,6 +113,31 @@ describe("current-main September 17 DTO review", () => {
     expect(signatures(
       "app_bridge:host_to_app_arbitrary:apps/workbench/src/apps/app-bridge.ts#AppBridgeRequest",
     )).toContain("purpose:\"media\"|\"references\"");
+
+    const aroundHistory = signatures(
+      "http:request_response:GET /api/rooms/:id/messages/:messageId/around",
+    );
+    expect(aroundHistory).toContain(
+      "kind:\"human_ai_readable_live_shadow_request_v1\"|\"human_ai_readable_live_shadow_request_v2\"",
+    );
+    expect(aroundHistory).not.toContain("terminalExecutions:");
+    expect(aroundHistory).not.toContain(
+      "committerDeviceSigningPublicKeyBase64url?:string;kind:\"human_ai_readable",
+    );
+
+    for (const locator of [
+      "http:request_response:POST /api/message-backfill/source",
+      "http:request_response:POST /api/rooms/:id/messages/shadow-read",
+    ]) {
+      const negotiatedHistory = signatures(locator);
+      expect(negotiatedHistory).toContain("terminalExecutions:");
+      expect(negotiatedHistory).toContain(
+        "committerDeviceSigningPublicKeyBase64url?:string;kind:\"human_ai_readable",
+      );
+      expect(negotiatedHistory).toContain(
+        "signerEvidence:{evidenceBytesBase64url:string;kind:\"agent_runtime_publication\"|\"processor_authorization\"}|{kind:\"human_ai_readable",
+      );
+    }
 
     const bridgeOptions = DTO_BASELINE_DECLARATIONS.find((entry) =>
       entry.locator.endsWith("#AppBridgeOptions")

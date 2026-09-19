@@ -620,6 +620,96 @@ describe("postModelNode (with resolver)", () => {
       } }), config);
       expect(executions).toBe(decision.expectedExecutions);
     }
+
+    const standingState = makeState([
+      new AIMessage({
+        content: "",
+        tool_calls: [{
+          id: "play-explainer-standing",
+          name: "play_explainer",
+          args: { explainerId: "intro" },
+        }],
+      }),
+    ]);
+    standingState.threadId = 55;
+    const standingResult = await createPostModelNode(makeMockResolver({
+      play_explainer: {
+        type: "require_approval",
+        route: { type: "prove_it", approvers: ["owner-id"] },
+      },
+    }), ALWAYS_MATCH)(standingState);
+    expect(standingResult.approvedToolCalls).toHaveLength(1);
+  });
+
+  test("capabilityless prove_it cannot be satisfied by standing or workstation approval", async () => {
+    const catalog = new ToolCatalog();
+    catalog.register({
+      name: "capabilityless_delete",
+      factory: () => new DynamicStructuredTool({
+        name: "capabilityless_delete",
+        description: "Delete a synthetic connected-app record.",
+        schema: z.object({ recordId: z.string() }),
+        func: async () => "deleted",
+      }),
+      category: "meta",
+      trustTier: "standard",
+      impact: "destructive",
+      exposure: "core",
+      requiresApproval: true,
+      approvalLevel: "prove_it",
+      resultScanPolicy: "never",
+    });
+    initToolCatalog(catalog);
+
+    let standingCalls = 0;
+    let workstationCalls = 0;
+    const resolver = makeMockResolver({
+      capabilityless_delete: {
+        type: "require_approval",
+        route: { type: "prove_it", approvers: ["owner-id"] },
+      },
+    });
+    const graph = new StateGraph(NautiloStateAnnotation)
+      .addNode("post_model", createPostModelNode(resolver, {
+        matchCommandApproval: async () => {
+          standingCalls += 1;
+          return { id: "standing-rule", scope: "server" as const };
+        },
+        resolveWorkstationApprovalOverride: () => {
+          workstationCalls += 1;
+          return { override: "auto", executionClass: "profile_bound_sandbox" };
+        },
+        isPinEnrolled: async () => true,
+      }))
+      .addEdge(START, "post_model")
+      .addEdge("post_model", END)
+      .compile({ checkpointer: new MemorySaver() });
+    const state = makeState([
+      new AIMessage({
+        content: "",
+        tool_calls: [{
+          id: "capabilityless-delete-call",
+          name: "capabilityless_delete",
+          args: { recordId: "record-1" },
+        }],
+      }),
+    ]);
+    state.threadId = 56;
+
+    const parked = await graph.invoke(state, {
+      configurable: { thread_id: "capabilityless-prove-it-floor" },
+    }) as Awaited<ReturnType<typeof graph.invoke>> & {
+      __interrupt__?: Array<{ value?: unknown }>;
+    };
+
+    expect(parked).toMatchObject({
+      __interrupt__: [{ value: {
+        type: "prove_it_challenge",
+        tools: [{ id: "capabilityless-delete-call", name: "capabilityless_delete" }],
+      } }],
+    });
+    expect(standingCalls).toBe(0);
+    expect(workstationCalls).toBe(0);
   });
 
   test("require_approval with external binary → approval_ask interrupt (throws outside graph)", async () => {
