@@ -48,7 +48,7 @@ import {
 } from "@nautilo/agent";
 
 // Re-export so existing importers (notably the runtime's own unit
-// tests) keep their import path stable after D084 relocated the
+// tests) keep their import path stable after relocated the
 // helper into `@nautilo/agent`.
 export { interruptValueToServerEvent };
 import { debug, log, warn } from "@nautilo/logger";
@@ -294,7 +294,7 @@ export function freshForegroundTurnScopedGraphContext(input: Record<string, unkn
 }
 
 /**
- * Strict boundary parser shared by main and M085 fork foreground executors.
+ * Strict boundary parser shared by main and fork foreground executors.
  * A job input is not itself authority: only this complete server-authored
  * ordinary-origin shape may reach graph state and host admission.
  */
@@ -335,14 +335,14 @@ export function shouldGraphAbortOnStreamTimeout(turnId: string | undefined): boo
   return getAgentTurnContext(turnId)?.assistantVisibleOutput === true;
 }
 
-/** D421 Phase 4.2 — key-explicit variant for the per-agent slot. */
+/** key-explicit variant for the per-agent slot. */
 export function shouldGraphAbortOnStreamTimeoutByKey(key: string | undefined): boolean {
   const k = key?.trim();
   if (!k) return false;
   return getAgentTurnContextByKey(k)?.assistantVisibleOutput === true;
 }
 
-/** D421 Phase 4.2 — key-explicit variant for the per-agent slot. */
+/** key-explicit variant for the per-agent slot. */
 function markAssistantVisibleOutputForTurnByKey(key: string | undefined): void {
   const k = key?.trim();
   if (!k) return;
@@ -350,7 +350,7 @@ function markAssistantVisibleOutputForTurnByKey(key: string | undefined): void {
 }
 
 /**
- * D421 Phase 4.2 — consume the recorded redirect request exactly once on the
+ * consume the recorded redirect request exactly once on the
  * executor SUCCESS path and notify the runtime-internal completion hook. The
  * request is consumed BEFORE turn-context cleanup ({@link clearAgentTurnContext})
  * so the single-consumption CAS cannot race cleanup. The hook is invoked
@@ -391,7 +391,7 @@ async function finalizeSourceRedirectOnSuccess(
 }
 
 /**
- * D421 Phase 4.2 — notify the completion hook of a non-success terminal
+ * notify the completion hook of a non-success terminal
  * (error / abort) so the server can clean its pending redirect context. The
  * recorded request is NOT consumed (an errored/aborted source does not
  * enqueue a target); it is dropped with the turn-context cleanup.
@@ -443,14 +443,14 @@ export async function* langgraphExecutor(
   const message = typeof input["message"] === "string" ? input["message"] : "";
   const attachmentTextBlocks = parseStringArray(input["attachmentTextBlocks"]);
   const multimodalImages = parseMultimodalImagesFromJobInput(input["multimodalImages"]);
-  // D391 — retained attachment ids to link to this turn's human row (stamped in
+  // retained attachment ids to link to this turn's human row (stamped in
   // persistMessages once the human fingerprint is known).
   const retainedAttachmentIds = parseStringArray(input["retainedAttachmentIds"]);
   const threadId = typeof input["threadId"] === "string" ? input["threadId"] : (laneKey ?? "default");
   const effectiveLaneKey = laneKey ?? "app:default";
   const memoryAccessEnvelope = (input["memoryAccessEnvelope"] as MemoryAccessEnvelope | undefined) ?? null;
   const actorRole = typeof input["actorRole"] === "string" ? input["actorRole"] : "owner";
-  // M125 Phase 2.6: agentId flows through every turn. The caller (chat
+  // agentId flows through every turn. The caller (chat
   // route) populates it from the envelope, which got it from
   // resolveContext. Background jobs / older callers that don't thread
   // it explicitly must now also stamp it — fail loudly here rather
@@ -468,7 +468,7 @@ export async function* langgraphExecutor(
     );
   }
 
-  // M042B: room routing identity (room:<uuid> laneKey separately is
+  // room routing identity (room:<uuid> laneKey separately is
   // captured above in effectiveLaneKey). roomId is carried into state
   // for pre_model / memory store. Defensive fallbacks for background
   // jobs and older test fixtures that don't thread room context.
@@ -476,7 +476,7 @@ export async function* langgraphExecutor(
     (typeof input["roomId"] === "string" && input["roomId"])
       ? input["roomId"]
       : memoryAccessEnvelope?.roomId ?? "";
-  // D426 — the server supplies the canonical child Room id on Subthread
+  // the server supplies the canonical child Room id on Subthread
   // wakes. Keep it separate from `roomId` so plain room turns cannot
   // accidentally participate in a parent root summary.
   const subthreadRoomId =
@@ -487,7 +487,7 @@ export async function* langgraphExecutor(
     ? (input["roomRoster"] as RoomParticipant[])
     : [];
 
-  // D082 PR B — populate turnId on graph state so the checkpoint
+  // PR B — populate turnId on graph state so the checkpoint
   // carries it across HTTP-request boundaries. Resume handlers
   // (`/api/auth/approval-reply`, `/api/auth/identity-challenge`,
   // `/api/auth/prove-and-resume`) read it back via graph.getState
@@ -502,7 +502,7 @@ export async function* langgraphExecutor(
       : null;
   const mentionedHumanUserIds = parseStringArray(input["mentionedHumanUserIds"]);
 
-  // D421 Phase 4.2 — per-agent execution context isolation. Group multi-wake
+  // per-agent execution context isolation. Group multi-wake
   // jobs share the human `turnId`; keying skip / redirect / visible-output /
   // depth state by it alone would let one bot's `skip` suppress another's
   // fallback. Derive a per-agent `turnContextId` from `humanTurnId + agentId`
@@ -511,20 +511,20 @@ export async function* langgraphExecutor(
   // transcript/event fingerprint stays the original `turnId`.
   const turnContextId =
     turnId && agentId ? turnContextKey(turnId, agentId) : turnId;
-  // D421 Phase 4.3 — target depth is seeded only when the executor actually
+  // target depth is seeded only when the executor actually
   // starts. This avoids leaking a seeded context when a queued target is
   // cancelled before execution, while still preceding graph/model/tool work.
   if (input["redirectDepth"] === 1 && turnContextId) {
     seedAgentRedirectDepthByKey(turnContextId);
   }
 
-  // D316/D574 — the Human directly addressed this Agent by mention, reply, or
+  // the Human directly addressed this Agent by mention, reply, or
   // UI choice. Carried onto graph state so pre_model/agent withhold `skip`,
   // inject the selection steering prompt, and retain foreground authority.
   const supervisionMetadata = connectedWebSupervisionMetadata(input);
   const explicitlySelected = supervisionMetadata === undefined && input["explicitlySelected"] === true;
 
-  // D079 Phase 2 — two-path API. Paths came pre-validated from the
+  // two-path API. Paths came pre-validated from the
   // chat route (absolute-only, control-chars rejected, system-path
   // blocklist applied). `null` in the input means "client didn't
   // provide / no folder open" — we coerce to empty-string here so
@@ -535,7 +535,7 @@ export async function* langgraphExecutor(
   const currentFolderRelayId = typeof input["currentFolderRelayId"] === "string" ? input["currentFolderRelayId"] : "";
   const workspacePath = typeof input["workspacePath"] === "string" ? input["workspacePath"] : "";
   const autoApprove = input["autoApprove"] === true;
-  // D356/D423 — in-focus artifacts and their resolved manifest are
+  // in-focus artifacts and their resolved manifest are
   // turn-scoped alongside mini-app context, so fresh graph input always carries
   // their normalized values, including empty arrays.
   const {
@@ -544,7 +544,7 @@ export async function* langgraphExecutor(
     artifactRefs,
     focusedResources,
   } = freshForegroundTurnScopedGraphContext(input);
-  // M087 — time-awareness context resolved at chat ingress. `userTimezone`
+  // time-awareness context resolved at chat ingress. `userTimezone`
   // is always a valid IANA name (server resolves request ?? stored ?? "UTC");
   // background/legacy callers that omit it get the "UTC" default. The reducer
   // default for `previousUserMessageAt` is null (first-message fallback).
@@ -586,14 +586,14 @@ export async function* langgraphExecutor(
   }
 
   const policyResolver = getPolicyResolver();
-  // Stack 208 P0 — one shared graph execution policy seam. The recursion ceiling
-  // is resolved here (100 in P0) and threaded into `streamConfig` below; no
+  // one shared graph execution policy seam. The recursion ceiling
+  // is resolved here (100 in ) and threaded into `streamConfig` below; no
   // call site hardcodes `100`. `GraphExecutionMetrics` counts supersteps /
   // model invocations / tool calls from the existing `streamEvents` hook and
   // is logged at stream end / on error (telemetry-only, no persistence).
   const executionPolicy = resolveGraphExecutionPolicy(input);
   const metrics = new GraphExecutionMetrics();
-  // D418 task 3.2.5 — thread the Full Workstation approval override
+  // task 3.2.5 — thread the Full Workstation approval override
   // resolver (if `app.ts` installed one on `defaultPostModelDeps`) into the
   // graph. A per-turn shallow copy keeps the graph's deps snapshot stable
   // for the turn even if the server-wide singleton is later replaced; the
@@ -659,7 +659,7 @@ export async function* langgraphExecutor(
     resolveGrant: postModelDeps.resolveComputerUseRootGrant,
   });
   const isGuest = actorRole === "guest";
-  // M132/M156 — Profile is 1:1 with Agent. `ownerId` in room turns is the
+  // Profile is 1:1 with Agent. `ownerId` in room turns is the
   // authorization / transcript owner and can differ from the speaking agent's
   // owner (e.g. a foreign-owned agent in a shared room). Agent identity
   // fields like soul/name/model must therefore resolve by `agentId`.
@@ -716,7 +716,7 @@ export async function* langgraphExecutor(
   const memoryBrief = memoryBriefItems
     .map((memory) => `- [${memory.type}] ${memory.content}`)
     .join("\n");
-  // D371 R2 — per-turn model override (decision A: per-thread). Explicit
+  // per-turn model override (decision A: per-thread). Explicit
   // Room/Agent state is never silently replaced if it becomes unavailable.
   const perTurnModelRaw = typeof input["model"] === "string" ? input["model"].trim() : "";
   const configuredModel = perTurnModelRaw || profile?.defaultModel || null;
@@ -735,7 +735,7 @@ export async function* langgraphExecutor(
 
   const serverTimePrefixIso =
     typeof input["serverTimePrefixIso"] === "string" ? input["serverTimePrefixIso"] : undefined;
-  // D302 P4 — "wake against an already-persisted human message". When true, the
+  // "wake against an already-persisted human message". When true, the
   // human row already exists in the transcript (optimistic delivery / ask_user
   // pre-persist), so we still inject the message into the graph (the model must
   // respond to it) but SKIP the transcript persist + its message.new — avoiding
@@ -744,7 +744,7 @@ export async function* langgraphExecutor(
   // Voice mode is a per-request client decision, not a server-wide setting.
   // The client sends voiceMode:true in the POST body only when its local UI
   // toggle is on. Server-side TTS additionally requires ELEVENLABS_API_KEY
-  // in the environment (loaded from ~/.nautilo/instance.env). D021.
+  // in the environment (loaded from ~/.nautilo/instance.env). .
   const clientVoiceMode = input["voiceMode"] === true;
   const hasElevenLabsKey = !!process.env["ELEVENLABS_API_KEY"]?.trim();
   const voiceEnabled = clientVoiceMode && hasElevenLabsKey;
@@ -754,19 +754,19 @@ export async function* langgraphExecutor(
 
   const langgraphThreadId = threadId;
 
-  // M166 Phase B — explicit turn-kind signal. The foreground executor is always
+  // explicit turn-kind signal. The foreground executor is always
   // a FRESH turn (resume replies flow through the dedicated resumeGraphWith*
   // handlers, not here).
   const turnKind: TurnKind = classifyTurnKind({});
   log(`[nautilo/executor] turnKind=${turnKind}`);
 
-  // M168 — rebuild the conversation HISTORY from the DB transcript (single
+  // rebuild the conversation HISTORY from the DB transcript (single
   // source of truth) on FRESH room turns. The `messages` channel reducer is
   // overwrite (`(_, update) => update`), so this replaces — not appends to —
-  // prior state. M171 (Phase H) removed the old checkpoint-history read path;
+  // prior state. removed the old checkpoint-history read path;
   // the checkpoint is STILL written by the graph below (it holds in-flight
   // execution state for resume), it is just no longer read for history.
-  // R5 — group/subthread wakes fire against an already-persisted human row;
+  // Group and subthread wakes fire against an already-persisted human row;
   // `currentMessageId` excludes it so the triggering message isn't duplicated.
   const subthreadParentRoomId =
     typeof input["subthreadParentRoomId"] === "string" ? input["subthreadParentRoomId"] : "";
@@ -777,7 +777,7 @@ export async function* langgraphExecutor(
   const currentMessageId =
     typeof input["currentMessageId"] === "number" ? input["currentMessageId"] : undefined;
 
-  // M171 R2 — a foreground turn without a `roomId` is a stateless single-shot
+  // a foreground turn without a `roomId` is a stateless single-shot
   // (empty history). If it nonetheless LOOKS like a room turn — a populated
   // roster or a `room:`-shaped thread id — the `roomId` was dropped upstream;
   // surface it as a warn so the gap is observable rather than a silent `[]`.
@@ -860,7 +860,7 @@ export async function* langgraphExecutor(
     suppressImageDropNote,
     replyToMessageId,
   };
-  // M135 P6 — the server-time prefix is for the LLM's time grounding, so it
+  // the server-time prefix is for the LLM's time grounding, so it
   // belongs ONLY in the checkpoint (what the model sees). The persisted
   // transcript (`session_messages`, shown in the UI) must stay clean — hence
   // a separate un-prefixed copy below. When no prefix is set (group rooms /
@@ -873,8 +873,8 @@ export async function* langgraphExecutor(
     ? buildForegroundUserHumanMessage(userMessageArgs)
     : userMessage;
 
-  // M168 R6 — the full transcript subsumes the old transient peer-diff /
-  // subthread context block (deleted in M171); only the live turn message is
+  // the full transcript subsumes the old transient peer-diff /
+  // subthread context block (deleted in ); only the live turn message is
   // appended to the rebuilt history.
   const newTurnMessages: BaseMessage[] = [userMessage];
 
@@ -882,6 +882,7 @@ export async function* langgraphExecutor(
 
   const graphInput = {
     noProgressStreaks: new Map(),
+    browserDecision: null,
     noProgressPendingCorrection: null,
     noProgressPendingStop: null,
     // eslint-disable-next-line nautilo-msg/no-naked-message-concat -- historyMessages is the transcript narration (0..1 HumanMessage, no ToolMessages); newTurnMessages is just the live user message — no tool_call_id invariant to preserve.
@@ -900,11 +901,11 @@ export async function* langgraphExecutor(
     currentThreadId: langgraphThreadId,
     langgraphThreadId,
     approvalLaneKey: effectiveLaneKey,
-    // D447 / ISSUE-M217 — each foreground user/task input begins a fresh
+    // each foreground user/task input begins a fresh
     // foreground epoch. Fresh foreground and task report-back turns reuse the
     // room-bot checkpoint, while tools/pre-model loops and approval resumes
     // omit these inputs. The agent owns bounded activation-lease aging from
-    // that epoch; ingress must only reset M217's stale nested/background
+    // that epoch; ingress must only reset the current stale nested/background
     // lifecycle state so it cannot affect foreground classification or behavior.
     ...foregroundActivationState,
     taskReportBackContinuation,
@@ -923,7 +924,7 @@ export async function* langgraphExecutor(
     desktopAutomationProvenance: desktopAutomationAdmission?.provenance ?? null,
     desktopAutomationRouteBinding: desktopAutomationAdmission?.routeBinding ?? null,
     computerUseInvocationBindings: {},
-    // M042B: room context on graph state. roomId + roomRoster are
+    // room context on graph state. roomId + roomRoster are
     // read by pre_model for the "Room participants" prompt block.
     // For the seeded default room, langgraphThreadId above equals
     // graphThreadId ("app:default"), not the laneKey ("room:<uuid>").
@@ -932,12 +933,12 @@ export async function* langgraphExecutor(
     turnId,
     causalHumanUserId: causalHumanUserId ?? "",
     explicitlySelected,
-    // D421 Phase 4.2 — server-owned redirect authority (Requirement B). `true`
+    // server-owned redirect authority (Requirement B). `true`
     // ONLY for a single inferred wake; the tool-factory gate fails closed on
     // missing/`false`. Default `false` keeps legacy / background / DM callers
     // and pre-Phase-4.2 checkpoints inert.
     redirectAllowed: input["redirectAllowed"] === true,
-    // D079 Phase 2 — two-path context into agent state. Read by
+    // two-path context into agent state. Read by
     // pre-model's `buildTwoPathBlock` to inject the file-surfaces
     // block into the system prompt. Persists in the checkpoint so
     // resume paths see the same paths (matches turnId pattern,
@@ -949,7 +950,7 @@ export async function* langgraphExecutor(
     liveMiniAppSession,
     artifactRefs,
     focusedResources,
-    // M087 — time-awareness context. Read by pre-model's `## Current time`
+    // time-awareness context. Read by pre-model's `## Current time`
     // block and the `get_current_time` tool. Checkpointed like turnId so
     // resume paths see a stable value (H-023).
     userTimezone,
@@ -1020,7 +1021,7 @@ export async function* langgraphExecutor(
       causalHumanTurnId: causalHumanUserId ? turnId || null : null,
     },
   };
-  // D424 — preserve the user-sent workspace artifact focus lane through the
+  // preserve the user-sent workspace artifact focus lane through the
   // async executor path. `persistMessages` resolves these external ids against
   // the canonical room namespace before recording durable card relations; local
   // file focus refs are deliberately excluded.
@@ -1042,7 +1043,7 @@ export async function* langgraphExecutor(
     ]),
   );
 
-  // M143/D568 — internal wakes retain an audit input without publishing a fake
+  // internal wakes retain an audit input without publishing a fake
   // Human message. Never apply the input metadata to an entire output batch:
   // browser supervision uses internalToolMetadata for tool plumbing only, while
   // a deliberate tool-free answer stays visible. Task report-back is unchanged.
@@ -1053,7 +1054,7 @@ export async function* langgraphExecutor(
   const isTaskOriginated = inputMetadata?.["originatedBy"] === "task";
   const isAdvancedVideoWorkcard = inputMetadata?.["originatedBy"] === "advanced_video_workcard";
 
-  // D302 P4 — skip persisting the human row when it already exists (the bot is
+  // skip persisting the human row when it already exists (the bot is
   // waking against an already-delivered message). The model still sees it via
   // `graphInput.messages`; only the duplicate transcript row + event are avoided.
   if (protectedTurn !== undefined && !humanAlreadyPersisted) {
@@ -1062,7 +1063,7 @@ export async function* langgraphExecutor(
     );
   }
   if (!humanAlreadyPersisted && protectedTurn === undefined) {
-    // D391 — stamp turn_id on this turn's retained attachments when the human
+    // stamp turn_id on this turn's retained attachments when the human
     // row is persisted (only on the human persist call, which carries the ids).
     const humanPersistOpts = {
       ...persistOptsBase,
@@ -1186,11 +1187,11 @@ export async function* langgraphExecutor(
       : null;
   agentProgressHeartbeat?.start();
 
-  // D421 Phase 4.2 — per-agent turnContextId (`turnContextKey(humanTurnId,
+  // per-agent turnContextId (`turnContextKey(humanTurnId,
   // agentId)`) is threaded explicitly (not via ALS): the skip / redirect tools
   // compute it from their factory context, the stream processor reads it from
   // `streamCtx.turnContextId`, and chat-model-invocation computes it from the
-  // logger ALS `getCurrentTurnId()` + its `agentId` param. Two bots sharing
+  // logger ALS `getCurrentTurnId` + its `agentId` param. Two bots sharing
   // one human `turnId` therefore never collide on skip / redirect /
   // visible-output / depth state. The bare-`turnId` fallback paths below cover
   // legacy callers / background jobs where no `agentId` is bound.
@@ -1298,7 +1299,7 @@ export async function* langgraphExecutor(
 
     // Unknown checkpoint state remains incomplete, never reviewed as success.
     let memoryReviewState: "completed" | "awaiting" | "pending" = "pending";
-    // Check for pending interrupts (identity challenge, prove_it, or D061 approval_ask)
+    // Check for pending interrupts (identity challenge, prove_it, or approval_ask)
     try {
       const postState = await graph.getState({ configurable: { thread_id: langgraphThreadId } });
       memoryReviewState = memoryReviewCompletionState(postState);
@@ -1327,7 +1328,7 @@ export async function* langgraphExecutor(
       memoryReviewRecorded = true;
     }
 
-    // D421 Phase 4.2 — consume the recorded redirect request exactly once on
+    // consume the recorded redirect request exactly once on
     // the SUCCESS path and notify the runtime-internal completion hook BEFORE
     // turn-context cleanup. No-op when no request was recorded; the hook is
     // still notified with `completed_no_request` so the server can clean its
@@ -1335,7 +1336,7 @@ export async function* langgraphExecutor(
     // the source cleanup so source cleanup cannot race target seeding.
     await finalizeSourceRedirectOnSuccess(turnContextId, turnId, agentId);
 
-    // D128 — release the per-turn agent context (skipFlag, etc.) so the
+    // release the per-turn agent context (skipFlag, etc.) so the
     // next turn on this thread starts clean. No-op when turnId is empty.
     if (turnContextId) clearAgentTurnContextByKey(turnContextId);
     else if (turnId) clearAgentTurnContext(turnId);
@@ -1345,7 +1346,7 @@ export async function* langgraphExecutor(
       memoryReviewRecorded = true;
     }
     if (signal.aborted) {
-      // D421 Phase 4.2 — aborted source: do NOT consume the redirect request
+      // aborted source: do NOT consume the redirect request
       // (an aborted source does not enqueue a target); notify the hook so the
       // server can clean its pending context, then drop the turn context.
       await finalizeSourceRedirectOnTerminal("aborted", turnContextId, turnId, agentId);
@@ -1355,8 +1356,8 @@ export async function* langgraphExecutor(
     }
     checkpointPrimaryError = true;
 
-    // Stack 208 P0 — surface the typed internal graph-budget outcome distinctly
-    // in telemetry (R9). The user-safe sentence is produced by
+    // surface the typed internal graph-budget outcome distinctly
+    // in telemetry . The user-safe sentence is produced by
     // `toFriendlyError` at the runtime job-loop catch site; here we only log
     // the outcome + metrics so `rg "graph_budget_exceeded" server.log`
     // bridges to the specific failure. Raw framework detail stays in logs.
@@ -1387,7 +1388,7 @@ export async function* langgraphExecutor(
       }
     }
 
-    // D421 Phase 4.2 — errored source: do NOT consume the redirect request;
+    // errored source: do NOT consume the redirect request;
     // notify the hook so the server can clean its pending context.
     await finalizeSourceRedirectOnTerminal("error", turnContextId, turnId, agentId);
     if (turnContextId) clearAgentTurnContextByKey(turnContextId);
@@ -1395,7 +1396,7 @@ export async function* langgraphExecutor(
     throw error;
   } finally {
     agentProgressHeartbeat?.dispose();
-    // D421 Phase 4.2 — belt-and-suspenders cleanup of the per-agent
+    // belt-and-suspenders cleanup of the per-agent
     // turn-context slot. The success/error/abort paths already cleared it,
     // but a `return` from inside the try (e.g. abort) reaches here too, and a
     // lost-completion defense must not leave the slot leaking.
@@ -1414,23 +1415,23 @@ export async function* langgraphExecutor(
 }
 
 /**
- * M168/M171 — resolve a fresh foreground room turn's conversation HISTORY.
+ * resolve a fresh foreground room turn's conversation HISTORY.
  *
  * On `turnKind === "fresh"` with a `roomId` (the always-true foreground case),
  * rebuilds history from the DB transcript via `buildTranscriptContext`:
- *  - DM / group → `{ kind:"room", roomId, ownerId, agentId?, excludeMessageId? }`
- *    (full labelled room transcript).
- *  - subthread → the same scope plus `subthread:{ parentRoomId, anchorMessageId }`
- *    (parent up-to-anchor window ++ subthread window).
+ * - DM / group → `{ kind:"room", roomId, ownerId, agentId?, excludeMessageId? }`
+ * (full labelled room transcript).
+ * - subthread → the same scope plus `subthread:{ parentRoomId, anchorMessageId }`
+ * (parent up-to-anchor window ++ subthread window).
  *
- * M171 (Phase H) removed the old `readCheckpointHistory` fallback: a non-fresh
+ * removed the old `readCheckpointHistory` fallback: a non-fresh
  * or no-`roomId` foreground turn is now a stateless single-shot that returns
  * **`[]`** (the DB transcript is the single source of truth — there is no
- * checkpoint-history read left). The caller logs an R2 observability warn when a
+ * checkpoint-history read left). The caller logs an observability warn when a
  * room-shaped turn nonetheless arrives without a `roomId`.
  *
  * `depsOverride` is injected by unit tests; production constructs (and closes)
- * `defaultBuildTranscriptContextDeps()` per call. Exported for unit coverage.
+ * `defaultBuildTranscriptContextDeps` per call. Exported for unit coverage.
  */
 export async function resolveForegroundHistoryMessages(
   args: {
@@ -1501,7 +1502,7 @@ export async function resolveForegroundHistoryMessages(
               }
             : {}),
         },
-        // R4 — verbatim first cut (no recency window / summarization).
+        // Verbatim first cut with no recency window or summarization.
         maxLines: Number.MAX_SAFE_INTEGER,
       },
       effectiveDeps,
@@ -1511,7 +1512,7 @@ export async function resolveForegroundHistoryMessages(
   }
 }
 
-// `interruptValueToServerEvent` lives in `@nautilo/agent` (D084 —
+// `interruptValueToServerEvent` lives in `@nautilo/agent` ( —
 // packages/agent/src/graph/interrupt-mapping.ts). See the top-of-file
 // import + re-export. This keeps the executor's stream-completion
 // interrupt scan and the resume paths' chained-interrupt scan using
@@ -1533,16 +1534,16 @@ export interface StreamProcessorContext {
   /** Track whether we're inside a final_report_generation node for deep research streaming */
   inFinalReportNode?: boolean;
   /**
-   * D128 — current turnId, used to look up the agent turn context's
+   * current turnId, used to look up the agent turn context's
    * `skipFlag` (set by the `skip` tool) and suppress fallback
    * assistant-text emissions + persistence for the remainder of the
    * turn. Tool-message and tool-call AIMessage persistence is preserved
-   * for graph integrity per D128 Decision 4 ("skip wins for fallback
+   * for graph integrity per Decision 4 ("skip wins for fallback
    * only — explicit replies / tool plumbing still flow").
    */
   turnId?: string;
   /**
-   * D421 Phase 4.2 — per-agent turnContextId
+   * per-agent turnContextId
    * (`turnContextKey(humanTurnId, agentId)`). When present, the stream
    * processor resolves the per-bot slot for `skipFlag` suppression,
    * visible-output marking, and chat-model stream-activity stamping, so
@@ -1550,9 +1551,9 @@ export interface StreamProcessorContext {
    * `turnId` when absent (legacy callers, background jobs).
    */
   turnContextId?: string;
-  /** D563 — exact attempt metadata from Agent's actual `model.invoke`. */
+  /** exact attempt metadata from Agent's actual `model.invoke`. */
   modelAttemptId?: string;
-  /** D563 — Runtime owns classification-only usage high-water, not timers. */
+  /** Runtime owns classification-only usage high-water, not timers. */
   modelOutputTokensHighWaterMark?: number;
   laneKey?: string;
   liveShadowRuntime?: LiveShadowAgentRuntimeTurn;
@@ -1612,7 +1613,7 @@ function projectionPreflightRejection(message: BaseMessage, ordinary = false): R
 }
 
 /**
- * D128 — checks whether the agent's `skip` tool has been called this turn.
+ * checks whether the agent's `skip` tool has been called this turn.
  * Returns false when no `turnId` is bound (legacy callers, background jobs).
  */
 function fallbackSuppressedForTurn(turnId: string | undefined): boolean {
@@ -1621,7 +1622,7 @@ function fallbackSuppressedForTurn(turnId: string | undefined): boolean {
 }
 
 /**
- * D421 Phase 4.2 — key-explicit variant for the per-agent slot. Returns false
+ * key-explicit variant for the per-agent slot. Returns false
  * when no key is bound (legacy callers, background jobs).
  */
 function fallbackSuppressedForTurnByKey(key: string | undefined): boolean {
@@ -1631,7 +1632,7 @@ function fallbackSuppressedForTurnByKey(key: string | undefined): boolean {
 }
 
 /**
- * D128 — keep tool-call AIMessages + every ToolMessage, drop pure-text
+ * keep tool-call AIMessages + every ToolMessage, drop pure-text
  * AIMessages. The agent's `skip` tool ends the turn with no visible
  * assistant text; the graph state must still reflect the tool call that
  * was made.
@@ -1646,7 +1647,7 @@ function filterMessagesForSkippedTurn(messages: BaseMessage[]): BaseMessage[] {
 export function processStreamEvent(
   ev: unknown,
   tokenBatcher: TokenBatcher,
-  // D083 keeps ordinary executed-tool lifecycle in the custom tools node.
+  // keeps ordinary executed-tool lifecycle in the custom tools node.
   // This tracker is used only for an opted-in projection-preflight rejection,
   // whose call never reaches that node and therefore has no existing pair.
   toolTracker: ToolCallTracker,
@@ -1705,7 +1706,7 @@ export function processStreamEvent(
         modelAttemptIdFromStreamEvent(ev) ?? ctx?.modelAttemptId,
       );
     }
-    // D128 — once `skip` flipped the turn context flag, swallow every
+    // once `skip` flipped the turn context flag, swallow every
     // subsequent fallback token. We don't even feed the batcher so its
     // chunk-sequence counter stays clean and no stale chunks can leak
     // through a later flush. Synchronous tool emits (future `reply`
@@ -1723,11 +1724,11 @@ export function processStreamEvent(
       }
     }
     //
-    // D083 Phase 2b audit — LangChain's `on_tool_start` /
+    // audit — LangChain's `on_tool_start` /
     // `on_tool_end` stream events used to be handled HERE (as
     // sibling `else if` branches of this function's dispatch),
     // emitting a SECOND tool.start / tool.end pair on top of the
-    // custom `toolsNode`'s explicit emit (D082 PR A+). For
+    // custom `toolsNode`'s explicit emit ( PR A+). For
     // cloud-executor tools (any tool that runs via
     // `await tool.invoke(...)` inside
     // `packages/agent/src/nodes/tools.ts`) LangChain's tracing
@@ -1739,15 +1740,15 @@ export function processStreamEvent(
     //
     // The custom emit is the authoritative source for both code
     // paths:
-    //   - it sees the real `tc.args` before execution (richer
-    //     than LangChain's tracing payload, which can reorder /
-    //     rename)
-    //   - it runs the post-security scan and passes
-    //     `scanned.content` as the Phase 2 result (matches what
-    //     the ToolMessage carries forward to the LLM)
-    //   - it fires even when tools are rejected pre-execution by
-    //     the security scan, where LangChain's tracing wouldn't
-    //     fire
+    // - it sees the real `tc.args` before execution (richer
+    // than LangChain's tracing payload, which can reorder /
+    // rename)
+    // - it runs the post-security scan and passes
+    // `scanned.content` as result (matches what
+    // the ToolMessage carries forward to the LLM)
+    // - it fires even when tools are rejected pre-execution by
+    // the security scan, where LangChain's tracing wouldn't
+    // fire
     //
     // Removing the auto-emit handling eliminates the duplicate
     // cards with zero loss of information. If a future subgraph
@@ -1803,7 +1804,7 @@ export function processStreamEvent(
         const inputLen = Array.isArray(inMessages) ? inMessages.length : 0;
         if (Array.isArray(outMessages) && outMessages.length > inputLen) {
           const delta = outMessages.slice(inputLen);
-          // D128 — a skipped turn produces zero agent rows in
+          // a skipped turn produces zero agent rows in
           // session_messages. Drop pure-text AIMessages so the
           // transcript doesn't surface fallback content the user
           // never saw on the WS stream. Tool-call AIMessages and

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  replaceActiveModelCapabilityCatalog,
   resetModelCapabilitiesCacheForTests,
   setModelCapabilitiesCacheForTests,
 } from "@nautilo/model-capabilities";
 import { createDiscoverModelsTool } from "../../src/tools/meta/discover-models";
 import { listResolvedCatalogModels } from "../../src/config/resolved-catalog";
+import { getActiveModelCatalogSync } from "../../src/config/model-catalog/runtime-catalog";
 import { resetVeniceCatalogCacheModuleForTests } from "../../src/config/venice-catalog-cache";
 
 const NO_ENV: NodeJS.ProcessEnv = {};
@@ -33,13 +35,15 @@ interface ListSearchResponse {
       tools: boolean | null;
       structuredOutputs: boolean | null;
       reasoning: boolean | null;
+      visualGrounding: boolean | null;
       webSearch: boolean | null;
       e2ee: boolean | null;
     };
     input: readonly string[];
     output: readonly string[];
-    workload: "chat" | "generation";
+    workload: "chat" | "generation" | "decision";
     generation: { family: string; references: unknown; constraints: unknown } | null;
+    decision: { operations: readonly ["choice"]; inputTokens: number; maxChoices: number } | null;
   }>;
   totalMatched: number;
   offset: number;
@@ -51,7 +55,11 @@ interface ListSearchResponse {
 interface GetModelRow {
   id: string;
   availability: string;
-  features: { tools: boolean | null; reasoning: boolean | null };
+  features: {
+    tools: boolean | null;
+    reasoning: boolean | null;
+    visualGrounding: boolean | null;
+  };
   input: readonly string[];
   [k: string]: unknown;
 }
@@ -80,7 +88,7 @@ async function invoke(
   return (await tool.invoke(input)) as string;
 }
 
-describe("discover_models (D429 Phase 2)", () => {
+describe("discover_models (the current implementation)", () => {
   beforeEach(() => {
     resetVeniceCatalogCacheModuleForTests();
     resetModelCapabilitiesCacheForTests();
@@ -109,7 +117,9 @@ describe("discover_models (D429 Phase 2)", () => {
         "requires_reasoning",
         "requires_tools",
         "requires_vision",
+        "requires_visual_grounding",
         "runnable_only",
+        "workload",
       ].sort(),
     );
     expect(tool.name).toBe("discover_models");
@@ -135,7 +145,7 @@ describe("discover_models (D429 Phase 2)", () => {
     }
   });
 
-  test("list is sorted deterministically by priority then id (matches Phase 1)", async () => {
+  test("list is sorted deterministically by priority then id (matches )", async () => {
     const tool = createDiscoverModelsTool({ env: fullEnv(), allowChinaUpstream: true });
     const expected = listResolvedCatalogModels({
       env: fullEnv(),
@@ -210,6 +220,40 @@ describe("discover_models (D429 Phase 2)", () => {
       contextTokens: null,
       maxOutputTokens: null,
     });
+  });
+
+  test("workload filter returns typed decisions while preserving chat and generation rows", async () => {
+    const tool = createDiscoverModelsTool({
+      env: { OPENROUTER_API_KEY: "or-test", VENICE_API_KEY: "vk-test" },
+      allowChinaUpstream: true,
+    });
+
+    const decisions = parseList(await invoke(tool, { command: "list", workload: "decision" }));
+    expect(decisions.items).toHaveLength(1);
+    expect(decisions.items[0]).toMatchObject({
+      id: "openrouter:typesafe/jev-1.13",
+      workload: "decision",
+      input: ["text"],
+      output: ["text"],
+      generation: null,
+      decision: {
+        operations: ["choice"],
+        inputTokens: 32_000,
+        maxChoices: 255,
+      },
+      contextTokens: null,
+      maxOutputTokens: null,
+    });
+    expect(decisions.totalMatched).toBe(1);
+
+    const chat = parseList(await invoke(tool, { command: "list", workload: "chat" }));
+    expect(chat.items.length).toBeGreaterThan(0);
+    expect(chat.items.every((item) => item.workload === "chat")).toBe(true);
+    expect(chat.items.some((item) => item.id === "openrouter:typesafe/jev-1.13")).toBe(false);
+
+    const generation = parseList(await invoke(tool, { command: "list", workload: "generation" }));
+    expect(generation.items.length).toBeGreaterThan(0);
+    expect(generation.items.every((item) => item.workload === "generation")).toBe(true);
   });
 
   test("a positive reference-role filter excludes unknown capabilities and returns the known model", async () => {
@@ -359,6 +403,45 @@ describe("discover_models (D429 Phase 2)", () => {
     expect(res.items.map((i) => i.id)).not.toContain("openrouter:moonshotai/kimi-k2.6");
   });
 
+  test("requires_visual_grounding matches only explicit support and composes as metadata", async () => {
+    const entries = getActiveModelCatalogSync().catalog.entries;
+    const original = entries.map((entry) => ({
+      id: entry.id,
+      ...(entry.modalities ? { modalities: entry.modalities } : {}),
+      ...(entry.features ? { features: entry.features } : {}),
+      ...(entry.capabilityProvenance
+        ? { capabilityProvenance: entry.capabilityProvenance }
+        : {}),
+    }));
+    replaceActiveModelCapabilityCatalog(original.map((entry) => {
+      if (entry.id === "anthropic:claude-sonnet-4-6" && entry.features) {
+        return { ...entry, features: { ...entry.features, visualGrounding: true } };
+      }
+      if (entry.id === "openrouter:moonshotai/kimi-k2.6" && entry.features) {
+        return { ...entry, features: { ...entry.features, visualGrounding: false } };
+      }
+      return entry;
+    }));
+    try {
+      const tool = createDiscoverModelsTool({ env: fullEnv(), allowChinaUpstream: true });
+      const res = parseList(await invoke(tool, {
+        command: "list",
+        requires_visual_grounding: true,
+      }));
+      expect(res.items.every((item) => item.features.visualGrounding === true)).toBe(true);
+      expect(res.items.map((item) => item.id)).toContain("anthropic:claude-sonnet-4-6");
+      expect(res.items.map((item) => item.id)).not.toContain("openrouter:moonshotai/kimi-k2.6");
+
+      const exact = parseGet(await invoke(tool, {
+        command: "get",
+        model_id: "anthropic:claude-sonnet-4-6",
+      }));
+      expect(exact.model?.features.visualGrounding).toBe(true);
+    } finally {
+      replaceActiveModelCapabilityCatalog(original);
+    }
+  });
+
   test("capability filters combine with AND semantics", async () => {
     const tool = createDiscoverModelsTool({ env: fullEnv(), allowChinaUpstream: true });
     const res = parseList(
@@ -439,7 +522,7 @@ describe("discover_models (D429 Phase 2)", () => {
     }
   });
 
-  test("list never performs a network fetch (Phase 0)", async () => {
+  test("list never performs a network fetch ", async () => {
     const original = globalThis.fetch;
     let called = 0;
     (globalThis as { fetch: unknown }).fetch = () => {

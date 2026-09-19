@@ -14,6 +14,8 @@ import type {
   "@nautilo/lattice-bridge";
 import { NautiloStateAnnotation, type NautiloState } from "./state";
 import { preModelNode } from "../nodes/pre-model";
+import { createBrowserDecisionNode } from "../nodes/browser-decision";
+import { currentBrowserDecision } from "../graph/browser-decision";
 import { agentNode } from "../nodes/agent";
 import {
   createPostModelNode,
@@ -103,7 +105,7 @@ export function shouldContinue(
   if (state.approvalDenied) {
     return "pre_model";
   }
-  // M151 (Task Phase 7a) — a run with `awaitResponse` set parks on a human
+  // (Task ) — a run with `awaitResponse` set parks on a human
   // reply instead of ending. The `await_reply` node raises `await_human_reply`
   // (persisted checkpoint); on resume it injects the reply + clears the flag.
   if (state.awaitResponse) {
@@ -132,10 +134,13 @@ export function shouldContinue(
  */
 export function shouldContinueAfterTools(
   state: NautiloState,
-): "tools" | "pre_model" {
-  return state.approvedToolCalls && state.approvedToolCalls.length > 0
-    ? "tools"
-    : "pre_model";
+): "tools" | "pre_model" | "browser_decision" {
+  if (state.approvedToolCalls?.length) return "tools";
+  if (state.noProgressPendingCorrection || state.noProgressPendingStop || state.approvalDenied
+    || state.modelRejectedToolCallIds?.length || state.projectionRejectedToolCallIds?.length
+    || state.ordinaryContentAccessRejectedToolCallIds?.length) return "pre_model";
+  const decision = currentBrowserDecision(state);
+  return decision?.phase === "decide" || decision?.phase === "observe" ? "browser_decision" : "pre_model";
 }
 
 interface CompiledGraph {
@@ -239,7 +244,12 @@ export function createNautiloGraph(
   });
 
   const workflow = new StateGraph(NautiloStateAnnotation)
-    .addNode("pre_model", draftNodes.prepare)
+    .addNode("pre_model", async (state, config) => ({
+      ...await draftNodes.prepare(state, config),
+      // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
+      browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
+    }))
+    .addNode("browser_decision", createBrowserDecisionNode(deps))
     .addNode("agent", draftNodes.agent)
     .addNode("model_output_preflight", modelOutputPreflightNode)
     .addNode("projection_preflight", graphProjectionPreflightNode)
@@ -255,7 +265,12 @@ export function createNautiloGraph(
     .addEdge("ordinary_content_access_preflight", "post_model")
     .addConditionalEdges("post_model", shouldContinue)
     .addConditionalEdges("tools", shouldContinueAfterTools)
-    // M151 — on resume the await_reply node injects the human reply + clears
+    .addConditionalEdges("browser_decision", (state) => {
+      const phase = currentBrowserDecision(state)?.phase;
+      return phase === "waiting" ? "model_output_preflight"
+        : phase === "observe" || phase === "decide" ? "browser_decision" : "pre_model";
+    })
+    // on resume the await_reply node injects the human reply + clears
     // `awaitResponse`, then drives one more turn that reaches real END. (The
     // first-entry interrupt throws to suspend, so this edge is only traversed
     // post-resume.)

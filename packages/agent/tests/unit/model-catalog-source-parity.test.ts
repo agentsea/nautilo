@@ -34,6 +34,14 @@ const EXPECTED_AUDITED_LIMITS = {
     contextTokens: 1_040_000,
     outputTokens: 1_040_000,
   },
+  // Context-derived request ceiling; execution subtracts the actual prompt.
+  // This does not claim an observed million-token completion.
+  "fireworks:accounts/fireworks/models/deepseek-v4p1-flash": {
+    contextTokens: 1_048_576, outputTokens: 1_048_576,
+  },
+  "openrouter:deepseek/deepseek-v4.1-flash": {
+    contextTokens: 1_048_576, outputTokens: 384_000,
+  },
 } as const;
 
 describe("checked-in model catalog fallback", () => {
@@ -42,15 +50,15 @@ describe("checked-in model catalog fallback", () => {
     const parsed = ModelCatalogSchema.parse(manifest);
     // Match the canonical publisher's artifact serialization, before schema parsing.
     expect(createHash("sha256").update(`${JSON.stringify(manifest)}\n`).digest("hex"))
-      .toBe("1cee24ca046b92040f4f28e53b2042956747ff0220f164a9e0f4f0065311dc43");
+      .toBe("19cc7687c775b2bbcc33cbb9ed23f1e28d3f8a61a909864dc3828b77cde79fa2");
 
     expect(parsed).toEqual(localModelCatalog);
     expect(parsed).toMatchObject({
-      version: 3,
-      catalogVersion: "2026.09.09.2",
-      publishedAt: "2026-09-09T16:45:01Z",
+      version: 4,
+      catalogVersion: "2026.09.18.2",
+      publishedAt: "2026-09-18T15:17:12Z",
     });
-    expect(parsed.entries).toHaveLength(79);
+    expect(parsed.entries).toHaveLength(87);
     expect(
       parsed.entries
         .filter((entry) =>
@@ -65,9 +73,34 @@ describe("checked-in model catalog fallback", () => {
     ]);
   });
 
-  test("every bundled chat route has positive model-specific limits and generation routes omit them", () => {
+  test("includes the exact canonical Jev decision candidate", () => {
+    const entry = localModelCatalog.entries.find(
+      (candidate) => candidate.id === "openrouter:typesafe/jev-1.13",
+    );
+
+    expect(entry).toEqual({
+      id: "openrouter:typesafe/jev-1.13",
+      displayName: "Jev 1.13 (OpenRouter)",
+      provider: "openrouter",
+      routing: "openrouter",
+      priority: 999,
+      defaultEnabled: true,
+      workload: "decision",
+      modalities: { input: ["text"], output: ["text"] },
+      capabilityProvenance: "openrouter",
+      cost: { coefficient: 0.014 },
+      privacy: { grade: 4 },
+      decision: {
+        operations: ["choice"],
+        inputTokens: 32_000,
+        maxChoices: 255,
+      },
+    });
+  });
+
+  test("every bundled chat route has positive model-specific limits and non-chat routes omit them", () => {
     for (const entry of localModelCatalog.entries) {
-      if ("workload" in entry && entry.workload === "generation") {
+      if ("workload" in entry && entry.workload !== undefined && entry.workload !== "chat") {
         expect(entry.limits, `${entry.id} must not declare chat token limits`).toBeUndefined();
         continue;
       }
@@ -89,7 +122,7 @@ describe("checked-in model catalog fallback", () => {
 
   test("execution resolves every bundled chat row from the same catalog values without a global clamp", async () => {
     for (const entry of localModelCatalog.entries) {
-      if ("workload" in entry && entry.workload === "generation") continue;
+      if ("workload" in entry && entry.workload !== undefined && entry.workload !== "chat") continue;
       const limits = entry.limits!;
 
       expect(getModelTokenLimit(entry.id), entry.id).toBe(limits.contextTokens);

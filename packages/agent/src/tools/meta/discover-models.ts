@@ -1,21 +1,21 @@
 /**
  * discover_models — meta-tool that lets the agent query the resolved model
- * catalog (D429 Phase 2).
+ * catalog (the current implementation).
  *
  * Sibling of `discover_tools` / `discover_skills`: a bounded, read-only
- * window onto the Phase 1 resolved-catalog projection. It never places the
+ * window onto resolved-catalog projection. It never places the
  * full model list in the system prompt; the agent asks for what it needs.
  *
- * Phase 0 invariants enforced here:
- *   - `get` accepts one EXACT stable model id and only returns a curated
- *     resolved-catalog row. Arbitrary dynamic `openrouter:` / `gateway:`
- *     strings are NOT a v1 call surface — they resolve to
- *     `availability: "unknown_model"` and are reported as not-found.
- *   - Unknown capability metadata stays unknown: a `null` feature never
- *     satisfies `requires_*: true` (AND semantics).
- *   - Only compact, non-secret data is returned. No env key names with
- *     values, account fingerprints, or raw cache payloads are emitted —
- *     the Phase 1 projection is already non-secret.
+ * invariants enforced here:
+ * - `get` accepts one EXACT stable model id and only returns a curated
+ * resolved-catalog row. Arbitrary dynamic `openrouter:` / `gateway:`
+ * strings are NOT a v1 call surface — they resolve to
+ * `availability: "unknown_model"` and are reported as not-found.
+ * - Unknown capability metadata stays unknown: a `null` feature never
+ * satisfies `requires_*: true` (AND semantics).
+ * - Only compact, non-secret data is returned. No env key names with
+ * values, account fingerprints, or raw cache payloads are emitted —
+ * the resolved projection is already non-secret.
  *
  * Trust tier: guest (everyone can discover).
  * Impact: read-only.
@@ -35,6 +35,7 @@ const MIN_LIMIT = 1;
 const MAX_QUERY_LEN = 200;
 const MAX_MODEL_ID_LEN = 200;
 const MAX_PROVIDER_LEN = 64;
+const WORKLOADS = ["chat", "generation", "decision"] as const;
 const OUTPUT_MODALITIES = ["text", "image", "audio", "video", "embedding"] as const;
 const GENERATION_FAMILIES = ["image", "video", "music"] as const;
 const REFERENCE_ROLES = ["image", "video", "audio"] as const;
@@ -89,7 +90,7 @@ function capText(value: string | undefined, max: number): string | undefined {
 }
 
 /**
- * Compact, non-secret projection of a resolved catalog row. The Phase 1
+ * Compact, non-secret projection of a resolved catalog row. The
  * `ResolvedCatalogModel` is already non-secret by construction (no env keys,
  * no account fingerprints, no raw cache payloads), so this is a verbatim
  * pass-through with the optional `unavailableReason` normalized away when
@@ -122,17 +123,21 @@ function matchesCapabilityFilters(
     requiresVision?: boolean | undefined;
     requiresFileInput?: boolean | undefined;
     requiresReasoning?: boolean | undefined;
+    requiresVisualGrounding?: boolean | undefined;
+    workload?: (typeof WORKLOADS)[number] | undefined;
     output?: (typeof OUTPUT_MODALITIES)[number] | undefined;
     generationFamily?: (typeof GENERATION_FAMILIES)[number] | undefined;
     requiresReferenceRole?: (typeof REFERENCE_ROLES)[number] | undefined;
   },
 ): boolean {
   if (filters.runnableOnly && row.availability !== "selectable") return false;
-  // Unknown (null) never satisfies a positive requires_*: true (Phase 0).
+  // Unknown (null) never satisfies a positive requires_*: true .
   if (filters.requiresTools && row.features.tools !== true) return false;
   if (filters.requiresReasoning && row.features.reasoning !== true) return false;
+  if (filters.requiresVisualGrounding && row.features.visualGrounding !== true) return false;
   if (filters.requiresVision && !row.input.includes("image")) return false;
   if (filters.requiresFileInput && !row.input.includes("file")) return false;
+  if (filters.workload && row.workload !== filters.workload) return false;
   if (filters.output && !row.output.includes(filters.output)) return false;
   if (filters.generationFamily && row.generation?.family !== filters.generationFamily) return false;
   // Unknown reference support is not a positive match. This is intentionally
@@ -146,8 +151,8 @@ function matchesCapabilityFilters(
 function resolveCatalogRows(context?: DiscoverModelsContext): ResolvedCatalogModel[] {
   // includeUnavailable: true so Genie can see the full curated catalog and
   // learn which rows are selectable vs missing credentials / routing-filtered.
-  // listResolvedCatalogModels iterates only signed catalog rows (chat and
-  // generation), so dynamic openrouter:/gateway: ids never appear here.
+  // listResolvedCatalogModels iterates only signed catalog rows across all
+  // workloads, so dynamic openrouter:/gateway: ids never appear here.
   const options: { includeUnavailable: true; env?: NodeJS.ProcessEnv; allowChinaUpstream?: boolean } = {
     includeUnavailable: true,
   };
@@ -184,8 +189,9 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
     name: "discover_models",
     description:
       "Search the resolved model catalog to find available models by " +
-      "name, provider, or capability. Use `list` to browse, `search` to " +
-      "filter by text plus capability/output/generation criteria (AND semantics), and `get` " +
+      "name, provider, workload, or capability. Use `list` to browse with optional " +
+      "workload/capability/output/generation filters, `search` to add a text query to those " +
+      "filters (AND semantics), and `get` " +
       "to fetch one curated model by its exact stable id. Results are " +
       "non-secret and bounded with explicit truncation/next offset. " +
       "Dynamic openrouter:/gateway: ids are not accepted by `get`.",
@@ -225,6 +231,16 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         .boolean()
         .optional()
         .describe("When true, only return models known to support reasoning (null capability never matches)."),
+      requires_visual_grounding: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, only return models known to support grounding screenshot targets to coordinates (null capability never matches).",
+        ),
+      workload: z
+        .enum(WORKLOADS)
+        .optional()
+        .describe("Only return models for this execution workload: chat, generation, or decision."),
       output: z
         .enum(OUTPUT_MODALITIES)
         .optional()
@@ -261,13 +277,13 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
 
       // Handler-level validation of command-specific required fields. The
       // top-level schema stays a flat z.object (never a discriminated union),
-      // so required-ness is enforced here per Phase 2 §2.1 schema guidance.
+      // so required-ness is enforced here per §2.1 schema guidance.
       if (command === "get") {
         if (!modelId) {
           return malformed("`get` requires a non-empty `model_id`.");
         }
         // `get` only returns a curated resolved-catalog row. Dynamic
-        // openrouter:/gateway: ids are NOT a v1 call surface (Phase 0): they
+        // openrouter:/gateway: ids are NOT a v1 call surface : they
         // synthesize a config in getModelById and would otherwise resolve to
         // selectable/missing_credentials, so membership is checked against
         // the curated list (which iterates only ASSISTANT_MODELS) rather than
@@ -297,6 +313,8 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         requiresVision: input.requires_vision,
         requiresFileInput: input.requires_file_input,
         requiresReasoning: input.requires_reasoning,
+        requiresVisualGrounding: input.requires_visual_grounding,
+        workload: input.workload,
         output: input.output,
         generationFamily: input.generation_family,
         requiresReferenceRole: input.requires_reference_role,

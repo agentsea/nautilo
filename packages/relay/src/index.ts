@@ -545,6 +545,8 @@ export {
 export {
   BROWSER_TOOLS,
   isBrowserTool,
+  browserToolMayMutate,
+  agentBrowserSnapshotJsonArgv,
   agentBrowserArgv,
   agentBrowserCdpArgv,
   agentBrowserMouseClickArgvs,

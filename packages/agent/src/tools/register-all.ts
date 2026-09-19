@@ -1,5 +1,5 @@
 /**
- * Register all built-in tools in the catalog. One register() call per tool.
+ * Register all built-in tools in the catalog. One register call per tool.
  * This is the ONLY place tools are defined.
  *
  * Replaces: ALL_TOOL_FACTORIES, BUILTIN_TOOL_METADATA, register-builtin-tools.ts
@@ -160,11 +160,11 @@ function isOfficeToolingEnabled(): boolean {
   return fromRuntimeConfig().nautilo_office_enabled;
 }
 
-/** M203 — options for tool registration (test seams). */
+/** options for tool registration (test seams). */
 export interface RegisterAllToolsOptions {
   /**
    * Availability probe for the OfficeCLI binary. Defaults to the real
-   * `officeCliAvailable()` (cheap existence + exec-bit check). Injected in
+   * `officeCliAvailable` (cheap existence + exec-bit check). Injected in
    * unit tests to assert the `officecli` tool is registered only when a usable
    * binary exists on the host.
    */
@@ -201,7 +201,7 @@ export function registerAllTools(
   const isOfficeCliAvailable = options.officeCliAvailable ?? officeCliAvailable;
   const mediaGenerationAvailable = options.mediaGenerationAvailable ?? ((kind: "video" | "music") =>
     hasMediaGenerationApprovalRuntime() && Boolean(process.env["VENICE_API_KEY"]?.trim()) && activeCatalogHasMediaKind(kind));
-  // D448 Phase 2.1 — the factory itself accepts only a narrow port + trusted
+  // the factory itself accepts only a narrow port + trusted
   // context through the opaque catalog context. Registration deliberately
   // does not choose targets, relays, or filesystem authority.
   catalog.register({
@@ -319,7 +319,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // M088A — share an existing workspace artifact with a known user.
+  // share an existing workspace artifact with a known user.
   // Mirrors share_memory: moves an artifact row's namespace_id (no
   // bytes move); requires roster validation + hybrid sensitivity gate.
   catalog.register({
@@ -336,7 +336,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D261 P6b — drain nwState.emit channel-3 queue for a workspace artifact.
+  // b — drain nwState.emit channel-3 queue for a workspace artifact.
   catalog.register({
     name: "read_artifact_events",
     factory: (ctx) => createReadArtifactEventsTool(ctx),
@@ -403,9 +403,9 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // M144 — Phase 3 intent shortcuts (thin `createTask` wrappers on the M142
+  // intent shortcuts (thin `createTask` wrappers on
   // engine). `in_private_namespace` is the only one carrying the high-impact
-  // gate (M148 removed the legacy `do_in_private_namespace` it used to mirror).
+  // gate ( removed the legacy `do_in_private_namespace` it used to mirror).
   catalog.register({
     name: "in_scope",
     factory: (ctx) => createInScopeTool(ctx),
@@ -466,7 +466,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D363 (Stack-128) — `generate_repo_docs` entry tool. Thin
+  // (Stack-128) — `generate_repo_docs` entry tool. Thin
   // `repo_docs` task creator; a separate executor consumes the task.
   // Mints an async subagent that writes to a repo (potentially pushing or
   // opening a PR), so project execution retains its explicit approval gate.
@@ -509,14 +509,14 @@ export function registerAllTools(
   });
 
   // --- Filesystem tools ---
-  // M088B — `read_file`, `write_file`, `list_directory` were removed.
+  // `read_file`, `write_file`, `list_directory` were removed.
   // The unified `file` tool below covers all their use cases via its
   // 10 commands × 3 zones discriminated-union schema.
   //
-  // --- D079 Phase 4 unified `file` tool ---
+  // --- the current implementation unified `file` tool ---
   // One tool, 10 commands dispatched via discriminated-union schema
   // on the `command` arg. Canonical surface for workspace + current
-  // folder + legacy home/scratch zones (D079 Phase 4 §4.4).
+  // folder + legacy home/scratch zones (the current implementation §4.4).
   //
   // `impact: "destructive"` at the tool-level is a conservative
   // default for the approval dock's tier routing; the per-command
@@ -528,7 +528,7 @@ export function registerAllTools(
   //
   // No explicit executor field — uses the catalog default (cloud).
   // Handlers execute node:fs ops directly in the server process.
-  // Migration to executor:"relay" (when D057's relay work wires
+  // Migration to executor:"relay" (when the current relay work wires
   // filesystem dispatch end-to-end) is a mechanical rewire — the
   // schema + dispatcher shapes stay put.
   catalog.register({
@@ -543,7 +543,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D306 — dedicated document conversion (local md→pdf/docx; optional CloudConvert).
+  // dedicated document conversion (local md→pdf/docx; optional CloudConvert).
   catalog.register({
     name: "convert",
     factory: (ctx) => createConvertTool(ctx),
@@ -580,7 +580,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // D500 — Electron resolves the remote target, login user, and identity
+  // Electron resolves the remote target, login user, and identity
   // locally. These model-facing schemas therefore accept no SSH authority.
   // The dedicated relay capability is intentionally distinct from run_shell:
   // SSH is never admitted through a generic shell fallback. Invocation-service
@@ -651,7 +651,7 @@ export function registerAllTools(
     });
   }
 
-  // D497 — Electron owns target resolution and the canonical Current Folder
+  // Electron owns target resolution and the canonical Current Folder
   // transition. The catalog factory supplies model schema only; invocation
   // dispatches the narrow prepare/commit protocol through the exact desktop.
   catalog.register({
@@ -674,9 +674,9 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // --- Terminal (D373 / Stack 137) ---
+  // --- Terminal ( / ) ---
   // Interactive shared PTY. Distinct from run_shell (one-shot, prove_it):
-  // per the D373 operator decision the terminal uses "basic normal gating,
+  // per operator decision the terminal uses "basic normal gating,
   // NOT a PIN". The trust resolver is binary for relay tools (destructive |
   // requiresApproval → prove_it, else allow), so "no PIN" == capability-gated
   // allow: impact "high" (not "destructive") + requiresApproval:false →
@@ -697,13 +697,13 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // --- Computer Use (D516) ---
+  // --- Computer Use ---
   // The semantic Computer Use catalog is the sole desktop-control surface.
   // Runtime emits canUseComputer only for the exact Agent named by a live
   // redacted desktop-automation receipt; retired desktop_* registrations are
   // absent and cannot be revived by a missing or stale receipt.
   //
-  // `control_desktop` is still the actor's RBAC requirement.  The separate
+  // `control_desktop` is still the actor's RBAC requirement. The separate
   // relay capability is what binds this catalog to the live local receipt.
   // The browser Host contracts are catalogue-projected Agent tools. Their
   // descriptor and validated JSON are attached at invocation time; Relay and
@@ -712,7 +712,7 @@ export function registerAllTools(
 
   catalog.register({
     name: "browser_snapshot",
-    factory: () => createBrowserSnapshotTool(),
+    factory: (ctx) => createBrowserSnapshotTool(ctx),
     category: "computer",
     executor: "relay",
     trustTier: "standard",
@@ -1040,7 +1040,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  // D055 — structured Hue requests are dispatched only to a capable local
+  // structured Hue requests are dispatched only to a capable local
   // relay. The server owns this contract; relay-side OpenHue execution is
   // deliberately not reachable through a shell or generic network tool.
   catalog.register({
@@ -1058,7 +1058,7 @@ export function registerAllTools(
   });
 
   if (isOfficeToolingEnabled()) {
-    // D362 — LibreOffice office tool (server-side; nwuno engine). Convert/extract/
+    // LibreOffice office tool (server-side; nwuno engine). Convert/extract/
     // render + mutate (find-replace/template-fill/set-cell/…) on artifact-zone docs.
     // Low impact, no per-call approval; gated by use_project_content (same as file).
     catalog.register({
@@ -1077,7 +1077,7 @@ export function registerAllTools(
       resultScanPolicy: "on-suspicious",
     });
 
-    // D362 §3.4.8 — intent-level document editing. The durable, protocol-free
+    // intent-level document editing. The durable, protocol-free
     // write path for workspace docs: one intent (append/replace_exact/…) →
     // one verified edit → updated content returned. Hides coolwsd/WOPI/session
     // entirely from the model (no zone/inPlace knobs). Same trust profile as
@@ -1098,13 +1098,13 @@ export function registerAllTools(
 
   }
 
-  // D396 — OfficeCLI is a bundled headless binary for generating closed
+  // OfficeCLI is a bundled headless binary for generating closed
   // .docx/.xlsx/.pptx artifacts. It is intentionally NOT gated on
   // `nautilo_office_enabled` (the LibreOffice/coolwsd live-editor flag):
   // headless generation must remain available even when the interactive
   // office engine is disabled.
   //
-  // M203 — gate registration on a usable OfficeCLI binary (same pattern as
+  // gate registration on a usable OfficeCLI binary (same pattern as
   // import-docx / export-docx in app-tool-registration.ts). On a host with no
   // vendored binary and no OFFICECLI_PATH override, the tool is simply not
   // offered rather than registered as an always-failing tool.
@@ -1131,10 +1131,10 @@ export function registerAllTools(
     category: "administration",
     discoveryCategories: ["settings"],
     trustTier: "admin",
-    // D061-1b: flipped from "high" to "destructive" to match the
+    // flipped from "high" to "destructive" to match the
     // deprecated trust/tool-policies.ts canon. prove_it still fires via
     // requiresApproval+approvalLevel (unchanged). The flip is a no-op
-    // for today's runtime; it aligns with D061's verb map so Phase 2's
+    // for today's runtime; it aligns with the current verb map so the later
     // wiring can replace the requiresApproval gate cleanly later.
     impact: "destructive",
     exposure: "discoverable",
@@ -1158,7 +1158,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // --- Connections / vault (D041 Phase 2) ---
+  // --- Connections / vault (the current implementation) ---
   catalog.register({
     name: "use_connection",
     factory: (ctx) => createUseConnectionTool(ctx),
@@ -1224,7 +1224,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // Stack 163 — the Agent generates + sets her own profile avatar (preview
+  // the Agent generates + sets her own profile avatar (preview
   // → apply gate). Same tier as manage_profile (config / high / low).
   catalog.register({
     name: "manage_avatar",
@@ -1324,7 +1324,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // D417 P2 — an explicitly approved, relay-backed MP4 copy into the
+  // an explicitly approved, relay-backed MP4 copy into the
   // workspace artifact store. The tool never transcribes or extracts audio.
   catalog.register({
     name: "ingest_local_media",
@@ -1340,7 +1340,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D417 P3 — fixed-schema, explicitly approved MP4 → M4A extraction through
+  // fixed-schema, explicitly approved MP4 → extraction through
   // the desktop relay. This is deliberately separate from generic convert and
   // from transcription (which is never invoked here).
   catalog.register({
@@ -1369,7 +1369,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D525 — paid generation is present only when a server-owned exact-quote /
+  // paid generation is present only when a server-owned exact-quote /
   // durable-submit runtime and a compatible signed catalog row are available.
   // The post-model path forces an exact Once/Deny approval and replaces model
   // args with a checkpoint-private prepared binding before InvocationService.
@@ -1406,7 +1406,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D416 Phase 1.3 — bounded, local-only metadata discovery. Playback is not
+  // bounded, local-only metadata discovery. Playback is not
   // part of this tool and requires a later user-consented phase.
   catalog.register({
     name: "find_explainer",
@@ -1420,10 +1420,10 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D416 / D429 Phase 7.4 — resolves only user-accepted, verified bunny-storage
+  // resolves only user-accepted, verified bunny-storage
   // MP4 explainers. It returns the catalog id + display metadata only (NO CDN
   // URL); the Workbench fetches verified bytes through the authenticated
-  // server route (`GET /api/explainers/:id/media`) and plays a revocable Blob
+  // server route (`GET /api/explainers:id/media`) and plays a revocable Blob
   // URL. Mechanical confirmation gate: explicit user consent is required
   // before playback is resolved, preserving the consented-playback contract.
   catalog.register({
@@ -1445,12 +1445,12 @@ export function registerAllTools(
     factory: (ctx) => createRegenerateSoulTool(ctx),
     category: "settings",
     trustTier: "high",
-    // D061-1b: flipped from "high" to "destructive" to match the
+    // flipped from "high" to "destructive" to match the
     // deprecated trust/tool-policies.ts canon. requiresApproval +
     // approvalLevel: "confirm" unchanged — confirm-style prompt still
-    // fires the same way. No-op at runtime; preparatory for Phase 2.
-    // (Phase 2 will also decide whether to migrate "confirm" into
-    // "ask" under the new verb taxonomy — tracked in D061 issue.)
+    // fires the same way. No-op at runtime; preparatory for
+    // ( will also decide whether to migrate "confirm" into
+    // "ask" under the new verb taxonomy — tracked in issue.)
     impact: "destructive",
     exposure: "discoverable",
     tags: ["soul", "personality", "identity"],
@@ -1466,9 +1466,9 @@ export function registerAllTools(
   // If this is set to anything higher, nobody can prove their identity.
   catalog.register({
     name: "verify_identity",
-    // M125 Phase 1.1: factory is context-free. The PIN subject is the
+    // factory is context-free. The PIN subject is the
     // user driving the current turn (envelope.ownerId) and is resolved
-    // inside the tool per-invocation. Pre-M125 this read the
+    // inside the tool per-invocation. Pre- this read the
     // bootstrap-state-cache global, which meant any non-operator user's
     // prove_it borrowed the operator's PIN.
     factory: (ctx) => createVerifyIdentityTool(ctx),
@@ -1480,9 +1480,9 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // --- Channel / reply policy (D128) + one-hop redirect (D421 Phase 6.4) ---
+  // --- Channel / reply policy + one-hop redirect (the current implementation) ---
   // `skip` is the sole model-facing yield tool. With no `target_handle` it
-  // is ordinary silence (D128); with `target_handle` it records the existing
+  // is ordinary silence ; with `target_handle` it records the existing
   // immutable one-hop redirect request and suppresses source output. The
   // eager core exposure keeps it available on every eligible turn; the
   // explicit-picker withhold (`withholdSkipForExplicitSelection`) still
@@ -1502,7 +1502,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // --- Time (M087) ---
+  // --- Time ---
   catalog.register({
     name: "get_current_time",
     factory: (ctx) => createGetCurrentTimeTool(ctx),
@@ -1545,14 +1545,14 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D429 Phase 2 / Task 2.2.1 — bounded, read-only window onto the resolved
+  // / Task 2.2.1 — bounded, read-only window onto the resolved
   // model catalog. Genie can search/list/get curated models by
   // name/provider/capability without the full list sitting in the system
   // prompt. `get` accepts only exact curated ids (dynamic openrouter:/gateway:
   // ids are rejected). No new RBAC capability: discovery grants no provider or
   // Task execution authority.
   //
-  // Phase 0 decision #4: the full `discover_models` projection is
+  // decision #4: the full `discover_models` projection is
   // standard-tier/authenticated — it returns the richer non-secret resolved
   // projection (incl. runnable/unavailable reasons) to Genie, and guests
   // cannot query it. The compatibility-oriented, non-secret guest picker
@@ -1584,7 +1584,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D263 P2 — speaker-scoped skill authoring (manage_agents two-gate in body).
+  // speaker-scoped skill authoring (manage_agents two-gate in body).
   catalog.register({
     name: "skill_manage",
     factory: (ctx) => createSkillManageTool(ctx),
@@ -1596,7 +1596,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D263 P3 — mid-turn fallback to read one enabled skill body (R5).
+  // mid-turn fallback to read one enabled skill body .
   catalog.register({
     name: "view_skill",
     factory: (ctx) => createViewSkillTool(ctx),
@@ -1608,8 +1608,8 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D263 Stack 80 / §2.1 — search the speaker's enabled skills (catalog-primary
-  // v1). Read-only, guest-tier; paginates with explicit truncation (D272).
+  // / §2.1 — search the speaker's enabled skills (catalog-primary
+  // v1). Read-only, guest-tier; paginates with explicit truncation .
   catalog.register({
     name: "discover_skills",
     factory: (ctx) => createDiscoverSkillsTool(ctx),
@@ -1621,7 +1621,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D263 Stack 80 / §2.1 — drop a skill body pulled by view_skill from the
+  // / §2.1 — drop a skill body pulled by view_skill from the
   // engaged-set so the next pre-model rebuild omits it. No external side
   // effects (mutates thread-scoped graph state only); guest-tier, ungated.
   catalog.register({
@@ -1635,7 +1635,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D379 (Stack 145) — `command_*` family mirrors `skill_*` one-to-one,
+  // The `command_*` family mirrors `skill_*` one-to-one,
   // minus `requiresTools` (commands carry no tool-gating). Genies can
   // create commands (operator decision: no create-gating, no approval
   // step). Same `manage_agents` two-gate as skill_manage.
@@ -1650,7 +1650,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D379 (Stack 145) — mid-turn fallback to read one command body (DB row
+  // Mid-turn fallback to read one command body (DB row
   // or bundled official fallback). Read-only, guest-tier.
   catalog.register({
     name: "view_command",
@@ -1663,9 +1663,9 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D379 (Stack 145) — search the speaker's command catalog (official +
+  // Search the speaker's command catalog (official +
   // DB merged, DB shadows official by name). Read-only, guest-tier;
-  // paginates with explicit truncation (D272).
+  // paginates with explicit truncation .
   catalog.register({
     name: "discover_commands",
     factory: (ctx) => createDiscoverCommandsTool(ctx),
@@ -1677,7 +1677,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D379 (Stack 145) — structural mirror of `eject` (skills). Commands
+  // Structural mirror of `eject` (skills). Commands
   // are not per-turn engaged, so this is a no-op confirmation; guest-tier,
   // ungated. Named `eject_command` (NOT bare `eject`) to avoid colliding
   // with the skills `eject` tool.
@@ -1693,7 +1693,7 @@ export function registerAllTools(
   });
 
   // --- Sandbox-script execution ---
-  // D073 + D060 Sprint 2 G5 — execute_artifact. Runs a script
+  // + Sprint 2 G5 — execute_artifact. Runs a script
   // artifact (home/ or scratch/) inside the sandbox with runtime
   // allowlist + prove_it approval gate. Server-local (not a relay
   // tool) — the handler builds a Sandbox in-process from server
@@ -1716,7 +1716,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // M189 — installed mini-app source authoring (server DI via setMiniAppToolRuntime).
+  // installed mini-app source authoring (server DI via setMiniAppToolRuntime).
   catalog.register({
     name: "mini_app",
     factory: (ctx) => createMiniAppTool(ctx),
@@ -1757,7 +1757,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
 
-  // D568 — one Human-owned authenticated website-account read. The injected
+  // one Human-owned authenticated website-account read. The injected
   // server runtime re-checks exact Human + owned-Genie admission before it
   // can reach a profile; this entry only carries the existing Connections cap.
   catalog.register({
@@ -1787,7 +1787,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
 
-  // D568 — supervision of one already-admitted connected-website operation.
+  // supervision of one already-admitted connected-website operation.
   // The injected server runtime owns authority, provider state, and every
   // durable transition; this catalog entry exposes no browser coordinates.
   catalog.register({
@@ -1797,7 +1797,7 @@ export function registerAllTools(
     discoveryCategories: ["integrations"],
     trustTier: "high",
     // This supervises an operation the Human already admitted: inspect,
-    // schedule a check, steer, take/release direct control, or stop.  None of
+    // schedule a check, steer, take/release direct control, or stop. None of
     // those verbs admits a new website effect, so an approval prompt here is
     // both redundant and actively prevents the Genie from supervising work.
     impact: "low",
@@ -1828,7 +1828,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
 
-  // D384 §5.4 — `manage_local_mcp`: a Genie sets up a LOCAL (relay-tier)
+  // `manage_local_mcp`: a Genie sets up a LOCAL (relay-tier)
   // MCP on the requesting user's own machine. Verified-user tool (NO
   // requiredCapabilities, not admin); hard-scoped to the caller's own
   // relay (server-tier mutations refused in the injected runtime). Only
@@ -1869,7 +1869,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // D560 — one Desktop-local family for scanner observations and the model's
+  // one Desktop-local family for scanner observations and the model's
   // durable research record. The tool factory has no direct executor; the
   // invocation service attaches its private Task/TaskRun/model envelope only
   // after host and trust-policy admission.
@@ -1896,7 +1896,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // Every built-in registration above must declare the D419 exposure contract.
+  // Every built-in registration above must declare exposure contract.
   // External sources validate after their respective ingestion defaults supply
   // an exposure, so this strict check intentionally runs at the built-in seam.
   catalog.validate({ requireExposure: true });

@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
+import { setConfigOverrides } from "@nautilo/config";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -16,6 +18,7 @@ import { RELAY_SSH_APPROVED_REQUEST_VERSION } from "@nautilo/relay";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import * as trust from "@nautilo/trust";
 import type { NautiloState } from "../../src/agent/state";
+import { browserDecisionPlanSchema } from "../../src/graph/browser-decision";
 import { defaultPostModelDeps } from "../../src/agent/post-model-deps";
 import { bindProtectedMemoryResumeDeps } from
   "../../src/graph/protected-memory-resume-deps";
@@ -61,7 +64,13 @@ import { setOrdinaryHostResolver } from "../../src/runtime/ordinary-host-resolve
 import { getRequiredOrdinaryHostContext } from "../../src/runtime/ordinary-host-dispatch-context";
 import { describeResearchContextIndex, describeResearchContextMessage } from "../../src/tools/security/research-context";
 
+let initialOpenRouterKey: string | undefined;
+beforeEach(() => { initialOpenRouterKey = process.env["OPENROUTER_API_KEY"]; });
+
 afterEach(() => {
+  if (initialOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
+  else process.env["OPENROUTER_API_KEY"] = initialOpenRouterKey;
+  resetRuntimeModelCatalog();
   setAgentEventSink(null);
   setRelayRegistry(null);
   setOrdinaryHostResolver(null);
@@ -236,8 +245,8 @@ describe("paired-mobile conditional host execution context", () => {
             pairingGeneration: "generation-mobile",
             desktopSessionId: "desktop-session-mobile",
             capabilityRevision: 7,
-            workspaceRoot: "/Users/alice/Workspace",
-            currentFolderRoot: "/Users/alice/Project",
+            workspaceRoot: "/path/to/user",
+            currentFolderRoot: "/path/to/project",
           },
         };
       },
@@ -268,8 +277,8 @@ describe("paired-mobile conditional host execution context", () => {
     expect(result.status).toBe("success");
     expect(resolutionCalls).toBe(1);
     expect(result.content).toContain('"relayId":"relay-mobile"');
-    expect(result.content).toContain('"currentFolderRoot":"/Users/alice/Project"');
-    expect(result.content).toContain('"workspaceRoot":"/Users/alice/Workspace"');
+    expect(result.content).toContain('"currentFolderRoot":"/path/to/project"');
+    expect(result.content).toContain('"workspaceRoot":"/path/to/user"');
   });
 });
 
@@ -355,45 +364,45 @@ describe("connected website operation execution context", () => {
       },
     });
     const memoryAccessEnvelope: MemoryAccessEnvelope = {
-      ownerId: "owner-d568",
-      actorId: "owner-d568",
-      agentId: "agent-d568",
-      roomId: "room-d568",
+      ownerId: "owner-connected-web",
+      actorId: "owner-connected-web",
+      agentId: "agent-connected-web",
+      roomId: "room-connected-web",
       readableNamespaces: [],
       mutableNamespaces: [],
       writableNamespaces: [],
       toolPolicy: {},
     };
     const context = createServerToolInvocationContext(state({
-      userId: "owner-d568",
-      agentId: "agent-d568",
-      roomId: "room-d568",
-      currentThreadId: "graph-thread-d568",
-      turnId: "turn-d568",
+      userId: "owner-connected-web",
+      agentId: "agent-connected-web",
+      roomId: "room-connected-web",
+      currentThreadId: "graph-thread-connected-web",
+      turnId: "turn-connected-web",
       memoryAccessEnvelope,
       activatedToolNames: ["manage_connected_web_operation"],
     }), () => ({ status: "allowed" }));
 
     const result = await createNautiloToolInvocationSession(context).invoke({
-      callId: "tool-call-d568",
+      callId: "tool-call-connected-web",
       toolName: "manage_connected_web_operation",
       args: {
         operation: "inspect",
         operationId: "77777777-7777-4777-8777-777777777777",
         expectedControlEpoch: 3,
       },
-      authorityRef: "receipt-d568",
+      authorityRef: "receipt-connected-web",
     });
 
     expect(result.status).toBe("success");
     expect(capturedActors).toHaveLength(1);
-    expect(capturedActors[0]?.["userId"]).toBe("owner-d568");
-    expect(capturedActors[0]?.["agentId"]).toBe("agent-d568");
-    expect(capturedActors[0]?.["roomId"]).toBe("room-d568");
-    expect(capturedActors[0]?.["currentThreadId"]).toBe("graph-thread-d568");
-    expect(capturedActors[0]?.["turnId"]).toBe("turn-d568");
-    expect(capturedActors[0]?.["toolCallId"]).toBe("tool-call-d568");
-    expect(capturedActors[0]?.["laneKey"]).toBe("room:room-d568");
+    expect(capturedActors[0]?.["userId"]).toBe("owner-connected-web");
+    expect(capturedActors[0]?.["agentId"]).toBe("agent-connected-web");
+    expect(capturedActors[0]?.["roomId"]).toBe("room-connected-web");
+    expect(capturedActors[0]?.["currentThreadId"]).toBe("graph-thread-connected-web");
+    expect(capturedActors[0]?.["turnId"]).toBe("turn-connected-web");
+    expect(capturedActors[0]?.["toolCallId"]).toBe("tool-call-connected-web");
+    expect(capturedActors[0]?.["laneKey"]).toBe("room:room-connected-web");
   });
 });
 
@@ -448,7 +457,7 @@ describe("focused-resource tool execution context", () => {
   });
 });
 
-describe("D538 uncontained host-command dispatch", () => {
+describe(" uncontained host-command dispatch", () => {
   function registerRunShellFixture(): void {
     const catalog = new ToolCatalog();
     catalog.register({
@@ -1313,6 +1322,359 @@ describe("structured SSH uncertain dispatch outcome", () => {
 });
 
 describe("Nautilo tool invocation service", () => {
+  test("recovers an exact top-level browser plan and rejects ambiguous shapes without a plain-read fallback", async () => {
+    const catalog = new ToolCatalog();
+    registerAllTools(catalog);
+    initToolCatalog(catalog);
+    const dispatched: Record<string, unknown>[] = [];
+    setRelayRegistry({
+      findByCapabilityForUser: () => ["relay-1"],
+      getCapabilities: () => ({ profile: "desktop-agent", canControlBrowser: true, browserSessionId: "browser-1" }),
+      getUserId: () => "owner",
+      getRelaySessionId: () => "socket-1",
+      getDesktopSessionId: () => "desktop-1",
+      getPairingGeneration: () => "pairing-1",
+      isRelayHeartbeatFresh: () => true,
+      dispatch: async (_relayId, request) => {
+        dispatched.push(request.args);
+        return { status: "ok", result: "snapshot" };
+      },
+    });
+    const rawPlan = {
+      goal: "Choose the reviewed result",
+      constraints: ["Keep the exact selection"],
+      allowedOrigins: ["https://example.com"],
+      actions: [{ kind: "click", role: "button", name: "Choose" }],
+      progress: [],
+      success: [],
+    };
+    const rawCall = call("browser_snapshot", rawPlan);
+    const selectCall = call("browser_select", { ref: "@e4", values: ["express", "pickup"] });
+    const typeCall = call("browser_type", { ref: "@e5", text: "exact text", clear: true });
+    const invocationState = state({
+      relayCapabilities: { canControlBrowser: true, control_browser: true },
+      requiredHostRelays: {
+        [rawCall.callId]: "relay-1",
+        [selectCall.callId]: "relay-1",
+        [typeCall.callId]: "relay-1",
+      },
+      trustedExecutionEntrypoint: "foreground.main",
+      verifiedOrdinaryOrigin: { kind: "local_electron", userId: "owner", actorId: "owner", relayId: "relay-1",
+        desktopSessionId: "desktop-1", pairingGeneration: "pairing-1", requestId: "request-raw-plan" },
+    });
+    const invoke = (input: NautiloToolInvocationCall) => createNautiloToolInvocationSession(
+      createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
+    ).invoke(input);
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
+    try {
+      expect((await invoke(rawCall)).status).toBe("success");
+      expect(dispatched).toEqual([{}]);
+      expect((await invoke(selectCall)).status).toBe("success");
+      expect((await invoke(typeCall)).status).toBe("success");
+      expect(dispatched.slice(1)).toEqual([
+        { ref: "@e4", values: ["express", "pickup"] },
+        { ref: "@e5", text: "exact text", clear: true },
+      ]);
+
+      for (const args of [
+        { ...rawPlan, appId: "mixed-selector" },
+        { decisionPlan: rawPlan, goal: rawPlan.goal },
+        { unknownSnapshotArgument: true },
+      ]) {
+        const rejected = await invoke({ ...rawCall, args });
+        expect(rejected.status).toBe("error");
+        expect(rejected.content).toContain("No browser request was sent");
+      }
+      expect(dispatched).toHaveLength(3);
+
+      delete process.env["OPENROUTER_API_KEY"];
+      const disabled = await invoke(rawCall);
+      expect(disabled.status).toBe("error");
+      expect(disabled.content).toContain("Routine browser decisions are unavailable");
+      expect(dispatched).toHaveLength(3);
+    } finally {
+      setConfigOverrides({});
+    }
+  });
+
+  test("reads one retained browser snapshot by historyToolCallId without dispatch or changing current authority", async () => {
+    const catalog = new ToolCatalog();
+    registerAllTools(catalog);
+    initToolCatalog(catalog);
+    let relayDispatches = 0;
+    setRelayRegistry({
+      findByCapabilityForUser: () => ["relay-1"],
+      getCapabilities: () => ({ profile: "desktop-agent", canControlBrowser: true, browserSessionId: "browser-current" }),
+      getUserId: () => "owner",
+      getRelaySessionId: () => "socket-1",
+      getDesktopSessionId: () => "desktop-1",
+      getPairingGeneration: () => "pairing-1",
+      isRelayHeartbeatFresh: () => true,
+      dispatch: async () => {
+        relayDispatches += 1;
+        throw new Error("historical browser reads must not dispatch");
+      },
+    });
+    const sourceToolCallId = "call-browser-snapshot-retained";
+    const retainedObservation = {
+      version: 1 as const,
+      snapshot: "Older page with @e7 button",
+      refs: { e7: { role: "button", name: "Older action" } },
+      pageUrl: "https://example.com/older",
+      browserSessionId: "browser-current",
+      observationId: "observation-older",
+    };
+    const currentObservation = {
+      ...retainedObservation,
+      snapshot: "Current page with @e2 textbox",
+      refs: { e2: { role: "textbox", name: "Current field" } },
+      pageUrl: "https://example.com/current",
+      observationId: "observation-current",
+    };
+    const browserDecision = {
+      turnId: "turn",
+      modelId: "openrouter:typesafe/jev-1.13",
+      phase: "decide" as const,
+      reason: null,
+      observation: currentObservation,
+      plan: {
+        goal: "Continue on the current page",
+        constraints: [],
+        allowedOrigins: ["https://example.com"],
+        actions: [{ kind: "click" as const, role: "button", name: "Continue" }],
+        progress: [],
+        success: [],
+      },
+      pending: null,
+      recovery: {
+        interventionLimit: 2,
+        consecutiveEvents: 0,
+        interventionAt: 2,
+        progressSeen: [],
+        assessNextObservation: false,
+      },
+    };
+    const historyCall = call("browser_snapshot", { historyToolCallId: sourceToolCallId });
+    const invocationState = state({
+      messages: [
+        new AIMessage({ content: "", tool_calls: [{
+          id: sourceToolCallId, name: "browser_snapshot", args: {}, type: "tool_call",
+        }] }),
+        new ToolMessage({
+          name: "browser_snapshot",
+          tool_call_id: sourceToolCallId,
+          content: JSON.stringify(retainedObservation),
+          additional_kwargs: { nautilo_tool_status: "success" },
+        }),
+      ],
+      relayCapabilities: { canControlBrowser: true, control_browser: true },
+      requiredHostRelays: { [historyCall.callId]: "relay-1" },
+      trustedExecutionEntrypoint: "foreground.main",
+      verifiedOrdinaryOrigin: {
+        kind: "local_electron", userId: "owner", actorId: "owner", relayId: "relay-1",
+        desktopSessionId: "desktop-1", pairingGeneration: "pairing-1", requestId: "request-history",
+      },
+      browserDecision,
+    });
+    const session = createNautiloToolInvocationSession(
+      createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
+    );
+
+    const retained = await session.invoke(historyCall);
+    expect(retained).toMatchObject({ status: "success" });
+    if (typeof retained.content !== "string") throw new Error("expected retained browser JSON text");
+    const historical = JSON.parse(retained.content) as {
+      version: number;
+      historical: boolean;
+      sourceToolCallId: string;
+      warning: string;
+      observation: unknown;
+    };
+    expect(historical).toEqual({
+      version: 1,
+      historical: true,
+      sourceToolCallId,
+      warning: "Historical evidence only. Its refs are stale; take a fresh browser_snapshot before acting.",
+      observation: retainedObservation,
+    });
+    expect(relayDispatches).toBe(0);
+    expect(invocationState.browserDecision).toBe(browserDecision);
+    expect(invocationState.browserDecision?.observation).toBe(currentObservation);
+
+    for (const args of [
+      { historyToolCallId: sourceToolCallId, appId: "conflict" },
+      { historyToolCallId: "" },
+      { historyToolCallId: "call-browser-snapshot-missing" },
+    ]) {
+      const rejected = await session.invoke({ ...historyCall, args });
+      expect(rejected.status).toBe("error");
+      expect(typeof rejected.content === "string" ? rejected.content.toLowerCase() : "")
+        .toContain("no browser request was sent");
+    }
+    expect(relayDispatches).toBe(0);
+    expect(invocationState.browserDecision).toBe(browserDecision);
+    expect(invocationState.browserDecision?.observation).toBe(currentObservation);
+  });
+
+  test("binds a fast browser proposal to its exact snapshot and strips model-supplied private fields", async () => {
+    const catalog = new ToolCatalog();
+    registerAllTools(catalog);
+    initToolCatalog(catalog);
+    const dispatched: Record<string, unknown>[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    const classes: Array<string | undefined> = [];
+    const controller = new AbortController();
+    let failure: "none" | "stale" | "unknown" | "browser-error" = "none";
+    const browserDiagnostic = "browser_click may have taken effect. Do not replay it blindly.\nUnderlying browser error: locator.click: element is covered by a dialog";
+    setRelayRegistry({
+      findByCapabilityForUser: () => ["relay-1"],
+      getCapabilities: () => ({ profile: "desktop-agent", canControlBrowser: true, browserSessionId: "browser-1" }),
+      getUserId: () => "owner",
+      getRelaySessionId: () => "socket-1",
+      getDesktopSessionId: () => "desktop-1",
+      getPairingGeneration: () => "pairing-1",
+      isRelayHeartbeatFresh: () => true,
+      dispatch: async (_relayId, request) => {
+        dispatched.push(request.args); signals.push(request.signal); classes.push(request.executionClass);
+        if (failure === "stale") return { status: "error", error: "Stale observation", errorCode: "browser_observation_stale" };
+        if (failure === "unknown") throw Object.assign(new Error("lost receipt"), { desktopAutomationOutcome: "unknown" });
+        if (failure === "browser-error") return { status: "error", errorCode: "browser_outcome_unknown", error: browserDiagnostic };
+        return { status: "ok", result: "clicked" };
+      },
+    });
+    const invocation = call("browser_click", { ref: "@e1" });
+    const invocationState = state({
+      relayCapabilities: { canControlBrowser: true, control_browser: true },
+      requiredHostRelays: { [invocation.callId]: "relay-1" },
+      trustedExecutionEntrypoint: "foreground.main",
+      verifiedOrdinaryOrigin: { kind: "local_electron", userId: "owner", actorId: "owner", relayId: "relay-1",
+        desktopSessionId: "desktop-1", pairingGeneration: "pairing-1", requestId: "request-1" },
+      browserDecision: {
+        turnId: "turn", modelId: "openrouter:typesafe/jev-1.13", phase: "waiting", reason: null, observation: null,
+        plan: { goal: "Search", constraints: [], allowedOrigins: ["https://example.com"],
+          actions: [{ kind: "click", role: "button", name: "Search" }],
+          progress: [{ kind: "snapshot_contains", text: "Results" }], success: [{ kind: "snapshot_contains", text: "Found" }] },
+        pending: { call: { id: invocation.callId, name: invocation.toolName, args: invocation.args },
+          browserSessionId: "browser-1", observationId: "observation-1" },
+      },
+    });
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
+    try {
+      const invoke = (input = invocation) => createNautiloToolInvocationSession(
+        createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
+        { signal: controller.signal },
+      ).invoke(input);
+      expect((await invoke()).status).toBe("success");
+      expect(dispatched).toEqual([{ ref: "@e1", _requiredSession: "browser-1", _requiredObservationId: "observation-1" }]);
+      expect((await invoke({ ...invocation, args: { ref: "@e2" } })).status).toBe("error");
+      expect(dispatched).toHaveLength(1);
+      delete process.env["OPENROUTER_API_KEY"];
+      expect((await invoke()).status).toBe("error");
+      expect(dispatched).toHaveLength(1);
+      invocationState.browserDecision = null;
+      expect((await invoke({ ...invocation, args: { ref: "@e1", _requiredSession: "forged", _requiredObservationId: "forged" } })).status).toBe("success");
+      expect(dispatched[1]).toEqual({ ref: "@e1" });
+      invocationState.requiredHostRelays = { "call-browser_snapshot": "relay-1" };
+      const malformed = await invoke(call("browser_snapshot", {
+        decisionPlan: {
+          allowedOrigins: ["https://user:test1@example.com/?canary=1"],
+          ignoredPlanField: "private-planner-value",
+        },
+        _requiredSession: "forged",
+        _requiredObservationId: "forged",
+      }));
+      expect(malformed.status).toBe("error");
+      const malformedContent = typeof malformed.content === "string" ? malformed.content : JSON.stringify(malformed.content);
+      const diagnostic = JSON.parse(malformedContent) as {
+        error: string;
+        browserRequestSent: boolean;
+        issues: Array<{ path: unknown; code: unknown }>;
+        expectedContract: unknown;
+      };
+      expect(diagnostic.error).toBe("invalid_browser_decision_plan");
+      expect(diagnostic.browserRequestSent).toBe(false);
+      expect(diagnostic.expectedContract).toEqual(z.toJSONSchema(browserDecisionPlanSchema, { io: "input" }));
+      const issuePaths = diagnostic.issues.map((issue) => JSON.stringify(issue.path));
+      for (const requiredPath of [
+        JSON.stringify(["decisionPlan", "goal"]),
+        JSON.stringify(["decisionPlan", "allowedOrigins", 0]),
+      ]) expect(issuePaths).toContain(requiredPath);
+      expect(issuePaths).not.toContain(JSON.stringify(["decisionPlan", "actions"]));
+      for (const issue of diagnostic.issues) expect(issue.code).toBeString();
+      expect(JSON.stringify(diagnostic)).not.toContain("private-planner-value");
+      expect(JSON.stringify(diagnostic)).not.toContain("test1");
+      expect(JSON.stringify(diagnostic)).not.toContain("canary");
+      expect(dispatched).toHaveLength(2);
+      const validDecisionPlan = {
+        goal: "Search",
+        actions: [{ kind: "click", role: "button", name: "Search" }],
+        progress: [{ kind: "snapshot_contains", text: "Results" }],
+        success: [{ kind: "snapshot_contains", text: "Found" }],
+      };
+      const disabled = await invoke(call("browser_snapshot", {
+        decisionPlan: validDecisionPlan,
+        _requiredSession: "forged",
+        _requiredObservationId: "forged",
+      }));
+      expect(disabled.status).toBe("error");
+      expect(disabled.content).toContain("Routine browser decisions are unavailable");
+      expect(disabled.content).toContain("no browser request was sent");
+      expect(dispatched).toHaveLength(2);
+      process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
+      expect((await invoke(call("browser_snapshot", {
+        decisionPlan: validDecisionPlan,
+        _requiredSession: "forged",
+        _requiredObservationId: "forged",
+      }))).status).toBe("success");
+      expect(dispatched[2]).toEqual({});
+      expect(signals).toEqual([controller.signal, controller.signal, controller.signal]);
+      expect(classes).toEqual(["browser", "browser", "browser"]);
+      const singletonSnapshot = call("browser_snapshot", { decisionPlan: validDecisionPlan });
+      invocationState.messages = [new AIMessage({ content: "", tool_calls: [
+        { id: singletonSnapshot.callId, name: singletonSnapshot.toolName, args: singletonSnapshot.args, type: "tool_call" },
+        { id: "call-browser-click", name: "browser_click", args: { ref: "@e1" }, type: "tool_call" },
+      ] })];
+      const singleton = await invoke(singletonSnapshot);
+      expect(singleton.status).toBe("error");
+      const singletonContent = typeof singleton.content === "string" ? singleton.content : JSON.stringify(singleton.content);
+      const singletonDiagnostic = JSON.parse(singletonContent) as {
+        error: string;
+        browserRequestSent: boolean;
+        issues: unknown[];
+        expectedContract: unknown;
+      };
+      expect(singletonDiagnostic.error).toBe("decision_plan_requires_singleton");
+      expect(singletonDiagnostic.browserRequestSent).toBe(false);
+      expect(singletonDiagnostic.issues).toEqual([]);
+      expect(singletonDiagnostic.expectedContract).toEqual(z.toJSONSchema(browserDecisionPlanSchema, { io: "input" }));
+      expect(dispatched).toHaveLength(3);
+      invocationState.requiredHostRelays = { [invocation.callId]: "relay-1" };
+      failure = "stale";
+      expect((await invoke()).additionalKwargs).toMatchObject({ nautilo_browser_failure: "browser_observation_stale" });
+      failure = "unknown";
+      const unknown = await invoke();
+      expect(unknown.additionalKwargs).toMatchObject({ nautilo_browser_failure: "browser_outcome_unknown" });
+      expect(unknown.content).toContain("Do not replay");
+      expect(unknown.content).toContain("browser_click");
+      expect(unknown.content).toContain("Underlying relay error: lost receipt");
+      invocationState.taskRun = true;
+      const beforeBackgroundDispatch = dispatched.length;
+      const backgroundUnknown = await invoke();
+      expect(backgroundUnknown.status).toBe("error");
+      expect(backgroundUnknown.additionalKwargs).toMatchObject({ nautilo_browser_failure: "browser_outcome_unknown" });
+      expect(backgroundUnknown.content).toContain("browser_click");
+      expect(backgroundUnknown.content).toContain("Do not replay");
+      expect(backgroundUnknown.content).toContain("Underlying relay error: lost receipt");
+      expect(dispatched).toHaveLength(beforeBackgroundDispatch + 1);
+      failure = "browser-error";
+      const browserError = await invoke();
+      expect(browserError.status).toBe("error");
+      expect(browserError.additionalKwargs).toMatchObject({ nautilo_browser_failure: "browser_outcome_unknown" });
+      expect(browserError.content).toContain(browserDiagnostic);
+    } finally { setConfigOverrides({}); }
+  });
   test("dispatches a report-back only to its exact live relay and embedded Browser session", async () => {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);

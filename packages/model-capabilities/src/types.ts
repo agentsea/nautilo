@@ -11,6 +11,8 @@ export interface ModelCapabilityFeatures {
   readonly tools: boolean | null;
   readonly structuredOutputs: boolean | null;
   readonly reasoning: boolean | null;
+  /** Supports grounding screenshot targets to coordinates; absent means unknown. */
+  readonly visualGrounding?: boolean | null | undefined;
 }
 
 /**

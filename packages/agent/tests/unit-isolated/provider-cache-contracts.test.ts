@@ -1,5 +1,5 @@
 /**
- * D526 Phase 1.1 — hermetic provider cache-contract characterization.
+ * Hermetic provider cache-contract characterization.
  *
  * Every adapter call is intercepted below its request serializer and global
  * fetch is a hard failure. These fixtures therefore pin the installed
@@ -46,12 +46,12 @@ function openAiCompatibleResponse(overrides: {
     details["cache_write_tokens"] = overrides.cacheWriteTokens;
   }
   return {
-    id: "d526-hermetic",
-    model: "d526-model",
+    id: "cache_fixture-hermetic",
+    model: "cache_fixture-model",
     // This makes the installed OpenAI-compatible converter retain raw usage in
     // response_metadata, which is the only place its unnormalized
     // cache_write_tokens can survive.
-    system_fingerprint: "d526-fingerprint",
+    system_fingerprint: "cache_fixture-fingerprint",
     choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
     usage: {
       prompt_tokens: 100,
@@ -76,7 +76,7 @@ function expectOneRequest(requests: WireRequest[], expected: WireRequest): void 
 
 async function generate(
   model: unknown,
-  messages: BaseMessage[] = [new HumanMessage("D526 provider cache contract")],
+  messages: BaseMessage[] = [new HumanMessage("provider cache contract")],
 ): Promise<GeneratedResult> {
   return (model as {
     _generate: (messages: BaseMessage[], options: Record<string, never>) => Promise<GeneratedResult>;
@@ -88,7 +88,7 @@ function fixtureTool(name: string, description: string, schema: z.ZodType) {
     name,
     description,
     schema,
-    func: async () => "D526 provider wire fixture must not execute",
+    func: async () => "provider wire fixture must not execute",
   });
 }
 
@@ -115,7 +115,7 @@ async function invokeWithTools(model: unknown, tools: DynamicStructuredTool[]): 
     bindTools: (boundTools: DynamicStructuredTool[]) => {
       invoke: (messages: BaseMessage[]) => Promise<unknown>;
     };
-  }).bindTools(tools).invoke([new HumanMessage("D526 selected-tool wire probe")]);
+  }).bindTools(tools).invoke([new HumanMessage("selected-tool wire probe")]);
 }
 
 async function withOpenAICompatibleCompletion<T>(
@@ -169,14 +169,14 @@ async function withOpenAIResponses<T>(
   proto.completionWithRetry = async (request: WireRequest) => {
     requests.push(request);
     return {
-      id: "resp_d526_hermetic",
+      id: "resp_cache_fixture_hermetic",
       object: "response",
       created_at: 0,
       status: "completed",
       model: "gpt-5.6-luna",
       output_text: "ok",
       output: [{
-        id: "msg_d526_hermetic",
+        id: "msg_cache_fixture_hermetic",
         type: "message",
         role: "assistant",
         status: "completed",
@@ -206,7 +206,7 @@ beforeAll(() => {
       : input instanceof URL
         ? input.href
         : input.url;
-    throw new Error(`D526 provider cache contract test blocked unexpected HTTP request: ${url}`);
+    throw new Error(`provider cache contract test blocked unexpected HTTP request: ${url}`);
   }) as unknown as typeof globalThis.fetch;
 });
 
@@ -214,16 +214,16 @@ afterAll(() => {
   globalThis.fetch = savedFetch;
 });
 
-describe("D526 provider cache contracts", () => {
+describe("provider cache contracts", () => {
   test("OpenAI, OpenRouter, and Fireworks immediately project the current ordered tool selection", async () => {
     const core = fixtureTool(
-      "d526_core_tool",
-      "Stable D526 tool selected on every turn.",
+      "cache_fixture_core_tool",
+      "Stable tool selected on every turn.",
       z.object({ acknowledgment: z.literal("stable") }),
     );
     const deferred = fixtureTool(
-      "d526_deferred_tool",
-      "D526 tool selected only while its activation and authority remain live.",
+      "cache_fixture_deferred_tool",
+      "tool selected only while its activation and authority remain live.",
       z.object({ query: z.string().min(1), mode: z.enum(["precise", "broad"]) }),
     );
     const stableTools = [core];
@@ -234,10 +234,10 @@ describe("D526 provider cache contracts", () => {
       const stable = wireToolSignatures(requests[0]!);
       const activated = wireToolSignatures(requests[1]!);
       const deactivated = wireToolSignatures(requests[2]!);
-      expect(stable.map(({ name }) => name)).toEqual(["d526_core_tool"]);
+      expect(stable.map(({ name }) => name)).toEqual(["cache_fixture_core_tool"]);
       expect(activated.map(({ name }) => name)).toEqual([
-        "d526_core_tool",
-        "d526_deferred_tool",
+        "cache_fixture_core_tool",
+        "cache_fixture_deferred_tool",
       ]);
       expect(activated[0]).toEqual(stable[0]);
       expect(deactivated).toEqual(stable);
@@ -245,7 +245,7 @@ describe("D526 provider cache contracts", () => {
 
     await withOpenAIResponses(async (requests) => {
       const model = await createUnmeteredEvaluationModel("openai:gpt-5.6-luna", {
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
         maxTokens: 8192,
         openAIExplicitPromptCache: true,
       });
@@ -255,13 +255,13 @@ describe("D526 provider cache contracts", () => {
       assertSelectionTransitions(requests);
       expect(requests.every((request) =>
         (request["prompt_cache_options"] as Record<string, unknown> | undefined)?.["mode"]
-          === "explicit",
+          === "implicit",
       )).toBe(true);
     });
 
     await withOpenAICompatibleCompletion(openAiCompatibleResponse(), async (requests) => {
       const model = await createUnmeteredEvaluationModel("openrouter:deepseek/deepseek-v4-flash", {
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
         openRouterSessionId: "22222222-2222-4222-8222-222222222222",
       });
       await invokeWithTools(model, stableTools);
@@ -277,7 +277,7 @@ describe("D526 provider cache contracts", () => {
       const model = await createUnmeteredEvaluationModel(
         "fireworks:accounts/fireworks/models/deepseek-v4-flash",
         {
-          apiKey: "d526-synthetic-key",
+          apiKey: "cache_fixture-synthetic-key",
           maxTokens: 4096,
           fireworksSessionAffinityId: "22222222-2222-4222-8222-222222222222",
         },
@@ -293,7 +293,7 @@ describe("D526 provider cache contracts", () => {
     await withOpenAICompatibleCompletion(openAiCompatibleResponse(), async (requests) => {
       const model = new ChatOpenAI({
         model: "gpt-5.6-luna",
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
         streamUsage: true,
       });
       const generated = await generate(model);
@@ -325,7 +325,7 @@ describe("D526 provider cache contracts", () => {
     });
   });
 
-  test("direct GPT-5.6 serializes the explicit stable breakpoint and cache mode", async () => {
+  test("direct GPT-5.6 retains the explicit stable breakpoint with implicit history caching", async () => {
     await withOpenAIResponses(async (requests) => {
       const stable = "stable system and selected tool guidance";
       const volatile = "\nvolatile Memory, time, and message context";
@@ -336,7 +336,7 @@ describe("D526 provider cache contracts", () => {
         { openAIExplicitPromptCache: true },
       );
       const model = await createUnmeteredEvaluationModel("openai:gpt-5.6-luna", {
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
         maxTokens: 8192,
         openAIExplicitPromptCache: true,
       });
@@ -345,7 +345,7 @@ describe("D526 provider cache contracts", () => {
       expectOneRequest(requests, {
         model: "gpt-5.6-luna",
         stream: false,
-        prompt_cache_options: { mode: "explicit" },
+        prompt_cache_options: { mode: "implicit" },
         input: [
           {
             type: "message",
@@ -394,12 +394,12 @@ describe("D526 provider cache contracts", () => {
     try {
       const generated = await generate(new ChatGoogleGenerativeAI({
         model: "gemini-2.5-pro",
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
         streamUsage: true,
       }));
 
       expectOneRequest(requests, {
-        contents: [{ role: "user", parts: [{ text: "D526 provider cache contract" }] }],
+        contents: [{ role: "user", parts: [{ text: "provider cache contract" }] }],
       });
       expect(usageFromGenerated(generated)).toMatchObject({
         cachedInputTokens: 90,
@@ -413,7 +413,7 @@ describe("D526 provider cache contracts", () => {
   test("Fireworks perf-only cache metrics remain outside LangChain usage", async () => {
     const streamingShape = new ChatFireworks({
       model: "accounts/fireworks/models/glm-5p2",
-      apiKey: "d526-synthetic-key",
+      apiKey: "cache_fixture-synthetic-key",
       streaming: true,
     });
     // Mirrors Nautilo's factory repair for @langchain/fireworks@0.1.3.
@@ -430,7 +430,7 @@ describe("D526 provider cache contracts", () => {
     }), async (requests) => {
       const model = new ChatFireworks({
         model: "accounts/fireworks/models/glm-5p2",
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
       });
       model.streamUsage = true;
       const generated = await generate(model);
@@ -451,7 +451,7 @@ describe("D526 provider cache contracts", () => {
     await withFireworksCompletion(openAiCompatibleResponse({ cachedTokens: 90 }), async () => {
       const model = new ChatFireworks({
         model: "accounts/fireworks/models/deepseek-v4-flash-0731",
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
       });
       model.streamUsage = true;
       const generated = await generate(model);
@@ -467,7 +467,7 @@ describe("D526 provider cache contracts", () => {
   test("OpenRouter preserves cache reads and lets Nautilo recover raw cache writes", async () => {
     await withOpenAICompatibleCompletion(openAiCompatibleResponse({ cacheWriteTokens: 95 }), async (requests) => {
       const model = await createUnmeteredEvaluationModel("openrouter:openai/gpt-5.5", {
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
         openRouterSessionId: "22222222-2222-4222-8222-222222222222",
       });
       const generated = await generate(model);
@@ -489,7 +489,7 @@ describe("D526 provider cache contracts", () => {
   test("Venice will record OpenAI-compatible cached_tokens when the provider returns them", async () => {
     await withOpenAICompatibleCompletion(openAiCompatibleResponse(), async (requests) => {
       const model = await createUnmeteredEvaluationModel("venice:zai-org-glm-5-2", {
-        apiKey: "d526-synthetic-key",
+        apiKey: "cache_fixture-synthetic-key",
       });
       const generated = await generate(model);
 

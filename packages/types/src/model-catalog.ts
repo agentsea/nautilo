@@ -1,5 +1,5 @@
 /**
- * D429 Phase 7 — safe, signed model-catalog contract.
+ * safe, signed model-catalog contract.
  *
  * Mirrors the canonical JSON Schema in `nautilo-catalogs/schemas/model-catalog.schema.json`
  * and the signed release-pointer contract in
@@ -17,7 +17,7 @@
  * `models/` directory plus the validated `catalogVersion` — never read from the
  * pointer body. The canonical signing payload is exactly:
  *
- *   nautilo-model-catalog-v1\ncatalogVersion=<v>\nartifactSha256=<hex>\n
+ * nautilo-model-catalog-v1\ncatalogVersion=<v>\nartifactSha256=<hex>\n
  *
  * Verification order (enforced by the remote loader): strict pointer shape →
  * trusted signingKeyId → Ed25519 signature over the canonical payload → exact
@@ -45,10 +45,13 @@ export const MODEL_CATALOG_CONTROLS_VERSION = 2;
  * pretending those rows are chat-completions candidates.
  */
 export const MODEL_CATALOG_MEDIA_VERSION = 3;
+/** Reader-first support for typed decisions, distinct from chat generation. */
+export const MODEL_CATALOG_DECISION_VERSION = 4;
 export const MODEL_CATALOG_SUPPORTED_VERSIONS = [
   MODEL_CATALOG_VERSION,
   MODEL_CATALOG_CONTROLS_VERSION,
   MODEL_CATALOG_MEDIA_VERSION,
+  MODEL_CATALOG_DECISION_VERSION,
 ] as const;
 export const MODEL_CATALOG_MAX_ENTRIES = 500;
 
@@ -139,6 +142,8 @@ const featuresSchema = z
     tools: z.boolean().nullable(),
     structuredOutputs: z.boolean().nullable(),
     reasoning: z.boolean().nullable(),
+    /** Screenshot-to-target coordinate grounding support; absence is unknown. */
+    visualGrounding: z.boolean().nullable().optional(),
   })
   .strict();
 
@@ -164,6 +169,14 @@ const mediaPrivacySchema = z
 const intelligenceSchema = z.object({ tier: intelligenceTierSchema }).strict();
 
 const modelWorkloadSchema = z.enum(["chat", "generation"]);
+const decisionWorkloadSchema = z.enum(["chat", "generation", "decision"]);
+const decisionSchema = z.object({
+  operations: z.tuple([z.literal("choice")]),
+  /** Provider bound for shared state plus one question, not chat output. */
+  inputTokens: z.number().positive().refine(Number.isInteger),
+  /** Provider-advertised maximum; consumers must not silently truncate. */
+  maxChoices: z.number().positive().refine(Number.isInteger),
+}).strict();
 const generationFamilySchema = z.enum(["image", "video", "music"]);
 /**
  * Transport-level reference kinds, deliberately not creative labels. Creative
@@ -532,6 +545,51 @@ const ModelCatalogV3EntrySchema = addModelCatalogEntrySemantics(
   }
 });
 
+/** Keep the legacy validator intact; v4 adds only the closed decision branch. */
+const ModelCatalogV4EntrySchema = addModelCatalogEntrySemantics(
+  modelCatalogEntryBaseSchema
+    .partial({ intelligence: true, limits: true })
+    .extend({
+      modalities: mediaModalitiesSchema.optional(),
+      privacy: mediaPrivacySchema,
+      controls: modelControlsSchema.optional(),
+      taskPreferences: z.tuple([taskPreferenceSchema]).optional(),
+      workload: decisionWorkloadSchema.optional(),
+      generation: generationSchema.optional(),
+      decision: decisionSchema.optional(),
+    })
+    .strict(),
+).superRefine((entry, ctx) => {
+  if (entry.workload !== "decision") {
+    const { decision, ...legacy } = entry;
+    if (decision !== undefined) {
+      ctx.addIssue({ code: "custom", message: "only decision workloads may declare decision metadata", path: ["decision"] });
+    }
+    const parsed = ModelCatalogV3EntrySchema.safeParse(legacy);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+      }
+    }
+    return;
+  }
+  if (!entry.decision) {
+    ctx.addIssue({ code: "custom", message: "decision workload requires decision metadata", path: ["decision"] });
+  }
+  if (entry.capabilityProvenance === undefined) {
+    ctx.addIssue({ code: "custom", message: "decision workload requires capability provenance", path: ["capabilityProvenance"] });
+  }
+  if (entry.modalities?.input.length !== 1 || entry.modalities.input[0] !== "text"
+    || entry.modalities.output.length !== 1 || entry.modalities.output[0] !== "text") {
+    ctx.addIssue({ code: "custom", message: "decision workload requires exact text input and text output", path: ["modalities"] });
+  }
+  for (const field of ["features", "limits", "intelligence", "controls", "generation", "taskPreferences"] as const) {
+    if (entry[field] !== undefined) {
+      ctx.addIssue({ code: "custom", message: `decision workload must not declare ${field}`, path: [field] });
+    }
+  }
+});
+
 function addCatalogEntryUniqueness<Schema extends z.ZodTypeAny>(schema: Schema): Schema {
   return schema.superRefine((value, ctx) => {
     const catalog = value as { entries: { id: string }[] };
@@ -579,11 +637,24 @@ export const ModelCatalogV3Schema = addCatalogEntryUniqueness(z
   })
   .strict());
 
-/** Strictly accepts v1/model-only, v2/controls, or v3/media manifests. */
+/** Reader-first v4 contract for workload-isolated typed decisions. */
+export const ModelCatalogV4Schema = addCatalogEntryUniqueness(z
+  .object({
+    version: z.literal(MODEL_CATALOG_DECISION_VERSION),
+    catalogVersion: catalogReleaseVersion,
+    publishedAt: catalogPublishedAt,
+    // Preserve complete validated v4 catalogues. Legacy readers retain their
+    // historical count ceiling; v4 does not inherit that ungrounded boundary.
+    entries: z.array(ModelCatalogV4EntrySchema),
+  })
+  .strict());
+
+/** Strictly accepts every reviewed manifest version without widening legacy readers. */
 export const ModelCatalogSchema = z.discriminatedUnion("version", [
   ModelCatalogV1Schema,
   ModelCatalogV2Schema,
   ModelCatalogV3Schema,
+  ModelCatalogV4Schema,
 ]);
 
 /** 64 lowercase hex characters. */
@@ -620,7 +691,7 @@ export const ModelCatalogReleasePointerSchema = z
  * byte-identical to `canonicalSigningPayload` in
  * `nautilo-catalogs/scripts/publish-model-catalog.mjs`:
  *
- *   nautilo-model-catalog-v1\ncatalogVersion=<v>\nartifactSha256=<hex>\n
+ * nautilo-model-catalog-v1\ncatalogVersion=<v>\nartifactSha256=<hex>\n
  */
 export function canonicalModelCatalogSigningPayload(
   catalogVersion: string,
@@ -647,7 +718,8 @@ export type ModelCatalogIntelligenceTier = z.infer<typeof intelligenceTierSchema
 export type ModelCatalogTaskPreference = z.infer<typeof taskPreferenceSchema>;
 export type ModelCatalogInputModality = z.infer<typeof inputModalitySchema>;
 export type ModelCatalogOutputModality = z.infer<typeof mediaOutputModalitySchema>;
-export type ModelCatalogWorkload = z.infer<typeof modelWorkloadSchema>;
+export type ModelCatalogWorkload = z.infer<typeof decisionWorkloadSchema>;
+export type ModelCatalogDecision = z.infer<typeof decisionSchema>;
 export type ModelCatalogGenerationFamily = z.infer<typeof generationFamilySchema>;
 export type ModelCatalogGenerationReferenceRole = z.infer<typeof generationReferenceRoleSchema>;
 export type ModelCatalogGenerationReferenceConstraints = z.infer<typeof generationReferenceConstraintsSchema>;
@@ -679,9 +751,9 @@ export interface ModelControlSelection {
 }
 /**
  * The latest entry shape deliberately remains structurally compatible with
- * v1/v2 readers: its media fields are optional and legacy rows are chat rows.
+ * legacy entries: workload-specific fields are optional and legacy rows are chat rows.
  */
-export type ModelCatalogEntry = z.infer<typeof ModelCatalogV3EntrySchema>;
+export type ModelCatalogEntry = z.infer<typeof ModelCatalogV4EntrySchema>;
 export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
 export type ModelCatalogReleasePointer = z.infer<typeof ModelCatalogReleasePointerSchema>;
 

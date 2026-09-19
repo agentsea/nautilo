@@ -19,7 +19,7 @@ import {
   extractUsageFromLLMResult,
 } from "../../src/usage/usage-callback";
 
-describe("model pricing (D405)", () => {
+describe("model pricing ", () => {
   test("Sonnet baseline is $3 in / $15 out per Mtok", () => {
     const price = getModelPrice("anthropic:claude-sonnet-4-6");
     expect(price.inputPerMtok).toBe(3);
@@ -71,8 +71,8 @@ describe("model pricing (D405)", () => {
   });
 });
 
-describe("cache-aware pricing (D407)", () => {
-  test("D462 — Kimi K3 serving profiles use published uncached, cached, and output rates", () => {
+describe("cache-aware pricing ", () => {
+  test(" — Kimi K3 serving profiles use published uncached, cached, and output rates", () => {
     const model = "fireworks:accounts/fireworks/models/kimi-k3";
     expect(resolveModelPrice(model)).toEqual({
       source: "explicit",
@@ -101,6 +101,21 @@ describe("cache-aware pricing (D407)", () => {
       source: "explicit",
       price: { inputPerMtok: 0.435, cachedInputPerMtok: 0.003625, outputPerMtok: 0.87 },
     });
+  });
+
+  test("OpenRouter DeepSeek V4.1 Flash bills cache reads at its published rate", () => {
+    const model = "openrouter:deepseek/deepseek-v4.1-flash";
+    expect(resolveModelPrice(model)).toEqual({
+      source: "explicit",
+      price: { inputPerMtok: 0.15, cachedInputPerMtok: 0.003, outputPerMtok: 0.6 },
+    });
+    // 1M total input = 100k uncached @ $0.15/M + 900k cached @ $0.003/M,
+    // plus 10k output @ $0.60/M.
+    expect(estimateCostUsd(model, {
+      inputTokens: 1_000_000,
+      cachedInputTokens: 900_000,
+      outputTokens: 10_000,
+    })).toBeCloseTo(0.0237, 9);
   });
 
   test("Anthropic cache_read bills at 0.1× input", () => {
@@ -145,27 +160,99 @@ describe("cache-aware pricing (D407)", () => {
     expect(cost).toBeCloseTo(3, 6);
   });
 
-  test("Stack 166 — gpt-5.6-sol has explicit pricing incl. a separate cache-write rate", () => {
+  test(" — gpt-5.6-sol has explicit pricing incl. a separate cache-write rate", () => {
     expect(hasExplicitPrice("openai:gpt-5.6-sol")).toBe(true);
     const resolved = resolveModelPrice("openai:gpt-5.6-sol");
     expect(resolved.source).toBe("explicit");
-    expect(resolved.price.inputPerMtok).toBe(5);
-    expect(resolved.price.outputPerMtok).toBe(30);
-    expect(resolved.price.cacheWritePerMtok).toBe(6.25);
-    // 1M cache-creation tokens @ $6.25/M = $6.25 (5.6 publishes a write rate)
+    expect(resolved.price).toEqual({
+      inputPerMtok: 4,
+      outputPerMtok: 20,
+      cachedInputPerMtok: 0.4,
+      cacheWritePerMtok: 5,
+      longContext: {
+        inputTokensAbove: 272_000,
+        rates: { inputPerMtok: 8, outputPerMtok: 30, cachedInputPerMtok: 0.8, cacheWritePerMtok: 10 },
+      },
+    });
+    // A whole request above 272k input uses the published long-context band.
     const cost = estimateCostUsd("openai:gpt-5.6-sol", {
       inputTokens: 1_000_000,
       outputTokens: 0,
       cacheCreationTokens: 1_000_000,
     });
-    expect(cost).toBeCloseTo(6.25, 6);
+    expect(cost).toBeCloseTo(10, 6);
   });
 
-  test("gpt-5.6-terra explicit pricing remains authoritative", () => {
-    const resolved = resolveModelPrice("openai:gpt-5.6-terra");
-    expect(resolved.source).toBe("explicit");
-    expect(resolved.price.inputPerMtok).toBe(2.5);
-    expect(resolved.price.outputPerMtok).toBe(15);
+  test("gpt-5.6-sol switches the whole request rate only above 272k total input", () => {
+    const atThreshold = estimateCostUsd("openai:gpt-5.6-sol", {
+      inputTokens: 272_000,
+      cachedInputTokens: 72_000,
+      cacheCreationTokens: 20_000,
+      outputTokens: 100_000,
+    });
+    expect(atThreshold).toBeCloseTo(2.8488, 8);
+
+    const aboveThreshold = estimateCostUsd("openai:gpt-5.6-sol", {
+      inputTokens: 272_001,
+      cachedInputTokens: 72_000,
+      cacheCreationTokens: 20_000,
+      outputTokens: 100_000,
+    });
+    expect(aboveThreshold).toBeCloseTo(4.697608, 8);
+  });
+
+  test("gpt-5.6-sol reasoning tokens remain a subset of output", () => {
+    expect(estimateCostUsd("openai:gpt-5.6-sol", {
+      inputTokens: 1,
+      outputTokens: 100_000,
+      reasoningTokens: 90_000,
+    })).toBeCloseTo(2.000004, 8);
+  });
+
+  test("long-context metadata does not change ordinary model pricing", () => {
+    expect(estimateCostUsd("anthropic:claude-sonnet-4-6", {
+      inputTokens: 272_001,
+      cachedInputTokens: 72_000,
+      cacheCreationTokens: 20_000,
+      outputTokens: 100_000,
+    })).toBeCloseTo(2.136603, 8);
+  });
+
+  test.each([
+    {
+      model: "openai:gpt-5.6-terra",
+      price: {
+        inputPerMtok: 2, outputPerMtok: 12, cachedInputPerMtok: 0.2, cacheWritePerMtok: 2.5,
+        longContext: { inputTokensAbove: 272_000,
+          rates: { inputPerMtok: 4, outputPerMtok: 18, cachedInputPerMtok: 0.4, cacheWritePerMtok: 5 } },
+      },
+      atThreshold: 1.6244,
+      aboveThreshold: 2.648804,
+    },
+    {
+      model: "openai:gpt-5.6-luna",
+      price: {
+        inputPerMtok: 0.2, outputPerMtok: 1.2, cachedInputPerMtok: 0.02, cacheWritePerMtok: 0.25,
+        longContext: { inputTokensAbove: 272_000,
+          rates: { inputPerMtok: 0.4, outputPerMtok: 1.8, cachedInputPerMtok: 0.04, cacheWritePerMtok: 0.5 } },
+      },
+      atThreshold: 0.16244,
+      aboveThreshold: 0.2648804,
+    },
+  ])("$model uses exact standard and >272k whole-request rates", ({ model, price, atThreshold, aboveThreshold }) => {
+    expect(resolveModelPrice(model)).toEqual({ source: "explicit", price });
+    expect(estimateCostUsd(model, {
+      inputTokens: 272_000,
+      cachedInputTokens: 72_000,
+      cacheCreationTokens: 20_000,
+      outputTokens: 100_000,
+    })).toBeCloseTo(atThreshold, 8);
+    expect(estimateCostUsd(model, {
+      inputTokens: 272_001,
+      cachedInputTokens: 72_000,
+      cacheCreationTokens: 20_000,
+      outputTokens: 100_000,
+    })).toBeCloseTo(aboveThreshold, 8);
   });
 
   test("Venice DeepSeek V4 Flash uses its explicit published rates", () => {
@@ -173,6 +260,20 @@ describe("cache-aware pricing (D407)", () => {
       source: "explicit",
       price: { inputPerMtok: 0.17, cachedInputPerMtok: 0.03, outputPerMtok: 0.35 },
     });
+  });
+
+  test("Jev Choice uses the reviewed OpenRouter input-only rate", () => {
+    const id = "openrouter:typesafe/jev-1.13";
+    expect(PRICING_VERSION).toBe("2026-09-19.1");
+    expect(hasExplicitPrice(id)).toBe(true);
+    expect(resolveModelPrice(id)).toEqual({
+      source: "explicit",
+      price: { inputPerMtok: 0.042, outputPerMtok: 0 },
+    });
+    expect(estimateCostUsd(id, {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    })).toBeCloseTo(0.042, 9);
   });
 
   test("static catalog coefficient scales the Sonnet baseline", () => {
@@ -197,7 +298,7 @@ describe("cache-aware pricing (D407)", () => {
   });
 });
 
-describe("runtime-catalog pricing (ISSUE-M217)", () => {
+describe("runtime-catalog pricing ", () => {
   afterEach(() => {
     resetRuntimeModelCatalog();
   });
@@ -259,7 +360,7 @@ describe("runtime-catalog pricing (ISSUE-M217)", () => {
   });
 });
 
-describe("usage extraction from LLMResult (D405)", () => {
+describe("usage extraction from LLMResult ", () => {
   test("reads usage_metadata incl. cache-read + reasoning details", () => {
     const usage = extractUsageFromLLMResult({
       generations: [

@@ -1,5 +1,5 @@
 /**
- * D336 — embedded SaaS browser automation (agent-browser) shared relay logic.
+ * embedded SaaS browser automation (agent-browser) shared relay logic.
  *
  * Pure, dependency-free mapping from a `browser_*` tool call to an
  * `agent-browser` CLI argv array. Lives in `@nautilo/relay` so the Electron
@@ -10,7 +10,7 @@
  * only builds argv; it does no spawning and no shell interpolation.
  */
 
-/** The fixed set of browser tools supported in D336 Phase 2. */
+/** The fixed set of browser tools supported in the current implementation */
 export const BROWSER_TOOLS = [
   "browser_snapshot",
   "browser_click",
@@ -39,6 +39,17 @@ export type BrowserToolName = (typeof BROWSER_TOOLS)[number];
 
 export function isBrowserTool(name: string): name is BrowserToolName {
   return (BROWSER_TOOLS as readonly string[]).includes(name);
+}
+
+/** UI navigation, typing, scrolling and pointer input may all have effects. Unknown browser tools are not admitted. */
+export function browserToolMayMutate(name: string): boolean {
+  return isBrowserTool(name) && ![
+    "browser_snapshot", "browser_read", "browser_read_page", "browser_screenshot", "browser_get", "browser_wait",
+  ].includes(name);
+}
+
+export function agentBrowserSnapshotJsonArgv(cfgPath: string, session: string): string[] {
+  return [...browserArgvPrefix(cfgPath, session), "--json", "snapshot"];
 }
 
 function requireStringArg(
@@ -81,7 +92,7 @@ export const browserArgvPrefix = (cfgPath: string, session: string) =>
  * Prefix for a server-owned, already-attached CDP browser.
  *
  * The CDP capability is deliberately absent here: callers must pass it through
- * `AGENT_BROWSER_CDP` in the process environment.  In particular, Connected
+ * `AGENT_BROWSER_CDP` in the process environment. In particular, Connected
  * Website control must not use the `browseruse` provider shortcut; that
  * shortcut creates a different, unowned Browser Use browser.
  */

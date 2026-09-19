@@ -1,0 +1,168 @@
+import { describe, expect, test } from "bun:test";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { processHistory } from "../../src/utils/history-manager";
+import { projectBrowserHistory, readBrowserHistory } from "../../src/tools/browser/browser-history";
+
+function observation(session: string, ordinal: number, snapshot = `snapshot-${ordinal}`) {
+  return JSON.stringify({
+    version: 1,
+    snapshot,
+    refs: { e1: { role: "button", name: `Action ${ordinal}` } },
+    pageUrl: `https://example.test/page/${ordinal}`,
+    browserSessionId: session,
+    observationId: `observation-${session}-${ordinal}`,
+  });
+}
+
+function snapshot(callId: string, session: string, ordinal: number, content = observation(session, ordinal)) {
+  return new ToolMessage({
+    id: `message-${callId}`,
+    name: "browser_snapshot",
+    tool_call_id: callId,
+    content,
+    status: "success",
+    additional_kwargs: { nautilo_tool_status: "success", authority: "retained" },
+    response_metadata: { source: "relay" },
+  });
+}
+
+function compacted(message: BaseMessage): Record<string, unknown> | null {
+  if (!ToolMessage.isInstance(message) || typeof message.content !== "string") return null;
+  try {
+    const parsed = JSON.parse(message.content) as Record<string, unknown>;
+    return parsed["notice"] ? parsed : null;
+  } catch { return null; }
+}
+
+describe("browser history provider projection", () => {
+  test("retains baseline/current per session and compacts older snapshots deterministically", () => {
+    const oldA = snapshot("a-1", "session-a", 1, observation("session-a", 1, "x".repeat(10_000)));
+    const baselineA = snapshot("a-2", "session-a", 2);
+    const currentA = snapshot("a-3", "session-a", 3);
+    const oldB = snapshot("b-1", "session-b", 1);
+    const baselineB = snapshot("b-2", "session-b", 2);
+    const currentB = snapshot("b-3", "session-b", 3);
+    const messages = [oldA, baselineA, currentA, oldB, baselineB, currentB];
+
+    const first = projectBrowserHistory(messages);
+    const second = projectBrowserHistory(messages);
+    expect(compacted(first.messages[0]!)).toMatchObject({
+      historical: true, sourceToolCallId: "a-1", browserSessionId: "session-a",
+    });
+    expect(compacted(first.messages[3]!)).toMatchObject({
+      historical: true, sourceToolCallId: "b-1", browserSessionId: "session-b",
+    });
+    expect(first.messages.slice(1, 3)).toEqual([baselineA, currentA]);
+    expect(first.messages.slice(4, 6)).toEqual([baselineB, currentB]);
+    expect((first.messages[0] as ToolMessage).content).toBe((second.messages[0] as ToolMessage).content);
+    expect(first.originals.get("a-1")).toBe(oldA);
+    expect(messages[0]).toBe(oldA);
+  });
+
+  test("leaves actions, errors, authority messages, duplicates and malformed snapshots unchanged", () => {
+    const action = new ToolMessage({ name: "browser_click", tool_call_id: "click-1", content: "clicked", status: "success" });
+    const error = new ToolMessage({ name: "browser_snapshot", tool_call_id: "error-1", content: observation("s", 1), status: "error" });
+    const malformed = snapshot("malformed", "s", 2, "not-json");
+    const duplicateA = snapshot("duplicate", "s", 3);
+    const duplicateB = snapshot("duplicate", "s", 4);
+    const authority = new SystemMessage("Browser authority changed; inspect before acting.");
+    const messages = [action, error, malformed, duplicateA, duplicateB, authority];
+
+    expect(projectBrowserHistory(messages).messages).toEqual(messages);
+    expect(projectBrowserHistory(messages).originals.size).toBe(0);
+  });
+
+  test("processHistory budgets projected bytes but restores exact canonical snapshot objects", () => {
+    const old = snapshot("old", "session", 1, observation("session", 1, "large".repeat(20_000)));
+    const baseline = snapshot("baseline", "session", 2);
+    const current = snapshot("current", "session", 3);
+    const call = (id: string) => new AIMessage({
+      content: "",
+      tool_calls: [{ id, name: "browser_snapshot", args: {} }],
+    });
+    const messages = [
+      new HumanMessage("browse"),
+      call("old"), old,
+      call("baseline"), baseline,
+      call("current"), current,
+    ];
+    const processed = processHistory(messages, {
+      validationEnabled: true,
+      pruningEnabled: true,
+      tokenBudgetFraction: 0.9,
+      windowKeepRecent: 100,
+      modelId: "openai:gpt-5.6-sol",
+    });
+
+    expect(compacted(processed.messages[2]!)).toMatchObject({ sourceToolCallId: "old" });
+    expect(processed.canonicalMessages?.[2]).toBe(old);
+    expect(processed.canonicalMessages?.[4]).toBe(baseline);
+    expect(processed.canonicalMessages?.[6]).toBe(current);
+    expect(old.content).toContain("largelarge");
+  });
+});
+
+describe("exact browser history retrieval", () => {
+  test("reads one successful retained live snapshot from current messages only", () => {
+    const source = snapshot("source", "session", 1);
+    const result = readBrowserHistory([source], "source");
+    expect(result).not.toBeNull();
+    expect(JSON.parse(result!)).toMatchObject({
+      version: 1,
+      historical: true,
+      sourceToolCallId: "source",
+      warning: expect.stringContaining("refs are stale") as unknown,
+      observation: { browserSessionId: "session", observationId: "observation-session-1" },
+    });
+  });
+
+  test("rejects unavailable, duplicate, error, malformed and recursive historical results", () => {
+    const live = snapshot("source", "session", 1);
+    const duplicate = snapshot("source", "session", 2);
+    const error = new ToolMessage({ name: "browser_snapshot", tool_call_id: "error", content: observation("session", 3), status: "error" });
+    const malformed = snapshot("malformed", "session", 4, "{}");
+    const recursive = new ToolMessage({
+      name: "browser_snapshot",
+      tool_call_id: "history-result",
+      content: readBrowserHistory([live], "source")!,
+      status: "success",
+    });
+
+    expect(readBrowserHistory([live], "missing")).toBeNull();
+    expect(readBrowserHistory([live, duplicate], "source")).toBeNull();
+    expect(readBrowserHistory([error], "error")).toBeNull();
+    expect(readBrowserHistory([malformed], "malformed")).toBeNull();
+    expect(readBrowserHistory([recursive], "history-result")).toBeNull();
+  });
+
+  test("keeps an explicit retrieval until a newer live observation then compacts it", () => {
+    const source = snapshot("source", "session", 1);
+    const historyCall = new AIMessage({
+      content: "",
+      tool_calls: [{ id: "history-call", name: "browser_snapshot", args: { historyToolCallId: "source" } }],
+    });
+    const historyResult = new ToolMessage({
+      name: "browser_snapshot",
+      tool_call_id: "history-call",
+      content: readBrowserHistory([source], "source")!,
+      status: "success",
+      additional_kwargs: { nautilo_tool_status: "success" },
+    });
+
+    const immediate = projectBrowserHistory([source, historyCall, historyResult]);
+    expect(immediate.messages[2]).toBe(historyResult);
+
+    const afterLive = projectBrowserHistory([
+      source,
+      historyCall,
+      historyResult,
+      snapshot("baseline", "session", 2),
+      snapshot("current", "session", 3),
+    ]);
+    expect(compacted(afterLive.messages[2]!)).toMatchObject({
+      historical: true,
+      sourceToolCallId: "source",
+    });
+    expect(afterLive.originals.get("history-call")).toBe(historyResult);
+  });
+});

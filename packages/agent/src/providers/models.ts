@@ -31,16 +31,16 @@ const DEFAULT_OUTPUT_TOKEN_LIMIT = 8_192;
 /**
  * Exact **total context** sizes from provider model APIs (lowercase keys).
  * - Fireworks `glm-5p2`: Fireworks model page reports 1040K context, serverless ready
- *   with function calling and no image input (2026-06-18).
+ * with function calling and no image input (2026-06-18).
  * - Fireworks `glm-5p1` / `glm-5`: `GET https://api.fireworks.ai/inference/v1/models` → `context_length` 202_752 each (2026-05-01).
  * - OpenRouter: `GET https://openrouter.ai/api/v1/models` → `context_length` for each `openrouter:` id (e.g. `z-ai/glm-5.1` = 202_752, `moonshotai/kimi-k2.6` = 262_142).
  * - Fireworks Kimi: `kimi-k2p6` → `context_length` 262_144 (2026-05-01).
  * - Fireworks MiniMax M3: `accounts/fireworks/models/minimax-m3` model page + live
- *   chat-completions validation (2026-06-18) → 512K context.
+ * chat-completions validation (2026-06-18) → 512K context.
  * - Anthropic Opus 4.7: `GET https://api.anthropic.com/v1/models/claude-opus-4-7` →
- *   `max_input_tokens` 1_000_000, `max_tokens` (max output) 128_000 (2026-05-01).
+ * `max_input_tokens` 1_000_000, `max_tokens` (max output) 128_000 (2026-05-01).
  * - Anthropic Sonnet 4.6: same endpoint for `claude-sonnet-4-6` → `max_input_tokens` 1_000_000,
- *   `max_tokens` 128_000 (2026-05-01).
+ * `max_tokens` 128_000 (2026-05-01).
  * Env `MODEL_TOKEN_OVERRIDES` / file may lower these per deployment but may
  * never raise the signed catalog ceiling.
  */
@@ -54,7 +54,7 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
   "openrouter:openai/gpt-5.5": 1_050_000,
   "openrouter:google/gemini-3.1-pro-preview": 1_048_576,
   "anthropic:claude-sonnet-5": 1_000_000,
-  // D399 — Anthropic GET /v1/models/claude-fable-5 → max_input_tokens 1_000_000 (2026-07-08).
+  // Anthropic GET /v1/models/claude-fable-5 → max_input_tokens 1_000_000 (2026-07-08).
   "anthropic:claude-fable-5": 1_000_000,
   "fireworks:accounts/fireworks/models/glm-5p2": 1_040_000,
   "fireworks:accounts/fireworks/models/glm-5p1": 202_752,
@@ -79,14 +79,14 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
 /**
  * Exact **max generation** (`max_tokens` / LangChain `maxTokens`) from provider docs + APIs.
  * - Fireworks GLM 5.2 / GLM 5.1 / GLM 5, MiniMax M3 / M2.7 & DeepSeek V4 Pro: Fireworks FAQ — for most models, max completion
- *   equals the model’s full context window (`https://docs.fireworks.ai/faq/models/inference/limitations-controls`).
+ * equals the model’s full context window (`https://docs.fireworks.ai/faq/models/inference/limitations-controls`).
  * - Fireworks MiniMax M3: live chat-completions accepted `max_tokens: 512000` (2026-06-18).
  * - OpenRouter DeepSeek V4 Pro: `GET /api/v1/models` → `top_provider.max_completion_tokens` = 384_000 (2026-05-01).
  * - OpenRouter `z-ai/glm-5.1`: same API → `top_provider.max_completion_tokens` = 65_535 (2026-05-01).
  * - OpenRouter `moonshotai/kimi-k2.6`: same API → `top_provider.max_completion_tokens` = 262_142 (2026-05-01).
  * - OpenRouter MiniMax M2.7: same API leaves `max_completion_tokens` null; OpenRouter request schema uses
- *   `max_tokens` in `[1, context_length)` (exclusive upper bound), hence **196_608 − 1**.
- *   (`https://openrouter.ai/docs/api/reference/overview` — `max_tokens` range.)
+ * `max_tokens` in `[1, context_length)` (exclusive upper bound), hence **196_608 − 1**.
+ * (`https://openrouter.ai/docs/api/reference/overview` — `max_tokens` range.)
  * - Anthropic Opus 4.7: `GET /v1/models/claude-opus-4-7` → `max_tokens` 128_000 (2026-05-01).
  * - Anthropic Sonnet 4.6: `GET /v1/models/claude-sonnet-4-6` → `max_tokens` 128_000 (2026-05-01).
  */
@@ -100,7 +100,7 @@ const NAUTILO_BUILTIN_OUTPUT_TOKENS: Record<string, number> = {
   "openrouter:openai/gpt-5.5": 128_000,
   "openrouter:google/gemini-3.1-pro-preview": 65_536,
   "anthropic:claude-sonnet-5": 128_000,
-  // D399 — Anthropic GET /v1/models/claude-fable-5 → max_tokens 128_000 (2026-07-08).
+  // Anthropic GET /v1/models/claude-fable-5 → max_tokens 128_000 (2026-07-08).
   "anthropic:claude-fable-5": 128_000,
   "fireworks:accounts/fireworks/models/glm-5p2": 1_040_000,
   "fireworks:accounts/fireworks/models/glm-5p1": 202_752,
@@ -163,16 +163,20 @@ export class MissingModelExecutionLimitsError extends Error {
   constructor(
     public readonly modelId: string,
     public readonly catalogVersion: string,
-    reason: "not-catalogued" | "generation-workload" | "missing-limits",
+    reason: "not-catalogued" | "generation-workload" | "decision-workload" | "missing-limits",
   ) {
     const detail = reason === "not-catalogued"
       ? "is not present in the active signed catalog"
       : reason === "generation-workload"
         ? "is a generation workload and cannot be used for chat completion"
+        : reason === "decision-workload"
+        ? "is a decision workload and cannot be used for chat completion"
         : "does not declare limits.contextTokens and limits.outputTokens";
     super(
       `Model "${modelId || "<empty>"}" ${detail} (catalog ${catalogVersion}). ` +
-        "Add reviewed model-specific limits to the catalog before enabling execution.",
+        (reason === "generation-workload" || reason === "decision-workload"
+          ? "Select a chat model for chat completion."
+          : "Add reviewed model-specific limits to the catalog before enabling execution."),
     );
     this.name = "MissingModelExecutionLimitsError";
   }
@@ -187,6 +191,9 @@ function requireActiveCatalogLimitSnapshot(modelId: string): ActiveCatalogLimitS
   }
   if ("workload" in entry && entry.workload === "generation") {
     throw new MissingModelExecutionLimitsError(normalizedId, catalog.catalogVersion, "generation-workload");
+  }
+  if ("workload" in entry && entry.workload === "decision") {
+    throw new MissingModelExecutionLimitsError(normalizedId, catalog.catalogVersion, "decision-workload");
   }
   if (!entry.limits) {
     throw new MissingModelExecutionLimitsError(normalizedId, catalog.catalogVersion, "missing-limits");
@@ -451,7 +458,7 @@ type ModelProvider = "anthropic" | "openai" | "google" | "xai" | "fireworks" | "
 
 /**
  * Venice-specific output-token limits. Checked ONLY when the model ID has the
- * `venice:` prefix, via `veniceOutputLimit()` below. Keeping these in their
+ * `venice:` prefix, via `veniceOutputLimit` below. Keeping these in their
  * own pattern table (rather than in `STATIC_OUTPUT_LIMIT_RULES`) prevents
  * cross-provider substring leakage — e.g. a "kimi-k2-thinking" substring rule
  * written in the shared table would incorrectly match Fireworks-hosted Kimi
@@ -621,7 +628,7 @@ function staticOutputLimitForModel(modelIdLower: string): number | undefined {
  * fetches provider APIs and deliberately does not apply the generic fallback:
  * callers can distinguish a known limit from an unknown/dynamic model.
  *
- * This powers D429's synchronous resolved catalog projection. It reuses the
+ * This powers the synchronous resolved catalog projection. It reuses the
  * existing static rule tables rather than maintaining a second limit catalog.
  */
 export function getKnownModelMaxOutputTokens(modelId: string): number | null {

@@ -13,6 +13,18 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Automatic Jev browser decisions through OpenRouter. Genies can delegate routine
+  clicks, exact text, keyboard input and other existing browser controls using
+  fresh observations, with normal permissions and usage accounting. Larger
+  candidate sets use parallel screening before the final choice. Uncertainty or
+  repeated lack of progress returns control to the Genie, which verifies the
+  outcome. Delegation appears when an eligible model and activated credentials are available;
+  ordinary browser control remains available without Jev.
+- Catalog support for decision workloads and optional visual-grounding metadata,
+  keeping decision models separate from chat-model selection.
+- Read-only admin model catalog with providers, capabilities, and current server
+  availability, including decision models without adding them to chat selectors.
+
 - Quiet Events per Human: snooze for an hour, until tomorrow, until a chosen
   time, or until manually resumed. A crossed-out bell replaces the bell and its numbered
   badge disappears while quiet. Event history and unread state remain available;
@@ -25,6 +37,28 @@ store update, or Desktop/Host installation.
   superseded revocation history. Narrower restrictions and protected paths remain
   enforced. Folder changes reach outgoing messages immediately, and delayed
   startup reads no longer restore an older folder selection.
+
+- Sol, Terra and Luna cost estimates use current standard API rates and whole-request
+  long-context pricing, including cache reads and writes. Non-streaming OpenAI
+  Responses preserve provider usage details for cache-write accounting.
+- GPT-5.6 conversation caching keeps the stable instruction breakpoint while
+  enabling reuse of conversation and tool-result prefixes. Prompt time references
+  remain stable within each turn instead of invalidating caching at every step.
+  Direct OpenAI preserves later runtime instructions in their conversation position,
+  preventing browser handoffs from invalidating earlier cached context; fallback
+  providers retain their required system-message format.
+- Browser prompts retain current and previous observations while older snapshots
+  remain retrievable from retained conversation history. Routine handoffs attach
+  their exact reason to provider-only tool evidence where possible, preserving
+  the stable prompt prefix and original receipts. Both delegated and ordinary
+  browser loops benefit from the smaller history. Uncertain actions return the
+  underlying browser error and require fresh observation before recovery.
+
+- Embedded browser key and pointer actions select their guest before forwarding
+  CDP input, preventing the Workbench composer from retaining keyboard focus
+  during browser automation. Controlled browser surfaces keep rendering in the
+  background, and viewport screenshots use Electron's native capture path
+  without activating the window. Input and capture errors reach the caller.
 
 - Fresh database installations permit legitimate content-access receipt cleanup
   when associated users or content are deleted, while retaining protection
@@ -348,7 +382,7 @@ store update, or Desktop/Host installation.
   these fixes.
 - Hue bridge rediscovery and pairing recovery.
 
-## Component release records — verified 2026-09-09
+## Component release records verified 2026-09-09
 
 These are dated publication/ledger records, not claims about every user's
 installed version or the present public CDN pointers.
@@ -461,13 +495,13 @@ old unified-version and Desktop version-file instructions are superseded by
 - `CHANGELOG.md` (this file).
 - Canonical app semver `NAUTILO_APP_VERSION` (`packages/config/src/app-version.ts`, export `@nautilo/config/app-version`).
 - Workbench Settings → Security: **Set / change approval PIN** (enroll vs change via `GET /api/auth/pin-enrollment` + `POST /api/auth/pin` through `apiClient`).
-- `@nautilo/api-client`: `getPinEnrollment()`, `changePin({ newPin, currentPin? })` (omit `currentPin` for first-time PIN enrollment).
+- `@nautilo/api-client`: `getPinEnrollment`, `changePin({ newPin, currentPin? })` (omit `currentPin` for first-time PIN enrollment).
 - Server: `GET /api/auth/pin-enrollment` — returns `{ enrolled: boolean }` for the authenticated session user.
 
 ### Changed
 
 - Workbench Settings → Security: clearer sub-sections (**Runtime security**, **Account & password**, **Approval PIN**), **Server posture** instead of ambiguous “Details”, inline network summary, collapsible Logto password change.
-- Workbench Settings → About: shows **Nautilo product version** (not Electron’s `app.getVersion()`), platform, and Electron runtime on desktop; browser build shows `(web)`.
+- Workbench Settings → About: shows **Nautilo product version** (not Electron’s `app.getVersion`), platform, and Electron runtime on desktop; browser build shows `(web)`.
 - Desktop `app:getVersion` IPC returns product semver; `electron/preload` exposes `electronVersion` for About.
 - `apps/desktop/package.json` `version` set to **0.3.7** to match product semver.
 

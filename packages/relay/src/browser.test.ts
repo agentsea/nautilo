@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   agentBrowserArgv,
+  agentBrowserSnapshotJsonArgv,
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
   agentBrowserViewportEvalArgv,
@@ -9,11 +10,12 @@ import {
   agentBrowserCdpArgv,
   browserCdpArgvPrefix,
   browserArgvPrefix,
+  browserToolMayMutate,
   isBrowserTool,
   BROWSER_TOOLS,
 } from "./browser";
 
-describe("D336 agentBrowserArgv — argv mapping", () => {
+describe(" agentBrowserArgv — argv mapping", () => {
   const cfgPath = "/tmp/agent-browser-provider.json";
   const session = "nautilo-default";
 
@@ -29,6 +31,14 @@ describe("D336 agentBrowserArgv — argv mapping", () => {
   it("browser_snapshot maps to agent-browser snapshot with provider config", () => {
     expect(agentBrowserArgv("browser_snapshot", {}, cfgPath, session)).toEqual([
       ...prefix,
+      "snapshot",
+    ]);
+  });
+
+  it("browser_snapshot JSON helper requests a structured snapshot envelope", () => {
+    expect(agentBrowserSnapshotJsonArgv(cfgPath, session)).toEqual([
+      ...prefix,
+      "--json",
       "snapshot",
     ]);
   });
@@ -458,6 +468,21 @@ describe("D336 agentBrowserArgv — argv mapping", () => {
     expect(isBrowserTool("browser_back")).toBe(true);
     expect(isBrowserTool("browser_open")).toBe(true);
     expect(isBrowserTool("desktop_see")).toBe(false);
+  });
+
+  it("classifies every current browser tool by mutation potential", () => {
+    const readonly = new Set([
+      "browser_snapshot",
+      "browser_read",
+      "browser_read_page",
+      "browser_screenshot",
+      "browser_get",
+      "browser_wait",
+    ]);
+    for (const tool of BROWSER_TOOLS) {
+      expect(browserToolMayMutate(tool)).toBe(!readonly.has(tool));
+    }
+    expect(browserToolMayMutate("browser_future_operation")).toBe(false);
   });
 
   it("never emits a shell string — argv is always an array of discrete tokens", () => {

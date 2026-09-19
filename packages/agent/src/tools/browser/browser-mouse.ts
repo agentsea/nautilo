@@ -8,7 +8,8 @@ export function createBrowserMouseTool() {
       "Click at pixel coordinates (trusted) to place the caret / hit canvas targets you located in a screenshot.\n\n" +
       "WHEN TO USE: after browser_screenshot when you need to focus a canvas-rendered region (e.g. Google Docs " +
       "body) or click a control you identified visually. By default x/y are IMAGE pixels from the screenshot " +
-      "(click exactly what you see — no scaling math). Pass space:\"css\" when coords come from browser_get box " +
+      "(click exactly what you see — no scaling math). Do not multiply image coordinates by DPR or " +
+      "scale: the executor converts image pixels to CSS pixels exactly once. Pass space:\"css\" when coords come from browser_get box " +
       "(CSS viewport pixels). Follow with browser_press or browser_type for keyboard input.\n\n" +
       "WORKFLOW: browser_screenshot → locate (x, y) in the image → browser_mouse {x, y} → browser_press / " +
       "browser_type. Re-screenshot after major layout changes.\n\n" +
