@@ -1,14 +1,11 @@
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
-import { browserDecisionObservationSchema, type BrowserDecisionObservation } from "../../graph/browser-decision";
+import { browserObservationFromResult, type BrowserDecisionObservation } from "../../graph/browser-decision";
 
 function liveObservation(message: BaseMessage): BrowserDecisionObservation | null {
-  if (!ToolMessage.isInstance(message) || message.name !== "browser_snapshot"
+  if (!ToolMessage.isInstance(message) || !["browser_snapshot", "control_connected_web_operation"].includes(message.name ?? "")
     || message.status === "error" || message.additional_kwargs["nautilo_tool_status"] === "error"
     || typeof message.content !== "string") return null;
-  try {
-    const parsed = browserDecisionObservationSchema.safeParse(JSON.parse(message.content));
-    return parsed.success ? parsed.data : null;
-  } catch { return null; }
+  return browserObservationFromResult(message.name, message.content);
 }
 
 /** Reads only the current conversation's retained canonical result; never dispatches to a browser. */
@@ -17,7 +14,9 @@ export function readBrowserHistory(messages: BaseMessage[], toolCallId: string):
   if (matches.length !== 1) return null;
   const observation = liveObservation(matches[0]!);
   return observation ? JSON.stringify({ version: 1, historical: true, sourceToolCallId: toolCallId,
-    warning: "Historical evidence only. Its refs are stale; take a fresh browser_snapshot before acting.", observation }) : null;
+    warning: matches[0]!.name === "control_connected_web_operation"
+      ? "Historical evidence only. Its refs are stale; take a fresh snapshot through control_connected_web_operation before acting."
+      : "Historical evidence only. Its refs are stale; take a fresh browser_snapshot before acting.", observation }) : null;
 }
 
 /** Provider-only view. Baseline/current observations and all action/error receipts stay intact. */
@@ -32,7 +31,7 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
   for (const message of messages) {
     if (ToolMessage.isInstance(message)) callCounts.set(message.tool_call_id, (callCounts.get(message.tool_call_id) ?? 0) + 1);
     if (AIMessage.isInstance(message)) for (const call of message.tool_calls ?? []) {
-      if (call.id && call.name === "browser_snapshot" && typeof call.args["historyToolCallId"] === "string") {
+      if (call.id && ["browser_snapshot", "control_connected_web_operation"].includes(call.name) && typeof call.args["historyToolCallId"] === "string") {
         historicalCalls.set(call.id, call.args["historyToolCallId"]);
       }
     }
@@ -59,7 +58,7 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
     if (!ToolMessage.isInstance(message) || callCounts.get(message.tool_call_id) !== 1) return message;
     const observation = observations.get(index);
     const historicalSource = historicalCalls.get(message.tool_call_id);
-    const isHistory = historicalSource !== undefined && message.name === "browser_snapshot" && message.status !== "error"
+    const isHistory = historicalSource !== undefined && ["browser_snapshot", "control_connected_web_operation"].includes(message.name ?? "") && message.status !== "error"
       && message.additional_kwargs["nautilo_tool_status"] !== "error";
     if (isHistory) originals.set(message.tool_call_id, message);
     if ((!observation || retain.has(index)) && (!isHistory || index > newestLiveIndex)) return message;
@@ -70,7 +69,7 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
           observationId: observation.observationId } : {}),
         originalCharacters: typeof message.content === "string" ? message.content.length : null,
         notice: "Older browser evidence omitted from this prompt. Canonical content is retained in this conversation; these are not current action refs.",
-        retrieve: { tool: "browser_snapshot", args: { historyToolCallId: sourceToolCallId } },
+        retrieve: { tool: message.name, args: { historyToolCallId: sourceToolCallId } },
       }),
       tool_call_id: message.tool_call_id,
       ...(message.name === undefined ? {} : { name: message.name }),

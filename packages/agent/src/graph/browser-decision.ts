@@ -123,9 +123,54 @@ export const browserDecisionObservationSchema = z.object({
 }).strict();
 export type BrowserDecisionObservation = z.infer<typeof browserDecisionObservationSchema>;
 
+/** Installed execution adapter; absent on older checkpoints means embedded browser. */
+export interface ConnectedBrowserDecisionTarget {
+  readonly kind: "connected_web";
+  readonly operationId: string;
+  readonly controlEpoch: number;
+}
+
+export function isBrowserDecisionTool(name: string | undefined): boolean {
+  return name?.startsWith("browser_") === true || name === "control_connected_web_operation";
+}
+
+export function isBrowserDecisionSnapshot(call: Pick<ToolCall, "name" | "args">): boolean {
+  return call.name === "browser_snapshot" || (call.name === "control_connected_web_operation"
+    && (call.args["command"] as { kind?: unknown } | undefined)?.kind === "snapshot");
+}
+
+export function interpretBrowserDecisionCall(call: Pick<ToolCall, "name" | "args">): BrowserDecisionPlanInterpretation {
+  if (!isBrowserDecisionSnapshot(call)) return { kind: "none", requestedDelegation: false };
+  if (call.name === "browser_snapshot") return interpretBrowserDecisionPlanArgs(call.args);
+  const { operationId: _operationId, expectedControlEpoch: _epoch, command: _command, ...plan } = call.args;
+  return interpretBrowserDecisionPlanArgs(plan);
+}
+
+export function browserObservationFromResult(name: string | undefined, content: unknown): BrowserDecisionObservation | null {
+  if (typeof content !== "string") return null;
+  try {
+    const value = JSON.parse(content) as Record<string, unknown>;
+    const parsed = browserDecisionObservationSchema.safeParse(name === "control_connected_web_operation"
+      ? value["ok"] === true ? value["observation"] : null : value);
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
+/** Route a shared semantic proposal through the exact operation's existing tool authority. */
+export function browserDecisionDriverCall(
+  call: Pick<ToolCall, "name" | "args">, target?: ConnectedBrowserDecisionTarget,
+): Pick<ToolCall, "name" | "args"> {
+  if (!target) return call;
+  return { name: "control_connected_web_operation", args: {
+    operationId: target.operationId, expectedControlEpoch: target.controlEpoch,
+    command: { kind: call.name.slice("browser_".length), ...call.args },
+  } };
+}
+
 export interface BrowserDecisionState {
   readonly turnId: string;
   readonly modelId: string;
+  readonly target?: ConnectedBrowserDecisionTarget;
   readonly plan: BrowserDecisionPlan;
   readonly phase: "decide" | "observe" | "waiting" | "handoff";
   readonly observation: BrowserDecisionObservation | null;
@@ -256,12 +301,12 @@ export function currentBrowserDecision(state: NautiloState): BrowserDecisionStat
 function pairedBrowserToolResultIndexes(messages: readonly BaseMessage[]): Set<number> {
   const calls = new Map<string, string>();
   for (const message of messages) if (AIMessage.isInstance(message)) {
-    for (const call of message.tool_calls ?? []) if (call.id && call.name.startsWith("browser_")) {
+    for (const call of message.tool_calls ?? []) if (call.id && isBrowserDecisionTool(call.name)) {
       calls.set(call.id, call.name);
     }
   }
   return new Set(messages.flatMap((message, index) =>
-    ToolMessage.isInstance(message) && message.name?.startsWith("browser_")
+    ToolMessage.isInstance(message) && isBrowserDecisionTool(message.name)
       && calls.get(message.tool_call_id) === message.name ? [index] : []));
 }
 
@@ -274,12 +319,12 @@ export function browserHandoffToolResultIndex(
   if (!observation) return null;
   const paired = pairedBrowserToolResultIndexes(messages);
   const anchors = messages.flatMap((message, index) => {
-    if (!paired.has(index) || !ToolMessage.isInstance(message) || message.name !== "browser_snapshot"
+    if (!paired.has(index) || !ToolMessage.isInstance(message) || !isBrowserDecisionTool(message.name)
       || typeof message.content !== "string") return [];
     try {
-      const parsed = browserDecisionObservationSchema.safeParse(JSON.parse(message.content));
-      return parsed.success && parsed.data.browserSessionId === observation.browserSessionId
-        && parsed.data.observationId === observation.observationId ? [index] : [];
+      const parsed = browserObservationFromResult(message.name, message.content);
+      return parsed?.browserSessionId === observation.browserSessionId
+        && parsed.observationId === observation.observationId ? [index] : [];
     } catch { return []; }
   });
   if (anchors.length !== 1) return null;
@@ -428,7 +473,7 @@ export function settleBrowserDecision(
   const continues = current?.phase === "waiting" && pending != null && pending.call.id === call.id
     && pending.call.name === call.name && JSON.stringify(pending.call.args) === JSON.stringify(call.args);
   const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
-  const interpretedPlan = call.name === "browser_snapshot" ? interpretBrowserDecisionPlanArgs(call.args ?? {}) : null;
+  const interpretedPlan = interpretBrowserDecisionCall(call);
   const proposedPlan = interpretedPlan?.kind === "plan" ? {
     ...interpretedPlan.plan,
     allowedOrigins: [...new Set(interpretedPlan.plan.allowedOrigins.map((value) => new URL(value).origin))].sort(),
@@ -448,6 +493,10 @@ export function settleBrowserDecision(
     ? {
         turnId: state.turnId,
         modelId,
+        ...(call.name === "control_connected_web_operation" ? { target: {
+          kind: "connected_web" as const, operationId: String(call.args["operationId"]),
+          controlEpoch: Number(call.args["expectedControlEpoch"]),
+        } } : {}),
         plan: proposedPlan,
         phase: "decide",
         observation: null,
@@ -462,13 +511,18 @@ export function settleBrowserDecision(
         },
       }
     : { ...current!, pending: null };
-  if (result.additional_kwargs?.["nautilo_tool_status"] !== "success") {
-    const failure = result.additional_kwargs?.["nautilo_browser_failure"];
+  let connectedResult: Record<string, unknown> | null = null;
+  if (call.name === "control_connected_web_operation" && typeof result.content === "string") {
+    try { connectedResult = JSON.parse(result.content) as Record<string, unknown>; } catch { /* rejected below */ }
+  }
+  if (result.additional_kwargs?.["nautilo_tool_status"] !== "success"
+    || (call.name === "control_connected_web_operation" && connectedResult?.["ok"] !== true)) {
+    const failure = result.additional_kwargs?.["nautilo_browser_failure"] ?? connectedResult?.["browserFailure"];
     return continues && failure === "browser_observation_stale"
       ? recordBrowserDecisionEvent(base, "browser_observation_stale", "observe")
       : immediateHandoff(base, safeBrowserFailureReason(failure));
   }
-  if (call.name !== "browser_snapshot") {
+  if (!isBrowserDecisionSnapshot(call)) {
     return {
       ...base,
       phase: "observe",
@@ -476,24 +530,22 @@ export function settleBrowserDecision(
       recovery: { ...base.recovery!, assessNextObservation: true },
     };
   }
-  let content: unknown;
-  try { content = typeof result.content === "string" ? JSON.parse(result.content) : null; } catch { content = null; }
-  const observation = browserDecisionObservationSchema.safeParse(content);
-  if (!observation.success || (continues && observation.data.browserSessionId !== pending?.browserSessionId)) {
+  const observation = browserObservationFromResult(result.name, result.content);
+  if (!observation || (continues && observation.browserSessionId !== pending?.browserSessionId)) {
     return immediateHandoff(base, "fresh_bound_observation_unavailable");
   }
   if (starts && proposedPlan !== null) {
-    if (!["http:", "https:"].includes(new URL(observation.data.pageUrl).protocol)) {
+    if (!["http:", "https:"].includes(new URL(observation.pageUrl).protocol)) {
       return immediateHandoff(base, "routine_browser_requires_http_origin");
     }
     // The browser supplies the current origin; the Genie need not reproduce it.
     const resolvedPlan = { ...proposedPlan, allowedOrigins: proposedPlan.allowedOrigins.length
-      ? proposedPlan.allowedOrigins : [new URL(observation.data.pageUrl).origin] };
+      ? proposedPlan.allowedOrigins : [new URL(observation.pageUrl).origin] };
     const started = { ...base, plan: resolvedPlan };
     if (current?.phase === "handoff") {
       const changedPlan = stableJson(current.plan) !== stableJson(resolvedPlan);
       const changedEvidence = materialEvidenceKey(current.observation)
-        !== materialEvidenceKey(observation.data);
+        !== materialEvidenceKey(observation);
       if (!changedPlan && !changedEvidence) {
         return immediateHandoff(
           current,
@@ -502,11 +554,11 @@ export function settleBrowserDecision(
       }
       const progressSeen = [...new Set([
         ...currentRecovery!.progressSeen,
-        ...trueProgressKeys(resolvedPlan, observation.data),
+        ...trueProgressKeys(resolvedPlan, observation),
       ])].sort();
       return {
         ...started,
-        observation: observation.data,
+        observation: observation,
         recovery: {
           ...currentRecovery!,
           interventionAt: currentRecovery!.consecutiveEvents + currentRecovery!.interventionLimit,
@@ -517,14 +569,14 @@ export function settleBrowserDecision(
     }
     return {
       ...started,
-      observation: observation.data,
+      observation: observation,
       recovery: {
         ...base.recovery!,
-        progressSeen: trueProgressKeys(resolvedPlan, observation.data).sort(),
+        progressSeen: trueProgressKeys(resolvedPlan, observation).sort(),
       },
     };
   }
-  return settleFreshObservation(base, observation.data);
+  return settleFreshObservation(base, observation);
 }
 
 export function browserDecisionHandoffContent(reason: string): string {

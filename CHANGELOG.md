@@ -13,6 +13,12 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Routine Jev delegation for connected websites already under direct Genie
+  control through Browser Use. It reuses the browser decision loop, verifies
+  fresh observations against the exact operation and control epoch, and returns
+  uncertain effects to the Genie without replay. Hosted and ordinary control
+  remain available without a decision-model key.
+
 - Opt-in Jev browser decisions through OpenRouter. Genies can delegate routine
   clicks, exact text, keyboard input and other existing browser controls using
   fresh observations, with normal permissions and usage accounting. Larger

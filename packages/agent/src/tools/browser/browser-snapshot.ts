@@ -3,20 +3,27 @@ import { z } from "zod";
 import { fromRuntimeConfig } from "@nautilo/config";
 import { resolveCatalogModel } from "../../config/resolved-catalog";
 import { browserDecisionPlanSchema } from "../../graph/browser-decision";
+import { resolveChoiceDriver } from "../../providers/choice-driver";
 
 interface BrowserSnapshotContext {
-  readonly turnId?: string;
+  readonly turnId?: string | undefined;
   readonly fullEncryptionOnly?: boolean;
 }
 
-export function createBrowserSnapshotTool(context?: BrowserSnapshotContext) {
+export function resolveBrowserDecisionModel(context?: BrowserSnapshotContext) {
   // Re-evaluate on every model binding; registration without turn context stays read-only.
   // This is exposure only. Runtime model, credential and authority checks still apply.
   const modelId = fromRuntimeConfig().nautilo_browser_decision_model.trim();
   const model = context?.turnId && context.fullEncryptionOnly === false && modelId
     ? resolveCatalogModel(modelId) : null;
-  const canDelegate = model?.availability === "selectable" && model.workload === "decision"
-    && model.decision?.operations.length === 1 && model.decision.operations[0] === "choice";
+  return model?.availability === "selectable" && model.workload === "decision"
+    && resolveChoiceDriver(model.provider)
+    && model.decision?.operations.length === 1 && model.decision.operations[0] === "choice" ? model : null;
+}
+
+export function createBrowserSnapshotTool(context?: BrowserSnapshotContext) {
+  const model = resolveBrowserDecisionModel(context);
+  const canDelegate = model !== null;
 
   return new DynamicStructuredTool({
     name: "browser_snapshot",

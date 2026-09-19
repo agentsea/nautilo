@@ -1,4 +1,5 @@
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import type { BrowserDecisionObservation } from "../../graph/browser-decision";
 import type {
   ConnectedWebAccountStatus,
   ConnectedWebOperationDriver,
@@ -10,7 +11,7 @@ import type {
 } from "@nautilo/types";
 
 /**
- * D568 — server-injected execution seam for one private connected-web read.
+ * Server-injected execution seam for one private connected-web read.
  *
  * The account store, ownership check, browser profile, provider client, and
  * execution serialization all live in @nautilo/server. @nautilo/agent only
@@ -27,7 +28,7 @@ export interface ConnectedWebAccountReadToolActorContext {
   readonly agentId: string;
   /** Current foreground Room; server verifies it is the owner's personal Room. */
   readonly roomId: string;
-  /** A task/subagent calling Room is not supported for Phase 1 personal reads. */
+  /** A task/subagent calling Room is not supported for personal reads. */
   readonly callingRoomId: string | null;
   /** Existing resolved foreground authority; never synthesized by this tool. */
   readonly memoryAccessEnvelope: MemoryAccessEnvelope;
@@ -236,9 +237,8 @@ export interface ConnectedWebAccountReadToolRuntime {
 }
 
 /**
- * D568 Phase 2's deliberately small external-write contract. A Genie has no
- * generic browser command surface: it can only ask to save one Human-named
- * item, and the server stamps effect/risk/approval facts independently.
+ * Typed external-write contract for saving one Human-named item. The server
+ * stamps effect/risk/approval facts independently of the requesting Genie.
  */
 export interface ConnectedWebAccountActionToolInput {
   readonly account: string;
@@ -281,7 +281,7 @@ export interface ConnectedWebAccountActionToolRuntime {
 }
 
 /**
- * D568's provider-neutral supervision seam. The server owns every provider,
+ * Provider-neutral supervision seam. The server owns every provider,
  * browser, lease, intent, and effect coordinate; this contract admits only an
  * already-authorized foreground actor and a typed control request.
  */
@@ -368,7 +368,7 @@ export interface ConnectedWebOperationToolRuntime {
 export type ConnectedWebOperationDirectCommand =
   | Readonly<{ kind: "snapshot" }>
   | Readonly<{ kind: "click"; ref: string }>
-  | Readonly<{ kind: "type"; ref: string; text: string; clear?: boolean }>
+  | Readonly<{ kind: "type"; ref: string; text: string; clear?: boolean | undefined }>
   | Readonly<{ kind: "press"; key: string }>
   | Readonly<{ kind: "open"; url: string }>
   | Readonly<{ kind: "back" }>
@@ -380,10 +380,11 @@ export type ConnectedWebOperationDirectCommand =
   | Readonly<{ kind: "select"; ref: string; values: readonly string[] }>
   | Readonly<{ kind: "set_checked"; ref: string; checked: boolean }>
   | Readonly<{ kind: "scroll_into_view"; ref: string }>
+  | Readonly<{ kind: "scroll"; direction: "up" | "down" | "left" | "right"; amount?: number | undefined }>
   | Readonly<{ kind: "wait_for"; ref: string }>
   | Readonly<{ kind: "wait"; milliseconds: number }>
   | Readonly<{ kind: "read"; ref: string }>
-  | Readonly<{ kind: "get"; what: "box" | "value" | "attr" | "title" | "url"; ref?: string; name?: string }>;
+  | Readonly<{ kind: "get"; what: "box" | "value" | "attr" | "title" | "url"; ref?: string | undefined; name?: string | undefined }>;
 
 export interface ConnectedWebOperationDirectToolInput {
   readonly operationId: string;
@@ -395,14 +396,26 @@ export type ConnectedWebOperationDirectToolResult =
   | Readonly<{
       ok: true;
       command: Readonly<{ text: string; truncated: boolean }>;
+      observation?: BrowserDecisionObservation;
       operation: ConnectedWebOperationSafeProjection;
     }>
-  | Readonly<{ ok: false; code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result"; recovery: "none" }>;
+  | Readonly<{ ok: false; code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result"; recovery: "none";
+      browserFailure?: "browser_observation_stale" | "browser_cancelled" | "browser_authority_lost" | "browser_outcome_unknown" | "browser_observation_invalid";
+      /** Sanitized browser error evidence, never a provider capability. */
+      detail?: string;
+    }>;
+
+/** Trusted invocation state, never model-supplied tool arguments. */
+export interface ConnectedWebOperationDirectControlOptions {
+  readonly signal?: AbortSignal;
+  readonly decision?: { readonly kind: "observe" } | { readonly kind: "act"; readonly observationId: string };
+}
 
 export interface ConnectedWebOperationDirectToolRuntime {
   control(
     actor: ConnectedWebOperationToolActorContext,
     input: ConnectedWebOperationDirectToolInput,
+    options?: ConnectedWebOperationDirectControlOptions,
   ): Promise<ConnectedWebOperationDirectToolResult>;
 }
 

@@ -17,10 +17,11 @@ import {
 import {
   browserConditionMatches,
   browserDecisionCandidates,
+  browserDecisionDriverCall,
   browserDecisionHandoffContent,
   browserHandoffToolResultIndex,
   currentBrowserDecision,
-  interpretBrowserDecisionPlanArgs,
+  interpretBrowserDecisionCall,
   recordBrowserDecisionEvent,
   type BrowserDecisionState,
 } from "../graph/browser-decision";
@@ -83,7 +84,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
       for (let index = state.messages.length - 1; index >= 0; index -= 1) {
         const message = state.messages[index];
         if (AIMessage.isInstance(message) && message.tool_calls?.some((call) =>
-          call.name === "browser_snapshot" && interpretBrowserDecisionPlanArgs(call.args).requestedDelegation)) {
+          interpretBrowserDecisionCall(call).requestedDelegation)) {
           planIndex = index;
           break;
         }
@@ -150,11 +151,11 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           ? `choice_${error.code}` : "choice_unavailable");
       }
     }
-    const proposal = { ...call, id: `browser-choice:${randomUUID()}`, type: "tool_call" as const };
+    const proposal = { ...browserDecisionDriverCall(call, decision.target), id: `browser-choice:${randomUUID()}`, type: "tool_call" as const };
     return {
       browserDecision: { ...nextDecision, phase: "waiting", reason: null, pending: {
         call: proposal, browserSessionId: observation.browserSessionId,
-        observationId: proposal.name === "browser_snapshot" ? null : observation.observationId,
+        observationId: call.name === "browser_snapshot" ? null : observation.observationId,
       } },
       // This is a proposal only. Normal preflights and post-model admission decide whether it may execute.
       messages: mergeMessagesPreservingInvariants(state.messages, [new AIMessage({

@@ -1,5 +1,5 @@
 import { fromRuntimeConfig } from "@nautilo/config";
-import { browserDecisionHandoffContent, browserDecisionPlanError, browserHandoffToolResultIndex, interpretBrowserDecisionPlanArgs, settleBrowserDecision } from "../graph/browser-decision";
+import { browserDecisionHandoffContent, browserDecisionPlanError, browserHandoffToolResultIndex, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -468,8 +468,7 @@ function settleToolsNode(
     ),
   );
   const browserDecision = settleBrowserDecision(state, executedCalls, results, remainingToolCalls, fromRuntimeConfig().nautilo_browser_decision_model.trim());
-  const requestedBrowserDelegation = executedCalls.some((call) => call.name === "browser_snapshot"
-    && interpretBrowserDecisionPlanArgs(call.args ?? {}).requestedDelegation);
+  const requestedBrowserDelegation = executedCalls.some((call) => interpretBrowserDecisionCall(call).requestedDelegation);
   const messagesWithResults = mergeMessagesPreservingInvariants(state.messages, [...results]);
   const projectableBrowserHandoff = browserDecision?.phase === "handoff"
     && browserHandoffToolResultIndex(messagesWithResults, browserDecision) !== null;
@@ -477,7 +476,7 @@ function settleToolsNode(
     && (!browserDecision || browserDecision.reason === "ordinary_genie_control")
     ? [new SystemMessage({ id: `browser-handoff:${randomUUID()}`, content: browserDecisionPlanError(null,
         "browser_delegation_not_started",
-        "Routine delegation did not start. Inspect the tool results. It requires an enabled decision model, an active turn and one standalone browser_snapshot call with a valid decisionPlan. Correct the reported issue before retrying; do not assume routine actions ran.",
+        "Routine delegation did not start. Inspect the tool results. It requires an enabled decision model, an active turn and one standalone snapshot call with a valid decisionPlan through the same browser tool. For a connected operation, retain its operationId and current expectedControlEpoch. Correct the reported issue before retrying; do not assume routine actions ran.",
         null) })]
     : browserDecision?.phase === "handoff" && browserDecision.reason && !projectableBrowserHandoff
     && browserDecision.reason !== "ordinary_genie_control"

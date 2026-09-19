@@ -1,6 +1,6 @@
 import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
-import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
+import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
 import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
@@ -1131,7 +1131,7 @@ export function createNautiloToolInvocationSession(
     },
     { relayRegistry: _relayRegistry },
   );
-  const resolveToolMap = (toolCallId: string) => {
+  const resolveToolMap = (toolCallId: string, invocationCall: NautiloState["approvedToolCalls"][number]) => {
     const tools = resolveToolsForExposure(
       catalog,
       runtimeConfig.nautilo_tool_exposure_mode,
@@ -1156,6 +1156,11 @@ export function createNautiloToolInvocationSession(
           currentTaskRunId: state.currentTaskRunId,
           turnId: state.turnId,
           toolCallId,
+          signal: config?.signal,
+          browserDecision: currentBrowserDecision(state),
+          browserDecisionCall: invocationCall,
+          browserDecisionSingleton: [...state.messages].reverse().find((message) => AIMessage.isInstance(message))?.tool_calls?.length === 1,
+          browserHistoryMessages: state.messages,
           ordinaryContentAccessRequired: ordinaryContentAccess?.mode === "plaintext_only",
           ...(ordinaryContentAccess?.mode !== "plaintext_only" ? {} : {
             ordinaryContentAccess: {
@@ -1288,6 +1293,22 @@ export function createNautiloToolInvocationSession(
       // admission receipt can prove approval provenance, but cannot resurrect
       // a tool removed by current actor/catalog/model/relay policy.
       const toolCallId = tc.id ?? `${tc.name}_${Date.now()}`;
+      const connectedPlan = tc.name === "control_connected_web_operation" ? interpretBrowserDecisionCall(tc) : null;
+      if (connectedPlan?.kind === "invalid") {
+        const tm = new ToolMessage({
+          content: browserDecisionPlanError(connectedPlan.error, connectedPlan.code,
+            connectedPlan.instruction.replaceAll("browser_snapshot", "control_connected_web_operation snapshot")),
+          tool_call_id: toolCallId, name: tc.name,
+        });
+        assignStableToolMessageId(tm);
+        setToolMessageStatus(tm, "error");
+        return tm;
+      }
+      const connectedArgs = tc.args as Record<string, unknown>;
+      const invocationArgs = connectedPlan?.kind === "plan" ? {
+        operationId: connectedArgs["operationId"], expectedControlEpoch: connectedArgs["expectedControlEpoch"],
+        command: connectedArgs["command"], decisionPlan: connectedPlan.plan,
+      } : tc.args;
       if (state.ordinaryContentAccessBindings?.[toolCallId] && ordinaryContentAccess?.mode !== "plaintext_only") {
         const tm = new ToolMessage({
           content: JSON.stringify({ error: "content_access_policy_changed", recovery: "prepare_new_call", message: ORDINARY_CONTENT_ACCESS_RECOVERY }),
@@ -1330,7 +1351,7 @@ export function createNautiloToolInvocationSession(
         setToolMessageStatus(tm, "error");
         return tm;
       }
-      const toolMap = resolveToolMap(toolCallId);
+      const toolMap = resolveToolMap(toolCallId, tc);
       const tool = toolMap.get(tc.name);
 
       if (!tool) {
@@ -1818,7 +1839,7 @@ export function createNautiloToolInvocationSession(
             taskCreationBackgroundTaskProvenance,
             () => runWithDeepResearchReturnContext(
               deepResearchReturnContext,
-              () => tool.invoke(tc.args, {
+              () => tool.invoke(invocationArgs, {
                 ...config,
                 configurable: {
                   ...(config?.configurable ?? {}),
@@ -1951,11 +1972,21 @@ export function createNautiloToolInvocationSession(
         // "success" because the read handler never calls
         // `fileToolError` on the success-content path.
         let taskReadError = false;
+        let connectedBrowserError = false;
+        let connectedBrowserFailure: string | undefined;
+        if (tc.name === "control_connected_web_operation") {
+          // This tool owns a typed server result envelope; page text remains nested data.
+          try {
+            const receipt = JSON.parse(rawContent) as Record<string, unknown>;
+            connectedBrowserError = receipt["ok"] === false || typeof receipt["error"] === "string";
+            if (connectedBrowserError && typeof receipt["browserFailure"] === "string") connectedBrowserFailure = receipt["browserFailure"];
+          } catch { connectedBrowserError = true; }
+        }
         if (ordinaryContentAccessRetryRequired.has(toolCallId)) throw new OrdinaryContentAccessRetryRequiredError();
         if (tc.name === "task" && tc.args["command"] === "read") {
           try { taskReadError = isTaskReadErrorReceipt(JSON.parse(rawContent)); } catch { /* Not a typed Task read receipt. */ }
         }
-        if (fileStatus === "error" || projectionError !== null || relayToolError !== null || taskReadError || ordinaryContentAccessErrors.has(toolCallId)) {
+        if (fileStatus === "error" || projectionError !== null || relayToolError !== null || taskReadError || connectedBrowserError || ordinaryContentAccessErrors.has(toolCallId)) {
           if (allowToolTelemetry) {
             emitAgentEvent(
               toolTracker.toolEnd(
@@ -1971,6 +2002,7 @@ export function createNautiloToolInvocationSession(
             content: scanned.content,
             tool_call_id: toolCallId,
             name: tc.name,
+            ...(connectedBrowserFailure ? { additional_kwargs: { nautilo_browser_failure: connectedBrowserFailure } } : {}),
           });
           assignStableToolMessageId(tm);
           setToolMessageStatus(tm, "error");

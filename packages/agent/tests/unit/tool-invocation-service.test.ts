@@ -18,6 +18,8 @@ import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import * as trust from "@nautilo/trust";
 import type { NautiloState } from "../../src/agent/state";
 import { browserDecisionPlanSchema } from "../../src/graph/browser-decision";
+import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
+import { createControlConnectedWebOperationTool } from "../../src/tools/connected-web-accounts/control-connected-web-operation";
 import { defaultPostModelDeps } from "../../src/agent/post-model-deps";
 import { bindProtectedMemoryResumeDeps } from
   "../../src/graph/protected-memory-resume-deps";
@@ -56,6 +58,8 @@ import { createManageConnectedWebOperationTool } from "../../src/tools/connected
 import {
   resetConnectedWebAccountReadToolRuntimeForTests,
   setConnectedWebOperationToolRuntime,
+  setConnectedWebOperationDirectToolRuntime,
+  type ConnectedWebOperationDirectControlOptions,
 } from "../../src/tools/connected-web-accounts/runtime";
 import { registerAllTools } from "../../src/tools/register-all";
 import { runWithInitiatingClientSurface } from "../../src/runtime/initiating-client-surface-context";
@@ -325,6 +329,74 @@ describe("live mini-app tool execution context", () => {
 });
 
 describe("connected website operation execution context", () => {
+  test("passes actual invocation arguments and cancellation authority into the connected decision driver", async () => {
+    const priorKey = process.env["OPENROUTER_API_KEY"];
+    process.env["OPENROUTER_API_KEY"] = "synthetic-connected-key";
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    setConfigOverrides({ nautilo_browser_decision_model: "openrouter:typesafe/jev-1.13" });
+    try {
+      const catalog = new ToolCatalog();
+      catalog.register({ name: "control_connected_web_operation", exposure: "core", category: "integrations",
+        trustTier: "high", impact: "low", executor: "cloud", resultScanPolicy: "always",
+        factory: context => createControlConnectedWebOperationTool(context) });
+      initToolCatalog(catalog);
+      const captures: ConnectedWebOperationDirectControlOptions[] = [];
+      let fail = false;
+      setConnectedWebOperationDirectToolRuntime({ control: async (_actor, input, options) => {
+        captures.push(options ?? {});
+        if (fail) return { ok: false, code: "conflict", recovery: "none", browserFailure: "browser_observation_stale", detail: "Page changed before click." };
+        return { ok: true, command: { text: "observed", truncated: false }, operation: {
+          operationId: input.operationId, controlEpoch: input.expectedControlEpoch, driver: "direct", lifecycle: "running",
+          activity: { phase: "working", code: "observed", summary: "Observed current page." }, receipt: null,
+        } };
+      } });
+      const controller = new AbortController();
+      const request = call("control_connected_web_operation", {
+        operationId: "77777777-7777-4777-8777-777777777777", expectedControlEpoch: 3,
+        command: { kind: "snapshot" }, decisionPlan: { goal: "Open details" },
+      });
+      const sourceCall = { id: request.callId, name: request.toolName, args: request.args };
+      const invocationState = state({ currentThreadId: "thread-connected",
+        messages: [new AIMessage({ content: "", tool_calls: [sourceCall] })],
+        memoryAccessEnvelope: { ownerId: "owner", actorId: "owner", agentId: "agent", roomId: "room",
+          readableNamespaces: [], mutableNamespaces: [], writableNamespaces: [], toolPolicy: {} },
+      });
+      const invoke = (input = request) => createNautiloToolInvocationSession(
+        createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
+        { signal: controller.signal },
+      ).invoke(input);
+      expect((await invoke()).status).toBe("success");
+      expect(captures[0]?.signal).toBe(controller.signal);
+      expect(captures[0]?.decision).toEqual({ kind: "observe" });
+      const action = { ...request, args: { operationId: request.args["operationId"], expectedControlEpoch: 3,
+        command: { kind: "click", ref: "@e1" } } };
+      invocationState.browserDecision = {
+        turnId: "turn", modelId: "openrouter:typesafe/jev-1.13", phase: "waiting", reason: null,
+        target: { kind: "connected_web", operationId: String(request.args["operationId"]), controlEpoch: 3 },
+        plan: browserDecisionPlanSchema.parse({ goal: "Open details" }), observation: null,
+        pending: { call: { id: action.callId, name: action.toolName, args: action.args }, browserSessionId: "browser", observationId: "fresh-observation" },
+      };
+      expect((await invoke(action)).status).toBe("success");
+      expect(captures[1]?.signal).toBe(controller.signal);
+      expect(captures[1]?.decision).toEqual({ kind: "act", observationId: "fresh-observation" });
+      expect((await invoke({ ...action, args: { ...action.args, command: { kind: "click", ref: "@e2" } } })).status).toBe("error");
+      expect(captures).toHaveLength(2);
+      fail = true;
+      const stale = await invoke(action);
+      expect(stale.status).toBe("error");
+      expect(stale.additionalKwargs?.["nautilo_browser_failure"]).toBe("browser_observation_stale");
+      expect(stale.content).toContain("Page changed before click.");
+      controller.abort();
+      expect((await invoke(action)).status).toBe("error");
+      expect(captures).toHaveLength(3);
+    } finally {
+      if (priorKey === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = priorKey;
+      setConfigOverrides({});
+      resetRuntimeModelCatalog();
+    }
+  });
+
   test("injects exact foreground thread, turn, tool call, and resolved lane into the real management factory", async () => {
     const catalog = new ToolCatalog();
     catalog.register({

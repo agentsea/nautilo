@@ -82,6 +82,11 @@ You have access to ${tools.length} tools:
     }
   }
 
+  const connectedBrowser = tools.find((tool) => tool.name === "control_connected_web_operation");
+  if (!isGuest && connectedBrowser?.schema instanceof z.ZodObject && Object.hasOwn(connectedBrowser.schema.shape, "decisionPlan")) {
+    prompt += "\nFor a connected website already under your direct control, prefer control_connected_web_operation with command:{kind:'snapshot'} and decisionPlan for complete routine segments. Keep its exact operationId and current expectedControlEpoch. The runtime uses the same routine decision model and recovery loop without switching to the embedded browser. Supply exact named values and reusable action templates once. After a handoff, inspect evidence, repair only the missing strategy or information, and delegate the remaining routine work again. Verify completion independently. Hosted and public website operations keep their existing management path; do not invent direct authority for them.\n";
+  }
+
   if (toolNames.has("browse_web") || toolNames.has("run_web_search") || toolNames.has("read_webpage")) {
     prompt += WEB_RESEARCH;
   }
