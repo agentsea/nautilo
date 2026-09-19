@@ -1,4 +1,6 @@
 import { describe, test, it, expect, mock, afterEach } from "bun:test";
+import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
+import type { StructuredTool } from "@langchain/core/tools";
 import * as nautiloLogger from "@nautilo/logger";
 
 /**
@@ -327,6 +329,7 @@ import { PersonalPolicyResolver } from "../../src/personal-policy-resolver";
 
 afterEach(() => {
   warnSpy.mockClear();
+  clearToolCatalog();
 });
 
 function makeResolver() {
@@ -341,6 +344,24 @@ const makeTool = (name: string, args: Record<string, unknown> = {}) => ({
   id: "test-id",
   type: "tool_call" as const,
 });
+
+function registerCapabilitylessApprovalTool(): void {
+  const catalog = new ToolCatalog();
+  catalog.register({
+    name: "play_explainer",
+    factory: () => ({
+      description: "Resolve an explainer after explicit confirmation.",
+    }) as unknown as StructuredTool,
+    category: "help",
+    trustTier: "guest",
+    impact: "read-only",
+    exposure: "discoverable",
+    requiresApproval: true,
+    approvalLevel: "confirm",
+    resultScanPolicy: "never",
+  });
+  initToolCatalog(catalog);
+}
 
 // ===========================================================================
 // resolveContext
@@ -746,6 +767,18 @@ describe("M044 — Room-subset rule", () => {
 // ===========================================================================
 
 describe("buildEnvelope toolPolicy", () => {
+  test("capabilityless approval tools remain approval-gated", async () => {
+    registerCapabilitylessApprovalTool();
+    const resolver = makeResolver();
+    const envelope = await resolver.buildEnvelope(
+      OWNER_ACTOR_ID,
+      "tui:default",
+      TEST_AGENT_ID,
+    );
+
+    expect(envelope.toolPolicy["play_explainer"]).toBe("require_prove_it");
+  });
+
   test("owner toolPolicy has require_prove_it for destructive tools", async () => {
     const resolver = makeResolver();
     const envelope = await resolver.buildEnvelope(OWNER_ACTOR_ID, "tui:default", TEST_AGENT_ID);
@@ -842,6 +875,30 @@ describe("buildEnvelope toolPolicy", () => {
 // ===========================================================================
 
 describe("checkToolAccess with envelope", () => {
+  test("capabilityless approval tools require approval with and without an envelope", async () => {
+    registerCapabilitylessApprovalTool();
+    const resolver = makeResolver();
+    const envelope = await resolver.buildEnvelope(
+      OWNER_ACTOR_ID,
+      "tui:default",
+      TEST_AGENT_ID,
+    );
+
+    const enveloped = await resolver.checkToolAccess(
+      OWNER_ACTOR_ID,
+      makeTool("play_explainer", { explainerId: "intro" }),
+      envelope,
+    );
+    const fallback = await resolver.checkToolAccess(
+      OWNER_ACTOR_ID,
+      makeTool("play_explainer", { explainerId: "intro" }),
+      undefined,
+    );
+
+    expect(enveloped.type).toBe("require_approval");
+    expect(fallback.type).toBe("require_approval");
+  });
+
   test("owner with envelope gets require_approval for destructive tool", async () => {
     const resolver = makeResolver();
     const envelope = await resolver.buildEnvelope(OWNER_ACTOR_ID, "tui:default", TEST_AGENT_ID);

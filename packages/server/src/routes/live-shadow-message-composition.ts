@@ -4505,8 +4505,7 @@ export async function selectLiveShadowTurnPlan(
 ): Promise<SharedAgentLiveShadowPlanResult | HumanPeerLiveShadowPlanResult> {
   const shared = await planners.shared(input);
   if (
-    input.requestVersion === 2
-    || shared.status !== "ineligible"
+    shared.status !== "ineligible"
     || shared.reason !== "room_topology_unsupported"
   ) return shared;
   return planners.humanPeer(input);

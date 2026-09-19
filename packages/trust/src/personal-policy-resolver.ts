@@ -764,8 +764,28 @@ export class PersonalPolicyResolver implements PolicyResolver {
       : getToolPolicy(tool.name);
     const requiredCap =
       "requiredCapability" in toolInfo ? toolInfo.requiredCapability : null;
+    const requiresApproval =
+      "requiresApproval" in toolInfo && toolInfo.requiresApproval === true;
 
     if (!requiredCap) {
+      if (requiresApproval) {
+        const agentIdForRouting = this.resolveAgentId("");
+        return {
+          type: "require_approval",
+          route: await this.routeApproval(
+            actorId,
+            tool.name,
+            {
+              toolName: tool.name,
+              params: (tool.args ?? {}) as Record<string, unknown>,
+              impact: toolInfo.impact === "read-only"
+                ? "low"
+                : toolInfo.impact as "low" | "high" | "destructive",
+            },
+            agentIdForRouting,
+          ),
+        };
+      }
       if (toolInfo.impact === "read-only") return { type: "read_only" };
       return { type: "allow" };
     }
@@ -776,8 +796,6 @@ export class PersonalPolicyResolver implements PolicyResolver {
     const caps = subjectUserId
       ? await getUserCapabilities(subjectUserId)
       : [];
-    const requiresApproval =
-      "requiresApproval" in toolInfo && toolInfo.requiresApproval === true;
     if (caps.includes(requiredCap)) {
       if (requiresApproval) {
         return {
@@ -970,7 +988,9 @@ function buildToolPolicyFromCapabilities(
   const policy: Record<string, ToolAccess> = {};
   for (const { name, impact, requiredCapability, requiresApproval } of getToolNamesAndPolicies()) {
     if (!requiredCapability) {
-      policy[name] = impact === "read-only" ? "read_only" : "allow";
+      policy[name] = requiresApproval
+        ? "require_prove_it"
+        : impact === "read-only" ? "read_only" : "allow";
     } else if (caps.includes(requiredCapability)) {
       policy[name] = impact === "destructive" || requiresApproval
         ? "require_prove_it"

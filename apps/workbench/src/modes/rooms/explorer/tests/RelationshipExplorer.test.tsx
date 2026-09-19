@@ -12,6 +12,8 @@ import type { RoomSummaryDto } from "@nautilo/types";
 let grantedCapabilities = new Set(["create_rooms", "read_memories"]);
 let archivedRoomsFixture: RoomSummaryDto[] = [];
 const unarchiveRoom = mock(async () => ({ ok: true }));
+const removeRoomMember = mock(async () => ({ ok: true, kind: "user" as const }));
+const navigate = mock(() => undefined);
 const searchChats = mock(async () => ({
   conversations: [],
   conversationsTruncated: false,
@@ -28,8 +30,17 @@ mock.module("../../../../lib/api", () => ({
       rooms: opts?.includeArchived ? archivedRoomsFixture : [],
     }),
     unarchiveRoom,
+    removeRoomMember,
     searchChats,
   },
+}));
+
+mock.module("../../../../hooks/use-auth", () => ({
+  useAuth: () => ({ viewer: { sessionActorId: "viewer-actor" } }),
+}));
+
+mock.module("react-router-dom", () => ({
+  useNavigate: () => navigate,
 }));
 
 mock.module("../../../../hooks/use-can", () => ({
@@ -110,6 +121,8 @@ describe("RelationshipExplorer", () => {
     cleanup();
     archivedRoomsFixture = [];
     unarchiveRoom.mockClear();
+    removeRoomMember.mockClear();
+    navigate.mockClear();
     searchChats.mockClear();
     grantedCapabilities = new Set(["create_rooms", "read_memories"]);
     localStorage.removeItem(EXPANDED_STORAGE_KEY);
@@ -338,6 +351,78 @@ describe("RelationshipExplorer", () => {
     const { RelationshipExplorer } = await import("../RelationshipExplorer");
     const html = renderToStaticMarkup(<RelationshipExplorer />);
     expect(html).toContain('aria-label="Sort rooms (Recent, descending)"');
+  });
+
+  test("refreshes and navigates away after leaving the active public room", async () => {
+    mockVirtualizer();
+    const setActiveRoom = mock(() => {});
+    const refreshRooms = mock(async () => {});
+    mock.module("../../new-conversation/new-conversation-context", () => ({
+      useNewConversation: () => ({ open: mock(() => {}), close: mock(() => {}), isOpen: false }),
+    }));
+    mock.module("../use-explorer-data", () => ({
+      useExplorerData: () => ({
+        sections: [{
+          kind: "public",
+          title: "Public",
+          defaultCollapsed: false,
+          rows: [
+            { id: "left", kind: "room", depth: 0, label: "Leaving", roomId: "room-left", isSubthread: false, roomKind: "open" },
+            { id: "next", kind: "room", depth: 0, label: "Next", roomId: "room-next", isSubthread: false, roomKind: "open" },
+          ],
+        }],
+        activeRoomId: "room-left",
+        setActiveRoom,
+        refreshRooms,
+        refreshing: false,
+        ready: true,
+        error: null,
+        humanDirectory: [],
+      }),
+    }));
+
+    const { RelationshipExplorer } = await import("../RelationshipExplorer");
+    render(<RelationshipExplorer />);
+    window.dispatchEvent(new CustomEvent("nautilo:explorer-room-left", {
+      detail: { roomId: "room-left", label: "Leaving" },
+    }));
+
+    await waitFor(() => expect(refreshRooms).toHaveBeenCalled());
+    await waitFor(() => expect(setActiveRoom).toHaveBeenCalledWith("room-next"));
+  });
+
+  test("navigates home when the departed room has no fallback even if refresh fails", async () => {
+    mockVirtualizer();
+    const refreshRooms = mock(async () => { throw new Error("refresh unavailable"); });
+    mock.module("../../new-conversation/new-conversation-context", () => ({
+      useNewConversation: () => ({ open: mock(() => {}), close: mock(() => {}), isOpen: false }),
+    }));
+    mock.module("../use-explorer-data", () => ({
+      useExplorerData: () => ({
+        sections: [{
+          kind: "public",
+          title: "Public",
+          defaultCollapsed: false,
+          rows: [{ id: "left", kind: "room", depth: 0, label: "Leaving", roomId: "room-left", isSubthread: false, roomKind: "open" }],
+        }],
+        activeRoomId: "room-left",
+        setActiveRoom: mock(() => {}),
+        refreshRooms,
+        refreshing: false,
+        ready: true,
+        error: null,
+        humanDirectory: [],
+      }),
+    }));
+
+    const { RelationshipExplorer } = await import("../RelationshipExplorer");
+    render(<RelationshipExplorer />);
+    window.dispatchEvent(new CustomEvent("nautilo:explorer-room-left", {
+      detail: { roomId: "room-left", label: "Leaving" },
+    }));
+
+    expect(navigate).toHaveBeenCalledWith("/", { replace: true });
+    await waitFor(() => expect(refreshRooms).toHaveBeenCalled());
   });
 
   test("a nonempty query renders shared authorized results instead of filtering the tree", async () => {

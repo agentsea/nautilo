@@ -29,6 +29,11 @@ import {
   resolveNautiloStorageRoot,
   type ResolvedInstance,
 } from "@nautilo/config";
+import {
+  classifyProfileAuthority,
+  readProfileInstanceAuthority,
+  type InstanceAuthorityDecision,
+} from "@nautilo/instance-discovery/node";
 import { bootstrapDirForInstance } from "@nautilo/operator-secrets";
 import {
   bootstrapClaimInvite,
@@ -59,6 +64,7 @@ import {
   type MigrationLineageEntry,
 } from "../lib/migration-lineage";
 import { queryPostgresContainer } from "../lib/postgres-archive";
+import { isProtectedDurableInstance } from "../lib/protected-durable-instance";
 
 const REPO_ROOT = NAUTILO_REPO_ROOT;
 const BOOTSTRAP_SCRIPT = resolve(
@@ -75,34 +81,101 @@ const PG_POLL_INTERVAL_MS = 500;
 export function assertInfraMigrationLedgerCompatible(
   rawLedger: string,
   checkout: readonly MigrationLineageEntry[],
-): void {
+): Readonly<{ databaseMigrationCount: number; pendingMigrationCount: number }> {
   const database = parseDatabaseMigrationLedger(rawLedger);
-  // A genuinely fresh database has no Drizzle rows and is allowed to migrate.
-  if (database.length === 0) return;
+  // An empty ledger is a compatible prefix; instance authority is checked separately.
+  if (database.length === 0) {
+    return Object.freeze({
+      databaseMigrationCount: 0,
+      pendingMigrationCount: checkout.length,
+    });
+  }
   const mapped = mapDatabaseLedgerToCheckout(database, checkout);
   assertExactMigrationPrefix(mapped, checkout);
+  return Object.freeze({
+    databaseMigrationCount: database.length,
+    pendingMigrationCount: checkout.length - database.length,
+  });
 }
 
-async function preflightInfraMigrationLedger(container: string): Promise<void> {
+export function assertInfraPendingMigrationsAllowed(input: Readonly<{
+  rawLedger: string;
+  checkout: readonly MigrationLineageEntry[];
+  instanceRoot: string;
+  profileAuthority: InstanceAuthorityDecision | null;
+  iKnowWhatIAmDoing?: boolean;
+}>): void {
+  const state = assertInfraMigrationLedgerCompatible(
+    input.rawLedger,
+    input.checkout,
+  );
+  // An exact ledger has no pending schema mutation. A missing or empty ledger
+  // is fresh, but still has the checkout's full migration set pending and must
+  // pass the same instance-authority guard before db:migrate runs.
+  if (state.pendingMigrationCount === 0) return;
+  if (input.profileAuthority?.classification === "remote") {
+    throw new Error(
+      `profile authority classifies this instance as remote: ${input.profileAuthority.reason}`,
+    );
+  }
+  if (input.profileAuthority?.classification === "unknown") {
+    throw new Error(
+      `profile authority is ambiguous: ${input.profileAuthority.reason}`,
+    );
+  }
+  if (
+    isProtectedDurableInstance(input.instanceRoot, input.profileAuthority)
+    && input.iKnowWhatIAmDoing !== true
+  ) {
+    throw new Error(
+      `refusing to apply ${state.pendingMigrationCount} pending migration${
+        state.pendingMigrationCount === 1 ? "" : "s"
+      } to a protected durable instance without --i-know-what-i-am-doing`,
+    );
+  }
+}
+
+async function preflightInfraMigrationLedger(
+  container: string,
+  input: Readonly<{
+    instanceId: string;
+    instanceRoot: string;
+    operatorHomeDir: string;
+    iKnowWhatIAmDoing?: boolean;
+  }>,
+): Promise<void> {
   const ledgerTable = queryPostgresContainer({
     container,
     database: "nautilo",
     sql: "SELECT to_regclass('drizzle.__drizzle_migrations');",
   });
-  if (ledgerTable === "") return;
-  const rawLedger = queryPostgresContainer({
-    container,
-    database: "nautilo",
-    sql: `
-      SELECT created_at::text || '|' || hash
-      FROM drizzle.__drizzle_migrations
-      ORDER BY id ASC;
-    `,
-  });
+  const rawLedger = ledgerTable === ""
+    ? ""
+    : queryPostgresContainer({
+      container,
+      database: "nautilo",
+      sql: `
+        SELECT created_at::text || '|' || hash
+        FROM drizzle.__drizzle_migrations
+        ORDER BY id ASC;
+      `,
+    });
   const checkout = await readCheckoutMigrationLineage(
     join(DB_PACKAGE_DIR, "src", "migrations"),
   );
-  assertInfraMigrationLedgerCompatible(rawLedger, checkout);
+  const profileAuthority = classifyProfileAuthority(
+    input.instanceId,
+    readProfileInstanceAuthority(input.operatorHomeDir),
+  );
+  assertInfraPendingMigrationsAllowed({
+    rawLedger,
+    checkout,
+    instanceRoot: input.instanceRoot,
+    profileAuthority,
+    ...(input.iKnowWhatIAmDoing === undefined
+      ? {}
+      : { iKnowWhatIAmDoing: input.iKnowWhatIAmDoing }),
+  });
 }
 
 interface ExecOk {
@@ -438,11 +511,9 @@ async function waitForUrl200(url: string, timeoutMs: number): Promise<void> {
 
 export interface InfraStartOptions {
   /**
-   * D202 opt-in flag, retained for API compatibility but now a no-op.
-   * `infra:start` is the canonical orchestrator and always proceeds against
-   * whichever instance `resolveInstance()` picks; the inner
-   * `migrate-add-agent-role` sub-step self-grants regardless of this flag
-   * (see the call site below for rationale).
+   * Explicit opt-in for applying pending migrations to a protected durable
+   * instance. The inner `migrate-add-agent-role` sub-step remains covered by
+   * the orchestrator's own intent after this preflight passes.
    */
   iKnowWhatIAmDoing?: boolean | undefined;
   /**
@@ -572,10 +643,8 @@ export async function infraStart(options: InfraStartOptions = {}): Promise<numbe
     console.error("[infra:start] HOME is required to resolve clone provenance");
     return 1;
   }
-  const cloneOperationPath = join(
-    resolveNautiloStorageRoot(home, inst.instanceId),
-    "clone-operation.json",
-  );
+  const instanceRoot = resolveNautiloStorageRoot(home, inst.instanceId);
+  const cloneOperationPath = join(instanceRoot, "clone-operation.json");
   let logtoAlreadyProvisioned: boolean;
   try {
     const cloneOperation: unknown = existsSync(cloneOperationPath)
@@ -638,7 +707,14 @@ export async function infraStart(options: InfraStartOptions = {}): Promise<numbe
   console.log(`[infra:start]   ${legacyPg} healthy and bootstrap roles ready`);
 
   try {
-    await preflightInfraMigrationLedger(legacyPg);
+    await preflightInfraMigrationLedger(legacyPg, {
+      instanceId: inst.instanceId,
+      instanceRoot,
+      operatorHomeDir: home,
+      ...(options.iKnowWhatIAmDoing === undefined
+        ? {}
+        : { iKnowWhatIAmDoing: options.iKnowWhatIAmDoing }),
+    });
   } catch (err) {
     console.error(
       "[infra:start] migration lineage preflight failed before role repair, " +
