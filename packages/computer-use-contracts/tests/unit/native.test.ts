@@ -5,6 +5,7 @@ import {
   NATIVE_CONTRACT_SCHEMAS,
   computerDoInputSchema,
   computerObserveInputSchema,
+  computerNativeControlStateSchema,
 } from "../../src/native.ts";
 
 const suffix = "a".repeat(43);
@@ -15,6 +16,19 @@ const snapshotTarget = { version: 1, context, reference: `dsnap_${suffix}` } as 
 const regionTarget = { version: 1, context, reference: `dsnap_${"b".repeat(43)}` } as const;
 
 describe("native Computer Use action contract", () => {
+  test("selected control state preserves provider values without inventing missing state", () => {
+    const state = { completeness: "partial" as const, value: "0", valueDescription: "Muted", selected: false,
+      range: { minimum: 0, maximum: 100 } };
+    expect(computerNativeControlStateSchema.parse(state)).toEqual(state);
+    expect(computerNativeControlStateSchema.parse({ completeness: "partial", value: "" }))
+      .toEqual({ completeness: "partial", value: "" });
+    for (const invalid of [
+      { ...state, value: 0 }, { ...state, selected: "false" }, { ...state, completeness: "complete" },
+      { ...state, range: { minimum: 1, maximum: 1 } }, { ...state, range: { minimum: 0 } },
+      { ...state, range: { minimum: 0, maximum: Infinity } }, { ...state, checked: false },
+      { ...state, element_token: "private-token" },
+    ]) expect(computerNativeControlStateSchema.safeParse(invalid).success).toBe(false);
+  });
   test("exposes real pointer movement only with its truthful desktop-coordinate contract", () => {
     const operation = { kind: "move_pointer", scope: "desktop", target: snapshotTarget, coordinateSpace: "presented_snapshot_pixels", x: 12, y: 24 };
     expect(computerDoInputSchema.safeParse({ operation }).success).toBe(true);

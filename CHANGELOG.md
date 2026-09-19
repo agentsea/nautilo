@@ -29,6 +29,10 @@ store update, or Desktop/Host installation.
   uncertain effects to the Genie without replay. Hosted and ordinary control
   remain available when no eligible decision model is runnable.
 
+- Native Computer Use observations expose the selected control's reported value,
+  value description, selection state and numeric range when available. Missing
+  state stays unknown, and content is not retained in mutation receipts.
+
 - Automatic Jev browser decisions through OpenRouter. Genies can delegate routine
   clicks, exact text, keyboard input and other existing browser controls using
   fresh observations, with normal permissions and usage accounting. Larger

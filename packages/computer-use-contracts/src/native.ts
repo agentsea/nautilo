@@ -254,6 +254,20 @@ const computerElementRequestSelectorSchema = z.union([
   computerKeyElementSelectorSchema,
 ]);
 
+/** Fresh provider-reported content, separate from retained action authority.
+ * Missing attributes are unknown, not empty/false. Accessibility values can
+ * include placeholders or renderer echoes; task verification remains explicit.
+ */
+export const computerNativeControlStateSchema = z.object({
+  completeness: z.literal("partial"),
+  value: z.string().optional(),
+  valueDescription: z.string().optional(),
+  selected: z.boolean().optional(),
+  range: z.object({ minimum: z.number().finite(), maximum: z.number().finite() }).strict()
+    .refine((range) => range.maximum > range.minimum, "a provider range must have increasing endpoints").optional(),
+}).strict().describe("Partial accessibility state for the selected control. Missing fields are unknown. Provider values may include placeholders or renderer echoes; they are not independent proof of task completion.");
+export type ComputerNativeControlState = z.infer<typeof computerNativeControlStateSchema>;
+
 const computerTextElementEvidenceSchema = z
   .object({
     kind: z.literal("element"),
@@ -269,6 +283,7 @@ const computerTextElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerTextElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -296,6 +311,7 @@ const computerValueElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerValueElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -323,6 +339,7 @@ const computerClickElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerClickElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -349,6 +366,7 @@ const computerScrollElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerScrollElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -369,6 +387,7 @@ const computerKeyElementSelectionSchema = z.object({
   disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
   target: computerElementTargetReferenceSchema.optional(),
   evidence: computerKeyElementEvidenceSchema.optional(),
+  state: computerNativeControlStateSchema.optional(),
 }).strict().superRefine((value, context) => {
   const unique = value.disposition === "unique";
   if (unique !== (value.target !== undefined) || unique !== (value.evidence !== undefined)
@@ -383,7 +402,11 @@ const computerElementSelectionSchema = z.union([
   computerClickElementSelectionSchema,
   computerScrollElementSelectionSchema,
   computerKeyElementSelectionSchema,
-]);
+]).superRefine((value, context) => {
+  if (value.state !== undefined && value.disposition !== "unique") {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "control state belongs only to one freshly selected element" });
+  }
+});
 
 const computerWindowSemanticQuerySchema = sanitizedTargetLabelSchema
   .max(240)
@@ -2315,7 +2338,7 @@ export const COMPUTER_USE_NATIVE_CONTRACTS = {
   observe: {
     contractNamespace: "nautilo.computer_use",
     contractId: "native.observe",
-    contractVersion: 9,
+    contractVersion: 10,
     schemaDigest: schemaDigest(NATIVE_CONTRACT_SCHEMAS.observe),
     effectClass: "read",
     replayClass: "safe",

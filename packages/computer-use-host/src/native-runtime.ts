@@ -22,7 +22,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Jimp, JimpMime } from "jimp";
 import { COMPUTER_USE_HOST_PNG_MAX_BYTES } from "@nautilo/computer-use-host-protocol";
-import { normalizeCuaMacosKey, normalizeCuaMacosHotkey } from "@nautilo/computer-use-contracts/native";
+import { normalizeCuaMacosKey, normalizeCuaMacosHotkey, type ComputerNativeControlState } from "@nautilo/computer-use-contracts/native";
 
 const execFileAsync = promisify(execFile);
 const HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS = 100;
@@ -385,6 +385,7 @@ export type CuaWindowStateObserveResult =
       evidence?: Readonly<
         { kind: "element"; role: string; action: "type_text" | "scroll" | "set_value" | "click" | "right_click" | "double_click" | "press_key"; enabled?: boolean }
       >;
+      state?: ComputerNativeControlState;
     }>;
     windowSnapshot?: Readonly<{
       target: Readonly<{ version: 1; context: string; reference: string }>;
@@ -1170,14 +1171,14 @@ function clickControlRole(role: unknown): string | null {
  * Select one exact snapshot-bound native element for the requested operation.
  * Role, content, geometry and advisory actions do not establish writability.
  * Cua attempts the operation and reports the actual effect. An exact label is a
- * model-supplied disambiguator only; neither it nor any provider label crosses
- * the observation/result boundary.
+ * model-supplied disambiguator only. Selected control content is published only
+ * in the fresh observation, never retained in action authority or receipts.
  */
 function parseNativeElementSelection(
   result: CuaContextToolResult,
   selector: Readonly<{ role: string; labelEquals?: string }>,
 ): Readonly<{ disposition: "zero" | "ambiguous" | "incomplete" }>
-  | Readonly<{ disposition: "unique"; elementToken: string; enabled?: boolean; observedValue?: boolean; value?: string }> {
+  | Readonly<{ disposition: "unique"; elementToken: string; enabled?: boolean; observedValue?: boolean; value?: string; state: ComputerNativeControlState }> {
   const data = result.structuredContent;
   const elements = data === null ? null : list(data["elements"]);
   if (elements === null) return { disposition: "incomplete" };
@@ -1213,8 +1214,22 @@ function parseNativeElementSelection(
       : typeof value === "string" && ["0", "false", "no", "off"].includes(value.trim().toLowerCase())
         ? false
         : undefined;
+  const minimum = sole["min"];
+  const maximum = sole["max"];
+  // The public state projection preserves typed provider attributes without
+  // coercion, placeholder inference, or first-N text truncation. Unknown
+  // optional metadata does not retire the driver session.
+  const state: ComputerNativeControlState = {
+    completeness: "partial",
+    ...(typeof value === "string" ? { value } : {}),
+    ...(typeof sole["value_description"] === "string" ? { valueDescription: sole["value_description"] } : {}),
+    ...(typeof selected === "boolean" ? { selected } : {}),
+    ...(typeof minimum === "number" && Number.isFinite(minimum)
+      && typeof maximum === "number" && Number.isFinite(maximum) && maximum > minimum
+      ? { range: { minimum, maximum } } : {}),
+  };
   return {
-    disposition: "unique", elementToken: token,
+    disposition: "unique", elementToken: token, state,
     ...(enabled === undefined ? {} : { enabled }),
     ...(typeof value === "string" ? { value } : {}),
     ...(normalizedValue === undefined ? {} : { observedValue: normalizedValue }),
@@ -2807,6 +2822,7 @@ export class CuaComputerUseAdapter {
         ...(mintedElement !== null ? {
           target: { version: 1 as const, context: request.target.context, reference: mintedElement.reference },
           evidence: elementInput!.evidence,
+          ...(selection?.disposition === "unique" ? { state: selection.state } : {}),
         } : {}),
       };
       // A deliberate fresh read replaces old tokens; it never replays an effect.

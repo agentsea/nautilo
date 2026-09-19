@@ -56,6 +56,37 @@ test("native editing guidance covers whole filenames, scope recovery, and commit
   expect(guidance).toContain("Never remove window identity checks");
 });
 
+test("catalogue publishes partial control state for every unique native selection family", () => {
+  const entry = bundledComputerUseContractCatalogue.contracts.find(
+    (candidate) => candidate.descriptor.contractId === "native.observe",
+  )!;
+  expect(entry.descriptor.contractVersion).toBe(10);
+  const states: unknown[] = [];
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    const node = value as Record<string, unknown>;
+    const properties = node["properties"] as Record<string, unknown> | undefined;
+    if (properties?.["state"] !== undefined) states.push(properties["state"]);
+    for (const child of Object.values(node)) visit(child);
+  };
+  visit(entry.publicSchemas.result.jsonSchema);
+  expect(states).toHaveLength(5);
+  for (const state of states) expect(state).toMatchObject({
+    type: "object",
+    properties: {
+      completeness: { const: "partial" },
+      value: { type: "string" },
+      valueDescription: { type: "string" },
+      selected: { type: "boolean" },
+      range: { properties: { minimum: { type: "number" }, maximum: { type: "number" } } },
+    },
+    required: ["completeness"],
+    additionalProperties: false,
+  });
+  expect(bundledComputerUseContractCatalogue.modelGuidance).toContain("Missing fields are unknown");
+  expect(bundledComputerUseContractCatalogue.modelGuidance).toContain("placeholder or renderer echo");
+});
+
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), {
     status: 200,
@@ -227,7 +258,7 @@ test("only exact reviewed read-safe Host descriptors opt into coordinated schedu
     replayClass: entry.descriptor.replayClass,
   }))).toEqual([
     { contractId: "browser.read_page", contractVersion: 5, executionLane: "host", effectClass: "read", replayClass: "safe" },
-    { contractId: "native.observe", contractVersion: 9, executionLane: "host", effectClass: "read", replayClass: "safe" },
+    { contractId: "native.observe", contractVersion: 10, executionLane: "host", effectClass: "read", replayClass: "safe" },
   ]);
 
   let executions = 0;
