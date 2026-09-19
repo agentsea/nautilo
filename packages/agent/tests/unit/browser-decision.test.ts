@@ -1,0 +1,2189 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import type { ToolCall } from "@langchain/core/messages/tool";
+import { invalidateRuntimeConfigCache, setConfigOverrides } from "@nautilo/config";
+import { z } from "zod";
+import type { NautiloState } from "../../src/agent/state";
+import {
+  browserDecisionCandidates,
+  browserDecisionPlanError,
+  browserDecisionPlanSchema,
+  currentBrowserDecision,
+  settleBrowserDecision,
+  type BrowserDecisionObservation,
+  type BrowserDecisionPlan,
+  type BrowserDecisionState,
+} from "../../src/graph/browser-decision";
+import { createBrowserDecisionNode } from "../../src/nodes/browser-decision";
+import { projectBrowserHandoffForProvider } from "../../src/nodes/pre-model";
+import {
+  ChoiceRequestError,
+  type OpenRouterChoiceInput,
+} from "../../src/providers/openrouter-choice";
+import {
+  configureRuntimeModelCatalog,
+  resetRuntimeModelCatalog,
+} from "../../src/config/model-catalog/runtime-catalog";
+import { getUsageContext } from "../../src/usage/usage-context";
+
+const JEV_ID = "openrouter:typesafe/jev-1.13";
+const RESULTS_PROGRESS_KEY = JSON.stringify({ kind: "snapshot_contains", text: "Results" });
+const REDACTED_TYPE_DESCRIPTION = JSON.stringify({
+  kind: "type",
+  role: "textbox",
+  name: "Search",
+  value: "Genie-supplied text",
+  clear: true,
+});
+
+const plan: BrowserDecisionPlan = {
+  goal: "Open the exact result and continue through the reviewed controls",
+  constraints: ["Do not leave the reviewed origin"],
+  allowedOrigins: ["https://shop.example"],
+  actions: [
+    { kind: "click", role: "button", name: "Open details" },
+    { kind: "type", role: "textbox", name: "Search", text: "blue mug", clear: true },
+  ],
+  progress: [{ kind: "snapshot_contains", text: "Results" }],
+  success: [{ kind: "snapshot_contains", text: "Order complete" }],
+};
+
+function observation(
+  overrides: Partial<BrowserDecisionObservation> = {},
+): BrowserDecisionObservation {
+  return {
+    version: 1,
+    snapshot: "Results are ready",
+    refs: {
+      e1: { role: " button ", name: "Open   details" },
+      e2: { role: "textbox", name: "Search" },
+    },
+    pageUrl: "https://shop.example/results",
+    browserSessionId: "browser-session-1",
+    observationId: "observation-1",
+    ...overrides,
+  };
+}
+
+function decision(overrides: Partial<BrowserDecisionState> = {}): BrowserDecisionState {
+  return {
+    turnId: "turn-1",
+    modelId: JEV_ID,
+    plan,
+    phase: "decide",
+    observation: observation(),
+    pending: null,
+    reason: null,
+    recovery: {
+      interventionLimit: 2,
+      consecutiveEvents: 0,
+      interventionAt: 2,
+      progressSeen: [RESULTS_PROGRESS_KEY],
+      assessNextObservation: false,
+    },
+    ...overrides,
+  };
+}
+
+function state(overrides: Partial<NautiloState> = {}): NautiloState {
+  return {
+    turnId: "turn-1",
+    userId: "user-1",
+    messages: [],
+    browserDecision: decision(),
+    noProgressPendingCorrection: null,
+    noProgressPendingStop: null,
+    approvalDenied: false,
+    approvedToolCalls: [],
+    ...overrides,
+  } as unknown as NautiloState;
+}
+
+function call(
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+): ToolCall & { id: string } {
+  return { id, name, args, type: "tool_call" };
+}
+
+function successfulResult(
+  toolCall: ToolCall & { id: string },
+  content: string,
+): ToolMessage {
+  return new ToolMessage({
+    name: toolCall.name,
+    tool_call_id: toolCall.id,
+    content,
+    additional_kwargs: { nautilo_tool_status: "success" },
+  });
+}
+
+function failedResult(
+  toolCall: ToolCall & { id: string },
+  browserFailure?: string,
+): ToolMessage {
+  return new ToolMessage({
+    name: toolCall.name,
+    tool_call_id: toolCall.id,
+    content: "",
+    additional_kwargs: {
+      nautilo_tool_status: "error",
+      ...(browserFailure === undefined ? {} : { nautilo_browser_failure: browserFailure }),
+    },
+  });
+}
+
+function startingState(toolCall: ToolCall & { id: string }): NautiloState {
+  return state({
+    browserDecision: null,
+    messages: [new AIMessage({ content: "", tool_calls: [toolCall] })],
+  });
+}
+
+function proposedToolCall(update: Partial<NautiloState>): ToolCall & { id: string } {
+  const message = update.messages?.at(-1);
+  expect(AIMessage.isInstance(message)).toBe(true);
+  const proposed = AIMessage.isInstance(message) ? message.tool_calls?.[0] : undefined;
+  expect(proposed?.id).toBeString();
+  if (!proposed?.id) throw new Error("expected one proposed tool call");
+  return proposed as ToolCall & { id: string };
+}
+
+describe("browser decision policy", () => {
+  test("goal and named values discover fresh targets without predicting field labels", () => {
+    const supplied = "  Café\n#ffd8a8  ";
+    const parsed = browserDecisionPlanSchema.parse({ goal: "Set the background", values: { "background color": supplied } });
+    expect(parsed.actions).toEqual([{ kind: "click_observed" }]);
+    const snapshot = call("values-plan", "browser_snapshot", { decisionPlan: parsed });
+    const settled = settleBrowserDecision(startingState(snapshot), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID);
+    if (!settled) throw new Error("expected admitted plan");
+    const fresh = observation({ refs: { e17: { role: "combobox", name: "Hex code" } } });
+    const built = browserDecisionCandidates(settled.plan, fresh, 4);
+    expect(built.reason).toBeNull();
+    expect(built.candidates[1]?.call).toEqual({ name: "browser_type", args: { ref: "@e17", text: supplied, clear: true } });
+    expect(JSON.parse(built.candidates[1]!.description)).toMatchObject({ valueName: "background color", role: "combobox", name: "Hex code" });
+    expect(built.candidates.map(({ description }) => description).join()).not.toContain(supplied);
+    expect(built.candidates.map(({ call }) => call?.args["ref"] as unknown)).not.toContain("@e2");
+  });
+
+  test("supplied values retain complete coverage, empty text and distinct values on duplicate labels", () => {
+    const valuePlan = browserDecisionPlanSchema.parse({ goal: "Fill the form", allowedOrigins: ["https://shop.example"],
+      values: { "first name": "Ada", "last name": "Lovelace", "clear note": "" } });
+    const fresh = observation({ refs: { e3: { role: "custom-input", name: "Name" }, e9: { role: "textbox", name: "Name" } } });
+    const built = browserDecisionCandidates(valuePlan, fresh, 10);
+    expect(built.reason).toBeNull();
+    expect(built.candidates.filter(({ call }) => call?.name === "browser_type").map(({ call }) => call?.args)).toEqual([
+      { ref: "@e3", text: "Ada", clear: true }, { ref: "@e9", text: "Ada", clear: true },
+      { ref: "@e3", text: "Lovelace", clear: true }, { ref: "@e9", text: "Lovelace", clear: true },
+      { ref: "@e3", text: "", clear: true }, { ref: "@e9", text: "", clear: true },
+    ]);
+    const overCapacity = browserDecisionCandidates(valuePlan, fresh, 9);
+    expect(overCapacity.reason).toBeNull();
+    expect(overCapacity.candidates).toHaveLength(10);
+  });
+
+  test("supplied-value choices do not duplicate an identical exact typing template", () => {
+    const built = browserDecisionCandidates({ ...plan, values: { query: "blue mug" } }, observation(), 20);
+    expect(built.reason).toBeNull();
+    expect(built.candidates.filter(({ call }) => call?.name === "browser_type" && call.args["ref"] === "@e2")).toHaveLength(1);
+  });
+
+  test("equal text for different purposes preserves both semantic choices", () => {
+    const built = browserDecisionCandidates({ ...plan, actions: [{ kind: "click_observed" }],
+      values: { "sender name": "Alex", "recipient name": "Alex" } },
+    observation({ refs: { e7: { role: "textbox", name: "Recipient" } } }), 5);
+    expect(built.reason).toBeNull();
+    expect(built.candidates.filter(({ call }) => call?.name === "browser_type").map(({ description }) =>
+      (JSON.parse(description) as { valueName: string }).valueName)).toEqual(["sender name", "recipient name"]);
+  });
+
+  test("normalizes credential-free HTTP(S) URLs to origins for matching", () => {
+    const accepted = browserDecisionPlanSchema.parse({
+      ...plan,
+      allowedOrigins: [
+        "http://127.0.0.1:9460/catalogue.html?stage=1",
+        "https://shop.example/path#detail",
+        "https://shop.example",
+        "http://127.0.0.1:9460",
+      ],
+    });
+    expect(browserDecisionCandidates(
+      accepted,
+      observation({ pageUrl: "http://127.0.0.1:9460/results" }),
+      4,
+    ).reason).toBeNull();
+
+    const snapshot = call("snapshot-root-origins", "browser_snapshot", {
+      decisionPlan: accepted,
+    });
+    const settled = settleBrowserDecision(
+      startingState(snapshot), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({
+        pageUrl: "http://127.0.0.1:9460/results",
+      })))],
+      [], JEV_ID,
+    );
+    expect(settled?.plan.allowedOrigins).toEqual([
+      "http://127.0.0.1:9460",
+      "https://shop.example",
+    ]);
+  });
+
+  test("defaults minimal goal-and-actions plans and binds them to the fresh observation origin", () => {
+    const unboundPlan = {
+      goal: "Search for the exact product",
+      actions: [{ kind: "click" as const, role: "button", name: "Open details", ignoredActionField: "discard" }],
+      ignoredPlanField: "discard",
+    };
+    const parsed = browserDecisionPlanSchema.parse(unboundPlan);
+    expect(parsed).toEqual({
+      goal: "Search for the exact product",
+      constraints: [],
+      allowedOrigins: [],
+      actions: [{ kind: "click", role: "button", name: "Open details" }],
+      progress: [],
+      success: [],
+    });
+
+    for (const [label, decisionPlan] of [
+      ["omitted origins", unboundPlan],
+      ["empty origins", { ...unboundPlan, constraints: [], allowedOrigins: [] }],
+    ] as const) {
+      const snapshot = call(`snapshot-${label}`, "browser_snapshot", { decisionPlan });
+      const settled = settleBrowserDecision(
+        startingState(snapshot),
+        [snapshot],
+        [successfulResult(snapshot, JSON.stringify(observation({
+          pageUrl: "http://127.0.0.1:9460/results",
+        })))],
+        [],
+        JEV_ID,
+      );
+      expect(settled?.plan.constraints).toEqual([]);
+      expect(settled?.plan.allowedOrigins).toEqual(["http://127.0.0.1:9460"]);
+      expect(settled?.plan).not.toHaveProperty("ignoredPlanField");
+      expect(settled?.plan.actions[0]).not.toHaveProperty("ignoredActionField");
+      if (!settled?.observation) throw new Error("expected a settled observation");
+      const candidates = browserDecisionCandidates(settled.plan, settled.observation, 3);
+      expect(candidates.reason).toBeNull();
+      if (candidates.reason !== null) throw new Error("expected a minimal-plan action candidate");
+      expect(candidates.candidates[0]?.call).toEqual({ name: "browser_click", args: { ref: "@e1" } });
+    }
+  });
+
+  test("returns canonical, input-only plan repair guidance without guessing required semantics", () => {
+    const rejected = browserDecisionPlanSchema.safeParse({
+      allowedOrigins: ["https://user:test1@example.com/?canary=1"],
+      ignoredPlanField: "private-planner-value",
+    });
+    expect(rejected.success).toBe(false);
+    if (rejected.success) throw new Error("expected an invalid decision plan");
+
+    const diagnostic: unknown = JSON.parse(browserDecisionPlanError(rejected.error));
+    expect(diagnostic).toMatchObject({
+      error: "invalid_browser_decision_plan",
+      browserRequestSent: false,
+    });
+    if (diagnostic === null || typeof diagnostic !== "object") throw new Error("expected a diagnostic object");
+    const record = diagnostic as Record<string, unknown>;
+    expect(record["expectedContract"]).toEqual(z.toJSONSchema(browserDecisionPlanSchema, { io: "input" }));
+    const issues = record["issues"];
+    if (!Array.isArray(issues)) throw new Error("expected diagnostic issues");
+    const issuePaths = issues.map((issue) => {
+      if (issue === null || typeof issue !== "object") throw new Error("expected diagnostic issue");
+      return JSON.stringify((issue as Record<string, unknown>)["path"]);
+    });
+    for (const requiredPath of [
+      JSON.stringify(["decisionPlan", "goal"]),
+      JSON.stringify(["decisionPlan", "allowedOrigins", 0]),
+    ]) expect(issuePaths).toContain(requiredPath);
+    expect(JSON.stringify(diagnostic)).not.toContain("private-planner-value");
+    expect(JSON.stringify(diagnostic)).not.toContain("test1");
+    expect(JSON.stringify(diagnostic)).not.toContain("canary");
+  });
+
+  test("hands a plan back when its default origin is not HTTP(S)", () => {
+    const snapshot = call("snapshot-file-origin", "browser_snapshot", {
+      decisionPlan: {
+        goal: "Search for the exact product",
+        actions: [{ kind: "click", role: "button", name: "Search" }],
+        progress: [{ kind: "snapshot_contains", text: "Results" }],
+        success: [{ kind: "snapshot_contains", text: "Found" }],
+      },
+    });
+    const settled = settleBrowserDecision(
+      startingState(snapshot),
+      [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({ pageUrl: "file:///catalogue.html" })))],
+      [],
+      JEV_ID,
+    );
+    expect(settled).toMatchObject({ phase: "handoff", reason: "routine_browser_requires_http_origin" });
+  });
+
+  test("rejects credentialed, non-HTTP, and malformed allowed origins", () => {
+    for (const allowedOrigin of [
+      "https://user:test1@example.com/",
+      "ftp://shop.example/",
+      ":// malformed origin",
+    ]) {
+      expect(browserDecisionPlanSchema.safeParse({
+        ...plan,
+        allowedOrigins: [allowedOrigin],
+      }).success, allowedOrigin).toBe(false);
+    }
+  });
+
+  test("covers every exact normalized role/name action plus observe and defer", () => {
+    const built = browserDecisionCandidates(plan, observation(), 4);
+
+    expect(built).toEqual({
+      reason: null,
+      candidates: [
+        {
+          id: "action_0",
+          description: JSON.stringify(plan.actions[0]),
+          call: { name: "browser_click", args: { ref: "@e1" } },
+        },
+        {
+          id: "action_1",
+          description: REDACTED_TYPE_DESCRIPTION,
+          call: {
+            name: "browser_type",
+            args: { ref: "@e2", text: "blue mug", clear: true },
+          },
+        },
+        {
+          id: "reobserve",
+          description: "Observe again because the page is still changing; do not repeat an uncertain action.",
+          call: { name: "browser_snapshot", args: {} },
+        },
+        {
+          id: "defer_to_genie",
+          description: expect.any(String) as string,
+          call: null,
+        },
+      ],
+    });
+
+    expect(browserDecisionCandidates(plan, observation({
+      refs: { e1: { role: "button", name: "open details" } },
+    }), 4)).toEqual({ candidates: [], reason: "no_planned_target_requires_genie" });
+  });
+
+  test("maps the ordinary browser controls with exact arguments and fresh semantic refs", () => {
+    const expandedPlan = browserDecisionPlanSchema.parse({
+      ...plan,
+      actions: [
+        { kind: "press", key: "Control+Alt+Shift+K" },
+        { kind: "press", key: "Home" },
+        { kind: "hover", role: "button", name: "Menu" },
+        { kind: "double_click", role: "button", name: "Menu" },
+        { kind: "scroll_into_view", role: "button", name: "Menu" },
+        { kind: "select", role: "select", name: "Shipping", values: ["express", "pickup"] },
+        { kind: "set_checked", role: "checkbox", name: "Subscribe", checked: false },
+        { kind: "drag", from: { role: "listitem", name: "Source" }, to: { role: "listitem", name: "Destination" } },
+        { kind: "scroll", direction: "left", amount: 137.5 },
+        { kind: "back" },
+        { kind: "forward" },
+        { kind: "reload" },
+        { kind: "open", url: "https://shop.example/next" },
+      ],
+    });
+    const refs = {
+      e10: { role: "button", name: "Menu" },
+      e11: { role: "select", name: "Shipping" },
+      e12: { role: "checkbox", name: "Subscribe" },
+      e13: { role: "listitem", name: "Source" },
+      e14: { role: "listitem", name: "Destination" },
+    };
+    const built = browserDecisionCandidates(expandedPlan, observation({ refs }), 255);
+    expect(built.reason).toBeNull();
+    if (built.reason !== null) throw new Error("expected expanded browser candidates");
+    expect(built.candidates.slice(0, -2).map(({ call }) => call)).toEqual([
+      { name: "browser_press", args: { key: "Control+Alt+Shift+K" } },
+      { name: "browser_press", args: { key: "Home" } },
+      { name: "browser_hover", args: { ref: "@e10" } },
+      { name: "browser_double_click", args: { ref: "@e10" } },
+      { name: "browser_scroll_into_view", args: { ref: "@e10" } },
+      { name: "browser_select", args: { ref: "@e11", values: ["express", "pickup"] } },
+      { name: "browser_set_checked", args: { ref: "@e12", checked: false } },
+      { name: "browser_drag", args: { from: "@e13", to: "@e14" } },
+      { name: "browser_scroll", args: { direction: "left", amount: 137.5 } },
+      { name: "browser_back", args: {} },
+      { name: "browser_forward", args: {} },
+      { name: "browser_reload", args: {} },
+      { name: "browser_open", args: { url: "https://shop.example/next" } },
+    ]);
+    expect(built.candidates.slice(0, 2).map(({ description }) => description)).toEqual([
+      JSON.stringify({ kind: "press", key: "Control+Alt+Shift+K" }),
+      JSON.stringify({ kind: "press", key: "Home" }),
+    ]);
+    expect(built.candidates[5]?.description).toBe(JSON.stringify({
+      kind: "select", role: "select", name: "Shipping", values: ["express", "pickup"],
+    }));
+    expect(built.candidates[7]?.description).toBe(JSON.stringify({
+      kind: "drag",
+      from: { role: "listitem", name: "Source" },
+      to: { role: "listitem", name: "Destination" },
+    }));
+    expect(built.candidates.slice(-2).map(({ id }) => id)).toEqual(["reobserve", "defer_to_genie"]);
+
+    const remapped = browserDecisionCandidates(expandedPlan, observation({ refs: {
+      e90: refs.e10, e91: refs.e11, e92: refs.e12, e93: refs.e13, e94: refs.e14,
+    }, observationId: "observation-2" }), 255);
+    expect(remapped.reason).toBeNull();
+    if (remapped.reason !== null) throw new Error("expected remapped browser candidates");
+    expect(remapped.candidates.slice(2, 8).map(({ call }) => call)).toEqual([
+      { name: "browser_hover", args: { ref: "@e90" } },
+      { name: "browser_double_click", args: { ref: "@e90" } },
+      { name: "browser_scroll_into_view", args: { ref: "@e90" } },
+      { name: "browser_select", args: { ref: "@e91", values: ["express", "pickup"] } },
+      { name: "browser_set_checked", args: { ref: "@e92", checked: false } },
+      { name: "browser_drag", args: { from: "@e93", to: "@e94" } },
+    ]);
+  });
+
+  test("hands an ambiguous drag back without proposing either endpoint", () => {
+    const dragPlan = browserDecisionPlanSchema.parse({ ...plan, actions: [{ kind: "drag",
+      from: { role: "listitem", name: "Source" }, to: { role: "listitem", name: "Destination" } }] });
+    expect(browserDecisionCandidates(dragPlan, observation({ refs: {
+      e20: { role: "listitem", name: "Source" },
+      e21: { role: "listitem", name: "Source" },
+      e22: { role: "listitem", name: "Destination" },
+    } }), 255)).toEqual({ candidates: [], reason: "ambiguous_target_requires_genie" });
+  });
+
+  test("rejects a known navigation outside the plan's reviewed origins before proposing it", () => {
+    const navigationPlan = browserDecisionPlanSchema.parse({
+      ...plan,
+      actions: [{ kind: "open", url: "https://unreviewed.example/path" }],
+    });
+    expect(browserDecisionCandidates(navigationPlan, observation(), 255)).toEqual({
+      candidates: [], reason: "navigation_outside_planned_origins",
+    });
+  });
+
+  test("offers every fresh observed target without a role allowlist, preserving each observed ref and cap fence", () => {
+    const observedPlan: BrowserDecisionPlan = { ...plan, actions: [{ kind: "click_observed" }] };
+    const dynamic = observation({ refs: {
+      e7: { role: "link", name: "New result introduced after planning" },
+      e8: { role: "treeitem", name: "Unlisted control role" },
+    } });
+    const candidates = browserDecisionCandidates(observedPlan, dynamic, 4);
+    expect(candidates.reason).toBeNull();
+    if (candidates.reason !== null) throw new Error("expected dynamic observed candidates");
+    expect(candidates.candidates.slice(0, 2).map((candidate) => candidate.call)).toEqual([
+      { name: "browser_click", args: { ref: "@e7" } },
+      { name: "browser_click", args: { ref: "@e8" } },
+    ]);
+
+    const duplicateLabels = browserDecisionCandidates(observedPlan, observation({ refs: {
+      e7: { role: "button", name: "Inherited duplicate label" },
+      e8: { role: "button", name: "Inherited duplicate label" },
+    } }), 255);
+    expect(duplicateLabels.reason).toBeNull();
+    if (duplicateLabels.reason !== null) throw new Error("expected distinct observed duplicate-label candidates");
+    expect(duplicateLabels.candidates.slice(0, 2)).toEqual([
+      {
+        id: "action_0",
+        description: JSON.stringify({ kind: "click", role: "button", name: "Inherited duplicate label", targetRef: "@e7" }),
+        call: { name: "browser_click", args: { ref: "@e7" } },
+      },
+      {
+        id: "action_1",
+        description: JSON.stringify({ kind: "click", role: "button", name: "Inherited duplicate label", targetRef: "@e8" }),
+        call: { name: "browser_click", args: { ref: "@e8" } },
+      },
+    ]);
+
+    const overCapacity = browserDecisionCandidates(observedPlan, observation({ refs: {
+      e7: { role: "link", name: "First dynamic result" },
+      e8: { role: "treeitem", name: "Second dynamic result" },
+      e9: { role: "tab", name: "Third dynamic result" },
+    } }), 4);
+    expect(overCapacity.reason).toBeNull();
+    expect(overCapacity.candidates).toHaveLength(5);
+  });
+
+  test("fails closed on an ambiguous exact target", () => {
+    expect(browserDecisionCandidates(plan, observation({
+      refs: {
+        e1: { role: "button", name: "Open details" },
+        e9: { role: " button ", name: "Open   details" },
+      },
+    }), 255)).toEqual({ candidates: [], reason: "ambiguous_target_requires_genie" });
+  });
+
+  test("defers indistinguishable typing choices instead of asking Jev to guess the local value", () => {
+    expect(browserDecisionCandidates({ ...plan, actions: [
+      { kind: "type", role: "textbox", name: "Search", text: "first", clear: true },
+      { kind: "type", role: "textbox", name: "Search", text: "second", clear: true },
+    ] }, observation(), 255)).toEqual({ candidates: [], reason: "ambiguous_planned_action_requires_genie" });
+  });
+
+  test("preserves the complete candidate set instead of truncating it to the model cap", () => {
+    const full = browserDecisionCandidates(plan, observation(), 4);
+    expect(full.reason).toBeNull();
+    if (full.reason !== null) throw new Error("expected full candidate set");
+    expect(full.candidates).toHaveLength(4);
+
+    const overCapacity = browserDecisionCandidates(plan, observation(), 3);
+    expect(overCapacity.reason).toBeNull();
+    expect(overCapacity.candidates).toEqual(full.candidates);
+  });
+
+  test("hands novel targets and origin changes back while completion evidence remains advisory", () => {
+    expect(browserDecisionCandidates(plan, observation({ refs: {
+      e7: { role: "link", name: "A newly introduced choice" },
+    } }), 255)).toEqual({ candidates: [], reason: "no_planned_target_requires_genie" });
+
+    const matchedEvidence = browserDecisionCandidates(plan, observation({
+      snapshot: "Results\nOrder complete",
+    }), 255);
+    expect(matchedEvidence.reason).toBeNull();
+    if (matchedEvidence.reason !== null) throw new Error("expected advisory completion evidence");
+    expect(matchedEvidence.candidates.map(({ id }) => id)).toEqual([
+      "action_0", "action_1", "reobserve", "defer_to_genie",
+    ]);
+
+    expect(browserDecisionCandidates(plan, observation({
+      pageUrl: "https://checkout.example/order",
+    }), 255)).toEqual({ candidates: [], reason: "page_left_planned_origins" });
+
+    const noDeclaredCompletion = browserDecisionCandidates({ ...plan, success: [] }, observation(), 255);
+    expect(noDeclaredCompletion.reason).toBeNull();
+    if (noDeclaredCompletion.reason !== null) throw new Error("expected Genie verification defer candidate");
+    const defer = noDeclaredCompletion.candidates.at(-1);
+    expect(defer?.id).toBe("defer_to_genie");
+    expect(defer?.description).toContain("independent verification");
+    expect(defer?.call).toBeNull();
+  });
+
+  test("only returns a decision bound to the current turn", () => {
+    const matchingDecision = decision();
+    const matching = state({ browserDecision: matchingDecision });
+    expect(currentBrowserDecision(matching)).toBe(matchingDecision);
+    expect(currentBrowserDecision(state({ turnId: "turn-2" }))).toBeNull();
+    expect(currentBrowserDecision(state({ turnId: "" }))).toBeNull();
+  });
+});
+
+describe("browser decision settlement", () => {
+  test("ordinary snapshot, click, type, and press results remain outside the optional decision loop", () => {
+    const ordinaryCalls = [
+      call("ordinary-snapshot", "browser_snapshot", {}),
+      call("ordinary-click", "browser_click", { ref: "@e1" }),
+      call("ordinary-type", "browser_type", { ref: "@e2", text: "exact text", clear: true }),
+      call("ordinary-press", "browser_press", { key: "Enter" }),
+    ];
+    for (const ordinaryCall of ordinaryCalls) {
+      const ordinaryState = state({
+        browserDecision: null,
+        messages: [new AIMessage({ content: "", tool_calls: [ordinaryCall] })],
+      });
+      expect(settleBrowserDecision(
+        ordinaryState,
+        [ordinaryCall],
+        [successfulResult(ordinaryCall, ordinaryCall.name === "browser_snapshot"
+          ? JSON.stringify(observation()) : "{}")],
+        [],
+        JEV_ID,
+      )).toBeNull();
+    }
+  });
+
+  test("matching completion evidence on the starting page does not stop the decision loop", () => {
+    const snapshot = call("already-done", "browser_snapshot", {
+      decisionPlan: { ...plan, success: [{ kind: "snapshot_contains", text: "Results" }] },
+    });
+    const settled = settleBrowserDecision(startingState(snapshot), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID);
+    expect(settled).toMatchObject({ phase: "decide", reason: null, observation: observation() });
+  });
+
+  test("starts only from one admitted successful snapshot and binds its fresh observation", () => {
+    const snapshot = call("snapshot-1", "browser_snapshot", { decisionPlan: plan });
+    const result = successfulResult(snapshot, JSON.stringify(observation()));
+
+    expect(settleBrowserDecision(
+      startingState(snapshot), [snapshot], [result], [], JEV_ID,
+    )).toEqual(decision());
+
+    expect(settleBrowserDecision(
+      startingState(snapshot), [snapshot, call("extra", "browser_click", { ref: "@e1" })],
+      [result], [], JEV_ID,
+    )).toBeNull();
+    expect(settleBrowserDecision(
+      startingState(snapshot), [snapshot], [result], [snapshot], JEV_ID,
+    )).toBeNull();
+    expect(settleBrowserDecision(
+      state({ browserDecision: null, messages: [] }), [snapshot], [result], [], JEV_ID,
+    )).toBeNull();
+    const batchSource = state({
+      browserDecision: null,
+      messages: [new AIMessage({
+        content: "",
+        tool_calls: [snapshot, call("batched", "browser_click", { ref: "@e1" })],
+      })],
+    });
+    expect(settleBrowserDecision(
+      batchSource, [snapshot], [result], [], JEV_ID,
+    )).toBeNull();
+  });
+
+  test("starts from an unambiguously misplaced top-level plan without changing the canonical tool call", () => {
+    const rawArgs = { ...plan };
+    const snapshot = call("snapshot-top-level-plan", "browser_snapshot", rawArgs);
+    const source = startingState(snapshot);
+    const settled = settleBrowserDecision(
+      source, [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID,
+    );
+
+    expect(settled).toEqual(decision());
+    expect(snapshot.args).toEqual(rawArgs);
+    expect(snapshot.args).not.toHaveProperty("decisionPlan");
+    const canonical = source.messages[0];
+    expect(AIMessage.isInstance(canonical) ? canonical.tool_calls?.[0]?.args : null).toEqual(rawArgs);
+  });
+
+  test("malformed, legacy, and unsuccessful initial snapshots fail closed", () => {
+    const snapshot = call("snapshot-1", "browser_snapshot", { decisionPlan: plan });
+    for (const content of [
+      "not-json",
+      JSON.stringify({ ...observation(), version: undefined }),
+      JSON.stringify({ snapshot: "legacy", refs: {}, url: "https://shop.example" }),
+    ]) {
+      expect(settleBrowserDecision(
+        startingState(snapshot), [snapshot], [successfulResult(snapshot, content)], [], JEV_ID,
+      )).toMatchObject({ phase: "handoff", reason: "fresh_bound_observation_unavailable" });
+    }
+
+    const failed = new ToolMessage({
+      name: snapshot.name,
+      tool_call_id: snapshot.id,
+      content: JSON.stringify(observation()),
+      additional_kwargs: { nautilo_tool_status: "error" },
+    });
+    expect(settleBrowserDecision(
+      startingState(snapshot), [snapshot], [failed], [], JEV_ID,
+    )).toMatchObject({ phase: "handoff", reason: "tool_failure_requires_genie_inspection" });
+  });
+
+  test("continues only the exact pending id, name, and arguments", () => {
+    const pendingCall = call("click-1", "browser_click", { ref: "@e1" });
+    const waiting = decision({
+      phase: "waiting",
+      pending: {
+        call: pendingCall,
+        browserSessionId: "browser-session-1",
+        observationId: "observation-1",
+      },
+    });
+    const base = state({ browserDecision: waiting });
+    const result = successfulResult(pendingCall, JSON.stringify({ clicked: true }));
+
+    expect(settleBrowserDecision(base, [pendingCall], [result], [], JEV_ID)).toEqual({
+      ...waiting,
+      phase: "observe",
+      pending: null,
+      reason: null,
+      recovery: { ...waiting.recovery!, assessNextObservation: true },
+    });
+
+    for (const changed of [
+      call("click-other", "browser_click", { ref: "@e1" }),
+      call("click-1", "browser_type", { ref: "@e1" }),
+      call("click-1", "browser_click", { ref: "@e2" }),
+    ]) {
+      expect(settleBrowserDecision(
+        base, [changed], [successfulResult(changed, "{}")], [], JEV_ID,
+      )).toMatchObject({ phase: "handoff", reason: "ordinary_genie_control", pending: null });
+    }
+  });
+
+  test("requires a continued snapshot to remain in its bound browser session", () => {
+    const snapshot = call("snapshot-2", "browser_snapshot", {});
+    const waiting = decision({
+      phase: "waiting",
+      pending: {
+        call: snapshot,
+        browserSessionId: "browser-session-1",
+        observationId: null,
+      },
+    });
+    const changedSession = observation({
+      browserSessionId: "browser-session-2",
+      observationId: "observation-2",
+    });
+
+    expect(settleBrowserDecision(
+      state({ browserDecision: waiting }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(changedSession))], [], JEV_ID,
+    )).toMatchObject({ phase: "handoff", reason: "fresh_bound_observation_unavailable" });
+  });
+
+  test("recovers from the first typed stale observation and intervenes on the second", () => {
+    const click = call("click-stale", "browser_click", { ref: "@e1" });
+    const waiting = decision({
+      phase: "waiting",
+      pending: {
+        call: click,
+        browserSessionId: "browser-session-1",
+        observationId: "observation-1",
+      },
+    });
+    const first = settleBrowserDecision(
+      state({ browserDecision: waiting }), [click],
+      [failedResult(click, "browser_observation_stale")], [], JEV_ID,
+    );
+    expect(first).toMatchObject({
+      phase: "observe",
+      reason: null,
+      recovery: { consecutiveEvents: 1, interventionAt: 2, assessNextObservation: false },
+    });
+    if (!first) throw new Error("expected stale recovery");
+
+    const snapshot = call("snapshot-stale", "browser_snapshot", {});
+    const secondWaiting: BrowserDecisionState = {
+      ...first,
+      phase: "waiting",
+      pending: {
+        call: snapshot,
+        browserSessionId: "browser-session-1",
+        observationId: null,
+      },
+    };
+    const second = settleBrowserDecision(
+      state({ browserDecision: secondWaiting }), [snapshot],
+      [failedResult(snapshot, "browser_observation_stale")], [], JEV_ID,
+    );
+    expect(second).toMatchObject({
+      phase: "handoff",
+      pending: null,
+      recovery: { consecutiveEvents: 2, interventionAt: 2 },
+    });
+    expect(second?.reason).toBe(
+      "browser_decision_intervention_required cause=browser_observation_stale count=2 limit=2",
+    );
+  });
+
+  test("counts one no-progress event only after an action and its fresh snapshot", () => {
+    const snapshot = call("snapshot-after-click", "browser_snapshot", {});
+    const waiting = decision({
+      phase: "waiting",
+      pending: {
+        call: snapshot,
+        browserSessionId: "browser-session-1",
+        observationId: null,
+      },
+      recovery: {
+        ...decision().recovery!,
+        assessNextObservation: true,
+      },
+    });
+
+    expect(settleBrowserDecision(
+      state({ browserDecision: waiting }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({ observationId: "observation-2" })))],
+      [], JEV_ID,
+    )).toMatchObject({
+      phase: "decide",
+      recovery: { consecutiveEvents: 1, assessNextObservation: false },
+    });
+  });
+
+  test("without declared milestones, UUID-only observations consume budget while material changes preserve prior errors", () => {
+    const noMilestonePlan: BrowserDecisionPlan = { ...plan, progress: [], success: [] };
+    const snapshot = call("snapshot-no-milestone", "browser_snapshot", {});
+    const waiting = decision({
+      plan: noMilestonePlan,
+      phase: "waiting",
+      pending: { call: snapshot, browserSessionId: "browser-session-1", observationId: null },
+      recovery: {
+        interventionLimit: 2,
+        consecutiveEvents: 0,
+        interventionAt: 2,
+        progressSeen: [],
+        assessNextObservation: true,
+      },
+    });
+    const uuidOnly = settleBrowserDecision(
+      state({ browserDecision: waiting }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({ observationId: "observation-2" })))],
+      [], JEV_ID,
+    );
+    expect(uuidOnly).toMatchObject({ phase: "decide", recovery: { consecutiveEvents: 1, assessNextObservation: false } });
+
+    const changed = settleBrowserDecision(
+      state({ browserDecision: { ...uuidOnly!, phase: "waiting", pending: {
+        call: snapshot,
+        browserSessionId: "browser-session-1",
+        observationId: null,
+      }, recovery: { ...uuidOnly!.recovery!, assessNextObservation: true } } }),
+      [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({ snapshot: "Results rendered with a different product list", observationId: "observation-3" })))],
+      [], JEV_ID,
+    );
+    expect(changed).toMatchObject({ phase: "decide", recovery: { consecutiveEvents: 1, assessNextObservation: false } });
+  });
+
+  test("changed intermediate states continue toward a pending milestone without consuming or clearing prior errors", () => {
+    const sliderPlan: BrowserDecisionPlan = {
+      ...plan,
+      progress: [{ kind: "snapshot_contains", text: "Level 7" }],
+      success: [],
+    };
+    const snapshot = call("snapshot-slider-progress", "browser_snapshot", {});
+    let current = decision({
+      plan: sliderPlan,
+      observation: observation({ snapshot: "Slider Level 0" }),
+      recovery: {
+        interventionLimit: 3,
+        consecutiveEvents: 1,
+        interventionAt: 3,
+        progressSeen: [],
+        assessNextObservation: true,
+      },
+    });
+
+    for (const level of [1, 2, 3]) {
+      const waiting: BrowserDecisionState = {
+        ...current,
+        phase: "waiting",
+        pending: { call: snapshot, browserSessionId: "browser-session-1", observationId: null },
+        recovery: { ...current.recovery!, assessNextObservation: true },
+      };
+      const next = settleBrowserDecision(
+        state({ browserDecision: waiting }), [snapshot],
+        [successfulResult(snapshot, JSON.stringify(observation({
+          snapshot: `Slider Level ${level}`,
+          observationId: `observation-${level + 1}`,
+        })))], [], JEV_ID,
+      );
+      expect(next).toMatchObject({
+        phase: "decide",
+        reason: null,
+        recovery: { consecutiveEvents: 1, interventionAt: 3, progressSeen: [], assessNextObservation: false },
+      });
+      if (!next) throw new Error("expected changed slider evidence to continue");
+      current = next;
+    }
+  });
+
+  test("unchanged evidence still escalates twice while a declared milestone remains pending", () => {
+    const sliderPlan: BrowserDecisionPlan = {
+      ...plan,
+      progress: [{ kind: "snapshot_contains", text: "Level 7" }],
+      success: [],
+    };
+    const snapshot = call("snapshot-slider-stalled", "browser_snapshot", {});
+    let current = decision({
+      plan: sliderPlan,
+      observation: observation({ snapshot: "Slider Level 3" }),
+      recovery: {
+        interventionLimit: 2,
+        consecutiveEvents: 0,
+        interventionAt: 2,
+        progressSeen: [],
+        assessNextObservation: true,
+      },
+    });
+
+    for (const observationId of ["observation-2", "observation-3"]) {
+      const waiting: BrowserDecisionState = {
+        ...current,
+        phase: "waiting",
+        pending: { call: snapshot, browserSessionId: "browser-session-1", observationId: null },
+        recovery: { ...current.recovery!, assessNextObservation: true },
+      };
+      const next = settleBrowserDecision(
+        state({ browserDecision: waiting }), [snapshot],
+        [successfulResult(snapshot, JSON.stringify(observation({
+          snapshot: "Slider Level 3",
+          observationId,
+        })))], [], JEV_ID,
+      );
+      if (!next) throw new Error("expected stalled slider evidence to settle");
+      current = next;
+    }
+
+    expect(current).toMatchObject({
+      phase: "handoff",
+      reason: "browser_decision_intervention_required cause=no_verified_progress count=2 limit=2",
+      recovery: { consecutiveEvents: 2, interventionAt: 2, progressSeen: [] },
+    });
+  });
+
+  test("a newly verified progress milestone alone clears the recovery streak", () => {
+    const milestonePlan: BrowserDecisionPlan = {
+      ...plan,
+      progress: [
+        ...plan.progress,
+        { kind: "snapshot_contains", text: "Details loaded" },
+      ],
+    };
+    const snapshot = call("snapshot-progress", "browser_snapshot", {});
+    const waiting = decision({
+      plan: milestonePlan,
+      phase: "waiting",
+      pending: {
+        call: snapshot,
+        browserSessionId: "browser-session-1",
+        observationId: null,
+      },
+      recovery: {
+        interventionLimit: 2,
+        consecutiveEvents: 1,
+        interventionAt: 2,
+        progressSeen: [RESULTS_PROGRESS_KEY],
+        assessNextObservation: true,
+      },
+    });
+    const progressed = settleBrowserDecision(
+      state({ browserDecision: waiting }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({
+        snapshot: "Results\nDetails loaded",
+        observationId: "observation-2",
+      })))], [], JEV_ID,
+    );
+
+    expect(progressed).toMatchObject({
+      phase: "decide",
+      recovery: {
+        consecutiveEvents: 0,
+        interventionAt: 2,
+        assessNextObservation: false,
+      },
+    });
+    expect(progressed?.recovery?.progressSeen).toContain(
+      JSON.stringify({ kind: "snapshot_contains", text: "Details loaded" }),
+    );
+  });
+
+  test("same plan and material evidence cannot restart a handed-off episode", () => {
+    const handedOff = decision({
+      phase: "handoff",
+      reason: "browser_decision_intervention_required cause=no_verified_progress count=2 limit=2",
+      recovery: {
+        ...decision().recovery!,
+        consecutiveEvents: 2,
+      },
+    });
+    const snapshot = call("snapshot-restart", "browser_snapshot", { decisionPlan: plan });
+    const uuidOnlyChange = observation({ observationId: "observation-new-uuid" });
+    const restart = state({
+      browserDecision: handedOff,
+      messages: [new AIMessage({ content: "", tool_calls: [snapshot] })],
+    });
+
+    const refused = settleBrowserDecision(
+      restart, [snapshot], [successfulResult(snapshot, JSON.stringify(uuidOnlyChange))], [], JEV_ID,
+    );
+    expect(refused).toMatchObject({
+      phase: "handoff",
+      observation: handedOff.observation,
+      recovery: { consecutiveEvents: 2, interventionAt: 2 },
+    });
+    expect(refused?.reason).toBe(
+      "browser_decision_restart_requires_revised_plan_or_evidence count=2 limit=2",
+    );
+  });
+
+  test("ordinary multi-tool batches retain recovery history before a refused restart", () => {
+    const handedOff = decision({
+      phase: "handoff",
+      reason: "browser_decision_intervention_required cause=no_verified_progress count=2 limit=2",
+      recovery: { ...decision().recovery!, consecutiveEvents: 2 },
+    });
+    const ordinary = call("ordinary-batch", "read_webpage", { url: "https://shop.example" });
+    const extra = call("ordinary-extra", "browser_click", { ref: "@e1" });
+    const retained = settleBrowserDecision(
+      state({ browserDecision: handedOff }), [ordinary, extra],
+      [successfulResult(ordinary, "{}")], [extra], JEV_ID,
+    );
+    expect(retained).toMatchObject({
+      phase: "handoff",
+      reason: "ordinary_genie_control",
+      recovery: { consecutiveEvents: 2, interventionAt: 2 },
+    });
+    if (!retained) throw new Error("expected recovery history to remain checkpointed");
+
+    const snapshot = call("snapshot-after-batch", "browser_snapshot", { decisionPlan: plan });
+    const refused = settleBrowserDecision(
+      state({
+        browserDecision: retained,
+        messages: [new AIMessage({ content: "", tool_calls: [snapshot] })],
+      }),
+      [snapshot], [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID,
+    );
+    expect(refused).toMatchObject({
+      phase: "handoff",
+      reason: "browser_decision_restart_requires_revised_plan_or_evidence count=2 limit=2",
+      recovery: { consecutiveEvents: 2 },
+    });
+  });
+
+  test("revised material evidence starts a new episode without erasing the streak", () => {
+    const handedOff = decision({
+      phase: "handoff",
+      reason: "browser_decision_intervention_required cause=no_verified_progress count=2 limit=2",
+      recovery: {
+        ...decision().recovery!,
+        consecutiveEvents: 2,
+      },
+    });
+    const snapshot = call("snapshot-revised", "browser_snapshot", { decisionPlan: plan });
+    const revisedEvidence = observation({
+      snapshot: "Results changed materially",
+      observationId: "observation-2",
+    });
+    const resumed = settleBrowserDecision(
+      state({
+        browserDecision: handedOff,
+        messages: [new AIMessage({ content: "", tool_calls: [snapshot] })],
+      }),
+      [snapshot], [successfulResult(snapshot, JSON.stringify(revisedEvidence))], [], JEV_ID,
+    );
+
+    expect(resumed).toMatchObject({
+      phase: "decide",
+      observation: revisedEvidence,
+      recovery: {
+        interventionLimit: 2,
+        consecutiveEvents: 2,
+        interventionAt: 4,
+        assessNextObservation: false,
+      },
+    });
+  });
+
+  test("revised plans baseline newly true predicates and preserve the absolute count", () => {
+    const handedOff = decision({
+      phase: "handoff",
+      reason: "browser_decision_intervention_required cause=no_verified_progress count=2 limit=2",
+      recovery: { ...decision().recovery!, consecutiveEvents: 2 },
+    });
+    const revisedPlan: BrowserDecisionPlan = {
+      ...plan,
+      goal: "Continue with the revised reviewed plan",
+      progress: [...plan.progress, { kind: "snapshot_contains", text: "ready" }],
+    };
+    const snapshot = call("snapshot-revised-plan", "browser_snapshot", {
+      decisionPlan: revisedPlan,
+    });
+    const resumed = settleBrowserDecision(
+      state({
+        browserDecision: handedOff,
+        messages: [new AIMessage({ content: "", tool_calls: [snapshot] })],
+      }),
+      [snapshot], [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID,
+    );
+
+    expect(resumed).toMatchObject({
+      phase: "decide",
+      plan: revisedPlan,
+      recovery: { consecutiveEvents: 2, interventionAt: 4 },
+    });
+    expect(resumed?.recovery?.progressSeen).toContain(
+      JSON.stringify({ kind: "snapshot_contains", text: "ready" }),
+    );
+  });
+
+  test("persists the initial policy limit across live configuration changes", () => {
+    const snapshot = call("snapshot-policy", "browser_snapshot", { decisionPlan: plan });
+    try {
+      setConfigOverrides({ nautilo_browser_decision_intervention_limit: 3 });
+      const started = settleBrowserDecision(
+        startingState(snapshot), [snapshot],
+        [successfulResult(snapshot, JSON.stringify(observation()))], [], JEV_ID,
+      );
+      expect(started?.recovery).toMatchObject({ interventionLimit: 3, interventionAt: 3 });
+      if (!started) throw new Error("expected a started decision episode");
+
+      setConfigOverrides({ nautilo_browser_decision_intervention_limit: 9 });
+      const click = call("click-policy", "browser_click", { ref: "@e1" });
+      const waiting: BrowserDecisionState = {
+        ...started,
+        phase: "waiting",
+        pending: {
+          call: click,
+          browserSessionId: "browser-session-1",
+          observationId: "observation-1",
+        },
+      };
+      expect(settleBrowserDecision(
+        state({ browserDecision: waiting }), [click],
+        [failedResult(click, "browser_observation_stale")], [], JEV_ID,
+      )).toMatchObject({
+        recovery: { interventionLimit: 3, interventionAt: 3, consecutiveEvents: 1 },
+      });
+    } finally {
+      setConfigOverrides({});
+    }
+  });
+
+  test("cancelled, authority-lost, uncertain, invalid, and unknown failures hand off immediately", () => {
+    const click = call("click-failure", "browser_click", { ref: "@e1" });
+    const waiting = decision({
+      phase: "waiting",
+      pending: {
+        call: click,
+        browserSessionId: "browser-session-1",
+        observationId: "observation-1",
+      },
+    });
+    const cases: Array<[string | undefined, string]> = [
+      ["browser_cancelled", "browser_cancelled"],
+      ["browser_authority_lost", "browser_authority_lost"],
+      ["browser_outcome_unknown", "browser_outcome_unknown"],
+      ["browser_observation_invalid", "browser_observation_invalid"],
+      ["not_a_known_code", "tool_failure_requires_genie_inspection"],
+      [undefined, "tool_failure_requires_genie_inspection"],
+    ];
+    for (const [failure, reason] of cases) {
+      expect(settleBrowserDecision(
+        state({ browserDecision: waiting }), [click], [failedResult(click, failure)], [], JEV_ID,
+      )).toMatchObject({
+        phase: "handoff",
+        reason,
+        recovery: { consecutiveEvents: 0 },
+      });
+    }
+  });
+
+  test("ordinary Genie tool calls interrupt an existing decision run", () => {
+    const pendingCall = call("click-1", "browser_click", { ref: "@e1" });
+    const waiting = decision({
+      phase: "waiting",
+      pending: {
+        call: pendingCall,
+        browserSessionId: "browser-session-1",
+        observationId: "observation-1",
+      },
+    });
+    const ordinary = call("ordinary-1", "read_webpage", { url: "https://shop.example" });
+
+    expect(settleBrowserDecision(
+      state({ browserDecision: waiting }), [ordinary],
+      [successfulResult(ordinary, "{}")], [], JEV_ID,
+    )).toMatchObject({ phase: "handoff", reason: "ordinary_genie_control", pending: null });
+  });
+});
+
+describe("browser decision node", () => {
+  let priorOpenRouterKey: string | undefined;
+  let priorDecisionModel: string | undefined;
+
+  beforeEach(() => {
+    priorOpenRouterKey = process.env["OPENROUTER_API_KEY"];
+    priorDecisionModel = process.env["NAUTILO_BROWSER_DECISION_MODEL"];
+    process.env["OPENROUTER_API_KEY"] = "or-test";
+    delete process.env["NAUTILO_BROWSER_DECISION_MODEL"];
+    setConfigOverrides({ nautilo_browser_decision_model: JEV_ID });
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+  });
+
+  afterEach(() => {
+    resetRuntimeModelCatalog();
+    setConfigOverrides({});
+    if (priorOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
+    else process.env["OPENROUTER_API_KEY"] = priorOpenRouterKey;
+    if (priorDecisionModel === undefined) delete process.env["NAUTILO_BROWSER_DECISION_MODEL"];
+    else process.env["NAUTILO_BROWSER_DECISION_MODEL"] = priorDecisionModel;
+    invalidateRuntimeConfigCache();
+  });
+
+  test("uses the accounted Choice seam and proposes rather than approves the selected call", async () => {
+    const controller = new AbortController();
+    let received: OpenRouterChoiceInput | undefined;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        received = input;
+        return {
+          selectedId: "action_0",
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 80, outputTokens: 4, actualCostUsd: 0.00000336 },
+        };
+      },
+    });
+
+    const update = await node(state(), { signal: controller.signal });
+    expect(received).toMatchObject({
+      modelId: JEV_ID,
+      tenantContext: { ownerId: "user-1" },
+      signal: controller.signal,
+      state: {
+        goal: plan.goal,
+        constraints: plan.constraints,
+        snapshot: "Results are ready",
+        completionEvidence: [{ kind: "snapshot_contains", text: "Order complete", matches: false }],
+      },
+      choices: [
+        { id: "action_0", description: JSON.stringify(plan.actions[0]) },
+        { id: "action_1", description: REDACTED_TYPE_DESCRIPTION },
+        { id: "reobserve" },
+        { id: "defer_to_genie" },
+      ],
+    });
+    const transmittedRequest = JSON.stringify(received);
+    expect(transmittedRequest).not.toContain("blue mug");
+    expect(transmittedRequest).not.toContain("shop.example");
+    expect(transmittedRequest).not.toContain("allowedOrigins");
+    expect(transmittedRequest).not.toContain("pageUrl");
+    expect(transmittedRequest).not.toContain("refs");
+    expect(transmittedRequest).not.toContain("browserSessionId");
+    expect(transmittedRequest).not.toContain("observationId");
+    expect(transmittedRequest).toContain("Order complete");
+    expect(update.browserDecision).toMatchObject({
+      phase: "waiting",
+      pending: { call: { name: "browser_click", args: { ref: "@e1" } } },
+    });
+    expect(proposedToolCall(update)).toMatchObject({
+      name: "browser_click",
+      args: { ref: "@e1" },
+    });
+    const receipt = AIMessage.isInstance(update.messages?.at(-1))
+      ? update.messages.at(-1)?.additional_kwargs["nautilo_browser_decision"] : null;
+    expect(receipt).toMatchObject({ choiceCalls: 1, screeningRounds: 0 });
+    expect(Object.hasOwn(update, "approvedToolCalls")).toBe(false);
+  });
+
+  test("projects a routine handoff onto its exact provider-only tool receipt without mutating canonical history", async () => {
+    const snapshot = call("snapshot-projectable-handoff", "browser_snapshot", { decisionPlan: plan });
+    const snapshotResult = successfulResult(snapshot, JSON.stringify(observation()));
+    const canonicalMessages = [
+      new SystemMessage("stable leading authority"),
+      new AIMessage({ content: "", tool_calls: [snapshot] }),
+      snapshotResult,
+    ];
+    const handedOff = decision({ phase: "handoff", reason: "decision_model_unavailable" });
+    const sourceState = state({ messages: canonicalMessages, browserDecision: handedOff });
+
+    const projected = projectBrowserHandoffForProvider(canonicalMessages, sourceState);
+    expect(projected.projected).toBe(true);
+    expect(projected.messages[0]?.content).toBe("stable leading authority");
+    expect(snapshotResult.content).toBe(JSON.stringify(observation()));
+    expect(canonicalMessages[2]).toBe(snapshotResult);
+    const providerReceipt = projected.messages[2];
+    expect(ToolMessage.isInstance(providerReceipt)).toBe(true);
+    if (!ToolMessage.isInstance(providerReceipt) || typeof providerReceipt.content !== "string") {
+      throw new Error("expected projected browser tool receipt");
+    }
+    expect(providerReceipt.content).toContain(JSON.stringify(observation()));
+    expect(providerReceipt.content).toContain("decision_model_unavailable");
+    expect(providerReceipt.content).toContain("[Runtime browser supervision]");
+    expect(providerReceipt.additional_kwargs["nautilo_browser_supervision"]).toBe("decision_model_unavailable");
+    expect(providerReceipt.tool_call_id).toBe(snapshot.id);
+
+    expect(projectBrowserHandoffForProvider(canonicalMessages, state({
+      turnId: "new-turn",
+      messages: canonicalMessages,
+      browserDecision: handedOff,
+    }))).toEqual({ messages: canonicalMessages, projected: false });
+    expect(projectBrowserHandoffForProvider(canonicalMessages, state({
+      messages: canonicalMessages,
+      browserDecision: null,
+    }))).toEqual({ messages: canonicalMessages, projected: false });
+
+    const windowed = [new SystemMessage("stable leading authority"), new HumanMessage("continue")];
+    const fallback = projectBrowserHandoffForProvider(windowed, state({
+      messages: canonicalMessages,
+      browserDecision: handedOff,
+    }));
+    expect(fallback.projected).toBe(false);
+    expect(fallback.messages[0]?.content).toBe("stable leading authority");
+    expect(fallback.messages.at(-1)?.content).toContain("decision_model_unavailable");
+    expect(windowed).toHaveLength(2);
+    const deduplicated = projectBrowserHandoffForProvider(fallback.messages, state({
+      messages: canonicalMessages,
+      browserDecision: handedOff,
+    }));
+    expect(deduplicated.messages).toBe(fallback.messages);
+
+    const visualCall = call("visual-browser-result", "browser_screenshot", {});
+    const nonTextTail = [
+      ...canonicalMessages,
+      new AIMessage({ content: "", tool_calls: [visualCall] }),
+      new ToolMessage({
+        name: visualCall.name,
+        tool_call_id: visualCall.id,
+        content: [{ type: "image_url", image_url: { url: "data:image/png;base64,fixture" } }],
+      }),
+    ];
+    const nonTextFallback = projectBrowserHandoffForProvider(nonTextTail, state({
+      messages: nonTextTail,
+      browserDecision: handedOff,
+    }));
+    expect(SystemMessage.isInstance(nonTextFallback.messages.at(-1))).toBe(true);
+    expect(nonTextFallback.messages.at(-1)?.content).toContain("decision_model_unavailable");
+
+    const ordinary = decision({ phase: "handoff", reason: "ordinary_genie_control" });
+    expect(projectBrowserHandoffForProvider(windowed, state({
+      messages: canonicalMessages,
+      browserDecision: ordinary,
+    }))).toEqual({ messages: windowed, projected: false });
+  });
+
+  test("returns projectable handoffs without appending a late System message", async () => {
+    const snapshot = call("snapshot-projectable-node", "browser_snapshot", { decisionPlan: plan });
+    const messages = [
+      new AIMessage({ content: "", tool_calls: [snapshot] }),
+      successfulResult(snapshot, JSON.stringify(observation())),
+    ];
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => ({
+        selectedId: "defer_to_genie",
+        requestedModelId: JEV_ID,
+        resolvedModelId: "typesafe/jev-1.13-20260917",
+        usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+      }),
+    });
+    const update = await node(state({ messages }), { signal: new AbortController().signal });
+
+    expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: "jev_requested_genie" });
+    expect(Object.hasOwn(update, "messages")).toBe(false);
+    if (!update.browserDecision) throw new Error("expected projectable handoff state");
+    const projected = projectBrowserHandoffForProvider(messages, state({
+      messages,
+      browserDecision: update.browserDecision,
+    }));
+    expect(projected.projected).toBe(true);
+    expect(projected.messages[1]?.content).toContain("jev_requested_genie");
+  });
+
+  test("runs an arbitrary press template through Choice and records its selected proposal", async () => {
+    const exactKey = "Control+Alt+Shift+K";
+    const pressPlan = browserDecisionPlanSchema.parse({ ...plan, actions: [{ kind: "press", key: exactKey }] });
+    const controller = new AbortController();
+    let received: OpenRouterChoiceInput | undefined;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        received = input;
+        return { selectedId: "action_0", requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 12, outputTokens: 2, actualCostUsd: 0.000001 } };
+      },
+    });
+    const update = await node(state({ browserDecision: decision({ plan: pressPlan }) }), { signal: controller.signal });
+
+    expect(received?.choices).toEqual([
+      { id: "action_0", description: JSON.stringify({ kind: "press", key: exactKey }) },
+      { id: "reobserve", description: expect.any(String) as string },
+      { id: "defer_to_genie", description: expect.any(String) as string },
+    ]);
+    expect(proposedToolCall(update)).toMatchObject({ name: "browser_press", args: { key: exactKey } });
+    expect(update.browserDecision).toMatchObject({
+      phase: "waiting",
+      pending: { call: { name: "browser_press", args: { key: exactKey } }, observationId: "observation-1" },
+    });
+    const receipt = AIMessage.isInstance(update.messages?.at(-1))
+      ? update.messages.at(-1)?.additional_kwargs["nautilo_browser_decision"] : null;
+    expect(receipt).toMatchObject({ selectedId: "action_0", choiceCalls: 1, screeningRounds: 0 });
+  });
+
+  test.each([
+    {
+      label: "autocomplete query match still permits selecting its suggestion",
+      plan: { ...plan, actions: [{ kind: "click", role: "option", name: "Blue mug" }],
+        success: [{ kind: "snapshot_contains", text: "blue mug" }] } satisfies BrowserDecisionPlan,
+      observation: observation({ snapshot: "Search: blue mug\nSuggestions available",
+        refs: { e7: { role: "option", name: "Blue mug" } } }),
+      expected: { name: "browser_click", args: { ref: "@e7" } },
+      evidence: { kind: "snapshot_contains", text: "blue mug", matches: true },
+    },
+    {
+      label: "prefilled text match still permits saving the form",
+      plan: { ...plan, actions: [{ kind: "click", role: "button", name: "Save" }],
+        success: [{ kind: "snapshot_contains", text: "Ada" }] } satisfies BrowserDecisionPlan,
+      observation: observation({ snapshot: "Name Ada\nChanges not saved",
+        refs: { e8: { role: "button", name: "Save" } } }),
+      expected: { name: "browser_click", args: { ref: "@e8" } },
+      evidence: { kind: "snapshot_contains", text: "Ada", matches: true },
+    },
+    {
+      label: "matching starting URL still permits pending work",
+      plan: { ...plan, actions: [{ kind: "click", role: "button", name: "Continue" }],
+        success: [{ kind: "url_equals", url: "https://shop.example/results" }] } satisfies BrowserDecisionPlan,
+      observation: observation({ snapshot: "Setup is still pending",
+        refs: { e9: { role: "button", name: "Continue" } } }),
+      expected: { name: "browser_click", args: { ref: "@e9" } },
+      evidence: { kind: "url_equals", url: "https://shop.example/results", matches: true },
+    },
+  ])("passes literal completion evidence while preserving the selected tool binding: $label", async (fixture) => {
+    const controller = new AbortController();
+    let received: OpenRouterChoiceInput | undefined;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        received = input;
+        return { selectedId: "action_0", requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null } };
+      },
+    });
+    const update = await node(state({ browserDecision: decision({
+      plan: fixture.plan,
+      observation: fixture.observation,
+    }) }), { signal: controller.signal });
+
+    expect((received?.state as Record<string, unknown>)["completionEvidence"]).toEqual([fixture.evidence]);
+    expect(proposedToolCall(update)).toMatchObject(fixture.expected);
+    expect(update.browserDecision).toMatchObject({
+      phase: "waiting",
+      pending: { call: fixture.expected, observationId: fixture.observation.observationId },
+    });
+  });
+
+  test.each([
+    {
+      label: "matched evidence with an otherwise completed goal",
+      success: [{ kind: "snapshot_contains", text: "Order complete" }] as BrowserDecisionPlan["success"],
+      snapshot: "Results\nOrder complete",
+      matches: true,
+    },
+    {
+      label: "unmatched evidence when the full fresh state otherwise supports handback",
+      success: [{ kind: "snapshot_contains", text: "Receipt ready" }] as BrowserDecisionPlan["success"],
+      snapshot: "Order complete",
+      matches: false,
+    },
+  ])("allows Choice to defer without proposing an effect: $label", async (fixture) => {
+    const controller = new AbortController();
+    let received: OpenRouterChoiceInput | undefined;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        received = input;
+        return { selectedId: "defer_to_genie", requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null } };
+      },
+    });
+    const completionPlan = { ...plan, success: fixture.success };
+    const update = await node(state({ browserDecision: decision({
+      plan: completionPlan,
+      observation: observation({ snapshot: fixture.snapshot }),
+    }) }), { signal: controller.signal });
+
+    expect((received?.state as Record<string, unknown>)["completionEvidence"]).toEqual([
+      { ...fixture.success[0], matches: fixture.matches },
+    ]);
+    expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: "jev_requested_genie", pending: null });
+    expect(update.messages?.some((message) => AIMessage.isInstance(message) && message.tool_calls?.length)).toBe(false);
+  });
+
+  test("screens every oversized action and executes only the final nominated original call", async () => {
+    const refs = Object.fromEntries(Array.from({ length: 86 }, (_, index) => [
+      `e${index + 1}`,
+      { role: index === 0 ? "textbox" : "generic", name: `Target ${index + 1}` },
+    ]));
+    const capacityPlan: BrowserDecisionPlan = {
+      ...plan,
+      actions: [{ kind: "click_observed" }],
+      values: { first: "one", second: "two", third: "three", fourth: "four" },
+    };
+    const capacityObservation = observation({ refs });
+    const requests: OpenRouterChoiceInput[] = [];
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        requests.push(input);
+        const ids = new Set(input.choices.map(({ id }) => id));
+        const selectedId = ids.has("action_172") ? "action_172"
+          : ids.has("action_344") ? "action_344"
+          : (() => { throw new Error("unexpected tournament choices"); })();
+        return {
+          selectedId,
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13",
+          usage: { inputTokens: 10, outputTokens: 2, actualCostUsd: 0.0001 },
+        };
+      },
+    });
+
+    const update = await node(state({ browserDecision: decision({
+      plan: capacityPlan,
+      observation: capacityObservation,
+    }) }), { signal: new AbortController().signal });
+    expect(requests).toHaveLength(3);
+    for (const value of Object.values(capacityPlan.values ?? {})) {
+      expect(JSON.stringify(requests)).not.toContain(JSON.stringify(value));
+    }
+    expect(requests.slice(0, 2).map(({ choices }) => choices.length).sort((a, b) => a - b)).toEqual([177, 255]);
+    expect(requests.slice(0, 2).every(({ choices }) => choices.at(-1)?.id === "none_in_group")).toBe(true);
+    expect(new Set(requests.slice(0, 2).flatMap(({ choices }) => choices.slice(0, -1).map(({ id }) => id))).size).toBe(430);
+    expect(requests[2]?.choices.map(({ id }) => id)).toEqual([
+      "action_172", "action_344", "reobserve", "defer_to_genie",
+    ]);
+    expect(update.browserDecision).toMatchObject({ phase: "waiting" });
+    expect(proposedToolCall(update)).toMatchObject({
+      name: "browser_type",
+      args: { ref: "@e1", text: "two", clear: true },
+    });
+    expect(update.messages?.filter((message) => AIMessage.isInstance(message) && message.tool_calls?.length)).toHaveLength(1);
+    const message = update.messages?.at(-1);
+    expect(AIMessage.isInstance(message)).toBe(true);
+    if (!AIMessage.isInstance(message)) throw new Error("expected one final browser proposal");
+    const receipt = message.additional_kwargs["nautilo_browser_decision"] as Record<string, unknown>;
+    expect(receipt).toMatchObject({
+      selectedId: "action_172",
+      choiceCalls: 3,
+      screeningRounds: 1,
+      usage: { inputTokens: 30, outputTokens: 6 },
+    });
+    expect((receipt["usage"] as Record<string, number>)["actualCostUsd"]).toBeCloseTo(0.0003);
+  });
+
+  test("a screening provider failure recovers without proposing any action", async () => {
+    const refs = Object.fromEntries(Array.from({ length: 86 }, (_, index) => [
+      `e${index + 1}`,
+      { role: "generic", name: `Target ${index + 1}` },
+    ]));
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        if (input.choices.some(({ id }) => id === "action_0")) {
+          throw new ChoiceRequestError("provider_error", 503, true);
+        }
+        return {
+          selectedId: "none_in_group",
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13",
+          usage: { inputTokens: 1, outputTokens: 1, actualCostUsd: null },
+        };
+      },
+    });
+    const update = await node(state({ browserDecision: decision({
+      plan: { ...plan, actions: [{ kind: "click_observed" }], values: {
+        first: "one", second: "two", third: "three", fourth: "four",
+      } },
+      observation: observation({ refs }),
+    }) }), { signal: new AbortController().signal });
+
+    expect(update.browserDecision).toMatchObject({
+      phase: "observe",
+      reason: null,
+      recovery: { consecutiveEvents: 1 },
+    });
+    expect(update.messages).toBeUndefined();
+  });
+
+  test("attributes Choice usage to the initiating user, room, agent, and turn without leaking scope", async () => {
+    for (const [subagentDepth, callType] of [[0, "chat"], [1, "subagent"]] as const) {
+      let captured = getUsageContext();
+      const node = createBrowserDecisionNode({
+        fullEncryptionOnlyForState: () => false,
+        choose: async () => {
+          await Promise.resolve();
+          captured = getUsageContext();
+          return {
+            selectedId: "action_0",
+            requestedModelId: JEV_ID,
+            resolvedModelId: "typesafe/jev-1.13-20260917",
+            usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+          };
+        },
+      });
+      const turnId = `turn-usage-${subagentDepth}`;
+      await node(state({
+        turnId,
+        userId: "user-usage",
+        roomId: "room-usage",
+        agentId: "agent-usage",
+        subagentDepth,
+        browserDecision: decision({ turnId }),
+      }), { signal: new AbortController().signal });
+
+      expect(captured).toEqual({
+        callType,
+        userId: "user-usage",
+        roomId: "room-usage",
+        metadata: { agentId: "agent-usage", turnId },
+      });
+      expect(getUsageContext()).toBeUndefined();
+    }
+  });
+
+  test("cycles click to newly discovered typing target without a generative-model step", async () => {
+    const controller = new AbortController();
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => {
+        const selectedId = choiceCalls++ === 0 ? "action_0" : "action_1";
+        return {
+          selectedId,
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 50, outputTokens: 3, actualCostUsd: null },
+        };
+      },
+    });
+
+    const initial = state({ browserDecision: decision({ plan: browserDecisionPlanSchema.parse({
+      goal: "Search the catalogue", values: { "search query": "blue mug" }, allowedOrigins: ["https://shop.example"],
+    }) }) });
+    const firstUpdate = await node(initial, { signal: controller.signal });
+    const firstCall = proposedToolCall(firstUpdate);
+    if (!firstUpdate.browserDecision) throw new Error("expected a pending browser decision");
+    expect(firstCall.name).toBe("browser_click");
+    expect(choiceCalls).toBe(1);
+
+    const afterClick = settleBrowserDecision(
+      state({ browserDecision: firstUpdate.browserDecision }), [firstCall],
+      [successfulResult(firstCall, "{}")], [], JEV_ID,
+    );
+    expect(afterClick).toMatchObject({ phase: "observe" });
+    if (!afterClick) throw new Error("expected browser observation phase");
+
+    const observeUpdate = await node(
+      state({ browserDecision: afterClick }), { signal: controller.signal },
+    );
+    const snapshotCall = proposedToolCall(observeUpdate);
+    if (!observeUpdate.browserDecision) throw new Error("expected a pending browser snapshot");
+    expect(snapshotCall).toMatchObject({ name: "browser_snapshot", args: {} });
+    expect(choiceCalls).toBe(1);
+    expect(Object.hasOwn(observeUpdate, "approvedToolCalls")).toBe(false);
+
+    const fresh = observation({ observationId: "observation-2", refs: { e17: { role: "searchbox", name: "Catalogue keywords" } } });
+    const afterSnapshot = settleBrowserDecision(
+      state({ browserDecision: observeUpdate.browserDecision }), [snapshotCall],
+      [successfulResult(snapshotCall, JSON.stringify(fresh))], [], JEV_ID,
+    );
+    expect(afterSnapshot).toMatchObject({ phase: "decide", observation: fresh });
+
+    const secondUpdate = await node(
+      state({ browserDecision: afterSnapshot }), { signal: controller.signal },
+    );
+    expect(proposedToolCall(secondUpdate)).toMatchObject({
+      name: "browser_type",
+      args: { ref: "@e17", text: "blue mug", clear: true },
+    });
+    expect(choiceCalls).toBe(2);
+  });
+
+  test("carries only confirmed redacted actions from the current decision episode into the next Choice", async () => {
+    const controller = new AbortController();
+    const choiceInputs: OpenRouterChoiceInput[] = [];
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        choiceInputs.push(input);
+        return {
+          selectedId: choiceCalls++ === 0 ? "action_1" : "action_0",
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+        };
+      },
+    });
+    const priorCall = call("prior-action", "browser_click", { ref: "@e9" });
+    const priorReceipt = new AIMessage({
+      content: "",
+      tool_calls: [priorCall],
+      additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice",
+        action: "prior episode action must be excluded",
+      } },
+    });
+    const plannedSnapshot = call("planned-snapshot", "browser_snapshot", { ...plan });
+    const planReceipt = new AIMessage({ content: "", tool_calls: [plannedSnapshot] });
+    const initialMessages = [priorReceipt, successfulResult(priorCall, "{}"), planReceipt];
+
+    const firstUpdate = await node(
+      state({ messages: initialMessages }),
+      { signal: controller.signal },
+    );
+    const firstCall = proposedToolCall(firstUpdate);
+    expect(firstCall).toMatchObject({ name: "browser_type", args: { ref: "@e2", text: "blue mug", clear: true } });
+    const firstReceipt = firstUpdate.messages?.at(-1);
+    expect(AIMessage.isInstance(firstReceipt)).toBe(true);
+    const firstAction = AIMessage.isInstance(firstReceipt)
+      ? firstReceipt.additional_kwargs["nautilo_browser_decision"] as Record<string, unknown>
+      : null;
+    expect(firstAction?.["action"]).toBe(REDACTED_TYPE_DESCRIPTION);
+    expect(JSON.stringify(firstAction)).not.toContain("blue mug");
+    if (!firstUpdate.browserDecision) throw new Error("expected a pending first action");
+
+    const wrongNameResult = new ToolMessage({
+      name: "browser_click",
+      tool_call_id: firstCall.id,
+      content: "",
+      additional_kwargs: { nautilo_tool_status: "error" },
+    });
+    const confirmedFirstResult = successfulResult(firstCall, "{}");
+    const afterFirstAction = settleBrowserDecision(
+      state({ browserDecision: firstUpdate.browserDecision }),
+      [firstCall], [confirmedFirstResult], [], JEV_ID,
+    );
+    if (!afterFirstAction) throw new Error("expected observation phase after confirmed action");
+    const observeUpdate = await node(state({
+      browserDecision: afterFirstAction,
+      messages: [...(firstUpdate.messages ?? []), wrongNameResult, confirmedFirstResult],
+    }), { signal: controller.signal });
+    const snapshotCall = proposedToolCall(observeUpdate);
+    if (!observeUpdate.browserDecision) throw new Error("expected a pending snapshot");
+    const snapshotResult = successfulResult(snapshotCall, JSON.stringify(observation({ observationId: "observation-2" })));
+    const afterSnapshot = settleBrowserDecision(
+      state({ browserDecision: observeUpdate.browserDecision }),
+      [snapshotCall], [snapshotResult], [], JEV_ID,
+    );
+    if (!afterSnapshot) throw new Error("expected a fresh decision observation");
+
+    const unconfirmedCall = call("unconfirmed-action", "browser_click", { ref: "@e8" });
+    const unconfirmedReceipt = new AIMessage({
+      content: "",
+      tool_calls: [unconfirmedCall],
+      additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice",
+        action: "unconfirmed action must be excluded",
+      } },
+    });
+    await node(state({
+      browserDecision: afterSnapshot,
+      messages: [...(observeUpdate.messages ?? []), snapshotResult, unconfirmedReceipt],
+    }), { signal: controller.signal });
+
+    expect(choiceInputs).toHaveLength(2);
+    const secondState = choiceInputs[1]?.state as Record<string, unknown>;
+    expect(secondState["recentActions"]).toEqual([{ action: REDACTED_TYPE_DESCRIPTION, status: "success" }]);
+    const serializedSecondChoice = JSON.stringify(choiceInputs[1]);
+    expect(serializedSecondChoice).not.toContain("blue mug");
+    expect(serializedSecondChoice).not.toContain("prior episode action");
+    expect(serializedSecondChoice).not.toContain("unconfirmed action");
+
+    const noBoundaryCall = call("no-boundary-action", "browser_click", { ref: "@e7" });
+    const noBoundaryReceipt = new AIMessage({
+      content: "",
+      tool_calls: [noBoundaryCall],
+      additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice",
+        action: "history without a visible plan boundary must be excluded",
+      } },
+    });
+    await node(state({ messages: [noBoundaryReceipt, successfulResult(noBoundaryCall, "{}")] }), { signal: controller.signal });
+    expect(choiceInputs).toHaveLength(3);
+    const noBoundaryState = choiceInputs[2]?.state as Record<string, unknown>;
+    expect(noBoundaryState).not.toHaveProperty("recentActions");
+
+    const pendingCall = call("pending-action", "browser_click", { ref: "@e6" });
+    const pendingReceipt = new AIMessage({
+      content: "",
+      tool_calls: [pendingCall],
+      additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice",
+        action: "matched nonterminal status has no status field",
+      } },
+    });
+    const pendingResult = new ToolMessage({
+      name: pendingCall.name,
+      tool_call_id: pendingCall.id,
+      content: "",
+      additional_kwargs: { nautilo_tool_status: "pending" },
+    });
+    await node(state({ messages: [planReceipt, pendingReceipt, pendingResult] }), { signal: controller.signal });
+    expect(choiceInputs).toHaveLength(4);
+    const pendingState = choiceInputs[3]?.state as Record<string, unknown>;
+    expect(pendingState["recentActions"]).toEqual([
+      { action: "matched nonterminal status has no status field" },
+    ]);
+  });
+
+  test("marks a stale type as never executed and can propose its exact value at the fresh ref", async () => {
+    const controller = new AbortController();
+    const choiceInputs: OpenRouterChoiceInput[] = [];
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        choiceInputs.push(input);
+        return {
+          selectedId: choiceCalls++ === 0 ? "action_1" : "action_0",
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+        };
+      },
+    });
+    const plannedSnapshot = call("planned-stale-snapshot", "browser_snapshot", { decisionPlan: plan });
+    const planReceipt = new AIMessage({ content: "", tool_calls: [plannedSnapshot] });
+
+    const firstUpdate = await node(state({ messages: [planReceipt] }), { signal: controller.signal });
+    const staleCall = proposedToolCall(firstUpdate);
+    expect(staleCall).toMatchObject({
+      name: "browser_type",
+      args: { ref: "@e2", text: "blue mug", clear: true },
+    });
+    if (!firstUpdate.browserDecision) throw new Error("expected a pending stale action");
+    const staleResult = failedResult(staleCall, "browser_observation_stale");
+    const afterStale = settleBrowserDecision(
+      state({ browserDecision: firstUpdate.browserDecision }),
+      [staleCall], [staleResult], [], JEV_ID,
+    );
+    expect(afterStale).toMatchObject({ phase: "observe", recovery: { consecutiveEvents: 1 } });
+    if (!afterStale) throw new Error("expected stale recovery");
+
+    const observeUpdate = await node(state({
+      browserDecision: afterStale,
+      messages: [...(firstUpdate.messages ?? []), staleResult],
+    }), { signal: controller.signal });
+    const snapshotCall = proposedToolCall(observeUpdate);
+    expect(snapshotCall).toMatchObject({ name: "browser_snapshot", args: {} });
+    if (!observeUpdate.browserDecision) throw new Error("expected a pending recovery snapshot");
+    const fresh = observation({
+      observationId: "observation-shifted",
+      refs: { e17: { role: "textbox", name: "Search" } },
+    });
+    const snapshotResult = successfulResult(snapshotCall, JSON.stringify(fresh));
+    const afterSnapshot = settleBrowserDecision(
+      state({ browserDecision: observeUpdate.browserDecision }),
+      [snapshotCall], [snapshotResult], [], JEV_ID,
+    );
+    expect(afterSnapshot).toMatchObject({ phase: "decide", observation: fresh });
+
+    const retryUpdate = await node(state({
+      browserDecision: afterSnapshot,
+      messages: [...(observeUpdate.messages ?? []), snapshotResult],
+    }), { signal: controller.signal });
+    expect(choiceInputs).toHaveLength(2);
+    expect((choiceInputs[1]?.state as Record<string, unknown>)["recentActions"]).toEqual([
+      { action: REDACTED_TYPE_DESCRIPTION, status: "not_executed_stale" },
+    ]);
+    expect(proposedToolCall(retryUpdate)).toMatchObject({
+      name: "browser_type",
+      args: { ref: "@e17", text: "blue mug", clear: true },
+    });
+  });
+
+  test("privacy-policy absence, full-encryption policy, and cancellation make zero Choice calls", async () => {
+    const cases: Array<{
+      node: ReturnType<typeof createBrowserDecisionNode>;
+      signal: AbortSignal;
+      reason: string;
+    }> = [];
+    let choiceCalls = 0;
+    const choose = async () => {
+      choiceCalls += 1;
+      throw new Error("must not call Choice");
+    };
+    cases.push({
+      node: createBrowserDecisionNode({ choose }),
+      signal: new AbortController().signal,
+      reason: "decision_provider_egress_unavailable",
+    });
+    cases.push({
+      node: createBrowserDecisionNode({ fullEncryptionOnlyForState: () => true, choose }),
+      signal: new AbortController().signal,
+      reason: "decision_provider_egress_unavailable",
+    });
+    const aborted = new AbortController();
+    aborted.abort();
+    cases.push({
+      node: createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose }),
+      signal: aborted.signal,
+      reason: "run_signal_unavailable_or_cancelled",
+    });
+
+    for (const fixture of cases) {
+      expect(await fixture.node(state(), { signal: fixture.signal })).toMatchObject({
+        browserDecision: { phase: "handoff", reason: fixture.reason },
+      });
+    }
+    expect(choiceCalls).toBe(0);
+  });
+
+  test("recoverable Choice failures refresh observation without retrying the provider inline", async () => {
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => {
+        choiceCalls += 1;
+        throw new ChoiceRequestError("network_error", null, true);
+      },
+    });
+    const signal = new AbortController().signal;
+
+    const recovered = await node(state(), { signal });
+    expect(recovered.browserDecision).toMatchObject({
+      phase: "observe",
+      recovery: { consecutiveEvents: 1, assessNextObservation: false },
+    });
+    expect(choiceCalls).toBe(1);
+    expect(recovered.messages).toBeUndefined();
+
+    const refresh = await node(state({ browserDecision: recovered.browserDecision ?? null }), { signal });
+    expect(proposedToolCall(refresh)).toMatchObject({ name: "browser_snapshot", args: {} });
+    expect(choiceCalls).toBe(1);
+  });
+
+  test("two Choice failures separated by a fresh observation reach intervention", async () => {
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => {
+        choiceCalls += 1;
+        throw new ChoiceRequestError("network_error", null, true);
+      },
+    });
+    const signal = new AbortController().signal;
+
+    const firstFailure = await node(state(), { signal });
+    expect(firstFailure.browserDecision).toMatchObject({
+      phase: "observe",
+      recovery: { consecutiveEvents: 1, interventionAt: 2 },
+    });
+
+    const reobserve = await node(
+      state({ browserDecision: firstFailure.browserDecision ?? null }), { signal },
+    );
+    const snapshot = proposedToolCall(reobserve);
+    expect(snapshot).toMatchObject({ name: "browser_snapshot", args: {} });
+    if (!reobserve.browserDecision) throw new Error("expected a fresh-observation proposal");
+
+    const fresh = settleBrowserDecision(
+      state({ browserDecision: reobserve.browserDecision }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({ observationId: "observation-2" })))],
+      [], JEV_ID,
+    );
+    expect(fresh).toMatchObject({
+      phase: "decide",
+      recovery: { consecutiveEvents: 1, assessNextObservation: false },
+    });
+
+    const secondFailure = await node(state({ browserDecision: fresh }), { signal });
+    expect(secondFailure.browserDecision).toMatchObject({
+      phase: "handoff",
+      recovery: { consecutiveEvents: 2, interventionAt: 2 },
+    });
+    expect(secondFailure.browserDecision?.reason).toBe(
+      "browser_decision_intervention_required cause=choice_network_error count=2 limit=2",
+    );
+    expect(choiceCalls).toBe(2);
+  });
+
+  test("verified progress after a restarted episode resets count and threshold", async () => {
+    const handedOff = decision({
+      phase: "handoff",
+      reason: "browser_decision_intervention_required cause=no_verified_progress count=2 limit=2",
+      recovery: { ...decision().recovery!, consecutiveEvents: 2 },
+    });
+    const revisedPlan: BrowserDecisionPlan = {
+      ...plan,
+      goal: "Continue from revised evidence until details load",
+      progress: [...plan.progress, { kind: "snapshot_contains", text: "Details loaded" }],
+    };
+    const restartSnapshot = call("snapshot-restarted-episode", "browser_snapshot", {
+      decisionPlan: revisedPlan,
+    });
+    const restarted = settleBrowserDecision(
+      state({
+        browserDecision: handedOff,
+        messages: [new AIMessage({ content: "", tool_calls: [restartSnapshot] })],
+      }),
+      [restartSnapshot],
+      [successfulResult(restartSnapshot, JSON.stringify(observation({
+        snapshot: "Results changed materially",
+        observationId: "observation-restart",
+      })))],
+      [], JEV_ID,
+    );
+    expect(restarted).toMatchObject({
+      phase: "decide",
+      recovery: { consecutiveEvents: 2, interventionAt: 4 },
+    });
+
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => ({
+        selectedId: "action_0",
+        requestedModelId: JEV_ID,
+        resolvedModelId: "typesafe/jev-1.13-20260917",
+        usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+      }),
+    });
+    const signal = new AbortController().signal;
+    const actionUpdate = await node(state({ browserDecision: restarted }), { signal });
+    const action = proposedToolCall(actionUpdate);
+    if (!actionUpdate.browserDecision) throw new Error("expected a restarted action proposal");
+
+    const afterAction = settleBrowserDecision(
+      state({ browserDecision: actionUpdate.browserDecision }), [action],
+      [successfulResult(action, "{}")], [], JEV_ID,
+    );
+    expect(afterAction).toMatchObject({
+      phase: "observe",
+      recovery: { consecutiveEvents: 2, interventionAt: 4, assessNextObservation: true },
+    });
+
+    const observeUpdate = await node(state({ browserDecision: afterAction }), { signal });
+    const progressSnapshot = proposedToolCall(observeUpdate);
+    if (!observeUpdate.browserDecision) throw new Error("expected post-action observation");
+    const progressed = settleBrowserDecision(
+      state({ browserDecision: observeUpdate.browserDecision }), [progressSnapshot],
+      [successfulResult(progressSnapshot, JSON.stringify(observation({
+        snapshot: "Results changed materially\nDetails loaded",
+        observationId: "observation-progress",
+      })))],
+      [], JEV_ID,
+    );
+
+    expect(progressed).toMatchObject({
+      phase: "decide",
+      recovery: {
+        consecutiveEvents: 0,
+        interventionAt: 2,
+        assessNextObservation: false,
+      },
+    });
+  });
+
+  test("invalid responses and retryable provider failures recover; non-retryable failures hand off", async () => {
+    for (const error of [
+      new ChoiceRequestError("invalid_response"),
+      new ChoiceRequestError("provider_error", 503, true),
+    ]) {
+      const node = createBrowserDecisionNode({
+        fullEncryptionOnlyForState: () => false,
+        choose: async () => { throw error; },
+      });
+      expect(await node(state(), { signal: new AbortController().signal })).toMatchObject({
+        browserDecision: { phase: "observe", recovery: { consecutiveEvents: 1 } },
+      });
+    }
+
+    const denied = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => { throw new ChoiceRequestError("provider_error", 400, false); },
+    });
+    expect(await denied(state(), { signal: new AbortController().signal })).toMatchObject({
+      browserDecision: { phase: "handoff", reason: "choice_provider_error" },
+    });
+  });
+
+  test("an explicit Jev reobserve assesses the next snapshot for progress", async () => {
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => ({
+        selectedId: "reobserve",
+        requestedModelId: JEV_ID,
+        resolvedModelId: "typesafe/jev-1.13-20260917",
+        usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+      }),
+    });
+    const update = await node(state(), { signal: new AbortController().signal });
+    const snapshot = proposedToolCall(update);
+    expect(update.browserDecision).toMatchObject({
+      phase: "waiting",
+      recovery: { assessNextObservation: true, consecutiveEvents: 0 },
+    });
+    if (!update.browserDecision) throw new Error("expected reobserve proposal");
+
+    expect(settleBrowserDecision(
+      state({ browserDecision: update.browserDecision }), [snapshot],
+      [successfulResult(snapshot, JSON.stringify(observation({ observationId: "observation-2" })))],
+      [], JEV_ID,
+    )).toMatchObject({
+      phase: "decide",
+      recovery: { assessNextObservation: false, consecutiveEvents: 1 },
+    });
+  });
+
+  test("approval denial hands off without a Choice or browser proposal", async () => {
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => {
+        choiceCalls += 1;
+        throw new Error("must not call Choice");
+      },
+    });
+    const update = await node(
+      state({ approvalDenied: true }), { signal: new AbortController().signal },
+    );
+    expect(update.browserDecision).toMatchObject({
+      phase: "handoff",
+      reason: "existing_run_intervention",
+      recovery: { consecutiveEvents: 0 },
+    });
+    expect(choiceCalls).toBe(0);
+    expect(update.messages?.some((message) =>
+      AIMessage.isInstance(message) && (message.tool_calls?.length ?? 0) > 0)).toBe(false);
+  });
+
+  test("an out-of-set choice recovers while an explicit defer returns control", async () => {
+    for (const selectedId of ["not-in-the-set", "defer_to_genie"]) {
+      const node = createBrowserDecisionNode({
+        fullEncryptionOnlyForState: () => false,
+        choose: async () => ({
+          selectedId,
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+        }),
+      });
+      const update = await node(state(), { signal: new AbortController().signal });
+      expect(update.browserDecision).toMatchObject({
+        phase: selectedId === "defer_to_genie" ? "handoff" : "observe",
+        reason: selectedId === "defer_to_genie" ? "jev_requested_genie" : null,
+        pending: null,
+        recovery: {
+          consecutiveEvents: selectedId === "defer_to_genie" ? 0 : 1,
+        },
+      });
+      expect(update.messages?.some((message) =>
+        AIMessage.isInstance(message) && (message.tool_calls?.length ?? 0) > 0) ?? false).toBe(false);
+    }
+  });
+
+  test("changed configuration and unavailable catalog credentials fail before Choice", async () => {
+    let choiceCalls = 0;
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      choose: async () => {
+        choiceCalls += 1;
+        throw new Error("must not call Choice");
+      },
+    });
+    const signal = new AbortController().signal;
+
+    setConfigOverrides({ nautilo_browser_decision_model: "" });
+    const disabled = await node(state(), { signal });
+    expect(disabled).toMatchObject({
+      browserDecision: { phase: "handoff", reason: "decision_opt_in_changed" },
+    });
+    const disabledHandoff = disabled.messages?.at(-1);
+    expect(SystemMessage.isInstance(disabledHandoff)).toBe(true);
+    if (!SystemMessage.isInstance(disabledHandoff) || typeof disabledHandoff.content !== "string") {
+      throw new Error("expected text supervisor handoff");
+    }
+    expect(disabledHandoff.content).toContain("decision_opt_in_changed");
+    expect(disabledHandoff.content).toContain("Inspect the latest tool evidence");
+    expect(disabledHandoff.content).toContain("Do not blindly replay an uncertain action");
+
+    setConfigOverrides({ nautilo_browser_decision_model: JEV_ID });
+    delete process.env["OPENROUTER_API_KEY"];
+    const unavailable = await node(state(), { signal });
+    expect(unavailable).toMatchObject({
+      browserDecision: { phase: "handoff", reason: "decision_model_unavailable" },
+    });
+    const unavailableHandoff = unavailable.messages?.at(-1);
+    expect(SystemMessage.isInstance(unavailableHandoff)).toBe(true);
+    if (!SystemMessage.isInstance(unavailableHandoff) || typeof unavailableHandoff.content !== "string") {
+      throw new Error("expected text supervisor handoff");
+    }
+    expect(unavailableHandoff.content).toContain("decision_model_unavailable");
+    expect(unavailableHandoff.content).toContain("verify outcomes");
+    expect(unavailable.messages?.some((message) =>
+      AIMessage.isInstance(message) && (message.tool_calls?.length ?? 0) > 0)).toBe(false);
+    expect(choiceCalls).toBe(0);
+  });
+});

@@ -1,5 +1,7 @@
+import { isSupportedChoiceProvider } from "../../providers/choice-provider-support";
+
 /**
- * D429 Phase 7.2 — provider-adapter support gate for remote catalog rows.
+ * provider-adapter support gate for remote catalog rows.
  *
  * Only provider prefixes already routable by `createUniversalModel`
  * (`packages/agent/src/providers/universal.ts`) can become runnable from a
@@ -25,4 +27,12 @@ export const SUPPORTED_MODEL_CATALOG_PROVIDER_PREFIXES: ReadonlySet<string> = Ob
 
 export function isSupportedModelCatalogProvider(provider: string): boolean {
   return SUPPORTED_MODEL_CATALOG_PROVIDER_PREFIXES.has(provider.toLowerCase());
+}
+
+export function isSupportedModelCatalogWorkload(
+  provider: string,
+  workload: "chat" | "generation" | "decision",
+): boolean {
+  return isSupportedModelCatalogProvider(provider)
+    && (workload !== "decision" || isSupportedChoiceProvider(provider));
 }

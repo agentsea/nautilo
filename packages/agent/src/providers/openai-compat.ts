@@ -1,4 +1,9 @@
-import { ChatOpenAICompletions } from "@langchain/openai";
+import {
+  ChatOpenAICompletions,
+  ChatOpenAIResponses,
+  convertMessagesToResponsesInput,
+  convertResponsesMessageToAIMessage,
+} from "@langchain/openai";
 
 type InvocationOptions = Parameters<ChatOpenAICompletions["invocationParams"]>[0];
 type InvocationExtra = Parameters<ChatOpenAICompletions["invocationParams"]>[1];
@@ -21,5 +26,37 @@ export class OpenAIGpt6Completions extends ChatOpenAICompletions {
       delete params.max_tokens;
     }
     return params;
+  }
+}
+
+/** Preserve provider usage that LangChain's non-streaming Responses converter omits. */
+export class OpenAIUsageResponses extends ChatOpenAIResponses {
+  override async _generate(
+    messages: Parameters<ChatOpenAIResponses["_generate"]>[0],
+    options: Parameters<ChatOpenAIResponses["_generate"]>[1],
+    runManager?: Parameters<ChatOpenAIResponses["_generate"]>[2],
+  ) {
+    options.signal?.throwIfAborted();
+    const params = this.invocationParams(options);
+    // The streaming adapter already retains raw usage on response.completed.
+    if (params.stream) return super._generate(messages, options, runManager);
+    const response = await this.completionWithRetry({
+      input: convertMessagesToResponsesInput({ messages, zdrEnabled: this.zdrEnabled ?? false, model: this.model }),
+      ...params,
+      stream: false,
+    }, { signal: options.signal, ...options.options });
+    const message = convertResponsesMessageToAIMessage(response);
+    if (response.usage) message.response_metadata["usage"] = response.usage;
+    return {
+      generations: [{ text: response.output_text, message }],
+      llmOutput: {
+        id: response.id,
+        ...(response.usage ? { tokenUsage: {
+          promptTokens: response.usage.input_tokens,
+          completionTokens: response.usage.output_tokens,
+          totalTokens: response.usage.total_tokens,
+        } } : {}),
+      },
+    };
   }
 }

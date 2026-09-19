@@ -26,7 +26,22 @@ describe("readCapabilitiesCacheFromDisk", () => {
         "openai/gpt-5.5": {
           input: ["text", "image"],
           output: ["text"],
-          features: { tools: true, structuredOutputs: false, reasoning: true },
+          features: {
+            tools: true,
+            structuredOutputs: false,
+            reasoning: true,
+            visualGrounding: null,
+          },
+        },
+        "vendor/grounded": {
+          input: ["text", "image"],
+          output: ["text"],
+          features: { tools: false, structuredOutputs: false, reasoning: false, visualGrounding: true },
+        },
+        "vendor/not-grounded": {
+          input: ["text", "image"],
+          output: ["text"],
+          features: { tools: false, structuredOutputs: false, reasoning: false, visualGrounding: false },
         },
       },
     });
@@ -34,6 +49,9 @@ describe("readCapabilitiesCacheFromDisk", () => {
     const cache = await readCapabilitiesCacheFromDisk(file);
     expect(cache?.models["openai/gpt-5.5"]?.input).toEqual(["text", "image"]);
     expect(cache?.models["openai/gpt-5.5"]?.features?.reasoning).toBe(true);
+    expect(cache?.models["openai/gpt-5.5"]?.features?.visualGrounding).toBeNull();
+    expect(cache?.models["vendor/grounded"]?.features?.visualGrounding).toBe(true);
+    expect(cache?.models["vendor/not-grounded"]?.features?.visualGrounding).toBe(false);
   });
 
   test("ignores malformed rows instead of trusting invalid modalities", async () => {

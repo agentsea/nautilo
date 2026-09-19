@@ -1,49 +1,30 @@
 import { GraphRecursionError } from "@langchain/langgraph";
+import { fromRuntimeConfig } from "@nautilo/config";
 
 /**
- * Stack 208 P0 — one shared graph execution policy seam.
+ * Shared graph execution policy for foreground, forked, scoped, and resumed
+ * runs. Every entry point resolves this policy and passes its recursion limit
+ * to LangGraph. The million-step ceiling is an overflow backstop, while three
+ * repeated normalized failures trigger correction and then a typed
+ * `no_progress` stop. User Stop and human interrupts remain authoritative.
  *
- * Every graph entry point (foreground, fork, scope-subagent, and the three
- * resume paths) resolves a {@link GraphExecutionPolicy} through
- * {@link resolveGraphExecutionPolicy} and threads `policy.recursionLimit`
- * into its `streamEvents` config. No call site hardcodes `100`. P0 keeps the
- * effective limit at 100 (R1: the technical ceiling rises to `1_000_000`
- * only after the P1 storage and P2 no-progress gates ship). The seam exists
- * so later phases change ONE constant here rather than six scattered sites.
- *
- * R9 — LangGraph's raw {@link GraphRecursionError} is mapped here to a typed
- * internal {@link GraphBudgetOutcome}; `friendly-errors.ts` renders the
- * user-safe sentence while the raw framework detail (troubleshooting URL,
- * literal limit number) stays in server logs, never on the room-broadcast
- * WS event.
- */
-
-/**
- * P0 default — unchanged from the prior scattered constants. R1 raises this
- * to `1_000_000` only after P1 (shallow saver) and P2 (no-progress breaker)
- * pass their gates. Keeping it here as a named constant means the raise is a
- * one-line diff in this file.
- *
- * Stack 208 P2 — the P1 storage gate and the P2 no-progress breaker have
- * shipped, so the technical recursion ceiling is now {@link DEFAULT_GRAPH_RECURSION_LIMIT}
- * below (1_000_000). This is an overflow / runaway backstop, NOT a normal
- * stopping condition (R1): legitimate long-running work may run for hours,
- * the no-progress breaker stops demonstrated failure loops, and User Stop /
- * explicit Task time pause / human interrupts remain authoritative (R3).
+ * LangGraph's raw {@link GraphRecursionError} is mapped to a typed internal
+ * {@link GraphBudgetOutcome}. `friendly-errors.ts` renders the user-safe text;
+ * raw framework details stay in server logs.
  */
 export const DEFAULT_GRAPH_RECURSION_LIMIT = 1_000_000;
 
 /**
- * Stack 208 P2 — default number of identical normalized failures that
+ * Default number of identical normalized failures that
  * trigger one corrective model turn before a typed `no_progress` stop. The
  * stop fires on the next identical failure after the corrective turn was
  * issued (limit + 1). Mirrors the spec's policy:
  *
  * ```ts
  * type GraphExecutionPolicy = {
- *   recursionLimit: 1_000_000;
- *   repeatedFailureLimit: 3;
- *   explicitTimeLimitMs?: number;
+ * recursionLimit: 1_000_000;
+ * repeatedFailureLimit: 3;
+ * explicitTimeLimitMs?: number;
  * };
  * ```
  *
@@ -53,19 +34,19 @@ export const DEFAULT_GRAPH_RECURSION_LIMIT = 1_000_000;
 export const DEFAULT_REPEATED_FAILURE_LIMIT = 3;
 
 /**
- * Resolved execution policy for one graph invocation. P0 carried only the
- * recursion ceiling; P2 threads the {@link DEFAULT_REPEATED_FAILURE_LIMIT}
- * so the no-progress breaker is configurable from one seam. P3 may thread
- * explicit per-run / deployment caps (D2 / R2 — omitted means no deadline).
+ * Resolved execution policy for one graph invocation. Internal callers and
+ * tests may override these values through the shared resolution seam.
  */
 export interface GraphExecutionPolicy {
-  /** Technical ceiling on LangGraph supersteps (R1). */
+  /** Technical ceiling on LangGraph supersteps. */
   recursionLimit: number;
   /**
-   * Stack 208 P2 — identical normalized failures that trigger one corrective
-   * model turn before a typed `no_progress` stop (R4).
+   * Identical normalized failures that trigger one corrective model turn
+   * before a typed `no_progress` stop.
    */
   repeatedFailureLimit: number;
+  /** Consecutive recoverable browser-decision events before Genie intervention. */
+  browserDecisionInterventionLimit: number;
 }
 
 /** Internal/test override seam; production call sites normally omit this. */
@@ -73,13 +54,6 @@ export type GraphExecutionPolicyOverrides = Partial<GraphExecutionPolicy>;
 
 /**
  * Resolve the execution policy for one graph invocation.
- *
- * P0 ignored explicit per-run / deployment caps (D2 / R2): an omitted
- * `time_limit_seconds` means no wall-clock termination, and the recursion
- * ceiling is a technical backstop, not a product budget. The seam is here so
- * P2 can thread a `repeatedFailureLimit` and P3 can raise the ceiling without
- * touching call sites.
- *
  * `input` is accepted (and intentionally unused) so the signature is stable
  * for future per-run cap threading. `overrides` is an internal/test seam for
  * proving non-default policy values flow to consumers; production call sites
@@ -93,15 +67,21 @@ export function resolveGraphExecutionPolicy(
     overrides.recursionLimit ?? DEFAULT_GRAPH_RECURSION_LIMIT;
   const repeatedFailureLimit =
     overrides.repeatedFailureLimit ?? DEFAULT_REPEATED_FAILURE_LIMIT;
+  const browserDecisionInterventionLimit = overrides.browserDecisionInterventionLimit
+    ?? fromRuntimeConfig().nautilo_browser_decision_intervention_limit;
   if (!Number.isInteger(recursionLimit) || recursionLimit < 1) {
     throw new Error(`Invalid graph recursion limit: ${recursionLimit}`);
   }
   if (!Number.isInteger(repeatedFailureLimit) || repeatedFailureLimit < 1) {
     throw new Error(`Invalid repeated failure limit: ${repeatedFailureLimit}`);
   }
+  if (!Number.isInteger(browserDecisionInterventionLimit) || browserDecisionInterventionLimit < 1) {
+    throw new Error(`Invalid browser decision intervention limit: ${browserDecisionInterventionLimit}`);
+  }
   return {
     recursionLimit,
     repeatedFailureLimit,
+    browserDecisionInterventionLimit,
   };
 }
 
@@ -113,7 +93,7 @@ export function resolveGraphExecutionPolicy(
  * union in `@nautilo/types` is untouched). The runtime job-loop catch site
  * detects this outcome and emits a structured `[nautilo/job]` log token so
  * `rg "graph_budget_exceeded" server.log` bridges to the specific failure
- * (R9 — framework failure remains distinct in telemetry, not in the WS
+ * ( — framework failure remains distinct in telemetry, not in the WS
  * category union that would require a cross-boundary types change).
  */
 export interface GraphBudgetOutcome {
@@ -181,7 +161,7 @@ function inferGraphRecursionLimit(error: unknown): number | null {
 
 /**
  * Read-only snapshot of a {@link GraphExecutionMetrics} accumulator.
- * Telemetry-only (D2): logged to `server.log`, never persisted, never put on
+ * Telemetry-only : logged to `server.log`, never persisted, never put on
  * a WS event.
  */
 export interface GraphExecutionMetricsSnapshot {
@@ -192,7 +172,7 @@ export interface GraphExecutionMetricsSnapshot {
 }
 
 /**
- * Stack 208 P0 — measurable counters fed from the existing `streamEvents` hook.
+ * measurable counters fed from the existing `streamEvents` hook.
  *
  * Each graph entry point already iterates `for await (const ev of
  * graph.streamEvents(...))`; calling {@link noteStreamEvent} per event counts
@@ -200,8 +180,8 @@ export interface GraphExecutionMetricsSnapshot {
  * `agent`, `post_model`, `tools`, and `await_reply`), model invocations
  * (`on_chat_model_start`), and tool calls (`on_tool_start`) — the same event
  * shapes `processStreamEvent` already dispatches on, so no new hook is
- * invented. The snapshot is logged at stream end / on error via `log()`.
- * No persistence is introduced (D2 — telemetry-only defaults).
+ * invented. The snapshot is logged at stream end / on error via `log`.
+ * No persistence is introduced ( — telemetry-only defaults).
  */
 export class GraphExecutionMetrics {
   private readonly startedAt: number;
@@ -229,6 +209,7 @@ export class GraphExecutionMetrics {
         name === "agent" ||
         name === "post_model" ||
         name === "tools" ||
+        name === "browser_decision" ||
         name === "await_reply"
       )
     ) {

@@ -1,23 +1,23 @@
 /**
- * D429 Phase 1 — resolved catalog projection.
+ * resolved catalog projection.
  *
  * Composes ONE non-secret, server-side {@link ResolvedCatalogModel} row per
  * active signed-catalog entry by reusing existing sources only:
  *
- *   - identity / cost / routing  : `ASSISTANT_MODELS` (`./assistant-models`)
- *   - modalities / features / provenance / lastVerifiedAt
- *                                : `resolveModelCapabilities` (`@nautilo/model-capabilities`)
- *   - venice capability overlay  : `readVeniceCapabilityHintsSync` (`./venice-catalog-cache`)
- *   - privacy grade              : `MODEL_PRIVACY_GRADE` (`./model-privacy`)
- *   - intelligence tier / rank   : `MODEL_INTELLIGENCE_TIER` / `INTELLIGENCE_RANK` (`./model-selection`)
- *   - signed execution limits      : active model-catalog entry
- *   - unknown-id display hint     : `getDescriptiveModelContextTokens` / `getKnownModelMaxOutputTokens`
- *                                   (`../providers/models`)
- *   - credential detection       : `modelHasRunnableCredentials` (`../chat/model-runtime-credentials`)
+ * - identity / cost / routing : `ASSISTANT_MODELS` (`./assistant-models`)
+ * - modalities / features / provenance / lastVerifiedAt
+ * : `resolveModelCapabilities` (`@nautilo/model-capabilities`)
+ * - venice capability overlay : `readVeniceCapabilityHintsSync` (`./venice-catalog-cache`)
+ * - privacy grade : `MODEL_PRIVACY_GRADE` (`./model-privacy`)
+ * - intelligence tier / rank : `MODEL_INTELLIGENCE_TIER` / `INTELLIGENCE_RANK` (`./model-selection`)
+ * - signed execution limits : active model-catalog entry
+ * - unknown-id display hint : `getDescriptiveModelContextTokens` / `getKnownModelMaxOutputTokens`
+ * (`../providers/models`)
+ * - credential detection : `modelHasRunnableCredentials` (`../chat/model-runtime-credentials`)
  *
  * It does NOT duplicate provider-prefix parsing, privacy grades, intelligence
  * tiers, or limit tables. List/get are pure / cache-backed: they never await a
- * network fetch (Phase 0 decision; `tests/unit/resolved-catalog.test.ts`
+ * network fetch ( decision; `tests/unit/resolved-catalog.test.ts`
  * stubs `globalThis.fetch` to throw to prove it). Venice refresh may warm the
  * cache asynchronously via `scheduleVeniceCatalogRefreshIfNeeded`, but the
  * returned rows are computed only from checked-in data / current caches.
@@ -66,7 +66,7 @@ import {
   getActiveModelCatalogSync,
   type ModelCatalogProvenance,
 } from "./model-catalog/runtime-catalog";
-import { isSupportedModelCatalogProvider } from "./model-catalog/supported-providers";
+import { isSupportedModelCatalogWorkload } from "./model-catalog/supported-providers";
 
 /** Explicit caller consent overrides the operator setting; injected environments are authoritative. */
 export function resolveChinaUpstreamConsent(
@@ -135,7 +135,7 @@ interface AvailabilityOutcome {
 
 /**
  * Resolve runnable state + reason. Routing policy is evaluated SEPARATELY
- * from credentials (Phase 0): a china-routed Venice SKU without opt-in is
+ * from credentials : a china-routed Venice SKU without opt-in is
  * `routing_filtered` even when a Venice key is present; a keyed western SKU
  * is `selectable`; a non-venice disabled catalog row is `disabled`.
  */
@@ -144,15 +144,15 @@ function resolveAvailability(
   id: string,
   env: NodeJS.ProcessEnv,
   allowChinaUpstream: boolean,
+  workload: ResolvedCatalogModel["workload"],
 ): AvailabilityOutcome {
-  // D429 Phase 7.2 — remote rows whose provider prefix is not routable by
-  // createUniversalModel can never become runnable. The gate is local: remote
-  // metadata cannot make an unsupported provider selectable.
+  // Provider and workload adapters are local code. Remote metadata cannot
+  // make an unsupported transport selectable.
   const provider = getProviderFromModelId(id);
-  if (!isSupportedModelCatalogProvider(provider)) {
+  if (!isSupportedModelCatalogWorkload(provider, workload)) {
     return {
       availability: "disabled",
-      reason: `provider "${provider}" is not supported by this server`,
+      reason: `provider "${provider}" is not supported for the ${workload} workload on this server`,
     };
   }
   // Release disablement is absolute for every provider. Local credentials,
@@ -221,7 +221,7 @@ function refineVeniceAvailability(
   return base;
 }
 
-/** Features with explicit `null` for unknown (Phase 0: never coerce unknown→false). */
+/** Features with explicit `null` for unknown (: never coerce unknown→false). */
 function resolveFeatures(id: string): ResolvedCatalogFeatures {
   const resolved = resolveModelCapabilities(id);
   const f = resolved.features;
@@ -229,6 +229,7 @@ function resolveFeatures(id: string): ResolvedCatalogFeatures {
     tools: f ? f.tools : null,
     structuredOutputs: f ? f.structuredOutputs : null,
     reasoning: f ? f.reasoning : null,
+    visualGrounding: f?.visualGrounding ?? null,
     webSearch: null,
     e2ee: null,
   };
@@ -246,10 +247,10 @@ function resolveFeatures(id: string): ResolvedCatalogFeatures {
 }
 
 /**
- * D429 Phase 7 — active released snapshot seam. Membership and descriptive
+ * active released snapshot seam. Membership and descriptive
  * metadata come from the validated remote catalog (or the checked-in fallback
  * when no remote snapshot is hydrated). The snapshot is read SYNCHRONOUSLY and
- * atomically; this never awaits a network fetch (Phase 0 invariant preserved).
+ * atomically; this never awaits a network fetch ( invariant preserved).
  */
 function findActiveCatalogEntry(id: string): ModelCatalogEntry | undefined {
   const { catalog } = getActiveModelCatalogSync();
@@ -358,6 +359,18 @@ function resolveFeaturesFor(
   id: string,
   entry: ModelCatalogEntry | undefined,
 ): ResolvedCatalogFeatures {
+  // Decision capability facts are not chat/tool capabilities. An observational
+  // provider cache must never fill in chat features for this separate workload.
+  if (entry?.workload === "decision") {
+    return {
+      tools: null,
+      structuredOutputs: null,
+      reasoning: null,
+      visualGrounding: null,
+      webSearch: null,
+      e2ee: null,
+    };
+  }
   if (entry?.features) {
     const resolved = resolveModelCapabilities(id);
     const features = resolved.features ?? entry.features;
@@ -365,6 +378,7 @@ function resolveFeaturesFor(
       tools: features.tools,
       structuredOutputs: features.structuredOutputs,
       reasoning: features.reasoning,
+      visualGrounding: features.visualGrounding ?? null,
       webSearch: null,
       e2ee: null,
     };
@@ -381,7 +395,7 @@ function resolveFeaturesFor(
  * Never awaits a fetch — all sources are sync / cache-backed. Remote
  * metadata can add/correct descriptive fields but can never supply URLs /
  * credentials, make China routing consent true, or make an unsupported
- * provider runnable (Phase 7.2).
+ * provider runnable .
  */
 export function resolveCatalogModel(
   id: string,
@@ -403,10 +417,12 @@ export function resolveCatalogModel(
       output: ["text"],
       workload: "chat",
       generation: null,
+      decision: null,
       features: {
         tools: null,
         structuredOutputs: null,
         reasoning: null,
+        visualGrounding: null,
         webSearch: null,
         e2ee: null,
       },
@@ -428,6 +444,7 @@ export function resolveCatalogModel(
     id,
     env,
     resolveChinaUpstreamConsent(options.allowChinaUpstream, env),
+    entry?.workload ?? "chat",
   );
   const { availability, reason } = refineVeniceAvailability(baseAvailability, id, veniceSnapshot);
   const { input, output, veniceHint } = resolveModalitiesFor(id, entry);
@@ -441,12 +458,12 @@ export function resolveCatalogModel(
     : (MODEL_INTELLIGENCE_TIER[id] ?? null);
   const privacyGrade: number | null = entry ? entry.privacy.grade : (MODEL_PRIVACY_GRADE[id] ?? null);
   const costCoefficient: number = entry ? entry.cost.coefficient : getCostCoefficient(id);
-  const contextTokens: number | null = workload === "generation"
+  const contextTokens: number | null = workload !== "chat"
     ? null
     : entry?.limits
     ? entry.limits.contextTokens
     : getDescriptiveModelContextTokens(id);
-  const maxOutputTokens: number | null = workload === "generation"
+  const maxOutputTokens: number | null = workload !== "chat"
     ? null
     : entry?.limits
     ? entry.limits.outputTokens
@@ -470,6 +487,7 @@ export function resolveCatalogModel(
     output,
     workload,
     generation,
+    decision: entry?.decision ? { ...entry.decision, operations: [...entry.decision.operations] } : null,
     features,
     privacyGrade,
     privacyLabel: entry?.privacy.label ?? null,
@@ -495,7 +513,7 @@ export function resolveCatalogModel(
 /**
  * List resolved catalog rows for every entry in the active released snapshot
  * (validated remote catalog, or the checked-in fallback when no remote
- * snapshot is hydrated). Per Phase 0, dynamic/arbitrary ids are excluded from
+ * snapshot is hydrated). Per , dynamic/arbitrary ids are excluded from
  * the v1 list (they remain resolvable via {@link resolveCatalogModel}).
  * Unavailable rows are omitted unless `includeUnavailable` is set. Sorted by
  * priority then id, matching the legacy picker ordering. A newly published

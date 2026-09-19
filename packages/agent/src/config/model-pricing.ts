@@ -17,13 +17,13 @@ import { getActiveModelCatalogSync } from "./model-catalog/runtime-catalog";
  * $3 in / $15 out (matches the `costCoefficient = 1.0` anchor in
  * `assistant-models.ts`).
  *
- * Cache rates (D407): providers price cached prompt tokens differently.
- *   - `cachedInputPerMtok` = cache-READ rate (Anthropic 0.1× input, OpenAI
- *     ≈0.5×, Gemini ≈0.25×). Omit → cache reads bill at the normal input rate.
- *   - `cacheWritePerMtok` = cache-WRITE/creation rate (Anthropic 1.25× input;
- *     OpenAI/Gemini have no separate write charge). Omit → cache-creation
- *     tokens bill at the normal input rate.
- * NOTE: these multipliers are operator-confirmable — see ISSUE-D407.
+ * Cache rates: providers price cached prompt tokens differently.
+ * - `cachedInputPerMtok` = cache-READ rate (Anthropic 0.1× input, OpenAI
+ * ≈0.5×, Gemini ≈0.25×). Omit → cache reads bill at the normal input rate.
+ * - `cacheWritePerMtok` = cache-WRITE/creation rate (for example Anthropic
+ * 1.25× input and supported OpenAI models' published write rate). Omit → cache-creation
+ * tokens bill at the normal input rate.
+ * These rates are operator-confirmable from provider pricing sources.
  */
 export interface ModelPrice {
   /** USD per 1M input (prompt) tokens. */
@@ -34,10 +34,15 @@ export interface ModelPrice {
   cachedInputPerMtok?: number;
   /** USD per 1M cache-WRITE/creation input tokens (Anthropic 1.25× input). */
   cacheWritePerMtok?: number;
+  /** Optional whole-request rate band selected when total input exceeds the threshold. */
+  longContext?: {
+    inputTokensAbove: number;
+    rates: Omit<ModelPrice, "longContext">;
+  };
 }
 
 /** Bump on any price change. Stored on each usage row for later reconciliation. */
-export const PRICING_VERSION = "2026-09-08.1";
+export const PRICING_VERSION = "2026-09-19.1";
 
 /** Baseline used to derive an estimate for models absent from the explicit table. */
 const SONNET_BASELINE: ModelPrice = { inputPerMtok: 3, outputPerMtok: 15 };
@@ -47,6 +52,8 @@ const SONNET_BASELINE: ModelPrice = { inputPerMtok: 3, outputPerMtok: 15 };
  * Models not listed fall back to a `costCoefficient`-scaled Sonnet baseline.
  */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
+  // OpenRouter Jev 1.13 model page, verified 2026-09-18. Output usage is free.
+  "openrouter:typesafe/jev-1.13": { inputPerMtok: 0.042, outputPerMtok: 0 },
   // --- Anthropic (cache read 0.1× input, cache write 1.25× input) ---
   "anthropic:claude-sonnet-4-6": { inputPerMtok: 3, outputPerMtok: 15, cachedInputPerMtok: 0.3, cacheWritePerMtok: 3.75 },
   "anthropic:claude-sonnet-5": { inputPerMtok: 3, outputPerMtok: 15, cachedInputPerMtok: 0.3, cacheWritePerMtok: 3.75 },
@@ -57,11 +64,40 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
   // --- OpenAI (cache read ≈0.5× input, no separate write charge) ---
   "openai:gpt-5.5-2026-04-23": { inputPerMtok: 6, outputPerMtok: 30, cachedInputPerMtok: 3 },
   "openai:gpt-5.4-2026-03-05": { inputPerMtok: 3, outputPerMtok: 15, cachedInputPerMtok: 1.5 },
-  // Stack 166 — GPT-5.6 family, standard tier / short-context (developers.openai.com/api/docs/pricing).
-  // Unlike GPT-5.4/5.5, the 5.6 family DOES publish a separate cache-write rate.
-  "openai:gpt-5.6-sol": { inputPerMtok: 5, outputPerMtok: 30, cachedInputPerMtok: 0.5, cacheWritePerMtok: 6.25 },
-  "openai:gpt-5.6-terra": { inputPerMtok: 2.5, outputPerMtok: 15, cachedInputPerMtok: 0.25, cacheWritePerMtok: 3.125 },
-  "openai:gpt-5.6-luna": { inputPerMtok: 1, outputPerMtok: 6, cachedInputPerMtok: 0.1, cacheWritePerMtok: 1.25 },
+  // GPT-5.6 standard rates and whole-request long-context pricing, verified 2026-09-18:
+  // https://developers.openai.com/api/docs/models/gpt-5.6-sol
+  // https://developers.openai.com/api/docs/models/gpt-5.6-terra
+  // https://developers.openai.com/api/docs/models/gpt-5.6-luna
+  "openai:gpt-5.6-sol": {
+    inputPerMtok: 4,
+    outputPerMtok: 20,
+    cachedInputPerMtok: 0.4,
+    cacheWritePerMtok: 5,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 8, outputPerMtok: 30, cachedInputPerMtok: 0.8, cacheWritePerMtok: 10 },
+    },
+  },
+  "openai:gpt-5.6-terra": {
+    inputPerMtok: 2,
+    outputPerMtok: 12,
+    cachedInputPerMtok: 0.2,
+    cacheWritePerMtok: 2.5,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 4, outputPerMtok: 18, cachedInputPerMtok: 0.4, cacheWritePerMtok: 5 },
+    },
+  },
+  "openai:gpt-5.6-luna": {
+    inputPerMtok: 0.2,
+    outputPerMtok: 1.2,
+    cachedInputPerMtok: 0.02,
+    cacheWritePerMtok: 0.25,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 0.4, outputPerMtok: 1.8, cachedInputPerMtok: 0.04, cacheWritePerMtok: 0.5 },
+    },
+  },
   // --- Google (implicit cache read ≈0.25× input, no separate write charge) ---
   "google:gemini-2.5-pro": { inputPerMtok: 1.25, outputPerMtok: 10, cachedInputPerMtok: 0.3125 },
   "google:gemini-3.1-pro-preview": { inputPerMtok: 1.5, outputPerMtok: 12, cachedInputPerMtok: 0.375 },
@@ -77,6 +113,9 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
   "fireworks:accounts/fireworks/models/deepseek-v4-pro": { inputPerMtok: 0.9, outputPerMtok: 3 },
   "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": { inputPerMtok: 1.32, cachedInputPerMtok: 0.044, outputPerMtok: 3.96 },
   "openrouter:deepseek/deepseek-v4-pro-0813": { inputPerMtok: 0.435, cachedInputPerMtok: 0.003625, outputPerMtok: 0.87 },
+  // OpenRouter public model API base rates, verified 2026-09-19. The provider
+  // advertises scheduled override windows, so these remain dashboard estimates.
+  "openrouter:deepseek/deepseek-v4.1-flash": { inputPerMtok: 0.15, cachedInputPerMtok: 0.003, outputPerMtok: 0.6 },
   "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": { inputPerMtok: 0.14, cachedInputPerMtok: 0.028, outputPerMtok: 0.28 },
   "fireworks:accounts/fireworks/models/minimax-m3": { inputPerMtok: 0.5, outputPerMtok: 2 },
   // --- Venice ---
@@ -113,7 +152,7 @@ export type PricingSource = "explicit" | "serving_profile" | "catalog_coefficien
 /** How image-gen usage rows derived their frozen USD estimate at insert. */
 export type ImagePricingSource = "image_explicit" | "image_default";
 
-/** Reserved `llm_usage_events.metadata.usagePricingSource` values (ISSUE-M217). */
+/** Reserved `llm_usage_events.metadata.usagePricingSource` values. */
 export type UsagePricingSource = PricingSource | ImagePricingSource;
 
 /** Stored metadata sources that indicate a coefficient/default fallback estimate. */
@@ -147,7 +186,7 @@ function pricingSourceForDerivedModel(modelId: string): PricingSource {
 
 /**
  * Resolve a price for a model id, using the explicit table when present and
- * otherwise a canonical `getCostCoefficient()`-scaled Sonnet baseline. Always
+ * otherwise a canonical `getCostCoefficient`-scaled Sonnet baseline. Always
  * returns a price so estimates never silently drop to zero for unknown/dynamic
  * models.
  */
@@ -200,15 +239,18 @@ export interface UsageTokens {
  * Providers fold cache reads + cache creation INTO `inputTokens`
  * (LangChain normalizes `usage_metadata.input_tokens = uncached + cache_read
  * + cache_creation`). So we split them out and bill each band at its rate:
- *   uncached      → inputPerMtok
- *   cache_read    → cachedInputPerMtok (fallback: inputPerMtok)
- *   cache_creation→ cacheWritePerMtok  (fallback: inputPerMtok)
- *   output        → outputPerMtok (reasoning tokens are already inside output)
+ * uncached → inputPerMtok
+ * cache_read → cachedInputPerMtok (fallback: inputPerMtok)
+ * cache_creation→ cacheWritePerMtok (fallback: inputPerMtok)
+ * output → outputPerMtok (reasoning tokens are already inside output)
  */
 export function estimateCostUsd(modelId: string, tokens: UsageTokens, servingProfileId?: string): number {
-  const price = resolveModelPrice(modelId, servingProfileId).price;
+  const resolvedPrice = resolveModelPrice(modelId, servingProfileId).price;
   const input = Math.max(0, tokens.inputTokens ?? 0);
   const output = Math.max(0, tokens.outputTokens ?? 0);
+  const price = resolvedPrice.longContext && input > resolvedPrice.longContext.inputTokensAbove
+    ? resolvedPrice.longContext.rates
+    : resolvedPrice;
   const cacheRead = Math.max(0, Math.min(tokens.cachedInputTokens ?? 0, input));
   const cacheCreation = Math.max(
     0,

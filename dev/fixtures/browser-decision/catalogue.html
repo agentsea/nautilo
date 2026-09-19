@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blue Mug Catalogue</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, sans-serif;
+        color: #10233e;
+        background: #eef5fb;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        box-sizing: border-box;
+        width: min(100%, 50rem);
+        margin: 0 auto;
+        padding: 2rem 1rem 3rem;
+      }
+
+      h1,
+      h2 {
+        color: #083d77;
+      }
+
+      .panel,
+      .product,
+      .details {
+        margin-top: 1rem;
+        padding: 1rem;
+        border: 1px solid #b7cce0;
+        border-radius: 0.75rem;
+        background: #fff;
+      }
+
+      form {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      input,
+      button {
+        min-height: 2.75rem;
+        padding: 0.6rem 0.8rem;
+        border-radius: 0.45rem;
+        font: inherit;
+      }
+
+      input {
+        border: 1px solid #6f8eac;
+      }
+
+      button {
+        width: fit-content;
+        border: 1px solid #075ca8;
+        color: #fff;
+        background: #075ca8;
+        cursor: pointer;
+      }
+
+      button:hover,
+      button:focus-visible {
+        background: #03447f;
+      }
+
+      .products {
+        display: grid;
+        gap: 0.8rem;
+      }
+
+      .product h3 {
+        margin-top: 0;
+      }
+
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.6rem 1rem;
+      }
+
+      dt {
+        font-weight: 700;
+      }
+
+      dd {
+        margin: 0;
+      }
+
+      .notice {
+        border-left: 0.3rem solid #c76c00;
+        padding-left: 0.75rem;
+      }
+
+      .visual-catalogue {
+        display: block;
+        width: 100%;
+        height: clamp(26rem, calc(100vw - 2rem), 34rem);
+        border: 1px solid #6f8eac;
+        border-radius: 0.5rem;
+        background: #f8fbff;
+        cursor: pointer;
+      }
+
+      @media (min-width: 38rem) {
+        form {
+          grid-template-columns: 1fr auto;
+          align-items: end;
+        }
+
+        form label {
+          grid-column: 1 / -1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p>Browser decision qualification fixture</p>
+        <h1 id="stage-heading">Stage 1: Search the catalogue</h1>
+        <p>Goal: find the cheapest in-stock blue ceramic mug.</p>
+      </header>
+      <section id="fixture" aria-labelledby="stage-heading"></section>
+      <p id="status" aria-live="polite"></p>
+    </main>
+
+    <!-- Developer fixture mode=recoverable leaves two submissions unchanged; mode=visual draws Stage 3 choices only on canvas. -->
+    <script>
+      const FIXTURE_DATA = Object.freeze({
+        expectedItem: Object.freeze({
+          name: "Blue Ceramic Mug — Dawn",
+          price: "$8.00",
+          sku: "MUG-BLUE-08",
+        }),
+        products: Object.freeze([
+          Object.freeze({
+            name: "Blue Ceramic Mug — Dawn",
+            price: "$8.00",
+            sku: "MUG-BLUE-08",
+            colour: "Blue",
+            material: "Ceramic",
+            availability: "In stock",
+          }),
+          Object.freeze({
+            name: "Blue Ceramic Mug — Dusk",
+            price: "$12.00",
+            sku: "MUG-BLUE-12",
+            colour: "Blue",
+            material: "Ceramic",
+            availability: "In stock",
+          }),
+          Object.freeze({
+            name: "Ocean Blue Ceramic Mug",
+            price: "$6.00",
+            sku: "MUG-BLUE-06",
+            colour: "Blue",
+            material: "Ceramic",
+            availability: "Out of stock",
+          }),
+          Object.freeze({
+            name: "Red Ceramic Mug",
+            price: "$10.00",
+            sku: "MUG-RED-10",
+            colour: "Red",
+            material: "Ceramic",
+            availability: "Out of stock",
+          }),
+        ]),
+      });
+
+      const fixture = document.querySelector("#fixture");
+      const stageHeading = document.querySelector("#stage-heading");
+      const status = document.querySelector("#status");
+      const fixtureMode = new URLSearchParams(window.location.search).get("mode");
+      const ambiguousMode = fixtureMode === "ambiguous";
+      const recoverableMode = fixtureMode === "recoverable";
+      const visualMode = fixtureMode === "visual";
+      let searchedProducts = [];
+      let searchMatches = [];
+      let recoverableSearchAttempts = 0;
+      let disposeVisualResults = () => {};
+
+      function productName(product) {
+        if (!ambiguousMode || !product.sku.startsWith("MUG-BLUE-")) {
+          return product.name;
+        }
+
+        return "Blue Ceramic Mug";
+      }
+
+      function priceInCents(product) {
+        return Number(product.price.replace(/[^0-9.]/g, "")) * 100;
+      }
+
+      function setStage(number, title) {
+        stageHeading.textContent = `Stage ${number}: ${title}`;
+      }
+
+      function clearVisualResults() {
+        disposeVisualResults();
+        disposeVisualResults = () => {};
+      }
+
+      function renderSearch() {
+        clearVisualResults();
+        setStage(1, "Search the catalogue");
+        fixture.replaceChildren();
+        const panel = document.createElement("section");
+        panel.className = "panel";
+
+        const form = document.createElement("form");
+        form.setAttribute("role", "search");
+        const label = document.createElement("label");
+        label.htmlFor = "catalogue-search";
+        label.textContent = "Search catalogue";
+        const input = document.createElement("input");
+        input.id = "catalogue-search";
+        input.name = "query";
+        input.type = "search";
+        input.required = true;
+        input.autocomplete = "off";
+        input.placeholder = "blue ceramic mug";
+        input.addEventListener("input", () => {
+          status.textContent = input.value.trim() ? "Search phrase entered" : "Enter a catalogue search, then select Search.";
+        });
+        const submit = document.createElement("button");
+        submit.type = "submit";
+        submit.textContent = "Search";
+        form.append(label, input, submit);
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          if (recoverableMode && recoverableSearchAttempts < 2) {
+            recoverableSearchAttempts += 1;
+            return;
+          }
+          const terms = input.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+          searchMatches = FIXTURE_DATA.products
+            .filter((product) => terms.every((term) => `${product.name} ${product.colour} ${product.material}`.toLocaleLowerCase().includes(term)))
+            .sort((left, right) => priceInCents(left) - priceInCents(right));
+          searchedProducts = searchMatches;
+          renderFilter();
+        });
+        panel.append(form);
+        fixture.append(panel);
+        status.textContent = "Enter a catalogue search, then select Search.";
+        input.focus();
+      }
+
+      function renderFilter() {
+        clearVisualResults();
+        setStage(2, "Filter results");
+        fixture.replaceChildren();
+        const panel = document.createElement("section");
+        panel.className = "panel";
+        const summary = document.createElement("p");
+        summary.textContent = `${searchedProducts.length} search results found.`;
+        const filter = document.createElement("button");
+        filter.type = "button";
+        filter.textContent = "In stock";
+        filter.addEventListener("click", () => {
+          searchedProducts = searchedProducts.filter((product) => product.availability === "In stock");
+          renderResults();
+        });
+        panel.append(summary, filter);
+        fixture.append(panel);
+        status.textContent = "Select In stock to continue.";
+        filter.focus();
+      }
+
+      function renderResults() {
+        clearVisualResults();
+        setStage(3, "Choose a product");
+        fixture.replaceChildren();
+        const panel = document.createElement("section");
+        panel.className = "panel";
+        const resultsHeading = document.createElement("h2");
+        resultsHeading.textContent = "In-stock results";
+
+        if (visualMode) {
+          resultsHeading.textContent = "Product cards";
+          renderVisualResults(panel, resultsHeading, searchMatches);
+          fixture.append(panel);
+          status.textContent = "Choose a visual product card.";
+          return;
+        }
+
+        const products = document.createElement("div");
+        products.className = "products";
+
+        for (const product of searchedProducts) {
+          const card = document.createElement("article");
+          card.className = "product";
+          const name = productName(product);
+          const heading = document.createElement("h3");
+          heading.textContent = name;
+          const description = document.createElement("p");
+          description.textContent = `${product.colour} ${product.material.toLocaleLowerCase()} · ${product.availability}`;
+          const price = document.createElement("p");
+          price.textContent = `Price: ${product.price}`;
+          const details = document.createElement("button");
+          details.type = "button";
+          details.textContent = `View ${name}`;
+          details.addEventListener("click", () => renderDetails(product));
+          card.append(heading, description, price, details);
+          products.append(card);
+        }
+
+        if (ambiguousMode) {
+          const notice = document.createElement("p");
+          notice.className = "notice";
+          notice.textContent = "Some products share a display name. Compare their prices and details.";
+          panel.append(notice);
+        }
+
+        panel.append(resultsHeading, products);
+        fixture.append(panel);
+        status.textContent = "Select a product detail button.";
+        products.querySelector("button")?.focus();
+      }
+
+      function renderVisualResults(panel, resultsHeading, products) {
+        const canvas = document.createElement("canvas");
+        canvas.className = "visual-catalogue";
+        canvas.setAttribute("aria-label", "Visual product catalogue");
+        const context = canvas.getContext("2d");
+        const hitRegions = [];
+
+        function draw() {
+          const bounds = canvas.getBoundingClientRect();
+          const width = Math.max(1, Math.round(bounds.width));
+          const height = Math.max(1, Math.round(bounds.height));
+          const ratio = window.devicePixelRatio || 1;
+          canvas.width = Math.round(width * ratio);
+          canvas.height = Math.round(height * ratio);
+          context.setTransform(ratio, 0, 0, ratio, 0, 0);
+          context.clearRect(0, 0, width, height);
+          context.fillStyle = "#f8fbff";
+          context.fillRect(0, 0, width, height);
+
+          const padding = 16;
+          const gap = 12;
+          const cardWidth = width - padding * 2;
+          const cardHeight = (height - padding * 2 - gap * (products.length - 1)) / products.length;
+          hitRegions.length = 0;
+
+          products.forEach((product, index) => {
+            const top = padding + index * (cardHeight + gap);
+            const inStock = product.availability === "In stock";
+            context.fillStyle = inStock ? "#e9f4ff" : "#fff1e8";
+            context.strokeStyle = inStock ? "#2f70a8" : "#b85c00";
+            context.lineWidth = 2;
+            context.beginPath();
+            context.roundRect(padding, top, cardWidth, cardHeight, 10);
+            context.fill();
+            context.stroke();
+
+            context.fillStyle = "#10233e";
+            context.font = "700 18px system-ui, sans-serif";
+            context.fillText(product.name, padding + 16, top + 31);
+            context.font = "16px system-ui, sans-serif";
+            context.fillText(`${product.colour} ${product.material} · ${product.availability}`, padding + 16, top + 58);
+            context.font = "700 18px system-ui, sans-serif";
+            context.fillText(product.price, padding + 16, top + 75);
+
+            const buttonWidth = Math.min(116, cardWidth - 32);
+            const buttonHeight = 28;
+            const buttonLeft = padding + cardWidth - buttonWidth - 16;
+            const buttonTop = top + cardHeight - buttonHeight - 8;
+            context.fillStyle = "#075ca8";
+            context.beginPath();
+            context.roundRect(buttonLeft, buttonTop, buttonWidth, buttonHeight, 7);
+            context.fill();
+            context.fillStyle = "#ffffff";
+            context.font = "700 15px system-ui, sans-serif";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillText("View details", buttonLeft + buttonWidth / 2, buttonTop + buttonHeight / 2);
+            context.textAlign = "start";
+            context.textBaseline = "alphabetic";
+            hitRegions.push({ product, left: buttonLeft, top: buttonTop, width: buttonWidth, height: buttonHeight });
+          });
+        }
+
+        canvas.addEventListener("click", (event) => {
+          const bounds = canvas.getBoundingClientRect();
+          const x = event.clientX - bounds.left;
+          const y = event.clientY - bounds.top;
+          const target = hitRegions.find((region) => x >= region.left && x <= region.left + region.width && y >= region.top && y <= region.top + region.height);
+          if (target) {
+            renderDetails(target.product);
+          }
+        });
+
+        const resizeObserver = new ResizeObserver(draw);
+        resizeObserver.observe(canvas);
+        disposeVisualResults = () => resizeObserver.disconnect();
+        panel.append(resultsHeading, canvas);
+        requestAnimationFrame(draw);
+      }
+
+      function renderDetails(product) {
+        clearVisualResults();
+        setStage(4, "Confirm selection");
+        fixture.replaceChildren();
+        const details = document.createElement("section");
+        details.className = "details";
+        const heading = document.createElement("h2");
+        heading.textContent = "Product details";
+        const list = document.createElement("dl");
+
+        for (const [label, value] of [
+          ["Name", productName(product)],
+          ["Price", product.price],
+          ["SKU", product.sku],
+          ["Colour", product.colour],
+          ["Material", product.material],
+          ["Availability", product.availability],
+        ]) {
+          const term = document.createElement("dt");
+          term.textContent = label;
+          const definition = document.createElement("dd");
+          definition.textContent = value;
+          list.append(term, definition);
+        }
+
+        const reset = document.createElement("p");
+        reset.textContent = "Reload this page to reset the fixture.";
+        details.append(heading, list, reset);
+        fixture.append(details);
+        status.textContent = "Product details are displayed.";
+      }
+
+      renderSearch();
+    </script>
+  </body>
+</html>

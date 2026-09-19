@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto";
 import {
   agentBrowserArgv,
+  agentBrowserSnapshotJsonArgv,
+  browserArgvPrefix,
+  browserToolMayMutate,
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
   agentBrowserViewportEvalArgv,
@@ -17,9 +21,12 @@ import {
   dispatchInteractiveBrowserPageRead,
 } from "../browser-page-read-dispatch.ts";
 import type { BrowserPageSnapshotStore } from "../browser-page-snapshot-store.ts";
+import { browserObservationSettleExpression } from "../browser-observation-settle.ts";
 import {
   FIXED_DESKTOP_DISPATCH_NOT_HANDLED,
   type FixedDesktopDispatchHandler,
+  type FixedDesktopDispatchContext,
+  type DesktopDispatchDecision,
 } from "./router.ts";
 
 const BROWSER_EXEC_TIMEOUT_MS = 30_000;
@@ -64,8 +71,13 @@ function browserExecError(
   error: unknown,
   installHint: () => string,
 ): RelayDispatchResult {
+  if (error instanceof BrowserDispatchFailure) {
+    return { status: "error", errorCode: error.code, error: error.message };
+  }
   const detail = error as {
     readonly code?: string;
+    readonly cmd?: string;
+    readonly signal?: string;
     readonly killed?: boolean;
     readonly stdout?: string;
     readonly stderr?: string;
@@ -77,24 +89,84 @@ function browserExecError(
       error: `agent-browser is not available. ${installHint()}`,
     };
   }
+  // Node embeds the full command (including arguments) in exec errors. Keep
+  // browser diagnostics, not that wrapper, in the model-visible handoff.
+  const commandPrefix = detail.cmd ? `Command failed: ${detail.cmd}` : undefined;
+  const processMessage = commandPrefix && detail.message?.startsWith(commandPrefix)
+    ? detail.message.slice(commandPrefix.length).trim()
+    : detail.message?.startsWith("Command failed:") ? undefined : detail.message;
+  const message = detail.stderr?.trim() || detail.stdout?.trim() || processMessage
+    || [detail.code, detail.signal].filter(Boolean).join(" ");
   if (detail.killed) {
     return {
       status: "error",
-      error: `${request.toolName} timed out after ${BROWSER_EXEC_TIMEOUT_MS}ms`,
+      error: `${request.toolName} timed out after ${BROWSER_EXEC_TIMEOUT_MS}ms${message ? `\n${message}` : ""}`,
     };
   }
-  const message =
-    (detail.stderr ?? detail.stdout ?? "").trim() ||
-    detail.message ||
-    `${request.toolName} failed`;
-  return { status: "error", error: message };
+  return { status: "error", error: message || `${request.toolName} failed` };
+}
+
+interface BrowserObservation {
+  version: 1;
+  snapshot: string;
+  refs: Record<string, { role: string; name: string }>;
+  pageUrl: string;
+  browserSessionId: string;
+  observationId: string;
+}
+
+class BrowserDispatchFailure extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+function parseBrowserSnapshot(stdout: string, session: string): BrowserObservation {
+  const envelope: unknown = JSON.parse(stdout);
+  const object = (value: unknown): Record<string, unknown> | null => value !== null
+    && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const response = object(envelope);
+  const data = response?.["success"] === true ? object(response["data"]) : null;
+  const rawRefs = object(data?.["refs"]);
+  if (typeof data?.["snapshot"] !== "string" || typeof data["origin"] !== "string" || !rawRefs) {
+    throw new Error("Invalid agent-browser snapshot envelope");
+  }
+  const pageUrl = new URL(data["origin"]).href;
+  const refs: BrowserObservation["refs"] = {};
+  for (const [key, raw] of Object.entries(rawRefs).sort(([a], [b]) => a.localeCompare(b))) {
+    const ref = object(raw);
+    if (!/^e\d+$/.test(key) || typeof ref?.["role"] !== "string" || !ref["role"].trim()
+      || typeof ref["name"] !== "string") throw new Error("Invalid agent-browser reference");
+    refs[key] = { role: ref["role"], name: ref["name"] };
+  }
+  return { version: 1, snapshot: data["snapshot"], refs, pageUrl, browserSessionId: session, observationId: randomUUID() };
+}
+
+function browserFailure(code: string, error: string): DesktopDispatchDecision {
+  return { handled: true, result: { status: "error", errorCode: code, error } };
 }
 
 /** Fixed interactive-browser adapter over Electron-owned BrowserView ports. */
 export function createInteractiveBrowserDispatchHandler(
   ports: InteractiveBrowserDispatchPorts,
 ): FixedDesktopDispatchHandler {
-  return async ({ request }) => {
+  let latestObservation: BrowserObservation | null = null;
+  let settleSession: string | null = null;
+  let tail: Promise<void> = Promise.resolve();
+  const execute = async ({ request, signal }: FixedDesktopDispatchContext, markMutation: () => void): Promise<DesktopDispatchDecision> => {
+    const assertLive = () => {
+      if (signal?.aborted) throw new BrowserDispatchFailure("browser_cancelled", "Browser operation cancelled before the next action.");
+      const required = request.args["_requiredSession"];
+      if (typeof required === "string" && (!ports.hasPublishedView() || ports.sessionFor({}) !== required)) {
+        throw new BrowserDispatchFailure("browser_authority_lost", "The bound embedded Browser session is no longer active. Reobserve before acting.");
+      }
+    };
+    assertLive();
+    const exec: InteractiveBrowserDispatchPorts["exec"] = async (binary, argv, options) => {
+      assertLive();
+      if (browserToolMayMutate(request.toolName)) markMutation();
+      const result = await ports.exec(binary, argv, { ...options, ...(signal ? { signal } : {}) });
+      assertLive();
+      return result;
+    };
     if (request.executionClass !== "browser" && !isBrowserTool(request.toolName)) {
       return FIXED_DESKTOP_DISPATCH_NOT_HANDLED;
     }
@@ -107,6 +179,18 @@ export function createInteractiveBrowserDispatchHandler(
         },
       };
     }
+
+    const requiredObservationId = typeof request.args["_requiredObservationId"] === "string"
+      ? request.args["_requiredObservationId"] : null;
+    const boundObservation = requiredObservationId === null ? null : latestObservation;
+    if (requiredObservationId !== null && (!boundObservation || boundObservation.observationId !== requiredObservationId)) {
+      return browserFailure("browser_observation_stale", "The browser observation was consumed or superseded. Take a fresh snapshot before choosing an action.");
+    }
+    if (boundObservation && !browserToolMayMutate(request.toolName)) {
+      return browserFailure("browser_authority_lost", "This action is outside the admitted routine browser contract.");
+    }
+    // Every mutation attempt consumes the observation, including ordinary Genie actions.
+    if (browserToolMayMutate(request.toolName) || request.toolName === "browser_snapshot") latestObservation = null;
 
     const requiredSession =
       typeof request.args["_requiredSession"] === "string"
@@ -220,6 +304,8 @@ export function createInteractiveBrowserDispatchHandler(
           },
         };
       }
+      assertLive();
+      markMutation();
       const readiness = await ports.ensureBrowserSurface({
         url: url.href,
         timeoutMs: BROWSER_EXEC_TIMEOUT_MS,
@@ -227,6 +313,58 @@ export function createInteractiveBrowserDispatchHandler(
       if (!readiness.ok) {
         return { handled: true, result: { status: "error", error: readiness.error } };
       }
+    }
+
+    const session =
+      requiredSession ??
+      ports.sessionFor(request.toolName === "browser_read_page" ? {} : request.args);
+
+    const readSnapshot = async (): Promise<BrowserObservation> => {
+      assertLive();
+      if (settleSession !== null) {
+        const pendingSession = settleSession;
+        settleSession = null;
+        if (pendingSession === session) {
+          const { stdout } = await ports.exec(binary, [
+            ...browserArgvPrefix(configPath, session), "eval",
+            browserObservationSettleExpression(BROWSER_EXEC_TIMEOUT_MS),
+          ], { timeout: BROWSER_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024, ...(signal ? { signal } : {}) });
+          assertLive();
+          const settled: unknown = JSON.parse(stdout);
+          if (settled === null || typeof settled !== "object" || !("ready" in settled) || settled.ready !== true) {
+            throw new BrowserDispatchFailure("browser_observation_invalid", "The browser did not settle before observation: the document, focused control or open autocomplete response remained pending. Inspect fresh browser state before continuing.");
+          }
+        }
+      }
+      const { stdout } = await ports.exec(binary, agentBrowserSnapshotJsonArgv(configPath, session), {
+        timeout: BROWSER_EXEC_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, ...(signal ? { signal } : {}),
+      });
+      assertLive();
+      if (!ports.hasPublishedView() || ports.sessionFor({}) !== session) {
+        throw new BrowserDispatchFailure("browser_authority_lost", "The embedded Browser changed during observation. Observe the current session again.");
+      }
+      try { return parseBrowserSnapshot(stdout, session); } catch {
+        throw new BrowserDispatchFailure("browser_observation_invalid", "The browser did not return a complete structured observation. Return to the Genie for inspection.");
+      }
+    };
+    if (request.toolName === "browser_snapshot") {
+      const observation = await readSnapshot();
+      latestObservation = observation;
+      return { handled: true, result: { status: "ok", result: observation } };
+    }
+    if (boundObservation !== null) {
+      if (requiredSession !== boundObservation.browserSessionId || session !== boundObservation.browserSessionId
+        || !browserToolMayMutate(request.toolName)) {
+        return browserFailure("browser_authority_lost", "The proposed action no longer matches its browser session.");
+      }
+      // The queue serializes snapshot/ref-map replacement and the following mutation.
+      // This proves AX/URL equivalence, not DOM identity or immunity to in-page JavaScript races.
+      const fresh = await readSnapshot();
+      if (fresh.pageUrl !== boundObservation.pageUrl || fresh.snapshot !== boundObservation.snapshot
+        || JSON.stringify(fresh.refs) !== JSON.stringify(boundObservation.refs)) {
+        return browserFailure("browser_observation_stale", "The browser changed since the decision. Take a fresh snapshot; the proposed action was not executed.");
+      }
+      assertLive();
     }
 
     const navigationAction =
@@ -238,7 +376,10 @@ export function createInteractiveBrowserDispatchHandler(
             ? "reload"
             : null;
     if (navigationAction && ports.controlBrowserNavigation) {
+      assertLive();
+      markMutation();
       const navigation = await ports.controlBrowserNavigation({ action: navigationAction });
+      assertLive();
       if (!navigation.ok) {
         return { handled: true, result: { status: "error", error: navigation.error } };
       }
@@ -251,15 +392,12 @@ export function createInteractiveBrowserDispatchHandler(
           },
         };
       }
+      assertLive();
       return {
         handled: true,
         result: { status: "ok", result: `Browser ${navigationAction} completed` },
       };
     }
-
-    const session =
-      requiredSession ??
-      ports.sessionFor(request.toolName === "browser_read_page" ? {} : request.args);
 
     if (request.toolName === "browser_read_page") {
       return {
@@ -275,7 +413,7 @@ export function createInteractiveBrowserDispatchHandler(
           },
           {
             hasActiveTarget: ports.hasPublishedView,
-            exec: ports.exec,
+            exec,
             ...(ports.snapshotStore === undefined
               ? {}
               : { snapshotStore: ports.snapshotStore }),
@@ -311,7 +449,7 @@ export function createInteractiveBrowserDispatchHandler(
         };
       }
       try {
-        await ports.exec(binary, argv, {
+        await exec(binary, argv, {
           timeout: BROWSER_EXEC_TIMEOUT_MS,
           maxBuffer: 8 * 1024 * 1024,
         });
@@ -321,7 +459,7 @@ export function createInteractiveBrowserDispatchHandler(
         let scale = 1;
         try {
           const evaluation = agentBrowserViewportEvalArgv(configPath, session);
-          const { stdout } = await ports.exec(binary, evaluation, {
+          const { stdout } = await exec(binary, evaluation, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
             maxBuffer: 1024 * 1024,
           });
@@ -388,7 +526,7 @@ export function createInteractiveBrowserDispatchHandler(
         if (scale === undefined) {
           try {
             const evaluation = agentBrowserViewportEvalArgv(configPath, session);
-            const { stdout } = await ports.exec(binary, evaluation, {
+            const { stdout } = await exec(binary, evaluation, {
               timeout: BROWSER_EXEC_TIMEOUT_MS,
               maxBuffer: 1024 * 1024,
             });
@@ -418,7 +556,7 @@ export function createInteractiveBrowserDispatchHandler(
           cssY,
         );
         for (const argv of commands) {
-          await ports.exec(binary, argv, {
+          await exec(binary, argv, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
             maxBuffer: 8 * 1024 * 1024,
           });
@@ -468,7 +606,7 @@ export function createInteractiveBrowserDispatchHandler(
       if (direction === "down" || direction === "up") {
         try {
           const evaluation = agentBrowserViewportEvalArgv(configPath, session);
-          const { stdout } = await ports.exec(binary, evaluation, {
+          const { stdout } = await exec(binary, evaluation, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
             maxBuffer: 1024 * 1024,
           });
@@ -507,7 +645,7 @@ export function createInteractiveBrowserDispatchHandler(
       }
       try {
         for (const argv of commands) {
-          await ports.exec(binary, argv, {
+          await exec(binary, argv, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
             maxBuffer: 8 * 1024 * 1024,
           });
@@ -544,7 +682,7 @@ export function createInteractiveBrowserDispatchHandler(
       const deadline = Date.now() + timeoutMs;
       do {
         try {
-          const { stdout } = await ports.exec(binary, argv, {
+          const { stdout } = await exec(binary, argv, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
             maxBuffer: 1024 * 1024,
           });
@@ -563,7 +701,12 @@ export function createInteractiveBrowserDispatchHandler(
             result: browserExecError(request, error, ports.binaryInstallHint),
           };
         }
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise<void>((resolve, reject) => {
+          const cancel = () => { clearTimeout(timer); reject(new BrowserDispatchFailure("browser_cancelled", "Browser wait cancelled.")); };
+          const timer = setTimeout(() => { signal?.removeEventListener("abort", cancel); resolve(); }, 100);
+          signal?.addEventListener("abort", cancel, { once: true });
+          if (signal?.aborted) cancel();
+        });
       } while (Date.now() < deadline);
       return {
         handled: true,
@@ -587,7 +730,7 @@ export function createInteractiveBrowserDispatchHandler(
       };
     }
     try {
-      const { stdout } = await ports.exec(binary, argv, {
+      const { stdout } = await exec(binary, argv, {
         timeout: BROWSER_EXEC_TIMEOUT_MS,
         maxBuffer: 8 * 1024 * 1024,
       });
@@ -608,5 +751,42 @@ export function createInteractiveBrowserDispatchHandler(
         result: browserExecError(request, error, ports.binaryInstallHint),
       };
     }
+  };
+  return (context) => {
+    if (context.request.executionClass !== "browser" && !isBrowserTool(context.request.toolName)) {
+      return Promise.resolve(FIXED_DESKTOP_DISPATCH_NOT_HANDLED);
+    }
+    const run = async (): Promise<DesktopDispatchDecision> => {
+      let mutationAttempted = false;
+      let outcome: DesktopDispatchDecision;
+      try { outcome = await execute(context, () => {
+        mutationAttempted = true;
+        settleSession = ports.sessionFor({});
+      }); }
+      catch (error) {
+        outcome = error instanceof BrowserDispatchFailure
+          ? browserFailure(error.code, error.message)
+          : { handled: true, result: browserExecError(context.request, error, ports.binaryInstallHint) };
+      }
+      if (!mutationAttempted && context.signal?.aborted && outcome.handled && outcome.result.status === "error") {
+        return browserFailure("browser_cancelled", "Browser operation cancelled before the next action.");
+      }
+      if (mutationAttempted && outcome.handled && outcome.result.status === "error") {
+        const causeCode = outcome.result.errorCode ? ` (${outcome.result.errorCode})` : "";
+        return {
+          handled: true,
+          result: {
+            ...outcome.result,
+            errorCode: "browser_outcome_unknown",
+            error: `${context.request.toolName} may have taken effect. Do not replay it blindly. Obtain a fresh observation and inspect the result before deciding how to recover.\nUnderlying browser error${causeCode}: ${outcome.result.error}`,
+          },
+        };
+      }
+      return outcome;
+    };
+    // One queue covers all browser calls, including ordinary observation/read/action traffic.
+    const pending = tail.then(run, run);
+    tail = pending.then(() => undefined, () => undefined);
+    return pending;
   };
 }

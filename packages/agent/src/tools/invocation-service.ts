@@ -1,3 +1,6 @@
+import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
+import { readBrowserHistory } from "./browser/browser-history";
+import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
 import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
@@ -255,7 +258,7 @@ export type ExecutionPolicy = {
   hostScope: HostScopeRequirement;
   relayCapability?: string | undefined;
   /**
-   * D384 Phase 5 — relay id owning a relay-hosted MCP tool. When set,
+   * relay id owning a relay-hosted MCP tool. When set,
    * dispatch is PINNED to this relay (not capability-selected) so the call
    * reaches the machine actually running the MCP server.
    */
@@ -264,7 +267,7 @@ export type ExecutionPolicy = {
 
 /**
  * Resolve executor/impact for toolsNode dispatch. Catalog entries are
- * authoritative for executor and impact (M188 dynamic app tools). Built-in
+ * authoritative for executor and impact, including dynamic app tools. Built-in
  * relay tools keep `relayCapability` from static TOOL_POLICIES because
  * catalog entries do not carry that field.
  */
@@ -289,7 +292,7 @@ export function resolveExecutionPolicy(
       if (staticRelay) {
         policy.relayCapability = staticRelay;
       }
-      // D384 Phase 5 — a relay-hosted MCP tool carries its owning relay id;
+      // a relay-hosted MCP tool carries its owning relay id;
       // dispatch pins to it rather than capability-selecting a relay.
       if (entry.hostedBy) {
         policy.hostedBy = entry.hostedBy;
@@ -311,7 +314,7 @@ export function resolveExecutionPolicy(
 }
 
 /**
- * D079 Phase 4 / G4 commit 12 — per-command log label for the
+ * Per-command log label for the
  * unified `file` tool. Returns `"file:<command>"` when the tool
  * dispatch carries a string `command` arg, bare tool name
  * otherwise.
@@ -322,7 +325,7 @@ export function resolveExecutionPolicy(
  * routing decision through execution through result scanning.
  *
  * The WS-event tool name (tool.start / tool.end payloads) stays
- * bare `file` — the D083 tool-card renderer keys on that name
+ * bare `file` — tool-card renderer keys on that name
  * for its visual dispatch + expects it unchanged. Log labeling is
  * a separate channel (server log only), so the two surfaces
  * don't conflict.
@@ -337,12 +340,12 @@ function formatToolLogLabel(tc: { name: string; args: unknown }): string {
 }
 
 /**
- * Stack 208 P2 — explicit tool-execution status, stamped onto every
+ * explicit tool-execution status, stamped onto every
  * `ToolMessage` produced by this node as `additional_kwargs.nautilo_tool_status`.
  *
  * The no-progress breaker (see `graph/no-progress.ts`) keys failure streaks
  * on an EXPLICIT error signal at the execution seam — never inferred from
- * arbitrary successful content (R4 / spec). Without this marker the breaker
+ * arbitrary successful content ( / spec). Without this marker the breaker
  * would have to pattern-match content prefixes, which is brittle and would
  * misclassify a tool that legitimately returns an "Error: …" string as its
  * successful payload. The marker is internal (`nautilo_` prefix, same
@@ -360,7 +363,7 @@ function setToolMessageStatus(tm: ToolMessage, status: "success" | "error"): Too
 }
 
 /**
- * Stack 208 P2 — read the explicit status marker a tools node stamped onto a
+ * read the explicit status marker a tools node stamped onto a
  * `ToolMessage`. Returns `null` when the marker is absent (e.g. a ToolMessage
  * produced by an older code path or a tool's own `func` that did not pass
  * through this node's status setter). The breaker treats `null` as "not an
@@ -372,7 +375,7 @@ function readToolMessageStatus(tm: ToolMessage): "success" | "error" | null {
   return null;
 }
 
-/** D513 — bounded readable fallback carried inside typed semantic recovery. */
+/** bounded readable fallback carried inside typed semantic recovery. */
 const GOOGLE_AUTH_REQUIRED_GUIDANCE =
   "Google Workspace is not connected on this device or the login expired. " +
   "Open Google Workspace setup, sign in, then retry.";
@@ -403,7 +406,7 @@ const STRUCTURED_SSH_OUTPUT_ARTIFACT_CONTINUATION_ERROR_CODES = new Set([
 
 /**
  * Continuation retrieval is the only relay error whose typed disposition is
- * useful to Genie: an old Desktop rejecting D505 search should trigger one
+ * useful to Genie: an old Desktop rejecting search should trigger one
  * legacy-page fallback, never a rerun. Keep every unrelated relay error
  * byte-for-byte compatible and do not reflect arbitrary relay error codes.
  */
@@ -440,25 +443,25 @@ function formatRelayToolError(
 export type ToolRelayRegistry = {
   findByCapabilityForUser(capability: string, userId: string): string[];
   getCapabilities(relayId: string): RelayCapabilities | null | undefined;
-  /** M174 — protocol version a relay registered with (gates the `fs` class). */
+  /** protocol version a relay registered with (gates the `fs` class). */
   getProtocolVersion?(relayId: string): number | null | undefined;
-  /** D418 protocol v7 — relay owner user (null when not connected). */
+  /** protocol v7 — relay owner user (null when not connected). */
   getUserId?(relayId: string): string | null | undefined;
-  /** D418 protocol v7 — relay desktop session id (null when none / not connected). */
+  /** protocol v7 — relay desktop session id (null when none / not connected). */
   getDesktopSessionId?(relayId: string): string | null | undefined;
-  /** M286 — server-minted per-socket generation for report-back continuation. */
+  /** server-minted per-socket generation for report-back continuation. */
   getRelaySessionId?(relayId: string): string | null | undefined;
-  /** M286 — exact relay must remain heartbeat-fresh at late revalidation. */
+  /** exact relay must remain heartbeat-fresh at late revalidation. */
   isRelayHeartbeatFresh?(relayId: string, now?: number): boolean;
-  /** D418 protocol v7 — relay capability revision (null when not connected). */
+  /** protocol v7 — relay capability revision (null when not connected). */
   getCapabilityRevision?(relayId: string): number | null | undefined;
   /**
-   * D418 Commit 2 — server-derived pairing generation (validated relay-token
+   * server-derived pairing generation (validated relay-token
    * row id; null when not connected or never carried).
    */
   getPairingGeneration?(relayId: string): string | null | undefined;
   /**
-   * D418 — the relay's validated advisory Workstation Profile binding snapshot
+   * the relay's validated advisory Workstation Profile binding snapshot
    * (null when none advertised / not connected). Advisory binding data only;
    * the live compiled profile on the desktop relay remains final.
    */
@@ -466,7 +469,7 @@ export type ToolRelayRegistry = {
     relayId: string,
   ): RelayWorkstationProfileSnapshot | null | undefined;
   /**
-   * D418 — the relay's validated advisory active-grant snapshot for the
+   * the relay's validated advisory active-grant snapshot for the
    * chosen authenticated relay, or null/undefined when none was advertised.
    *
    * DISCOVERY ONLY. This snapshot is never filesystem authority: it exists so
@@ -480,7 +483,7 @@ export type ToolRelayRegistry = {
     relayId: string,
   ): RelayDesktopFilesystemGrantSnapshot | null | undefined;
   /**
-   * D418 reconnect/session split-brain fix — the LIVE active Full
+   * reconnect/session split-brain fix — the LIVE active Full
    * Workstation session for a user, or null/undefined when no session is
    * active or no lookup was wired. Read by the no-plan `run_shell` gate so
    * it fails closed for an active session bound to the selected relay EVEN
@@ -491,7 +494,7 @@ export type ToolRelayRegistry = {
   getActiveWorkstationSession?(
     userId: string,
   ): ActiveWorkstationSessionView | null | undefined;
-  /** D500: server-owned correlated request for Electron-local SSH preparation. */
+  /** server-owned correlated request for Electron-local SSH preparation. */
   prepareStructuredSsh?(
     relayId: string,
     input: {
@@ -516,46 +519,46 @@ export type ToolRelayRegistry = {
       args: Record<string, unknown>;
       impact: "read-only" | "low" | "high" | "destructive";
       approvalObtained: boolean;
-      /** D565 v19 exact Relay provenance for a hosted MCP tool. */
+      /** exact Relay provenance for a hosted MCP tool. */
       hostedBy?: string | undefined;
       allowedRoots?: string[] | undefined;
       timeout?: number | undefined;
       sandboxProfile?: RelaySandboxProfile | undefined;
-      executionClass?: "computer_use" | "desktop" | "fs" | "local-file" | "real_workstation" | "structured-ssh" | undefined;
+      executionClass?: "computer_use" | "desktop" | "fs" | "browser" | "local-file" | "real_workstation" | "structured-ssh" | undefined;
       /**
-       * D418 task 3.1.3b — optional plan-bound shell-binding envelope for a
+       * task 3.1.3b — optional plan-bound shell-binding envelope for a
        * generic `run_shell` dispatch. Carries only opaque ids / binding /
        * operation metadata; the desktop relay revalidates it against its live
        * Electron authority/profile state. The runtime relay registry forwards
        * it to the wire `relay:dispatch` message.
        */
       workstationShellBinding?: RelayWorkstationShellBinding | undefined;
-      /** D538 server-owned marker for dispatches admitted by the live uncontained session resolver. */
+      /** server-owned marker for dispatches admitted by the live uncontained session resolver. */
       uncontainedHostCommandsSession?: true | undefined;
       onSecurityScanProgress?: ((progress: RelaySecurityScanProgressMessage) => void) | undefined;
       onRunShellProgress?: ((progress: RelayRunShellProgressMessage) => void) | undefined;
       onStructuredSshProgress?: ((progress: RelayStructuredSshProgressMessage) => void) | undefined;
       /** Server-local cancellation authority; never serialized onto the relay wire. */
       signal?: AbortSignal | undefined;
-      /** D500 — validated, secret-free structured SSH admission metadata. */
+      /** validated, secret-free structured SSH admission metadata. */
       sshBinding?: RelaySshDispatchBindingV1 | undefined;
-      /** D516 — exact server-admitted semantic computer invocation binding. */
+      /** exact server-admitted semantic computer invocation binding. */
       desktopAutomationBinding?: ComputerUseInvocationBinding | undefined;
       /** Exact active-catalogue Host descriptor and validated JSON. */
       computerUseRequest?: ComputerUseHostDispatchRequest | undefined;
-      /** M286 server-local Task continuation fence; never serialized. */
+      /** server-local Task continuation fence; never serialized. */
       requiredRelaySessionId?: string | undefined;
       requiredDesktopSessionId?: string | undefined;
       requiredPairingGeneration?: string | undefined;
     },
   ): Promise<RelayDispatchResult>;
-  /** M174 — typed convenience for the `fs` execution class (see InMemoryRelayRegistry). */
+  /** typed convenience for the `fs` execution class (see InMemoryRelayRegistry). */
   fsDispatch?(
     relayId: string,
     req: RelayFsRequest,
     opts: { mutating: boolean; timeoutMs?: number },
   ): Promise<RelayFsResult>;
-  /** M206 — typed convenience for the `local-file` execution class (see InMemoryRelayRegistry). */
+  /** typed convenience for the `local-file` execution class (see InMemoryRelayRegistry). */
   localFileDispatch?(
     relayId: string,
     req: RelayLocalFileRequest,
@@ -569,7 +572,7 @@ export type ToolRelayRegistry = {
       requiredPairingGeneration?: string;
     },
   ): Promise<RelayLocalFileResult>;
-  /** D448 — dedicated local apply-patch dispatch; Electron resolves Current Folder authority. */
+  /** dedicated local apply-patch dispatch; Electron resolves Current Folder authority. */
   applyPatchDispatch?(
     relayId: string,
     req: RelayLocalApplyPatchRequest,
@@ -581,14 +584,14 @@ export type ToolRelayRegistry = {
       requiredPairingGeneration?: string;
     },
   ): Promise<RelayLocalApplyPatchResult>;
-  /** D504 — exact, owner-pinned browser research read; never a relay selector. */
+  /** exact, owner-pinned browser research read; never a relay selector. */
   browserResearchReadDispatch?(
     relayId: string,
     actorId: string,
     request: RelayBrowserResearchReadRequest,
     options?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<BrowserPageReadResult>;
-  /** D504 v13 — exact, owner-pinned inert retained-page inspection. */
+  /** exact, owner-pinned inert retained-page inspection. */
   browserResearchSnapshotInspectionDispatch?(
     relayId: string,
     actorId: string,
@@ -632,7 +635,7 @@ function resolveExactTaskContinuationCapabilities(input: {
 }
 
 // ---------------------------------------------------------------------------
-// D418 task 3.1.2 — WorkstationDispatchPlan consumption (relay pinning).
+// task 3.1.2 — WorkstationDispatchPlan consumption (relay pinning).
 //
 // The server-side post-model override resolver admits one transient
 // `WorkstationDispatchPlan` per tool-call id (binding tool-call id + user +
@@ -672,7 +675,7 @@ export interface WorkstationDispatchPlanView {
   readonly desktopSessionId: string;
   readonly serverBindingId: string;
   /**
-   * D418 Commit 2 — the server-derived `pairingGeneration` the active Full
+   * the server-derived `pairingGeneration` the active Full
    * Workstation session was activated with (never client-authored).
    */
   readonly pairingGeneration: string;
@@ -681,16 +684,16 @@ export interface WorkstationDispatchPlanView {
   readonly grantIds: readonly string[];
   readonly capabilityRevision: number;
   /**
-   * D440 Phase 1 — the Current Folder the operation was admitted for. When
+   * the Current Folder the operation was admitted for. When
    * present, the dispatch seam fails closed if the live Current Folder
    * differs (a re-bind to a new Current Folder is an authority change). The
    * runtime plan carries it; extra fields are fine for assignability, so
-   * this is optional for backward-compat with pre-D440 plan fixtures.
+   * this is optional for backward-compat with earlier plan fixtures.
    */
   readonly currentFolder?: string;
-  /** D440 Phase 1 — durable grant-store revision at admission (optional). */
+  /** durable grant-store revision at admission (optional). */
   readonly grantRevision?: number | null;
-  /** D440 Phase 1 — protected-policy version at admission (optional). */
+  /** protected-policy version at admission (optional). */
   readonly protectedPolicyVersion?: number | null;
 }
 
@@ -705,13 +708,13 @@ export interface WorkstationRelayFingerprintView {
   readonly profileId: string | null;
   readonly profileRevision: number | null;
   /**
-   * D418 Commit 2 — the live relay's server-derived pairing generation, or
+   * the live relay's server-derived pairing generation, or
    * `null` when the relay is not connected or never carried one.
    */
   readonly pairingGeneration: string | null;
-  /** D440 Phase 1 — live grant-store revision (null when not advertised). */
+  /** live grant-store revision (null when not advertised). */
   readonly grantRevision?: number | null;
-  /** D440 Phase 1 — live protected-policy version (null when not advertised). */
+  /** live protected-policy version (null when not advertised). */
   readonly protectedPolicyVersion?: number | null;
 }
 
@@ -729,7 +732,7 @@ export type WorkstationPlanRevalidationReasonView =
   | "no_plan";
 
 /**
- * D418 reconnect/session split-brain fix — minimal structural view of an
+ * reconnect/session split-brain fix — minimal structural view of an
  * active Full Workstation session read by the no-plan `run_shell` gate.
  * Only the binding fields the gate compares against the selected relay are
  * exposed; the runtime `RelayActiveWorkstationSessionView` satisfies this
@@ -764,7 +767,7 @@ export interface WorkstationDispatchPlanRegistry {
     fingerprint: WorkstationRelayFingerprintView,
   ): WorkstationPlanRevalidationResultView;
   /**
-   * D440 Phase 1 — same-authority re-admission for a missing / TTL-expired
+   * same-authority re-admission for a missing / TTL-expired
    * plan. Returns a freshly admitted plan when the live binding (sourced by
    * the registry's injected `getActiveBinding` provider) exactly matches the
    * live relay fingerprint, or `null` when the provider is unwired, no
@@ -784,12 +787,12 @@ export interface WorkstationDispatchPlanRegistry {
 let _workstationDispatchPlanRegistry: WorkstationDispatchPlanRegistry | null = null;
 
 /**
- * D418 task 3.1.2 — install the transient `WorkstationDispatchPlan` store
+ * task 3.1.2 — install the transient `WorkstationDispatchPlan` store
  * the tools node consults to pin relay dispatches. Called once at server
  * startup (after the relay + session registries are constructed). Pass
  * `null` to release (the tools node then skips plan pinning and falls back
  * to the normal first-eligible-relay path — fail-closed, byte-for-byte
- * pre-D418 dispatch behavior).
+ * earlier dispatch behavior).
  */
 export function setWorkstationDispatchPlanRegistry(
   registry: WorkstationDispatchPlanRegistry | null,
@@ -804,7 +807,7 @@ export function getWorkstationDispatchPlanRegistry():
   return _workstationDispatchPlanRegistry;
 }
 
-/** D476 — source Memory ids are private provenance and never room-scoped telemetry. */
+/** source Memory ids are private provenance and never room-scoped telemetry. */
 export function sanitizeToolCallArgsForEvent(
   tc: { name: string; args: unknown; id?: string },
   state: NautiloState,
@@ -1091,7 +1094,7 @@ export function createNautiloToolInvocationSession(
     state.model || runtimeConfig.nautilo_model,
   );
 
-  // D263 Stack 80 / §2.1 — shared engaged-skill set for this turn's tool
+  // / §2.1 — shared engaged-skill set for this turn's tool
   // execution. Seeded from checkpointed state; `view_skill` engages, `eject`
   // clears. Persisted back below so the next pre-model rebuild re-injects only
   // the still-engaged bodies (graph-state, no Skill-Focus table — see
@@ -1242,7 +1245,7 @@ export function createNautiloToolInvocationSession(
     return new Map(tools.map((tool) => [tool.name, tool]));
   };
 
-  // D057 2a.1.11 / chrome-bundle follow-up — emit tool.start + tool.end
+  // 2a.1.11 / chrome-bundle follow-up — emit tool.start + tool.end
   // events over the WS event bus so the workbench Activity tab,
   // cited-file glyph, and future ToolCard primitive have a lifecycle
   // to render. Previously only LangGraph-native `on_tool_start` /
@@ -1434,7 +1437,7 @@ export function createNautiloToolInvocationSession(
         return tm;
       }
 
-      // D447 — execution, not selection, renews residency. This is after the
+      // execution, not selection, renews residency. This is after the
       // executable tool-map lookup and pre-execution security gate, and before
       // relay/cloud dispatch so ordinary executor and result-scan failures
       // still retain a concrete eligible deferred tool for the next turn.
@@ -1482,9 +1485,9 @@ export function createNautiloToolInvocationSession(
         // cloud executor or the relay dispatch path. Both paths then flow
         // through a single scanToolResult call below — security policy is
         // applied once, regardless of executor. Relays are dumb executors;
-        // the scan is the server's responsibility. See D062.
+        // the scan is the server's responsibility. See .
         let rawContent: string;
-        // Stack 208 P3 — explicit file-result status, captured
+        // explicit file-result status, captured
         // out-of-band around the cloud `file` invocation (see
         // `file-result-status.ts`). Default "success"; only the cloud
         // `file` path flips it via a `fileToolError` marker inside the
@@ -1537,7 +1540,7 @@ export function createNautiloToolInvocationSession(
         } else if (policy.executor === "relay") {
           const relayResult = await executeViaRelayRaw(tc, policy, state, {
             toolCallId,
-            // D560 provenance must retain the actual Task-selected model.
+            // provenance must retain the actual Task-selected model.
             // `requestedModelId` is only a capability-projection fallback and
             // can name a built-in candidate that the Task never selected.
             ...(tc.name === "security_scan" && state.model?.trim()
@@ -1622,7 +1625,7 @@ export function createNautiloToolInvocationSession(
             // bypass scanning — same semantics as the cloud path's
             // catch-block errors below.
             const safeRelayError = redactSecrets(relayResult.errorMessage).text;
-            // M150 (R6 / D3) — in a background/async Task run there is no
+            // ( / ) — in a background/async Task run there is no
             // present human to relay a "connect your relay" tool message to.
             // When the relay vanished mid-run (`relayUnavailable`), fail the
             // whole run with a recognizable `relay_unavailable` error rather
@@ -1667,6 +1670,7 @@ export function createNautiloToolInvocationSession(
               content: safeRelayError,
               tool_call_id: toolCallId,
               name: tc.name,
+              ...(relayResult.browserFailure ? { additional_kwargs: { nautilo_browser_failure: relayResult.browserFailure } } : {}),
             });
             assignStableToolMessageId(tm);
             setToolMessageStatus(tm, "error");
@@ -1721,7 +1725,7 @@ export function createNautiloToolInvocationSession(
           tc.name === "manage_local_mcp" &&
           tc.args["action"] === "install"
         ) {
-          // D503: no model-provided request reaches the launch service here.
+          // no model-provided request reaches the launch service here.
           // Post-model replaced the args with an opaque approval binding, and
           // the service refuses a missing/stale/tampered receipt.
           const approvalId = typeof tc.args["approvalId"] === "string"
@@ -1796,7 +1800,7 @@ export function createNautiloToolInvocationSession(
           rawContent = JSON.stringify(result);
         } else {
           log(`[nautilo/tools] Executing (cloud): ${formatToolLogLabel(tc)}`);
-          // Stack 208 P3 — wrap cloud `file` invocations in the explicit
+          // wrap cloud `file` invocations in the explicit
           // file-result-status capture so an out-of-band `fileToolError`
           // marker inside a `file` command handler carries the error
           // status to this node WITHOUT content guessing (no `Error:`
@@ -1834,7 +1838,7 @@ export function createNautiloToolInvocationSession(
           }
           if (result instanceof ToolMessage) {
             const r = result;
-            // D113A — non-string content (multimodal: image/PDF blocks)
+            // non-string content (multimodal: image/PDF blocks)
             // can't ride the WS event's `result: string` field. The
             // tool may stash a structured summary on
             // `additional_kwargs.nautilo_event_summary` (JSON string)
@@ -1849,13 +1853,13 @@ export function createNautiloToolInvocationSession(
               contentForEvent =
                 typeof summary === "string" ? summary : "[multimodal tool result]";
             }
-            // Stack 208 P3 — the captured status drives the tool.end
+            // the captured status drives the tool.end
             // event kind and the `nautilo_tool_status` marker. A
             // `file` multimodal read never calls `fileToolError`, so
             // `fileStatus` is "success" here; non-file tools default
             // to "success". The model-facing `content` is preserved
             // byte-for-byte. Emit is unconditional, matching the
-            // pre-P3 multimodal path.
+            // pre- multimodal path.
             emitAgentEvent(
               toolTracker.toolEnd(
                 toolCallId,
@@ -1901,7 +1905,7 @@ export function createNautiloToolInvocationSession(
 
         if (scanned.blocked) {
           warn(`[nautilo/tools] Content from ${formatToolLogLabel(tc)} BLOCKED: ${scanned.threats.join(", ")}`);
-          // D083 Phase 2b audit — the client sees a single bounded,
+          // audit — the client sees a single bounded,
           // human-safe reason and the safe replacement, never raw scanner
           // identifiers. Detailed identifiers remain in the warning above.
           if (allowToolTelemetry) {
@@ -1926,7 +1930,7 @@ export function createNautiloToolInvocationSession(
         }
 
         // Normal success path. Duration computed by toolTracker from
-        // the startTime it stashed on toolStart above. D083 Phase 2:
+        // the startTime it stashed on toolStart above. the current implementation:
         // pass the scanned (post-security) content as the result so
         // the inline ToolCard can render real stdout / file content /
         // search matches instead of the legacy "Done (Xms)"
@@ -1934,7 +1938,7 @@ export function createNautiloToolInvocationSession(
         // (TOOL_RESULT_MAX_BYTES); the ToolMessage going to the LLM
         // carries the full content regardless.
         //
-        // Stack 208 P3 — the file-result status was captured
+        // the file-result status was captured
         // out-of-band around the cloud `file` invocation above (see
         // `captureFileToolResult`). An explicit `fileToolError`
         // marker inside a `file` command handler flips `fileStatus`
@@ -2000,7 +2004,7 @@ export function createNautiloToolInvocationSession(
         // Strict Shadow failures are crypto-boundary control flow, not an
         // ordinary tool error the model may receive and continue past.
         if (error instanceof StrictShadowEnforcementError) throw error;
-        // M150 — a Task-run relay-drop must propagate (it fails the run via
+        // a Task-run relay-drop must propagate (it fails the run via
         // reportBackTaskError); do NOT swallow it into a recoverable
         // ToolMessage the agent could ignore. Foreground never throws this.
         if (error instanceof RelayUnavailableError) throw error;
@@ -2160,7 +2164,7 @@ export function createNautiloToolInvocationSession(
  * string (for success) or a pre-formatted error message (for all failure
  * paths). The caller (toolsNode) wraps success output in scanToolResult
  * and builds the final ToolMessage; error messages are server-generated
- * and bypass scanning. See D062.
+ * and bypass scanning. See .
  */
 type RelayDispatchOutcome =
   | { ok: true; rawContent: string; toolError?: string }
@@ -2177,17 +2181,18 @@ type RelayDispatchOutcome =
       errorMessage: string;
       networkDenied?: ApprovalAskNetworkContext;
       /**
-       * M150 — true when the failure is "no relay could be reached for this
+       * true when the failure is "no relay could be reached for this
        * capability" (no registry, no eligible relay for the user, or the
        * dispatch threw because the device disconnected). Distinct from a
        * relay-*returned* error (a real tool failure the agent should see) or a
        * timeout-tier violation. In a Task run this flag makes the dispatch seam
        * throw `RelayUnavailableError` so the run fails cleanly instead of the
-       * agent silently continuing cloud-only (R6 / D3).
+       * agent silently continuing cloud-only ( / ).
        */
       relayUnavailable?: boolean;
       /** A dispatched Desktop shell lost its final relay receipt. */
       runShellOutcome?: "unknown";
+      browserFailure?: "browser_observation_stale" | "browser_cancelled" | "browser_authority_lost" | "browser_outcome_unknown" | "browser_observation_invalid";
       /** A dispatched structured SSH operation lost its final relay receipt. */
       structuredSshOutcome?: "unknown";
       /** A semantic desktop mutation lost its final relay receipt. */
@@ -2195,7 +2200,7 @@ type RelayDispatchOutcome =
     };
 
 /**
- * M150 — a relay-executor tool could not reach a relay mid-run (the relay
+ * a relay-executor tool could not reach a relay mid-run (the relay
  * vanished after being live at run start). Thrown ONLY for Task runs
  * (`state.taskRun`), where there is no present human to relay a "connect your
  * relay" tool message to; it propagates out of the tools node (past the
@@ -2824,7 +2829,7 @@ async function prepareStructuredSshExact(
 }
 
 /**
- * D560's only model-to-Desktop translation. The operation is validated from
+ * 's only model-to-Desktop translation. The operation is validated from
  * the admitted model call, while every identity is re-derived from the active
  * server Task state. Do not add roots, relays, Task ids, or model ids to the
  * public schema: the exact continuation contributes the stale current-folder
@@ -3298,10 +3303,26 @@ async function executeViaRelayRaw(
     readonly toolCallId?: string;
     /** Enclosing graph/job cancellation authority. */
     readonly signal?: AbortSignal;
-    /** Already selected catalog model; only used for the private D560 envelope. */
+    /** Already selected catalog model; only used for the private envelope. */
     readonly resolvedModelId?: string;
   } = {},
 ): Promise<RelayDispatchOutcome> {
+  const browserPlan = tc.name === "browser_snapshot" ? interpretBrowserDecisionPlanArgs(tc.args) : null;
+  if (browserPlan?.kind === "invalid") {
+    return { ok: false, errorMessage: browserDecisionPlanError(
+      browserPlan.error, browserPlan.code, browserPlan.instruction,
+    ) };
+  }
+  if (tc.name === "browser_snapshot" && tc.args["historyToolCallId"] !== undefined) {
+    const source = tc.args["historyToolCallId"];
+    if (typeof source !== "string" || source.trim().length === 0 || Object.keys(tc.args).some(key => key !== "historyToolCallId")) {
+      return { ok: false, errorMessage: "Historical browser read requires only historyToolCallId: a nonempty tool-call ID from this conversation. It cannot be combined with a decision plan or browser selector. No browser request was sent." };
+    }
+    const content = readBrowserHistory(state.messages, source);
+    return content === null
+      ? { ok: false, errorMessage: "browser_history_unavailable: No unique successful snapshot with that tool-call ID is retained in this conversation. No other conversation was searched and no browser request was sent. A fresh snapshot can show only the current page." }
+      : { ok: true, rawContent: content };
+  }
   if (!_relayRegistry) {
     warn(`[nautilo/tools] Relay tool ${formatToolLogLabel(tc)} called but no relay registry configured`);
     return {
@@ -3311,7 +3332,7 @@ async function executeViaRelayRaw(
     };
   }
 
-  // D497 — this is deliberately before generic host resolution. Current
+  // this is deliberately before generic host resolution. Current
   // Folder adoption is meaningful only on the local Electron that received
   // the ordinary request; it must never select a paired-mobile host or the
   // first relay advertising a capability.
@@ -3339,7 +3360,7 @@ async function executeViaRelayRaw(
       relayUnavailable: false,
     };
   }
-  // D500 is intentionally foreground-main only. This runs before relay
+  // is intentionally foreground-main only. This runs before relay
   // selection/prepare so forks, background tasks, and subagents cannot even
   // request a local grant selection.
   if ((isStructuredSsh || isStructuredSshOutput) && state.trustedExecutionEntrypoint !== "foreground.main") {
@@ -3511,7 +3532,7 @@ async function executeViaRelayRaw(
     }
   }
   // -----------------------------------------------------------------
-  // D418 task 3.1.2 — WorkstationDispatchPlan relay pinning.
+  // task 3.1.2 — WorkstationDispatchPlan relay pinning.
   //
   // Before the first-eligible / hosted-MCP relay selection, consult the
   // transient plan registry. When a plan was admitted for this tool-call id
@@ -3534,7 +3555,7 @@ async function executeViaRelayRaw(
     ? planRegistry.get(tc.id ?? "")
     : null;
   // -----------------------------------------------------------------
-  // D440 Phase 1 — same-authority re-admission for a missing / TTL-expired
+  // same-authority re-admission for a missing / TTL-expired
   // plan. When no plan was admitted for this tool-call id (missing OR
   // lazily purged after the 5-minute TTL) but an active Full Workstation
   // session is still bound to the selected relay AND the live relay
@@ -3545,8 +3566,8 @@ async function executeViaRelayRaw(
   // changed) is caught inside `readmit` (it revalidates the candidate plan
   // against the live fingerprint) and returns `null` — the dispatch then
   // falls through to the existing fail-closed Full Workstation gate. A bare
-  // `readmit` that is not wired (legacy / pre-D440) is a no-op: `plan` stays
-  // `null` and byte-for-byte pre-D440 behavior is preserved.
+  // `readmit` that is not wired (legacy / earlier) is a no-op: `plan` stays
+  // `null` and byte-for-byte earlier behavior is preserved.
   // -----------------------------------------------------------------
   if (
     (relayId === undefined || state.verifiedOrdinaryOrigin?.kind === "local_electron") &&
@@ -3597,7 +3618,7 @@ async function executeViaRelayRaw(
       );
       // Fail closed. The operation was approved only for the exact bound
       // relay; a stale binding never falls back to another eligible relay.
-      // `relay_not_connected` is a relay-vanished mid-run failure (R6) for
+      // `relay_not_connected` is a relay-vanished mid-run failure for
       // Task runs; the other drift reasons are binding-stale denials. The
       // structured disposition block carries the cause / retry-safety /
       // recovery action for the agent + UI; the human fallback copy stays
@@ -3629,7 +3650,7 @@ async function executeViaRelayRaw(
         relayUnavailable: revalidation.reason === "relay_not_connected",
       };
     }
-    // D440 Phase 1 — Current Folder coherence. The plan pinned the Current
+    // Current Folder coherence. The plan pinned the Current
     // Folder the operation was admitted for; a drift to a different live
     // Current Folder is an authority change. Fail closed and require
     // re-authorization on the currently selected Current Folder. The plan
@@ -3685,7 +3706,7 @@ async function executeViaRelayRaw(
     // Exact ordinary-origin resolution already selected and revalidated the
     // Relay. Downstream sandbox and local authority checks still apply.
   } else if (policy.hostedBy) {
-    // D384 Phase 5 — relay-hosted MCP tool: PIN to the owning relay. SEC6
+    // relay-hosted MCP tool: PIN to the owning relay. SEC6
     // defense-in-depth: only dispatch if that relay is connected FOR THIS
     // USER (a relay the requesting user doesn't own is never a valid target,
     // even though C6 visibility already prevents cross-user tool exposure).
@@ -3709,7 +3730,7 @@ async function executeViaRelayRaw(
       return {
         ok: false,
         errorMessage: `Error: ${tc.name} requires a connected relay with ${requiredRelayCapability}. Connect a desktop app or run nautilo-relay to enable this tool.`,
-        // M150 — the relay-vanished-mid-run case (R6): live at run start, gone now.
+        // the relay-vanished-mid-run case : live at run start, gone now.
         relayUnavailable: true,
       };
     }
@@ -3944,11 +3965,11 @@ async function executeViaRelayRaw(
     };
   }
 
-  // D060 Sprint 1 G5.4.b — build the per-turn sandbox envelope from
-  // server-enforced posture + relay-reported paths. M150 (R7): this is the
+  // Sprint 1 G5.4.b — build the per-turn sandbox envelope from
+  // server-enforced posture + relay-reported paths. : this is the
   // SINGLE dispatch seam — a Task-origin relay call (subagent/`taskRun`) and a
   // foreground turn build the profile identically (keyed on `resolveLaneKey` +
-  // relay caps, with no task-vs-foreground branch), so the D060 sandbox /
+  // relay caps, with no task-vs-foreground branch), so sandbox /
   // six-layer ladder applies the same for background runs. Returns null if
   // the relay hasn\u0027t reported dataDir / toolsBin yet (older client
   // pre-G5.4.c); we log + dispatch without an envelope. Release
@@ -3990,7 +4011,7 @@ async function executeViaRelayRaw(
     }
   }
 
-  // run_shell tiered timeout (Stack 57). Only run_shell carries timeout_seconds.
+  // run_shell tiered timeout . Only run_shell carries timeout_seconds.
   // The resolver enforces: ≤soft free, soft→hard needs a non-empty
   // timeout_reason, >hard refused. A Human approval surface receives that
   // reason as first-class intent; auto execution has no Human judge, so it is
@@ -4012,7 +4033,7 @@ async function executeViaRelayRaw(
     timeoutMs = structuredSsh.args["timeoutSeconds"] * 1_000;
   }
 
-  // D502 — run_shell admits exactly one of raw `command`, structured `git`,
+  // run_shell admits exactly one of raw `command`, structured `git`,
   // or bounded Desktop-local `output_artifact` continuation retrieval. The
   // LLM-facing Zod schema enforces this with a superRefine, but relay tools
   // dispatch through `args` WITHOUT a schema parse, so re-check here at the
@@ -4040,7 +4061,7 @@ async function executeViaRelayRaw(
     }
   }
 
-  // D538 adds a seamless server-owned lane for ordinary raw commands that do
+  // adds a seamless server-owned lane for ordinary raw commands that do
   // not select an execution mode. Existing internal callers that explicitly
   // request the Full Workstation or sandbox lane retain their prior semantics.
   // The model-facing schema no longer requires or advertises this selector.
@@ -4109,7 +4130,7 @@ async function executeViaRelayRaw(
     ? securityScanRequest.request
     : dispatchArgs;
 
-  // D418 task 3.1.3b — when a WorkstationDispatchPlan pinned this dispatch AND
+  // task 3.1.3b — when a WorkstationDispatchPlan pinned this dispatch AND
   // the tool is a generic `run_shell`, attach the plan-bound shell-binding
   // envelope. It carries ONLY the opaque ids / binding / operation metadata the
   // desktop relay needs to prove the dispatch maps to the active
@@ -4123,7 +4144,7 @@ async function executeViaRelayRaw(
       ? (buildWorkstationShellBindingFromPlan(plan, tc.id ?? "") ?? undefined)
       : undefined;
 
-  // D418 protected-shell enforcement — a Full Workstation eligible relay
+  // protected-shell enforcement — a Full Workstation eligible relay
   // (one advertising an active Workstation Profile binding snapshot) must
   // NEVER run a generic `run_shell` through the server's sandbox envelope,
   // which carries no `protectedPaths`. `protectedPaths` enter the sandbox
@@ -4132,7 +4153,7 @@ async function executeViaRelayRaw(
   // has no valid plan-bound binding (missing or stale plan / session), fail
   // closed with a stable error rather than dispatch an unprotected shell.
   //
-  // D418 reconnect/session split-brain fix — the gate ALSO fails closed
+  // reconnect/session split-brain fix — the gate ALSO fails closed
   // when an active Full Workstation session is bound to the selected relay
   // EVEN IF the relay's profile snapshot is absent. A reconnect that
   // re-registered frozen pre-activation capabilities (or a capability
@@ -4190,11 +4211,11 @@ async function executeViaRelayRaw(
     }
   }
 
-  // D538 pairs the already-existing enclosing Job signal with the exact
+  // pairs the already-existing enclosing Job signal with the exact
   // process-memory activation fence. The combined signal never crosses the
   // relay protocol; `InMemoryRelayRegistry` already turns it into one exact
   // cancellation correlation. Keep the original signal byte-for-byte for
-  // every non-D538 dispatch.
+  // every other dispatch.
   const dispatchAbortController = uncontainedActivationSignal === undefined
     ? null
     : new AbortController();
@@ -4222,11 +4243,42 @@ async function executeViaRelayRaw(
             ),
           ]
         : relayCaps?.allowedRoots;
-    const relayDispatchArgs = tc.name.startsWith("browser_")
-      && hasTaskContinuation
-      && taskContinuation.browserSessionId
-        ? { ...dispatchArgs, _requiredSession: taskContinuation.browserSessionId }
-        : dispatchArgs;
+    const relayDispatchArgs = { ...dispatchArgs };
+    if (tc.name.startsWith("browser_")) {
+      if (tc.name === "browser_snapshot" && browserPlan?.kind === "plan") {
+        const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
+        if (source?.tool_calls && (source.tool_calls.length !== 1 || source.tool_calls[0]?.id !== (opts.toolCallId ?? tc.id))) {
+          return { ok: false, errorMessage: browserDecisionPlanError(null, "decision_plan_requires_singleton",
+            "Send browser_snapshot with decisionPlan as its own tool call, after preceding tools finish. No browser request was sent for this delegation; other calls in the batch may execute normally.") };
+        }
+        if (!fromRuntimeConfig().nautilo_browser_decision_model.trim()) {
+          return { ok: false, errorMessage: "Routine browser decisions are not enabled. Omit decisionPlan and use ordinary browser tools; no browser request was sent." };
+        }
+      }
+      // Model-visible plans remain in the graph; only server-owned bindings cross the relay.
+      delete relayDispatchArgs["decisionPlan"];
+      if (tc.name === "browser_snapshot" && browserPlan?.kind === "plan" && browserPlan.source === "top_level") {
+        for (const key of Object.keys(browserDecisionPlanSchema.shape)) delete relayDispatchArgs[key];
+      }
+      delete relayDispatchArgs["_requiredSession"];
+      delete relayDispatchArgs["_requiredObservationId"];
+      if (hasTaskContinuation && taskContinuation.browserSessionId) {
+        relayDispatchArgs["_requiredSession"] = taskContinuation.browserSessionId;
+      }
+      const decision = currentBrowserDecision(state);
+      const pending = decision?.pending;
+      if (pending && pending.call.id === (opts.toolCallId ?? tc.id)) {
+        if (decision?.phase !== "waiting" || pending.call.name !== tc.name
+          || JSON.stringify(pending.call.args) !== JSON.stringify(tc.args)
+          || fromRuntimeConfig().nautilo_browser_decision_model.trim() !== decision.modelId
+          || (relayDispatchArgs["_requiredSession"] !== undefined
+            && relayDispatchArgs["_requiredSession"] !== pending.browserSessionId)) {
+          return { ok: false, errorMessage: "Browser decision binding changed; return to the Genie for fresh observation." };
+        }
+        relayDispatchArgs["_requiredSession"] = pending.browserSessionId;
+        if (pending.observationId !== null) relayDispatchArgs["_requiredObservationId"] = pending.observationId;
+      }
+    }
     const result = await _relayRegistry.dispatch(relayId, {
       toolName: isStructuredSsh ? "ssh" : tc.name,
       args: structuredSsh?.args ?? (tc.name === "security_scan" ? trustedDispatchArgs : relayDispatchArgs),
@@ -4254,6 +4306,8 @@ async function executeViaRelayRaw(
           ? { executionClass: "desktop" as const }
         : isSemanticComputerUse
           ? { executionClass: "computer_use" as const }
+        : isBrowserTool(tc.name)
+          ? { executionClass: "browser" as const }
           : {}),
       ...(shellBinding !== undefined ? { workstationShellBinding: shellBinding } : {}),
       ...(uncontainedActivationSignal !== undefined
@@ -4333,6 +4387,7 @@ async function executeViaRelayRaw(
       ...(((tc.name === "run_shell" && typeof tc.args["command"] === "string")
         || isStructuredSsh
         || isSemanticComputerUse
+        || tc.name.startsWith("browser_")
         || tc.name === "security_scan") && dispatchSignal
         ? { signal: dispatchSignal }
         : {}),
@@ -4351,6 +4406,13 @@ async function executeViaRelayRaw(
     }
 
     if (result.status === "error") {
+      if (tc.name.startsWith("browser_")) {
+        const code = result.errorCode;
+        if (code === "browser_observation_stale" || code === "browser_cancelled" || code === "browser_authority_lost"
+          || code === "browser_outcome_unknown" || code === "browser_observation_invalid") {
+          return { ok: false, errorMessage: formatRelayToolError(tc, result), browserFailure: code };
+        }
+      }
       warn(`[nautilo/tools] Relay tool ${formatToolLogLabel(tc)} returned error: ${result.error}`);
       if (result.networkDeniedDestination !== undefined) {
         return {
@@ -4409,8 +4471,9 @@ async function executeViaRelayRaw(
     const msg = error instanceof Error ? error.message : String(error);
     warn(`[nautilo/tools] Relay dispatch for ${formatToolLogLabel(tc)} failed: ${msg}`);
     const structuredSshOutcomeUnknown = isStructuredSsh && isStructuredSshOutcomeUnknown(error);
+    const browserMutationOutcomeUnknown = browserToolMayMutate(tc.name) && isDesktopAutomationOutcomeUnknown(error);
     const desktopMutationOutcomeUnknown =
-      computerUseRequest?.contract.effectClass !== "read" && isDesktopAutomationOutcomeUnknown(error);
+      isSemanticComputerUse && computerUseRequest?.contract.effectClass !== "read" && isDesktopAutomationOutcomeUnknown(error);
     // A pre-send activation abort is a known cancellation: the registry
     // rejects before constructing/sending a frame. Only its explicit
     // post-send unknown discriminant may widen a thrown raw-shell outcome.
@@ -4418,7 +4481,10 @@ async function executeViaRelayRaw(
       isRealWorkstationRunShell && isRunShellOutcomeUnknown(error);
     return {
       ok: false,
-      errorMessage: desktopMutationOutcomeUnknown
+      ...(browserMutationOutcomeUnknown ? { browserFailure: "browser_outcome_unknown" as const } : {}),
+      errorMessage: browserMutationOutcomeUnknown
+        ? `Error: ${tc.name} outcome is unknown because its final receipt was lost. Do not replay it blindly. Obtain a fresh browser observation and inspect the result before deciding how to recover.\nUnderlying relay error: ${msg}`
+        : desktopMutationOutcomeUnknown
         ? "Error: Computer Use outcome is unknown because its final receipt was lost. "
           + "Do not replay the operation. Obtain fresh Computer Use state before deciding the next action."
         : uncontainedHostOutcomeUnknown
@@ -4426,12 +4492,13 @@ async function executeViaRelayRaw(
         : structuredSshOutcomeUnknown
           ? structuredSshUnknownOutcomeGuidance(structuredSsh?.binding.operation)
           : `Error dispatching ${tc.name} to relay: ${msg}`,
-      // M150 — a thrown dispatch (e.g. the device disconnected/slept while the
+      // a thrown dispatch (e.g. the device disconnected/slept while the
       // call was in flight) is a relay-unavailable failure, not a tool error.
-      // D500 — a structurally confirmed post-send SSH outcome is different:
+      // a structurally confirmed post-send SSH outcome is different:
       // the exact broker operation may have run, so do not label it a
       // pre-effect relay-unavailable failure or encourage a blind retry.
       relayUnavailable: !structuredSshOutcomeUnknown &&
+        !browserMutationOutcomeUnknown &&
         !desktopMutationOutcomeUnknown &&
         !uncontainedHostOutcomeUnknown,
       ...(tc.name === "run_shell" && isRunShellOutcomeUnknown(error)
@@ -4632,7 +4699,7 @@ async function handleNetworkApprovalAndRetry(
   }
 
   if (verb === "room" || verb === "always") {
-    // Network egress widening is lane-keyed (not the M037 command-approval
+    // Network egress widening is lane-keyed (not command-approval
     // DB). Both room + always map to a persisted lane network allow-rule;
     // durable DB-backed network rules are a deliberate follow-up.
     const laneKey = resolveLaneKey(state);
@@ -4673,7 +4740,7 @@ function resolveLaneKey(state: NautiloState): string {
 }
 
 /**
- * D418 task 3.1.2 — read the live relay-binding fingerprint for a relay id
+ * task 3.1.2 — read the live relay-binding fingerprint for a relay id
  * from the relay registry, for `WorkstationDispatchPlan` re-validation.
  * Each field is `null` when the relay is not connected or has not advertised
  * that piece of binding state (a single `null` fails the re-validation
@@ -4703,7 +4770,7 @@ function readWorkstationRelayFingerprint(relayId: string): WorkstationRelayFinge
     profileId: profile?.profileId ?? null,
     profileRevision: profile?.profileRevision ?? null,
     pairingGeneration: reg.getPairingGeneration?.(relayId) ?? null,
-    // D440 Phase 1 — live grant-store + protected-policy revisions for
+    // live grant-store + protected-policy revisions for
     // revision-coherent re-validation. Absent when the relay did not
     // advertise the corresponding snapshot; revalidation skips the check
     // when either side is absent.
@@ -4713,7 +4780,7 @@ function readWorkstationRelayFingerprint(relayId: string): WorkstationRelayFinge
 }
 
 /**
- * D440 Phase 1 — structured shell-binding disposition surfaced to the agent
+ * structured shell-binding disposition surfaced to the agent
  * (and, via the tool message, to the UI) when a plan-bound `run_shell`
  * dispatch cannot proceed. Carries the non-secret cause, retry-safety,
  * refreshability, and the exact recovery action. No credentials, approval
@@ -4749,7 +4816,7 @@ export type WorkstationShellDisposition =
     };
 
 /**
- * D440 Phase 1 — render a {@link WorkstationShellDisposition} as a compact,
+ * render a {@link WorkstationShellDisposition} as a compact,
  * grep-able, machine-parseable block appended to the stable human-readable
  * error copy. The human copy stays byte-for-byte compatible with existing
  * readers (it still contains the "missing or stale plan" / "no longer the
@@ -4777,7 +4844,7 @@ function renderWorkstationShellDisposition(
 }
 
 /**
- * D418 task 3.1.3b — build the plan-bound `RelayWorkstationShellBinding` from a
+ * task 3.1.3b — build the plan-bound `RelayWorkstationShellBinding` from a
  * pinned `WorkstationDispatchPlan` + the live tool-call id. The binding carries
  * ONLY the opaque plan binding tuple and the classified shell operation — no
  * roots, no paths, no filesystem identity. The `agentScope` is the durable
@@ -4843,7 +4910,7 @@ export function buildWorkstationShellBindingFromPlan(
  * Runs before the cloud-vs-relay dispatch split so the same policy applies
  * to both execution paths. Relay tools for filesystem/shell get scanned
  * here before the dispatch leaves the server; cloud tools get scanned
- * before `tool.invoke()`.
+ * before `tool.invoke`.
  *
  * Exported for unit testing. The toolsNode pipeline is the canonical
  * caller; individual tests can import the pure function here to pin
@@ -4872,7 +4939,7 @@ export function validateBeforeExecution(
     }
   }
 
-  // D079 PR-011 security port — the unified `file` tool dispatches on
+  // PR-011 security port — the unified `file` tool dispatches on
   // a `command` + `zone` arg pair and was not covered by the legacy
   // name-keyed branch above. When `zone === "absolute"`, the agent
   // passed a full absolute path; the deny-list (home-relative and
