@@ -68,6 +68,12 @@ store update, or Desktop/Host installation.
   without treating different actions on unchanged text as automatic failures.
   The shared behavior applies to embedded and connected direct browser control.
 
+- Computer Use preserves final execution receipts after Stop, including partial
+  delivery, instead of replacing them with a generic cancellation or expiring
+  them while cleanup is still running. Retired connections and Host generations
+  remain fenced. Selecting a control for a different action now returns a valid
+  no-input-sent result so the Genie can select a fresh target and continue.
+
 - Desktop shell commands honor replacement folder grants without being blocked by
   superseded revocation history. Narrower restrictions and protected paths remain
   enforced. Folder changes reach outgoing messages immediately, and delayed

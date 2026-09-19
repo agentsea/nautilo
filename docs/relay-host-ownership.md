@@ -198,11 +198,19 @@ an explicit deadline or cancellation is outcome-unknown with the initiating
 reason preserved, including compatibility with older callback-dropping Hosts.
 Never infer Human Stop or zero delivery from a generic callback error.
 
-The existing post-cancel receipt grace (5 seconds, configurable up to 10) is not
-an execution budget. It can still lose a late receipt and is named follow-up
-debt: qualify cleanup latency and late-result reconciliation before claiming
-the grace is an authoritative operational policy. Likewise the generic 60-second
-fallback for unrelated/unowned calls is not validated by this Computer Use fix.
+Computer Use has no post-cancel receipt-expiry timer. After forwarding Stop or
+an explicit deadline once, the registry retains the exact invocation until the
+executor settles or its authenticated connection retires. The broker preserves
+the checked receipt even when its signal is aborted, including partial delivery;
+a retired Host session cannot publish a late result into its replacement.
+An executor that never settles while its connection remains live remains pending,
+not falsely completed or safe to replay. Connection retirement settles it as
+outcome-unknown and releases its listeners.
+
+The separate embedded Browser mutation path retains its existing post-cancel
+receipt grace (5 seconds, configurable up to 10). That grace and the generic
+60-second fallback for unrelated/unowned calls are not validated by this
+Computer Use repair.
 
 Peekaboo is out. It has no executable, packaging, runtime route, fallback, or
 handler. The only remaining source mention is a strict legacy local-state

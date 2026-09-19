@@ -59,8 +59,8 @@ const entry = (
 export const bundledComputerUseContractCatalogue: ComputerUseContractCatalogueV1 =
   computerUseContractCatalogueV1Schema.parse({
     formatVersion: 1,
-    catalogueVersion: "2026-09-10.1",
-    publishedAt: "2026-09-10T09:38:36.000Z",
+    catalogueVersion: "2026-09-19.1",
+    publishedAt: "2026-09-19T00:00:00.000Z",
     provenance: "bundled",
     modelGuidance: `### Computer Use
 For a single-file rename, first verify that only the intended file is selected. A filename editor may initially select the basename but leave the extension outside the selection: type_text inserts at that selection, whereas set_value replaces the whole native value. To replace an exact filename, use set_value on a current editable field; if semantic delivery is unavailable, use a fresh screenshot to identify the active editor, select its whole value (including the extension), and type the full filename. Verify the draft, commit once, then verify the editor has closed and the new filename exists. An edited draft is not a committed rename. Window images can omit app-level menus and inline editors; inspect a fresh desktop image when the pending UI is missing from the window image. If a semantic write is not_delivered with targetCondition unavailable, do not repeatedly reselect the same semantic control: take fresh visual evidence and use the supported pixel/desktop route. Never remove window identity checks, assume a different window owns the editor, or replay an uncertain commit.

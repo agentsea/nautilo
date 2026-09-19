@@ -290,7 +290,7 @@ function port(responses: readonly CuaContextToolResult[]) {
   };
 }
 
-describe("D516 Cua semantic adapter foundation", () => {
+describe("Cua semantic adapter foundation", () => {
   test("launches only one exact full-inventory semantic match through the named bundle seam", async () => {
     const checked = port([
       installedApps([
@@ -2765,8 +2765,8 @@ describe("D516 Cua semantic adapter foundation", () => {
     const missingWindow = { context: initial.data.context, reference: `dtgt_${"A".repeat(43)}` };
     const missingElement = { context: initial.data.context, reference: `detgt_${"B".repeat(43)}` };
     const focused = await subject.focus({ scope, operation: { kind: "focus", target: missingWindow } });
-    const typedWindow = await subject.typeText({ scope, operation: { kind: "type_text", target: missingWindow, text: "D516" } });
-    const typedElement = await subject.typeText({ scope, operation: { kind: "type_text", target: missingElement, text: "D516" } });
+    const typedWindow = await subject.typeText({ scope, operation: { kind: "type_text", target: missingWindow, text: "TEST" } });
+    const typedElement = await subject.typeText({ scope, operation: { kind: "type_text", target: missingElement, text: "TEST" } });
     expect(focused).toMatchObject({ ok: false, receipt: { resolvedTarget: { kind: "window", role: "unavailable" }, completionCertainty: "not_completed" } });
     expect(typedWindow).toMatchObject({ ok: false, receipt: { resolvedTarget: { kind: "window", role: "unavailable" }, completionCertainty: "not_completed" } });
     expect(typedElement).toMatchObject({ ok: false, receipt: { resolvedTarget: { kind: "element", state: "unavailable" }, completionCertainty: "not_completed" } });
@@ -4008,7 +4008,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       window_id: windowId, pid: 77, element_count: elements.length, total_element_count: elements.length,
       returned_element_count: elements.length, elements_complete: false, tree_markdown: "private tree", elements, _note: "private note",
     });
-    const sentinel = "D516-SENTINEL";
+    const sentinel = "TEST-SENTINEL";
     const checked = port([
       result({ windows: siblingRows, current_space_id: 1 }),
       result({ effect: "unverifiable", route: "accessibility", delivery: { mode: "foreground" } }),
@@ -4065,7 +4065,7 @@ describe("D516 Cua semantic adapter foundation", () => {
     if (!typed.ok) throw new Error("expected typed receipt");
     const typedReceipt = computerMutationReceiptSchema.safeParse(typed.receipt);
     if (!typedReceipt.success) throw new Error(JSON.stringify(typedReceipt.error.issues));
-    expect(JSON.stringify(typed.receipt)).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|D516-SENTINEL/);
+    expect(JSON.stringify(typed.receipt)).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|TEST-SENTINEL/);
     const verified = await subject.verify({ scope, target: handoff.window.target, expect: [{ element: { selector: { role: "text_area" }, valueEquals: sentinel } }] });
     expect(verified).toMatchObject({ ok: true, verification: { status: "satisfied", stable: true, samples: 2 } });
     expect(checked.calls.filter((call) => call.name === "invoke_menu")).toEqual([{ name: "invoke_menu", args: { pid: 77, window_id: 513, path: ["File", "New"] } }]);
@@ -4078,7 +4078,7 @@ describe("D516 Cua semantic adapter foundation", () => {
     const consumedReceipt = computerMutationReceiptSchema.safeParse(consumed.receipt);
     if (!consumedReceipt.success) throw new Error(JSON.stringify(consumedReceipt.error.issues));
     expect(checked.calls.filter((call) => call.name === "type_text")).toHaveLength(1);
-    expect(JSON.stringify({ created, state, typed, verified })).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|D516-SENTINEL/);
+    expect(JSON.stringify({ created, state, typed, verified })).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|TEST-SENTINEL/);
   });
 
   test("selects one existing semantic value control and performs one private-token set_value", async () => {
@@ -4512,6 +4512,142 @@ describe("D516 Cua semantic adapter foundation", () => {
       expect(checked.calls.filter((call) => call.name === "scroll")).toHaveLength(1);
       await expect(subject.scroll({ scope, operation: { kind: "scroll", target: selected.observation.element.target, direction: "down", amount: 5, by: "line" } })).resolves.toMatchObject({ ok: false, receipt: { action: "scroll", completionCertainty: "not_completed" } });
       expect(checked.calls.filter((call) => call.name === "scroll")).toHaveLength(1);
+    }
+  });
+
+  test("preserves mismatched selected-action evidence through the real Host and permits fresh selection", async () => {
+    const editor = result({ window_id: 90, pid: 42, element_count: 1, total_element_count: 1, returned_element_count: 1,
+      elements_complete: false, tree_markdown: "private tree", _note: "private note",
+      elements: [{ role: "AXTextField", label: "Editor", value: "Existing contents", enabled: true, element_token: "private-editor-token" }] });
+    const checked = port([apps(), windows(), editor, editor, apps(), windows(),
+      result({ effect: "confirmed", route: "accessibility", delivery: { mode: "background", delivered_count: 6 }, evidence: [{ kind: "value_readback" }] }),
+    ]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value, readHidIdleNanoseconds: async () => 1_000_000_000, monotonicMilliseconds: () => 10_000 });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    if (!desktop.ok) throw new Error("expected desktop");
+    const window = desktop.observation.targets[0]!.target;
+    const selected = await subject.observeWindowState({ scope, target: window, selector: { role: "text_field", action: "set_value" } });
+    if (!selected.ok || !selected.observation.element?.target) throw new Error("expected value target");
+    const runtime = new CuaNativeContractRuntime({ adapter: subject, scopeForAuthority: () => scope });
+    const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+    const dispatch = (requestId: string, target: typeof window) => host.dispatch({
+      kind: "request", protocol: { major: 3, minor: 0 }, requestId,
+      authority: { authorityLeaseId: "lease-1", authorityGeneration: 1 },
+      fence: { hostGeneration: "host-1", driverGeneration: "driver-1", cancellationGeneration: 1 },
+      contract: COMPUTER_USE_NATIVE_CONTRACTS.do,
+      arguments: { operation: { kind: "type_text", target, text: "append" } },
+    });
+    const refused = await dispatch("mismatched-action", selected.observation.element.target);
+    expect(refused).toMatchObject({ settlement: "not_completed", result: {
+      action: "type_text", resolvedTarget: { kind: "element", role: "text_field", action: "set_value" },
+      completionCertainty: "not_completed", deliveryMode: "not_delivered", providerAction: null,
+      textDelivery: { requestedCharacters: 6, deliveredCharacters: 0 },
+      outcome: { phase: "resolve_target", providerCondition: "ready", targetCondition: "unavailable", recovery: ["observe_again"] },
+    } });
+    expect(checked.calls).toHaveLength(3);
+    expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+    expect(computerMutationReceiptSchema.safeParse(refused.result).success).toBe(true);
+    // No incompatible evidence may be laundered into an effectful receipt.
+    for (const patch of [
+      { completionCertainty: "completed" },
+      { completionCertainty: "unknown_completion", deliveryMode: "unknown" },
+      { deliveryMode: "background" },
+      { verification: "verified" },
+      { providerAction: undefined },
+      { textDelivery: { requestedCharacters: 6, deliveredCharacters: 1 } },
+      { outcome: { ...(refused.result.outcome as Record<string, unknown>), phase: "post_effect_verification" } },
+      { outcome: { ...(refused.result.outcome as Record<string, unknown>), stateChangeCertainty: "unknown" } },
+    ]) expect(computerMutationReceiptSchema.safeParse({ ...refused.result, ...patch }).success).toBe(false);
+    const fresh = await subject.observeWindowState({ scope, target: window, selector: { role: "text_field", action: "type_text" } });
+    if (!fresh.ok || !fresh.observation.element?.target) throw new Error("expected fresh typing target");
+    expect(await dispatch("fresh-insertion", fresh.observation.element.target)).toMatchObject({ settlement: "completed", result: {
+      action: "type_text", textDelivery: { requestedCharacters: 6, deliveredCharacters: 6 },
+    } });
+    expect(checked.calls.filter((call) => call.name === "type_text")).toHaveLength(1);
+    expect(checked.calls.filter((call) => call.name === "set_value")).toHaveLength(0);
+    expect(JSON.stringify(refused)).not.toMatch(/private-editor-token|Existing contents|append/);
+    await subject.close();
+  });
+
+  test("settles every incompatible element-input action without invoking the driver", async () => {
+    for (const kind of ["type_text", "set_value", "scroll", "click", "press_key", "hotkey"] as const) {
+      const checked = port([apps(), windows(), result({ window_id: 90, pid: 42, element_count: 1,
+        total_element_count: 1, returned_element_count: 1, elements_complete: false,
+        tree_markdown: "private tree", _note: "private note",
+        elements: [{ role: "AXTextField", enabled: true, element_token: "private-editor-token" }] }),
+      ]);
+      const subject = new CuaComputerUseAdapter({ port: checked.value,
+        readHidIdleNanoseconds: async () => 1_000_000_000, monotonicMilliseconds: () => 10_000 });
+      const desktop = await subject.observe({ scope, operation: "desktop_state" });
+      if (!desktop.ok) throw new Error("expected desktop");
+      const selected = await subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target,
+        selector: { role: "text_field", action: kind === "set_value" ? "type_text" : "set_value" } });
+      if (!selected.ok || !selected.observation.element?.target) throw new Error("expected incompatible target");
+      const runtime = new CuaNativeContractRuntime({ adapter: subject, scopeForAuthority: () => scope });
+      const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+      const fields = kind === "type_text" ? { text: "append" } : kind === "set_value" ? { value: "replacement" }
+        : kind === "scroll" ? { direction: "up", amount: 2, by: "line" }
+        : kind === "press_key" ? { key: "Escape" } : kind === "hotkey" ? { keys: ["cmd", "a"] } : {};
+      const refused = await host.dispatch({ kind: "request", protocol: { major: 3, minor: 0 }, requestId: `mismatch-${kind}`,
+        authority: { authorityLeaseId: "lease-1", authorityGeneration: 1 },
+        fence: { hostGeneration: "host-1", driverGeneration: "driver-1", cancellationGeneration: 1 },
+        contract: COMPUTER_USE_NATIVE_CONTRACTS.do,
+        arguments: { operation: { kind, target: selected.observation.element.target, ...fields } },
+      });
+      expect(refused).toMatchObject({ settlement: "not_completed", result: { action: kind,
+        deliveryMode: "not_delivered", providerAction: null, outcome: { providerCondition: "ready", recovery: ["observe_again"] },
+      } });
+      expect(computerMutationReceiptSchema.safeParse(refused.result).success).toBe(true);
+      if (kind === "scroll") {
+        // A current target plus a final no-retry outcome is not one of scroll's
+        // closed pre-effect failure families. The mismatch exception must not
+        // let arbitrary outcome semantics bypass that contract.
+        expect(computerMutationReceiptSchema.safeParse({
+          ...refused.result,
+          outcome: {
+            ...refused.result.outcome,
+            retrySafety: "never",
+            targetCondition: "current",
+            recovery: [],
+          },
+        }).success).toBe(false);
+      }
+      expect(checked.calls).toHaveLength(3);
+      expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+      await subject.close();
+    }
+  });
+
+  test("keeps mismatched target refusals valid before cancellation and Human-input checks", async () => {
+    for (const mode of ["cancelled", "external", "unavailable"] as const) {
+      let idle: number | null = 1_000_000_000;
+      const checked = port([apps(), windows(), result({ window_id: 90, pid: 42, element_count: 1,
+        total_element_count: 1, returned_element_count: 1, elements_complete: false,
+        tree_markdown: "private tree", _note: "private note",
+        elements: [{ role: "AXTextField", enabled: true, element_token: "private-editor-token" }] }),
+      ]);
+      const subject = new CuaComputerUseAdapter({ port: checked.value,
+        readHidIdleNanoseconds: async () => idle, monotonicMilliseconds: () => 10_000 });
+      const desktop = await subject.observe({ scope, operation: "desktop_state" });
+      if (!desktop.ok) throw new Error("expected desktop");
+      const selected = await subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target,
+        selector: { role: "text_field", action: "set_value" } });
+      if (!selected.ok || !selected.observation.element?.target) throw new Error("expected value target");
+      const controller = new AbortController();
+      if (mode === "cancelled") controller.abort();
+      else idle = mode === "external" ? 0 : null;
+      const refused = await subject.typeText({ scope, signal: controller.signal,
+        operation: { kind: "type_text", target: selected.observation.element.target, text: "append" } });
+      expect(refused.ok).toBe(false);
+      expect(computerMutationReceiptSchema.safeParse(refused.receipt).success).toBe(true);
+      expect(refused.receipt).toMatchObject({ resolvedTarget: { action: "set_value" },
+        textDelivery: { deliveredCharacters: 0 }, outcome: mode === "cancelled"
+          ? { providerCondition: "cancelled", targetCondition: "current" }
+          : { providerCondition: "unknown", targetCondition: "unknown", ...(mode === "external" ? { externalInterference: "user_input" } : {}) },
+      });
+      expect(checked.calls).toHaveLength(3);
+      expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+      await subject.close();
     }
   });
 
@@ -5837,7 +5973,7 @@ describe("D516 Cua semantic adapter foundation", () => {
 
     for (const mode of ["external", "unavailable"] as const) {
       const mutation = await freshTarget(mode);
-      const typed = await mutation.subject.typeText({ scope, operation: { kind: "type_text", target: mutation.target, text: "D516" } });
+      const typed = await mutation.subject.typeText({ scope, operation: { kind: "type_text", target: mutation.target, text: "TEST" } });
       expect(typed).toMatchObject({ ok: false, outcome: { recovery: ["observe_again"] } });
       expect(JSON.stringify(typed).includes("externalInterference")).toBe(mode === "external");
       expect(mutation.checked.calls.filter((call) => call.name === "type_text")).toHaveLength(0);
@@ -5863,7 +5999,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       if (!observed.ok) throw new Error("expected authority mint");
       const target = observed.observation.targets[0]!.target;
       if (kind === "type") {
-        const typed = await subject.typeText({ scope, operation: { kind: "type_text", target, text: "D516" } });
+        const typed = await subject.typeText({ scope, operation: { kind: "type_text", target, text: "TEST" } });
         expect(typed).toMatchObject({ ok: false, outcome: { externalInterference: "user_input", recovery: ["observe_again"] } });
         expect(checked.calls.filter((call) => call.name === "type_text")).toHaveLength(0);
       } else {
@@ -5996,7 +6132,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       if (!element.ok) throw new Error("expected element");
       const checked = port([apps(), windows(), result(refusal, true)]);
       const subject = new CuaComputerUseAdapter({ port: checked.value, registry });
-      const typed = await subject.typeText({ scope, operation: { kind: "type_text", target: { context: initial.data.context, reference: element.data[0]!.reference }, text: "D516" } });
+      const typed = await subject.typeText({ scope, operation: { kind: "type_text", target: { context: initial.data.context, reference: element.data[0]!.reference }, text: "TEST" } });
       expect(typed).toMatchObject({ ok: false, receipt: { completionCertainty: "not_completed", outcome: { phase: "pre_effect_dispatch", retrySafety: "observe_before_retry", recovery: ["observe_again"] } } });
       expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
     }

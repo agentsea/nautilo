@@ -86,12 +86,11 @@ async function registeredRegistry(capabilities: RelayCapabilities): Promise<InMe
   return registry;
 }
 
-describe("D516 InMemoryRelayRegistry Computer use snapshot", () => {
+describe("InMemoryRelayRegistry Computer Use snapshot", () => {
   async function lifetimeFixture() {
     const sent: RelayServerMessage[] = [];
     const registry = new InMemoryRelayRegistry({
       authorizeDesktopAutomationDispatch: () => true,
-      desktopAutomationResultReceiptGraceMs: 20,
     });
     await registry.register("relay-1", "human-1", semanticCapabilities({
       profile: "desktop-agent", canControlDesktop: true, desktopAutomation: SNAPSHOT,
@@ -139,6 +138,30 @@ describe("D516 InMemoryRelayRegistry Computer use snapshot", () => {
     expect(sent.filter(message => message.type === "relay:cancel")).toHaveLength(1);
   });
 
+  test("Stop retains the original invocation beyond the former receipt grace without replay", async () => {
+    const { registry, sent, controller, request } = await lifetimeFixture();
+    const outcome = registry.dispatch("relay-1", request).catch((error: unknown) => error);
+    await Promise.resolve();
+    const timers = spyOn(globalThis, "setTimeout");
+    controller.abort();
+    registry.cancelDispatch((sent[0] as Extract<RelayServerMessage, { type: "relay:dispatch" }>).correlationId);
+    const expiryCallbacks = timers.mock.calls.map(([callback]) => callback);
+    timers.mockRestore();
+    // Advance every scheduled post-cancel deadline deterministically. With
+    // the old implementation this destroys the correlation before readback.
+    for (const callback of expiryCallbacks) if (typeof callback === "function") callback();
+    const frame = sent[0];
+    if (frame?.type !== "relay:dispatch") throw new Error("Missing dispatch");
+    const receipt = { status: "ok" as const, result: { settlement: "cancelled",
+      result: { textDelivery: { requestedCharacters: 289, deliveredCharacters: 73 }, completionCertainty: "partially_completed" },
+    } };
+    registry.resolveDispatch(frame.correlationId, receipt);
+    expect(await outcome).toEqual(receipt);
+    expect(expiryCallbacks).toHaveLength(0);
+    expect(sent.filter(message => message.type === "relay:cancel")).toHaveLength(1);
+    expect(sent.filter(message => message.type === "relay:dispatch")).toHaveLength(1);
+  });
+
   test("unowned Computer Use retains the fallback instead of creating an immortal request", async () => {
     const { registry, sent, request } = await lifetimeFixture();
     const { signal: _signal, ...unowned } = request;
@@ -151,6 +174,54 @@ describe("D516 InMemoryRelayRegistry Computer use snapshot", () => {
     if (frame?.type !== "relay:dispatch") throw new Error("Missing dispatch");
     registry.resolveDispatch(frame.correlationId, { status: "ok", result: { settlement: "completed" } });
     expect(await pending).toMatchObject({ status: "ok" });
+  });
+
+  test("an explicit deadline cancels immediately but does not impose another receipt deadline", async () => {
+    const { registry, sent, request } = await lifetimeFixture();
+    const timers = spyOn(globalThis, "setTimeout");
+    const outcome = registry.dispatch("relay-1", { ...request, timeout: 100 });
+    await Promise.resolve();
+    expect(timers.mock.calls).toHaveLength(1);
+    const deadline = timers.mock.calls[0]![0];
+    if (typeof deadline !== "function") throw new Error("Missing deadline");
+    deadline();
+    const timerCount = timers.mock.calls.length;
+    timers.mockRestore();
+    const frame = sent[0];
+    if (frame?.type !== "relay:dispatch") throw new Error("Missing dispatch");
+    registry.resolveDispatch(frame.correlationId, { status: "ok", result: { settlement: "completed" } });
+    expect(await outcome).toMatchObject({ status: "ok", result: { settlement: "completed" } });
+    expect(timerCount).toBe(1);
+    expect(sent.filter(message => message.type === "relay:cancel")).toHaveLength(1);
+  });
+
+  test("a replacement cannot inherit a cancelled invocation or accept its late receipt", async () => {
+    const { registry, sent, controller, request } = await lifetimeFixture();
+    const old = registry.dispatch("relay-1", request).catch((error: unknown) => error);
+    await Promise.resolve();
+    controller.abort();
+    const oldFrame = sent[0];
+    if (oldFrame?.type !== "relay:dispatch") throw new Error("Missing old dispatch");
+    const replacement: RelayServerMessage[] = [];
+    await registry.register("relay-1", "human-1", semanticCapabilities({
+      profile: "desktop-agent", canControlDesktop: true, desktopAutomation: SNAPSHOT,
+    }), message => { replacement.push(message); }, RELAY_PROTOCOL_VERSION, "session-1", 0, "pairing-1");
+    expect(await old).toMatchObject({ desktopAutomationOutcome: "unknown", reason: "replacement" });
+    let settled = false;
+    const fresh = registry.dispatch("relay-1", { ...request, signal: new AbortController().signal });
+    void fresh.then(() => { settled = true; });
+    await Promise.resolve();
+    registry.resolveDispatch(oldFrame.correlationId, { status: "ok", result: { settlement: "completed" } });
+    registry.cancelDispatch(oldFrame.correlationId);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(replacement.filter(message => message.type === "relay:cancel")).toHaveLength(0);
+    const freshFrame = replacement[0];
+    if (freshFrame?.type !== "relay:dispatch") throw new Error("Missing fresh dispatch");
+    registry.resolveDispatch(freshFrame.correlationId, { status: "ok", result: { settlement: "not_completed" } });
+    expect(await fresh).toMatchObject({ status: "ok", result: { settlement: "not_completed" } });
+    expect(sent.filter(message => message.type === "relay:dispatch")).toHaveLength(1);
+    expect(replacement.filter(message => message.type === "relay:dispatch")).toHaveLength(1);
   });
 
   test("signal-owned work still settles unknown on disconnect without replay", async () => {
@@ -576,7 +647,6 @@ describe("D516 InMemoryRelayRegistry Computer use snapshot", () => {
   test("abort keeps a bound catalogue mutation pending until Desktop returns its generic settlement", async () => {
     const sent: RelayServerMessage[] = [];
     const registry = new InMemoryRelayRegistry({
-      desktopAutomationResultReceiptGraceMs: 20,
       authorizeDesktopAutomationDispatch: () => true,
     });
     registry.register(
@@ -622,10 +692,9 @@ describe("D516 InMemoryRelayRegistry Computer use snapshot", () => {
     });
   });
 
-  test("missing catalogue-mutation receipt expires as Computer Use outcome unknown", async () => {
+  test("connection loss after Stop settles unknown without inventing a receipt", async () => {
     const sent: RelayServerMessage[] = [];
     const registry = new InMemoryRelayRegistry({
-      desktopAutomationResultReceiptGraceMs: 5,
       authorizeDesktopAutomationDispatch: () => true,
     });
     registry.register(
@@ -651,12 +720,13 @@ describe("D516 InMemoryRelayRegistry Computer use snapshot", () => {
     await Promise.resolve();
     controller.abort();
 
+    await registry.unregister("relay-1");
     const error = await pending.catch((caught: unknown) => caught);
 
     expect(sent.filter((message) => message.type === "relay:cancel")).toHaveLength(1);
     expect(error).toBeInstanceOf(RelayDispatchOutcomeUnknownError);
     expect((error as RelayDispatchOutcomeUnknownError).desktopAutomationOutcome).toBe("unknown");
-    expect((error as RelayDispatchOutcomeUnknownError).reason).toBe("cancel");
+    expect((error as RelayDispatchOutcomeUnknownError).reason).toBe("disconnect");
   });
 
   test.each(["revoked", "throw"] as const)("fresh RBAC %s denies before semantic send", async (mode) => {

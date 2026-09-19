@@ -437,7 +437,7 @@ test("published native pointer and AX action schema agrees with Host admission",
   const element = { version: 1, context, reference: `detgt_${"c".repeat(43)}` };
   const definition = activeComputerUseHostToolDefinitions().find((candidate) => candidate.entry.descriptor.contractId === "native.do");
   if (definition === undefined) throw new Error("missing native.do");
-  expect(definition.entry.descriptor.contractVersion).toBe(11);
+  expect(definition.entry.descriptor.contractVersion).toBe(12);
   const pixel = { kind: "click", target: snapshot, coordinateSpace: "window_snapshot_pixels", x: 10, y: 20 };
   const drag = { kind: "drag_drop", target: snapshot, coordinateSpace: "presented_snapshot_pixels", from: { x: 2, y: 3 }, to: { x: 20, y: 30 } };
   const accepted = [

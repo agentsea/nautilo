@@ -3417,7 +3417,7 @@ export class CuaComputerUseAdapter {
             ? (provider.operation !== "click" && provider.operation !== "right_click" && provider.operation !== "double_click") || provider.elementToken === undefined
           : provider.operation !== "focus" && (provider.operation !== "press_key" || provider.elementToken === undefined))) {
       const result = outcome("resolve_target", { retrySafety: "observe_before_retry", stateChangeCertainty: "not_changed", providerCondition: "ready", targetCondition: "unavailable", recovery: ["observe_again"] });
-      return { ok: false, receipt: windowMutationFailureReceipt(request, target.data.evidence, "not_completed", result), error: "This target cannot receive typed desktop input by the selected provider.", outcome: result };
+      return { ok: false, receipt: windowMutationFailureReceipt(request, target.data.evidence, "not_completed", result), error: `This target was not selected for ${request.operation.kind}. Observe the window and select a fresh target for the intended action; no input was sent.`, outcome: result };
     }
     const leases: Lease[] = [];
     const requestedCharacters = request.operation.kind === "type_text" ? [...request.operation.text].length : null;

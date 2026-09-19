@@ -857,6 +857,8 @@ interface PendingDispatch {
   structuredSshDispatch: boolean;
   /** A mutating Computer Use or Browser frame may have changed UI state before its receipt is lost. */
   effectfulDesktopAutomation: boolean;
+  /** Computer Use executors retain their canonical receipt until settlement or connection retirement. */
+  computerUseDispatch: boolean;
   /** Exact prepared operation; auth is deliberately progress-free. */
   structuredSshOperation?: RelaySshOperation | undefined;
   /** Authenticated socket generation that accepted this dispatch frame. */
@@ -1497,7 +1499,7 @@ export interface InMemoryRelayRegistryOptions {
    * solely to keep registry timing tests deterministic and cannot exceed 10s.
    */
   readonly runShellResultReceiptGraceMs?: number | undefined;
-  /** Bounded wait for Electron's canonical Computer Use or Browser mutation receipt after cancel/timeout. */
+  /** Existing Browser-only receipt grace; Computer Use waits for executor settlement or connection retirement. */
   readonly desktopAutomationResultReceiptGraceMs?: number | undefined;
   /**
    * invoked after a relay's remotely-projectable presence changes:
@@ -2930,6 +2932,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
           rawRunShellCommand && request.executionClass === "real_workstation",
         structuredSshDispatch,
         effectfulDesktopAutomation,
+        computerUseDispatch: request.executionClass === "computer_use",
         ...(request.sshBinding !== undefined ? { structuredSshOperation: request.sshBinding.operation } : {}),
         connectionGeneration: entry.connectionGeneration,
         ...(request.toolName === "security_scan" && request.onSecurityScanProgress ? { onSecurityScanProgress: request.onSecurityScanProgress } : {}),
@@ -3443,9 +3446,9 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
    * Cancel an in-flight dispatch. Ordinary tools retain the historical
    * immediate rejection. A dispatched raw run_shell first forwards cancel,
    * then waits one bounded receipt grace for Electron's canonical cancelled
-   * result; mutating Computer Use and Browser frames share their existing
-   * canonical-receipt grace, including UI effects such as hover or scroll.
-   * Repeated cancel calls do not extend either grace. A dispatched structured
+   * result. Computer Use waits for its executor receipt or authenticated
+   * connection retirement; Browser frames retain their existing receipt grace.
+   * Repeated cancel calls do not resend or extend a grace. A dispatched structured
    * SSH frame remains on its existing timeout policy, but a cancel without a
    * synchronously returned canonical result is effect-unknown.
    */
@@ -3522,8 +3525,9 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     if (pending.receiptGraceReason !== undefined) return;
     pending.receiptGraceReason = reason;
     clearTimeout(pending.timer);
+    pending.timer = undefined;
     for (const entry of this.relays.values()) {
-      if (!correlationId.startsWith(entry.relayId + ":")) continue;
+      if (!correlationId.startsWith(entry.relayId + ":") || entry.connectionGeneration !== pending.connectionGeneration) continue;
       try {
         entry.send({ type: "relay:cancel", correlationId });
       } catch {
@@ -3532,6 +3536,11 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       }
       break;
     }
+    // Stop requests executor cleanup; it cannot expire the only authoritative
+    // receipt while Computer Use can still report partial or completed work.
+    // Result delivery and authenticated connection retirement both detach the
+    // abort listener and settle this invocation exactly once.
+    if (pending.computerUseDispatch) return;
     // A synchronous transport may already have delivered the final receipt.
     if (this.pending.get(correlationId) !== pending) return;
     pending.timer = setTimeout(() => {

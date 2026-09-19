@@ -143,7 +143,7 @@ describe("Computer Use Host broker", () => {
     expect(closes).toBe(1);
   });
 
-  test("cancels one simultaneous request without closing its sibling's Host session", async () => {
+  test.each(["cancelled", "completed", "unknown_completion", "not_completed"] as const)("preserves %s after Stop without closing its sibling's Host session", async (settlement) => {
     let launches = 0;
     let closes = 0;
     const cancelled: Parameters<ComputerUseHostProtocolSession["cancel"]>[0][] = [];
@@ -174,8 +174,8 @@ describe("Computer Use Host broker", () => {
               requestId: target.message.requestId,
               fence: target.message.fence,
               contract: target.message.contract,
-              settlement: "cancelled",
-              result: { status: "cancelled" },
+              settlement,
+              result: { status: "executor_receipt", delivered: 73 },
             } });
             pending.delete(message.requestId);
           },
@@ -203,7 +203,7 @@ describe("Computer Use Host broker", () => {
     } });
     pending.delete("request:second");
 
-    expect(await first).toEqual({ ok: false, code: "host_cancelled" });
+    expect(await first).toMatchObject({ ok: true, result: { requestId: "request:first", settlement, result: { status: "executor_receipt", delivered: 73 } } });
     expect(await second).toMatchObject({ ok: true, result: { requestId: "request:second", settlement: "completed" } });
     expect(cancelled).toHaveLength(1);
     expect(cancelled[0]).toMatchObject({
@@ -219,6 +219,37 @@ describe("Computer Use Host broker", () => {
     expect(closes).toBe(0);
     await broker.close();
     expect(closes).toBe(1);
+  });
+
+  test("does not dispatch when cancellation arrives during bootstrap", async () => {
+    const controller = new AbortController();
+    let requests = 0;
+    const broker = new ComputerUseHostBroker(
+      { bootstrap: async () => ({ state: "ready" }), acquireLaunch: launch },
+      { launch: async () => {
+        controller.abort();
+        return session(async () => { requests += 1; throw new Error("must not dispatch"); });
+      } }, () => endpoint,
+    );
+    expect(await broker.dispatch(request(controller.signal))).toEqual({ ok: false, code: "host_cancelled" });
+    expect(requests).toBe(0);
+    await broker.close();
+  });
+
+  test("does not publish a late receipt after its Host session is retired", async () => {
+    const started = Promise.withResolvers<ComputerUseHostRequest>();
+    const receipt = Promise.withResolvers<ComputerUseHostResult>();
+    const broker = new ComputerUseHostBroker(
+      { bootstrap: async () => ({ state: "ready" }), acquireLaunch: launch },
+      { launch: async () => session(async message => { started.resolve(message); return await receipt.promise; }) },
+      () => endpoint,
+    );
+    const pending = broker.dispatch(request());
+    const message = await started.promise;
+    await broker.close();
+    receipt.resolve({ kind: "result", protocol: { major: 3, minor: 0 }, requestId: message.requestId,
+      fence: message.fence, contract: message.contract, settlement: "completed", result: { status: "old" } });
+    expect(await pending).toEqual({ ok: false, code: "host_protocol_rejected" });
   });
 
   test("retires a crashed Host and fences stale references on the replacement generation", async () => {
