@@ -56,6 +56,8 @@ function stoppedBrowser(browserId: string) {
 function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
   let currentOperation = operation();
   let currentBinding = binding();
+  let decisionSnapshot = '- button "Continue" [ref=e1]';
+  let decisionFailure = false;
   const calls = {
     started: [] as Array<{ profileId: string; timeoutMinutes: number }>,
     navigated: [] as Array<{ cdpUrl: string; origin: string; timeoutMs: number }>,
@@ -143,6 +145,10 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
         calls.invoked.push(input);
         return { text: `snapshot ${RESOLVED_CDP}`, truncated: false };
       },
+      observe: async () => {
+        if (decisionFailure) throw new Error("invalid observation");
+        return { snapshot: decisionSnapshot, refs: { e1: { role: "button", name: "Continue" } } };
+      },
       bindPinnedTarget: async () => undefined,
       readPinnedUrl: async () => { calls.pinnedUrlReads += 1; return `${ORIGIN}/page`; },
       closePrivateDaemons: async () => { calls.cleanupOrder.push("daemon"); },
@@ -161,6 +167,8 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
     calls,
     setOperation: (value: ConnectedWebOperation) => { currentOperation = value; },
     setBinding: (value: ConnectedWebAccountBinding) => { currentBinding = value; },
+    setDecisionSnapshot: (value: string) => { decisionSnapshot = value; },
+    setDecisionFailure: (value: boolean) => { decisionFailure = value; },
   };
 }
 
@@ -172,7 +180,7 @@ const admission = {
   source: "saved_profile" as const,
 };
 
-test("D568 direct router admits only an owner-scoped connected saved profile, fences it, and returns sanitized bounded feedback", async () => {
+test("direct router admits only an owner-scoped connected saved profile, fences it, and returns sanitized bounded feedback", async () => {
   const { router, calls } = makeRouter();
   const result = await router.execute({ ...admission, command: { toolName: "browser_snapshot", args: {} } });
 
@@ -198,7 +206,7 @@ test("D568 direct router admits only an owner-scoped connected saved profile, fe
   });
 });
 
-test("D568 direct router attaches only the one active browser proven by the exact hosted Agent session", async () => {
+test("direct router attaches only the one active browser proven by the exact hosted Agent session", async () => {
   const { router, calls } = makeRouter();
   const lease = await router.acquire({ ...admission, source: "hosted_session" });
   expect(calls.started).toEqual([]);
@@ -209,7 +217,7 @@ test("D568 direct router attaches only the one active browser proven by the exac
   expect(calls.stopped).toEqual(["browser-private-id"]);
 });
 
-test("D568 direct router retains the exact Browser Use live-view capability only while its lease is live", async () => {
+test("direct router retains the exact Browser Use live-view capability only while its lease is live", async () => {
   const { router } = makeRouter({
     provider: {
       startBrowser: async () => ({ kind: "failure", code: "network_error" }),
@@ -226,7 +234,7 @@ test("D568 direct router retains the exact Browser Use live-view capability only
   expect(lease.ownerLiveViewUrl()).toBeNull();
 });
 
-test("D568 direct router transfers an active read checkpoint with a sealed attached browser instead of releasing the writer", async () => {
+test("direct router transfers an active read checkpoint with a sealed attached browser instead of releasing the writer", async () => {
   const activeRead = {
     resource: "read", phase: "active", reservationToken: "reservation-private", recordedAt: "2026-09-03T00:00:00.000Z", opaqueExecutionRef: "sealed-run-private",
   } as ConnectedWebAccountBinding["executionCheckpoint"];
@@ -245,7 +253,7 @@ test("D568 direct router transfers an active read checkpoint with a sealed attac
   await lease.close();
 });
 
-test("D568 direct router fails closed when a hosted writer has no terminal proof", async () => {
+test("direct router fails closed when a hosted writer has no terminal proof", async () => {
   const { router, calls } = makeRouter({ hostedLifecycle: { hasTerminalProof: async () => false } });
   const error = await router.acquire(admission).then(() => null, (cause: unknown) => cause);
   expect(error).toMatchObject({ code: "hosted_still_active", message: "direct browser control unavailable" });
@@ -254,7 +262,7 @@ test("D568 direct router fails closed when a hosted writer has no terminal proof
   expect(calls.stopped).toEqual([]);
 });
 
-test("D568 direct router never opens a direct lease for an external-effect operation", async () => {
+test("direct router never opens a direct lease for an external-effect operation", async () => {
   const context = makeRouter();
   context.setOperation(operation({
     actionOperationId: "77777777-7777-4777-8777-777777777777",
@@ -267,7 +275,7 @@ test("D568 direct router never opens a direct lease for an external-effect opera
   expect(context.calls.rotated).toEqual([]);
 });
 
-test("D568 direct router CAS-fences a hosted/checking handoff after provider start and cleans up the exact new browser", async () => {
+test("direct router CAS-fences a hosted/checking handoff after provider start and cleans up the exact new browser", async () => {
   const { router, calls, setOperation } = makeRouter({
     provider: {
       startBrowser: async (input) => {
@@ -288,7 +296,7 @@ test("D568 direct router CAS-fences a hosted/checking handoff after provider sta
   expect(calls.stopped).toEqual(["browser-private-id"]);
 });
 
-test("D568 direct router stops its newly created browser when initial navigation fails", async () => {
+test("direct router stops its newly created browser when initial navigation fails", async () => {
   const { router, calls } = makeRouter({ navigateSavedProfileBrowser: async () => { throw new Error("navigation failed"); } });
   const failed = await router.acquire({
     ownerUserId: "owner-1", accountId: "account-1", operationId: "operation-1", expectedControlEpoch: 4, source: "saved_profile",
@@ -300,7 +308,7 @@ test("D568 direct router stops its newly created browser when initial navigation
   expect(calls.rotated).toEqual([]);
 });
 
-test("D568 direct router rejects ambiguous hosted-browser attachment without choosing or stopping an unproven browser", async () => {
+test("direct router rejects ambiguous hosted-browser attachment without choosing or stopping an unproven browser", async () => {
   const { router, calls } = makeRouter({
     provider: {
       startBrowser: async () => ({ kind: "failure", code: "network_error" }),
@@ -323,7 +331,7 @@ test("D568 direct router rejects ambiguous hosted-browser attachment without cho
   expect(calls.stopped).toEqual([]);
 });
 
-test("D568 direct router re-reads owner account and operation fences before every command, then releases exact resources", async () => {
+test("direct router re-reads owner account and operation fences before every command, then releases exact resources", async () => {
   const { router, calls, setOperation } = makeRouter();
   const lease = await router.acquire(admission);
   setOperation(operation({ driver: "human", controlEpoch: 6 }));
@@ -334,7 +342,7 @@ test("D568 direct router re-reads owner account and operation fences before ever
   expect(calls.released).toEqual(["/run/nautilo/op-1"]);
 });
 
-test("D568 direct router prevents navigation outside the durable account origin and observes the destination after an allowed navigation", async () => {
+test("direct router prevents navigation outside the durable account origin and observes the destination after an allowed navigation", async () => {
   const { router, calls } = makeRouter();
   const lease = await router.acquire(admission);
   await lease.invoke({ toolName: "browser_snapshot", args: {} });
@@ -355,7 +363,7 @@ test("D568 direct router prevents navigation outside the durable account origin 
   await secondLease.close();
 });
 
-test("D568 direct mutations require one fresh snapshot and never manufacture replay authority", async () => {
+test("direct mutations require one fresh snapshot and never manufacture replay authority", async () => {
   const { router, calls } = makeRouter();
   const lease = await router.acquire(admission);
   const stale = await lease.invoke({ toolName: "browser_click", args: { ref: "@e1" } })
@@ -371,6 +379,60 @@ test("D568 direct mutations require one fresh snapshot and never manufacture rep
   expect(calls.invoked).toHaveLength(2);
   expect(calls.stopped).toEqual([]);
   await lease.close();
+});
+
+test("decision mutations refresh and consume the exact server-owned observation once", async () => {
+  const { router, calls } = makeRouter();
+  const lease = await router.acquire(admission);
+  const observation = await lease.observeDecision();
+  expect(observation.snapshot).toContain("Continue");
+  expect(observation.pageUrl).toBe(`${ORIGIN}/page`);
+  await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, observation.observationId);
+  expect(calls.invoked).toHaveLength(1);
+  const replay = await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, observation.observationId)
+    .then(() => null, (error: unknown) => error);
+  expect(replay).toMatchObject({ code: "observation_stale" });
+  expect(calls.invoked).toHaveLength(1);
+  await lease.close();
+});
+
+test("ordinary commands and failed re-observation invalidate saved decision authority", async () => {
+  const first = makeRouter();
+  const lease = await first.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  await lease.invoke({ toolName: "browser_snapshot", args: {} });
+  expect(await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, observation.observationId)
+    .then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  const next = await lease.observeDecision();
+  first.setDecisionSnapshot("- button Changed [ref=e1]");
+  expect(await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, next.observationId)
+    .then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(first.calls.invoked).toHaveLength(1);
+  await lease.close();
+
+  const second = makeRouter();
+  const otherLease = await second.router.acquire(admission);
+  const old = await otherLease.observeDecision();
+  second.setDecisionFailure(true);
+  expect(await otherLease.observeDecision().then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_invalid" });
+  second.setDecisionFailure(false);
+  expect(await otherLease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, old.observationId)
+    .then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(await otherLease.invoke({ toolName: "browser_click", args: { ref: "@e1" } })
+    .then(() => null, (error: unknown) => error)).toMatchObject({ code: "fresh_snapshot_required" });
+  expect(second.calls.invoked).toHaveLength(0);
+  await otherLease.close();
+
+  const third = makeRouter();
+  const refreshLease = await third.router.acquire(admission);
+  const refreshObservation = await refreshLease.observeDecision();
+  third.setDecisionFailure(true);
+  expect(await refreshLease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, refreshObservation.observationId)
+    .then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_invalid" });
+  expect(await refreshLease.invoke({ toolName: "browser_click", args: { ref: "@e1" } })
+    .then(() => null, (error: unknown) => error)).toMatchObject({ code: "fresh_snapshot_required" });
+  expect(third.calls.invoked).toHaveLength(0);
+  await refreshLease.close();
 });
 
 test("a provider Stop retry closes the same browser across recovery epochs without reopening input", async () => {
@@ -394,7 +456,7 @@ test("a provider Stop retry closes the same browser across recovery epochs witho
   expect(starts).toBe(1);
 });
 
-test("D568 direct router reports exact-provider and private-directory cleanup truth independently", async () => {
+test("direct router reports exact-provider and private-directory cleanup truth independently", async () => {
   const { router, calls } = makeRouter({
     provider: {
       startBrowser: async () => ({
@@ -418,7 +480,7 @@ test("D568 direct router reports exact-provider and private-directory cleanup tr
   expect(calls.stopped).toEqual(["browser-private-id"]);
 });
 
-test("D568 direct router retries unresolved directory cleanup against its rotated recovery fence", async () => {
+test("direct router retries unresolved directory cleanup against its rotated recovery fence", async () => {
   let releases = 0;
   const { router, calls } = makeRouter({
     directories: {
@@ -449,7 +511,7 @@ for (const [name, stopResult] of [
   ["still active", { ...stoppedBrowser("browser-private-id"), status: "active" as const }],
   ["wrong browser", stoppedBrowser("different-browser-private-id")],
 ] as const) {
-  test(`D568 direct router keeps recovery fenced when provider stop proof is ${name}`, async () => {
+  test(`direct router keeps recovery fenced when provider stop proof is ${name}`, async () => {
     const { router, calls } = makeRouter({
       provider: {
         startBrowser: async () => ({
@@ -470,7 +532,7 @@ for (const [name, stopResult] of [
   });
 }
 
-test("D568 direct router turns a post-rotation discovery failure into a new fenced recovery epoch", async () => {
+test("direct router turns a post-rotation discovery failure into a new fenced recovery epoch", async () => {
   const { router, calls } = makeRouter({
     resolveCdpWebSocketUrl: async () => { throw new Error(`failed ${CDP_DISCOVERY}`); },
   });

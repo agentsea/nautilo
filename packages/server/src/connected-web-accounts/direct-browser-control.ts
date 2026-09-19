@@ -4,11 +4,11 @@ import {
 } from "./cdp-navigator";
 
 /**
- * The small v0.35.2 semantic surface this foundation can bind to a Browser Use
- * managed browser.  This is deliberately not the upstream `all` profile and
- * not a model-facing tool registration.  Routing, origin enforcement, file
- * transfer, tabs/frames/dialogs, coordinate gestures, and screenshots are
- * separate D568 work before this can be wired into a Genie.
+ * Semantic commands supported by the pinned agent-browser transport for a
+ * Browser Use managed browser. The router and operation runtime enforce
+ * origin and actor authority; this is not a model-facing tool registration.
+ * File transfer, tabs/frames/dialogs, coordinate gestures and screenshots are
+ * outside this direct-control surface.
  */
 export const DIRECT_CONNECTED_WEB_BROWSER_TOOLS = [
   "browser_snapshot",
@@ -24,6 +24,7 @@ export const DIRECT_CONNECTED_WEB_BROWSER_TOOLS = [
   "browser_drag",
   "browser_select",
   "browser_set_checked",
+  "browser_scroll",
   "browser_scroll_into_view",
   "browser_wait",
   "browser_read",
@@ -62,6 +63,11 @@ export interface DirectBrowserControlCommandResult {
   readonly truncated: boolean;
 }
 
+export interface DirectBrowserControlObservation {
+  readonly snapshot: string;
+  readonly refs: Readonly<Record<string, { readonly role: string; readonly name: string }>>;
+}
+
 export interface DirectBrowserControlProvider {
   /**
    * Browser Use is authoritative for lifecycle. Closing an attached CDP client
@@ -94,7 +100,16 @@ export interface DirectBrowserControlHarness {
     readonly socketDirectory: string;
     /** Caller-provisioned operation-private HOME/state directory. */
     readonly homeDirectory: string;
+    readonly signal?: AbortSignal;
   }): Promise<DirectBrowserControlCommandResult>;
+  /** Private structured snapshot path used by the server decision loop. */
+  observe?(input: {
+    readonly session: string;
+    readonly environment: Readonly<{ AGENT_BROWSER_CDP: string }>;
+    readonly socketDirectory: string;
+    readonly homeDirectory: string;
+    readonly signal?: AbortSignal;
+  }): Promise<DirectBrowserControlObservation>;
   /** Server-only bootstrap. The CDP target id never reaches a model result. */
   bindPinnedTarget?(input: {
     readonly targetId: string;
@@ -139,6 +154,7 @@ export class DirectBrowserControlError extends Error {
     readonly code: "stale_control" | "unsupported_tool" | "unavailable" | "closed",
     /** Internal cleanup proof for bootstrap failures; never projected. */
     readonly cleanup?: DirectBrowserControlCleanupResult,
+    readonly detail?: string,
   ) {
     super("direct browser control unavailable");
     this.name = "DirectBrowserControlError";
@@ -204,7 +220,7 @@ export class DirectBrowserControlSession {
     }
   }
 
-  async invoke(command: DirectBrowserControlCommand): Promise<DirectBrowserControlCommandResult> {
+  async invoke(command: DirectBrowserControlCommand, signal?: AbortSignal): Promise<DirectBrowserControlCommandResult> {
     if (this.closed) throw new DirectBrowserControlError("closed");
     if (!isCurrentTool(command.toolName)) throw new DirectBrowserControlError("unsupported_tool");
     if (this.commandInFlight) throw new DirectBrowserControlError("stale_control");
@@ -228,16 +244,55 @@ export class DirectBrowserControlSession {
         environment: { AGENT_BROWSER_CDP: this.websocketUrl },
         socketDirectory: this.socketDirectory,
         homeDirectory: this.homeDirectory,
+        ...(signal === undefined ? {} : { signal }),
       });
       await this.assertPinnedOrigin();
       return result;
     } catch (error) {
       await this.close();
       if (error instanceof DirectBrowserControlError) throw error;
-      throw new DirectBrowserControlError("unavailable");
+      const detail = typeof error === "object" && error !== null && "detail" in error && typeof error.detail === "string"
+        ? error.detail : undefined;
+      throw new DirectBrowserControlError("unavailable", undefined, detail);
     } finally {
       this.commandInFlight = false;
     }
+  }
+
+
+  async observe(signal?: AbortSignal): Promise<{ readonly observation: DirectBrowserControlObservation; readonly pageUrl: string }> {
+    if (this.closed) throw new DirectBrowserControlError("closed");
+    if (this.commandInFlight || !await this.deps.isCurrentControlEpoch(this.identity)) {
+      throw new DirectBrowserControlError("stale_control");
+    }
+    this.commandInFlight = true;
+    try {
+      await this.assertPinnedOrigin();
+      if (!this.deps.harness.observe) throw new DirectBrowserControlError("unavailable");
+      const observation = await this.deps.harness.observe({
+        session: this.session,
+        environment: { AGENT_BROWSER_CDP: this.websocketUrl },
+        socketDirectory: this.socketDirectory,
+        homeDirectory: this.homeDirectory,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      const pageUrl = await this.readPinnedUrl();
+      return { observation, pageUrl };
+    } finally {
+      this.commandInFlight = false;
+    }
+  }
+
+  private async readPinnedUrl(): Promise<string> {
+    if (!this.deps.harness.readPinnedUrl) throw new DirectBrowserControlError("unavailable");
+    const pageUrl = await this.deps.harness.readPinnedUrl({
+      session: this.session,
+      environment: { AGENT_BROWSER_CDP: this.websocketUrl },
+      socketDirectory: this.socketDirectory,
+      homeDirectory: this.homeDirectory,
+    });
+    if (new URL(pageUrl).origin !== this.allowedOrigin) throw new DirectBrowserControlError("stale_control");
+    return new URL(pageUrl).href;
   }
 
   /** Concurrent closes share an attempt; unresolved cleanup remains retryable. */

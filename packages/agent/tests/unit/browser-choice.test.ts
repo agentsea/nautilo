@@ -78,6 +78,27 @@ describe("browser choice screening", () => {
     expect(selected.selectedId).toBe("defer_to_genie");
   });
 
+  test("keeps completion and visual handoffs in the final decision across multiple screening rounds", async () => {
+    const base = input(40);
+    const request = { ...base, choices: [...base.choices,
+      { id: "completion_ready", description: "Verify complete goal" },
+      { id: "needs_visual_evidence", description: "Inspect pixels" }] };
+    let final = false;
+    const selected = await chooseBrowserAction(request, 5, async (candidate) => {
+      expect(candidate.choices.length).toBeLessThanOrEqual(5);
+      if (candidate.choices.at(-1)?.id === "none_in_group") {
+        expect(candidate.choices.some(({ id }) => id === "needs_visual_evidence")).toBe(false);
+        return result(candidate.choices[0]!.id);
+      }
+      final = true;
+      expect(candidate.choices.map(({ id }) => id)).toEqual(["action_0", "reobserve", "defer_to_genie", "completion_ready", "needs_visual_evidence"]);
+      return result("needs_visual_evidence");
+    });
+    expect(final).toBe(true);
+    expect(selected.screeningRounds).toBeGreaterThan(1);
+    expect(selected.selectedId).toBe("needs_visual_evidence");
+  });
+
   test("does not present partial known costs as the total", async () => {
     let calls = 0;
     const selected = await chooseBrowserAction(input(6), 4, async (candidate) => {

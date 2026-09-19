@@ -46,12 +46,12 @@ export function createBrowserSnapshotTool(context?: BrowserSnapshotContext) {
       "historical result from this conversation, without touching the browser. Historical refs are stale and " +
       "must never be used to act. Missing retained history returns an explicit error.\n\n" +
       (canDelegate ?
-      `PREFERRED ROUTE FOR ROUTINE ACTIONS: ${model.displayName} is available now. Favor delegation ` +
+      `PREFERRED ROUTE FOR ROUTINE ACTIONS: ${model.displayName} is available now. After the initial observation, default to delegation ` +
       "over manually issuing routine clicks, typing and key presses. Hand off a complete coherent " +
-      "segment with decisionPlan, not a separate plan for each click. When similar pickers reuse " +
-      "ambiguous dialog or field labels, finish one semantic target (including typing and selecting), " +
-      "verify it, then delegate the next target with only its needed values. State the desired " +
-      "outcome, relevant constraints, and named exact typing values together; omit actions for ordinary " +
+      "outcome with decisionPlan through its selections and confirmation, not a separate plan for each " +
+      "field or click. The model follows successive dialogs using current state and action history. " +
+      "Split only for an actual ambiguity or missing information. State the desired " +
+      "outcome, every user constraint, and named exact typing values together; omit actions for ordinary " +
       "click discovery. For keyboard or other controls, include click_observed alongside exact reusable actions, e.g. {kind:\"press\",key:\"ArrowRight\"} and {kind:\"press\",key:\"Enter\"}. Supply the keys once, not one delegation per keypress. Supported templates also cover scrolling, native selection, check/uncheck, hover, double-click, drag and navigation. You need not predict field labels: values are matched to fresh targets. The decision " +
       "model can keep choosing from fresh observations across menus and page changes; the runtime " +
       "observes and checks every action without waking you for routine progress. For example, opening " +

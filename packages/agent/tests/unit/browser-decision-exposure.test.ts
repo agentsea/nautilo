@@ -92,7 +92,7 @@ describe("live browser decision exposure", () => {
       const enabled = bind();
       const snapshot = enabled.find((tool) => tool.name === "browser_snapshot")!;
       expect(snapshot.description).toMatch(/Jev.*available now/);
-      expect(snapshot.description).toContain("Favor delegation");
+      expect(snapshot.description).toContain("default to delegation");
       expect(buildSystemPrompt({ assistantName: "Test", tools: [snapshot], isGuest: false })).toContain("runtime owns the observe/act loop");
       expect(snapshot.schema).toBeDefined();
       expect(JSON.stringify(z.toJSONSchema(snapshot.schema as z.ZodObject))).toContain('"decisionPlan"');
@@ -120,6 +120,7 @@ describe("live browser decision exposure", () => {
       const ordinaryPrompt = buildSystemPrompt({ assistantName: "Test", tools: [...disabled], isGuest: false });
       expect(ordinaryPrompt).toContain("browser_snapshot / browser_click / browser_type / browser_press");
       expect(ordinaryPrompt).not.toContain("routine browser decision model is available");
+      expect(ordinaryPrompt).not.toContain("decisionPlan");
     }
   });
 });

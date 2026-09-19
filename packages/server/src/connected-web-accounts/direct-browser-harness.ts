@@ -6,6 +6,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   DirectBrowserControlCommandResult,
+  DirectBrowserControlObservation,
   DirectBrowserControlHarness,
 } from "./direct-browser-control";
 
@@ -31,7 +32,7 @@ interface AgentBrowserManifest {
 }
 
 export class DirectBrowserHarnessError extends Error {
-  constructor(readonly code: "unavailable" | "timeout" | "failed") {
+  constructor(readonly code: "unavailable" | "timeout" | "failed", readonly detail?: string) {
     super("direct browser harness unavailable");
     this.name = "DirectBrowserHarnessError";
   }
@@ -238,8 +239,7 @@ async function readBounded(stream: ReadableStream<Uint8Array>, maxBytes: number)
 }
 
 function sanitizeSuccessfulOutput(output: string, cdpUrl: string): string {
-  const redacted = output
-    .replaceAll(cdpUrl, "[redacted]")
+  const redacted = (cdpUrl ? output.replaceAll(cdpUrl, "[redacted]") : output)
     .replace(/wss:\/\/[^\s"'<>]+/gu, "[redacted]");
   const visible = stripInvisibleUnicode(redacted).text;
   return [...visible]
@@ -273,7 +273,7 @@ function defaultSpawn(input: {
  * A production-facing, dependency-injected adapter for one agent-browser CLI
  * command attached to a Browser Use browser. It is intentionally only a
  * harness: direct-operation authority, origin checks, and model routing stay
- * in their dedicated D568 layers.
+ * in the router and operation runtime.
  */
 export function createServerDirectBrowserHarness(
   dependencies: DirectBrowserHarnessDependencies = {},
@@ -291,16 +291,26 @@ export function createServerDirectBrowserHarness(
     readonly argv: readonly string[];
     readonly environment: Readonly<Record<string, string>>;
     readonly timeoutMs: number;
+    readonly signal?: AbortSignal;
   }): Promise<BoundedStream> => {
     const executable = await resolveBinary().catch(() => { throw new DirectBrowserHarnessError("unavailable"); });
     let child: DirectBrowserHarnessProcess;
     try {
+      if (input.signal?.aborted) throw new DirectBrowserHarnessError("failed");
       child = (dependencies.spawn ?? defaultSpawn)({
         command: [executable, ...input.argv],
         environment: input.environment,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof DirectBrowserHarnessError) throw error;
       throw new DirectBrowserHarnessError("unavailable");
+    }
+    const abort = () => {
+      try { child.kill(); } catch { /* process is already gone */ }
+    };
+    input.signal?.addEventListener("abort", abort, { once: true });
+    if (input.signal?.aborted) {
+      try { child.kill(); } catch { /* process is already gone */ }
     }
     let timedOut = false;
     let resolveTimeout: ((value: { readonly kind: "timed_out" }) => void) | null = null;
@@ -323,8 +333,11 @@ export function createServerDirectBrowserHarness(
       }
       const { stdout, stderr, exitCode } = result;
       if (exitCode !== 0) {
-        void stderr;
-        throw new DirectBrowserHarnessError("failed");
+        const detail = sanitizeSuccessfulOutput(stderr.text || stdout.text, input.environment["AGENT_BROWSER_CDP"] ?? "")
+          .replaceAll(input.environment["AGENT_BROWSER_SOCKET_DIR"] ?? "\0", "[redacted]")
+          .replaceAll(input.environment["HOME"] ?? "\0", "[redacted]")
+          .replaceAll(executable, "[redacted]");
+        throw new DirectBrowserHarnessError("failed", detail || undefined);
       }
       return stdout;
     } catch (error) {
@@ -332,11 +345,24 @@ export function createServerDirectBrowserHarness(
       throw new DirectBrowserHarnessError(timedOut ? "timeout" : "failed");
     } finally {
       clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", abort);
     }
   };
 
   return {
-    buildArgv: ({ toolName, args, session }) => agentBrowserCdpArgv(toolName, args as Record<string, unknown>, session),
+    buildArgv: ({ toolName, args, session }) => {
+      if (toolName === "browser_scroll") {
+        const direction = args["direction"];
+        const amount = args["amount"];
+        if (!["up", "down", "left", "right"].includes(direction as string)
+          || (amount !== undefined && (typeof amount !== "number" || !Number.isFinite(amount)))) {
+          throw new DirectBrowserHarnessError("failed");
+        }
+        return ["--session", session, "scroll", direction as string,
+          ...(amount === undefined ? [] : [String(amount)])];
+      }
+      return agentBrowserCdpArgv(toolName, args as Record<string, unknown>, session);
+    },
     async invoke(input): Promise<DirectBrowserControlCommandResult> {
       const session = sessionFromArgv(input.argv);
       const platform = dependencies.platform ?? process.platform;
@@ -359,8 +385,52 @@ export function createServerDirectBrowserHarness(
           pinTab: true,
         }),
         timeoutMs: effectiveCommandTimeoutMs,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
       return { text: sanitizeSuccessfulOutput(stdout.text, input.environment.AGENT_BROWSER_CDP), truncated: stdout.truncated };
+    },
+    async observe(input): Promise<DirectBrowserControlObservation> {
+      if (!validCdpCapability(input.environment.AGENT_BROWSER_CDP)
+        || !validPrivateDirectory(input.socketDirectory)
+        || !validPrivateDirectory(input.homeDirectory)
+        || !/^[a-z0-9](?:[a-z0-9_-]{0,119})$/iu.test(input.session)
+        || !validSocketPathBudget(dependencies.platform ?? process.platform, input.socketDirectory, input.session)) {
+        throw new DirectBrowserHarnessError("unavailable");
+      }
+      const output = await run({
+        argv: ["--session", input.session, "--json", "snapshot"],
+        environment: childEnvironment({ cdpUrl: input.environment.AGENT_BROWSER_CDP,
+          socketDirectory: input.socketDirectory, homeDirectory: input.homeDirectory,
+          contentBoundaries: true, pinTab: true }),
+        timeoutMs: commandTimeoutMs,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+      if (output.truncated) throw new DirectBrowserHarnessError("failed", "browser observation exceeded the safe output boundary");
+      try {
+        const envelope = JSON.parse(output.text) as unknown;
+        const record = (value: unknown): Record<string, unknown> | null =>
+          typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+        const outer = record(envelope);
+        const data = outer?.["success"] === true ? record(outer["data"]) : null;
+        const rawRefs = record(data?.["refs"]);
+        if (typeof data?.["snapshot"] !== "string" || !rawRefs) throw new Error("invalid");
+        const refs: Record<string, { role: string; name: string }> = {};
+        for (const [key, value] of Object.entries(rawRefs).sort(([a], [b]) => a.localeCompare(b))) {
+          const ref = record(value);
+          if (!/^e\d+$/u.test(key) || typeof ref?.["role"] !== "string" || !ref["role"].trim()
+            || typeof ref["name"] !== "string") throw new Error("invalid");
+          refs[key] = { role: ref["role"], name: ref["name"] };
+        }
+        const sanitized = sanitizeSuccessfulOutput(data["snapshot"], input.environment.AGENT_BROWSER_CDP);
+        const safeRefs: Record<string, { role: string; name: string }> = {};
+        for (const [key, ref] of Object.entries(refs)) safeRefs[key] = {
+          role: sanitizeSuccessfulOutput(ref.role, input.environment.AGENT_BROWSER_CDP),
+          name: sanitizeSuccessfulOutput(ref.name, input.environment.AGENT_BROWSER_CDP),
+        };
+        return { snapshot: sanitized, refs: safeRefs };
+      } catch {
+        throw new DirectBrowserHarnessError("failed", "browser observation was invalid");
+      }
     },
     async bindPinnedTarget(input): Promise<void> {
       if (!validCdpCapability(input.environment.AGENT_BROWSER_CDP)

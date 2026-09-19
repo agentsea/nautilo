@@ -13,6 +13,12 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Routine Jev delegation for connected websites already under direct Genie
+  control through Browser Use. It reuses the browser decision loop, verifies
+  fresh observations against the exact operation and control epoch, and returns
+  uncertain effects to the Genie without replay. Hosted and ordinary control
+  remain available when no eligible decision model is runnable.
+
 - Automatic Jev browser decisions through OpenRouter. Genies can delegate routine
   clicks, exact text, keyboard input and other existing browser controls using
   fresh observations, with normal permissions and usage accounting. Larger
@@ -32,6 +38,11 @@ store update, or Desktop/Host installation.
   anyone else's settings or chat notifications.
 
 ### Fixed
+
+- Routine browser delegation now preserves complete goals and exact error evidence,
+  distinguishes completion and visual handoffs, and detects repeated action cycles
+  without treating different actions on unchanged text as automatic failures.
+  The shared behavior applies to embedded and connected direct browser control.
 
 - Desktop shell commands honor replacement folder grants without being blocked by
   superseded revocation history. Narrower restrictions and protected paths remain

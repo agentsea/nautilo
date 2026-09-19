@@ -5,7 +5,8 @@ import type {
   BrowserUseResult,
 } from "../browser-use/browser-use-cloud";
 import { warn } from "@nautilo/logger";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { BrowserDecisionObservation } from "@nautilo/agent";
 import type { ConnectedWebOperationProviderReferences } from "@nautilo/db";
 import {
   createDirectBrowserControlSession,
@@ -134,9 +135,10 @@ export interface DirectBrowserRouterCommandResult {
 
 export class DirectBrowserRouterError extends Error {
   constructor(
-    readonly code: "unavailable" | "stale_control" | "hosted_still_active" | "origin_not_allowed" | "fresh_snapshot_required",
+    readonly code: "unavailable" | "stale_control" | "hosted_still_active" | "origin_not_allowed" | "fresh_snapshot_required" | "observation_stale" | "cancelled" | "outcome_unknown" | "observation_invalid",
     /** Server-only cleanup truth for a post-fence admission failure. */
     readonly cleanup?: DirectBrowserRouterCleanupResult,
+    readonly detail?: string,
   ) {
     super("direct browser control unavailable");
     this.name = "DirectBrowserRouterError";
@@ -299,6 +301,8 @@ export class DirectBrowserRouterLease {
   private closed = false;
   private cleanup: Promise<DirectBrowserRouterCleanupResult> | null = null;
   private hasFreshSnapshot = false;
+  private readonly decisionSessionId = randomUUID();
+  private decisionObservation: { readonly id: string; readonly fingerprint: string } | null = null;
 
   constructor(
     private readonly admission: DirectBrowserRouterAdmission,
@@ -350,6 +354,7 @@ export class DirectBrowserRouterLease {
 
   async invoke(command: DirectBrowserControlCommand): Promise<DirectBrowserControlCommandResult> {
     if (this.closed) throw new DirectBrowserRouterError("stale_control");
+    this.decisionObservation = null;
     const mutating = command.toolName === "browser_click"
       || command.toolName === "browser_type"
       || command.toolName === "browser_press"
@@ -362,6 +367,7 @@ export class DirectBrowserRouterLease {
       || command.toolName === "browser_drag"
       || command.toolName === "browser_select"
       || command.toolName === "browser_set_checked"
+      || command.toolName === "browser_scroll"
       || command.toolName === "browser_scroll_into_view";
     if (mutating && !this.hasFreshSnapshot) {
       throw new DirectBrowserRouterError("fresh_snapshot_required");
@@ -384,6 +390,85 @@ export class DirectBrowserRouterLease {
         throw new DirectBrowserRouterError("stale_control");
       }
       throw new DirectBrowserRouterError("unavailable");
+    }
+  }
+
+  async observeDecision(signal?: AbortSignal): Promise<BrowserDecisionObservation> {
+    if (this.closed) throw new DirectBrowserRouterError("stale_control");
+    this.decisionObservation = null;
+    this.hasFreshSnapshot = false;
+    if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
+    try {
+      await this.currentBinding();
+      const result = await this.control.observe(signal);
+      if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
+      const observation: BrowserDecisionObservation = {
+        version: 1,
+        snapshot: result.observation.snapshot,
+        refs: result.observation.refs,
+        pageUrl: result.pageUrl,
+        browserSessionId: this.decisionSessionId,
+        observationId: randomUUID(),
+      };
+      const fingerprint = createHash("sha256").update(JSON.stringify({ snapshot: observation.snapshot,
+        refs: observation.refs, pageUrl: observation.pageUrl })).digest("hex");
+      this.decisionObservation = { id: observation.observationId, fingerprint };
+      this.hasFreshSnapshot = true;
+      return observation;
+    } catch (error) {
+      if (error instanceof DirectBrowserRouterError) throw error;
+      if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
+      if (error instanceof DirectBrowserControlError && error.code === "stale_control") {
+        await this.close();
+        throw new DirectBrowserRouterError("stale_control", undefined, error.detail);
+      }
+      const detail = typeof error === "object" && error !== null && "detail" in error && typeof error.detail === "string"
+        ? error.detail : undefined;
+      throw new DirectBrowserRouterError("observation_invalid", undefined, detail);
+    }
+  }
+
+  async invokeDecision(command: DirectBrowserControlCommand, observationId: string, signal?: AbortSignal): Promise<DirectBrowserControlCommandResult> {
+    if (this.closed) throw new DirectBrowserRouterError("stale_control");
+    if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
+    if (!this.decisionObservation || this.decisionObservation.id !== observationId) {
+      throw new DirectBrowserRouterError("observation_stale");
+    }
+    this.hasFreshSnapshot = false;
+    try {
+      await this.currentBinding();
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
+    const refreshed = await this.control.observe(signal).catch((error: unknown) => {
+      if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
+      if (error instanceof DirectBrowserControlError && error.code === "stale_control") {
+        throw new DirectBrowserRouterError("stale_control", undefined, error.detail);
+      }
+      const detail = typeof error === "object" && error !== null && "detail" in error && typeof error.detail === "string"
+        ? error.detail : undefined;
+      throw new DirectBrowserRouterError("observation_invalid", undefined, detail);
+    });
+    const fingerprint = createHash("sha256").update(JSON.stringify({ snapshot: refreshed.observation.snapshot,
+      refs: refreshed.observation.refs, pageUrl: refreshed.pageUrl })).digest("hex");
+    if (fingerprint !== this.decisionObservation.fingerprint) {
+      this.decisionObservation = null;
+      this.hasFreshSnapshot = false;
+      throw new DirectBrowserRouterError("observation_stale");
+    }
+    this.decisionObservation = null;
+    this.hasFreshSnapshot = false;
+    if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
+    try {
+      await this.currentBinding();
+      if (!requestedOpenStaysAtOrigin(command, this.bindingOrigin)) throw new DirectBrowserRouterError("origin_not_allowed");
+      return await this.control.invoke(command, signal);
+    } catch (error) {
+      await this.close();
+      if (error instanceof DirectBrowserRouterError) throw error;
+      const detail = error instanceof DirectBrowserControlError ? error.detail : undefined;
+      throw new DirectBrowserRouterError("outcome_unknown", undefined, detail);
     }
   }
 
