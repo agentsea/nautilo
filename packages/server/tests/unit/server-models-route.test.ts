@@ -560,6 +560,38 @@ test("embedding GET reports actual runtime selection and pending state after a f
   expect(refreshCount).toBe(1);
 });
 
+test("embedding GET marks OpenRouter routes available through Nautilo Gateway", async () => {
+  const previousKey = process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
+  const previousBase = process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
+  const previousOpenRouter = process.env["OPENROUTER_API_KEY"];
+  try {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
+    delete process.env["OPENROUTER_API_KEY"];
+    const call = routeHarness({
+      getCapabilities: async () => ["read_server_settings"],
+      getDb: () => ({}) as never,
+      getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+      getConfig: async () => ({ ...modelConfig, embeddingModel: null }),
+      refreshConfigCache: async () => null,
+      getActiveEmbeddingSelection: () => null,
+      getEffectiveEmbeddingModel: () => "openrouter:qwen/qwen3-embedding-8b",
+    });
+    const result = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+    const body = result.body as { embeddingModels: { id: string; available: boolean }[] };
+    expect(body.embeddingModels
+      .filter((entry) => entry.id.startsWith("openrouter:"))
+      .every((entry) => entry.available)).toBe(true);
+  } finally {
+    if (previousKey === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
+    else process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = previousKey;
+    if (previousBase === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
+    else process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = previousBase;
+    if (previousOpenRouter === undefined) delete process.env["OPENROUTER_API_KEY"];
+    else process.env["OPENROUTER_API_KEY"] = previousOpenRouter;
+  }
+});
+
 test("media selections distinguish inheritance, automatic, supported, and unavailable values", () => {
   expect(parseUpdateBodyForTests({ imageModel: null }, listMediaModels)).toEqual({
     ok: true, patch: { imageModel: null },

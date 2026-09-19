@@ -12,12 +12,14 @@ const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_OPENAI_KEY = process.env["OPENAI_API_KEY"];
 const ORIGINAL_OPENROUTER_KEY = process.env["OPENROUTER_API_KEY"];
 const ORIGINAL_VENICE_KEY = process.env["VENICE_API_KEY"];
+const ORIGINAL_MANAGED_GATEWAY_KEY = process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
+const ORIGINAL_MANAGED_GATEWAY_BASE_URL = process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
 type ServerModelConfigRow = NonNullable<ReturnType<typeof db.getCachedServerModelConfigRow>>;
 
 let serverEmbeddingModel: string | null | undefined;
 let serverConfigSpy: Mock<typeof db.getCachedServerModelConfigRow>;
 
-function restoreEnv(name: "OPENAI_API_KEY" | "OPENROUTER_API_KEY" | "VENICE_API_KEY", value: string | undefined) {
+function restoreEnv(name: "OPENAI_API_KEY" | "OPENROUTER_API_KEY" | "VENICE_API_KEY" | "NAUTILO_MANAGED_GATEWAY_API_KEY" | "NAUTILO_MANAGED_GATEWAY_BASE_URL", value: string | undefined) {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
@@ -45,6 +47,8 @@ describe("memory embedding providers", () => {
     delete process.env["OPENAI_API_KEY"];
     delete process.env["OPENROUTER_API_KEY"];
     delete process.env["VENICE_API_KEY"];
+    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
+    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     setConfigOverrides({
       nautilo_embedding_model: "text-embedding-3-small",
       nautilo_embedding_dims: 3,
@@ -61,6 +65,8 @@ describe("memory embedding providers", () => {
     restoreEnv("OPENAI_API_KEY", ORIGINAL_OPENAI_KEY);
     restoreEnv("OPENROUTER_API_KEY", ORIGINAL_OPENROUTER_KEY);
     restoreEnv("VENICE_API_KEY", ORIGINAL_VENICE_KEY);
+    restoreEnv("NAUTILO_MANAGED_GATEWAY_API_KEY", ORIGINAL_MANAGED_GATEWAY_KEY);
+    restoreEnv("NAUTILO_MANAGED_GATEWAY_BASE_URL", ORIGINAL_MANAGED_GATEWAY_BASE_URL);
     serverConfigSpy.mockRestore();
     setConfigOverrides({});
   });
@@ -103,9 +109,112 @@ describe("memory embedding providers", () => {
       Authorization: "Bearer openrouter-secret",
       "Content-Type": "application/json",
     });
+    expect(request?.init?.redirect).toBeUndefined();
     expect(parseRequestBody(request?.init?.body)).toEqual({
       model: "openai/text-embedding-3-small",
       input: ["hello"],
+      dimensions: 3,
+    });
+  });
+
+  test("managed Gateway preserves existing Venice auto identity and dimensions", async () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1/";
+    process.env["OPENROUTER_API_KEY"] = "direct-openrouter-secret-must-not-be-used";
+    process.env["VENICE_API_KEY"] = "existing-venice-secret";
+    let request: { url: string; init: Parameters<typeof fetch>[1] } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: fetchInputUrl(input), init };
+      return embeddingResponse([{ index: 0, embedding: [1, 2, 3] }]);
+    }) as typeof fetch;
+
+    expect(await embedTexts(["hello"])).toEqual([[1, 2, 3]]);
+    expect(request?.url).toBe("https://api.venice.ai/api/v1/embeddings");
+    expect(request?.init?.headers).toEqual({
+      Authorization: "Bearer existing-venice-secret",
+      "Content-Type": "application/json",
+    });
+    expect(parseRequestBody(request?.init?.body)).toEqual({
+      model: "text-embedding-3-small",
+      input: ["hello"],
+      dimensions: 3,
+    });
+  });
+
+  test("managed Gateway preserves existing direct OpenRouter auto identity while replacing its transport", async () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1/";
+    process.env["OPENROUTER_API_KEY"] = "direct-openrouter-secret-must-not-be-used";
+    let request: { url: string; init: Parameters<typeof fetch>[1] } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: fetchInputUrl(input), init };
+      return embeddingResponse([{ index: 0, embedding: [1, 2, 3] }]);
+    }) as typeof fetch;
+
+    expect(await embedTexts(["hello"])).toEqual([[1, 2, 3]]);
+    expect(request?.url).toBe("https://gateway.qa.example/v1/embeddings");
+    expect(request?.init?.headers).toEqual({
+      Authorization: `Bearer ngw_${"a".repeat(43)}`,
+      "Content-Type": "application/json",
+    });
+    expect(request?.init?.redirect).toBe("error");
+    expect(parseRequestBody(request?.init?.body)).toEqual({
+      model: "openai/text-embedding-3-small",
+      input: ["hello"],
+      dimensions: 3,
+    });
+  });
+
+  test("Gateway-only automatic embeddings use the existing OpenRouter model and dimensions", async () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1/";
+    setConfigOverrides({ nautilo_embedding_model: "", nautilo_embedding_dims: 1536 });
+    let request: { url: string; init: Parameters<typeof fetch>[1] } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: fetchInputUrl(input), init };
+      return embeddingResponse([{
+        index: 0,
+        embedding: Array.from({ length: 1536 }, (_, index) => index === 0 ? 1 : 0),
+      }]);
+    }) as typeof fetch;
+
+    expect(getProtectedMemoryEmbeddingConfiguration()).toEqual({
+      provider: "openrouter",
+      model: "qwen/qwen3-embedding-8b",
+      dimensions: 1536,
+    });
+    await embedTexts(["hello"]);
+    expect(request?.url).toBe("https://gateway.qa.example/v1/embeddings");
+    expect(parseRequestBody(request?.init?.body)).toEqual({
+      model: "qwen/qwen3-embedding-8b",
+      input: ["hello"],
+      dimensions: 1536,
+    });
+  });
+
+  test("present malformed managed Gateway config does not fall through to direct OpenRouter", () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["OPENROUTER_API_KEY"] = "direct-openrouter-secret-must-not-be-used";
+
+    expect(() => getProtectedMemoryEmbeddingConfiguration()).toThrow(
+      "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    );
+  });
+
+  test("malformed managed Gateway config preserves unrelated Venice and OpenAI auto routes", () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["VENICE_API_KEY"] = "existing-venice-secret";
+    expect(getProtectedMemoryEmbeddingConfiguration()).toEqual({
+      provider: "venice",
+      model: "text-embedding-3-small",
+      dimensions: 3,
+    });
+
+    delete process.env["VENICE_API_KEY"];
+    process.env["OPENAI_API_KEY"] = "existing-openai-secret";
+    expect(getProtectedMemoryEmbeddingConfiguration()).toEqual({
+      provider: "openai",
+      model: "text-embedding-3-small",
       dimensions: 3,
     });
   });

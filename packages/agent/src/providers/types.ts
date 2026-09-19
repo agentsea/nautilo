@@ -81,6 +81,10 @@ export interface CreateModelOptions extends ProviderInitOptions {
    * dies silently.
    */
   timeoutMs?: number | null;
+  /** Disable provider SDK retries when replay could create duplicate billed work. */
+  maxRetries?: number;
+  /** Reject HTTP redirects before forwarding an Authorization header elsewhere. */
+  forbidRedirects?: boolean;
   /**
    * Arbitrary pass-through fields forwarded into `ChatOpenAI.modelKwargs`.
    * Currently only honored by `createOpenAI` — other factories ignore it.

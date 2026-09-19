@@ -17,6 +17,7 @@ const PASSING_VALUES: Record<string, string> = {
   anthropic: `sk-ant-api03-${"a".repeat(50)}`,
   openai: `sk-proj-${"a".repeat(40)}`,
   openrouter: `sk-or-v1-${"a".repeat(40)}`,
+  "nautilo-gateway": `ngw_${"a".repeat(43)}`,
   gateway: "opaque-gateway-key-1234",
   google: `AIzaSy${"a".repeat(34)}`,
   fireworks: `fw_${"a".repeat(20)}`,
@@ -100,10 +101,11 @@ describe("buildSummary().hasConversion derives from cloudconvert key", () => {
 });
 
 describe("buildSummary().hasEmbeddings accepts qualified runtime paths", () => {
-  const envVars = ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "VENICE_API_KEY"] as const;
+  const envVars = ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "NAUTILO_MANAGED_GATEWAY_API_KEY", "VENICE_API_KEY"] as const;
   const saved: Record<(typeof envVars)[number], string | undefined> = {
     OPENAI_API_KEY: undefined,
     OPENROUTER_API_KEY: undefined,
+    NAUTILO_MANAGED_GATEWAY_API_KEY: undefined,
     VENICE_API_KEY: undefined,
   };
 
@@ -130,6 +132,12 @@ describe("buildSummary().hasEmbeddings accepts qualified runtime paths", () => {
 
   test("is true for Venice without OpenAI or OpenRouter", async () => {
     process.env["VENICE_API_KEY"] = "a".repeat(48);
+    const result = await check({ validate: false });
+    expect(result.summary.hasEmbeddings).toBe(true);
+  });
+
+  test("is true for Nautilo Gateway without a direct provider key", async () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
     const result = await check({ validate: false });
     expect(result.summary.hasEmbeddings).toBe(true);
   });

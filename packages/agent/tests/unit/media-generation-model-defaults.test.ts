@@ -67,6 +67,31 @@ describe("server media generation defaults", () => {
     expect(listMediaGenerationModels("music", {}).every((model) => !model.enabled)).toBe(true);
   });
 
+  test("a managed Gateway credential does not make OpenRouter media routes available", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+    };
+    const openRouterImages = listMediaGenerationModels("image", env)
+      .filter((model) => model.provider === "openrouter");
+    expect(openRouterImages.length).toBeGreaterThan(0);
+    expect(openRouterImages.every((model) => !model.enabled)).toBe(true);
+    expect(openRouterImages.every((model) =>
+      model.unavailableReason === "OpenRouter credential is not configured"
+    )).toBe(true);
+  });
+
+  test("malformed managed Gateway config does not disable direct OpenRouter media", () => {
+    const env = {
+      OPENROUTER_API_KEY: "direct-openrouter-media-key",
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+    };
+    const openRouterImages = listMediaGenerationModels("image", env)
+      .filter((model) => model.provider === "openrouter");
+    expect(openRouterImages.length).toBeGreaterThan(0);
+    expect(openRouterImages.some((model) => model.enabled)).toBe(true);
+  });
+
   test("explicit media choices are preserved; missing model is accepted without guessing model-specific defaults", () => {
     const explicit = { model: "minimax-music-v26", prompt: "A lyrical song" };
     expect(withMediaGenerationDefault("music", explicit)).toBe(explicit);

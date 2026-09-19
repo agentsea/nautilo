@@ -24,7 +24,7 @@ type LoadState =
 type RowSave = "idle" | "saving" | "saved" | { error: string };
 
 const KEY_DISPLAY_ORDER = [
-  "venice", "openrouter", "elevenlabs", "openai", "anthropic", "google",
+  "nautilo-gateway", "venice", "openrouter", "elevenlabs", "openai", "anthropic", "google",
   "fireworks", "groq",
 ];
 

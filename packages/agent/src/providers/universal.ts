@@ -26,6 +26,7 @@ import {
   getStubModelForTests,
   setStubModelForTests,
 } from "./stub-model-state";
+import { resolveOpenRouterTransport } from "./openrouter-transport";
 
 /**
  * Compose the final `venice_parameters` object that will be forwarded on the
@@ -62,7 +63,6 @@ export function __setStubModelForTests(model: ChatModel | null): void {
   setStubModelForTests(model);
 }
 
-const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_GATEWAY_LABEL = "OpenAI-compatible gateway";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -158,17 +158,24 @@ export function buildOpenRouterCreateModelOptions(
   cleanOptions: Record<string, unknown>,
   callbacks?: Callbacks,
 ): CreateModelOptions {
-  const openRouterApiKey = nonEmptyString(cleanOptions["apiKey"]) ?? nonEmptyString(process.env?.["OPENROUTER_API_KEY"]);
-  if (!openRouterApiKey) {
+  const transport = resolveOpenRouterTransport({
+    directApiKey: cleanOptions["apiKey"],
+  });
+  if (!transport) {
     throw new Error("The OpenRouter credential is not configured for this model route.");
   }
   const options: CreateModelOptions = {
     modelId,
-    apiKey: openRouterApiKey,
-    baseUrl: OPENROUTER_BASE_URL,
+    apiKey: transport.apiKey,
+    baseUrl: transport.baseUrl,
+    ...(transport.kind === "managed-gateway"
+      ? { maxRetries: 0, forbidRedirects: true }
+      : {}),
   };
   if (callbacks) options.callbacks = callbacks;
-  const headers = buildOpenRouterHeaders(cleanOptions);
+  const headers = transport.kind === "openrouter"
+    ? buildOpenRouterHeaders(cleanOptions)
+    : undefined;
   if (headers) options.headers = headers;
   const sessionId = nonEmptyString(cleanOptions["openRouterSessionId"]);
   if (sessionId && UUID_PATTERN.test(sessionId)) {
@@ -225,32 +232,36 @@ export function buildGatewayCreateModelOptions(
   };
 }
 
-export function withGatewayErrorLabel(model: ChatModel, label: string): ChatModel {
+export function withGatewayErrorLabel(
+  model: ChatModel,
+  label: string,
+  policy: Readonly<{ sanitize?: boolean }> = {},
+): ChatModel {
   const invoke: ChatModel["invoke"] = async (messages, options) => {
-      try {
-        return await model.invoke(messages, options);
-      } catch (error) {
-        throw labelGatewayError(error, label);
-      }
+    try {
+      return await model.invoke(messages, options);
+    } catch (error) {
+      throw labelGatewayError(error, label, policy.sanitize === true);
+    }
   };
   const stream: NonNullable<ChatModel["stream"]> = async function* (messages, options) {
-      if (!model.stream) {
-        throw new Error(`${label} model does not support streaming`);
+    if (!model.stream) {
+      throw new Error(`${label} model does not support streaming`);
+    }
+    try {
+      const stream = await model.stream(messages, options);
+      for await (const chunk of stream) {
+        yield chunk;
       }
-      try {
-        const stream = await model.stream(messages, options);
-        for await (const chunk of stream) {
-          yield chunk;
-        }
-      } catch (error) {
-        throw labelGatewayError(error, label);
-      }
+    } catch (error) {
+      throw labelGatewayError(error, label, policy.sanitize === true);
+    }
   };
   const bindTools: NonNullable<ChatModel["bindTools"]> = (tools, options) => {
-      if (!model.bindTools) {
-        throw new Error(`${label} model does not support tool binding`);
-      }
-      return withGatewayErrorLabel(model.bindTools(tools, options), label);
+    if (!model.bindTools) {
+      throw new Error(`${label} model does not support tool binding`);
+    }
+    return withGatewayErrorLabel(model.bindTools(tools, options), label, policy);
   };
 
   // Preserve the concrete LangChain instance and all of its configuration
@@ -269,15 +280,41 @@ export function withGatewayErrorLabel(model: ChatModel, label: string): ChatMode
   }) as ChatModel;
 }
 
-function labelGatewayError(error: unknown, label: string): Error {
+function managedGatewayFailureMessage(error: unknown): string {
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    name?: unknown;
+    code?: unknown;
+  } | null;
+  const status = typeof candidate?.status === "number"
+    ? candidate.status
+    : typeof candidate?.statusCode === "number"
+      ? candidate.statusCode
+      : undefined;
+  if (status === 401 || status === 403) return "The Gateway rejected the Nautilo credential.";
+  if (status === 402) return "The Gateway reports insufficient test capacity.";
+  if (status === 429) return "The Gateway rate-limited the request.";
+  if (status !== undefined && status >= 500) return "The Gateway is temporarily unavailable.";
+  if (
+    candidate?.name === "AbortError"
+    || candidate?.name === "ProviderTimeoutError"
+    || candidate?.code === "NAUTILO_PROVIDER_TIMEOUT"
+  ) {
+    return "The Gateway request was cancelled or timed out.";
+  }
+  return "The Gateway request failed.";
+}
+
+function labelGatewayError(error: unknown, label: string, sanitize = false): Error {
   if (error instanceof Error) {
-    if (error.message.startsWith(`${label}:`)) return error;
-    const wrapped = new Error(`${label}: ${error.message}`);
-    wrapped.cause = error;
+    if (!sanitize && error.message.startsWith(`${label}:`)) return error;
+    const wrapped = new Error(`${label}: ${sanitize ? managedGatewayFailureMessage(error) : error.message}`);
+    if (!sanitize) wrapped.cause = error;
     copyErrorStatus(error, wrapped);
     return wrapped;
   }
-  return new Error(`${label}: ${String(error)}`);
+  return new Error(`${label}: ${sanitize ? managedGatewayFailureMessage(error) : String(error)}`);
 }
 
 /**
@@ -458,13 +495,18 @@ async function createUniversalModelInternal(
       return createOpenAI(factoryOpts);
     case "openrouter": {
       const orOpts = buildOpenRouterCreateModelOptions(id, cleanOptions, usageCallbacks);
+      const openRouterTransport = resolveOpenRouterTransport({
+        directApiKey: cleanOptions["apiKey"],
+      });
       if (resolvedMaxTokens !== undefined) orOpts.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) orOpts.timeoutMs = resolvedTimeoutMs;
       orOpts.reasoningOutput = reasoningOutput;
       if (factoryOpts.reasoningEffort) orOpts.reasoningEffort = factoryOpts.reasoningEffort;
+      const managedGateway = openRouterTransport?.kind === "managed-gateway";
       return withGatewayErrorLabel(
         await createOpenAI(orOpts),
-        "OpenRouter",
+        managedGateway ? "Nautilo Gateway" : "OpenRouter",
+        { sanitize: managedGateway },
       );
     }
     case "gateway": {

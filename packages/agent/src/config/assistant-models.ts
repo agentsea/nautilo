@@ -5,6 +5,7 @@ import {
 import { getActiveModelCatalogSync } from "./model-catalog/runtime-catalog";
 import { isSupportedModelCatalogProvider } from "./model-catalog/supported-providers";
 import { resolveModelRole } from "./model-role-resolution";
+import { hasRunnableOpenRouterTransport } from "../providers/openrouter-transport";
 
 /** Venice upstream routing for privacy UX (see AUDIT-2026-05-06-d086-venice-catalog-routing). */
 export type VeniceRouting = "venice-hosted" | "western-anonymized" | "china-anonymized";
@@ -259,7 +260,7 @@ export function getSelectableModels(): AssistantModelConfig[] {
   for (const model of getEnabledModels()) {
     models.set(model.id, model);
   }
-  if (process.env["OPENROUTER_API_KEY"]?.trim()) {
+  if (hasRunnableOpenRouterTransport()) {
     for (const model of ASSISTANT_MODELS.filter((m) => isOpenRouterModelId(m.id))) {
       models.set(model.id, openRouterModelConfig(model.id, model));
     }

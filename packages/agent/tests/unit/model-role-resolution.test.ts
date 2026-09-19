@@ -102,6 +102,20 @@ const catalog = ModelCatalogSchema.parse({
       modalities: { input: ["text"], output: ["embedding"] },
       features: { tools: false, structuredOutputs: false, reasoning: false },
     },
+    {
+      id: "openrouter:openai/gpt-5.4-image-2",
+      displayName: "GPT-5.4 Image 2 (OpenRouter)",
+      provider: "openrouter",
+      routing: "openrouter",
+      priority: 5,
+      defaultEnabled: true,
+      cost: { coefficient: 1.28 },
+      privacy: { grade: 4 },
+      intelligence: { tier: "frontier" },
+      limits: { contextTokens: 8_192, outputTokens: 8_192 },
+      modalities: { input: ["text", "image", "file"], output: ["image"] },
+      features: { tools: false, structuredOutputs: true, reasoning: true },
+    },
   ],
 });
 
@@ -134,6 +148,58 @@ describe("resolveModelRole", () => {
     expect(resolveModelRole("chat", { env: { VENICE_API_KEY: "vk" } })).toBe(
       "venice:minimax-m3-preview",
     );
+  });
+
+  test("managed Gateway takes precedence for chat/background while preserving an existing Venice embedding identity", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+      VENICE_API_KEY: "venice-direct-key",
+    };
+    expect(resolveModelRole("chat", { env })).toBe("openrouter:minimax/minimax-m3");
+    expect(resolveModelRole("systemTasks", { env })).toBe("openrouter:minimax/minimax-m3");
+    expect(resolveModelRole("embeddings", { env })).toBe(
+      "venice:text-embedding-3-small",
+    );
+  });
+
+  test("Gateway-only automatic embeddings select the existing signed OpenRouter route", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+    };
+    expect(resolveModelRole("embeddings", { env })).toBe(
+      "openrouter:openai/text-embedding-3-small",
+    );
+  });
+
+  test("malformed managed Gateway configuration blocks chat and direct OpenRouter embedding fallback", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      OPENROUTER_API_KEY: "direct-openrouter-must-not-be-used",
+    };
+    expect(() => resolveModelRole("chat", { env })).toThrow(
+      "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    );
+    expect(() => resolveModelRole("embeddings", { env })).toThrow(
+      "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    );
+  });
+
+  test("malformed managed Gateway configuration preserves the signed legacy Venice embedding route", () => {
+    const managed = { NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}` };
+    expect(resolveModelRole("embeddings", {
+      env: { ...managed, VENICE_API_KEY: "existing-venice-key" },
+    })).toBe("venice:text-embedding-3-small");
+  });
+
+  test("malformed managed Gateway configuration does not disable direct OpenRouter image roles", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      OPENROUTER_API_KEY: "direct-openrouter-image-key",
+    };
+    const configuredId = "openrouter:openai/gpt-5.4-image-2";
+    expect(resolveModelRole("imageGeneration", { env, configuredId })).toBe(configuredId);
   });
 
   test("uses any eligible chat route for research after preferences are exhausted", async () => {

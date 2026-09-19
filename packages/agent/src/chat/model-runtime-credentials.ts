@@ -1,3 +1,5 @@
+import { hasRunnableOpenRouterTransport } from "../providers/openrouter-transport";
+
 /**
  * Best-effort check that a model id is likely invokable in the current process
  * (API keys / gateway URL present). Mirrors `createUniversalModel` provider branches.
@@ -38,7 +40,7 @@ function providerHasRunnableCredentials(
     case "openai":
       return !!trimEnv(env, "OPENAI_API_KEY");
     case "openrouter":
-      return !!trimEnv(env, "OPENROUTER_API_KEY");
+      return hasRunnableOpenRouterTransport(env);
     case "gateway":
       return !!(
         trimEnv(env, "NAUTILO_GATEWAY_API_KEY") &&

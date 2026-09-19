@@ -42,6 +42,7 @@ const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
+  "nautilo-gateway",
   "gateway",
   "google",
   "fireworks",

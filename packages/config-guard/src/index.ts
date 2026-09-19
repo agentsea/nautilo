@@ -34,6 +34,13 @@ export type {
   TransactionResult,
 } from "./types";
 export { ConfigGuardError } from "./types";
+export {
+  isManagedGatewayKey,
+  managedGatewayKeyUrl,
+  normalizeManagedGatewayBaseUrl,
+  MANAGED_GATEWAY_API_KEY_ENV_VAR,
+  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
+} from "./managed-gateway";
 
 export {
   getAllKeyDefinitions,
@@ -166,7 +173,7 @@ function buildSummary(keys: KeyReport[]): CheckSummary {
   };
 
   const hasLlm = computeHasLlmFromKeys(keys);
-  const hasEmbeddings = ok("openai") || ok("openrouter") || ok("venice");
+  const hasEmbeddings = ok("openai") || ok("openrouter") || ok("nautilo-gateway") || ok("venice");
   const hasVoice = ok("elevenlabs");
   const hasSearch = ok("tavily");
   const hasConversion = ok("cloudconvert");

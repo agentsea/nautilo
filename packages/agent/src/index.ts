@@ -452,6 +452,16 @@ export {
 } from "./resolve-provider-key";
 export { createUniversalModel, __setStubModelForTests } from "./providers/universal";
 export {
+  hasRunnableOpenRouterTransport,
+  managedGatewayKeyIsPresent,
+  managedGatewayTransportIsRunnable,
+  normalizeManagedGatewayBaseUrl,
+  resolveOpenRouterTransport,
+  MANAGED_GATEWAY_API_KEY_ENV_VAR,
+  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
+  type OpenRouterTransport,
+} from "./providers/openrouter-transport";
+export {
   smokeTestVenice,
   resolveVeniceSmokeModelId,
   DEFAULT_VENICE_SMOKE_MODEL_ID,

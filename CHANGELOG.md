@@ -13,6 +13,12 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Local internal QA servers can use a separately configured Nautilo Gateway
+  credential for signed OpenRouter chat, background, and embedding routes. The
+  administrator key stays masked, existing embedding identity is preserved,
+  media routes still require their direct credentials, and failed Gateway
+  requests are not replayed through retries or paid fallback chains.
+
 - Quiet Events per Human: snooze for an hour, until tomorrow, until a chosen
   time, or until manually resumed. A crossed-out bell replaces the bell and its numbered
   badge disappears while quiet. Event history and unread state remain available;

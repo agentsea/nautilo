@@ -17,6 +17,7 @@ import { getModelById } from "../config/assistant-models";
 import { ModelUnavailableError, resolveRetainedModels } from "../config/eligible-models";
 import { createUniversalModel } from "../providers/universal";
 import { modelRouteProvider } from "../providers/model-route";
+import { managedGatewayKeyIsPresent } from "../providers/openrouter-transport";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
@@ -698,6 +699,8 @@ export async function invokeChatModelWithFallback(
       throw error;
     }
 
+    const managedGatewayAttempt = modelRouteProvider(currentModelId) === "openrouter"
+      && managedGatewayKeyIsPresent();
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
     try {
       log(`[nautilo/agent] Attempting model: ${currentModelId}`);
@@ -764,7 +767,7 @@ export async function invokeChatModelWithFallback(
         controls,
         serving,
         reasoningOutput,
-        invokeOptions?.sameModelRetryMode ?? "short",
+        managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
         {
           ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
           callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
@@ -779,6 +782,10 @@ export async function invokeChatModelWithFallback(
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) throw error;
+      // A managed Gateway request may have been accepted and billed before a
+      // timeout/502 became visible. Never replay it against the same model or
+      // continue into an unrelated paid provider chain.
+      if (managedGatewayAttempt) throw error;
       const classified = classifyError(error);
       if (classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext) {
         // Never retry after visible partial output, or echo a provider error

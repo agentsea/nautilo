@@ -1,4 +1,5 @@
 import { getKeyDefinition } from "./key-registry";
+import { managedGatewayKeyUrl } from "./managed-gateway";
 
 const TIMEOUT_MS = 5000;
 
@@ -18,6 +19,7 @@ async function fetchWithTimeout(
 export async function checkProviderHealth(
   keyId: string,
   value: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ status: "verified" | "invalid_key" | "unreachable"; detail?: string }> {
   try {
     switch (keyId) {
@@ -164,6 +166,32 @@ export async function checkProviderHealth(
         }
         return { status: "unreachable", detail: `HTTP ${res.status}` };
       }
+      case "nautilo-gateway": {
+        const configuredBase = env["NAUTILO_MANAGED_GATEWAY_BASE_URL"]?.trim();
+        if (!configuredBase) {
+          return {
+            status: "unreachable",
+            detail: "NAUTILO_MANAGED_GATEWAY_BASE_URL is not configured",
+          };
+        }
+        const keyUrl = managedGatewayKeyUrl(configuredBase);
+        if (!keyUrl) {
+          return {
+            status: "unreachable",
+            detail: "NAUTILO_MANAGED_GATEWAY_BASE_URL must be an HTTPS API root ending in /v1",
+          };
+        }
+        const res = await fetchWithTimeout(keyUrl, {
+          method: "GET",
+          headers: { authorization: `Bearer ${value}` },
+          redirect: "error",
+        });
+        if (res.status === 401 || res.status === 403) {
+          return { status: "invalid_key", detail: `${res.status}` };
+        }
+        if (res.ok) return { status: "verified" };
+        return { status: "unreachable", detail: `HTTP ${res.status}` };
+      }
       case "venice": {
         // Venice's models endpoint is a non-billing authentication probe and
         // does not couple key health to any particular model identifier.
@@ -265,7 +293,7 @@ export async function checkKeysHealth(
     if (!v) {
       return;
     }
-    out[id] = await checkProviderHealth(id, v);
+    out[id] = await checkProviderHealth(id, v, env);
   });
   await Promise.all(tasks);
   return out;

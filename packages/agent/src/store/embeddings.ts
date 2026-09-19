@@ -4,9 +4,9 @@ import { resolveProviderKey } from "../resolve-provider-key";
 import { recordLlmUsage } from "../usage/record-usage";
 import { getUsageContext } from "../usage/usage-context";
 import { VENICE_EMBEDDINGS_URL } from "../providers/venice-api";
+import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
-const OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings";
 const DEFAULT_VENICE_EMBEDDING_MODEL = "text-embedding-qwen3-8b";
 const DEFAULT_OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
 const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
@@ -52,6 +52,7 @@ interface ResolvedEmbeddingProvider {
   apiKey: string;
   endpoint: string;
   model: string;
+  forbidRedirects: boolean;
 }
 
 function getEmbeddingConfig(modelOverride?: string | null) {
@@ -103,8 +104,8 @@ function embeddingProviderLabel(provider: EmbeddingProvider): string {
 
 function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
   const trimmedModel = model.trim();
-  const openRouterKey = resolveProviderKey("openrouter", {});
   const veniceKey = resolveProviderKey("venice", {});
+  const directOpenRouterKey = resolveProviderKey("openrouter", {});
   const openAiKey = resolveProviderKey("openai", {});
   const explicitlyVenice = trimmedModel.toLowerCase().startsWith("venice:");
   const explicitlyOpenAi = trimmedModel.toLowerCase().startsWith("openai:");
@@ -124,23 +125,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: veniceKey,
       endpoint: VENICE_EMBEDDINGS_URL,
       model: trimmedModel.slice("venice:".length),
-    };
-  }
-
-  if (explicitlyOpenRouter) {
-    if (!openRouterKey) {
-      throw new EmbeddingProviderError({
-        message:
-          "The configured OpenRouter embedding model requires an OpenRouter credential.",
-        code: "missing_credentials",
-        provider: "openrouter",
-      });
-    }
-    return {
-      provider: "openrouter",
-      apiKey: openRouterKey,
-      endpoint: OPENROUTER_EMBEDDINGS_URL,
-      model: openRouterModelId(trimmedModel),
+      forbidRedirects: false,
     };
   }
 
@@ -157,28 +142,77 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel.slice("openai:".length),
+      forbidRedirects: false,
     };
   }
 
+  if (explicitlyOpenRouter) {
+    let openRouterTransport: ReturnType<typeof resolveOpenRouterTransport>;
+    try {
+      openRouterTransport = resolveOpenRouterTransport();
+    } catch (error) {
+      throwInvalidGatewayEmbeddingConfiguration(error);
+    }
+    if (!openRouterTransport) {
+      throw new EmbeddingProviderError({
+        message:
+          "The configured OpenRouter embedding model requires an OpenRouter credential.",
+        code: "missing_credentials",
+        provider: "openrouter",
+      });
+    }
+    return {
+      provider: "openrouter",
+      apiKey: openRouterTransport.apiKey,
+      endpoint: `${openRouterTransport.baseUrl}/embeddings`,
+      model: openRouterModelId(trimmedModel),
+      forbidRedirects: openRouterTransport.kind === "managed-gateway",
+    };
+  }
+
+  // Preserve the established automatic embedding identity when a direct
+  // provider is already configured. Enabling Gateway must not reinterpret an
+  // existing index. Gateway-only installations take the OpenRouter route.
   if (veniceKey) {
     return {
       provider: "venice",
       apiKey: veniceKey,
       endpoint: VENICE_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_VENICE_EMBEDDING_MODEL,
+      forbidRedirects: false,
     };
   }
 
-  if (openRouterKey) {
+  // An invalid managed transport must block a direct OpenRouter route, but it
+  // does not invalidate an unrelated legacy OpenAI auto route.
+  if (!directOpenRouterKey && openAiKey) {
+    return {
+      provider: "openai",
+      apiKey: openAiKey,
+      endpoint: OPENAI_EMBEDDINGS_URL,
+      model: trimmedModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
+      forbidRedirects: false,
+    };
+  }
+
+  let openRouterTransport: ReturnType<typeof resolveOpenRouterTransport>;
+  try {
+    openRouterTransport = resolveOpenRouterTransport();
+  } catch (error) {
+    throwInvalidGatewayEmbeddingConfiguration(error);
+  }
+
+  if (directOpenRouterKey && openRouterTransport) {
     return {
       provider: "openrouter",
-      apiKey: openRouterKey,
-      endpoint: OPENROUTER_EMBEDDINGS_URL,
+      apiKey: openRouterTransport.apiKey,
+      endpoint: `${openRouterTransport.baseUrl}/embeddings`,
       // Preserve the selected model while spelling bare OpenAI model ids in
       // OpenRouter's canonical provider/model form.
       model: trimmedModel
         ? openRouterModelId(trimmedModel)
         : DEFAULT_OPENROUTER_EMBEDDING_MODEL,
+      forbidRedirects: openRouterTransport.kind === "managed-gateway",
     };
   }
 
@@ -188,6 +222,19 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
+      forbidRedirects: false,
+    };
+  }
+
+  if (openRouterTransport?.kind === "managed-gateway") {
+    return {
+      provider: "openrouter",
+      apiKey: openRouterTransport.apiKey,
+      endpoint: `${openRouterTransport.baseUrl}/embeddings`,
+      model: trimmedModel
+        ? openRouterModelId(trimmedModel)
+        : DEFAULT_OPENROUTER_EMBEDDING_MODEL,
+      forbidRedirects: true,
     };
   }
 
@@ -196,6 +243,14 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       "Memory embeddings require a configured Venice, OpenRouter, or OpenAI credential.",
     code: "missing_credentials",
     provider: null,
+  });
+}
+
+function throwInvalidGatewayEmbeddingConfiguration(error: unknown): never {
+  throw new EmbeddingProviderError({
+    message: error instanceof Error ? error.message : "The Nautilo Gateway configuration is invalid.",
+    code: "missing_credentials",
+    provider: "openrouter",
   });
 }
 
@@ -311,6 +366,7 @@ async function embedTextsWithResolvedProvider(
           : {}),
       }),
       ...(signal === undefined ? {} : { signal }),
+      ...(resolved.forbidRedirects ? { redirect: "error" as const } : {}),
     });
   } catch {
     throw new EmbeddingProviderError({

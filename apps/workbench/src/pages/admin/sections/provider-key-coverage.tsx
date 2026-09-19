@@ -7,6 +7,7 @@ const COVERAGE_ROWS = [
   {
     functionality: "Chat",
     providers: [
+      ["nautilo-gateway", "Nautilo Gateway"],
       ["venice", "Venice"],
       ["openrouter", "OpenRouter"],
       ["openai", "OpenAI"],
@@ -19,6 +20,7 @@ const COVERAGE_ROWS = [
   {
     functionality: "Embeddings",
     providers: [
+      ["nautilo-gateway", "Nautilo Gateway"],
       ["venice", "Venice"],
       ["openrouter", "OpenRouter"],
       ["openai", "OpenAI"],
