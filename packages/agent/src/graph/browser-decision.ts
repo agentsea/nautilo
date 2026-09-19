@@ -130,11 +130,11 @@ export interface ConnectedBrowserDecisionTarget {
   readonly controlEpoch: number;
 }
 
-export function isBrowserDecisionTool(name: string | undefined): boolean {
+function isBrowserDecisionTool(name: string | undefined): boolean {
   return name?.startsWith("browser_") === true || name === "control_connected_web_operation";
 }
 
-export function isBrowserDecisionSnapshot(call: Pick<ToolCall, "name" | "args">): boolean {
+function isBrowserDecisionSnapshot(call: Pick<ToolCall, "name" | "args">): boolean {
   return call.name === "browser_snapshot" || (call.name === "control_connected_web_operation"
     && (call.args["command"] as { kind?: unknown } | undefined)?.kind === "snapshot");
 }
