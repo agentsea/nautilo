@@ -29,11 +29,11 @@ import { getUsageContext } from "../../src/usage/usage-context";
 
 const JEV_ID = "openrouter:typesafe/jev-1.13";
 const RESULTS_PROGRESS_KEY = JSON.stringify({ kind: "snapshot_contains", text: "Results" });
-const REDACTED_TYPE_DESCRIPTION = JSON.stringify({
+const TYPE_DESCRIPTION = JSON.stringify({
   kind: "type",
   role: "textbox",
   name: "Search",
-  value: "Genie-supplied text",
+  value: "blue mug",
   clear: true,
 });
 
@@ -165,7 +165,7 @@ describe("browser decision policy", () => {
     expect(built.reason).toBeNull();
     expect(built.candidates[1]?.call).toEqual({ name: "browser_type", args: { ref: "@e17", text: supplied, clear: true } });
     expect(JSON.parse(built.candidates[1]!.description)).toMatchObject({ valueName: "background color", role: "combobox", name: "Hex code" });
-    expect(built.candidates.map(({ description }) => description).join()).not.toContain(supplied);
+    expect((JSON.parse(built.candidates[1]!.description) as { value: string }).value).toBe(supplied);
     expect(built.candidates.map(({ call }) => call?.args["ref"] as unknown)).not.toContain("@e2");
   });
 
@@ -350,7 +350,7 @@ describe("browser decision policy", () => {
         },
         {
           id: "action_1",
-          description: REDACTED_TYPE_DESCRIPTION,
+          description: TYPE_DESCRIPTION,
           call: {
             name: "browser_type",
             args: { ref: "@e2", text: "blue mug", clear: true },
@@ -520,11 +520,36 @@ describe("browser decision policy", () => {
     }), 255)).toEqual({ candidates: [], reason: "ambiguous_target_requires_genie" });
   });
 
-  test("defers indistinguishable typing choices instead of asking Jev to guess the local value", () => {
-    expect(browserDecisionCandidates({ ...plan, actions: [
-      { kind: "type", role: "textbox", name: "Search", text: "first", clear: true },
-      { kind: "type", role: "textbox", name: "Search", text: "second", clear: true },
-    ] }, observation(), 255)).toEqual({ candidates: [], reason: "ambiguous_planned_action_requires_genie" });
+  test("distinguishes reusable exact typing choices for the same field by their supplied text", () => {
+    const texts = ["Jev alpha", "Jev beta", "Jev gamma"];
+    const repeatedEntryPlan = browserDecisionPlanSchema.parse({ ...plan,
+      actions: [
+        ...texts.map((text) => ({ kind: "type", role: "textbox", name: "Search", text, clear: true })),
+        { kind: "press", key: "Enter" },
+      ],
+    });
+    for (const refId of ["e2", "e17"]) {
+      const built = browserDecisionCandidates(repeatedEntryPlan, observation({
+        refs: { [refId]: { role: "textbox", name: "Search" } },
+      }), 255);
+      expect(built.reason).toBeNull();
+      const typing = built.candidates.filter(({ call }) => call?.name === "browser_type");
+      expect(typing.map(({ description }) => (JSON.parse(description) as { value: string }).value)).toEqual(texts);
+      expect(typing.map(({ call }) => call?.args)).toEqual(texts.map(text => ({ ref: `@${refId}`, text, clear: true })));
+      expect(built.candidates.some(({ call }) => call?.name === "browser_press" && call.args["key"] === "Enter")).toBe(true);
+    }
+  });
+
+  test("named typing values expose their content as well as purpose for repeated entries", () => {
+    const values = { first: "Jev alpha", second: "Jev beta", third: "Jev gamma" };
+    const built = browserDecisionCandidates({ ...plan, actions: [{ kind: "click_observed" }], values },
+      observation({ refs: { e2: { role: "textbox", name: "New item" } } }), 255);
+    expect(built.reason).toBeNull();
+    const typing = built.candidates.filter(({ call }) => call?.name === "browser_type");
+    expect(typing.map(({ description }) => JSON.parse(description) as unknown)).toEqual(
+      Object.entries(values).map(([valueName, value]) => ({ kind: "type", role: "textbox", name: "New item",
+        targetRef: "@e2", valueName, value, clear: true })),
+    );
   });
 
   test("preserves the complete candidate set instead of truncating it to the model cap", () => {
@@ -1299,7 +1324,7 @@ describe("browser decision node", () => {
       },
       choices: [
         { id: "action_0", description: JSON.stringify(plan.actions[0]) },
-        { id: "action_1", description: REDACTED_TYPE_DESCRIPTION },
+        { id: "action_1", description: TYPE_DESCRIPTION },
         { id: "reobserve" },
         { id: "completion_ready" },
         { id: "needs_visual_evidence" },
@@ -1307,7 +1332,7 @@ describe("browser decision node", () => {
       ],
     });
     const transmittedRequest = JSON.stringify(received);
-    expect(transmittedRequest).not.toContain("blue mug");
+    expect(transmittedRequest).toContain("blue mug");
     expect(transmittedRequest).not.toContain("shop.example");
     expect(transmittedRequest).not.toContain("allowedOrigins");
     expect(transmittedRequest).not.toContain("pageUrl");
@@ -1747,7 +1772,7 @@ describe("browser decision node", () => {
     expect(choiceCalls).toBe(2);
   });
 
-  test("carries only confirmed redacted actions from the current decision episode into the next Choice", async () => {
+  test("carries only confirmed semantic actions from the current decision episode into the next Choice", async () => {
     const controller = new AbortController();
     const choiceInputs: OpenRouterChoiceInput[] = [];
     let choiceCalls = 0;
@@ -1787,8 +1812,8 @@ describe("browser decision node", () => {
     const firstAction = AIMessage.isInstance(firstReceipt)
       ? firstReceipt.additional_kwargs["nautilo_browser_decision"] as Record<string, unknown>
       : null;
-    expect(firstAction?.["action"]).toBe(REDACTED_TYPE_DESCRIPTION);
-    expect(JSON.stringify(firstAction)).not.toContain("blue mug");
+    expect(firstAction?.["action"]).toBe(TYPE_DESCRIPTION);
+    expect(JSON.stringify(firstAction)).toContain("blue mug");
     if (!firstUpdate.browserDecision) throw new Error("expected a pending first action");
 
     const wrongNameResult = new ToolMessage({
@@ -1832,9 +1857,9 @@ describe("browser decision node", () => {
 
     expect(choiceInputs).toHaveLength(2);
     const secondState = choiceInputs[1]?.state as Record<string, unknown>;
-    expect(secondState["recentActions"]).toEqual([{ action: REDACTED_TYPE_DESCRIPTION, status: "success" }]);
+    expect(secondState["recentActions"]).toEqual([{ action: TYPE_DESCRIPTION, status: "success" }]);
     const serializedSecondChoice = JSON.stringify(choiceInputs[1]);
-    expect(serializedSecondChoice).not.toContain("blue mug");
+    expect(serializedSecondChoice).toContain("blue mug");
     expect(serializedSecondChoice).not.toContain("prior episode action");
     expect(serializedSecondChoice).not.toContain("unconfirmed action");
 
@@ -1934,7 +1959,7 @@ describe("browser decision node", () => {
     }), { signal: controller.signal });
     expect(choiceInputs).toHaveLength(2);
     expect((choiceInputs[1]?.state as Record<string, unknown>)["recentActions"]).toEqual([
-      { action: REDACTED_TYPE_DESCRIPTION, status: "not_executed_stale", evidence: staleResult.content },
+      { action: TYPE_DESCRIPTION, status: "not_executed_stale", evidence: staleResult.content },
     ]);
     expect(proposedToolCall(retryUpdate)).toMatchObject({
       name: "browser_type",

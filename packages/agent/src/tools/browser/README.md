@@ -94,8 +94,9 @@ prove a click is semantically safe. Normal tool admission still governs every
 proposed action, including when the page exposes destructive controls.
 
 The complete admitted candidate set comes from the latest structured snapshot.
-Ambiguous exact role/name targets, indistinguishable local text choices, no matching target,
-or a changed observed origin hand back immediately. There is no first-N truncation or invented text. Jev can
+Ambiguous exact role/name targets, no matching target, or a changed observed
+origin hand back immediately. Different supplied typing values remain distinct
+choices for the same field. There is no first-N truncation or invented text. Jev can
 also select re-observation or deliberate deferral. With exact targets, new
 result/detail links require a revised plan. With `click_observed`, new targets
 become candidates automatically; Jev must defer when interpreting them exceeds
@@ -126,9 +127,13 @@ the existing usage recorder.
 Only goal, constraints, complete AX text and descriptions of the candidate
 operations go to Choice. Confirmed routine action descriptions and outcome
 status from the current delegation are reused from graph history, so the model
-can avoid repeating ineffective actions; raw tool results and typing values
-are not added to this history. Keyboard combinations and native selection values are included in candidate descriptions
-so Choice can distinguish them. Fixed typing values, navigation URLs, URL predicates, origin lists and
+can avoid repeating ineffective actions. Protected exact error evidence is retained;
+successful raw tool results are not duplicated in this history. Supplied typing
+text, keyboard combinations and native selection values are included in candidate
+descriptions so Choice can distinguish actions and their confirmed history.
+Replacing all typing text with a generic placeholder would make different entries
+for the same field indistinguishable. The executor still copies the selected text
+unchanged; Choice does not generate it. Navigation URLs, URL predicates, origin lists and
 private session/observation bindings stay local unless the same text is itself
 part of the supplied goal or observed page. The live Full-encryption policy must
 explicitly permit ordinary provider egress. A missing policy resolver fails
