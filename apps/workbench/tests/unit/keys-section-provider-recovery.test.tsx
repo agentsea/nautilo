@@ -14,7 +14,7 @@ import {
   BROWSER_USE_API_KEY_ENV_VAR,
   type KeyReport,
 } from "@nautilo/config-guard";
-import type { SetupKeysResult } from "@nautilo/api-client/browser";
+import { ApiError, type SetupKeysResult } from "@nautilo/api-client/browser";
 import { ProviderCredentialsEditor } from "../../src/pages/admin/sections/provider-credentials-section";
 
 let happyWindow: Window;
@@ -47,6 +47,15 @@ const browserUseKeyReport: KeyReport = {
   hint: null,
 };
 
+const gatewayKeyReport: KeyReport = {
+  ...keyReport,
+  id: "nautilo-gateway",
+  name: "Nautilo Gateway",
+  envVar: "NAUTILO_API_KEY",
+  purpose: "Nautilo Gateway access",
+  required: false,
+};
+
 const apiStub = {
   getKeySummary: mock(async () => ({ keys: [keyReport], hasLlm: false })),
   setupKeys: mock(async (): Promise<SetupKeysResult> => ({
@@ -57,6 +66,8 @@ const apiStub = {
     keys: [keyReport],
     summary: { total: 1, ok: 0, warnings: 0, errors: 1 },
   })),
+  getNautiloGateway: mock(async () => ({ baseUrl: null as string | null })),
+  updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
 };
 
 beforeAll(() => {
@@ -68,6 +79,8 @@ beforeEach(() => {
   apiStub.getKeySummary.mockReset();
   apiStub.setupKeys.mockReset();
   apiStub.validateKeys.mockReset();
+  apiStub.getNautiloGateway.mockReset();
+  apiStub.updateNautiloGateway.mockReset();
   apiStub.getKeySummary.mockImplementation(async () => ({
     keys: [keyReport],
     hasLlm: false,
@@ -76,6 +89,8 @@ beforeEach(() => {
     success: true,
     details: [{ key: keyReport.envVar, action: "applied" }],
   }));
+  apiStub.getNautiloGateway.mockImplementation(async () => ({ baseUrl: null }));
+  apiStub.updateNautiloGateway.mockImplementation(async (baseUrl) => ({ baseUrl }));
 });
 
 afterEach(async () => {
@@ -147,6 +162,33 @@ async function beginEdit(container: HTMLElement): Promise<HTMLButtonElement> {
   return saveButton!;
 }
 
+async function changeInput(input: HTMLInputElement, value: string): Promise<void> {
+  const reactPropsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
+  const reactProps = reactPropsKey
+    ? (input as unknown as Record<string, unknown>)[reactPropsKey]
+    : undefined;
+  const onChange = (
+    reactProps as { onChange?: (event: { target: { value: string } }) => void } | undefined
+  )?.onChange;
+  expect(onChange).toBeDefined();
+  await act(async () => {
+    onChange?.({ target: { value } });
+  });
+}
+
+async function renderGatewayEditor(): Promise<ReturnType<typeof render>> {
+  apiStub.getKeySummary.mockImplementation(async () => ({
+    keys: [gatewayKeyReport],
+    hasLlm: false,
+  }));
+  const view = render(
+    <ProviderCredentialsEditor keyApi={apiStub} enabled viewerIsVerified />,
+  );
+  await flushUntil(() => view.container.textContent?.includes("Nautilo Gateway API URL") ?? false);
+  await flushUntil(() => view.container.textContent?.includes("Edit") ?? false);
+  return view;
+}
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -159,6 +201,120 @@ function deferred<T>(): {
 }
 
 describe("KeysSection provider recovery", () => {
+  test("shows the non-secret Gateway URL, saves it, and reloads the persisted value", async () => {
+    let persisted = "http://127.0.0.1:43318/v1";
+    apiStub.getNautiloGateway.mockImplementation(async () => ({ baseUrl: persisted }));
+    apiStub.updateNautiloGateway.mockImplementation(async (baseUrl) => {
+      persisted = baseUrl;
+      return { baseUrl };
+    });
+
+    const view = await renderGatewayEditor();
+    expect(view.getByText(persisted)).toBeTruthy();
+    await act(async () => {
+      view.getByRole("button", { name: "Edit" }).click();
+    });
+    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    expect(input.type).toBe("url");
+    expect(input.type).not.toBe("password");
+    expect(input.autocomplete).toBe("off");
+    await changeInput(input, "https://gateway.example.test/v1");
+    await act(async () => {
+      view.getByRole("button", { name: "Save" }).click();
+    });
+    await flushUntil(() => view.container.textContent?.includes("https://gateway.example.test/v1") ?? false);
+    expect(apiStub.updateNautiloGateway).toHaveBeenCalledWith("https://gateway.example.test/v1");
+
+    view.unmount();
+    const reloaded = await renderGatewayEditor();
+    expect(reloaded.getByText("https://gateway.example.test/v1")).toBeTruthy();
+    expect(apiStub.getNautiloGateway).toHaveBeenCalledTimes(2);
+  });
+
+  test("keeps an invalid Gateway URL editable and recovers on the next save", async () => {
+    apiStub.getNautiloGateway.mockImplementation(async () => ({
+      baseUrl: "http://127.0.0.1:43318/v1",
+    }));
+    apiStub.updateNautiloGateway
+      .mockImplementationOnce(async () => {
+        throw new ApiError(400, "API URL must end in /v1");
+      })
+      .mockImplementationOnce(async (baseUrl) => ({ baseUrl }));
+
+    const view = await renderGatewayEditor();
+    await act(async () => view.getByRole("button", { name: "Edit" }).click());
+    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    await changeInput(input, "https://gateway.example.test");
+    await act(async () => view.getByRole("button", { name: "Save" }).click());
+    await flushUntil(() => view.container.textContent?.includes("API URL must end in /v1") ?? false);
+    expect(input.value).toBe("https://gateway.example.test");
+
+    await changeInput(input, "https://gateway.example.test/v1");
+    expect(view.queryByText("API URL must end in /v1")).toBeNull();
+    await act(async () => view.getByRole("button", { name: "Save" }).click());
+    await flushUntil(() => view.container.textContent?.includes("https://gateway.example.test/v1") ?? false);
+    expect(apiStub.updateNautiloGateway).toHaveBeenCalledTimes(2);
+  });
+
+  test("keeps a forbidden Gateway URL save recoverable without hiding key management", async () => {
+    apiStub.getNautiloGateway.mockImplementation(async () => ({
+      baseUrl: "http://127.0.0.1:43318/v1",
+    }));
+    apiStub.updateNautiloGateway.mockImplementationOnce(async () => {
+      throw new ApiError(403, "Forbidden");
+    });
+
+    const view = await renderGatewayEditor();
+    await act(async () => view.getByRole("button", { name: "Edit" }).click());
+    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    await changeInput(input, "https://gateway.example.test/v1");
+    await act(async () => view.getByRole("button", { name: "Save" }).click());
+    await flushUntil(
+      () => view.container.textContent?.includes("do not have permission to change") ?? false,
+    );
+    expect(input.value).toBe("https://gateway.example.test/v1");
+    expect(view.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(view.getByText("NAUTILO_API_KEY")).toBeTruthy();
+  });
+
+  test("shows a forbidden Gateway URL load independently of the key editor", async () => {
+    apiStub.getNautiloGateway.mockImplementationOnce(async () => {
+      throw new ApiError(403, "Forbidden");
+    });
+    apiStub.getKeySummary.mockImplementation(async () => ({
+      keys: [gatewayKeyReport],
+      hasLlm: false,
+    }));
+
+    const view = render(
+      <ProviderCredentialsEditor keyApi={apiStub} enabled viewerIsVerified />,
+    );
+    await flushUntil(
+      () => view.container.textContent?.includes("do not have permission to view") ?? false,
+    );
+    expect(view.getByText("NAUTILO_API_KEY")).toBeTruthy();
+    expect(view.queryByLabelText("Nautilo Gateway API URL")).toBeNull();
+  });
+
+  test("guards the Gateway URL against duplicate concurrent saves", async () => {
+    apiStub.getNautiloGateway.mockImplementation(async () => ({ baseUrl: null }));
+    const pending = deferred<{ baseUrl: string }>();
+    apiStub.updateNautiloGateway.mockImplementationOnce(async () => pending.promise);
+
+    const view = await renderGatewayEditor();
+    await act(async () => view.getByRole("button", { name: "Edit" }).click());
+    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    await changeInput(input, "https://gateway.example.test/v1");
+    const saveButton = view.getByRole("button", { name: "Save" });
+    act(() => {
+      saveButton.dispatchEvent(new happyWindow.MouseEvent("click", { bubbles: true }));
+      saveButton.dispatchEvent(new happyWindow.MouseEvent("click", { bubbles: true }));
+    });
+    expect(apiStub.updateNautiloGateway).toHaveBeenCalledTimes(1);
+    pending.resolve({ baseUrl: "https://gateway.example.test/v1" });
+    await flushUntil(() => view.container.textContent?.includes("https://gateway.example.test/v1") ?? false);
+  });
+
   test("omits Get a key for a provider without a signup destination", async () => {
     apiStub.getKeySummary.mockImplementation(async () => ({
       keys: [keyReport, { ...keyReport, id: "gateway", name: "OpenAI-Compatible Gateway", envVar: "NAUTILO_GATEWAY_API_KEY", signupUrl: "" }],

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { KeyReport } from "@nautilo/config-guard";
 import { ApiError } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../lib/api";
@@ -36,8 +36,141 @@ function displayOrder(key: KeyReport): number {
 
 type ProviderCredentialsApi = Pick<
   typeof apiClient,
-  "getKeySummary" | "setupKeys" | "validateKeys"
+  | "getKeySummary"
+  | "setupKeys"
+  | "validateKeys"
+  | "getNautiloGateway"
+  | "updateNautiloGateway"
 >;
+
+type GatewayUrlState =
+  | { kind: "loading" }
+  | { kind: "ready"; baseUrl: string | null }
+  | { kind: "error"; message: string }
+  | { kind: "forbidden" };
+
+function NautiloGatewayUrlEditor({ keyApi }: { keyApi: ProviderCredentialsApi }) {
+  const [state, setState] = useState<GatewayUrlState>({ kind: "loading" });
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savingRef = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const { baseUrl } = await keyApi.getNautiloGateway();
+      setState({ kind: "ready", baseUrl });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) {
+        setState({ kind: "forbidden" });
+      } else {
+        setState({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Failed to load Gateway API URL",
+        });
+      }
+    }
+  }, [keyApi]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async () => {
+    const baseUrl = draft?.trim() ?? "";
+    if (!baseUrl) {
+      setSaveError("URL required");
+      return;
+    }
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const updated = await keyApi.updateNautiloGateway(baseUrl);
+      setState({ kind: "ready", baseUrl: updated.baseUrl });
+      setDraft(null);
+    } catch (error) {
+      setSaveError(
+        error instanceof ApiError && error.status === 403
+          ? "You do not have permission to change the Nautilo Gateway API URL."
+          : error instanceof Error
+            ? error.message
+            : "Save failed",
+      );
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  return (
+    <FieldRow
+      label="Nautilo Gateway API URL"
+      htmlFor="settings-nautilo-gateway-api-url"
+      hint="Local QA API root ending in /v1."
+    >
+      {state.kind === "loading" ? (
+        <p className="pt-1.5 text-sm text-foreground-muted">Loading…</p>
+      ) : state.kind === "forbidden" ? (
+        <p className="pt-1.5 text-sm text-foreground-muted">
+          You do not have permission to view this setting.
+        </p>
+      ) : state.kind === "error" ? (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-xs text-[var(--error)]" role="alert">{state.message}</p>
+          <Button onClick={() => void load()}>Retry</Button>
+        </div>
+      ) : draft !== null ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <TextInput
+              id="settings-nautilo-gateway-api-url"
+              type="url"
+              value={draft}
+              onChange={(value) => {
+                setDraft(value);
+                setSaveError(null);
+              }}
+              placeholder="http://127.0.0.1:43318/v1"
+              autoComplete="off"
+              ariaLabel="Nautilo Gateway API URL"
+              disabled={saving}
+            />
+            <Button
+              variant="primary"
+              onClick={() => void save()}
+              loading={saving}
+              disabled={saving || !draft.trim()}
+            >
+              Save
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={saving}
+              onClick={() => {
+                setDraft(null);
+                setSaveError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+          {saveError ? (
+            <p className="text-xs text-[var(--error)]" role="alert">{saveError}</p>
+          ) : null}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="break-all text-sm text-foreground">
+            {state.baseUrl ?? "Not configured"}
+          </span>
+          <Button onClick={() => setDraft(state.baseUrl ?? "")}>Edit</Button>
+        </div>
+      )}
+    </FieldRow>
+  );
+}
 
 export interface ProviderCredentialsEditorProps {
   /** Focused test seam; production uses the shared authenticated client. */
@@ -250,8 +383,8 @@ export function ProviderCredentialsEditor({
             const isEditing = editingValue !== undefined;
             const row = saveState[k.id] ?? "idle";
             return (
+              <Fragment key={k.id}>
               <FieldRow
-                key={k.id}
                 label={k.name}
                 htmlFor={`settings-key-${k.id}`}
                 hint={
@@ -359,6 +492,10 @@ export function ProviderCredentialsEditor({
                   )}
                 </div>
               </FieldRow>
+              {k.id === "nautilo-gateway" ? (
+                <NautiloGatewayUrlEditor keyApi={keyApi} />
+              ) : null}
+              </Fragment>
             );
           })}
         </div>

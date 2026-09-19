@@ -15,7 +15,8 @@ store update, or Desktop/Host installation.
 
 - Local internal QA servers can use a separately configured Nautilo Gateway
   credential for signed OpenRouter chat, background, and embedding routes. The
-  administrator key stays masked, existing embedding identity is preserved,
+  administrator can save the Gateway API URL beside its masked key in Server
+  Admin, existing embedding identity is preserved,
   media routes still require their direct credentials, and failed Gateway
   requests are not replayed through retries or paid fallback chains.
 

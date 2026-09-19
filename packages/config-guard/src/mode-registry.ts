@@ -252,7 +252,7 @@ export const MODE_REGISTRY: ModeDefinition[] = [
   {
     id: "NAUTILO_MANAGED_GATEWAY_BASE_URL",
     envVar: "NAUTILO_MANAGED_GATEWAY_BASE_URL",
-    description: "Operator-owned Nautilo Gateway API root ending in /v1.",
+    description: "Nautilo Gateway API root ending in /v1.",
     validator: (v) => normalizeManagedGatewayBaseUrl(v)
       ? null
       : "must be an HTTPS API root ending in /v1 (HTTP is allowed only for localhost QA)",

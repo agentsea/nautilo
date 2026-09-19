@@ -5414,6 +5414,25 @@ export class NautiloApiClient {
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
   }
 
+  /** Read the administrator-visible Nautilo Gateway API root. */
+  async getNautiloGateway(): Promise<{ baseUrl: string | null }> {
+    return this.request({
+      path: "/api/setup/nautilo-gateway",
+      defaultErrorPrefix: "GET /api/setup/nautilo-gateway",
+    });
+  }
+
+  /** Update the Nautilo Gateway API root. */
+  async updateNautiloGateway(baseUrl: string): Promise<{ baseUrl: string }> {
+    return this.request({
+      method: "PUT",
+      path: "/api/setup/nautilo-gateway",
+      auth: "session-fresh",
+      body: { baseUrl },
+      defaultErrorPrefix: "PUT /api/setup/nautilo-gateway",
+    });
+  }
+
   /** Read the bounded web-research policy. Requires `read_server_settings`. */
   async getResearchProvider(): Promise<{
     provider: "auto" | "duckduckgo_html";
