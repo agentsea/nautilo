@@ -39,6 +39,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Browser decisions distinguish different supplied text values for the same
+  field, allowing repeated-entry tasks to stay in one routine delegation.
+
 - Routine browser delegation now preserves complete goals and exact error evidence,
   distinguishes completion and visual handoffs, and detects repeated action cycles
   without treating different actions on unchanged text as automatic failures.

@@ -256,7 +256,9 @@ export function browserDecisionCandidates(plan: BrowserDecisionPlan, observation
       if (action.kind === "select") args["values"] = action.values;
       if (action.kind === "set_checked") args["checked"] = action.checked;
       description = JSON.stringify({ kind: action.kind, role: normalize(action.role), name: normalize(action.name),
-        ...(action.kind === "type" ? { value: "Genie-supplied text", clear: action.clear } : {}),
+        // The selector must distinguish different supplied strings for the same
+        // target. The executor still copies the selected value unchanged.
+        ...(action.kind === "type" ? { value: action.text, clear: action.clear } : {}),
         ...(action.kind === "select" ? { values: action.values } : {}),
         ...(action.kind === "set_checked" ? { checked: action.checked } : {}) });
     } else {
@@ -286,7 +288,7 @@ export function browserDecisionCandidates(plan: BrowserDecisionPlan, observation
       if (templateCalls.has(JSON.stringify(call))) continue;
       candidates.push({ id: `action_${candidates.length}`, call,
         description: JSON.stringify({ kind: "type", role: ref.role, name: ref.name,
-          targetRef: `@${refId}`, valueName, value: "Genie-supplied text", clear: true }) });
+          targetRef: `@${refId}`, valueName, value, clear: true }) });
     }
   }
   if (candidates.length === 0) return { candidates: [], reason: "no_planned_target_requires_genie" };
