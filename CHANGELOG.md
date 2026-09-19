@@ -28,6 +28,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Server Admin places the Nautilo Gateway URL and key together at the end of
+  API Keys, following the separate OpenAI-compatible gateway.
+
 - OpenRouter-compatible streaming no longer counts a provider usage receipt
   twice when the final choice frame also carries cost or cache-write metadata.
 

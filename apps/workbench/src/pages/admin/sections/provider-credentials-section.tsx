@@ -24,12 +24,12 @@ type LoadState =
 type RowSave = "idle" | "saving" | "saved" | { error: string };
 
 const KEY_DISPLAY_ORDER = [
-  "nautilo-gateway", "venice", "openrouter", "elevenlabs", "openai", "anthropic", "google",
-  "fireworks", "groq",
+  "venice", "openrouter", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq",
 ];
 
 function displayOrder(key: KeyReport): number {
   if (key.id === "gateway") return KEY_DISPLAY_ORDER.length + 1;
+  if (key.id === "nautilo-gateway") return KEY_DISPLAY_ORDER.length + 2;
   const index = KEY_DISPLAY_ORDER.indexOf(key.id);
   return index === -1 ? KEY_DISPLAY_ORDER.length : index;
 }
@@ -106,7 +106,7 @@ function NautiloGatewayUrlEditor({ keyApi }: { keyApi: ProviderCredentialsApi })
 
   return (
     <FieldRow
-      label="Nautilo Gateway API URL"
+      label="Nautilo Gateway API URL (coming soon)"
       htmlFor="settings-nautilo-gateway-api-url"
       hint="Local QA API root ending in /v1."
     >
@@ -134,7 +134,7 @@ function NautiloGatewayUrlEditor({ keyApi }: { keyApi: ProviderCredentialsApi })
               }}
               placeholder="http://127.0.0.1:43318/v1"
               autoComplete="off"
-              ariaLabel="Nautilo Gateway API URL"
+              ariaLabel="Nautilo Gateway API URL (coming soon)"
               disabled={saving}
             />
             <Button
@@ -384,8 +384,15 @@ export function ProviderCredentialsEditor({
             const row = saveState[k.id] ?? "idle";
             return (
               <Fragment key={k.id}>
+              {k.id === "nautilo-gateway" ? (
+                <NautiloGatewayUrlEditor keyApi={keyApi} />
+              ) : null}
               <FieldRow
-                label={k.name}
+                label={
+                  k.id === "nautilo-gateway"
+                    ? "Nautilo Gateway key (coming soon)"
+                    : k.name
+                }
                 htmlFor={`settings-key-${k.id}`}
                 hint={
                   <span>
@@ -492,9 +499,6 @@ export function ProviderCredentialsEditor({
                   )}
                 </div>
               </FieldRow>
-              {k.id === "nautilo-gateway" ? (
-                <NautiloGatewayUrlEditor keyApi={keyApi} />
-              ) : null}
               </Fragment>
             );
           })}

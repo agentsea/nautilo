@@ -163,6 +163,19 @@ describe("resolveModelRole", () => {
     );
   });
 
+  test("managed Gateway preserves an explicit non-OpenRouter chat selection", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+      OPENAI_API_KEY: "direct-openai-key",
+    };
+
+    expect(resolveModelRole("chat", {
+      env,
+      configuredId: "openai:gpt-5.6-terra",
+    })).toBe("openai:gpt-5.6-terra");
+  });
+
   test("Gateway-only automatic embeddings select the existing signed OpenRouter route", () => {
     const env = {
       NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,

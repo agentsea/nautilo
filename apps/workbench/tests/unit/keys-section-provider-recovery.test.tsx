@@ -214,7 +214,9 @@ describe("KeysSection provider recovery", () => {
     await act(async () => {
       view.getByRole("button", { name: "Edit" }).click();
     });
-    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    const input = view.getByLabelText(
+      "Nautilo Gateway API URL (coming soon)",
+    ) as HTMLInputElement;
     expect(input.type).toBe("url");
     expect(input.type).not.toBe("password");
     expect(input.autocomplete).toBe("off");
@@ -243,7 +245,9 @@ describe("KeysSection provider recovery", () => {
 
     const view = await renderGatewayEditor();
     await act(async () => view.getByRole("button", { name: "Edit" }).click());
-    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    const input = view.getByLabelText(
+      "Nautilo Gateway API URL (coming soon)",
+    ) as HTMLInputElement;
     await changeInput(input, "https://gateway.example.test");
     await act(async () => view.getByRole("button", { name: "Save" }).click());
     await flushUntil(() => view.container.textContent?.includes("API URL must end in /v1") ?? false);
@@ -266,7 +270,9 @@ describe("KeysSection provider recovery", () => {
 
     const view = await renderGatewayEditor();
     await act(async () => view.getByRole("button", { name: "Edit" }).click());
-    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    const input = view.getByLabelText(
+      "Nautilo Gateway API URL (coming soon)",
+    ) as HTMLInputElement;
     await changeInput(input, "https://gateway.example.test/v1");
     await act(async () => view.getByRole("button", { name: "Save" }).click());
     await flushUntil(
@@ -293,7 +299,9 @@ describe("KeysSection provider recovery", () => {
       () => view.container.textContent?.includes("do not have permission to view") ?? false,
     );
     expect(view.getByText("NAUTILO_API_KEY")).toBeTruthy();
-    expect(view.queryByLabelText("Nautilo Gateway API URL")).toBeNull();
+    expect(
+      view.queryByLabelText("Nautilo Gateway API URL (coming soon)"),
+    ).toBeNull();
   });
 
   test("guards the Gateway URL against duplicate concurrent saves", async () => {
@@ -303,7 +311,9 @@ describe("KeysSection provider recovery", () => {
 
     const view = await renderGatewayEditor();
     await act(async () => view.getByRole("button", { name: "Edit" }).click());
-    const input = view.getByLabelText("Nautilo Gateway API URL") as HTMLInputElement;
+    const input = view.getByLabelText(
+      "Nautilo Gateway API URL (coming soon)",
+    ) as HTMLInputElement;
     await changeInput(input, "https://gateway.example.test/v1");
     const saveButton = view.getByRole("button", { name: "Save" });
     act(() => {
@@ -328,13 +338,23 @@ describe("KeysSection provider recovery", () => {
   });
 
   test("orders key fields for onboarding while preserving the remaining registry order", async () => {
-    const ids = ["anthropic", "cloudconvert", "openai", "tavily", "gateway", "venice", "groq", "google", "elevenlabs", "fireworks", "openrouter", "browser-use"];
-    const keys = ids.map((id) => ({ ...keyReport, id, name: id, envVar: `${id}_API_KEY` }));
+    const ids = ["anthropic", "cloudconvert", "openai", "tavily", "gateway", "venice", "groq", "google", "elevenlabs", "fireworks", "openrouter", "browser-use", "nautilo-gateway"];
+    const keys = ids.map((id) => ({
+      ...keyReport,
+      id,
+      name: id === "gateway" ? "OpenAI-Compatible Gateway" : id,
+      envVar: `${id}_API_KEY`,
+    }));
     apiStub.getKeySummary.mockImplementation(async () => ({ keys, hasLlm: false }));
     const container = await renderEditor();
     expect([...container.querySelectorAll("code")].map((el) => el.textContent)).toEqual(
-      ["venice", "openrouter", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq", "cloudconvert", "tavily", "browser-use", "gateway"].map((id) => `${id}_API_KEY`),
+      ["venice", "openrouter", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq", "cloudconvert", "tavily", "browser-use", "gateway", "nautilo-gateway"].map((id) => `${id}_API_KEY`),
     );
+    expect([...container.querySelectorAll("label")].slice(-3).map((el) => el.textContent)).toEqual([
+      "OpenAI-Compatible Gateway",
+      "Nautilo Gateway API URL (coming soon)",
+      "Nautilo Gateway key (coming soon)",
+    ]);
     expect(keys.map((key) => key.id)).toEqual(ids);
   });
 
