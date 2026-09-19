@@ -2083,6 +2083,81 @@ describe("browser decision node", () => {
     expect(choiceCalls).toBe(2);
   });
 
+  test("compacts consecutive action history without losing status, order, or fresh state", async () => {
+    const planned = new AIMessage({ content: "", tool_calls: [call("compact-plan", "browser_snapshot", { ...plan })] });
+    const action = JSON.stringify({ kind: "press", key: "ArrowRight" });
+    const expanded = [
+      ...Array.from({ length: 80 }, () => ({ action, status: "success" })),
+      { action, status: "error", evidence: "synthetic error evidence" },
+      { action, status: "not_executed_stale", evidence: "synthetic stale evidence" },
+      ...Array.from({ length: 20 }, () => ({ action, status: "success" })),
+      { action: "distinct final action", status: "success" },
+    ];
+    const messages = [planned, ...expanded.flatMap((entry, index) => {
+      const proposed = call(`compact-${index}`, "browser_press", { key: "ArrowRight" });
+      return [new AIMessage({ content: "", tool_calls: [proposed], additional_kwargs: {
+        nautilo_browser_decision: { operation: "choice", action: entry.action },
+      } }), new ToolMessage({ name: proposed.name, tool_call_id: proposed.id,
+        content: "evidence" in entry ? entry.evidence : "unneeded success body", additional_kwargs: {
+        nautilo_tool_status: entry.status === "success" ? "success" : "error",
+        ...(entry.status === "not_executed_stale" ? { nautilo_browser_failure: "browser_observation_stale" } : {}),
+      } })];
+    })];
+    const original = JSON.stringify(messages);
+    let observedState: Record<string, unknown> | undefined;
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      observedState = input.state as Record<string, unknown>;
+      return { selectedId: "action_0", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 1, outputTokens: 1, actualCostUsd: null } };
+    } });
+    await node(state({ messages }), { signal: new AbortController().signal });
+    expect(observedState?.["recentActions"]).toEqual([
+      { action, status: "success", repetitions: 80 },
+      { action, status: "error", evidence: "synthetic error evidence" },
+      { action, status: "not_executed_stale", evidence: "synthetic stale evidence" },
+      { action, status: "success", repetitions: 20 },
+      { action: "distinct final action", status: "success" },
+    ]);
+    const compact = observedState?.["recentActions"] as Array<{ action: string; status: string; repetitions?: number }>;
+    expect(compact.flatMap(({ repetitions = 1, ...entry }) => Array.from({ length: repetitions }, () => entry)))
+      .toEqual(expanded);
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(expanded).length);
+    expect(observedState?.["snapshot"]).toBe(observation().snapshot);
+    expect(JSON.stringify(observedState)).not.toContain("unneeded success body");
+    expect(JSON.stringify(messages)).toBe(original);
+  });
+
+  test.each(["error", "stale", "read", "connected_read"] as const)("preserves changing %s evidence during history compaction", async (kind) => {
+    const planned = new AIMessage({ content: "", tool_calls: [call("evidence-plan", "browser_snapshot", { ...plan })] });
+    const evidence = ["first evidence", "first evidence", "changed evidence", "changed evidence", "first evidence"];
+    const status = kind === "stale" ? "not_executed_stale" : kind === "error" ? "error" : "success";
+    const messages = [planned, ...evidence.flatMap((content, index) => {
+      const proposed = call(`evidence-${index}`, kind === "connected_read" ? "control_connected_web_operation"
+        : kind === "read" ? "browser_read" : "browser_click",
+      kind === "connected_read" ? { command: { kind: "read" } } : {});
+      return [new AIMessage({ content: "", tool_calls: [proposed], additional_kwargs: {
+        nautilo_browser_decision: { operation: "choice", action: "same described action" },
+      } }), new ToolMessage({ name: proposed.name, tool_call_id: proposed.id, content, additional_kwargs: {
+        nautilo_tool_status: kind === "error" || kind === "stale" ? "error" : "success",
+        ...(kind === "stale" ? { nautilo_browser_failure: "browser_observation_stale" } : {}),
+      } })];
+    })];
+    const original = JSON.stringify(messages);
+    let observedState: Record<string, unknown> | undefined;
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      observedState = input.state as Record<string, unknown>;
+      return { selectedId: "action_0", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 1, outputTokens: 1, actualCostUsd: null } };
+    } });
+    await node(state({ messages }), { signal: new AbortController().signal });
+    expect(observedState?.["recentActions"]).toEqual([
+      { action: "same described action", status, evidence: "first evidence", repetitions: 2 },
+      { action: "same described action", status, evidence: "changed evidence", repetitions: 2 },
+      { action: "same described action", status, evidence: "first evidence" },
+    ]);
+    expect(JSON.stringify(messages)).toBe(original);
+  });
+
   test("carries only confirmed semantic actions from the current decision episode into the next Choice", async () => {
     const controller = new AbortController();
     const choiceInputs: OpenRouterChoiceInput[] = [];

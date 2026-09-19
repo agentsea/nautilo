@@ -29,6 +29,10 @@ store update, or Desktop/Host installation.
   uncertain effects to the Genie without replay. Hosted and ordinary control
   remain available when no eligible decision model is runnable.
 
+- Routine browser decisions compact consecutive identical action-history entries
+  while preserving their count, order and outcomes, reducing repeated context
+  without truncating history or reusing stale observations.
+
 - Native Computer Use observations expose the selected control's reported value,
   value description, selection state and numeric range when available. Missing
   state stays unknown, and content is not retained in mutation receipts.
