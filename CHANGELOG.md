@@ -28,6 +28,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- OpenRouter-compatible streaming no longer counts a provider usage receipt
+  twice when the final choice frame also carries cost or cache-write metadata.
+
 - Desktop shell commands honor replacement folder grants without being blocked by
   superseded revocation history. Narrower restrictions and protected paths remain
   enforced. Folder changes reach outgoing messages immediately, and delayed
