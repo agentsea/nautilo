@@ -5,6 +5,10 @@ import { SquareCheck, X } from "lucide-react";
 // KeyReport categories are broader registry groupings, not capabilities.
 const COVERAGE_ROWS = [
   {
+    functionality: "Classification and scoring",
+    providers: [["typesafe", "TypeSafe"], ["openrouter", "OpenRouter"], ["venice", "Venice"]],
+  },
+  {
     functionality: "Chat",
     providers: [
       ["venice", "Venice"],
