@@ -296,7 +296,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       expect(decision).toMatchObject({
         provider: "openrouter", workload: "decision", availability: "missing_credentials",
         unavailableReason: "OpenRouter credential is not configured",
-        decision: { operations: ["choice"] },
+        decision: { operations: ["choice", "noul", "score"] },
         features: { visualGrounding: null },
       });
       expect(Object.keys(decision!).sort()).toEqual([
