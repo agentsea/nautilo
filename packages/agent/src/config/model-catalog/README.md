@@ -35,3 +35,12 @@ image input. `discover_models` exposes the fact and its positive capability filt
 it does not change browser execution or choose a helper automatically. Qualify the
 reader before publishing this field: older strict readers reject unknown feature
 keys and keep their validated fallback.
+
+Version 5 adds a separate `speech` workload with fixed, locally implemented
+transport identifiers, supported output formats, provider request character
+limits, and estimated USD per thousand characters. Speech rows are excluded
+from chat selection. The server-wide speech setting selects an exact catalog
+ID; when unset, the first runnable speech row in catalog priority order wins.
+Replies freeze that selection at admission and retain each Genie's voice.
+The v5 bootstrap is a candidate imported from canonical catalog authoring;
+publication of the signed v5 channel is a separate release step.

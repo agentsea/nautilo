@@ -15,7 +15,7 @@ import type { ServerEvent } from "@nautilo/types";
 import { messageNewDeliveryFacts } from "./message-new-delivery-facts";
 
 /**
- * M122/M240 — when a new message lands in a room, recompute + publish the
+ * When a new message lands in a room, recompute + publish the
  * canonical per-recipient notification delta. Hooked here (not in dispatch.ts)
  * because BOTH the human
  * peer-broadcast path and the assistant runtime-executor path emit `message.new`
@@ -58,7 +58,7 @@ let eventBridgeListener: ((event: ServerEvent) => void) | null = null;
 
 /** Workspace committed mutation truth is authorized and delivered by its SSE/outbox path only. */
 export function shouldBridgeRuntimeEventToWebSocket(event: ServerEvent): boolean {
-  return event.type !== "document.mutation.committed";
+  return event.type !== "document.mutation.committed" && event.type !== "voice.turn.end";
 }
 
 export function startEventBridge() {
@@ -69,14 +69,14 @@ export function startEventBridge() {
     if (event.type === "message.new") {
       void publishUnreadForNewMessage(event).catch((err) => {
         warn(
-          `[ws] M122 unread recompute failed for message.new: ${
+          `[ws]  unread recompute failed for message.new: ${
             err instanceof Error ? err.stack ?? err.message : String(err)
           }`,
         );
       });
       void publishImportantArrivalForNewMessage(event).catch((err) => {
         warn(
-          `[ws] M236 important-arrival classification failed for message.new: ${
+          `[ws]  important-arrival classification failed for message.new: ${
             err instanceof Error ? err.stack ?? err.message : String(err)
           }`,
         );

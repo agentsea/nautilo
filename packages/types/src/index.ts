@@ -56,3 +56,4 @@ export * from "./video-generation-reference";
 export * from "./protected-room-topology";
 
 export type { EmbeddingProvider, EmbeddingWithProvenanceV1 } from "./embedding";
+export * from "./voice-stream";

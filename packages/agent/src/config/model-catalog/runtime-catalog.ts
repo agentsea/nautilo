@@ -7,7 +7,7 @@
  *
  * Guarantees:
  *   - Official-product default pointer URL ships in source:
- *     {@link OFFICIAL_MODEL_CATALOG_POINTER_URL} (`https://media.nautilo.ai/models/v4/latest.json`).
+ *     {@link OFFICIAL_MODEL_CATALOG_POINTER_URL} (`https://media.nautilo.ai/models/v5/latest.json`).
  *     `NAUTILO_MODEL_CATALOG_POINTER_URL` is an OPTIONAL deployment / self-host
  *     override; `null` via the seam disables remote fetching entirely.
  *   - The loader is a cached singleton shared across calls, so its TTL /
@@ -46,7 +46,7 @@ import {
  * minimal signed `{catalogVersion, artifactSha256, signature, signingKeyId}`
  * document; the immutable manifest is derived from it.
  */
-export const OFFICIAL_MODEL_CATALOG_POINTER_URL = "https://media.nautilo.ai/models/v4/latest.json";
+export const OFFICIAL_MODEL_CATALOG_POINTER_URL = "https://media.nautilo.ai/models/v5/latest.json";
 
 /** Optional deployment / self-host override: release-pointer URL. */
 const MODEL_CATALOG_POINTER_URL_ENV = "NAUTILO_MODEL_CATALOG_POINTER_URL";

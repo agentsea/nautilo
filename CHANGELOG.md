@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server Controls → Models now selects the speech model for all Genies from the model catalog. Conversational is the catalog default; Genie voices remain independent, and changes apply to the next reply. The panel keeps Save changes visible and marks unsaved speech selections separately from the active model.
+- Voice replies now stream to native iOS and Android players as audio arrives. Stop, Room changes, reconnection, and backgrounding discard stale playback; Genie voice assignments remain unchanged.
+
 Changes on `main` after the source used for Desktop 0.14.44, plus the maintenance
 changes recorded here. Inclusion does not assert a server deployment, Mobile
 store update, or Desktop/Host installation.
@@ -38,6 +41,9 @@ store update, or Desktop/Host installation.
   anyone else's settings or chat notifications.
 
 ### Fixed
+
+- Speech uses Jessica when no usable voice is configured, preserving explicitly
+  assigned Genie voices.
 
 - Browser decision screening splits text-heavy candidate batches when the provider
   reports context overflow. It preserves all candidates and reports irreducible
@@ -338,7 +344,7 @@ store update, or Desktop/Host installation.
 - Stenographer continues processing other rooms when one room’s operation throws,
   so unavailable historical data does not block fresh journal and Reflection work.
 - Writer background Tasks retain the requesting Human's live document session
-  when Moxie is already busy and the new request runs on a foreground fork.
+  when the Genie is already busy and the new request runs on a foreground fork.
 - Writer documents remain readable in Reader after an accepted review saves
   canonical data without a static HTML preview.
 

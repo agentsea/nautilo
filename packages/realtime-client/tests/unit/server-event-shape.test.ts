@@ -1,5 +1,5 @@
 /**
- * M075 NFR-C1 / M077 — every `ServerEvent` variant must be classified for
+ *  NFR-C1 / every `ServerEvent` variant must be classified for
  * WebSocket routing (`inferDeliveryScope` in `packages/server`). Global
  * types (`policy.changed`, `worker.complete`, …) require an explicit
  * `{ kind: "all", acknowledgedGlobalLeak: true }` audience when emitted
@@ -23,13 +23,13 @@ const EVENT_ROUTING = {
   "message.tokens": "scoped",
   "message.new": "scoped",
   "message.updated": "scoped",
-  // M282 — protected live siblings stay on the originating Room lane.
+  // protected live siblings stay on the originating Room lane.
   "message.shadow_stream_start": "scoped",
   "message.shadow_stream_frame": "scoped",
   "message.shadow_durable": "scoped",
-  // M295 — the Human-key sibling is delivered only on its canonical Room lane.
+  // the Human-key sibling is delivered only on its canonical Room lane.
   "message.human_peer_shadow": "scoped",
-  // M296 — shared Human/Agent protected traffic remains on the canonical Room
+  // shared Human/Agent protected traffic remains on the canonical Room
   // lane; the authorization request is additionally filtered to its issuer.
   "message.shared_agent_shadow": "scoped",
   "message.shared_agent_authorization_required": "scoped",
@@ -38,15 +38,15 @@ const EVENT_ROUTING = {
   "message.shared_agent_stream_frame": "scoped",
   "message.shared_agent_output_shadow": "scoped",
   "thread.summary.changed": "scoped",
-  // M121 — room-scoped via `laneKey: "room:<id>"`; not globally fanned out.
+  // room-scoped via `laneKey: "room:<id>"`; not globally fanned out.
   "reaction.added": "scoped",
   "reaction.removed": "scoped",
-  // ISSUE-M172 — hard-delete fan-out is room-lane-scoped (not global).
+  // hard-delete fan-out is room-lane-scoped (not global).
   "message.deleted": "scoped",
   "job.status": "scoped",
   "job.progress": "scoped",
   "tool.start": "scoped",
-  // D502 — per-tool stream observations stay in the originating room lane.
+  // per-tool stream observations stay in the originating room lane.
   "tool.run_shell.progress": "scoped",
   "tool.end": "scoped",
   "prove_it.challenge": "scoped",
@@ -73,7 +73,7 @@ const EVENT_ROUTING = {
   "job.forked": "scoped",
   "fork.spliced": "scoped",
   "room.catalog.changed": "scoped",
-  // M323 — identifier-free durable-feed invalidation, delivered through an
+  // identifier-free durable-feed invalidation, delivered through an
   // explicit user audience supplied out of band by the server publisher.
   "event_feed.changed": "scoped",
   room_members_changed: "scoped",
@@ -83,10 +83,10 @@ const EVENT_ROUTING = {
   "notification.message.important": "scoped",
   "room.silence.changed": "scoped",
   "room.conductor_mode.changed": "scoped",
-  // M135 P5 (D-C) — room-scoped via `laneKey: "room:<id>"`; not in
+  //  (D-C) — room-scoped via `laneKey: "room:<id>"`; not in
   // WS_GLOBAL_FANOUT_EVENT_TYPES.
   "conductor.ask_user": "scoped",
-  // D299 follow-up — room-scoped via `laneKey: "room:<id>"`, viewer-gated on
+  //  follow-up — room-scoped via `laneKey: "room:<id>"`, viewer-gated on
   // `userActorId`; not in WS_GLOBAL_FANOUT_EVENT_TYPES.
   "conductor.focus_changed": "scoped",
   "conductor.routing": "scoped",
@@ -94,7 +94,8 @@ const EVENT_ROUTING = {
   // `inferDeliveryScope` (routes by `userId`, NOT room-fanned-out). Not in
   // WS_GLOBAL_FANOUT_EVENT_TYPES.
   "conductor.decision": "scoped",
-  // D440 — requester-private terminal approval receipt; routed by userId.
+  "voice.turn.end": "scoped",
+  // requester-private terminal approval receipt; routed by userId.
   "approval.resolved": "scoped",
   // M088C: SSE-only artifact lifecycle events. Not WS-fanned-out (not
   // in WS_GLOBAL_FANOUT_EVENT_TYPES); the workspace-artifacts SSE
@@ -104,33 +105,33 @@ const EVENT_ROUTING = {
   "workspace.artifact.deleted": "scoped",
   "document.patch.applied": "scoped",
   "document.mutation.committed": "scoped",
-  // M301 — content-free Room-scoped wake-ups for opportunistic Domain-key
+  // content-free Room-scoped wake-ups for opportunistic Domain-key
   // request fulfilment and durable target delivery.
   "crypto.domain_key_catch_up_requested": "scoped",
   "crypto.domain_key_catch_up_delivered": "scoped",
-  // M317 — emitted with an explicit user audience; the frame itself is empty.
+  // emitted with an explicit user audience; the frame itself is empty.
   "crypto.background_authorization_requested": "scoped",
-  // D453 — Codex-native approval/input requests and their terminal receipts
+  // Codex-native approval/input requests and their terminal receipts
   // are owner-scoped. They are not dynamic Nautilo Tool callbacks.
   "codex.request": "scoped",
   "codex.request.resolved": "scoped",
-  // M143 — task lifecycle events; owner-user-scoped via `inferDeliveryScope`
+  // task lifecycle events; owner-user-scoped via `inferDeliveryScope`
   // (not in WS_GLOBAL_FANOUT_EVENT_TYPES).
   "task.fired": "scoped",
   "task.completed": "scoped",
   "task.errored": "scoped",
-  // M147 — task lifecycle (pause/unpause/stop); owner-user-scoped via
+  // task lifecycle (pause/unpause/stop); owner-user-scoped via
   // `inferDeliveryScope` (not in WS_GLOBAL_FANOUT_EVENT_TYPES).
   "task.status": "scoped",
-  // M151 — task parked awaiting a human reply; owner-user-scoped (D14).
+  // task parked awaiting a human reply; owner-user-scoped.
   "task.awaiting_reply": "scoped",
-  // D307 — owner-scoped mid-run progress for subagent activity cards.
+  // owner-scoped mid-run progress for subagent activity cards.
   "task.progress": "scoped",
-  // M178 — room-scoped in-thread working affordance (routed like message.tokens).
+  // room-scoped in-thread working affordance (routed like message.tokens).
   "agent.progress": "scoped",
-  // D500 — room-scoped, redacted Structured SSH activity projection.
+  // room-scoped, redacted Structured SSH activity projection.
   "tool.structured_ssh.progress": "scoped",
-  // D458 — controller-private authoritative host projection, routed by userId.
+  // controller-private authoritative host projection, routed by userId.
   "remote.host.snapshot": "scoped",
   "remote.host.connected": "scoped",
   "remote.host.updated": "scoped",
@@ -138,7 +139,7 @@ const EVENT_ROUTING = {
   "remote.host.revoked": "scoped",
 } as const satisfies Record<ServerEvent["type"], "global" | "scoped">;
 
-describe("ServerEvent routing contract (M077)", () => {
+describe("ServerEvent routing contract ()", () => {
   test("every ServerEvent type is classified (exhaustive Record)", () => {
     const entries = Object.entries(EVENT_ROUTING) as Array<
       [ServerEvent["type"], "global" | "scoped"]

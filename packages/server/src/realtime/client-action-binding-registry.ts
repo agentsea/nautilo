@@ -1,5 +1,5 @@
 /**
- * D513 Phase 3.2 — bounded, process-local exact-client binding state.
+ * Bounded, process-local exact-client binding state.
  *
  * This registry deliberately stores no Room, content, transcript, or durable
  * job input. A client session is only a socket-local routing identifier; it is
@@ -58,6 +58,9 @@ export class ClientActionBindingRegistry {
   private readonly handlesByTurn = new Map<string, string>();
   private readonly handlesByGroupTurn = new Map<string, Set<string>>();
   private readonly armedHandlesByTurn = new Map<string, string>();
+  // Consuming a one-shot UI action must not erase speech routing for that turn.
+  // Retention shares the original admission TTL/rate bound and socket lifetime.
+  private readonly consumedTurnRoutes = new Map<string, Pick<Entry, "clientActionSessionId" | "expiresAt">>();
 
   constructor(
     private readonly now: () => number = Date.now,
@@ -225,6 +228,15 @@ export class ClientActionBindingRegistry {
     return true;
   }
 
+  /** Read the live initiating socket without consuming its UI-action binding. */
+  inspectTurnSocket(turnId: string): SocketLike | null {
+    this.prune();
+    const handle = this.handlesByTurn.get(turnId);
+    const entry = handle ? this.entries.get(handle) : undefined;
+    const route = entry?.state === "bound" ? entry : this.consumedTurnRoutes.get(turnId);
+    return route ? this.sessions.get(route.clientActionSessionId)?.socket ?? null : null;
+  }
+
   consumeOnce(turnId: string): ConsumedClientActionBinding | null {
     this.prune();
     const handle = this.handlesByTurn.get(turnId);
@@ -235,6 +247,10 @@ export class ClientActionBindingRegistry {
       socket: session.socket,
       initiatingClientSurface: session.coalescingContext.initiatingClientSurface,
     };
+    this.consumedTurnRoutes.set(turnId, {
+      clientActionSessionId: entry.clientActionSessionId,
+      expiresAt: entry.expiresAt,
+    });
     this.removeEntry(entry);
     return consumed;
   }
@@ -257,6 +273,9 @@ export class ClientActionBindingRegistry {
 
   private prune(): void {
     const now = this.now();
+    for (const [turnId, route] of this.consumedTurnRoutes) {
+      if (route.expiresAt <= now) this.consumedTurnRoutes.delete(turnId);
+    }
     for (const entry of this.entries.values()) {
       if (entry.expiresAt <= now) this.removeEntry(entry);
     }
@@ -269,6 +288,9 @@ export class ClientActionBindingRegistry {
     const session = this.sessions.get(clientActionSessionId);
     if (!session) return;
     for (const handle of [...session.handles]) this.cancel(handle);
+    for (const [turnId, route] of this.consumedTurnRoutes) {
+      if (route.clientActionSessionId === clientActionSessionId) this.consumedTurnRoutes.delete(turnId);
+    }
     this.sessions.delete(clientActionSessionId);
     this.onDeleteClientSession(clientActionSessionId);
   }

@@ -21,7 +21,7 @@ export type CatalogVoice = {
   languageLabel: string;
   previewUrl: string | null;
   verifiedLanguages: CatalogVerifiedLanguage[];
-  /** D261 — provenance for badge semantics; curated voices are Nautilo-tested/trusted. */
+  /** provenance for badge semantics; curated voices are Nautilo-tested/trusted. */
   source: "provider" | "curated";
 };
 
@@ -90,10 +90,10 @@ export type VoiceCustomizationHydrationResponse = {
   error?: string;
 };
 
-/** D261 P4 — trust badge for discovery/audition tool results. */
-export type VoiceDiscoveryBadge = "curated" | "provider_v3" | "unverified";
+/** trust badge for discovery/audition tool results. */
+export type VoiceDiscoveryBadge = "curated" | "provider_v3" | "provider_verified" | "unverified";
 
-/** D261 P4 — structured candidate from find_voice / audition_voices. */
+/** structured candidate from find_voice / audition_voices. */
 export type VoiceDiscoveryCandidate = {
   voiceId: string;
   name: string;
@@ -109,7 +109,7 @@ export type VoiceDiscoveryCandidate = {
   honestyWarning?: string;
 };
 
-/** D261 P4 — find_voice JSON envelope (LangChain tool returns a string). */
+/** find_voice JSON envelope (LangChain tool returns a string). */
 export type FindVoiceToolResult = {
   candidates: VoiceDiscoveryCandidate[];
   consideredCount: number;
@@ -118,7 +118,7 @@ export type FindVoiceToolResult = {
   error?: string;
 };
 
-/** D261 P4 — audition_voices JSON envelope. */
+/** audition_voices JSON envelope. */
 export type AuditionVoicesToolResult = {
   slate: VoiceDiscoveryCandidate[];
   suggestedSlate?: boolean;

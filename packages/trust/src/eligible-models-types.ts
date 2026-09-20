@@ -74,7 +74,7 @@ export type ResolvedCatalogInputModality = "text" | "image" | "file";
 export type ResolvedCatalogOutputModality = "text" | "image" | "audio" | "video" | "embedding";
 
 /** Only chat rows are candidates for chat routing. */
-export type ResolvedCatalogWorkload = "chat" | "generation" | "decision";
+export type ResolvedCatalogWorkload = "chat" | "generation" | "decision" | "speech";
 export interface ResolvedCatalogDecision {
   operations: readonly ["choice"];
   inputTokens: number;

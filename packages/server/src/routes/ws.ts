@@ -1,5 +1,5 @@
 /**
- * M058 — `/ws` first-message authentication.
+ * `/ws` first-message authentication.
  *
  * The Fastify trust preHandler runs on HTTP route handlers, not on
  * WebSocket upgrades, so the `/ws` route would otherwise accept
@@ -12,13 +12,13 @@
  *      token}` first.
  *   2. `addClient(socket)` — which adds the socket to the
  *      `ws-publisher` broadcast set — runs only after successful bearer
- *      validation and `listRoomsForActor` (M075 room scope). The server
+ *      validation and `listRoomsForActor` (Room scope). The server
  *      sends `auth.accepted` immediately after `addClient` on the same
  *      tick so the client never observes bus events before subscription
  *      registration (integration tests race on this otherwise).
  *      Pre-auth sockets are never added and receive zero broadcast events.
  *
- * Bearer validation reuses the M058 `resolveBearer` closure, which
+ * Bearer validation reuses the `resolveBearer` closure, which
  * the HTTP trust preHandler also consumes — one shared Logto JWT
  * verification path for HTTP and WebSocket upgrades.
  *
@@ -41,6 +41,7 @@ import { listRoomsForActor as defaultListRoomsForActor } from "@nautilo/trust";
 import { addClient, publishTypingPing, type WsClientMeta } from "../realtime/ws-publisher";
 import { getClientActionBindingRegistry } from "../realtime/client-action-binding-registry";
 import { getTtsService } from "../realtime/tts-service";
+import { voiceDelivery } from "../realtime/voice-delivery";
 import type { ResolveBearer } from "../auth/resolve-bearer";
 import {
   bearerResolutionDigest,
@@ -68,7 +69,7 @@ function resolveAuthTimeoutMs(): number {
 /** WS close code reserved for token-auth failures.
  *
  * 4401 lives in the WS private close-code range (4000–4999) and
- * borrows the HTTP 401 convention. M056 uses the same code on the
+ * borrows the HTTP 401 convention. HTTP uses the same code on the
  * `/relay` socket so the cluster has one auth-failure signal across
  * both WS surfaces. */
 export const WS_AUTH_CLOSE_CODE = 4401;
@@ -80,7 +81,7 @@ export const WS_AUTH_CLOSE_CODE = 4401;
 const wsPolicyContexts = new WeakMap<WebSocket, RuntimePolicyContext>();
 
 /**
- * Read the per-socket policy context attached during the M058 auth
+ * Read the per-socket policy context attached during the auth
  * handshake. Returns `undefined` when called before
  * `auth.accepted`, on an unauthenticated socket, or after the
  * socket has closed. Future per-event broadcast filtering will read
@@ -107,7 +108,7 @@ export interface WsRoutesDeps {
   /** Periodic current-device revalidation for already-open sockets. */
   deviceAdmissionRecheckMs?: number;
   /**
-   * D420 (Wave 3 task 3.2.1) — best-effort provider that returns the current
+   *  (Wave 3 task 3.2.1) — best-effort provider that returns the current
    * `maintenance.status` snapshot to send on authenticated connect, or null
    * to skip the frame. Optional: unit tests of the auth state machine omit it
    * (no snapshot sent); production wires a closure over the maintenance
@@ -116,7 +117,7 @@ export interface WsRoutesDeps {
    */
   getMaintenanceStatusEvent?: () => Promise<MaintenanceStatusEvent | null>;
   /**
-   * D458 Wave 7 — optional controller-presence resume port.  App wiring owns
+   *  Wave 7 — optional controller-presence resume port. App wiring owns
    * the authoritative projector; this transport layer merely sends the
    * already viewer-scoped snapshot/replay to the authenticated socket.
    */
@@ -134,8 +135,8 @@ export interface WsRoutesTestHooks {
    *  and room list load, immediately before `auth.accepted` is sent. */
   addClient?: (socket: WebSocket, meta: WsClientMeta) => void;
   /** Spy / replacement for `getTtsService().stop()`. */
-  onVoiceStop?: () => void;
-  /** M075 — unit tests without DB: stub room list for WS subscription scope. */
+  onVoiceStop?: (userId: string, turnId?: string) => void;
+  /** unit tests without DB: stub room list for WS subscription scope. */
   listRoomsForActor?: (
     actorId: string,
     options?: { includeRoster?: boolean; includeSubthreads?: boolean },
@@ -149,7 +150,7 @@ export function wsRoutes(
 ): void {
   const addClientFn = testHooks?.addClient ?? addClient;
   const onVoiceStopFn =
-    testHooks?.onVoiceStop ?? (() => getTtsService().stop());
+    testHooks?.onVoiceStop ?? ((userId: string, turnId?: string) => getTtsService().stop(userId, turnId));
 
   app.get("/ws", { websocket: true }, (socket: WebSocket) => {
     const wsConnDeps: WsConnectionDeps = {
@@ -177,7 +178,7 @@ export function wsRoutes(
 
 interface WsConnectionDeps {
   addClient: (socket: WebSocket, meta: WsClientMeta) => void;
-  onVoiceStop: () => void;
+  onVoiceStop: (userId: string, turnId?: string) => void;
   authTimeoutMs: number;
   checkDeviceAdmission?: NonNullable<WsRoutesDeps["checkDeviceAdmission"]>;
   deviceAdmissionRecheckMs?: number;
@@ -186,7 +187,7 @@ interface WsConnectionDeps {
     options?: { includeRoster?: boolean; includeSubthreads?: boolean },
   ) => Promise<Array<{ id: string }>>;
   /**
-   * D420 (Wave 3 task 3.2.1) — optional maintenance-status snapshot provider
+   *  (Wave 3 task 3.2.1) — optional maintenance-status snapshot provider
    * invoked once after successful auth + `addClient`. See {@link WsRoutesDeps}.
    */
   getMaintenanceStatusEvent?: () => Promise<MaintenanceStatusEvent | null>;
@@ -242,7 +243,7 @@ export function handleWsConnection(
 
   socket.on("message", (raw: RawData) => {
     if (state === "closed") return;
-    let parsed: { type?: unknown; token?: unknown; initiatingClientSurface?: unknown };
+    let parsed: { type?: unknown; token?: unknown; initiatingClientSurface?: unknown; voiceProtocol?: unknown; turnId?: unknown };
     try {
       parsed = JSON.parse(rawDataToString(raw)) as {
         type?: unknown;
@@ -277,7 +278,13 @@ export function handleWsConnection(
         );
       }
     } else if (msgType === "voice.stop") {
-      deps.onVoiceStop();
+      if (authenticatedUserId !== null && (parsed.turnId === undefined || (typeof parsed.turnId === "string" && parsed.turnId.length > 0))) {
+        deps.onVoiceStop(authenticatedUserId, parsed.turnId);
+      }
+    } else if (msgType === "voice.listen") {
+      voiceDelivery.update(socket, parsed);
+    } else if (msgType === "voice.consumed") {
+      voiceDelivery.consumed(socket, parsed);
     } else if (msgType === "typing.ping") {
       handleTypingPing(parsed as Record<string, unknown>);
     } else if (msgType === "remote.host.resume") {
@@ -304,7 +311,7 @@ export function handleWsConnection(
   async function handleRemoteHostResume(parsed: Record<string, unknown>): Promise<void> {
     if (authenticatedUserId === null || !deps.remoteHostPresenceStream) return;
     const cursor = parseRemoteHostCursor(parsed["cursor"]);
-    // A malformed supplied cursor is deliberately treated as no cursor.  The
+    // A malformed supplied cursor is deliberately treated as no cursor. The
     // stream returns a snapshot rather than leaking whether some other user's
     // cursor/stream id exists or closing an otherwise healthy connection.
     try {
@@ -337,6 +344,7 @@ export function handleWsConnection(
     type?: unknown;
     token?: unknown;
     initiatingClientSurface?: unknown;
+    voiceProtocol?: unknown;
   }): Promise<void> {
     if (state !== "awaiting-auth") return;
 
@@ -410,7 +418,7 @@ export function handleWsConnection(
     state = "authenticated";
     wsPolicyContexts.set(socket, result.policyContext);
 
-    // D513 Phase 3.2 — register the socket-local id before the room lookup
+    // register the socket-local id before the room lookup
     // yields, so a close during that lookup cannot leave a live registry entry.
     // It remains silent until `auth.accepted` below.
     // The identifier is later reused by the Live Shadow HTTP contract and its
@@ -457,11 +465,13 @@ export function handleWsConnection(
     }
 
     const roomIds = new Set(roomRows.map((r) => r.id));
-    deps.addClient(socket, {
+    const clientMeta = {
       userId: result.sessionUserId,
       actorId: result.sessionActorId,
       roomIds,
-    });
+    };
+    deps.addClient(socket, clientMeta);
+    voiceDelivery.register(socket, clientMeta, parsed.voiceProtocol === 1);
     authenticatedUserId = result.sessionUserId;
     authenticatedRoomIds = roomIds;
 
@@ -486,8 +496,8 @@ export function handleWsConnection(
     }
 
     if (socket.readyState === socket.OPEN) {
-      socket.send(JSON.stringify({ type: "auth.accepted" }));
-      // D513 Phase 3.1 — a new opaque session identifier for this exact socket only.
+      socket.send(JSON.stringify({ type: "auth.accepted", ...(parsed.voiceProtocol === 1 ? { voiceProtocol: 1 } : {}) }));
+      // a new opaque session identifier for this exact socket only.
       // It deliberately bypasses ws-publisher and has no Room/user audience.
       socket.send(JSON.stringify({
         type: "client.session.v1",
@@ -495,7 +505,7 @@ export function handleWsConnection(
       }));
     }
 
-    // D420 (Wave 3 task 3.2.1) — send a current maintenance-status snapshot
+    //  (Wave 3 task 3.2.1) — send a current maintenance-status snapshot
     // immediately after admission so a client that missed a live event starts
     // truthful (R12). Best-effort and fail-safe: a provider failure (or a
     // null return) MUST NOT poison the connection with a fabricated snapshot

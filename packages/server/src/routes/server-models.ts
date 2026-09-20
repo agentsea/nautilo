@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { getDefaultMediaGenerationModel, listMediaGenerationModels, listResolvedCatalogModels, kickRuntimeModelCatalogRefresh, ModelUnavailableError, NoRunnableModelForRoleError, resolveModelRole, resolveRetainedModels, getProtectedMemoryEmbeddingConfiguration, resolveProviderKey, EmbeddingProviderError } from "@nautilo/agent";
+import { getServerSpeechModel, listSpeechModels, getDefaultMediaGenerationModel, listMediaGenerationModels, listResolvedCatalogModels, kickRuntimeModelCatalogRefresh, ModelUnavailableError, NoRunnableModelForRoleError, resolveModelRole, resolveRetainedModels, getProtectedMemoryEmbeddingConfiguration, resolveProviderKey, EmbeddingProviderError } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
 import {
   getServerModelConfig,
@@ -154,6 +154,16 @@ function parseUpdateBody(
   }
   const raw = body as Record<string, unknown>;
   const patch: ServerModelConfigPatch = {};
+  if ("speechModel" in raw) {
+    const value = raw["speechModel"];
+    if (value !== null && typeof value !== "string") return { ok: false, error: "speechModel must be a string or null" };
+    const id = value?.trim() || null;
+    if (id) {
+      const option = listSpeechModels().find(model => model.id === id);
+      if (!option?.available) return { ok: false, error: option?.unavailableReason ?? "Unsupported speech model" };
+    }
+    patch.speechModel = id;
+  }
   if ("embeddingModel" in raw) {
     const value = raw["embeddingModel"];
     if (value !== null && typeof value !== "string") {
@@ -330,6 +340,7 @@ function parseUpdateBody(
     patch.imageModel === undefined &&
     patch.musicModel === undefined &&
     patch.videoModel === undefined &&
+    patch.speechModel === undefined &&
     patch.fallbackChain === undefined &&
     patch.reasoningOutput === undefined
     && patch.reasoningPolicy === undefined
@@ -350,6 +361,7 @@ export function toWire(config: ResolvedServerModelConfig) {
     imageModel: config.imageModel,
     musicModel: config.musicModel,
     videoModel: config.videoModel,
+    speechModel: config.speechModel,
     fallbackChain: config.fallbackChain,
     reasoningOutput: config.reasoningOutput,
     reasoningPolicy: config.reasoningPolicy,
@@ -395,6 +407,7 @@ export interface ServerModelsRouteDeps {
   getActiveEmbeddingSelection?: () => string | null;
   listMediaModels?: typeof mediaGenerationModels;
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
+  getEffectiveSpeechModel?: () => string | null;
 }
 
 export function serverModelsRoutes(
@@ -420,6 +433,8 @@ export function serverModelsRoutes(
     imageModels: listMediaModels("image"),
     musicModels: listMediaModels("music"),
     videoModels: listMediaModels("video"),
+    speechModels: listSpeechModels().map(({ speech, providerModelId, ...model }) => model),
+    effectiveSpeechModel: (overrides.getEffectiveSpeechModel ?? (() => { try { return getServerSpeechModel().id; } catch { return null; } }))(),
     effectiveImageModel: getEffectiveMediaModel("image"),
     effectiveMusicModel: getEffectiveMediaModel("music"),
     effectiveVideoModel: getEffectiveMediaModel("video"),

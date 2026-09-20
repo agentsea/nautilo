@@ -5,11 +5,11 @@ import {
   splitAtIncompleteVoiceTag,
 } from "../../src/utils/sentence-detector";
 
-// D283 lead-coalescing (default-on in production) holds a short *opening*
+//  lead-coalescing (default-on in production) holds a short *opening*
 // chunk and merges following text into it. Tests that exercise the raw
 // splitting / min-length / streaming mechanics disable it with
 // `leadMinChars: 0` so they assert the splitter in isolation; the dedicated
-// "lead coalescing" block below covers the feature itself, and the D261 /
+// "lead coalescing" block below covers the feature itself, and the
 // idempotency tests keep the default to prove coalescing leaves them intact.
 describe("SentenceDetector", () => {
   test("detects sentence ending with period followed by space", () => {
@@ -117,7 +117,7 @@ describe("SentenceDetector", () => {
     expect(events.length).toBe(1);
   });
 
-  test("D261 — multilingual turn emits three fragments with per-span lang", () => {
+  test("multilingual turn emits three fragments with per-span lang", () => {
     const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const roomId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const detector = new SentenceDetector({ partialTimeoutMs: 0, agentId, roomId });
@@ -136,7 +136,7 @@ describe("SentenceDetector", () => {
     expect(events.every((e) => !e.text.includes("<voice"))).toBe(true);
   });
 
-  test("D261 — survives token splits mid voice tag", () => {
+  test("survives token splits mid voice tag", () => {
     const detector = new SentenceDetector({ partialTimeoutMs: 0 });
     const parts = ["<voi", 'ce lang="es">', "Hola amigo.", "</voice>"];
     for (const part of parts) {
@@ -148,7 +148,7 @@ describe("SentenceDetector", () => {
     expect(events.every((e) => !e.text.includes("<voice"))).toBe(true);
   });
 
-  test("D261 — preserves an entirely tagged turn across every streaming boundary", () => {
+  test("preserves an entirely tagged turn across every streaming boundary", () => {
     const body = "Synthetic English sentence one. Synthetic English sentence two.";
     const tagged = `<voice lang="en">${body}</voice>`;
 
@@ -171,7 +171,7 @@ describe("SentenceDetector", () => {
     assertTagged([...tagged]);
   });
 
-  test("D261 — completed malformed tags remain literal instead of being held", () => {
+  test("completed malformed tags remain literal instead of being held", () => {
     const detector = new SentenceDetector({ partialTimeoutMs: 0, leadMinChars: 0 });
     detector.addToken("Before <voice nope>literal content</voice> after. ");
     const events = detector.drain();
@@ -181,7 +181,7 @@ describe("SentenceDetector", () => {
     expect(events[0]!.lang).toBeUndefined();
   });
 
-  test("D261 — nested voice tag stays literal", () => {
+  test("nested voice tag stays literal", () => {
     const segments = parseVoiceTaggedText(
       '<voice lang="es">outer <voice lang="fr">inner</voice> end</voice>',
     );
@@ -190,7 +190,7 @@ describe("SentenceDetector", () => {
     expect(segments[0]!.text).toContain('<voice lang="fr">');
   });
 
-  test("D261 — malformed voice tag is literal text", () => {
+  test("malformed voice tag is literal text", () => {
     const segments = parseVoiceTaggedText("before <voice>broken</voice> after");
     expect(segments.length).toBe(1);
     expect(segments[0]!.text).toContain("<voice>broken</voice>");
@@ -221,7 +221,7 @@ describe("SentenceDetector", () => {
   });
 });
 
-describe("SentenceDetector — D283 lead coalescing", () => {
+describe("SentenceDetector —  lead coalescing", () => {
   test("merges a short opening sentence forward into the first chunk", () => {
     const detector = new SentenceDetector({ partialTimeoutMs: 0 });
     detector.addToken("Good idea. I'll go ahead and open up the file and take a look. ");
@@ -289,4 +289,24 @@ describe("SentenceDetector — D283 lead coalescing", () => {
     expect(events[1]!.lang).toBe("es");
     expect(events.every((e) => !e.text.includes("<voice"))).toBe(true);
   });
+});
+
+test("idle flush publishes parsed text without another token and preserves incomplete voice tags", async () => {
+  const published: import("@nautilo/types").VoiceSentenceEvent[] = [];
+  const detector = new SentenceDetector({ partialTimeoutMs: 5, leadMinChars: 0, onIdleEvents: events => published.push(...events) });
+  detector.addToken('Hello there <voice lang="');
+  await Bun.sleep(15);
+  expect(published.map(event => event.text)).toEqual(["Hello there"]);
+  expect(detector.drain()).toEqual([]);
+  detector.addToken('es">Buenos días.</voice>'); detector.complete();
+  expect(detector.drain().map(event => [event.text, event.lang])).toEqual([["Buenos días.", "es"]]);
+  detector.reset();
+});
+test("reset cancels idle publication and held short openers flush without later text", async () => {
+  const published: import("@nautilo/types").VoiceSentenceEvent[] = [];
+  const detector = new SentenceDetector({ partialTimeoutMs: 5, onIdleEvents: events => published.push(...events) });
+  detector.addToken("Okay. "); await Bun.sleep(15);
+  expect(published.map(event => event.text)).toEqual(["Okay."]);
+  detector.addToken("This must never escape after cancellation"); detector.reset(); await Bun.sleep(15);
+  expect(published).toHaveLength(1);
 });

@@ -74,6 +74,12 @@ const initialConfig = {
   imageModel: null as string | null,
   musicModel: null as string | null,
   videoModel: null as string | null,
+  speechModel: null as string | null,
+  effectiveSpeechModel: "elevenlabs:eleven_v3_conversational" as string | null,
+  speechModels: [
+    { id: "elevenlabs:eleven_v3_conversational", displayName: "ElevenLabs v3 Conversational", provider: "elevenlabs", available: true },
+    { id: "elevenlabs:eleven_v3", displayName: "ElevenLabs v3", provider: "elevenlabs", available: true },
+  ],
   effectiveImageModel: "venice:gpt-image-2" as string | null,
   effectiveMusicModel: "venice:sonilo-v1-1-music" as string | null,
   effectiveVideoModel: "venice:seedance-2-5-text-to-video-basic" as string | null,
@@ -695,4 +701,19 @@ test("Memory model selection persists independently and inherits Conductor when 
   await act(async () => fireEvent.change(select, { target: { value: "" } }));
   await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
   await waitFor(() => expect(setServerModelsMock.mock.calls[1]?.[0].memoryReviewModel).toBeNull());
+});
+
+test("speech selection saves server-wide and can return to the catalog default", async () => {
+  const view = render(<ModelsSection />);
+  const select = await waitFor(() => view.getByLabelText("Speech model") as HTMLSelectElement);
+  expect(select.value).toBe("");
+  expect(view.getByTestId("effective-speech-model").textContent).toContain("ElevenLabs v3 Conversational");
+  await act(async () => fireEvent.change(select, { target: { value: "elevenlabs:eleven_v3" } }));
+  expect(view.getByText("Not saved yet. Select Save changes to apply this speech model.")).toBeTruthy();
+  expect(view.getByTestId("effective-speech-model").textContent).toContain("ElevenLabs v3 Conversational");
+  await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+  await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0].speechModel).toBe("elevenlabs:eleven_v3"));
+  await act(async () => fireEvent.change(select, { target: { value: "" } }));
+  await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+  await waitFor(() => expect(setServerModelsMock.mock.calls[1]?.[0].speechModel).toBeNull());
 });

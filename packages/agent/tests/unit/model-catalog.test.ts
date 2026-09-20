@@ -648,7 +648,7 @@ describe("the current implementation/7.3 — runtime seam, reconciliation, and c
 
   function configureRemote(manifest: ModelCatalog, now = 0): void {
     const { pointer, immutableBody } = buildSignedRelease(manifest, key);
-    const manifestUrl = `https://media.nautilo.ai/models/v4/catalog-${manifest.catalogVersion}.json`;
+    const manifestUrl = `https://media.nautilo.ai/models/v5/catalog-${manifest.catalogVersion}.json`;
     configureRuntimeModelCatalog({
       remoteConfig: {
         ttlMs: 1000,
@@ -666,8 +666,8 @@ describe("the current implementation/7.3 — runtime seam, reconciliation, and c
     });
   }
 
-  test("ships the verified official pointer URL", () => {
-    expect(OFFICIAL_MODEL_CATALOG_POINTER_URL).toBe("https://media.nautilo.ai/models/v4/latest.json");
+  test("targets the reader-first speech catalog channel", () => {
+    expect(OFFICIAL_MODEL_CATALOG_POINTER_URL).toBe("https://media.nautilo.ai/models/v5/latest.json");
   });
 
   test("Zod contract represents reviewed xai, together, and gateway routing classes", () => {
@@ -882,7 +882,7 @@ describe("the current implementation/7.3 — runtime seam, reconciliation, and c
       "priority",
       "fast",
     ]);
-    expect(localModelCatalog.version).toBe(4);
+    expect(localModelCatalog.version).toBe(5);
   });
 
   test("hydrate failure is non-fatal and leaves the checked-in fallback active", async () => {

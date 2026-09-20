@@ -88,7 +88,7 @@ const modelConfig: ResolvedServerModelConfig = {
   embeddingModel: null,
   imageModel: null,
   musicModel: null,
-  videoModel: null,
+  videoModel: null, speechModel: null,
   fallbackChain: ["openai:gpt-5.4-mini"],
   reasoningOutput: { [KNOWN_MODEL]: true },
   reasoningPolicy: { defaultEffort: null, overrides: {} },
@@ -105,7 +105,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       embeddingModel: null,
       imageModel: null,
       musicModel: null,
-      videoModel: null,
+      videoModel: null, speechModel: null,
       fallbackChain: [KNOWN_MODEL],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: {} },
@@ -120,7 +120,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         embeddingModel: null,
         imageModel: null,
         musicModel: null,
-        videoModel: null,
+        videoModel: null, speechModel: null,
         fallbackChain: [KNOWN_MODEL],
         reasoningOutput: { [KNOWN_MODEL]: false },
         reasoningPolicy: { defaultEffort: null, overrides: {} },
@@ -205,7 +205,7 @@ describe("server-models toWire", () => {
       embeddingModel: null,
       imageModel: null,
       musicModel: null,
-      videoModel: null,
+      videoModel: null, speechModel: null,
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
@@ -219,7 +219,7 @@ describe("server-models toWire", () => {
       embeddingModel: null,
       imageModel: null,
       musicModel: null,
-      videoModel: null,
+      videoModel: null, speechModel: null,
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
@@ -353,7 +353,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           embeddingModel: null,
           imageModel: null,
           musicModel: null,
-          videoModel: null,
+          videoModel: null, speechModel: null,
           fallbackChain: patch.fallbackChain ?? modelConfig.fallbackChain,
           reasoningOutput: patch.reasoningOutput ?? modelConfig.reasoningOutput,
           reasoningPolicy: patch.reasoningPolicy ?? modelConfig.reasoningPolicy,
@@ -414,7 +414,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         embeddingModel: null,
         imageModel: null,
         musicModel: null,
-        videoModel: null,
+        videoModel: null, speechModel: null,
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
@@ -512,7 +512,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         embeddingModel: null,
         imageModel: null,
         musicModel: null,
-        videoModel: null,
+        videoModel: null, speechModel: null,
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
@@ -665,5 +665,36 @@ test("media GET returns supported options and effective selections", async () =>
     effectiveImageModel: "venice:gpt-image-2",
     effectiveMusicModel: "venice:sonilo-v1-1-music",
     effectiveVideoModel: "venice:seedance-2-5-text-to-video-basic",
+  } });
+});
+
+test("speech selection validates catalog membership and credentials", () => {
+  const previous = process.env["ELEVENLABS_API_KEY"];
+  configureRuntimeModelCatalog({ catalogPointerUrl: null });
+  try {
+    process.env["ELEVENLABS_API_KEY"] = "synthetic-test-key";
+    expect(parseUpdateBodyForTests({ speechModel: "elevenlabs:eleven_v3" })).toEqual({ ok: true, patch: { speechModel: "elevenlabs:eleven_v3" } });
+    expect(parseUpdateBodyForTests({ speechModel: null })).toEqual({ ok: true, patch: { speechModel: null } });
+    expect(parseUpdateBodyForTests({ speechModel: "anthropic:claude-sonnet-4-6" }).ok).toBe(false);
+    expect(parseUpdateBodyForTests({ speechModel: "elevenlabs:unknown" }).ok).toBe(false);
+    delete process.env["ELEVENLABS_API_KEY"];
+    expect(parseUpdateBodyForTests({ speechModel: "elevenlabs:eleven_v3" }).ok).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env["ELEVENLABS_API_KEY"]; else process.env["ELEVENLABS_API_KEY"] = previous;
+    resetRuntimeModelCatalog();
+  }
+});
+
+test("speech GET reports the active runtime model when saved configuration refresh fails", async () => {
+  const call = routeHarness({
+    getCapabilities: async () => ["read_server_settings"],
+    getDb: () => ({}) as never,
+    getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+    getConfig: async () => ({ ...modelConfig, speechModel: "elevenlabs:eleven_v3" }),
+    refreshConfigCache: async () => null,
+    getEffectiveSpeechModel: () => "elevenlabs:eleven_v3_conversational",
+  });
+  expect(await call("GET", { ...requestBase, sessionUserId: "viewer" })).toMatchObject({ status: 200, body: {
+    speechModel: "elevenlabs:eleven_v3", effectiveSpeechModel: "elevenlabs:eleven_v3_conversational",
   } });
 });
