@@ -5,6 +5,8 @@ import { NATIVE_COMPATIBILITY_SCHEMAS } from "@nautilo/computer-use-contracts/na
 
 import type { CuaCheckedContextPort, CuaMainLifecycle } from "../../src/native-cua-lifecycle.ts";
 import { createNativeCuaHost } from "../../src/native-host.ts";
+import { COMPUTER_USE_HOST_VERSION } from "../../src/version.ts";
+import classificationReview from "../../reviews/0.1.24.json";
 
 function checkedPort(): CuaCheckedContextPort {
   return {
@@ -65,6 +67,12 @@ test("native Host owns lifecycle startup, checked generation, contracts, invalid
     COMPUTER_USE_BROWSER_CONTRACTS.pointer,
     COMPUTER_USE_BROWSER_CONTRACTS.dialog,
   ]);
+  const readyContracts = [...runtime.host.ready().contracts].sort((left, right) =>
+    left.contractId.localeCompare(right.contractId)
+    || left.contractNamespace.localeCompare(right.contractNamespace)
+    || left.contractVersion - right.contractVersion);
+  expect(classificationReview.hostVersion).toBe(COMPUTER_USE_HOST_VERSION);
+  expect(classificationReview.contracts).toEqual(readyContracts);
   const closeNative = spyOn(runtime.adapter, "close");
   invalidate?.({ generation: "cua_other_generation", reason: "supervisor_invalidated" });
   expect(closeNative).not.toHaveBeenCalled();
