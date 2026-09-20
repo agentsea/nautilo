@@ -9,7 +9,6 @@ import { nativeDecisionPlanSchema, nativeDecisionHostArguments } from "../../src
 import { nativeDecisionCandidates, nativeDecisionDispatchError, nativeDecisionEvidence, nativeDecisionResult, projectNativeDecisionScreen, settleNativeDecision, type NativeDecisionState } from "../../src/graph/native-decision";
 import { createNativeDecisionNode } from "../../src/nodes/native-decision";
 import { resolveNativeDecisionModel } from "../../src/config/native-decision-model";
-import { getEligibleModels } from "../../src/config/eligible-models";
 import { createComputerHostContractTool } from "../../src/tools/computer/computer-host-contract";
 import { computerResultDurableSidecar, projectSemanticComputerResult } from "../../src/tools/computer/model-result-projector";
 import { resolveComputerUseHostToolRequest } from "../../src/config/computer-use-catalogue/host-tool-admission";
@@ -248,7 +247,7 @@ test("native delegation is exposed with chat credentials but no Choice route", a
   } });
   await hydrateRuntimeModelCatalog();
   const model = resolveNativeDecisionModel({ turnId: "turn-1", fullEncryptionOnly: false });
-  expect(model?.id).toBe(getEligibleModels({ purpose: "chat-tools" })[0]?.id);
+  expect(model?.id).toBe("openrouter:qwen/qwen3.8-flash");
   expect(JSON.stringify(createComputerHostContractTool("computer_observe", { turnId: "turn-1", fullEncryptionOnly: false }).schema)).toContain('"decisionPlan"');
   expect(resolveNativeDecisionModel({ turnId: "turn-1", fullEncryptionOnly: true })).toBeNull();
 });

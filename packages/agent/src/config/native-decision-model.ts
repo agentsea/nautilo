@@ -1,11 +1,17 @@
 import { getEligibleModels } from "./eligible-models";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 
-/** The active signed catalogue owns membership and priority. Exact selections
- * never silently switch models; credentials, capabilities and routing still apply. */
+// Temporary experiment selection, not a new catalogue capability or chat default.
+// Promote controller selection to reviewed catalogue policy after live qualification.
+const PROTOTYPE_CONTROLLER_MODEL = "openrouter:qwen/qwen3.8-flash";
+
+/** A pinned prototype still requires active catalogue admission and credentials.
+ * No arbitrary chat-model fallback, catalogue insertion or picker mutation. */
 export function resolveNativeControllerModel(modelId?: string) {
+  const selected = modelId ?? PROTOTYPE_CONTROLLER_MODEL;
+  if (selected !== PROTOTYPE_CONTROLLER_MODEL) return null;
   const eligible = getEligibleModels({ purpose: "chat-tools" });
-  return (modelId === undefined ? eligible[0] : eligible.find(model => model.id === modelId)) ?? null;
+  return eligible.find(model => model.id === selected) ?? null;
 }
 
 /** Native and browser delegation share Choice, but native selection can also use chat tools. */

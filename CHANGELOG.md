@@ -20,8 +20,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Native Computer Use can hand structured control selection from a decision
   model to a routine interpretation model, then return after fresh observation.
   Both select bound choice IDs through the same action checks; input content and
-  uncertain effects survive the handoff. A credentialed, tool-capable chat model
-  can also select controls when no decision model is available.
+  uncertain effects survive the handoff. The prototype controller can also select
+  controls without a decision model when its catalogue entry and credentials
+  remain available; it does not change general chat defaults or model visibility.
 
 - Computer Use no longer duplicates screenshot-result text in OpenAI-compatible
   model requests. Parallel tool results stay paired before their attachments.

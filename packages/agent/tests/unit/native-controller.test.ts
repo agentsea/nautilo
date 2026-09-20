@@ -21,12 +21,12 @@ function input(signal = new AbortController().signal): ChoiceInput {
     choices: [{ id: "a1_0", description: "Insert content into observed editor" }, { id: "request_replan", description: "Return for replanning" }], signal };
 }
 
-test("controller discovery follows active catalogue membership and priority without model-name preferences", async () => {
+test("prototype controller remains pinned while catalogue withdrawal, capabilities and credentials stay authoritative", async () => {
   const catalog = structuredClone(getActiveModelCatalogSync().catalog);
   const template = catalog.entries.find(entry => entry.id === input().modelId)!;
   catalog.entries = [
-    { ...template, id: "openrouter:example/controller-alpha", priority: 20 },
-    { ...template, id: "openrouter:example/controller-beta", priority: 10 },
+    { ...template, priority: 20 },
+    { ...template, id: "openrouter:example/general-chat", priority: 1 },
   ];
   configureRuntimeModelCatalog({ loader: {
     get: async () => ({ catalog, source: "remote-fresh", stale: false,
@@ -35,13 +35,13 @@ test("controller discovery follows active catalogue membership and priority with
     refresh: async () => {}, clearCache: () => {},
   } });
   await hydrateRuntimeModelCatalog();
-  expect(resolveNativeControllerModel()?.id).toBe("openrouter:example/controller-beta");
-  expect(resolveNativeControllerModel("openrouter:example/controller-alpha")?.id).toBe("openrouter:example/controller-alpha");
-  expect(resolveNativeControllerModel(input().modelId)).toBeNull();
-  catalog.entries[1]!.defaultEnabled = false;
+  expect(resolveNativeControllerModel()?.id).toBe(input().modelId);
+  expect(resolveNativeControllerModel("openrouter:example/general-chat")).toBeNull();
+  catalog.entries[0]!.defaultEnabled = false;
   await hydrateRuntimeModelCatalog();
-  expect(resolveNativeControllerModel()?.id).toBe("openrouter:example/controller-alpha");
-  expect(resolveNativeControllerModel("openrouter:example/controller-beta")).toBeNull();
+  expect(resolveNativeControllerModel()).toBeNull();
+  expect(resolveNativeControllerModel(input().modelId)).toBeNull();
+  catalog.entries[0]!.defaultEnabled = true;
   catalog.entries[0]!.features!.tools = false;
   await hydrateRuntimeModelCatalog();
   expect(resolveNativeControllerModel()).toBeNull();
