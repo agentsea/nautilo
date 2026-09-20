@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { computerNativeControlCollectionSchema } from "@nautilo/computer-use-contracts/native";
+import type { z } from "zod";
 import { resolveComputerUseHostToolRequest } from "../../src/config/computer-use-catalogue/host-tool-admission";
 
 /** Synthetic state machine, not a Word emulator or a desktop executor. The
@@ -17,8 +18,16 @@ export interface ProverReceipt {
   stateChange: "not_changed" | "changed" | "unknown";
 }
 export interface ProverFrame {
-  evidence: Record<string, unknown>;
+  evidence: ProverEvidence;
   candidates: ProverCandidate[];
+}
+export interface ProverEvidence {
+  applications?: Array<{ name: string; running: boolean }>;
+  application?: string;
+  window?: string;
+  controlCollection?: Omit<z.infer<typeof computerNativeControlCollectionSchema>, "controls"> & {
+    controls: Array<Omit<z.infer<typeof computerNativeControlCollectionSchema>["controls"][number], "target">>;
+  };
 }
 
 const digest = (value: string) => createHash("sha256").update(value).digest("base64url");
@@ -53,7 +62,7 @@ export function createNativeProverFixture(name: NativeProverCase, seed: string) 
       candidates.push({ id: `action_${digest(`${seed}:${generation}:${JSON.stringify(description)}`)}`,
         description: JSON.stringify(description), ...(operation ? { operation } : {}) });
     };
-    let evidence: Record<string, unknown>;
+    let evidence: ProverEvidence;
     if (screen === "applications") {
       const applications = ["Notes", "Word", "Calculator"];
       evidence = { applications: applications.map(name => ({ name, running: runningApps.has(name) })) };
@@ -71,7 +80,7 @@ export function createNativeProverFixture(name: NativeProverCase, seed: string) 
             : screen === "document" && index === 0 ? { value: body } : {}) } })),
       });
       // The model needs current labels/state and local ids, not opaque target bytes.
-      evidence = { application: "Word", window: screen === "document" ? "New document" : screen,
+      evidence = { application: "Word", window: screen === "document" || screen === "unknown_document" ? "New document" : screen,
         controlCollection: { ...collection, controls: collection.controls.map(({ target: _target, ...row }) => row) } };
       for (const row of collection.controls) {
         add({ kind: "click", control: row.id }, { kind: "click", target: row.target });
@@ -92,8 +101,11 @@ export function createNativeProverFixture(name: NativeProverCase, seed: string) 
     );
     // Vary position and opaque identifiers independently of the expected answer.
     candidates.sort((a, b) => digest(`${seed}:${generation}:${a.id}`).localeCompare(digest(`${seed}:${generation}:${b.id}`)));
-    lastCandidates = candidates;
-    return { evidence, candidates };
+    // Short snapshot-local aliases are sufficient for model selection. Native
+    // authority stays in the private operation; never send hash handles as ids.
+    lastCandidates = candidates.map((candidate, index) => candidate.operation
+      ? { ...candidate, id: `a${generation}_${index}` } : candidate);
+    return { evidence, candidates: lastCandidates };
   }
 
   function apply(id: string): ProverReceipt {

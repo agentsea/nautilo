@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseProverArguments, runNativeDecisionProver } from "../../scripts/native-decision-prover";
+import { z } from "zod";
+import { parseProverArguments, projectProverScreeningState, runNativeDecisionProver } from "../../scripts/native-decision-prover";
 import { createNativeProverFixture, NATIVE_PROVER_CASES, PROVER_TEXT, type NativeProverCase } from "../fixtures/native-decision-prover";
 import type { ChoiceInput, ChoiceResult } from "../../src/providers/choice";
 
@@ -11,6 +12,9 @@ function answer(id: string): ChoiceResult {
 // A test-only oracle validates the harness, not Jev quality. It sees exactly the
 // same public synthetic state as the provider, never fixture.inspect().
 function oracle(input: ChoiceInput): Promise<ChoiceResult> {
+  // The real provider rejects undefined even when JSON.stringify would silently
+  // drop it. Exercise its JSON-value boundary on every simulated round.
+  expect(() => z.json().parse(input.state)).not.toThrow();
   const state = input.state as { goal: string; current: { applications?: unknown[]; window?: string;
     controlCollection?: { controls: Array<{ id: string; state: { value?: string } }> } } };
   let control: string | undefined;
@@ -23,10 +27,11 @@ function oracle(input: ChoiceInput): Promise<ChoiceResult> {
   else if (current.window === "canvas") control = "needs_visual_evidence";
   else if (current.window === "unknown_document") control = "defer_to_genie";
   else if (current.window === "settings") {
-    if (current.controlCollection?.controls[286]?.state.value === "42") control = "completion_ready";
+    if (current.controlCollection?.controls.find(row => row.id === "c286")?.state.value === "42") control = "completion_ready";
     else desired = { kind: "set_value", control: "c286" };
   } else if (current.window === "New document") {
     if (current.controlCollection?.controls[0]?.state.value === PROVER_TEXT || state.goal.startsWith("Open a new document")) control = "completion_ready";
+    else if (current.controlCollection?.controls[0]?.state.value === undefined) control = "defer_to_genie";
     else desired = { kind: "type_text", control: "c0" };
   }
   const candidate = input.choices.find(candidate => {
@@ -104,14 +109,72 @@ describe("native decision prover (offline harness checks, not model or GUI accep
       expect(input.choices.length).toBeLessThanOrEqual(255);
       expect(JSON.stringify(input.state)).not.toContain("detgt_");
       if (input.choices.some(candidate => candidate.id === "none_in_group")) {
+        const current = (input.state as { current: { controlCollection: { controls: Array<{id: string}> } } }).current;
+        const requested = new Set(input.choices.filter(choice => choice.id !== "none_in_group")
+          .map(choice => (JSON.parse(choice.description) as {control: string}).control));
+        expect(current.controlCollection.controls.map(row => row.id).sort()).toEqual([...requested].sort());
+        expect(current.controlCollection.controls.length).toBeLessThan(300);
         for (const candidate of input.choices) if (candidate.id !== "none_in_group") seen.add(candidate.description);
+      } else {
+        expect((input.state as {current: {controlCollection: {controls: unknown[]}}}).current.controlCollection.controls).toHaveLength(300);
       }
+      expect(input.choices.filter(choice => choice.id.startsWith("a")).every(choice => /^a\d+_\d+$/.test(choice.id))).toBe(true);
       return oracle(input);
     } });
     expect(report.verdict).toBe("fixture_goal_verified");
     expect(seen.size).toBe(600);
     expect(report.screeningRounds).toBe(2);
     expect(report.selectedActions).toBe(1);
+  });
+
+  test("projection retains ancestors, labels, values and metadata without changing candidate coverage", () => {
+    const controls = [
+      { id: "root", role: "group", label: "Channel settings", state: { completeness: "partial" } },
+      { id: "target", parent: "root", role: "slider", label: "Gain", state: { completeness: "partial", value: "10" } },
+      { id: "other", role: "slider", label: "Gain", state: { completeness: "partial", value: "90" } },
+    ];
+    const input: ChoiceInput = { modelId: "fixture-choice", signal: new AbortController().signal, instructions: "test",
+      state: { goal: "set gain", current: { controlCollection: { completeness: "partial", received: 3, omitted: 0, controls } } },
+      choices: [{ id: "a1_0", description: JSON.stringify({ kind: "set_value", control: "target", value: "42" }) },
+        { id: "none_in_group", description: "none" }] };
+    const serialized = JSON.stringify(input);
+    const projected = projectProverScreeningState(input);
+    expect(projected.choices).toBe(input.choices);
+    expect(projected.state).toMatchObject({ current: { controlCollection: { received: 3, omitted: 0, controls: controls.slice(0, 2) },
+      projection: { totalObservedControls: 3, controlsInThisGroup: 2 } } });
+    expect(JSON.stringify(input)).toBe(serialized);
+    const final = { ...input, choices: input.choices.slice(0, 1) };
+    expect(projectProverScreeningState(final)).toBe(final);
+    const missing = { ...input, choices: [{ id: "a1_1", description: '{"control":"missing"}' }, input.choices[1]!] };
+    expect(projectProverScreeningState(missing)).toBe(missing);
+  });
+
+  test("different snapshot controls named c0 never collapse into one historical click", async () => {
+    const report = await run("wrong_menu");
+    const clicks = report.history.filter(row => row.action === '{"kind":"click","control":"c0"}');
+    expect(clicks).toHaveLength(3);
+    expect(clicks.map(row => row.source.control?.label)).toEqual(["Blank document", "Back to start", "Blank document"]);
+    expect(clicks.map(row => row.source.window)).toEqual(["home", "wrong_menu", "home"]);
+    expect(clicks.every(row => row.repetitions === undefined)).toBe(true);
+    expect(clicks.map(row => row.observed.window)).toEqual(["wrong_menu", "home", "New document"]);
+  });
+
+  test("unchanged reobservation exposes no-progress facts but does not hide recovery choices", async () => {
+    let sawNoProgress = false;
+    const report = await run("uncertain_hidden", { choose: async input => {
+      const state = input.state as { current: {window?: string}; progress: {unchangedReobservations: number;lastMutationOutcome: string} };
+      if (state.progress.lastMutationOutcome !== "unknown_completion") return oracle(input);
+      if (state.progress.unchangedReobservations === 0) return answer("reobserve");
+      expect(state.progress.lastMutationOutcome).toBe("unknown_completion");
+      expect(state.progress.unchangedReobservations).toBe(1);
+      expect(input.choices.some(choice => choice.id === "reobserve")).toBe(true);
+      sawNoProgress = true;
+      return answer("needs_visual_evidence");
+    } });
+    expect(sawNoProgress).toBe(true);
+    expect(report.handoff).toBe("needs_visual_evidence");
+    expect(report.verdict).toBe("expected_handoff");
+    expect(report.actual.insertionCount).toBe(1);
   });
 
   test("fresh observation expires old fixture targets and randomizes positions", () => {
@@ -149,7 +212,22 @@ describe("native decision prover (offline harness checks, not model or GUI accep
       return oracle(input);
     } });
     expect(report.actual.insertionCount).toBe(2);
-    expect(report.verdict).toBe("false_completion");
+    expect(report.verdict).toBe("unsafe_duplicate_insertion");
+  });
+
+  test("later supervisor handback cannot hide a duplicate insertion", async () => {
+    let retried = false;
+    const report = await run("uncertain_hidden", { choose: async input => {
+      const state = input.state as { progress: { lastMutationOutcome: string | null }; current: {window: string} };
+      if (state.progress.lastMutationOutcome !== "unknown_completion") return oracle(input);
+      expect(state.current.window).toBe("New document");
+      if (retried) return answer("defer_to_genie");
+      retried = true;
+      return answer(input.choices.find(choice => choice.description.startsWith('{"kind":"type_text","control":"c0"'))!.id);
+    } });
+    expect(report.actual.insertionCount).toBe(2);
+    expect(report.verdict).toBe("unsafe_duplicate_insertion");
+    expect(report.requests).toHaveLength(4);
   });
 
   test("concurrent screening cannot exceed the shared caller-owned request budget", async () => {
