@@ -1,5 +1,5 @@
 /**
- * D340 — static checks for Current Folder -> relay root refresh wiring.
+ * Static checks for Current Folder -> relay root refresh wiring.
  *
  * `electron/main.ts` cannot be imported directly under bun:test without an
  * Electron runtime, so this pins the lifecycle wiring at source level.
@@ -21,7 +21,7 @@ describe("Current Folder relay root refresh wiring", () => {
       "function commitCurrentFolderPath(p: string, options: {refreshRelay?: boolean} = {}): void",
     );
     expect(fnStart).toBeGreaterThan(-1);
-    const fnEnd = main.indexOf("/** D154", fnStart);
+    const fnEnd = main.indexOf("function showWorkingFolderCommitError(", fnStart);
     expect(fnEnd).toBeGreaterThan(fnStart);
     const fnSlice = main.slice(fnStart, fnEnd);
 
@@ -45,7 +45,7 @@ describe("Current Folder relay root refresh wiring", () => {
   test("boot establishes a persisted Working Folder before workspace, renderer, or mutation-runtime consumers", () => {
     const bootStart = main.indexOf("async function boot(): Promise<void>");
     expect(bootStart).toBeGreaterThan(-1);
-    const bootEnd = main.indexOf("// D103 P3.7", bootStart);
+    const bootEnd = main.indexOf("app.setAboutPanelOptions(", bootStart);
     expect(bootEnd).toBeGreaterThan(bootStart);
     const boot = main.slice(bootStart, bootEnd);
 
@@ -64,7 +64,8 @@ describe("Current Folder relay root refresh wiring", () => {
 
   test("bootstrap never refreshes relay merely for its initial folder selection", () => {
     const bootStart = main.indexOf("async function boot(): Promise<void>");
-    const bootEnd = main.indexOf("// D103 P3.7", bootStart);
+    const bootEnd = main.indexOf("app.setAboutPanelOptions(", bootStart);
+    expect(bootEnd).toBeGreaterThan(bootStart);
     const boot = main.slice(bootStart, bootEnd);
     const bootstrapStart = boot.indexOf("resolveWorkingFolderBootstrap(");
     const workspaceIdx = boot.indexOf("genieWorkspaceRoot = ensureDefaultGenieWorkspace()");
@@ -79,7 +80,7 @@ describe("Current Folder relay root refresh wiring", () => {
   test("refresh helper serializes stop and boot through existing relay lifecycle", () => {
     const fnStart = main.indexOf("async function refreshRelayForCurrentFolder");
     expect(fnStart).toBeGreaterThan(-1);
-    const fnEnd = main.indexOf("/** * M055", fnStart);
+    const fnEnd = main.indexOf("function refreshAuthMenuState(", fnStart);
     expect(fnEnd).toBeGreaterThan(fnStart);
     const fnSlice = main.slice(fnStart, fnEnd);
 
@@ -96,7 +97,7 @@ describe("Current Folder relay root refresh wiring", () => {
   test("relay keeps Genie Workspace as its baseline and never turns it into Current Folder", () => {
     const fnStart = main.indexOf("async function startRelayForSession");
     expect(fnStart).toBeGreaterThan(-1);
-    const fnEnd = main.indexOf("/** * D340", fnStart);
+    const fnEnd = main.indexOf("async function refreshRelayForCurrentFolder(", fnStart);
     expect(fnEnd).toBeGreaterThan(fnStart);
     const fnSlice = main.slice(fnStart, fnEnd);
 

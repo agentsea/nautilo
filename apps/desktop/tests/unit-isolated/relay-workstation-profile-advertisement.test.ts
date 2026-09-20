@@ -1,5 +1,5 @@
 /**
- * D418 — relay Workstation Profile advertisement wiring tests.
+ * Relay Workstation Profile advertisement wiring tests.
  *
  * Verifies the relay capability builder includes the shared
  * ActiveWorkstationProfileController's redacted profile snapshot in
@@ -229,7 +229,7 @@ describe("relay capability builder — profile snapshot inclusion (source wiring
   });
 });
 
-describe("D418 local authority-boundary correction — dispatch handler wiring (source wiring)", () => {
+describe("local authority-boundary correction — dispatch handler wiring (source wiring)", () => {
   const desktopRoot = join(import.meta.dir, "../..");
   const relay = readFileSync(join(desktopRoot, "electron/relay.ts"), "utf-8");
 
@@ -311,7 +311,9 @@ describe("main — shared controller wiring (source wiring)", () => {
     const optionStart = main.indexOf("onComputerUseTopologyChange: (refreshRelayCapabilities) =>");
     const option = main.slice(optionStart, optionStart + 220);
     const reconcileStart = main.indexOf("async function reconcileComputerUseTopology(");
-    const reconcileEnd = main.indexOf("// D418 — local-only human grant administration", reconcileStart);
+    const reconcileEnd = main.indexOf("const desktopFilesystemGrantDurableStore =", reconcileStart);
+    expect(reconcileStart).toBeGreaterThan(-1);
+    expect(reconcileEnd).toBeGreaterThan(reconcileStart);
     const reconcile = main.slice(reconcileStart, reconcileEnd);
 
     expect(optionStart).toBeGreaterThan(-1);
@@ -327,7 +329,7 @@ describe("main — shared controller wiring (source wiring)", () => {
   });
 
   test("the activate callback skips its fire-and-forget re-advertise so it cannot race the handler's awaited refresh", () => {
-    // D418 first-enable race: `activate()` fires `onActiveProfileChanged`
+    // First-enable race: `activate()` fires `onActiveProfileChanged`
     // synchronously, which used to fire-and-forget a refresh that raced the
     // handler's explicit awaited `refreshDesktopRelayCapabilities("workstation
     // profile activation complete")`. The callback must now short-circuit for

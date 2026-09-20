@@ -15,7 +15,7 @@ function work(epoch: string, generation: number, abort: () => void): ComputerUse
   return { installationEpoch: epoch, grantGeneration: generation, abort };
 }
 
-describe("D516 main-process Computer use revocation fencing", () => {
+describe("main-process Computer use revocation fencing", () => {
   test("status stays side-effect free while startup and manual recovery share the managed Host route", () => {
     const statusStart = mainSource.indexOf('ipcMain.handle("computerUse:status"');
     const checkStart = mainSource.indexOf('ipcMain.handle("computerUse:check"');
@@ -83,15 +83,16 @@ describe("D516 main-process Computer use revocation fencing", () => {
     expect(wakeConnections).toBeGreaterThan(rebind);
 
     const signInStart = mainSource.indexOf("async function handleSignIn(");
-    const signInEnd = mainSource.indexOf("/**\n * M101", signInStart);
+    const signInEnd = mainSource.indexOf("async function handleAuthStepUp(", signInStart);
     expect(signInStart).toBeGreaterThan(-1);
+    expect(signInEnd).toBeGreaterThan(signInStart);
     expect(mainSource.slice(signInStart, signInEnd)).toContain("void bootRelayIfPossible(serverUrl);");
   });
 
   test("a reconnect refreshes and wakes an already-mounted Connections card even when local status fails", () => {
     const relayStart = mainSource.indexOf("async function startRelayForSession");
     const reconcileStart = mainSource.indexOf("async function reconcileComputerUseTopology");
-    const reconcileEnd = mainSource.indexOf("// D418", reconcileStart);
+    const reconcileEnd = mainSource.indexOf("const desktopFilesystemGrantDurableStore =", reconcileStart);
     expect(mainSource.slice(relayStart, reconcileStart)).toContain(
       "onComputerUseTopologyChange: (refreshRelayCapabilities) =>\n      reconcileComputerUseTopology(refreshRelayCapabilities),",
     );

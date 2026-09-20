@@ -1,5 +1,5 @@
 /**
- * D418 — Workstation Profile review / activation-preparation IPC wiring checks.
+ * Workstation Profile review / activation-preparation IPC wiring checks.
  *
  * Electron is mocked by inspecting the registered handler source rather than
  * importing main.ts, whose top-level boot path requires an Electron runtime.
@@ -38,7 +38,8 @@ function handlerSlice(channel: string): string {
     return `${main.slice(start, main.indexOf("ipcMain.handle(", start + 1))} ${main.slice(helperStart, start)}`;
   }
   if (channel === "deactivateActiveProfile") {
-    const activationSection = main.indexOf("// ── D418 — Workstation Profile activation seam", start);
+    const activationSection = main.indexOf("type WorkstationProfileServerActivationResponse =", start);
+    expect(activationSection).toBeGreaterThan(start);
     return main.slice(start, activationSection);
   }
   const next = main.indexOf("ipcMain.handle(", start + 1);
@@ -52,7 +53,7 @@ function uncontainedHandlerSlice(channel: "getStatus" | "activate" | "disable"):
   return main.slice(start, next === -1 ? undefined : next);
 }
 
-describe("D538 uncontained-host-command IPC", () => {
+describe("uncontained-host-command IPC", () => {
   test("sender-gates every operation and retains relay/session authority in main", () => {
     for (const channel of ["getStatus", "activate", "disable"] as const) {
       const slice = uncontainedHandlerSlice(channel);
@@ -83,7 +84,7 @@ describe("D538 uncontained-host-command IPC", () => {
     expect(disable).not.toContain("args?.desktopSessionId");
   });
 
-  test("D538 relay admission rechecks the main-owned exact status before the D486 runner", () => {
+  test("relay admission rechecks the main-owned exact status before the runner", () => {
     expect(main).toContain("verifyUncontainedHostCommandsForRelay");
     expect(main).toContain("/api/security/uncontained-host-commands/session?");
     expect(main).toContain("binding.desktopSessionId !== current.desktopSessionId");
@@ -335,7 +336,7 @@ describe("workstation profile review IPC — preload + workbench surface", () =>
   });
 });
 
-// ── D418 — Workstation Profile management bridge (narrow, sender-gated) ────
+// ── Workstation Profile management bridge (narrow, sender-gated) ────
 
 const MANAGEMENT_CHANNELS = [
   "materializeSeedProfile",
@@ -482,7 +483,7 @@ describe("workstation profile management IPC — preload + workbench surface", (
   });
 });
 
-// ── D418 — Workstation Profile activation seam (selectActiveProfile) ───────
+// ── Workstation Profile activation seam (selectActiveProfile) ───────
 //
 // The activation channel is the ONE bridge method that compiles a stored
 // profile into live authority — and only after the server proof flow
