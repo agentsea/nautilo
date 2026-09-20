@@ -156,7 +156,7 @@ test("publishes exact slider state only on the unique selected element through a
   })]);
 
   const observed = await observedWindow(host, "slider-state");
-  expect(COMPUTER_USE_NATIVE_CONTRACTS.observe.contractVersion).toBe(10);
+  expect(COMPUTER_USE_NATIVE_CONTRACTS.observe.contractVersion).toBe(11);
   expect(observed).toMatchObject({ settlement: "completed", result: {
     operation: "window_state",
     element: { disposition: "unique", state: {
@@ -266,4 +266,151 @@ test("a set_value receipt never republishes state, while the next explicit read 
   } });
   expect(checked.calls.filter((call) => call.name === "get_window_state")).toHaveLength(3);
   expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(refreshed.result).success).toBe(true);
+});
+
+function collectionState(elements: readonly Readonly<Record<string, unknown>>[]) {
+  return result({ window_id: 90, pid: 42, elements_complete: false,
+    element_count: elements.length, returned_element_count: elements.length, total_element_count: elements.length,
+    tree_markdown: "private raw accessibility tree", _note: "private provider diagnostic", elements });
+}
+
+type CollectionObservation = { target: object; controlCollection: {
+  completeness: string; received: number; omitted: number;
+  controls: Array<{ id: string; parent?: string; role: string; label?: string; enabled?: boolean; target?: object; state: object }>;
+} };
+
+const duplicateControls = [
+  { element_index: 80, element_token: "private-group-token", role: "AXGroup", label: "Audio", depth: 0 },
+  { element_index: 81, element_token: "private-left-token", parent_index: 80, role: "AXSlider", label: "Volume", enabled: true, value: "10", min: 0, max: 100 },
+  { element_index: 82, element_token: "private-right-token", parent_index: 80, role: "AXSlider", label: "Volume", enabled: true, value: "20", min: 0, max: 100 },
+];
+
+test("publishes distinct native controls, state and local hierarchy without leaking provider identity", async () => {
+  const { host } = hostFor([apps(), windows(), collectionState(duplicateControls)]);
+  const target = await desktopTarget(host, "collection-desktop");
+  const observed = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "collection", { operation: "window_state", target }));
+  expect(observed.settlement).toBe("completed");
+  const value = observed.result as unknown as CollectionObservation;
+  expect(value.controlCollection).toMatchObject({ completeness: "partial", received: 3, omitted: 0, controls: [
+    { id: "c0", role: "group", label: "Audio" },
+    { id: "c1", parent: "c0", role: "slider", label: "Volume", state: { value: "10", range: { minimum: 0, maximum: 100 } } },
+    { id: "c2", parent: "c0", role: "slider", label: "Volume", state: { value: "20" } },
+  ] });
+  expect(value.controlCollection.controls[1]!.target).not.toEqual(value.controlCollection.controls[2]!.target);
+  expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(value).success).toBe(true);
+  expect(JSON.stringify(value)).not.toMatch(/private-.*-token|element_index|parent_index|private raw accessibility tree/);
+  const forged = structuredClone(value);
+  forged.controlCollection.controls[1]!.target = { ...forged.controlCollection.controls[1]!.target, context: `dctx_${"b".repeat(43)}` };
+  expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(forged).success).toBe(false);
+});
+
+test("collection references dispatch an exact duplicate-labelled control once, then expose fresh state", async () => {
+  const changed = duplicateControls.map((control, index) => index === 2 ? { ...control, value: "42" } : control);
+  const { host, checked } = hostFor([
+    apps(), windows(), collectionState(duplicateControls),
+    apps(), windows(), effect(), collectionState(changed), collectionState(changed),
+  ]);
+  const target = await desktopTarget(host, "duplicate-desktop");
+  const initial = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "duplicates", { operation: "window_state", target }));
+  const controls = (initial.result as unknown as CollectionObservation).controlCollection.controls;
+  const acted = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.do, "set-second-duplicate", {
+    operation: { kind: "set_value", target: controls[2]!.target, value: "42" },
+  }));
+  expect(checked.calls.filter((call) => call.name === "set_value")).toEqual([
+    { name: "set_value", args: { pid: 42, window_id: 90, element_token: "private-right-token", value: "42" } },
+  ]);
+  // Duplicate labels cannot establish identity across a provider tree rebuild.
+  // Do not claim Host verification merely because another slider has this value.
+  expect(acted).toMatchObject({ settlement: "unknown_completion", result: { verification: "not_verified" } });
+  expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(acted.result).success).toBe(true);
+  expect(JSON.stringify(acted.result)).not.toMatch(/Volume|private-right-token|"42"/);
+  const stale = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.do, "stale-sibling", {
+    operation: { kind: "set_value", target: controls[1]!.target, value: "99" },
+  }));
+  expect(stale).toMatchObject({ result: { completionCertainty: "not_completed" } });
+  expect(checked.calls.filter((call) => call.name === "set_value")).toHaveLength(1);
+  const refreshed = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "duplicates-after", { operation: "window_state", target }));
+  expect(refreshed).toMatchObject({ settlement: "completed", result: { controlCollection: { controls: [
+    { label: "Audio" }, { state: { value: "10" } }, { state: { value: "42" } },
+  ] } } });
+});
+
+test("a new native observation retires every previous collection reference", async () => {
+  const { host, checked } = hostFor([apps(), windows(), collectionState(duplicateControls), collectionState(duplicateControls)]);
+  const target = await desktopTarget(host, "refresh-desktop");
+  const first = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "first-controls", { operation: "window_state", target }));
+  await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "replacement-controls", { operation: "window_state", target }));
+  for (const control of (first.result as unknown as CollectionObservation).controlCollection.controls) {
+    const stale = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.do, `stale-${control.id}`, {
+      operation: { kind: "click", target: control.target },
+    }));
+    expect(stale).toMatchObject({ result: { completionCertainty: "not_completed" } });
+  }
+  expect(checked.calls.filter((call) => call.name === "click")).toHaveLength(0);
+});
+
+test("collection preserves disabled and partial state without creating ambiguous token authority", async () => {
+  const { host, checked } = hostFor([apps(), windows(), collectionState([
+    { role: "AXCheckbox", element_token: "disabled-token", enabled: false, selected: false, value: "0" },
+    { role: "AXSlider", element_token: "shared-token", enabled: true, value_description: false, min: "0", max: 100 },
+    { role: "AXSlider", element_token: "shared-token", enabled: true },
+    { role: "AXNewControl", element_token: "unknown-enabled-token", enabled: "true", value: null },
+    { role: "AXStepper", element_token: "stepper-token", enabled: true, value: "0", min: 0, max: 10 },
+    { role: 4 },
+  ])]);
+  const target = await desktopTarget(host, "partial-desktop");
+  const observed = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "partial-controls", { operation: "window_state", target }));
+  const value = observed.result as unknown as CollectionObservation;
+  expect(value.controlCollection).toMatchObject({ received: 6, omitted: 1, completeness: "partial" });
+  const controls = value.controlCollection.controls;
+  expect(controls[0]).toMatchObject({ enabled: false, state: { selected: false, value: "0" } });
+  for (const control of controls.slice(0, 4)) expect(control.target).toBeUndefined();
+  expect(controls[1]!.state).toEqual({ completeness: "partial" });
+  expect(controls[3]).toMatchObject({ role: "new_control", state: { completeness: "partial" } });
+  expect(controls[4]!.target).toBeDefined();
+  expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(value).success).toBe(true);
+  expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+});
+
+test("collection does not first-N truncate a large provider set", async () => {
+  const elements = Array.from({ length: 300 }, (_, index) => ({
+    element_index: index, role: "AXButton", element_token: `fixture-token-${index}`, label: `Choice ${index}`,
+  }));
+  const { host } = hostFor([apps(), windows(), collectionState(elements)]);
+  const target = await desktopTarget(host, "large-desktop");
+  const observed = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, "large-controls", { operation: "window_state", target }));
+  const collection = (observed.result as unknown as CollectionObservation).controlCollection;
+  expect(collection.controls).toHaveLength(300);
+  expect(collection.omitted).toBe(0);
+  expect(collection.controls[299]!.label).toBe("Choice 299");
+  expect(collection.controls[299]!.target).toBeDefined();
+});
+
+test.each([
+  { kind: "click", args: { axAction: "press" }, tool: "click", providerArgs: { action: "press", delivery_mode: "background" } },
+  { kind: "type_text", args: { text: "exact insert" }, tool: "type_text", providerArgs: { text: "exact insert", delivery_mode: "background" } },
+  { kind: "press_key", args: { key: "a", modifiers: ["cmd"] }, tool: "press_key", providerArgs: { key: "a", modifiers: ["cmd"], delivery_mode: "background" } },
+  { kind: "hotkey", args: { keys: ["cmd", "a"] }, tool: "hotkey", providerArgs: { keys: ["cmd", "a"], delivery_mode: "background" } },
+  { kind: "scroll", args: { direction: "up", amount: 3, by: "line" }, tool: "scroll", providerArgs: { direction: "up", amount: 3, by: "line", delivery_mode: "background" } },
+])("a collection control uses ordinary $kind without role-based reselection", async ({ kind, args, tool, providerArgs }) => {
+  const actionResult = kind === "type_text"
+    ? result({ effect: "confirmed", route: "accessibility", delivery: { mode: "background", delivered_count: 12 }, evidence: [{ kind: "value_readback" }] })
+    : kind === "press_key" || kind === "hotkey"
+      ? result({ effect: "unverifiable", route: "synthetic_events", delivery: { mode: "background" } })
+      : effect();
+  const { host, checked } = hostFor([apps(), windows(), collectionState([
+    { role: "AXCustomControl", element_token: "fixture-control-token", label: "Surface", enabled: true },
+  ]), apps(), windows(), actionResult]);
+  const window = await desktopTarget(host, `direct-${kind}-desktop`);
+  const observed = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, `direct-${kind}-observe`, { operation: "window_state", target: window }));
+  const target = (observed.result as unknown as CollectionObservation).controlCollection.controls[0]!.target;
+  const acted = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.do, `direct-${kind}-act`, {
+    operation: { kind, target, ...args },
+  }));
+  expect(checked.calls.filter((call) => call.name === tool)).toEqual([
+    { name: tool, args: { pid: 42, window_id: 90, element_token: "fixture-control-token", ...providerArgs } },
+  ]);
+  expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(acted.result).success).toBe(true);
+  expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+  expect(checked.calls.filter((call) => call.name === "get_window_state")).toHaveLength(1);
 });

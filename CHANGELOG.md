@@ -23,6 +23,11 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Native window observations expose compact control collections with current
+  state, hierarchy and distinct targets for repeated labels. Those targets use
+  the existing native action tools without requiring another role/label lookup;
+  fresh observation replaces stale targets and provider tree gaps stay explicit.
+
 - Routine Jev delegation for connected websites already under direct Genie
   control through Browser Use. It reuses the browser decision loop, verifies
   fresh observations against the exact operation and control epoch, and returns

@@ -56,11 +56,11 @@ test("native editing guidance covers whole filenames, scope recovery, and commit
   expect(guidance).toContain("Never remove window identity checks");
 });
 
-test("catalogue publishes partial control state for every unique native selection family", () => {
+test("catalogue publishes partial state for every native selection family and the control collection", () => {
   const entry = bundledComputerUseContractCatalogue.contracts.find(
     (candidate) => candidate.descriptor.contractId === "native.observe",
   )!;
-  expect(entry.descriptor.contractVersion).toBe(10);
+  expect(entry.descriptor.contractVersion).toBe(11);
   const states: unknown[] = [];
   const visit = (value: unknown): void => {
     if (value === null || typeof value !== "object") return;
@@ -70,7 +70,7 @@ test("catalogue publishes partial control state for every unique native selectio
     for (const child of Object.values(node)) visit(child);
   };
   visit(entry.publicSchemas.result.jsonSchema);
-  expect(states).toHaveLength(5);
+  expect(states).toHaveLength(6);
   for (const state of states) expect(state).toMatchObject({
     type: "object",
     properties: {
@@ -258,7 +258,7 @@ test("only exact reviewed read-safe Host descriptors opt into coordinated schedu
     replayClass: entry.descriptor.replayClass,
   }))).toEqual([
     { contractId: "browser.read_page", contractVersion: 5, executionLane: "host", effectClass: "read", replayClass: "safe" },
-    { contractId: "native.observe", contractVersion: 10, executionLane: "host", effectClass: "read", replayClass: "safe" },
+    { contractId: "native.observe", contractVersion: 11, executionLane: "host", effectClass: "read", replayClass: "safe" },
   ]);
 
   let executions = 0;
@@ -468,7 +468,7 @@ test("published native pointer and AX action schema agrees with Host admission",
   const element = { version: 1, context, reference: `detgt_${"c".repeat(43)}` };
   const definition = activeComputerUseHostToolDefinitions().find((candidate) => candidate.entry.descriptor.contractId === "native.do");
   if (definition === undefined) throw new Error("missing native.do");
-  expect(definition.entry.descriptor.contractVersion).toBe(12);
+  expect(definition.entry.descriptor.contractVersion).toBe(13);
   const pixel = { kind: "click", target: snapshot, coordinateSpace: "window_snapshot_pixels", x: 10, y: 20 };
   const drag = { kind: "drag_drop", target: snapshot, coordinateSpace: "presented_snapshot_pixels", from: { x: 2, y: 3 }, to: { x: 20, y: 30 } };
   const accepted = [

@@ -42,9 +42,10 @@ export interface ComputerUseTargetEvidence {
 export interface ComputerUseProviderTarget {
   readonly provider: "cua";
   /**
-   * The one native operation this opaque target may authorize.
+   * Legacy selections bind one operation; element binds one exact control,
+   * with semantics supplied by the independently admitted action contract.
    */
-  readonly operation: "focus" | "observe_only" | "type_text" | "set_value" | "scroll" | "click" | "right_click" | "double_click" | "press_key";
+  readonly operation: "focus" | "observe_only" | "element" | "type_text" | "set_value" | "scroll" | "click" | "right_click" | "double_click" | "press_key";
   readonly app?: string;
   readonly pid?: number;
   /** Exact provider bundle identifier, retained host-side only. */
@@ -779,10 +780,12 @@ export class ComputerUseContextRegistry {
     observation: Readonly<{
       bounds?: NonNullable<ComputerUseTargetEvidence["bounds"]>;
       element?: Readonly<{ readonly evidence: ComputerUseTargetEvidence; readonly providerTarget: ComputerUseProviderTarget }>;
+      elements?: readonly Readonly<{ readonly evidence: ComputerUseTargetEvidence; readonly providerTarget: ComputerUseProviderTarget }>[];
       snapshot?: ComputerUseScreenSnapshotInput;
     }>,
   ): ContextRegistryResult<Readonly<{
     element: RegisteredComputerTarget | null;
+    elements?: readonly RegisteredComputerTarget[];
     snapshot: RegisteredComputerScreenSnapshot | null;
   }>> {
     const found = this.get(context, scope);
@@ -795,9 +798,10 @@ export class ComputerUseContextRegistry {
     }
 
     const element = observation.element;
-    if (element !== undefined && (element.evidence.kind !== "element" || element.providerTarget.provider !== "cua"
-      || element.providerTarget.pid !== ticket.pid || element.providerTarget.windowId !== ticket.windowId
-      || element.providerTarget.elementToken === undefined || element.providerTarget.elementToken.length === 0)) {
+    const elements = observation.elements ?? [];
+    if ([...(element === undefined ? [] : [element]), ...elements].some((item) => item.evidence.kind !== "element" || item.providerTarget.provider !== "cua"
+      || item.providerTarget.pid !== ticket.pid || item.providerTarget.windowId !== ticket.windowId
+      || item.providerTarget.elementToken === undefined || item.providerTarget.elementToken.length === 0)) {
       return { ok: false, code: "invalid" };
     }
 
@@ -834,6 +838,11 @@ export class ComputerUseContextRegistry {
     if (element !== undefined && elementReference !== null) {
       nextTargets.set(elementReference, { evidence: element.evidence, providerTarget: element.providerTarget });
     }
+    const registeredElements = elements.map((item) => {
+      const reference = this.opaque("detgt_");
+      nextTargets.set(reference, { evidence: item.evidence, providerTarget: item.providerTarget });
+      return { reference, evidence: item.evidence };
+    });
 
     found.data.windowReadRevisions.delete(`${ticket.pid}:${ticket.windowId}`);
     found.data.targets = nextTargets;
@@ -846,6 +855,7 @@ export class ComputerUseContextRegistry {
     return {
       ok: true,
       data: {
+        ...(observation.elements === undefined ? {} : { elements: registeredElements }),
         element: elementReference === null || element === undefined
           ? null : { reference: elementReference, evidence: element.evidence },
         snapshot: snapshotReference === null || snapshotRecord === null
@@ -1101,12 +1111,20 @@ export class ComputerUseContextRegistry {
     if (found.data.replayForbidden) return { ok: false, code: "replay_forbidden" };
     const target = found.data.targets.get(reference);
     if (target === undefined || target.evidence.kind !== "element" || target.providerTarget.provider !== "cua"
-      || (target.providerTarget.operation !== "type_text" && target.providerTarget.operation !== "set_value" && target.providerTarget.operation !== "scroll"
+      || (target.providerTarget.operation !== "element" && target.providerTarget.operation !== "type_text" && target.providerTarget.operation !== "set_value" && target.providerTarget.operation !== "scroll"
         && target.providerTarget.operation !== "click" && target.providerTarget.operation !== "right_click" && target.providerTarget.operation !== "double_click" && target.providerTarget.operation !== "press_key")
       || target.providerTarget.elementToken === undefined) {
       return { ok: false, code: "not_found" };
     }
     found.data.targets.delete(reference);
+    // A collection is one snapshot, not a batch of reusable action authority.
+    // Any admitted action retires its sibling controls before provider dispatch.
+    if (target.providerTarget.operation === "element") {
+      for (const [sibling, item] of found.data.targets) {
+        if (item.evidence.kind === "element" && item.providerTarget.pid === target.providerTarget.pid
+          && item.providerTarget.windowId === target.providerTarget.windowId) found.data.targets.delete(sibling);
+      }
+    }
     return { ok: true, data: target };
   }
 

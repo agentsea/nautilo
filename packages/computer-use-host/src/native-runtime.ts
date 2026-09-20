@@ -22,7 +22,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Jimp, JimpMime } from "jimp";
 import { COMPUTER_USE_HOST_PNG_MAX_BYTES } from "@nautilo/computer-use-host-protocol";
-import { normalizeCuaMacosKey, normalizeCuaMacosHotkey, type ComputerNativeControlState } from "@nautilo/computer-use-contracts/native";
+import { normalizeCuaMacosKey, normalizeCuaMacosHotkey, type ComputerNativeControlState, type ComputerNativeControlCollection } from "@nautilo/computer-use-contracts/native";
 
 const execFileAsync = promisify(execFile);
 const HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS = 100;
@@ -378,6 +378,7 @@ export type CuaWindowStateObserveResult =
     version: 1; operation: "window_state"; target: Readonly<{ version: 1; context: string; reference: string }>;
     evidence: ComputerUseTargetEvidence | null; completeness: "sufficient" | "partial" | "unavailable";
     degraded: boolean; verification: "supported" | "indeterminate" | "unavailable";
+    controlCollection?: ComputerNativeControlCollection;
     element?: Readonly<{
       selector: Readonly<{ role: string; interaction?: "right_click" | "double_click"; action?: "scroll" | "click" | "type_text" | "set_value" | "press_key" }>;
       disposition: "zero" | "unique" | "ambiguous" | "incomplete";
@@ -1214,26 +1215,81 @@ function parseNativeElementSelection(
       : typeof value === "string" && ["0", "false", "no", "off"].includes(value.trim().toLowerCase())
         ? false
         : undefined;
-  const minimum = sole["min"];
-  const maximum = sole["max"];
-  // The public state projection preserves typed provider attributes without
-  // coercion, placeholder inference, or first-N text truncation. Unknown
-  // optional metadata does not retire the driver session.
-  const state: ComputerNativeControlState = {
-    completeness: "partial",
-    ...(typeof value === "string" ? { value } : {}),
-    ...(typeof sole["value_description"] === "string" ? { valueDescription: sole["value_description"] } : {}),
-    ...(typeof selected === "boolean" ? { selected } : {}),
-    ...(typeof minimum === "number" && Number.isFinite(minimum)
-      && typeof maximum === "number" && Number.isFinite(maximum) && maximum > minimum
-      ? { range: { minimum, maximum } } : {}),
-  };
+  const state = nativeControlState(sole);
   return {
     disposition: "unique", elementToken: token, state,
     ...(enabled === undefined ? {} : { enabled }),
     ...(typeof value === "string" ? { value } : {}),
     ...(normalizedValue === undefined ? {} : { observedValue: normalizedValue }),
   };
+}
+
+function nativeControlState(element: Readonly<Record<string, unknown>>): ComputerNativeControlState {
+  const value = element["value"];
+  const selected = element["selected"];
+  const minimum = element["min"];
+  const maximum = element["max"];
+  // The public state projection preserves typed provider attributes without
+  // coercion, placeholder inference, or first-N text truncation. Unknown
+  // optional metadata does not retire the driver session.
+  return {
+    completeness: "partial",
+    ...(typeof value === "string" ? { value } : {}),
+    ...(typeof element["value_description"] === "string" ? { valueDescription: element["value_description"] } : {}),
+    ...(typeof selected === "boolean" ? { selected } : {}),
+    ...(typeof minimum === "number" && Number.isFinite(minimum)
+      && typeof maximum === "number" && Number.isFinite(maximum) && maximum > minimum
+      ? { range: { minimum, maximum } } : {}),
+  };
+}
+
+function nativeControlCollection(result: CuaContextToolResult, provider: ComputerUseProviderTarget) {
+  const rows = list(result.structuredContent?.["elements"]) ?? [];
+  const tokenCounts = new Map<string, number>();
+  const indexCounts = new Map<number, number>();
+  for (const raw of rows) {
+    const row = record(raw);
+    if (typeof row?.["element_token"] === "string") {
+      const token = row["element_token"];
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+    }
+    if (typeof row?.["element_index"] === "number") {
+      const index = row["element_index"];
+      indexCounts.set(index, (indexCounts.get(index) ?? 0) + 1);
+    }
+  }
+  const collection: ComputerNativeControlCollection = { completeness: "partial", received: rows.length, omitted: 0, controls: [] };
+  const elements: Array<{ evidence: ComputerUseTargetEvidence; providerTarget: ComputerUseProviderTarget }> = [];
+  const bindings: Array<{ controlIndex: number; elementIndex: number }> = [];
+  const parents = new Map<number, string>();
+  for (const raw of rows) {
+    const row = record(raw);
+    const role = clickControlRole(row?.["role"]);
+    if (row === null || role === null) { collection.omitted++; continue; }
+    const id = `c${collection.controls.length}`;
+    const parent = typeof row["parent_index"] === "number" ? parents.get(row["parent_index"]) : undefined;
+    const label = typeof row["label"] === "string" ? normalizeSemanticText(row["label"]) : undefined;
+    const enabled = typeof row["enabled"] === "boolean" ? row["enabled"] : undefined;
+    const control = { id, role, state: nativeControlState(row),
+      ...(label === undefined ? {} : { label }), ...(enabled === undefined ? {} : { enabled }),
+      ...(parent === undefined ? {} : { parent }),
+    };
+    const token = row["element_token"];
+    if (typeof token === "string" && token.length > 0 && tokenCounts.get(token) === 1
+      && (row["enabled"] === undefined || enabled === true)) {
+      bindings.push({ controlIndex: collection.controls.length, elementIndex: elements.length });
+      elements.push({ evidence: { kind: "element", role }, providerTarget: {
+        ...provider, operation: "element", elementToken: token,
+        // No label-based post-read identity: a same-labelled sibling can
+        // replace this control when Cua rebuilds the tree. Trust only the
+        // driver's exact action evidence or explicit fresh task verification.
+      } });
+    }
+    collection.controls.push(control);
+    const index = row["element_index"];
+    if (typeof index === "number" && Number.isSafeInteger(index) && index >= 0 && indexCounts.get(index) === 1) parents.set(index, id);
+  }
+  return { collection, elements, bindings };
 }
 
 function outcome(
@@ -2804,14 +2860,22 @@ export class CuaComputerUseAdapter {
           ...(selection.observedValue === undefined ? {} : { observedValue: selection.observedValue }),
         },
       } : null;
+      const controls = request.selector === undefined && !parsed.degraded ? nativeControlCollection(state.result, provider) : null;
       const committed = this.registry.registerWindowObservation(request.target.context, request.scope, state.readTicket, {
         ...(parsed.bounds === undefined ? {} : { bounds: parsed.bounds }),
         ...(elementInput === null ? {} : { element: elementInput }),
+        ...(controls === null ? {} : { elements: controls.elements }),
         ...(snapshotInput === undefined ? {} : { snapshot: snapshotInput }),
       });
       if (!committed.ok) return unavailable("stale", "ready", "This window observation could not publish current targets. Observe again.");
       const mintedElement = committed.data.element;
       const windowSnapshot = committed.data.snapshot;
+      if (controls !== null) {
+        for (const binding of controls.bindings) {
+          const target = committed.data.elements![binding.elementIndex]!;
+          controls.collection.controls[binding.controlIndex]!.target = { version: 1, context: request.target.context, reference: target.reference };
+        }
+      }
       const element = selection === null || selectedRole === undefined ? undefined : {
         selector: {
           role: selectedRole,
@@ -2834,6 +2898,7 @@ export class CuaComputerUseAdapter {
           version: 1, operation: "window_state", target: { version: 1, context: request.target.context, reference: request.target.reference },
           evidence: { ...target.data.evidence, ...(parsed.bounds === undefined ? {} : { bounds: parsed.bounds }) }, completeness: parsed.degraded ? "partial" : "sufficient", degraded: parsed.degraded,
           verification: parsed.degraded ? "indeterminate" : "supported", ...(element === undefined ? {} : { element }),
+          ...(controls === null ? {} : { controlCollection: controls.collection }),
           ...(windowSnapshot !== null ? {
             windowSnapshot: {
               target: { version: 1 as const, context: request.target.context, reference: windowSnapshot.reference },
@@ -3401,7 +3466,7 @@ export class CuaComputerUseAdapter {
     // The first vertical's AX element capability is single-use.  Retain the
     // established window-scoped text route for historical flows, which have
     // no element authority to claim.
-    const resolved = this.registry.resolveTarget(context, request.scope, reference);
+    let resolved = this.registry.resolveTarget(context, request.scope, reference);
     const unavailable: CuaComputerMutationReceipt["resolvedTarget"] = reference.startsWith("detgt_")
       ? { kind: "element", state: "unavailable" }
       : { kind: "window", role: "unavailable" };
@@ -3409,6 +3474,14 @@ export class CuaComputerUseAdapter {
       const result = outcome("resolve_target", { retrySafety: "observe_before_retry", stateChangeCertainty: "not_changed", targetCondition: "stale", recovery: ["observe_again"] });
       return { ok: false, receipt: windowMutationFailureReceipt(request, unavailable, "not_completed", result), error: registryError(resolved.code), outcome: result };
     }
+    // New collection references select identity; the admitted operation selects
+    // semantics. Legacy operation-specific references remain unchanged.
+    const bindAction = (data: { evidence: ComputerUseTargetEvidence; providerTarget: ComputerUseProviderTarget }) => {
+      if (data.providerTarget.operation !== "element") return data;
+      const operation = request.operation.kind;
+      return { evidence: { ...data.evidence, action: operation }, providerTarget: { ...data.providerTarget, operation } };
+    };
+    resolved = { ok: true, data: bindAction(resolved.data) };
     if (request.signal?.aborted) {
       const result = outcome("pre_effect_dispatch", { retrySafety: "safe", stateChangeCertainty: "not_changed", providerCondition: "cancelled", targetCondition: "current", recovery: ["retry_same_request"] });
       return { ok: false, receipt: windowMutationFailureReceipt(request, resolved.data.evidence, "not_completed", result), error: "Desktop input was cancelled before it began.", outcome: result };
@@ -3522,8 +3595,8 @@ export class CuaComputerUseAdapter {
           elementClaimRejected = true;
           return false;
         }
-        target = claimed;
-        provider = claimed.data.providerTarget;
+        target = { ok: true, data: bindAction(claimed.data) };
+        provider = target.data.providerTarget;
         return true;
       };
       let deliveryMode: "background" | "foreground" = "deliveryMode" in request.operation ? request.operation.deliveryMode ?? "background" : "background";

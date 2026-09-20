@@ -268,6 +268,38 @@ export const computerNativeControlStateSchema = z.object({
 }).strict().describe("Partial accessibility state for the selected control. Missing fields are unknown. Provider values may include placeholders or renderer echoes; they are not independent proof of task completion.");
 export type ComputerNativeControlState = z.infer<typeof computerNativeControlStateSchema>;
 
+/** A compact view of all rows received from one native snapshot. References
+ * identify controls, not guessed capabilities; ordinary action schemas still
+ * govern dispatch, and Cua reports whether the control accepts the operation. */
+export const computerNativeControlCollectionSchema = z.object({
+  completeness: z.literal("partial"),
+  received: nonnegativeSafeIntegerSchema,
+  omitted: nonnegativeSafeIntegerSchema,
+  controls: z.array(z.object({
+    id: z.string().regex(/^c[0-9]+$/),
+    parent: z.string().regex(/^c[0-9]+$/).optional(),
+    role: computerNativeRoleSchema,
+    label: sanitizedTargetLabelSchema.optional(),
+    enabled: z.boolean().optional(),
+    target: computerElementTargetReferenceSchema.optional(),
+    state: computerNativeControlStateSchema,
+  }).strict()),
+}).strict().superRefine((value, context) => {
+  const ids = new Set(value.controls.map((control) => control.id));
+  if (ids.size !== value.controls.length || value.received !== value.controls.length + value.omitted) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "control collection identity and accounting must agree" });
+  }
+  for (const control of value.controls) {
+    if (control.parent !== undefined && (control.parent === control.id || !ids.has(control.parent))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "control parent must name another returned control" });
+    }
+    if (control.enabled === false && control.target !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "disabled controls cannot publish action targets" });
+    }
+  }
+});
+export type ComputerNativeControlCollection = z.infer<typeof computerNativeControlCollectionSchema>;
+
 const computerTextElementEvidenceSchema = z
   .object({
     kind: z.literal("element"),
@@ -742,6 +774,8 @@ export const windowStateObservationSchema = z
     verification: z.enum(["supported", "indeterminate", "unavailable"]),
     /** Present only when the request selected one admitted semantic control role. */
     element: computerElementSelectionSchema.optional(),
+    /** Current structured controls when no single-control selector was requested. */
+    controlCollection: computerNativeControlCollectionSchema.optional(),
     /** Exact Cua window-local pixel frame from the same read as any query or token selection. */
     windowSnapshot: computerWindowSnapshotSchema.optional(),
     /** Bounded positive semantic evidence from one exact Cua query. */
@@ -767,6 +801,9 @@ export const windowStateObservationSchema = z
     }
     if (value.element?.target !== undefined && value.element.target.context !== value.target.context) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "a selected element must share the observed window context" });
+    }
+    if (value.controlCollection?.controls.some((control) => control.target !== undefined && control.target.context !== value.target.context)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "control references must share the observed window context" });
     }
     if (value.windowSnapshot !== undefined && value.windowSnapshot.target.context !== value.target.context) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "a window snapshot must share the observed window context" });
@@ -2338,7 +2375,7 @@ export const COMPUTER_USE_NATIVE_CONTRACTS = {
   observe: {
     contractNamespace: "nautilo.computer_use",
     contractId: "native.observe",
-    contractVersion: 10,
+    contractVersion: 11,
     schemaDigest: schemaDigest(NATIVE_CONTRACT_SCHEMAS.observe),
     effectClass: "read",
     replayClass: "safe",
@@ -2349,9 +2386,9 @@ export const COMPUTER_USE_NATIVE_CONTRACTS = {
   do: {
     contractNamespace: "nautilo.computer_use",
     contractId: "native.do",
-    // v12 admits truthful pre-dispatch evidence for an incompatible selection.
-    // Refinement semantics are versioned even when JSON Schema is unchanged.
-    contractVersion: 12,
+    // v13 accepts action-neutral controls from native.observe v11 while
+    // preserving operation-bound legacy selections and one-shot dispatch.
+    contractVersion: 13,
     schemaDigest: schemaDigest(NATIVE_CONTRACT_SCHEMAS.do),
     effectClass: "mutate",
     replayClass: "at_most_once",
