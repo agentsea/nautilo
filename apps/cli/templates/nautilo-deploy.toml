@@ -51,6 +51,11 @@ value = { value = "REPLACE_with_OpenRouter_key" }
 # key = "VENICE_API_KEY"
 # value = { value = "REPLACE_with_Venice_key" }
 
+# TypeSafe: Jev text classification and scoring; does not provide chat.
+# [[providers]]
+# key = "TYPESAFE_API_KEY"
+# value = { value = "REPLACE_with_TypeSafe_key" }
+
 # CloudConvert: additional document/file conversion formats.
 # [[providers]]
 # key = "CLOUDCONVERT_API_KEY"

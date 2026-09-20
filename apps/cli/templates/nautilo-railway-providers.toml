@@ -24,6 +24,7 @@ elevenlabs = { value = "REPLACE_with_ElevenLabs_key" }
 # browser-use = { value = "REPLACE_with_Browser_Use_key" }
 
 # Other supported services. Enable only the ones you intend to use.
+# typesafe = { value = "REPLACE_with_TypeSafe_key" }
 # google = { value = "REPLACE_with_Google_key" }
 # fireworks = { value = "REPLACE_with_Fireworks_key" }
 # groq = { value = "REPLACE_with_Groq_key" }
