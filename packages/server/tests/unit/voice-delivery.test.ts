@@ -154,3 +154,24 @@ test("a listener stalled for its whole audio window detaches without stopping th
   expect(stalled.sent.at(-1)).toBe(JSON.stringify({ type: "voice.stream.abort", streamId: start.streamId, reason: "overflow" }));
   expect(fast.sent.at(-1)).toBeInstanceOf(Uint8Array); expect(audience.signal.aborted).toBe(false); audience.dispose();
 });
+
+
+test("a detached listener stays out while another device completes the stream", async () => {
+  const delivery = new VoiceDelivery(); const retained = add(delivery); const detached = add(delivery);
+  const audience = delivery.admit("owner", "room")!; audience.control(start);
+  await audience.audio(frame(0));
+  detached.membership.roomIds.clear(); delivery.refresh();
+  expect(audience.signal.aborted).toBe(false);
+  expect(detached.socket.sent.at(-1)).toBe(JSON.stringify({ type: "voice.stream.abort", streamId: start.streamId, reason: "disconnected" }));
+  detached.membership.roomIds.add("room"); delivery.refresh();
+  expect(delivery.consumed(detached.socket.ws, { streamId: start.streamId, samples: 24000 })).toBe(false);
+  await audience.audio(frame(1));
+  expect(detached.socket.sent).toHaveLength(3);
+  expect(retained.socket.sent).toHaveLength(3);
+  expect(delivery.consumed(retained.socket.ws, { streamId: start.streamId, samples: 48000 })).toBe(true);
+  audience.control({ type: "voice.stream.end", streamId: start.streamId, sequence: 2 });
+  await audience.drained();
+  expect(retained.socket.sent).toHaveLength(4);
+  expect(detached.socket.sent).toHaveLength(3);
+  audience.dispose();
+});

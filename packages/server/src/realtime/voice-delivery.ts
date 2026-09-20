@@ -75,8 +75,20 @@ export class VoiceDelivery {
     // is stalled. Small differences between native callback clocks are normal.
     const stallMs = windowBytes / (VOICE_PCM_SAMPLE_RATE * 2) * 1000;
     let streamId: string | null = null;
-    const recipients = () => initial.filter(([socket, listener]) =>
-      this.listeners.get(socket) === listener && revisions.get(socket) === listener.revision && eligible(socket, listener));
+    const recipients = () => initial.filter(([socket, listener]) => {
+      if (!revisions.has(socket)) return false;
+      const live = this.listeners.get(socket) === listener && revisions.get(socket) === listener.revision && eligible(socket, listener);
+      if (!live) {
+        // Detachment is final for this stream, even if another device keeps it
+        // alive and this listener later regains access or starts listening.
+        revisions.delete(socket);
+        if (streamId !== null && socket.readyState === socket.OPEN) {
+          try { socket.send(JSON.stringify({ type: "voice.stream.abort", streamId, reason: "disconnected" })); }
+          catch { socket.close(); }
+        }
+      }
+      return live;
+    });
     const check = () => { if (recipients().length === 0) controller.abort(); };
     this.changed.add(check);
     const changed = (afterMs: number) => new Promise<void>(resolve => {
@@ -127,7 +139,7 @@ export class VoiceDelivery {
         if (event.type === "voice.stream.start") {
           streamId = event.streamId;
           this.credits.set(streamId, (socket, samples) => {
-            if (!revisions.has(socket) || samples * 2 > (sent.get(socket) ?? 0) || samples * 2 < (consumed.get(socket) ?? 0)) return false;
+            if (!recipients().some(([recipient]) => recipient === socket) || samples * 2 > (sent.get(socket) ?? 0) || samples * 2 < (consumed.get(socket) ?? 0)) return false;
             if (samples * 2 > (consumed.get(socket) ?? 0)) progressAt.set(socket, this.now());
             consumed.set(socket, samples * 2);
             this.refresh();
