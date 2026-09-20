@@ -1,4 +1,4 @@
 /** Catalog metadata cannot install a Choice transport. */
 export function isSupportedChoiceProvider(provider: string): boolean {
-  return provider.toLowerCase() === "openrouter";
+  return ["openrouter", "typesafe", "venice"].includes(provider.toLowerCase());
 }

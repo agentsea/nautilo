@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { resetModelCapabilitiesCacheForTests } from "@nautilo/model-capabilities";
-import { ModelCatalogV4Schema, type ModelCatalog } from "@nautilo/types";
+import { ModelCatalogV4Schema, ModelCatalogV6Schema, type ModelCatalog } from "@nautilo/types";
 import {
   getEligibleModels,
   resolveRetainedModels,
@@ -16,10 +16,11 @@ import {
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
-import { resolveCatalogModel } from "../../src/config/resolved-catalog";
+import { listResolvedCatalogModels, resolveCatalogModel } from "../../src/config/resolved-catalog";
 import { validateExactTaskModelSelection } from "../../src/config/validate-exact-task-model";
 import { resetVeniceCatalogCacheModuleForTests } from "../../src/config/venice-catalog-cache";
 import { createUniversalModel } from "../../src/providers/universal";
+import { invokeDecision } from "../../src/providers/decision-driver";
 
 const JEV_ID = "openrouter:typesafe/jev-1.13";
 const OPENROUTER_ENV: NodeJS.ProcessEnv = { OPENROUTER_API_KEY: "or-test" };
@@ -43,15 +44,16 @@ async function installCatalog(catalog: ModelCatalog): Promise<void> {
   await hydrateRuntimeModelCatalog();
 }
 
-function onlyDecisionCatalog(provider: "openrouter" | "venice" = "openrouter"): ModelCatalog {
+function onlyDecisionCatalog(provider: "openrouter" | "google" = "openrouter"): ModelCatalog {
   const current = getActiveModelCatalogSync().catalog;
-  if (current.version !== 4 && current.version !== 5) {
+  if (current.version !== 4 && current.version !== 5 && current.version !== 6) {
     throw new Error("checked-in Jev decision fixture is missing");
   }
-  const decision = current.entries.find((entry) => entry.id === JEV_ID);
-  if (!decision || decision.workload !== "decision") {
+  const source = current.entries.find((entry) => entry.id === JEV_ID);
+  if (!source || source.workload !== "decision") {
     throw new Error("checked-in Jev decision fixture is missing");
   }
+  const decision = { ...source, decision: { operations: ["choice"], inputTokens: 32000, maxChoices: 255 } };
   return ModelCatalogV4Schema.parse({
     ...current,
     version: 4,
@@ -60,10 +62,10 @@ function onlyDecisionCatalog(provider: "openrouter" | "venice" = "openrouter"): 
       ? [decision]
       : [{
           ...decision,
-          id: "venice:jev-decision-test",
-          displayName: "Unsupported Venice Decision Test",
-          provider: "venice",
-          routing: "venice-hosted",
+          id: "google:jev-decision-test",
+          displayName: "Unsupported Google Decision Test",
+          provider: "google",
+          routing: "first-party",
         }],
   });
 }
@@ -169,19 +171,62 @@ describe("decision model selection boundaries", () => {
   });
 
   test("a signed decision row stays disabled when its provider lacks a decision adapter", async () => {
-    const catalog = onlyDecisionCatalog("venice");
+    const catalog = onlyDecisionCatalog("google");
     await installCatalog(catalog);
 
-    expect(resolveCatalogModel("venice:jev-decision-test", {
+    expect(resolveCatalogModel("google:jev-decision-test", {
       env: { VENICE_API_KEY: "vk-test" },
       allowChinaUpstream: true,
     })).toMatchObject({
       availability: "disabled",
       unavailableReason:
-        'provider "venice" is not supported for the decision workload on this server',
+        'provider "google" is not supported for the decision workload on this server',
       workload: "decision",
       decision: { operations: ["choice"], inputTokens: 32_000, maxChoices: 255 },
     });
+  });
+
+  test("future visual decision metadata is accepted but remains non-runnable without an installed adapter", async () => {
+    const current = getActiveModelCatalogSync().catalog;
+    if (current.version !== 6) throw new Error("expected checked-in v6 model catalog");
+    const source = current.entries.find((entry) => entry.id === JEV_ID);
+    if (!source || source.workload !== "decision") throw new Error("expected checked-in Jev decision fixture");
+    const visualId = "openrouter:typesafe/jev-visual-future";
+    const catalog = ModelCatalogV6Schema.parse({
+      ...current,
+      catalogVersion: "2026.09.20.3",
+      entries: [{
+        ...source,
+        id: visualId,
+        displayName: "Future Visual Jev",
+        modalities: { input: ["image"], output: ["text"] },
+      }],
+    });
+    await installCatalog(catalog);
+
+    expect(resolveCatalogModel(visualId, { env: OPENROUTER_ENV })).toMatchObject({
+      input: ["image"],
+      availability: "disabled",
+      unavailableReason: "installed decision adapters accept text input only",
+      workload: "decision",
+    });
+    expect(listResolvedCatalogModels({ env: OPENROUTER_ENV }).some((row) => row.id === visualId)).toBe(false);
+
+    let fetchCalls = 0;
+    const result = await invokeDecision({
+      modelId: visualId,
+      state: "Synthetic visual evidence",
+      questions: { label: { type: "choice", instructions: "Classify", criteria: { other: null } } },
+      signal: new AbortController().signal,
+    }, {
+      apiKey: "or-test",
+      fetch: (async () => {
+        fetchCalls += 1;
+        throw new Error("network must not be reached");
+      }) as unknown as typeof fetch,
+    }).catch((error: unknown) => error);
+    expect(result).toMatchObject({ code: "unsupported_model" });
+    expect(fetchCalls).toBe(0);
   });
 
   test("the decision gate preserves existing chat and media availability", () => {

@@ -47,6 +47,7 @@ describe("ProviderKeyCoverage", () => {
     const rows = within(view.getByRole("table")).getAllByRole("row").slice(1);
 
     expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
+      "Classification and scoring",
       "Chat",
       "Embeddings",
       "Text-to-speech",
@@ -61,6 +62,7 @@ describe("ProviderKeyCoverage", () => {
     expect(
       rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent),
     ).toEqual([
+      "TypeSafeOpenRouterVenice",
       "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible Gateway",
       "VeniceOpenRouterOpenAI",
       "ElevenLabs",
@@ -73,8 +75,15 @@ describe("ProviderKeyCoverage", () => {
       "CloudConvert",
     ]);
 
-    expect(within(rows[3]).queryByLabelText(/^OpenAI:/u)).toBeNull();
-    expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(10);
+    expect(within(rows[4]).queryByLabelText(/^OpenAI:/u)).toBeNull();
+    expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(11);
+  });
+
+  test("TypeSafe covers classification and scoring without claiming chat", () => {
+    const view = render(<ProviderKeyCoverage keys={[report("typesafe", "TypeSafe", "verified")]} />);
+    expect(view.getByLabelText("Classification and scoring: supporting API key configured")).toBeTruthy();
+    expect(view.getByLabelText("Chat: no supporting API key configured")).toBeTruthy();
+    expect(view.getAllByLabelText(/supporting API key configured$/u).filter((element) => !element.getAttribute("aria-label")?.includes("no supporting"))).toHaveLength(1);
   });
 
   test("maps image generation only to its four runtime providers", () => {
@@ -133,6 +142,7 @@ describe("ProviderKeyCoverage", () => {
     const view = render(<ProviderKeyCoverage keys={keys} />);
 
     for (const functionality of [
+      "Classification and scoring",
       "Chat",
       "Embeddings",
       "Text-to-speech",
@@ -157,6 +167,8 @@ describe("ProviderKeyCoverage", () => {
         (chip) => chip.textContent,
       ),
     ).toEqual([
+      "OpenRouter",
+      "Venice",
       "Venice",
       "OpenRouter",
       "Venice",

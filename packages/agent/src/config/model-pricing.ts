@@ -42,7 +42,7 @@ export interface ModelPrice {
 }
 
 /** Bump on any price change. Stored on each usage row for later reconciliation. */
-export const PRICING_VERSION = "2026-09-19.1";
+export const PRICING_VERSION = "2026-09-20.1";
 
 /** Baseline used to derive an estimate for models absent from the explicit table. */
 const SONNET_BASELINE: ModelPrice = { inputPerMtok: 3, outputPerMtok: 15 };
@@ -147,7 +147,7 @@ export const IMAGE_PRICES_USD: Record<string, number> = {
 export const DEFAULT_IMAGE_PRICE_USD = 0.04;
 
 /** How token-based usage rows derived their frozen USD estimate at insert. */
-export type PricingSource = "explicit" | "serving_profile" | "catalog_coefficient" | "baseline_default";
+export type PricingSource = "explicit" | "catalog_decision" | "serving_profile" | "catalog_coefficient" | "baseline_default";
 
 /** How image-gen usage rows derived their frozen USD estimate at insert. */
 export type ImagePricingSource = "image_explicit" | "image_default";
@@ -193,6 +193,11 @@ function pricingSourceForDerivedModel(modelId: string): PricingSource {
 export function resolveModelPrice(modelId: string, servingProfileId?: string): ResolvedModelPrice {
   const servingProfilePrice = servingProfileId === undefined ? undefined : MODEL_SERVING_PROFILE_PRICES[modelId]?.[servingProfileId];
   if (servingProfilePrice) return { price: servingProfilePrice, source: "serving_profile" };
+  const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === modelId);
+  if (entry && "decision" in entry && entry.decision && "pricing" in entry.decision && entry.decision.pricing) {
+    const { inputPerMtok, cachedInputPerMtok, outputPerMtok } = entry.decision.pricing;
+    return { price: { inputPerMtok, cachedInputPerMtok, outputPerMtok }, source: "catalog_decision" };
+  }
   const direct = MODEL_PRICES[modelId];
   if (direct) return { price: direct, source: "explicit" };
   const coeff = getCostCoefficient(modelId);

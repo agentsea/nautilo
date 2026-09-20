@@ -48,12 +48,14 @@ export const MODEL_CATALOG_MEDIA_VERSION = 3;
 /** Reader-first support for typed decisions, distinct from chat generation. */
 export const MODEL_CATALOG_DECISION_VERSION = 4;
 export const MODEL_CATALOG_SPEECH_VERSION = 5;
+export const MODEL_CATALOG_TYPED_DECISION_VERSION = 6;
 export const MODEL_CATALOG_SUPPORTED_VERSIONS = [
   MODEL_CATALOG_VERSION,
   MODEL_CATALOG_CONTROLS_VERSION,
   MODEL_CATALOG_MEDIA_VERSION,
   MODEL_CATALOG_DECISION_VERSION,
   MODEL_CATALOG_SPEECH_VERSION,
+  MODEL_CATALOG_TYPED_DECISION_VERSION,
 ] as const;
 export const MODEL_CATALOG_MAX_ENTRIES = 500;
 
@@ -96,6 +98,7 @@ const routingClassSchema = z.enum([
   "china-anonymized",
 ]);
 const routingByProvider: Readonly<Record<string, readonly z.infer<typeof routingClassSchema>[]>> = {
+  typesafe: ["first-party"],
   elevenlabs: ["first-party"],
   anthropic: ["first-party"],
   openai: ["first-party"],
@@ -187,6 +190,8 @@ const decisionSchema = z.object({
   /** Provider-advertised maximum; consumers must not silently truncate. */
   maxChoices: z.number().positive().refine(Number.isInteger),
 }).strict();
+export const DECISION_OPERATIONS = ["choice", "noul", "score"] as const;
+export const DecisionOperationSchema = z.enum(DECISION_OPERATIONS);
 const generationFamilySchema = z.enum(["image", "video", "music"]);
 /**
  * Transport-level reference kinds, deliberately not creative labels. Creative
@@ -625,6 +630,46 @@ const ModelCatalogV5EntrySchema = addModelCatalogEntrySemantics(
     if (entry[field] !== undefined) ctx.addIssue({ code: "custom", message: `speech must not declare ${field}`, path: [field] });
 });
 
+const typedDecisionSchema = decisionSchema.extend({
+  pricing: rateCardSchema.optional(),
+  operations: z.array(DecisionOperationSchema).nonempty().refine((ops) => new Set(ops).size === ops.length, "operations must be unique"),
+  /** Aggregate state plus all questions; distinct from the longest-question bound. */
+  totalInputTokens: z.number().int().positive().optional(),
+  supportsMultipleQuestions: z.boolean().optional(),
+  maxScoreLevels: z.number().int().min(2).optional(),
+}).superRefine((decision, ctx) => {
+  if (decision.operations.includes("score") && decision.maxScoreLevels === undefined)
+    ctx.addIssue({ code: "custom", path: ["maxScoreLevels"], message: "score requires a reviewed level bound" });
+  if (decision.supportsMultipleQuestions && decision.totalInputTokens === undefined)
+    ctx.addIssue({ code: "custom", path: ["totalInputTokens"], message: "multiple questions require an aggregate token bound" });
+  if (decision.totalInputTokens !== undefined && decision.totalInputTokens < decision.inputTokens)
+    ctx.addIssue({ code: "custom", path: ["totalInputTokens"], message: "aggregate budget must cover the longest-question budget" });
+});
+
+/** Typed operations evolve independently of modalities; adapters gate executable inputs. */
+const ModelCatalogV6EntrySchema = addModelCatalogEntrySemantics(
+  modelCatalogEntryBaseSchema.partial({ intelligence: true, limits: true }).extend({
+    modalities: mediaModalitiesSchema.optional(), privacy: mediaPrivacySchema,
+    controls: modelControlsSchema.optional(), taskPreferences: z.tuple([taskPreferenceSchema]).optional(),
+    workload: speechWorkloadSchema.optional(), generation: generationSchema.optional(),
+    decision: typedDecisionSchema.optional(), speech: speechSchema.optional(),
+  }).strict(),
+).superRefine((entry, ctx) => {
+  // Validate all inherited workload rules with their original closed contracts.
+  // For decisions only, project the new operations/modalities onto the old shape.
+  const legacy = entry.workload === "decision" && entry.decision
+    ? { ...entry, modalities: { input: ["text"], output: entry.modalities?.output ?? [] },
+        decision: { operations: ["choice"], inputTokens: entry.decision.inputTokens, maxChoices: entry.decision.maxChoices } }
+    : entry;
+  const parsed = ModelCatalogV5EntrySchema.safeParse(legacy);
+  if (!parsed.success) for (const issue of parsed.error.issues)
+    ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
+  if (entry.workload === "decision" && !entry.modalities)
+    ctx.addIssue({ code: "custom", message: "decision input modalities are required", path: ["modalities"] });
+  if (entry.provider === "typesafe" && entry.workload !== "decision")
+    ctx.addIssue({ code: "custom", message: "TypeSafe supports decision workloads only", path: ["workload"] });
+});
+
 function addCatalogEntryUniqueness<Schema extends z.ZodTypeAny>(schema: Schema): Schema {
   return schema.superRefine((value, ctx) => {
     const catalog = value as { entries: { id: string }[] };
@@ -689,6 +734,11 @@ export const ModelCatalogV5Schema = addCatalogEntryUniqueness(z.object({
   publishedAt: catalogPublishedAt, entries: z.array(ModelCatalogV5EntrySchema),
 }).strict());
 
+export const ModelCatalogV6Schema = addCatalogEntryUniqueness(z.object({
+  version: z.literal(MODEL_CATALOG_TYPED_DECISION_VERSION), catalogVersion: catalogReleaseVersion,
+  publishedAt: catalogPublishedAt, entries: z.array(ModelCatalogV6EntrySchema),
+}).strict());
+
 /** Strictly accepts every reviewed manifest version without widening legacy readers. */
 export const ModelCatalogSchema = z.discriminatedUnion("version", [
   ModelCatalogV1Schema,
@@ -696,6 +746,7 @@ export const ModelCatalogSchema = z.discriminatedUnion("version", [
   ModelCatalogV3Schema,
   ModelCatalogV4Schema,
   ModelCatalogV5Schema,
+  ModelCatalogV6Schema,
 ]);
 
 /** 64 lowercase hex characters. */
@@ -761,7 +812,8 @@ export type ModelCatalogInputModality = z.infer<typeof inputModalitySchema>;
 export type ModelCatalogOutputModality = z.infer<typeof mediaOutputModalitySchema>;
 export type ModelCatalogWorkload = z.infer<typeof speechWorkloadSchema>;
 export type ModelCatalogSpeech = z.infer<typeof speechSchema>;
-export type ModelCatalogDecision = z.infer<typeof decisionSchema>;
+export type ModelCatalogDecision = z.infer<typeof typedDecisionSchema>;
+export type DecisionOperation = z.infer<typeof DecisionOperationSchema>;
 export type ModelCatalogGenerationFamily = z.infer<typeof generationFamilySchema>;
 export type ModelCatalogGenerationReferenceRole = z.infer<typeof generationReferenceRoleSchema>;
 export type ModelCatalogGenerationReferenceConstraints = z.infer<typeof generationReferenceConstraintsSchema>;
@@ -795,7 +847,7 @@ export interface ModelControlSelection {
  * The latest entry shape deliberately remains structurally compatible with
  * legacy entries: workload-specific fields are optional and legacy rows are chat rows.
  */
-export type ModelCatalogEntry = z.infer<typeof ModelCatalogV5EntrySchema>;
+export type ModelCatalogEntry = z.infer<typeof ModelCatalogV6EntrySchema>;
 export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
 export type ModelCatalogReleasePointer = z.infer<typeof ModelCatalogReleasePointerSchema>;
 

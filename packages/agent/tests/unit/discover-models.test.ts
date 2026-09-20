@@ -112,6 +112,7 @@ describe("discover_models (the current implementation)", () => {
         "provider",
         "query",
         "generation_family",
+        "decision_operation",
         "requires_reference_role",
         "requires_file_input",
         "requires_reasoning",
@@ -229,7 +230,7 @@ describe("discover_models (the current implementation)", () => {
     });
 
     const decisions = parseList(await invoke(tool, { command: "list", workload: "decision" }));
-    expect(decisions.items).toHaveLength(1);
+    expect(decisions.items).toHaveLength(3);
     expect(decisions.items[0]).toMatchObject({
       id: "openrouter:typesafe/jev-1.13",
       workload: "decision",
@@ -237,14 +238,14 @@ describe("discover_models (the current implementation)", () => {
       output: ["text"],
       generation: null,
       decision: {
-        operations: ["choice"],
+        operations: ["choice", "noul", "score"],
         inputTokens: 32_000,
         maxChoices: 255,
       },
       contextTokens: null,
       maxOutputTokens: null,
     });
-    expect(decisions.totalMatched).toBe(1);
+    expect(decisions.totalMatched).toBe(3);
 
     const chat = parseList(await invoke(tool, { command: "list", workload: "chat" }));
     expect(chat.items.length).toBeGreaterThan(0);
@@ -539,4 +540,12 @@ describe("discover_models (the current implementation)", () => {
       (globalThis as { fetch: unknown }).fetch = original;
     }
   });
+});
+
+test("operation discovery finds runnable classifiers and excludes chat, speech, and missing keys", async () => {
+  resetVeniceCatalogCacheModuleForTests();
+  const tool = createDiscoverModelsTool({ env: { TYPESAFE_API_KEY: "synthetic-key" } });
+  const result = parseList(await invoke(tool, { command: "list", decision_operation: "score", runnable_only: true }));
+  expect(result.items.map((row) => row.id)).toEqual(["typesafe:jev-1.13.0"]);
+  expect(result.items[0]).toMatchObject({ workload: "decision", input: ["text"], decision: { operations: ["choice", "noul", "score"] } });
 });

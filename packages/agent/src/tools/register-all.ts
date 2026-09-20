@@ -83,6 +83,8 @@ import { createVerifyIdentityTool } from "./trust/verify-identity";
 import { createRunDeepResearchTool } from "./research/run-deep-research";
 import { createSecurityScanTool } from "./security/security-scan";
 import { createDiscoverToolsTool } from "./meta/discover-tools";
+import { createEvaluateDecisionsTool, decisionToolUnavailable } from "./meta/evaluate-decisions";
+import { listResolvedCatalogModels } from "../config/resolved-catalog";
 import { createDiscoverModelsTool } from "./meta/discover-models";
 import { createActivateToolsTool } from "./meta/activate-tools";
 import { createDeactivateToolsTool } from "./meta/deactivate-tools";
@@ -170,6 +172,7 @@ export interface RegisterAllToolsOptions {
    */
   officeCliAvailable?: () => boolean;
   publicBrowserUseAvailable?: () => boolean;
+  decisionModelsAvailable?: () => boolean;
   /**
    * Combined credential/runtime/catalog readiness seam for paid Venice media.
    * Production defaults fail closed unless the approval runtime is installed
@@ -1562,6 +1565,20 @@ export function registerAllTools(
   // boundary; the runtime guest withhold is enforced by the guest toolPolicy
   // (trust/personal-policy-resolver.ts GUEST_ALLOWED_TOOLS), which does not
   // include `discover_models`.
+  catalog.register({
+    name: "evaluate_decisions",
+    factory: (ctx) => createEvaluateDecisionsTool(ctx),
+    category: "meta",
+    trustTier: "standard",
+    impact: "low",
+    exposure: "discoverable",
+    tags: ["classification", "scoring", "decisions", "models"],
+    isAvailable: options.decisionModelsAvailable ?? (() => listResolvedCatalogModels().some((row) => row.workload === "decision" && row.availability === "selectable")),
+    unavailableReason: "Configure a supported decision provider key and enable a decision model.",
+    unavailableInContext: (ctx) => decisionToolUnavailable(ctx),
+    resultScanPolicy: "always",
+  });
+
   catalog.register({
     name: "discover_models",
     factory: (ctx) => createDiscoverModelsTool(ctx),

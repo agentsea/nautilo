@@ -9,22 +9,39 @@ Version 4 adds the `decision` workload. Its `decision.inputTokens` and
 not chat context/output limits. Decision rows have no chat feature or intelligence
 claims. Versions 1–3 keep their existing validation rules.
 
+Version 6 adds Choice, Noul (binary probability), and Score operations, shared-state
+multi-question support, aggregate token budgets, score level bounds, and reviewed
+rate cards. Input modality remains independent of operation: the installed Jev
+adapters currently accept text/JSON only. Image or extraction metadata cannot
+install an executable adapter.
+
+The direct TypeSafe route uses `TYPESAFE_API_KEY`; Venice and OpenRouter reuse
+existing provider credentials. Server Controls exposes TypeSafe as a decision
+provider, so it cannot satisfy chat setup. `discover_models` can filter by
+`decision_operation`; `evaluate_decisions` evaluates independent named questions
+within an admitted, non-Full-encryption turn and its cancellation signal. It
+returns a complete validated batch or a failure, never a partial success or an
+action. The existing browser Choice consumer uses the same transport.
+
+Each evaluation makes one HTTP request without hidden retries. Provider usage
+is recorded once even when a billed result is malformed or arrives after
+cancellation. Provider-reported cost and identity remain distinct from catalog
+price estimates and requested aliases. Current promotional rates are catalog
+metadata, not permanent promises. No request content belongs in diagnostics.
+
 ## Reader compatibility
 
-The reader uses `https://media.nautilo.ai/models/v4/latest.json`. Older clients
-keep using `https://media.nautilo.ai/models/latest.json` for the v3 view. Both
-feeds use the same canonical catalog source and existing signature contract.
+The current reader uses `https://media.nautilo.ai/models/v6/latest.json`.
+The private publisher derives compatible v3, v4 and v5 views from one authored
+manifest. V3 omits decisions, speech, and `features.visualGrounding`; v4 omits
+speech; v4/v5 retain only text Choice routes their installed adapters support,
+with the original closed decision metadata. V5 preserves speech.
 
-The private publisher generates the v3 view by omitting decision rows and fields
-unknown to v3, including `features.visualGrounding`. This is a publication
-transform, never a second authored catalog. Each view has its own signed hash
-and immutable artifact; both artifacts are verified before either pointer moves.
-Reader source changes do not themselves publish either feed. Until its feed is
-published, a reader retains its validated last-known-good or bundled fallback.
-
-The current reader uses the existing signature, artifact hash, strict schema, and
-last-known-good path for v4 too. Invalid signatures or payloads never replace the
-active valid catalog.
+Every view has its own signed hash and immutable artifact. All artifacts are
+verified before pointer promotion. Reader changes do not publish feeds: until
+a compatible signed feed is available, the reader retains its validated
+last-known-good or bundled fallback. Invalid signatures and schemas never
+replace the active valid catalog.
 
 ## Visual grounding metadata
 
@@ -42,5 +59,4 @@ limits, and estimated USD per thousand characters. Speech rows are excluded
 from chat selection. The server-wide speech setting selects an exact catalog
 ID; when unset, the first runnable speech row in catalog priority order wins.
 Replies freeze that selection at admission and retain each Genie's voice.
-The v5 bootstrap is a candidate imported from canonical catalog authoring;
-publication of the signed v5 channel is a separate release step.
+Catalog authoring, signed publication, and installed reader adoption remain separate release steps.

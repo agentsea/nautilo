@@ -127,9 +127,10 @@ async function installCatalog(catalog: ModelCatalog): Promise<void> {
 
 function catalogWithOnlyDecisionProvider(provider: "openrouter" | "venice"): ModelCatalog {
   const current = getActiveModelCatalogSync().catalog;
-  if (current.version !== 4 && current.version !== 5) throw new Error("expected checked-in model catalog");
-  const jev = current.entries.find((entry) => entry.id === JEV_ID);
-  if (!jev || jev.workload !== "decision") throw new Error("expected checked-in Jev row");
+  if (current.version !== 4 && current.version !== 5 && current.version !== 6) throw new Error("expected checked-in model catalog");
+  const source = current.entries.find((entry) => entry.id === JEV_ID);
+  if (!source || source.workload !== "decision") throw new Error("expected checked-in Jev row");
+  const jev = { ...source, decision: { operations: ["choice"], inputTokens: 32000, maxChoices: 255 } };
   return ModelCatalogV4Schema.parse({
     ...current,
     version: 4,
@@ -379,7 +380,7 @@ describe("invokeOpenRouterChoice", () => {
     expect(usage.records).toHaveLength(1);
 
     const current = catalogWithOnlyDecisionProvider("openrouter");
-    if (current.version !== 4 && current.version !== 5) throw new Error("expected v4 decision catalog");
+    if (current.version !== 4 && current.version !== 5 && current.version !== 6) throw new Error("expected v4 decision catalog");
     const revoked = ModelCatalogV4Schema.parse({
       ...current,
       version: 4,

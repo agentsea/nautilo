@@ -76,9 +76,12 @@ export type ResolvedCatalogOutputModality = "text" | "image" | "audio" | "video"
 /** Only chat rows are candidates for chat routing. */
 export type ResolvedCatalogWorkload = "chat" | "generation" | "decision" | "speech";
 export interface ResolvedCatalogDecision {
-  operations: readonly ["choice"];
+  operations: readonly ("choice" | "noul" | "score")[];
   inputTokens: number;
   maxChoices: number;
+  totalInputTokens?: number | undefined;
+  supportsMultipleQuestions?: boolean | undefined;
+  maxScoreLevels?: number | undefined;
 }
 export type ResolvedCatalogGenerationFamily = "image" | "video" | "music";
 /** Provider input kinds, not Human-authored creative labels. */
@@ -137,7 +140,7 @@ export interface ResolvedCatalogFeatures {
  * resolver, privacy grades, intelligence tiers, cost coefficients, sync token
  * limits, credential detection) — it does NOT duplicate provider parsing or
  * metadata tables. All accessors are local / cache-backed: list/get never
- * awaits a network fetch ( decision; verified by a fetch-throws test).
+ * awaits a network fetch (verified by a fetch-throws test).
  */
 export interface ResolvedCatalogModel {
   // --- identity ---

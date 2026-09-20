@@ -55,7 +55,7 @@ describe("live browser decision exposure", () => {
 
   test("selects the first eligible implemented decision row in signed catalog order", () => {
     const eligible = resolvedCatalog.listResolvedCatalogModels().filter((row) => row.workload === "decision"
-      && row.decision?.operations.length === 1 && row.decision.operations[0] === "choice");
+      && row.decision?.operations.includes("choice"));
     expect(eligible.length).toBeGreaterThan(0);
     expect(resolveBrowserDecisionModel(context)?.id).toBe(eligible[0]?.id);
     expect(resolveBrowserDecisionModel(context, eligible[0]?.id)?.id).toBe(eligible[0]?.id);

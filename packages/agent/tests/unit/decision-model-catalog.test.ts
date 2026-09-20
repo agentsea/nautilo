@@ -158,7 +158,7 @@ describe("resolved decision projection", () => {
       output: ["text"],
       generation: null,
       decision: {
-        operations: ["choice"],
+        operations: ["choice", "noul", "score"],
         inputTokens: 32_000,
         maxChoices: 255,
       },

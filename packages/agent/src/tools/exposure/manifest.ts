@@ -1,5 +1,5 @@
 /**
- * D419's reviewed, declarative exposure taxonomy.
+ * Reviewed, declarative exposure taxonomy.
  *
  * This deliberately does not change catalog registration or binding. Phase 2
  * will use it to attach exposure metadata and resolve activated families.
@@ -140,11 +140,11 @@ export const TOOL_EXPOSURE_MANIFEST: ToolExposureManifest = {
       "convert",
       "execute_artifact",
     ],
-    // D497 — explicit Git/GitHub workstation intent may need to establish the
+    // explicit Git/GitHub workstation intent may need to establish the
     // local Current Folder before shell execution. This is the narrow folder
     // selector only; the broader filesystem family stays deferred.
     shell: ["run_shell", "terminal", "select_current_folder"],
-    // D500 — separate from the ordinary shell family. Generic local shell
+    // separate from the ordinary shell family. Generic local shell
     // work must never expose Human-granted remote SSH authority.
     structured_ssh: [
       "structured_ssh_auth",
@@ -195,7 +195,7 @@ export const TOOL_EXPOSURE_MANIFEST: ToolExposureManifest = {
       "play_explainer",
     ],
     time: ["get_current_time"],
-    research: ["run_deep_research", "security_scan"],
+    research: ["run_deep_research", "security_scan", "evaluate_decisions"],
     skill_authoring: ["skill_manage"],
     command_authoring: ["command_manage"],
   },
@@ -236,7 +236,7 @@ const DEVELOPMENT_FILESYSTEM_REQUEST =
 const DEVELOPMENT_SHELL_REQUEST =
   /\b(?:run|execute)\b[\s\S]{0,40}\b(?:tests?|build|compiler|linter|typecheck)\b|\b(?:build|compile|lint|typecheck)\b[\s\S]{0,50}\b(?:code|codebase|repository|repo|project|package|module|client|server)\b/i;
 /**
- * D502 — naming the deferred tool together with an execution verb is an
+ * naming the deferred tool together with an execution verb is an
  * unmistakable request to make the shell family callable. Keep the verb
  * coupled to the tool name so explanatory questions about run_shell do not
  * eagerly expose high-impact execution authority.
@@ -244,7 +244,7 @@ const DEVELOPMENT_SHELL_REQUEST =
 const EXPLICIT_RUN_SHELL_REQUEST =
   /\b(?:use|call|invoke)\b[\s\S]{0,32}\brun_shell\b|\brun_shell\b[\s\S]{0,32}\b(?:run|execute)\b/i;
 /**
- * D497 — Git/GitHub work is a concrete workstation-shell request, not a
+ * Git/GitHub work is a concrete workstation-shell request, not a
  * reason to make the shell family eager for ordinary repository discussion.
  * Keep the action and Git/GitHub signal coupled so a vague question about
  * software, bugs, or GitHub itself retains progressive exposure.
@@ -252,7 +252,7 @@ const EXPLICIT_RUN_SHELL_REQUEST =
 const EXPLICIT_GIT_GITHUB_SHELL_REQUEST =
   /\b(?:run|execute|check|show|list|inspect|query|fetch|review|open|create|close|comment|push|pull|status|diff|log|commit|branch|clone|checkout|merge|rebase)\b[\s\S]{0,80}\b(?:git|github|gh|pull requests?|issues?)\b|\b(?:git|github|gh)\b[\s\S]{0,80}\b(?:status|diff|log|branches?|issues?|bugs?|pull requests?|prs?|commits?|fetch|push|pull|clone|checkout|merge|rebase|list|open|create|close|comment|review)\b/i;
 /**
- * D500 — remote authority is exposed only for an explicit operational SSH,
+ * remote authority is exposed only for an explicit operational SSH,
  * remote-server, or DevOps request. Ordinary shell, Git, or SSH explanation
  * turns remain outside this separate high-impact family.
  */
@@ -270,7 +270,7 @@ const HARNESS_DELEGATION =
   /\b(?:use|run|invoke|delegate|route|send|hand\s*off|have)\b[\s\S]{0,48}\b(?:codex|coding harness|agent harness)\b/i;
 
 /**
- * D419 task 2.5 — deliberately narrow, deterministic intent-pack selection.
+ * deliberately narrow, deterministic intent-pack selection.
  *
  * This recognizes only an explicit, concrete request family. It does not
  * inspect policy, relays, namespaces, whitelists, or model capability itself:
@@ -321,7 +321,7 @@ export function resolveIntentPacks(request: string): IntentPackResolution {
 }
 
 /**
- * D423 — a server-resolved focused resource can carry an already-authorized,
+ * a server-resolved focused resource can carry an already-authorized,
  * model-facing `file` target. Its presence is a deterministic reason to make
  * exactly that tool callable for the turn: the focused-resources prompt tells
  * the model to use `file`, so leaving its schema deferred makes the pointer
@@ -440,7 +440,7 @@ export function validateCoreFamilyPartition(
   }
 }
 
-/** Validates the complete D419 core/family taxonomy against a catalog name set. */
+/** Validates the complete core/family taxonomy against a catalog name set. */
 export function validateToolExposureManifest(
   registeredToolNames: Iterable<string>,
   manifest: ToolExposureManifest = TOOL_EXPOSURE_MANIFEST,

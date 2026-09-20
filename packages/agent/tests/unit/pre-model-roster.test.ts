@@ -13,7 +13,7 @@ import { MAX_SUBAGENT_DEPTH } from "../../src/agent/state";
 import type { RoomParticipant } from "@nautilo/trust";
 
 /**
- * M042B — pre_model roster injection.
+ * pre_model roster injection.
  *
  * Two assertions both cheap and zero-DB:
  *
@@ -32,7 +32,7 @@ import type { RoomParticipant } from "@nautilo/trust";
 
 beforeAll(() => {
   const catalog = new ToolCatalog();
-  registerAllTools(catalog);
+  registerAllTools(catalog, { decisionModelsAvailable: () => true });
   initToolCatalog(catalog);
 });
 
@@ -100,7 +100,7 @@ async function systemPromptOf(state: NautiloState): Promise<string> {
       `expected first prepared message to be SystemMessage, got ${first?.constructor.name ?? "undefined"}`,
     );
   }
-  // D407 — for `anthropic:` models the system message is split into cached +
+  // for `anthropic:` models the system message is split into cached +
   // volatile text blocks. Reconstruct the full prompt text from the blocks
   // (concatenation is byte-identical to the single-string form).
   if (typeof first.content === "string") return first.content;
@@ -120,7 +120,7 @@ async function systemPromptOf(state: NautiloState): Promise<string> {
 // Roster injection — owner path
 // ===========================================================================
 
-describe("preModelNode — roster injection (M042B)", () => {
+describe("preModelNode — roster injection", () => {
   test("injects participants block when roomRoster is populated", async () => {
     const roster: RoomParticipant[] = [
       {
@@ -264,7 +264,19 @@ describe("preModelNode — roster injection (M042B)", () => {
     expect(prompt).toContain("**file**:");
   });
 
-  test("D419 keeps every authorized core schema represented in the system prompt", async () => {
+  test("retains activated decisions through eligibility pruning only in admitted ordinary turns", async () => {
+    const state = makeState({ turnId: "decision-turn", activatedToolNames: ["evaluate_decisions"] });
+    const ordinary = await preModelNode(state);
+    expect(ordinary.activatedToolNames).toContain("evaluate_decisions");
+    expect(ordinary.toolNames).toContain("evaluate_decisions");
+    const protectedTurn = await preModelNode(state, undefined, undefined, undefined, true);
+    expect(protectedTurn.activatedToolNames).not.toContain("evaluate_decisions");
+    expect(protectedTurn.toolNames).not.toContain("evaluate_decisions");
+    const unadmitted = await preModelNode({ ...state, turnId: "" });
+    expect(unadmitted.toolNames).not.toContain("evaluate_decisions");
+  });
+
+  test("keeps every authorized core schema represented in the system prompt", async () => {
     const state = makeState({});
     const patch = await preModelNode(state);
     const prompt = await systemPromptOf(state);
@@ -337,7 +349,7 @@ describe("preModelNode — roster injection (M042B)", () => {
     expect(prompt).toContain("**file**:");
   });
 
-  test("D497 projects an already-authorized shell for an explicit GitHub request without filesystem access", async () => {
+  test("projects an already-authorized shell for an explicit GitHub request without filesystem access", async () => {
     const state = makeState({
       messages: [new HumanMessage("List open GitHub issues for this repo.")],
       relayCapabilities: { use_high_impact_tools: true, canRunShell: true },
@@ -354,7 +366,7 @@ describe("preModelNode — roster injection (M042B)", () => {
     expect(patch.activatedToolNames).not.toContain("file");
   });
 
-  test("D497 keeps shell deferred for unrelated turns and denied/missing authorization", async () => {
+  test("keeps shell deferred for unrelated turns and denied/missing authorization", async () => {
     const unrelated = await preModelNode(makeState({
       messages: [new HumanMessage("Summarize the sprint note.")],
       relayCapabilities: { use_high_impact_tools: true, canRunShell: true },

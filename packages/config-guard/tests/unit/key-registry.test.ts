@@ -15,8 +15,8 @@ describe("key-registry", () => {
     expect(getKeyByEnvVar("NAUTILO_GATEWAY_API_KEY")?.signupUrl).toBe("");
   });
 
-  test("registry has twelve keys", () => {
-    expect(KEY_REGISTRY.length).toBe(12);
+  test("registry has thirteen keys", () => {
+    expect(KEY_REGISTRY.length).toBe(13);
   });
 
   test("getKeyByEnvVar resolves Venice", () => {
@@ -125,4 +125,8 @@ describe("key-registry", () => {
     expect(k?.formatCheck(`Bearer ${jwt}`)).toBe(false);
     expect(k?.formatCheck("short")).toBe(false);
   });
+});
+
+test("TypeSafe is a decision credential and cannot satisfy chat setup", () => {
+  expect(getKeyByEnvVar("TYPESAFE_API_KEY")).toMatchObject({ id: "typesafe", category: "decision", signupUrl: "https://console.typesafe.ai/" });
 });

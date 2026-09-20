@@ -85,6 +85,15 @@ describe("parseVeniceCatalogSnapshotResponse", () => {
     });
   });
 
+  test("decision listings retain presence without inventing chat capabilities or completeness", () => {
+    const data = [{ id: "jev-latest", type: "decision", model_spec: { offline: false, privacy: "anonymized" } }];
+    const all = parseVeniceCatalogSnapshotResponse({ object: "list", type: "all", data });
+    expect(all?.complete).toBe(true);
+    expect(all?.models["jev-latest"]).toMatchObject({ type: "decision", offline: false, privacy: "anonymized" });
+    expect(all?.models["jev-latest"]?.capabilities).toBeNull();
+    expect(parseVeniceCatalogSnapshotResponse({ object: "list", type: "decision", data })?.complete).toBe(false);
+  });
+
   test("marks a response partial when its type or a row type is not documented", () => {
     expect(parseVeniceCatalogSnapshotResponse({
       object: "list",
