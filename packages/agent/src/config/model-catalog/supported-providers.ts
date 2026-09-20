@@ -31,8 +31,9 @@ export function isSupportedModelCatalogProvider(provider: string): boolean {
 
 export function isSupportedModelCatalogWorkload(
   provider: string,
-  workload: "chat" | "generation" | "decision",
+  workload: "chat" | "generation" | "decision" | "speech",
 ): boolean {
+  if (workload === "speech") return provider === "elevenlabs";
   return isSupportedModelCatalogProvider(provider)
     && (workload !== "decision" || isSupportedChoiceProvider(provider));
 }

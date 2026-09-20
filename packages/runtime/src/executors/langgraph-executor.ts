@@ -77,6 +77,7 @@ import {
 } from "../utils/agent-progress-heartbeat";
 import { persistMessages, sanitizeMessageForTranscript } from "./persist-messages";
 import { SentenceDetector, type SentenceDetectorConfig } from "../utils/sentence-detector";
+import { bindVoiceTurnLifecycle } from "../utils/voice-turn-lifecycle";
 import { parseMultimodalImagesFromJobInput } from "./multimodal-job-input";
 import {
   parseActiveMiniAppInput,
@@ -969,7 +970,10 @@ export async function* langgraphExecutor(
     ...(turnId ? { turnId } : {}),
   });
   const voiceSubjectId = memoryAccessEnvelope?.ownerId ?? ownerId;
-  const sentenceDetectorConfig: SentenceDetectorConfig = {};
+  const sentenceDetectorConfig: SentenceDetectorConfig = {
+    onIdleEvents: events => { if (!signal.aborted) for (const event of events) eventBus.emit(event); },
+  };
+  sentenceDetectorConfig.turnId = turnId || _jobId;
   if (voiceSubjectId) {
     sentenceDetectorConfig.userId = voiceSubjectId;
   }
@@ -1171,6 +1175,8 @@ export async function* langgraphExecutor(
     recursionLimit: executionPolicy.recursionLimit,
     version: "v2",
   };
+
+  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId, agentId, turnId: turnId || _jobId });
 
   log(`[nautilo/executor] Starting stream for thread ${langgraphThreadId}`);
 
@@ -1380,13 +1386,7 @@ export async function* langgraphExecutor(
       for (const event of drained) yield event;
     }
 
-    if (sentenceDetector) {
-      sentenceDetector.complete();
-      const sdrained = sentenceDetector.drain();
-      if (!errorSkipSuppressed) {
-        for (const event of sdrained) yield event;
-      }
-    }
+    sentenceDetector?.reset();
 
     // errored source: do NOT consume the redirect request;
     // notify the hook so the server can clean its pending context.
@@ -1396,6 +1396,7 @@ export async function* langgraphExecutor(
     throw error;
   } finally {
     agentProgressHeartbeat?.dispose();
+    finishVoiceTurn(checkpointPrimaryError);
     // belt-and-suspenders cleanup of the per-agent
     // turn-context slot. The success/error/abort paths already cleared it,
     // but a `return` from inside the try (e.g. abort) reaches here too, and a

@@ -55,6 +55,8 @@ function mergeProviderAvailability(
     imageModels: refreshed.imageModels,
     musicModels: refreshed.musicModels,
     videoModels: refreshed.videoModels,
+    speechModels: refreshed.speechModels,
+    effectiveSpeechModel: refreshed.effectiveSpeechModel,
   };
 }
 
@@ -337,6 +339,7 @@ export function ModelsSection() {
       config.imageModel !== draft.imageModel ||
       config.musicModel !== draft.musicModel ||
       config.videoModel !== draft.videoModel ||
+      config.speechModel !== draft.speechModel ||
       config.fallbackChain.join(",") !== draft.fallbackChain.join(",") ||
       JSON.stringify(config.reasoningPolicy) !== JSON.stringify(draft.reasoningPolicy));
 
@@ -391,6 +394,7 @@ export function ModelsSection() {
         ...(draft.imageModel === config?.imageModel ? {} : { imageModel: draft.imageModel }),
         ...(draft.musicModel === config?.musicModel ? {} : { musicModel: draft.musicModel }),
         ...(draft.videoModel === config?.videoModel ? {} : { videoModel: draft.videoModel }),
+        ...(draft.speechModel === config?.speechModel ? {} : { speechModel: draft.speechModel }),
         fallbackChain: draft.fallbackChain,
         reasoningPolicy: draft.reasoningPolicy,
       });
@@ -417,8 +421,8 @@ export function ModelsSection() {
         <p className="mt-1 text-xs text-foreground-muted">
           Server-wide model defaults, fallback policy, and reasoning-output
           defaults. These apply when an Agent follows the server policy; they do
-          not change an Agent&apos;s own pinned model or fallback chain. Changes take
-          effect immediately — no restart.
+          not change an Agent&apos;s own pinned model or fallback chain.
+          Choose your settings, then select Save changes. No restart is needed.
         </p>
       </header>
 
@@ -712,6 +716,33 @@ export function ModelsSection() {
               </div>
             </div>
 
+            <div className="space-y-1.5 border-t border-border/60 pt-5">
+              <label htmlFor="server-speech-model" className="block text-xs font-semibold text-foreground">Speech model</label>
+              <p className="text-[11px] text-foreground-muted">Used by all Genies. Each Genie keeps its own voice. Select Save changes to use your choice for the next reply.</p>
+              <select id="server-speech-model" data-testid="server-speech-model"
+                className="w-full rounded-md border border-border bg-background-element px-2 py-1.5 text-sm"
+                value={draft.speechModel ?? ""} disabled={!canManage}
+                onChange={event => patch({ speechModel: event.target.value || null })}>
+                <option value="">Catalog default</option>
+                {draft.speechModel && !draft.speechModels.some(model => model.id === draft.speechModel) ?
+                  <option value={draft.speechModel} disabled>{draft.speechModel} (Unavailable)</option> : null}
+                {draft.speechModels.map(model => <option key={model.id} value={model.id} disabled={!model.available}>
+                  {model.displayName}{model.available ? "" : " (Unavailable)"}
+                </option>)}
+              </select>
+              <p className="text-[11px] text-foreground-muted" data-testid="effective-speech-model">
+                Active speech model: {draft.speechModels.find(model => model.id === draft.effectiveSpeechModel)?.displayName ?? draft.effectiveSpeechModel ?? "Unavailable"}
+              </p>
+              {draft.speechModel !== config?.speechModel ? (
+                <p className="text-xs text-[var(--warning)]" role="status">
+                  Not saved yet. Select Save changes to apply this speech model.
+                </p>
+              ) : null}
+              {!draft.effectiveSpeechModel ? <p className="text-[11px] text-[var(--warning)]">
+                {draft.speechModels.find(model => model.id === draft.speechModel)?.unavailableReason ?? draft.speechModels[0]?.unavailableReason ?? "No supported speech model is available in the current catalog."}
+              </p> : null}
+            </div>
+
             {/* Fallback chain */}
             <div className="space-y-1.5">
               <span className="block text-xs font-semibold text-foreground">
@@ -859,7 +890,7 @@ export function ModelsSection() {
             </div>
 
             {canManage ? (
-              <div className="flex items-center gap-3 border-t border-border/60 pt-4">
+              <div className="sticky bottom-0 z-10 -mx-5 flex flex-wrap items-center gap-3 border-t border-border bg-background-panel px-5 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.08)]">
                 <Button
                   variant="primary"
                   onClick={() => void handleSave()}
@@ -868,7 +899,9 @@ export function ModelsSection() {
                 >
                   {save === "saving" ? "Saving…" : "Save changes"}
                 </Button>
-                {save === "saved" ? (
+                {dirty && save === "idle" ? (
+                  <span className="text-xs text-[var(--warning)]" role="status">You have unsaved changes.</span>
+                ) : save === "saved" ? (
                   <span className="text-xs text-[var(--success,#16a34a)]">Saved. Live now.</span>
                 ) : typeof save === "object" ? (
                   <span className="text-xs text-[var(--error)]" role="alert">

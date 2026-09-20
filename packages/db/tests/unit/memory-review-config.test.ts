@@ -10,7 +10,7 @@ test("unset Memory overrides preserve runtime ownership instead of inheriting ch
   expect(resolveServerContextConfig(null).memoryReviewEnabled).toBeNull();
   const row: ServerModelConfigRow = {
     id: "server", defaultChatModel: "test:chat", conductorModel: null, embeddingModel: null,
-    imageModel: null, musicModel: null, videoModel: null,
+    imageModel: null, musicModel: null, videoModel: null, speechModel: null,
     stenographerModel: null, reflectionModel: null, memoryReviewModel: "test:review",
     fallbackChain: [], reasoningOutput: null, reasoningPolicy: null, updatedAt: new Date(),
   };

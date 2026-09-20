@@ -46,18 +46,18 @@ export interface MessageTokensEvent {
   done: boolean;
   tokenUsage?: TokenUsage;
   /**
-   * D300 — stable assistant author id for multi-agent rooms. Present on
+   * stable assistant author id for multi-agent rooms. Present on
    * assistant streaming chunks when the runtime knows `agentId`; clients
    * resolve display labels from the room roster. Never set on human/user
    * traffic.
    */
   authorAgentId?: string;
   /**
-   * M178 — correlates the chunk to the in-flight assistant turn; lets clients
+   * correlates the chunk to the in-flight assistant turn; lets clients
    * keep concurrent streams in distinct bubbles. Optional for older servers.
    */
   turnId?: string;
-  /** D521 — server-authored identity for one visible assistant message. */
+  /** server-authored identity for one visible assistant message. */
   assistantMessageKey?: string;
 }
 
@@ -67,22 +67,22 @@ export interface MessageNewEvent {
   type: "message.new";
   laneKey: string;
   messageId: string;
-  /** M230 — present for persisted Human rows so live projections are editable immediately. */
+  /** present for persisted Human rows so live projections are editable immediately. */
   logicalMessageKey?: string;
-  /** M230 — initial/current edit revision for the persisted Human row. */
+  /** initial/current edit revision for the persisted Human row. */
   editRevision?: number;
-  /** `user` = persisted human row (D124); `human` kept for back-compat. */
+  /** `user` = persisted human row; `human` kept for back-compat. */
   role: "ai" | "human" | "system" | "user";
   content: string;
-  /** D124 — `sessions.owner_id` for `role === "user"` / `human` rows. */
+  /** `sessions.owner_id` for `role === "user"` / `human` rows. */
   sourceUserId?: string;
   /**
-   * D124 B3 — human author id; WS layer skips `markDelivered` for sockets
+   *  B3 — human author id; WS layer skips `markDelivered` for sockets
    * whose `userId` matches (author already has optimistic UI).
    */
   senderUserId?: string;
   /**
-   * D300 — stable assistant author id for `role === "ai"` rows. Present when
+   * stable assistant author id for `role === "ai"` rows. Present when
    * the runtime knows `agentId`; clients resolve display labels from the room
    * roster. Never set on human/user/system rows.
    */
@@ -94,10 +94,10 @@ export interface MessageNewEvent {
    * agent as a "via" attribution.
    */
   authorHarnessId?: string;
-  /** D521 — matches this durable row to its streamed assistant bubble. */
+  /** matches this durable row to its streamed assistant bubble. */
   assistantMessageKey?: string;
   /**
-   * D359 — id of the message this reply quotes (inline quote-reply). Optional:
+   * id of the message this reply quotes (inline quote-reply). Optional:
    * absence means "no reply." Populated by the human/DM `message.new` emit
    * sites (`peer-broadcast.ts`, `agent-mediated.ts`) from the same send
    * request / persisted row that supplies `messageId` / `sourceUserId`, so
@@ -107,7 +107,7 @@ export interface MessageNewEvent {
    */
   replyToMessageId?: number;
   /**
-   * D424/D570 — server-authored ArtifactOpenCard refs. Present on an ordinary
+   * Server-authored ArtifactOpenCard refs. Present on an ordinary
    * focused user send or on the assistant question in a trusted ask_peer
    * Artifact handoff. Never inferred from prose/tool output. Hydrated from
    * `session_message_artifacts` at emit time; pointer-only.
@@ -117,7 +117,7 @@ export interface MessageNewEvent {
   workcardContinuation?: AdvancedVideoWorkcardContinuation;
 }
 
-/** M236 — complete viewer-private own-Room and aggregate notification delta. */
+/** complete viewer-private own-Room and aggregate notification delta. */
 export interface RoomNotificationChangedEvent {
   type: "room.notification.changed";
   userId: string;
@@ -130,7 +130,7 @@ export interface RoomNotificationChangedEvent {
 }
 
 /**
- * M323 — content-free hint that the authenticated Human's durable event feed
+ * content-free hint that the authenticated Human's durable event feed
  * changed. Delivery authority is supplied out of band by the server publisher;
  * the wire payload deliberately contains no user, event, recipient, or content
  * identifiers.
@@ -140,7 +140,7 @@ export interface EventFeedChangedEvent {
 }
 
 /**
- * M236 — non-replayed arrival signal. Deliberately contains labels and durable
+ * non-replayed arrival signal. Deliberately contains labels and durable
  * identifiers only; message content and arbitrary navigation targets are not
  * part of this contract.
  */
@@ -157,7 +157,7 @@ export interface ImportantMessageArrivedEvent {
   occurredAt: string;
 }
 
-/** D279 Phase 3.6 — wire shape for active room silence windows (D190). */
+/** wire shape for active room silence windows. */
 export type ActiveRoomSilenceDto = {
   id: string;
   kind: "mute" | "deaf";
@@ -168,7 +168,7 @@ export type ActiveRoomSilenceDto = {
 };
 
 /**
- * D279 Phase 3.6 — room-scoped silence state delta. Published on set, clear,
+ * room-scoped silence state delta. Published on set, clear,
  * and precise expiry so clients can drop the 30s poll backstop. Audience =
  * room members (mirrors `room_members_changed`).
  */
@@ -179,7 +179,7 @@ export interface RoomSilenceChangedEvent {
   silence: ActiveRoomSilenceDto | null;
 }
 
-/** D302 P5b — room-scoped smart-routing policy delta. */
+/** b — room-scoped smart-routing policy delta. */
 export interface RoomConductorModeChangedEvent {
   type: "room.conductor_mode.changed";
   roomId: string;
@@ -205,7 +205,7 @@ export interface ReactionRemovedEvent {
 }
 
 /**
- * ISSUE-M172 — a room message was hard-deleted. Zero-content (id + lane only),
+ * a room message was hard-deleted. Zero-content (id + lane only),
  * safe to broadcast room-scoped exactly like reaction events. Clients remove
  * the message from the active room's store on receipt.
  */
@@ -215,7 +215,7 @@ export interface MessageDeletedEvent {
   messageId: number;
 }
 
-/** M230 — authoritative replacement text for one logical Human turn. */
+/** authoritative replacement text for one logical Human turn. */
 export interface MessageUpdatedEvent {
   type: "message.updated";
   laneKey: string; // `room:<roomId>`
@@ -226,7 +226,7 @@ export interface MessageUpdatedEvent {
 }
 
 /**
- * D426 — authoritative, revisioned summary for a Subthread anchor shown in
+ * authoritative, revisioned summary for a Subthread anchor shown in
  * its parent Room. This is a snapshot, never an increment/decrement delta:
  * receivers discard it unless `summaryRevision` is newer than their current
  * anchor metadata.
@@ -255,14 +255,14 @@ export interface JobStatusEvent {
   authorAgentId?: string | undefined;
   /**
    * Friendly user-visible sentence on `status: "failed"`. One of the
-   * seven D141 friendly-error sentences (translated at the runtime
+   * seven friendly-error sentences (translated at the runtime
    * job-loop chokepoint). Contains zero echoed prompt content or
    * upstream model output, so it is safe to broadcast room-scoped
    * along with this event's normal lane routing.
    */
   message?: string | undefined;
   /**
-   * D141 Phase 1 — stable category tag for a failed event. One of
+   * stable category tag for a failed event. One of
    * `timeout` | `rate_limit` | `auth` | `bad_request` |
    * `context_exceeded` | `provider_unavailable` | `unknown`. Stable
    * enum (zero user content) — safe to broadcast on the room-scoped
@@ -279,8 +279,8 @@ export interface JobStatusEvent {
    * via the existing `formatProviderError` line at
    * `chat-model-invocation.ts:219` and the `[nautilo/job]` line at
    * `runtime/src/job.ts`. A future user-scoped error-details event
-   * (Stack 17 / D141-P3) can carry the raw blob to the request
-   * originator only — see ISSUE-D141 §"Locked Decisions" LD-8.
+   *  can carry the raw blob to the request
+   * originator only.
    */
   errorCategory?:
     | "timeout"
@@ -291,7 +291,7 @@ export interface JobStatusEvent {
     | "provider_unavailable"
     | "unknown"
     | undefined;
-  /** M075 — room-scoped WS routing when present. */
+  /** room-scoped WS routing when present. */
   laneKey?: string | undefined;
 }
 
@@ -320,7 +320,7 @@ export interface ToolStartEvent {
    */
   authorAgentId?: string | undefined;
   /**
-   * M178 — correlates the tool lifecycle event to the in-flight assistant turn.
+   * correlates the tool lifecycle event to the in-flight assistant turn.
    * Optional for older servers.
    */
   turnId?: string | undefined;
@@ -336,7 +336,7 @@ export interface ToolEndEvent {
   status: "success" | "error";
   error?: string | undefined;
   /**
-   * D083 Phase 2 — actual tool output, string-serialized. Populated
+   * actual tool output, string-serialized. Populated
    * from the ToolMessage's `content` on success, and (for error
    * paths that set `error`) repeated here as a convenience for UI
    * renderers. Capped at ~10KB server-side so the WS never blocks
@@ -351,7 +351,7 @@ export interface ToolEndEvent {
   result?: string | undefined;
   resultTruncated?: boolean | undefined;
   /**
-   * D502 — emitted only for an exact `run_shell` request that crossed relay
+   * emitted only for an exact `run_shell` request that crossed relay
    * dispatch but lost its canonical result. Optional/additive for older
    * clients; absent means an ordinary completed tool outcome.
    */
@@ -364,13 +364,13 @@ export interface ToolEndEvent {
    */
   authorAgentId?: string | undefined;
   /**
-   * M178 — correlates the tool lifecycle event to the in-flight assistant turn.
+   * correlates the tool lifecycle event to the in-flight assistant turn.
    * Optional for older servers.
    */
   turnId?: string | undefined;
 }
 
-/** D502 v1 — provisional, bounded Desktop `run_shell` output observation. */
+/**  v1 — provisional, bounded Desktop `run_shell` output observation. */
 export interface ToolRunShellProgressEvent {
   type: "tool.run_shell.progress";
   /** Room/lane provenance, identical to the corresponding tool lifecycle. */
@@ -391,7 +391,7 @@ export interface ToolRunShellProgressEvent {
 }
 
 /**
- * D500 v1 — provisional, secret-free observation for one structured SSH
+ *  v1 — provisional, secret-free observation for one structured SSH
  * operation. It deliberately has no destination, identity, command, local
  * path, approval, binding, or retry state; the final tool result is canonical.
  */
@@ -436,7 +436,7 @@ export interface WorkspaceArtifactChangedEvent {
   artifactId: string;
   path: string;
   clientMutationId?: string | undefined;
-  /** ISSUE-M193 — broad/unrepresentable write; consumers should full-resync, not patch catch-up. */
+  /** broad/unrepresentable write; consumers should full-resync, not patch catch-up. */
   reloadRequired?: boolean | undefined;
 }
 
@@ -456,17 +456,17 @@ export interface WorkspaceArtifactDeletedEvent {
   namespaceIds: string[];
 }
 
-/** ISSUE-M193 — document patch applied (Artifact SSE lane + HTTP catch-up). */
+/** document patch applied (Artifact SSE lane + HTTP catch-up). */
 export type { DocumentPatchEvent } from "./document-patches";
 
 /**
- * D083 Phase 2 — server-side cap on tool result size before wire
+ * server-side cap on tool result size before wire
  * emission. Prevents `run_shell` that dumps `ls -R /` (megabytes
  * of stdout) from blocking the WS for every connected client.
- * 10KB is the same cap ISSUE-D083 mandates for the expanded card
+ * 10KB is the same cap used for the expanded card
  * view, so truncation here means nothing is lost visually either.
  *
- * D275 — override via `NAUTILO_TOOL_RESULT_MAX_BYTES` (positive
+ * override via `NAUTILO_TOOL_RESULT_MAX_BYTES` (positive
  * integer); resolved once at module load.
  */
 const DEFAULT_TOOL_RESULT_MAX_BYTES = 10_000;
@@ -497,7 +497,7 @@ export function resolveToolResultMaxBytes(
 export const TOOL_RESULT_MAX_BYTES = resolveToolResultMaxBytes();
 
 /**
- * D268 — a `file` staged-patch result is NOT a display dump like a
+ * a `file` staged-patch result is NOT a display dump like a
  * `run_shell` log; it is a structured JSON control payload (a
  * `StagedResultEnvelope`, `{"staged":true,...}`) that the workbench must
  * `JSON.parse` to render the DiffView + Accept/Reject controls.
@@ -1062,7 +1062,7 @@ export function projectToolResultForEvent(
     const projected = projectComputerResultForEvent(result);
     if (projected !== null) return projected;
   }
-  // D502: retain only a strict, independently bounded DesktopShellResult.
+  // retain only a strict, independently bounded DesktopShellResult.
   // Prefix matching here would let a compromised relay bypass WS limits.
   if (toolName === "run_shell" && isBoundedDesktopShellResult(result)) {
     return { result, truncated: false };
@@ -1085,10 +1085,10 @@ export function projectToolResultForEvent(
 }
 
 /**
- * M078 — server-enriched context for `share_memory` ask / prove_it UIs.
+ * server-enriched context for `share_memory` ask / prove_it UIs.
  * The LLM marks `sensitivity`; the server does not run a content classifier.
  *
- * D136-P3: `targetHandle`, `targetDisplayName`, `roomLabel`, `wouldCreate`,
+ * -P3: `targetHandle`, `targetDisplayName`, `roomLabel`, `wouldCreate`,
  * and `sensitivity` are computed in lockstep with {@link ShareArtifactApprovalPreview}
  * via `resolveShareApprovalTargetRoomPreview` in `@nautilo/agent` — do not drift.
  */
@@ -1102,7 +1102,7 @@ export interface ShareMemoryApprovalPreview {
   roomLabel: string | null;
   wouldCreate: boolean;
   sensitivity: "normal" | "sensitive";
-  /** D476 — projection previews contain only destination-safe text. */
+  /** projection previews contain only destination-safe text. */
   projection?: {
     mode: "project";
     /** Existing exact prepared-preview deadline; not a new client-side TTL. */
@@ -1117,7 +1117,7 @@ export interface ShareMemoryApprovalPreview {
 
 /** M088A — server-enriched context for `share_artifact` ask / prove_it UIs.
  *
- * D136-P3: parallel fields to {@link ShareMemoryApprovalPreview} (`targetHandle` …
+ * -P3: parallel fields to {@link ShareMemoryApprovalPreview} (`targetHandle` …
  * `sensitivity`) must stay aligned in the agent preview helpers.
  */
 export interface ShareArtifactApprovalPreview {
@@ -1135,20 +1135,20 @@ export interface ProveItToolInfo {
   name: string;
   args: Record<string, unknown>;
   id?: string | undefined;
-  /** D563 — exact long-wait intent for an approved run_shell call. This is
+  /** exact long-wait intent for an approved run_shell call. This is
    * rendered separately from the compact generic argument preview. */
   runShellTimeout?: {
     readonly timeoutSeconds: number;
     /** Model-provided execution intent, untruncated after credential redaction. */
     readonly reason: string;
   } | undefined;
-  /** M078 — present when `name === "share_memory"`. */
+  /** present when `name === "share_memory"`. */
   shareMemoryPreview?: ShareMemoryApprovalPreview | undefined;
   /** M088A — present when `name === "share_artifact"`. */
   shareArtifactPreview?: ShareArtifactApprovalPreview | undefined;
 }
 
-/** Public, secret-free exact effect for one D503 local MCP install ask. */
+/** Public, secret-free exact effect for one  local MCP install ask. */
 export interface LocalMcpInstallApproval {
   readonly version: "local-mcp-install-v1";
   readonly digest: string;
@@ -1187,13 +1187,13 @@ export interface ProveItChallengeEvent {
   threadId: string;
   laneKey: string;
   tools: ProveItToolInfo[];
-  /** M075 — human who must receive this challenge over WS (user-scoped delivery). */
+  /** human who must receive this challenge over WS (user-scoped delivery). */
   userId?: string | undefined;
-  /** M164 — present when this challenge originated from a Task/subagent run. */
+  /** present when this challenge originated from a Task/subagent run. */
   taskId?: string;
-  /** M164 — the `task_runs.id` for the parked run. */
+  /** the `task_runs.id` for the parked run. */
   taskRunId?: string;
-  /** M164 — `"task"` marks a Task/subagent-originated approval so the workbench
+  /** `"task"` marks a Task/subagent-originated approval so the workbench
    *  bypasses active-room filtering. Absent for main-thread approvals. */
   origin?: "task";
 }
@@ -1212,19 +1212,19 @@ export type ApprovalAskReason =
   | "tier-bump"; // security-level shifted the tier map (e.g. cautious)
 
 /**
- * M037 — one slot of a generalized command signature. A tool call is
+ * one slot of a generalized command signature. A tool call is
  * abstracted to `toolName` + an ordered list of slots; `room`/`always`
  * standing-approval rules persist + match on the canonical serialization
  * of this structure (`signatureKey`).
  *
  * Wire-safe (no server-only deps) so the dock (browser), `@nautilo/db`,
- * and `@nautilo/trust` can all reference it. See ISSUE-M037.
+ * and `@nautilo/trust` can all reference it.
  *
- * - `literal`   — structural token (verb, command, subcommand). Equality.
+ * - `literal` — structural token (verb, command, subcommand). Equality.
  * - `directory` — a path/dir generalized to its parent dir. Prefix.
- * - `path`      — any path (reserved; rare).
- * - `arg`       — a generalized opaque operand (shell tokenizer output).
- * - `exact`     — pinned exact value for an opaque-kind param. Equality.
+ * - `path` — any path (reserved; rare).
+ * - `arg` — a generalized opaque operand (shell tokenizer output).
+ * - `exact` — pinned exact value for an opaque-kind param. Equality.
  */
 export type CommandSignatureSlot =
   | { kind: "literal"; token: string }
@@ -1252,7 +1252,7 @@ export interface ApprovalAskNetworkContext {
 }
 
 /**
- * D061 `ask`-verb challenge. Sibling of `ProveItChallengeEvent`.
+ *  `ask`-verb challenge. Sibling of `ProveItChallengeEvent`.
  *
  * Fires when `resolveApproval(...)` returns `verb === "ask"` in
  * `post-model.ts`. The client presents a four-button dialog (see
@@ -1268,43 +1268,43 @@ export interface ApprovalAskEvent {
   threadId: string;
   laneKey: string;
   tools: ProveItToolInfo[];
-  /** M075 — keys pending network audit context per authenticated user. */
+  /** keys pending network audit context per authenticated user. */
   userId?: string | undefined;
   /** Human-readable "why this is gated" line for the dialog. */
   reason: string;
   /** Machine-readable reason code for client-side theming / analytics. */
   reasonCode: ApprovalAskReason;
-  /** Optional D103 network destination context. URL path/query/body/headers are intentionally absent. */
+  /** Optional  network destination context. URL path/query/body/headers are intentionally absent. */
   network?: ApprovalAskNetworkContext;
   /** Subset of reply verbs the client may offer. Currently always the
    *  full four; a future config option might restrict e.g. hide "always"
-   *  in strict modes or when no M037 matcher is available. */
+   *  in strict modes or when no matcher is available. */
   allowedVerbs: ApprovalReplyVerb[];
   /**
-   * M037 — per-tool, server-classified display + generalization grain so
+   * per-tool, server-classified display + generalization grain so
    * the client renders exactly what each scope grants without
    * re-classifying. Index-aligned with `tools`. Optional on the wire so
    * older clients degrade gracefully (they just won't show the grain line).
    */
   scopeInfo?: ApprovalScopeInfo[];
-  /** D503: exact local MCP launch requiring one explicit, non-standing approval. */
+  /** exact local MCP launch requiring one explicit, non-standing approval. */
   localMcpInstall?: LocalMcpInstallApproval | undefined;
-  /** D525: exact paid media quote requiring one explicit, non-standing approval. */
+  /** exact paid media quote requiring one explicit, non-standing approval. */
   mediaGeneration?: MediaGenerationApproval | undefined;
-  /** D500: exact Electron-local SSH target selected after the first approval. */
+  /** exact Electron-local SSH target selected after the first approval. */
   structuredSsh?: StructuredSshApproval | undefined;
   /** When true clients must not auto-resolve or offer room/always scope. */
   requiresExplicitReview?: boolean | undefined;
-  /** M164 — present when this challenge originated from a Task/subagent run. */
+  /** present when this challenge originated from a Task/subagent run. */
   taskId?: string;
-  /** M164 — the `task_runs.id` for the parked run. */
+  /** the `task_runs.id` for the parked run. */
   taskRunId?: string;
-  /** M164 — `"task"` marks a Task/subagent-originated approval so the workbench
+  /** `"task"` marks a Task/subagent-originated approval so the workbench
    *  bypasses active-room filtering. Absent for main-thread approvals. */
   origin?: "task";
 }
 
-/** D458 — pre-approval choice among currently eligible paired computers. */
+/** pre-approval choice among currently eligible paired computers. */
 export interface HostChoiceEvent {
   type: "host.choice";
   choiceId: string;
@@ -1343,7 +1343,7 @@ export interface ConnectedWebAccountActionResumeFailedEvent {
 }
 
 /**
- * ISSUE-D440 — authoritative approval terminal event.
+ * authoritative approval terminal event.
  *
  * The Workbench approval lifecycle reducer
  * (`apps/workbench/src/approval/approval-lifecycle.ts`) keys every
@@ -1377,14 +1377,14 @@ export interface ApprovalResolvedEvent {
   resolution: "approved" | "denied" | "cancelled" | "expired";
   /** Echoes the reply verb when the resolution followed an HTTP reply. */
   verb?: ApprovalReplyVerb | undefined;
-  /** M164 — present when this approval originated from a Task/subagent run. */
+  /** present when this approval originated from a Task/subagent run. */
   taskId?: string;
   taskRunId?: string;
   origin?: "task";
 }
 
 /**
- * D375 — Auto-Approve session-mode boundary predicate.
+ * Auto-Approve session-mode boundary predicate.
  *
  * The single, named, testable home for the security boundary of the
  * ephemeral Auto-Approve mode, shared by every client (desktop workbench
@@ -1442,7 +1442,7 @@ export function shouldAutoResolveAsk({
 }
 
 /**
- * M037 — the generalization grain for one pending tool call, computed
+ * the generalization grain for one pending tool call, computed
  * server-side by the command-approval classifier. Index-aligned with
  * {@link ApprovalAskEvent.tools}.
  */
@@ -1454,7 +1454,7 @@ export interface ApprovalScopeInfo {
   /** True when nothing generalizes (opaque tool) — room/always persist an exact match. */
   sameAsOnce: boolean;
   /**
-   * M037 capability substrate — when present, `room`/`always` persist a
+   *  capability substrate — when present, `room`/`always` persist a
    * capability-scoped standing approval instead of an exact command signature.
    * Absent or `"tool"` keeps the legacy exact-command grain.
    */
@@ -1466,16 +1466,16 @@ export interface ApprovalScopeInfo {
 /**
  * The user's response to an `approval.ask` dialog.
  *
- * M037 replaced the in-memory, lane-scoped `session` verb with a durable,
+ *  replaced the in-memory, lane-scoped `session` verb with a durable,
  * DB-backed `room` scope. The four verbs are now:
  *
- * - `once`   — approve this single invocation only (no persistence)
- * - `room`   — write a standing-approval rule scoped to the current room
+ * - `once` — approve this single invocation only (no persistence)
+ * - `room` — write a standing-approval rule scoped to the current room
  *              (DB; matches a generalized signature for this user in this room)
  * - `always` — write a server-wide standing-approval rule for this user (DB)
- * - `deny`   — reject this invocation
+ * - `deny` — reject this invocation
  *
- * Both `room` and `always` persist via the M037 command-approval engine
+ * Both `room` and `always` persist via the command-approval engine
  * (`packages/trust/src/command-approvals.ts`) and short-circuit the `ask`
  * verb only — never `prove_it` / `block`.
  */
@@ -1495,16 +1495,18 @@ export interface VoiceStatusEvent {
 
 export interface VoiceSentenceEvent {
   type: "voice.sentence";
+  /** Immutable execution identity; never derived from a sentence index. */
+  turnId?: string | undefined;
   text: string;
   index: number;
   final: boolean;
   /** Room that produced the speech; clients use it for local foreground gating. */
   roomId?: string | undefined;
   userId?: string | undefined;
-  /** D261 — speaking agent; `TtsService` resolves its `voices` map. */
+  /** speaking agent; `TtsService` resolves its `voices` map. */
   agentId?: string | undefined;
   /**
-   * D261 — BCP-47 from a `<voice lang="…">` span the detector parsed and
+   * BCP-47 from a `<voice lang="…">` span the detector parsed and
    * stripped. Absent = untagged → resolver uses `voices.default`. The
    * detector emits language only; voiceId resolution lives in `TtsService`.
    */
@@ -1512,7 +1514,7 @@ export interface VoiceSentenceEvent {
 }
 
 /**
- * D261 — emitted when the agent spoke a `<voice lang="xx">` span but the
+ * emitted when the agent spoke a `<voice lang="xx">` span but the
  * profile has no `voices[xx]` (resolution fell back to `voices.default`).
  * Clients show a one-time, per-(agent,language) debounced "assign a voice?"
  * prompt. Server debounces so one turn emits at most one per language.
@@ -1526,6 +1528,7 @@ export interface VoiceSuggestionEvent {
 
 export interface VoiceAudioEvent {
   type: "voice.audio";
+  turnId?: string | undefined;
   data: string;
   chunkIndex: number;
   sentenceIndex: number;
@@ -1537,26 +1540,36 @@ export interface VoiceAudioEvent {
 
 export interface VoiceStopEvent {
   type: "voice.stop";
+  turnId?: string | undefined;
 }
 
-/** Emitted after `PUT /api/profile` so clients can re-fetch full profile (ISSUE-008 Phase 3). */
+/** Runtime-only terminal speech fence; never a Room broadcast. */
+export interface VoiceTurnEndEvent {
+  type: "voice.turn.end";
+  userId: string;
+  agentId: string;
+  turnId: string;
+  outcome: "completed" | "aborted";
+}
+
+/** Emitted after `PUT /api/profile` so clients can re-fetch full profile. */
 export interface ProfileUpdatedEvent {
   type: "profile.updated";
   profileId: string;
   name: string;
   onboardingCompleted: boolean;
-  /** M075 — user-scoped WS delivery. */
+  /** user-scoped WS delivery. */
   userId?: string | undefined;
 }
 
 /**
- * M054 — flavor of identity challenge.
+ * flavor of identity challenge.
  *
- *  - `verify`    — the user is signed in but the server wants a fresh
- *                  PIN proof for a sensitive operation (existing M036
+ *  - `verify` — the user is signed in but the server wants a fresh
+ *                  PIN proof for a sensitive operation (existing
  *                  flow, default for back-compat). Legacy
  *                  `POST /api/auth/verify-and-resume` was removed
- *                  post-M072 (404) — use
+ *                  post- (404) — use
  *                  `POST /api/auth/identity-verify-resume` instead.
  *  - `enrollPin` — the user is Logto-authenticated but doesn't yet
  *                  have a PIN, and a `prove_it` is pending (or they
@@ -1573,25 +1586,25 @@ export interface IdentityChallengeEvent {
   challengeId: string;
   expiresAt: string;
   threadId: string;
-  /** M075 — human scoped delivery for WS filtering. */
+  /** human scoped delivery for WS filtering. */
   userId?: string | undefined;
   /**
    * Optional for back-compat — older servers omit it; clients treat
-   * absence as `"verify"`. M054 added the field.
+   * absence as `"verify"`.
    */
   mode?: IdentityChallengeMode;
-  /** M164 — present when this challenge originated from a Task/subagent run. */
+  /** present when this challenge originated from a Task/subagent run. */
   taskId?: string;
-  /** M164 — the `task_runs.id` for the parked run. */
+  /** the `task_runs.id` for the parked run. */
   taskRunId?: string;
-  /** M164 — `"task"` marks a Task/subagent-originated approval so the workbench
+  /** `"task"` marks a Task/subagent-originated approval so the workbench
    *  bypasses active-room filtering. Absent for main-thread approvals. */
   origin?: "task";
 }
 
 /**
  * Emitted after `PUT /api/security/posture` successfully mutates the
- * server posture. D060 Sprint 1 G5.3.d (ship plan v3 §5.3 + §5.8).
+ * server posture.
  *
  * Live clients listen for this and re-read `GET /api/security/posture`
  * so their UI (Settings modal, status bar badge) reflects the new
@@ -1633,7 +1646,7 @@ export interface EncryptionPolicyChangedEvent {
 }
 
 /**
- * D087 Phase 3 §3.10 — reactive revision-state signal.
+ * reactive revision-state signal.
  *
  * Emitted whenever the revision store for a given path changes:
  *   - After a successful `recordRevision` insert (agent applied a
@@ -1670,7 +1683,7 @@ export interface RevisionsStateChangedEvent {
   } | null;
 }
 
-/** M070 — transcript append failed after `appendTranscriptMessages` threw. */
+/** transcript append failed after `appendTranscriptMessages` threw. */
 export interface SessionPersistenceFailedEvent {
   type: "session.persistence_failed";
   threadId: string;
@@ -1679,14 +1692,14 @@ export interface SessionPersistenceFailedEvent {
   droppedCount: number;
 }
 
-/** M074 — coalesced chat send buffered (no DB row yet for this id). */
+/** coalesced chat send buffered (no DB row yet for this id). */
 export interface JobCoalescedEvent {
   type: "job.coalesced";
   virtualJobId: string;
   laneKey: string;
 }
 
-/** M074 — merged/coalesced work mapped to a persisted foreground job id. */
+/** merged/coalesced work mapped to a persisted foreground job id. */
 export interface JobDispatchedEvent {
   type: "job.dispatched";
   virtualJobIds: string[];
@@ -1694,7 +1707,7 @@ export interface JobDispatchedEvent {
   laneKey: string;
 }
 
-/** M085 — foreground job ran on a fork checkpoint thread (busy lane). */
+/** foreground job ran on a fork checkpoint thread (busy lane). */
 export interface JobForkedEvent {
   type: "job.forked";
   laneKey: string;
@@ -1707,7 +1720,7 @@ export interface JobForkedEvent {
   sequence: number;
 }
 
-/** M085 — fork output merged into canonical parent graph checkpoint in order. */
+/** fork output merged into canonical parent graph checkpoint in order. */
 export interface ForkSplicedEvent {
   type: "fork.spliced";
   laneKey: string;
@@ -1718,7 +1731,7 @@ export interface ForkSplicedEvent {
   splicedMessageCount: number;
 }
 
-/** D124 P8 — membership change; client invalidates room roster + rehydrates active transcript. */
+/** membership change; client invalidates room roster + rehydrates active transcript. */
 export type RoomMembershipSystemEventPayload = {
   kind: "member_added" | "member_removed";
   actorId: string;
@@ -1731,7 +1744,7 @@ export interface RoomMembersChangedEvent {
   roomId: string;
   event: RoomMembershipSystemEventPayload;
   /**
-   * M314 — server-authored, content-free wake-up for an eligible protected
+   * server-authored, content-free wake-up for an eligible protected
    * Room while Shadow or Full encryption is active. Clients must still re-plan and
    * the protected authority route revalidates the exact current roster.
    */
@@ -1774,7 +1787,7 @@ export const TYPING_PING_INTERVAL_MS = 3000;
 export const TYPING_DECAY_MS = 5000;
 
 /**
- * D141 P3 — fallback hop notification.
+ * fallback hop notification.
  *
  * Emitted ONCE per fallback attempt inside `invokeChatModelWithFallback`,
  * BEFORE the next model is invoked. Lets the workbench render a
@@ -1799,13 +1812,13 @@ export const TYPING_DECAY_MS = 5000;
  * extends its ServerEvent switch with a `"model.fallback"` case that
  * sets `modelFallbackStatus` (status UI only — never assistant prose
  * or TTS). It renders as a detached `ModelFallbackStatusNotice` pill
- * with a turn-scoped auto-expiry + manual dismiss (D323), NOT attached
+ * with a turn-scoped auto-expiry + manual dismiss, NOT attached
  * to the assistant bubble.
  *
- * See ISSUE-D141 §"Strategic Solution → Phase 3" and ISSUE-D323.
+ *
  */
 /**
- * M178 — periodic "agent is working" heartbeat during model + post-model
+ * periodic "agent is working" heartbeat during model + post-model
  * latency, when no visible token has flowed recently. Drives an in-thread
  * "working…" affordance so a long gap between streamed text and a tool reads
  * as "still working," not "hung." Room-scoped via `laneKey` (routed like
@@ -1851,14 +1864,14 @@ export interface ModelFallbackEvent {
 }
 
 /**
- * M135 P5 (D-C) — the Room Conductor's Floor Manager chose `ask_user`: routing
+ *  (D-C) — the Room Conductor's Floor Manager chose `ask_user`: routing
  * was ambiguous and the user should disambiguate which assistant responds.
- * Server-side end-to-end in M135; the workbench single-select picker is a
+ * Server-side end-to-end in ; the workbench single-select picker is a
  * follow-up. NO bot is woken when this fires. Requester-private via `userId`;
  * `laneKey` and `roomId` are correlation aids only.
  *
  * `options[].botActorId` is an actor id the client echoes back as
- * `uiSelectedBotActorId` on the user's choice (same input path as M134 P4
+ * `uiSelectedBotActorId` on the user's choice (same input path as
  * UI-selection). This is NOT the "LLM never sees IDs" surface — that contract
  * governs the Floor Manager prompt only; clients legitimately use actor ids.
  */
@@ -1874,7 +1887,7 @@ export interface ConductorAskUserEvent {
   /** Persisted human-message id (null when not synchronously known). */
   messageId: string | null;
   /**
-   * D302 R13 — turn fingerprint of the already-persisted human message. The
+   *  R13 — turn fingerprint of the already-persisted human message. The
    * client echoes it back as `resumeTurnId` on the disambiguation pick so the
    * woken bot's turn reuses the same fingerprint and the read-time collapse
    * dedupes the re-sent human row (no double-post). Null on legacy emitters.
@@ -1885,7 +1898,7 @@ export interface ConductorAskUserEvent {
 }
 
 /**
- * D299 follow-up — the requester's Conversational Focus set changed
+ *  follow-up — the requester's Conversational Focus set changed
  * server-side (a Floor Manager / Conductor wake opened or extended focus, or a
  * focus lapsed/cleared). Focus is viewer-private, so although this is delivered
  * room-scoped via `laneKey`, the client only acts on it when `userActorId`
@@ -1909,7 +1922,7 @@ export interface ConductorFocusChangedEvent {
 }
 
 /**
- * D299 follow-up — transient Conductor routing-lifecycle signal for a single
+ *  follow-up — transient Conductor routing-lifecycle signal for a single
  * user's inbound message in a group room. `deciding` brackets the
  * `routeRoomMessage` pass (including any Floor Manager LLM call); `settled`
  * fires once the decision resolves. Powers the transient "Routing… / Deciding
@@ -1953,13 +1966,13 @@ export type ConductorDecisionReasonCode =
   | "ask_ambiguous_history"
   | "ask_router"
   | "routing_error"
-  // D421 Phase 3 (3.2.1) — controlled redirect accepted/rejected codes for the
+  //  (3.2.1) — controlled redirect accepted/rejected codes for the
   // requester-private `conductor.decision` receipt. Phase 4's redirect producer
   // passes a controlled `RedirectOutcomeCode` to the server-side classifier,
   // which maps it to one of these wire codes. The receipt carries ONLY the
   // code + a server-authored display sentence + (for accepted) the target's
   // public roster handle — never the raw model/tool reason, trace, or ids.
-  // See phase-0-baseline-and-contract.md §0.2.4 for the locked vocabulary.
+  // Use the shared closed vocabulary below.
   | "redirected"
   | "redirect_rejected_explicitly_selected"
   | "redirect_rejected_visible_output"
@@ -2034,9 +2047,9 @@ export interface ConductorDecisionReceiptEvent {
 }
 
 /**
- * M143 (Task primitive Phase 2b) — task lifecycle events. All three carry
+ *  (Task primitive Phase 2b) — task lifecycle events. All three carry
  * `ownerId` because `inferDeliveryScope` routes `task.*` to the owner's WS
- * clients only (`{ kind: "user", userId: ownerId }`, D14 owner-only). The
+ * clients only (`{ kind: "user", userId: ownerId }`, owner-only). The
  * result *message* a run posts into a shared calling room still emits the
  * normal room-scoped `message.new`; these events are the owner-private
  * lifecycle signal, never broadcast room-wide.
@@ -2068,8 +2081,8 @@ export interface TaskErroredEvent {
 }
 
 /**
- * M147 (R9) — task lifecycle transition (pause / unpause / stop). Owner-scoped
- * (D14): `inferDeliveryScope` routes `task.*` to the owner's WS clients only.
+ *  (R9) — task lifecycle transition (pause / unpause / stop). Owner-scoped
+ *: `inferDeliveryScope` routes `task.*` to the owner's WS clients only.
  * `status` is the task's new `tasks.status` (`paused` | `pending` |
  * `cancelled`). A stopped JOB still emits its own room-scoped
  * `job.status:cancelled`; this event is the owner-private task-level signal.
@@ -2082,8 +2095,8 @@ export interface TaskStatusEvent {
 }
 
 /**
- * M151 (Task Phase 7a) — a task run parked on a human reply (`await_human_reply`
- * interrupt). Owner-scoped (D14): `inferDeliveryScope` routes `task.*` to the
+ *  (Task Phase 7a) — a task run parked on a human reply (`await_human_reply`
+ * interrupt). Owner-scoped: `inferDeliveryScope` routes `task.*` to the
  * owner's WS clients only. The peer sees the agent's question via the normal
  * room-scoped `message.new`; this lifecycle signal is owner-private.
  */
@@ -2118,7 +2131,7 @@ export interface TaskHarnessActivity {
   endedAt?: number;
 }
 
-/** D307/D453 — owner-scoped mid-run progress for subagent activity cards. */
+/** /owner-scoped mid-run progress for subagent activity cards. */
 export interface TaskPreparationProgress {
   stage: "preparing_model" | "waiting_model" | "model_responding" | "using_tools" | "preparing_scanners" | "scanner_started" | "scanner_finished" | "recording_evidence" | "research_ready" | "inventory_progress";
   probe?: "gitleaks" | "osv_scanner" | "trivy" | "semgrep";
@@ -2149,13 +2162,13 @@ export interface TaskProgressEvent {
   detail: string;
   /** Preparation facts and an optional accepted, model-authored work subject. */
   preparation?: TaskPreparationProgress;
-  /** D453 — optional rich provider-neutral projection for assistant-ui cards. */
+  /** optional rich provider-neutral projection for assistant-ui cards. */
   activity?: TaskHarnessActivity;
   ownerId: string;
 }
 
 /**
- * D420 (Wave 3 task 3.2.1) — typed, payload-free global maintenance-status
+ *  (Wave 3 task 3.2.1) — typed, payload-free global maintenance-status
  * realtime event. Published through the WS broadcaster whenever the durable
  * `server_maintenance` state changes (enter draining, applying, successful
  * completion/cancel, lease renewal, and expiry recovery), and sent as a
@@ -2187,12 +2200,12 @@ export interface MaintenanceStatusEvent {
   hardExpiresAt: string | null;
 }
 
-/** D453 — owner-private, ephemeral native Codex request lifecycle events. */
+/** owner-private, ephemeral native Codex request lifecycle events. */
 type CodexRequestEvent = CodexNativeRequestEvent;
 type CodexRequestResolvedEvent = CodexNativeRequestResolvedEvent;
 
 /**
- * D458 Wave 7 — display-safe remote-host projection shared by the socket
+ *  Wave 7 — display-safe remote-host projection shared by the socket
  * contract. This must remain intentionally less expressive than a relay
  * registry: no user ids, relay ids, paths, workspace roots, capability maps,
  * session ids, pairing generations, or tokens cross this boundary.
@@ -2302,7 +2315,7 @@ export type ServerEvent =
   | WorkspaceArtifactDeletedEvent
   | DocumentPatchEvent
   /**
-   * D448 — durable, coordinator-authored document truth. Workspace delivery
+   * durable, coordinator-authored document truth. Workspace delivery
    * is intentionally scoped by the artifact SSE route, not global WS fanout.
    */
   | DocumentMutationCommittedEvent
@@ -2318,6 +2331,7 @@ export type ServerEvent =
   | VoiceSuggestionEvent
   | VoiceAudioEvent
   | VoiceStopEvent
+  | VoiceTurnEndEvent
   | ProfileUpdatedEvent
   | IdentityChallengeEvent
   | PostureChangedEvent
@@ -2366,7 +2380,7 @@ export function isProtectedMessageRealtimeEventV2(
 /**
  * Bus→WS events that historically fan out process-wide. Under
  * `audience=auto`, `inferDeliveryScope` drops them unless the emitter
- * passes `{ kind: "all", acknowledgedGlobalLeak: true }` (M077 NFR-C3).
+ * passes `{ kind: "all", acknowledgedGlobalLeak: true }` .
  * The production `event-bridge` maps these automatically via
  * `audienceForBridgedServerEvent`.
  */
@@ -2384,7 +2398,7 @@ export type WsGlobalFanoutEventType = (typeof WS_GLOBAL_FANOUT_EVENT_TYPES)[numb
 /**
  * Voice control signals without `laneKey` / per-socket `userId`; same
  * explicit-global semantics as {@link WS_GLOBAL_FANOUT_EVENT_TYPES}
- * (M077 PR review M-3).
+ * .
  */
 export const WS_VOICE_CONTROL_GLOBAL_EVENT_TYPES = [
   "voice.status",

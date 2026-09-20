@@ -1379,3 +1379,5 @@ export type {
 } from "./runtime/ordinary-content-access";
 export { collapseWhitespaceShareApprovalSnippet } from "./post-model/share-approval-preview";
 export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-content-access";
+
+export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";

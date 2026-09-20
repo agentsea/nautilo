@@ -1,5 +1,5 @@
 /**
- * D261 P4 — audition_voices tool-card renderer tests.
+ * audition_voices tool-card renderer tests.
  */
 import "../../../../tests/bun-dom-preload";
 import {
@@ -128,7 +128,7 @@ describe("parseEnvelope", () => {
     const env = makeEnvelope({
       slate: [
         sampleCandidate(),
-        sampleCandidate({ voiceId: "voice-b", name: "Lucía", badge: "provider_v3" }),
+        sampleCandidate({ voiceId: "voice-b", name: "Lucía", badge: "provider_verified" }),
       ],
       suggestedSlate: true,
       sampleText: "Sag: Guten Tag aus Berlin.",

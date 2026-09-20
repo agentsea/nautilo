@@ -37,6 +37,7 @@ import {
 import { persistMessages } from "./persist-messages";
 import { loadForegroundAuthoredContext } from "./foreground-authored-context";
 import { SentenceDetector, type SentenceDetectorConfig } from "../utils/sentence-detector";
+import { bindVoiceTurnLifecycle } from "../utils/voice-turn-lifecycle";
 import { parseMultimodalImagesFromJobInput } from "./multimodal-job-input";
 import {
   processStreamEvent,
@@ -515,7 +516,10 @@ export async function* forkLanggraphExecutor(
     ...(turnId ? { turnId } : {}),
   });
   const voiceSubjectId = memoryAccessEnvelope?.ownerId ?? ownerId;
-  const sentenceDetectorConfig: SentenceDetectorConfig = {};
+  const sentenceDetectorConfig: SentenceDetectorConfig = {
+    onIdleEvents: events => { if (!signal.aborted) for (const event of events) eventBus.emit(event); },
+  };
+  sentenceDetectorConfig.turnId = turnId || jobId;
   if (voiceSubjectId) {
     sentenceDetectorConfig.userId = voiceSubjectId;
   }
@@ -659,6 +663,8 @@ export async function* forkLanggraphExecutor(
     recursionLimit: executionPolicy.recursionLimit,
     version: "v2",
   };
+
+  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId, agentId, turnId: turnId || jobId });
 
   log(`[nautilo/executor] fork stream checkpoint=${checkpointThreadId} transcript=${transcriptThreadId}`);
 
@@ -875,16 +881,12 @@ export async function* forkLanggraphExecutor(
       yield event;
     }
 
-    if (sentenceDetector) {
-      sentenceDetector.complete();
-      for (const event of sentenceDetector.drain()) {
-        yield event;
-      }
-    }
+    sentenceDetector?.reset();
 
     throw error;
   } finally {
     agentProgressHeartbeat?.dispose();
+    finishVoiceTurn(checkpointPrimaryError);
     if (turnId) clearAgentTurnContext(turnId);
     if (turnId && agentId) {
       clearAgentTurnContextByKey(turnContextKey(turnId, agentId));

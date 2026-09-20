@@ -1,7 +1,7 @@
 {
-  "version": 4,
-  "catalogVersion": "2026.09.18.2",
-  "publishedAt": "2026-09-18T15:17:12Z",
+  "version": 5,
+  "catalogVersion": "2026.09.20.1",
+  "publishedAt": "2026-09-20T00:00:00Z",
   "entries": [
     {
       "id": "anthropic:claude-sonnet-4-6",
@@ -3424,6 +3424,72 @@
             "image/webp"
           ]
         }
+      }
+    },
+    {
+      "id": "elevenlabs:eleven_v3_conversational",
+      "displayName": "ElevenLabs v3 Conversational",
+      "provider": "elevenlabs",
+      "routing": "first-party",
+      "priority": 1,
+      "defaultEnabled": true,
+      "workload": "speech",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "audio"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.05
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "speech": {
+        "transport": "elevenlabs-dialogue-http",
+        "outputFormats": [
+          "pcm_24000",
+          "mp3_44100_128"
+        ],
+        "maxInputCharacters": 2000,
+        "usdPerThousandCharacters": "0.05"
+      }
+    },
+    {
+      "id": "elevenlabs:eleven_v3",
+      "displayName": "ElevenLabs v3",
+      "provider": "elevenlabs",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "workload": "speech",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "audio"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "speech": {
+        "transport": "elevenlabs-tts-http",
+        "outputFormats": [
+          "pcm_24000",
+          "mp3_44100_128"
+        ],
+        "maxInputCharacters": 5000,
+        "usdPerThousandCharacters": "0.10"
       }
     }
   ]

@@ -1,4 +1,4 @@
-// D369 Phase 3 — RealtimeProvider: the WS spine bound to the active server.
+// RealtimeProvider: the WS spine bound to the active server.
 // Sits inside AuthProvider (needs useServers + useAuth). On active-server
 // change (or sign-in) it tears down the old client and builds a new one for
 // the active server's `wss://…/ws` — this is the "seamless switch": no
@@ -26,7 +26,7 @@ import {
   visibleRealtimeOpenState,
 } from "@/providers/realtime-open-state";
 import { useServers } from "@/providers/server-registry";
-import type { ServerEvent } from "@nautilo/types";
+import type { ServerEvent, VoicePlaybackEvent } from "@nautilo/types";
 
 export type ConnectionState =
   | "idle"
@@ -46,6 +46,7 @@ interface RealtimeValue {
   recoveryRevision: number;
   /** Fan-out subscription. Returns an unsubscribe. Handlers fire on every inbound ServerEvent. */
   subscribe: (handler: EventHandler) => () => void;
+  subscribeVoice: (handler: (event: VoicePlaybackEvent) => void) => () => void;
   /** Send an outbound message. No-op when idle (no client). Buffered by the client during the auth handshake. */
   send: (message: Record<string, unknown>) => void;
   /** Stamp an ordinary request from this socket only; caller values are discarded. */
@@ -65,6 +66,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   // dispatches to every registered handler. Ref-held so subscribe/unsubscribe
   // identity is stable across renders.
   const handlersRef = useRef<Set<EventHandler>>(new Set());
+  const voiceHandlersRef = useRef(new Set<(event: VoicePlaybackEvent) => void>());
   // The current client. Closed + nulled on server switch / sign-out / unmount.
   const clientRef = useRef<ReturnType<typeof createServerRealtime> | null>(null);
   const connectionStateRef = useRef<ConnectionState>("idle");
@@ -117,6 +119,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
             /* isolated — subscriber error swallowed intentionally */
           }
         });
+      },
+      onVoiceEvent: (event) => {
+        if (!isCurrent()) return;
+        for (const handler of voiceHandlersRef.current) handler(event);
       },
       onControlEvent: (event) => {
         if (!isCurrent() || event.type !== "client.session.v1") return;
@@ -204,6 +210,11 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const subscribeVoice = useMemo<RealtimeValue["subscribeVoice"]>(() => handler => {
+    voiceHandlersRef.current.add(handler);
+    return () => { voiceHandlersRef.current.delete(handler); };
+  }, []);
+
   const send = useMemo<RealtimeValue["send"]>(
     () => (message) => {
       // No-op when idle; the client buffers during the auth handshake.
@@ -223,10 +234,11 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       openRevision: visibleOpenState.openRevision,
       recoveryRevision: visibleOpenState.recoveryRevision,
       subscribe,
+      subscribeVoice,
       send,
       withClientActionSession,
     }),
-    [connectionState, visibleOpenState.openRevision, visibleOpenState.recoveryRevision, subscribe, send, withClientActionSession],
+    [connectionState, visibleOpenState.openRevision, visibleOpenState.recoveryRevision, subscribe, subscribeVoice, send, withClientActionSession],
   );
 
   return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;

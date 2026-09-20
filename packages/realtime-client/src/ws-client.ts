@@ -1,6 +1,8 @@
 import {
   clientSessionEventV1Schema,
   parseUiActionEventV1,
+  VoiceStreamIngress,
+  type VoicePlaybackEvent,
   type InitiatingClientSurfaceV1,
   type RealtimeControlEvent,
   type ServerEvent,
@@ -14,7 +16,7 @@ export type RealtimeErrorHandler = (error: Error) => void;
  * State sequence on a clean session:
  *   `connecting` → `authenticating` → `open` → `closed`
  *
- * `authenticating` (M058) covers the window between the WS upgrade
+ * `authenticating` covers the window between the WS upgrade
  * completing and the server's `auth.accepted` reply landing.
  * Consumers that previously branched on `state === "open"` for
  * "really connected" keep working unchanged — the client only fires
@@ -52,18 +54,18 @@ export interface RealtimeClient {
   close(): void;
   send(message: Record<string, unknown>): void;
   /**
-   * D146 / Option β — tab hidden / intentional idle: close the socket
+   *  Tab hidden / intentional idle: close the socket
    * without scheduling reconnect backoff. Idempotent. No-op after
-   * `close()` (permanent shutdown). Orthogonal to M058 `reconnect()`.
+   * `close()` (permanent shutdown). Orthogonal to `reconnect()`.
    */
   suspend(): void;
   /**
-   * D146 — counterpart to `suspend()`: resume the connection loop.
+   * counterpart to `suspend()`: resume the connection loop.
    * Idempotent. No-op after `close()`.
    */
   resume(): void;
   /**
-   * M058 — re-enable the reconnect loop after `onAuthRejected`
+   * re-enable the reconnect loop after `onAuthRejected`
    * suspended it. Consumers call this once they've refreshed their
    * token (e.g. completed a new sign-in flow). No-op if the loop
    * is still active.
@@ -73,6 +75,8 @@ export interface RealtimeClient {
 
 export interface RealtimeClientOptions {
   onEvent: RealtimeEventHandler;
+  /** Advertise PCM support only when this client has an installed audio sink. */
+  onVoiceEvent?: ((event: VoicePlaybackEvent) => void) | undefined;
   /** Product-owned fixed declaration sent only in this socket's auth frame. */
   initiatingClientSurface?: InitiatingClientSurfaceV1 | undefined;
   /** Called for strict socket-local control frames after authentication. */
@@ -93,36 +97,36 @@ export interface RealtimeClientOptions {
    * (= 5 × the ping interval). Any inbound message (pong, event) resets the
    * stale timer.
    *
-   * D353 — this is a TRANSPORT-liveness check ("how many missed pings before
+   * this is a TRANSPORT-liveness check ("how many missed pings before
    * the socket is presumed dead"), NOT a model-response timeout. It must be a
    * multiple of `heartbeatIntervalMs`, not tied to model first-token budgets:
    * pong (15s, answered in the server WS handler independently of the job
    * loop) + `agent.progress` (~1.5s during active work) keep inbound traffic
    * flowing even through a 180s reasoning think, so a slow-but-alive turn
-   * never trips this. (The original D353 ghost — a dropped terminal
+   * never trips this. (A dropped terminal
    * `job.status` after a *genuine* dead-socket reconnect — is fixed by the
    * run-state reconcile on reconnect, not by this value.)
    */
   heartbeatTimeoutMs?: number | undefined;
   /**
-   * M058 — token provider for the first-frame auth handshake. Called
+   * token provider for the first-frame auth handshake. Called
    * fresh on every connect attempt so reconnects pick up refreshed
    * bundles transparently. Returning null closes the socket and
    * counts toward the 3-failure cap before `onAuthRejected("no_token")`.
    *
    * Optional so lightweight tests can omit it, BUT real clients
-   * running against an M058+ server MUST provide one.
+   * running against an authenticated server MUST provide one.
    */
   getToken?: GetTokenFn | undefined;
   /**
-   * M058 — fires after 3 consecutive auth handshake failures
+   * fires after 3 consecutive auth handshake failures
    * (`invalid_token` rejections OR `getToken()` returning null).
    * Reconnection is suspended until the consumer calls
    * `client.reconnect()` after refreshing tokens.
    */
   onAuthRejected?: ((reason: AuthRejectedReason) => void) | undefined;
   /**
-   * M058 — bounded outbound queue. Messages sent during
+   * bounded outbound queue. Messages sent during
    * `connecting` / `authenticating` / brief disconnect windows are
    * buffered (oldest dropped on overflow) and flushed on
    * `auth.accepted`. Default 64.
@@ -133,7 +137,7 @@ export interface RealtimeClientOptions {
 const DEFAULT_RECONNECT_BASE_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
-// D353 — "5 consecutive missed pings → the socket is dead." Tied to the ping
+// "5 consecutive missed pings → the socket is dead." Tied to the ping
 // INTERVAL, not to model latency: this is a transport-liveness check, not a
 // model-response timeout. Pong (every 15s, answered in the server WS handler
 // independently of the job loop) plus `agent.progress` (~1.5s during active
@@ -145,8 +149,8 @@ const DEFAULT_OUTBOUND_QUEUE_LIMIT = 64;
 const AUTH_FAILURE_CAP = 3;
 
 /**
- * Creates a WebSocket realtime client with first-message auth (M058),
- * automatic reconnection (D059), and heartbeat-based staleness
+ * Creates a WebSocket realtime client with first-message auth,
+ * automatic reconnection, and heartbeat-based staleness
  * detection.
  *
  * Behavior:
@@ -164,8 +168,8 @@ const AUTH_FAILURE_CAP = 3;
  *   null) suspend reconnect and fire `onAuthRejected(reason)`. The
  *   consumer refreshes credentials, then calls `client.reconnect()`.
  * - `close()` is idempotent and cancels any pending reconnect.
- * - D146 — `suspend()` / `resume()` implement visibility-aware idle
- *   close without reconnect backoff; orthogonal to M058 `suspended`.
+ * - `suspend()` / `resume()` implement visibility-aware idle
+ *   close without reconnect backoff; orthogonal to `suspended`.
  */
 export function createWsRealtimeClient(
   wsUrl: string,
@@ -173,6 +177,7 @@ export function createWsRealtimeClient(
 ): RealtimeClient {
   const {
     onEvent,
+    onVoiceEvent,
     onControlEvent,
     onError,
     onStateChange,
@@ -188,9 +193,9 @@ export function createWsRealtimeClient(
 
   let ws: WebSocket | null = null;
   let closed = false;
-  /** M058 — auth-rejection path: blocks `connect` / `scheduleReconnect`. */
+  /** auth-rejection path: blocks `connect` / `scheduleReconnect`. */
   let suspended = false;
-  /** D146 — visibility / intentional idle: blocks reconnect until `resume()`. */
+  /** visibility / intentional idle: blocks reconnect until `resume()`. */
   let idleSuspended = false;
   let state: RealtimeState = "closed";
   let reconnectAttempt = 0;
@@ -199,6 +204,8 @@ export function createWsRealtimeClient(
   let lastMessageAt = 0;
   let consecutiveAuthFailures = 0;
   const outboundQueue: Record<string, unknown>[] = [];
+  let voiceListener: Record<string, unknown> | null = null;
+  let voiceNegotiated = false;
 
   function setState(next: RealtimeState): void {
     if (state === next) return;
@@ -297,7 +304,7 @@ export function createWsRealtimeClient(
   function enqueueOutbound(message: Record<string, unknown>): void {
     if (outboundQueue.length >= outboundQueueLimit) {
       // Drop oldest — the alternative is unbounded memory growth
-      // during long disconnects. Documented in M058 §Risks.
+      // during long disconnects.
       const dropped = outboundQueue.shift();
       const droppedType =
         dropped && typeof dropped["type"] === "string" ? dropped["type"] : "unknown";
@@ -322,9 +329,12 @@ export function createWsRealtimeClient(
       return;
     }
     ws = thisWs;
+    thisWs.binaryType = "arraybuffer";
+    const voiceIngress = new VoiceStreamIngress();
+    voiceNegotiated = false;
 
     /**
-     * Stack 19 Phase 6.9.3 (2026-05-17) — socket-ownership race fix.
+     * socket-ownership race fix.
      *
      * Pre-fix race: `suspend()` calls `ws.close(1000)` (async). If
      * `resume()` runs before the close event fires, `connect()`
@@ -382,6 +392,7 @@ export function createWsRealtimeClient(
             type: "auth",
             token,
             ...(initiatingClientSurface ? { initiatingClientSurface } : {}),
+            ...(onVoiceEvent ? { voiceProtocol: 1 } : {}),
           }));
         } catch (err) {
           onError?.(err instanceof Error ? err : new Error(String(err)));
@@ -392,6 +403,15 @@ export function createWsRealtimeClient(
     thisWs.addEventListener("message", (event: MessageEvent) => {
       if (isStale()) return;
       lastMessageAt = Date.now();
+      if (event.data instanceof ArrayBuffer || event.data instanceof Uint8Array) {
+        const frame = state === "open" && voiceNegotiated ? voiceIngress.data(event.data) : null;
+        if (frame) onVoiceEvent?.({ type: "voice.stream.data", ...frame });
+        else {
+          onError?.(new Error("Invalid voice stream frame"));
+          thisWs.close(1002, "invalid voice stream");
+        }
+        return;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(String(event.data));
@@ -405,11 +425,13 @@ export function createWsRealtimeClient(
       if (state === "authenticating") {
         const msgType = (parsed as { type?: unknown }).type;
         if (msgType === "auth.accepted") {
+          voiceNegotiated = onVoiceEvent !== undefined && (parsed as { voiceProtocol?: unknown }).voiceProtocol === 1;
           consecutiveAuthFailures = 0;
           reconnectAttempt = 0;
           startHeartbeat();
           setState("open");
           flushOutboundQueue();
+          if (voiceNegotiated && voiceListener !== null) thisWs.send(JSON.stringify(voiceListener));
           return;
         }
         if (msgType === "auth.rejected") {
@@ -441,7 +463,7 @@ export function createWsRealtimeClient(
           return;
         }
         // Any other frame during `authenticating` is a protocol
-        // violation — pre-M058 servers will fail this check.
+        // violation — servers without this handshake will fail this check.
         onError?.(
           new Error("WS protocol violation: message before auth.accepted"),
         );
@@ -455,7 +477,13 @@ export function createWsRealtimeClient(
 
       // Pongs are heartbeat-only; don't surface them to consumers.
       if (isPongMessage(parsed)) return;
-      // D513 — socket-local controls are never ServerEvents and never
+      if (typeof (parsed as { type?: unknown }).type === "string" && String((parsed as { type: string }).type).startsWith("voice.stream.")) {
+        const control = voiceNegotiated ? voiceIngress.control(parsed) : null;
+        if (control) onVoiceEvent?.(control);
+        else thisWs.close(1002, "invalid voice stream control");
+        return;
+      }
+      // socket-local controls are never ServerEvents and never
       // forwarded through room/user broadcast handlers. Reserved control
       // names are consumed even when malformed, so an untrusted frame cannot
       // fall through to an application's ordinary event router.
@@ -520,6 +548,16 @@ export function createWsRealtimeClient(
       }
     },
     send(message: Record<string, unknown>) {
+      // A stop belongs to the current socket generation, never a future turn.
+      if ((message["type"] === "voice.stop" || message["type"] === "voice.consumed") && state !== "open") return;
+      // Old servers omit turn IDs. Preserve their Stop command, but never let
+      // an unscoped Stop cancel other device turns on a negotiated server.
+      if (message["type"] === "voice.stop" && voiceNegotiated &&
+          (typeof message["turnId"] !== "string" || message["turnId"].length === 0)) return;
+      if (message["type"] === "voice.listen") {
+        voiceListener = message;
+        if (state !== "open" || !voiceNegotiated) return;
+      }
       if (state === "open" && ws?.readyState === WebSocket.OPEN) {
         try {
           ws.send(JSON.stringify(message));

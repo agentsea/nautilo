@@ -1,5 +1,5 @@
 /**
- * M058 — `/ws` first-message authentication.
+ * `/ws` first-message authentication.
  *
  * Drives the per-connection state machine via the exported
  * `handleWsConnection` so the test never touches a real WS upgrade.
@@ -126,7 +126,7 @@ afterEach(() => {
   /* per-test fakes only — nothing global to reset */
 });
 
-describe("handleWsConnection (M058)", () => {
+describe("handleWsConnection ()", () => {
   test("auth timeout → relay-style close with 4401 + auth.rejected:auth_timeout, addClient NOT called", async () => {
     const socket = makeFakeSocket();
     const addClient = mock(() => {});
@@ -432,6 +432,11 @@ describe("handleWsConnection (M058)", () => {
 
     socket.emit("message", Buffer.from(JSON.stringify({ type: "voice.stop" })));
     expect(onVoiceStop).toHaveBeenCalledTimes(1);
+    expect(onVoiceStop).toHaveBeenLastCalledWith("user-1", undefined);
+    socket.emit("message", Buffer.from(JSON.stringify({ type: "voice.stop", userId: "foreign-user", turnId: "turn-a" })));
+    expect(onVoiceStop).toHaveBeenLastCalledWith("user-1", "turn-a");
+    socket.emit("message", Buffer.from(JSON.stringify({ type: "voice.stop", turnId: 42 })));
+    expect(onVoiceStop).toHaveBeenCalledTimes(2);
 
     socket.emit("message", Buffer.from(JSON.stringify({ type: "ping" })));
     const pong = socket.sent.find((m) => m.type === "pong");

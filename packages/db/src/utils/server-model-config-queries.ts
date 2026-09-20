@@ -25,22 +25,23 @@ export interface ServerModelConfigDefaults {
 export interface ResolvedServerModelConfig {
   /** Always populated (stored value or default). */
   defaultChatModel: string;
-  /** Empty string ⇒ inherit the default chat model (D221/M135 contract). */
+  /** Empty string ⇒ inherit the default chat model. */
   conductorModel: string;
-  /** Empty string ⇒ inherit the resolved Conductor model (M219). */
+  /** Empty string ⇒ inherit the resolved Conductor model. */
   stenographerModel: string;
-  /** Empty string ⇒ inherit the resolved Stenographer model (M271). */
+  /** Empty string ⇒ inherit the resolved Stenographer model. */
   reflectionModel: string;
   memoryReviewModel: string | null;
   embeddingModel: string | null;
   imageModel: string | null;
   musicModel: string | null;
   videoModel: string | null;
+  speechModel: string | null;
   /** Always populated (stored value or default). */
   fallbackChain: string[];
-  /** Per-model operator override for reasoning output (D331). Absent key ⇒ default ON. */
+  /** Per-model operator override for reasoning output. Absent key ⇒ default ON. */
   reasoningOutput: Record<string, boolean>;
-  /** D537 — one server default plus sparse model-specific reasoning-effort overrides. */
+  /** one server default plus sparse model-specific reasoning-effort overrides. */
   reasoningPolicy: ServerReasoningPolicy;
 }
 
@@ -56,6 +57,7 @@ export type ServerModelConfigPatch = Partial<
     | "imageModel"
     | "musicModel"
     | "videoModel"
+    | "speechModel"
     | "fallbackChain"
     | "reasoningOutput"
     | "reasoningPolicy"
@@ -79,6 +81,7 @@ export function resolveServerModelConfig(
     imageModel: row?.imageModel ?? null,
     musicModel: row?.musicModel ?? null,
     videoModel: row?.videoModel ?? null,
+    speechModel: row?.speechModel ?? null,
     fallbackChain: row?.fallbackChain ?? defaults.fallbackChain,
     reasoningOutput: row?.reasoningOutput ?? {},
     reasoningPolicy: row?.reasoningPolicy ?? {
@@ -130,6 +133,7 @@ export async function upsertServerModelConfig(
   if (patch.imageModel !== undefined) set.imageModel = patch.imageModel;
   if (patch.musicModel !== undefined) set.musicModel = patch.musicModel;
   if (patch.videoModel !== undefined) set.videoModel = patch.videoModel;
+  if (patch.speechModel !== undefined) set.speechModel = patch.speechModel;
   if (patch.fallbackChain !== undefined) set.fallbackChain = patch.fallbackChain;
   if (patch.reasoningOutput !== undefined) set.reasoningOutput = patch.reasoningOutput;
   if (patch.reasoningPolicy !== undefined) set.reasoningPolicy = patch.reasoningPolicy;

@@ -1210,6 +1210,12 @@ export const serverModelConfigSchema = z.object({
   imageModel: z.string().nullable().optional().default(null),
   musicModel: z.string().nullable().optional().default(null),
   videoModel: z.string().nullable().optional().default(null),
+  speechModel: z.string().nullable().optional().default(null),
+  effectiveSpeechModel: z.string().nullable().optional().default(null),
+  speechModels: z.array(z.object({
+    id: z.string(), displayName: z.string(), provider: z.string(), available: z.boolean(),
+    unavailableReason: z.string().optional(),
+  })).optional().default([]),
   effectiveImageModel: z.string().nullable().optional().default(null),
   effectiveMusicModel: z.string().nullable().optional().default(null),
   effectiveVideoModel: z.string().nullable().optional().default(null),
@@ -3087,7 +3093,7 @@ export type WorkspaceArtifactEvent =
     }
   /**
    * Durable mutation truth emitted after the coordinator has committed the
-   * Workspace artifact update.  Consumers must use `editorSave.anchoredPatch`
+   * Workspace artifact update. Consumers must use `editorSave.anchoredPatch`
    * when present and safely reload for snapshots or non-editor mutations.
    */
   | DocumentMutationCommittedEvent;
@@ -3822,6 +3828,7 @@ export class NautiloApiClient {
         imageModel?: string | null;
         musicModel?: string | null;
         videoModel?: string | null;
+        speechModel?: string | null;
         fallbackChain?: string[];
         reasoningOutput?: Record<string, boolean>;
         reasoningPolicy?: {
@@ -7837,7 +7844,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * synthesize a short eleven_v3 preview for a catalog voice.
+   * synthesize a short server-selected speech-model preview for a catalog voice.
    * Pass `{ text }` for a custom Genie sample line; omit for the server default audition script.
    */
   async previewVoice(voiceId: string, input?: { text?: string }): Promise<Blob> {
@@ -10616,7 +10623,7 @@ export class NautiloApiClient {
 
   // The 404 -> null mapping is a status-specific success
   // case (not an error), but `statusErrors` only takes `(body) => Error` mappers. Expressing
-  // this cleanly would need a separate `statusReturns?: Record<number, () => T>` knob; one
+  // this cleanly would need a separate `statusReturns?: Record<number, => T>` knob; one
   // call site doesn't justify it. Inline is correct here.
   async previewInvite(token: string): Promise<InvitePreview | null> {
     const enc = encodeURIComponent(token.replace(/^\/redeem\//, ""));
@@ -12058,7 +12065,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * advisory human-edit lease registration.  The request has only an
+   * advisory human-edit lease registration. The request has only an
    * untrusted target candidate and editor state; the authenticated transport
    * resolves identity, version, and human ownership before it touches the
    * registry.

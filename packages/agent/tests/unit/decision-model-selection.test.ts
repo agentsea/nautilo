@@ -45,15 +45,16 @@ async function installCatalog(catalog: ModelCatalog): Promise<void> {
 
 function onlyDecisionCatalog(provider: "openrouter" | "venice" = "openrouter"): ModelCatalog {
   const current = getActiveModelCatalogSync().catalog;
-  if (current.version !== 4) {
-    throw new Error("checked-in v4 Jev decision fixture is missing");
+  if (current.version !== 4 && current.version !== 5) {
+    throw new Error("checked-in Jev decision fixture is missing");
   }
   const decision = current.entries.find((entry) => entry.id === JEV_ID);
   if (!decision || decision.workload !== "decision") {
-    throw new Error("checked-in v4 Jev decision fixture is missing");
+    throw new Error("checked-in Jev decision fixture is missing");
   }
   return ModelCatalogV4Schema.parse({
     ...current,
+    version: 4,
     catalogVersion: "2026.09.18.2",
     entries: provider === "openrouter"
       ? [decision]

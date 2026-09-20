@@ -102,6 +102,8 @@ function missingCredentialReason(id: string): string {
   const colon = id.indexOf(":");
   const prefix = colon >= 0 ? id.slice(0, colon).toLowerCase() : "";
   switch (prefix) {
+    case "elevenlabs":
+      return "ElevenLabs credential is not configured";
     case "anthropic":
       return "Anthropic credential is not configured";
     case "openai":
@@ -181,7 +183,7 @@ function resolveAvailability(
     }
   }
 
-  if (!modelHasRunnableCredentials(id, env)) {
+  if (!(workload === "speech" ? !!env["ELEVENLABS_API_KEY"]?.trim() : modelHasRunnableCredentials(id, env))) {
     return {
       availability: "missing_credentials",
       reason: missingCredentialReason(id),
@@ -361,7 +363,7 @@ function resolveFeaturesFor(
 ): ResolvedCatalogFeatures {
   // Decision capability facts are not chat/tool capabilities. An observational
   // provider cache must never fill in chat features for this separate workload.
-  if (entry?.workload === "decision") {
+  if (entry?.workload === "decision" || entry?.workload === "speech") {
     return {
       tools: null,
       structuredOutputs: null,

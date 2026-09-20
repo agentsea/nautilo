@@ -215,14 +215,12 @@ function dedupe(voices: readonly CatalogVoice[]): CatalogVoice[] {
   const ids = new Set<string>();
   return voices.filter((voice) => !ids.has(voice.voiceId) && (ids.add(voice.voiceId), true));
 }
-const EXPRESSIVE_MODEL_IDS = new Set(["eleven_v3", "eleven_v4", "eleven_v4_hq"]);
 function languageBase(language: string): string { return language.trim().toLowerCase().split("-")[0] ?? language; }
 function trustRank(voice: CatalogVoice, language: string | null): number {
   if (voice.source === "curated") return 0;
   if (!language) return 2;
   const base = languageBase(language);
   return voice.verifiedLanguages.some((entry) =>
-    EXPRESSIVE_MODEL_IDS.has(entry.modelId) &&
     (languageBase(entry.language) === base || entry.language.toLowerCase() === language.toLowerCase())
   ) ? 1 : 2;
 }
