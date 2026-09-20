@@ -16,6 +16,7 @@ const TRUST_BYPASS_ROUTE_TEMPLATES = [
   "/api/config/setup-flags",
   "/api/profile/status",
   "/api/onboarding/*",
+  "/join",
   "/api/account/password/recover-with-code",
   "/api/account/password/recovery-relay/:sessionId",
   "/api/internal/logto/email-webhook",
@@ -33,7 +34,7 @@ const TRUST_BYPASS_ROUTE_TEMPLATES = [
   "/api/invites/:token/prepare-logto-signup",
   "/api/bind-logto-user",
   "/api/invites/:token/complete-profile",
-  // D488 — hosted first-owner claim capability is accepted only in these
+  // Hosted first-owner claim capability is accepted only in these
   // protected POST bodies. They mirror the browser-mediated invite flow:
   // preview/prepare are anonymous-capability operations, and complete
   // verifies the Logto bearer inline while the just-bound user is still in
@@ -45,7 +46,7 @@ const TRUST_BYPASS_ROUTE_TEMPLATES = [
   "/api/setup/validate-handle",
   "/api/test/security-scan",
   "/api/test/ping",
-  // D456 — provider OAuth returns to a static, secret-free completion page.
+  // Provider OAuth returns to a static, secret-free completion page.
   // The durable request is inspected only through the authenticated API.
   "/connections/oauth/complete",
 ] as const;
@@ -98,12 +99,12 @@ export const MUST_NOT_BYPASS_TRUST_ROUTES: readonly string[] = [
   "/api/workspace/artifacts/:id/patch",
   "/api/workspace/artifacts/:id/patches",
   "/api/workspace/artifacts/events",
-  // D121-P3 — artifact state bridge (postMessage RPC backing routes).
+  // Artifact state bridge (postMessage RPC backing routes).
   "/api/workspace/artifacts/:id/state/:key",
-  // D429 Phase 7.4.2 — authenticated verified-byte explainer media. Never
+  // Authenticated verified-byte explainer media. Never
   // public: unauthenticated requests must fail closed with 401.
   "/api/explainers/:id/media",
-  // D445 Phase 1 — provider-key admin routes use normal bearer resolution
+  // Provider-key admin routes use normal bearer resolution
   // so the trust preHandler can populate the caller's session/capability
   // context. Loopback/bootstrap remain honored inside each handler; the
   // bypass list must never short-circuit them.

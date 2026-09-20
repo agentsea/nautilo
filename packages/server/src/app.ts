@@ -78,6 +78,7 @@ import {
   type MobileWebNotServedReason,
 } from "./friendly-errors/mobile-web-not-served";
 import { healthRoutes, markReady } from "./routes/health";
+import { publicJoinRoutes } from "./routes/public-join";
 import { wsRoutes } from "./routes/ws";
 import { chatRoutes, defaultChatRoutesDeps, type ChatRoutesDeps } from "./routes/chat";
 import {
@@ -4477,6 +4478,9 @@ export async function createApp(options?: CreateAppOptions) {
     // resolve it only when a receipt is minted/verified. This keeps server
     // boot semantics unchanged when remote pairing is not configured.
     startupReceiptSecret: () => requirePairingPepper(),
+  });
+  publicJoinRoutes(app, {
+    inviteToken: process.env["NAUTILO_PUBLIC_JOIN_INVITE_TOKEN"],
   });
   invitesRoutes(app, {
     onHumanRoomJoined: humanMembershipEventProducer,

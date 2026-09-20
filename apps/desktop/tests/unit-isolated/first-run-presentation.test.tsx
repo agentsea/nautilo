@@ -7,9 +7,12 @@ let copied = "";
 let copyFails = false;
 let confirmIds: string[] = [];
 let acceptIds: string[] = [];
+let committedServerUrls: string[] = [];
 let commitImpl = () => new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
 let confirmImpl = async (): Promise<Record<string, unknown>> => ({ ok: false, reason: "stale" });
 let acceptImpl = async (): Promise<Record<string, unknown>> => ({ ok: false, reason: "stale" });
+const defaultConnectTargets = async () => ({ candidates: [], recentServers: [], suggestedUrl: null,
+  localDiscovery: { kind: "unavailable" }, mode: "first-run", currentServerUrl: null });
 reapplyHappyDomGlobals();
 Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
   writeText: async (value: string) => { if (copyFails) throw new Error("denied"); copied = value; },
@@ -17,9 +20,8 @@ Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
 Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
 const { act, cleanup, fireEvent, render, waitFor } = await import("@testing-library/react");
 Object.assign(window, { nautiloFirstRun: {
-  getConnectTargets: async () => ({ candidates: [], recentServers: [], suggestedUrl: null,
-    localDiscovery: { kind: "unavailable" }, mode: "first-run", currentServerUrl: null }),
-  commit: () => commitImpl(),
+  getConnectTargets: defaultConnectTargets,
+  commit: (cfg: { serverUrl?: string }) => { committedServerUrls.push(cfg.serverUrl ?? ""); return commitImpl(); },
   confirmDowngrade: (id: string) => { confirmIds.push(id); return confirmImpl(); },
   acceptIdentity: (id: string) => { acceptIds.push(id); return acceptImpl(); },
   abortAttempt: async () => true, cancel: async () => undefined,
@@ -32,23 +34,57 @@ const { App } = await import("../../first-run/index");
 beforeEach(() => {
   cleanup(); finish = null; copied = ""; copyFails = false;
   confirmIds = []; acceptIds = [];
+  committedServerUrls = [];
+  (window as unknown as { nautiloFirstRun: Record<string, unknown> })
+    .nautiloFirstRun["getConnectTargets"] = defaultConnectTargets;
   commitImpl = () => new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
   confirmImpl = async () => ({ ok: false, reason: "stale" });
   acceptImpl = async () => ({ ok: false, reason: "stale" });
 });
 
 describe("first-run connection presentation", () => {
-  test("keeps a fresh install empty while showing public server guidance", async () => {
+  test("keeps a fresh manual server field empty without treating Community as an implicit target", async () => {
     const view = render(<App />);
     const input = await view.findByLabelText("Server URL");
     expect((input as HTMLInputElement).value).toBe("");
-    expect(input.getAttribute("placeholder")).toBe("community.nautilo.dev");
+    expect(input.getAttribute("placeholder")).toBe("https://your-server.example");
+  });
+
+  test("presents Community as an explicit join or connect choice", async () => {
+    const api = (window as unknown as { nautiloFirstRun: Record<string, unknown> }).nautiloFirstRun;
+    api["getConnectTargets"] = async () => ({
+      candidates: [], recentServers: [], suggestedUrl: null,
+      localDiscovery: { kind: "unavailable" }, mode: "first-run", currentServerUrl: null,
+    });
+    const view = render(<App />);
+    const join = await view.findByRole("link", { name: "Join the Nautilo Community" });
+    expect(join.getAttribute("href")).toBe("https://community.nautilo.ai/join");
+    expect(join.getAttribute("target")).toBe("_blank");
+    fireEvent.click(view.getByRole("button", { name: "Already joined? Connect" }));
+    await waitFor(() => expect(committedServerUrls).toEqual(["https://community.nautilo.ai"]));
+    expect(view.getByRole("main", { name: "Connecting to server" })).toBeTruthy();
+    await act(async () => finish?.({ ok: false, reason: "stale" }));
+  });
+
+  test("shows Community once as Current instead of duplicating its recent-server entry", async () => {
+    const api = (window as unknown as { nautiloFirstRun: Record<string, unknown> }).nautiloFirstRun;
+    api["getConnectTargets"] = async () => ({
+      candidates: [],
+      recentServers: [{ url: "https://community.nautilo.ai", lastUsedAt: new Date().toISOString() }],
+      suggestedUrl: null, localDiscovery: { kind: "completed" },
+      mode: "switch-server", currentServerUrl: "https://community.nautilo.ai",
+    });
+    const view = render(<App />);
+    expect(await view.findByText("Current")).toBeTruthy();
+    expect(view.getAllByText("https://community.nautilo.ai")).toHaveLength(1);
+    expect(view.queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Create community account" })).toBeNull();
   });
 
   test("replaces the server form with the normal setup surface while sign-in is in flight", async () => {
     const view = render(<App />);
     fireEvent.change(await view.findByLabelText("Server URL"), { target: { value: "alpha.example.test" } });
-    fireEvent.click(view.getByRole("button", { name: /Connect/ }));
+    fireEvent.click(view.getByRole("button", { name: "Connect →" }));
     const connectionScreen = await view.findByRole("main", { name: "Connecting to server" });
     expect(connectionScreen.getAttribute("style")).toContain("background: var(--bg)");
     expect(connectionScreen.getAttribute("style")).not.toContain("linear-gradient");
@@ -62,7 +98,7 @@ describe("first-run connection presentation", () => {
     const view = render(<App />);
     const input = await view.findByLabelText("Server URL");
     fireEvent.change(input, { target: { value: "alpha.example.test" } });
-    fireEvent.click(view.getByRole("button", { name: /Connect/ }));
+    fireEvent.click(view.getByRole("button", { name: "Connect →" }));
     const base = { version: 1, lastObservationAtMs: Date.now() - 2_000, retrySafe: false,
       validActions: ["cancel", "wait"], priorPairing: "present", pairingStateChange: "unchanged",
       failureCode: null, supportReceipt: null };
@@ -97,7 +133,7 @@ describe("first-run connection presentation", () => {
     commitImpl = async () => ({ ok: false, reason: "downgrade-confirmation-required", decisionId: "downgrade-exact" });
     const downgrade = render(<App />);
     fireEvent.change(await downgrade.findByLabelText("Server URL"), { target: { value: "http://alpha.example.test" } });
-    fireEvent.click(downgrade.getByRole("button", { name: /Connect/ }));
+    fireEvent.click(downgrade.getByRole("button", { name: "Connect →" }));
     const confirm = await downgrade.findByRole("button", { name: "Confirm HTTP connection" });
     fireEvent.click(confirm);
     await waitFor(() => expect(confirmIds).toEqual(["downgrade-exact"]));
@@ -108,7 +144,7 @@ describe("first-run connection presentation", () => {
     acceptImpl = async () => { throw new Error("renderer transport rejected"); };
     const identity = render(<App />);
     fireEvent.change(await identity.findByLabelText("Server URL"), { target: { value: "alpha.example.test" } });
-    fireEvent.click(identity.getByRole("button", { name: /Connect/ }));
+    fireEvent.click(identity.getByRole("button", { name: "Connect →" }));
     const accept = await identity.findByRole("button", { name: "Use this server identity" });
     fireEvent.click(accept);
     await waitFor(() => expect(acceptIds).toEqual(["identity-exact"]));
@@ -124,7 +160,7 @@ describe("first-run connection presentation", () => {
       const view = render(<App />);
       const input = await view.findByLabelText("Server URL");
       fireEvent.change(input, { target: { value: "alpha.example.test" } });
-      fireEvent.click(view.getByRole("button", { name: /Connect/ }));
+      fireEvent.click(view.getByRole("button", { name: "Connect →" }));
       expect((await view.findByRole("alert")).textContent).toContain("Check the address and try again");
       const restoredInput = await view.findByLabelText("Server URL");
       await waitFor(() => expect(document.activeElement).toBe(restoredInput));
