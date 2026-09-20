@@ -87,6 +87,31 @@ async function registeredRegistry(capabilities: RelayCapabilities): Promise<InMe
 }
 
 describe("InMemoryRelayRegistry Computer Use snapshot", () => {
+  test("Host descriptors are copied, replaced, and cleared with the Desktop capability snapshot", async () => {
+    const contracts = [COMPUTER_USE_REQUEST.contract];
+    const registry = await registeredRegistry({
+      profile: "desktop-agent", canControlDesktop: true, desktopAutomation: SNAPSHOT,
+      computerUseHostContracts: contracts,
+    });
+    expect(registry.getCapabilities("relay-1")?.computerUseHostContracts).toEqual(contracts);
+    contracts.length = 0;
+    expect(registry.getCapabilities("relay-1")?.computerUseHostContracts).toHaveLength(1);
+    for (const [index, advertised] of [[COMPUTER_USE_REQUEST.contract, COMPUTER_USE_REQUEST.contract], []].entries()) {
+      expect(registry.updateCapabilities({
+        relayId: "relay-1", userId: "human-1", desktopSessionId: "session-1", capabilityRevision: index + 1,
+        capabilities: semanticCapabilities({ profile: "desktop-agent", canControlDesktop: true,
+          desktopAutomation: SNAPSHOT, computerUseHostContracts: advertised }),
+      })).toEqual({ ok: true });
+      // A malformed advertisement must not become legacy omission.
+      expect(registry.getCapabilities("relay-1")?.computerUseHostContracts).toEqual([]);
+    }
+    expect(registry.updateCapabilities({
+      relayId: "relay-1", userId: "human-1", desktopSessionId: "session-1", capabilityRevision: 3,
+      capabilities: { profile: "desktop-agent", canControlDesktop: false },
+    })).toEqual({ ok: true });
+    expect(registry.getCapabilities("relay-1")?.computerUseHostContracts).toBeUndefined();
+  });
+
   async function lifetimeFixture() {
     const sent: RelayServerMessage[] = [];
     const registry = new InMemoryRelayRegistry({

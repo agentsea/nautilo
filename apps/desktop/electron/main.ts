@@ -290,7 +290,7 @@ import {
   resolveMissingTargetFromExistingAncestor,
   type GuardedFileAdapter,
 } from "./local-file-history/file-adapter.ts";
-// M239 — macOS important-message delivery and Dock attention policies.
+// macOS important-message delivery and Dock attention policies.
 import {
   isMacosAppEffectivelyActive,
   NotificationMessageDeduper,
@@ -306,7 +306,7 @@ import {
   type DockAttentionDeps,
 } from "./notification-dock";
 import type { NotificationSummaryInput } from "./notification-summary";
-// D403 (ISSUE-D403) P0 — embedded-browser password layer. HUMAN-ONLY: these
+// embedded-browser password layer. HUMAN-ONLY: these
 // channels serve the guest <webview> preload + host renderer save/autofill UX
 // and must never be exposed on any agent/tool/CDP surface (see passwords/ipc.ts).
 import { registerPasswordsIpc } from "./passwords/ipc";
@@ -339,7 +339,7 @@ import {
   type KeepAwakePolicy,
 } from "./remote-control/keep-awake-policy";
 
-/** D357 Phase 3 — desktop jailed fs.mkdir result (main IPC). */
+/** desktop jailed fs.mkdir result (main IPC). */
 export type FsMkdirResult =
   | { ok: true }
   | {
@@ -348,7 +348,7 @@ export type FsMkdirResult =
       message?: string;
     };
 
-/** D418 — renderer-safe results for the narrow Desktop Filesystem Grant bridge. */
+/** renderer-safe results for the narrow Desktop Filesystem Grant bridge. */
 export type DesktopFilesystemGrantsIpcFailureCode =
   | DesktopFilesystemGrantStoreErrorCode
   | DesktopFilesystemGrantRootIdentityErrorCode
@@ -554,7 +554,7 @@ function nautiloAppVersion(): string {
   return app.getVersion();
 }
 
-// D057 2a.6 — normalize app identity before ANY app.getPath() call below
+// Normalize app identity before ANY app.getPath() call below.
 // (current-folder.json, logs, crashDumps, etc. all flow from this). Without
 // this, dev runs resolve to "@nautilo/desktop" (package.json "name")
 // while packaged runs resolve to "Nautilo" (electron-builder productName),
@@ -570,7 +570,7 @@ function nautiloAppVersion(): string {
 // only the saved-path pointer moves.
 app.setName(APP_NAME);
 
-// D384 Phase 5 — repair PATH before anything spawns children. A GUI-launched
+// repair PATH before anything spawns children. A GUI-launched
 // Electron app inherits a minimal PATH that omits ~/.maestro/bin,
 // /opt/homebrew/bin, etc., so relay-hosted stdio MCP servers (and CLI tools)
 // fail with `spawn <cmd> ENOENT`. Best-effort + idempotent.
@@ -580,7 +580,7 @@ app.setName(APP_NAME);
     log.info(`[desktop] PATH augmented (+${added} dir(s)) for child spawns`);
 }
 
-// M097 + Stack 19 Phase 4 (D156 Architecture amendment 2026-05-16) — segregate
+// Segregate
 // Electron `userData` by the (instance, profile) tuple so different
 // server-targets AND different operator identities get isolated
 // renderer state.
@@ -614,7 +614,7 @@ app.setName(APP_NAME);
 // per the no-hacks design rule.
 //
 // Auth is already per-instance per-profile via
-// `~/.nautilo${suffix}/desktop-auth[-<profile>].json` (M097 Phase 3 +
+// `~/.nautilo${suffix}/desktop-auth[-<profile>].json` (+
 // resolveNautiloRootDir from @nautilo/config); this completes the
 // isolation for everything Electron itself owns.
 const desktopProfile = parseProfileFromArgv(process.argv);
@@ -639,7 +639,7 @@ if (targetDirName !== APP_NAME) {
   app.setPath("crashDumps", path.join(tupleUserData, "Crashpad"));
 }
 
-// D516 2.1.2 — this owns an optional packaged child only. Its lifecycle is
+// This owns an optional packaged child only. Its lifecycle is
 // intentionally separate from provider admission, relay capability discovery,
 // and every Computer use dispatch path.
 // The Host owns the Cua process, socket, session, and driver generation.
@@ -755,7 +755,7 @@ let advertisedBrowserControlSessionSource: string | null = null;
 let browserResearchTargetManager: BrowserResearchTargetManager | null = null;
 
 /**
- * M161 Phase 3 — renderer subscribers to `servers:changed` pushes. Keyed
+ * renderer subscribers to `servers:changed` pushes. Keyed
  * by `webContents.id` so a destroyed renderer is pruned on the next
  * emission (unsubscribe-safe). The registry's `onChange` listener
  * (wired once in boot) broadcasts to every live subscriber.
@@ -772,8 +772,8 @@ let releasedDesktopBootFinalizer: Promise<void> | null = null;
 let releasedDesktopBootUpdaterStarted = false;
 let releasedDesktopBootActivateHandlerRegistered = false;
 
-// D514 — native menus are process-global, while Logto discovery is scoped to
-// the active M161 server session. The key includes every field that changes
+// native menus are process-global, while Logto discovery is scoped to
+// the active server session. The key includes every field that changes
 // the Account projection so a same-server Logto/signed-in transition cannot
 // leave a stale native menu behind. A switch/close/forget cascade coalesces
 // into one rebuild against its final projection.
@@ -880,7 +880,7 @@ function notifyComputerUseStatusChanged(): void {
   sendToActiveRenderer("computerUse:statusChanged");
 }
 
-// D103 — eligibility is derived solely from Electron's packaging state and
+// eligibility is derived solely from Electron's packaging state and
 // the version stamped by the protected signed-release workflow. The actual
 // generic provider URL is compiled into app-update.yml by electron-builder;
 // it is not accepted from an environment variable, CLI argument, server,
@@ -1463,7 +1463,7 @@ function deferRelayRootRefreshUntilCodexIdle(reason: string): void {
     if (deferredReason) void refreshRelayForCurrentFolder(deferredReason);
   }, RELAY_ROOT_REFRESH_IDLE_DELAY_MS);
 }
-// D418 reconnect/session split-brain fix — tracks whether the relay has
+// reconnect/session split-brain fix — tracks whether the relay has
 // completed at least one connected cycle, so `onRelayStatusChange` can
 // distinguish a RECONNECT (disconnected/error → connected again) from the
 // initial connect and re-push the current capability state. The relay
@@ -1474,7 +1474,7 @@ function deferRelayRootRefreshUntilCodexIdle(reason: string): void {
 // a stop/start cycle. Fire-and-forget: a failure is logged inside
 // `refreshDesktopRelayCapabilities` and never blocks the status update.
 let relayHasConnectedOnce = false;
-// D458 Wave 7 — one main-owned, scoped native wake blocker. It is deliberately
+// one main-owned, scoped native wake blocker. It is deliberately
 // not a general “keep my Mac awake” preference and the renderer never sees its
 // Electron id. It is released on every authority-ending lifecycle below.
 let remoteControlKeepAwakePolicy: KeepAwakePolicy = "off";
@@ -1524,7 +1524,7 @@ function unregisterRemoteControlPowerMonitor(): void {
   remoteControlPowerMonitorRegistered = false;
 }
 /**
- * M161 Phase 1 compatibility reads. Boot creates the initial registry
+ * compatibility reads. Boot creates the initial registry
  * session before any auth or renderer setup, so these helpers replace the
  * former module-level server/auth globals without changing existing callers'
  * observable single-server behavior.
@@ -1548,7 +1548,7 @@ function setSignedIn(value: boolean): void {
   serverSessions.updateSession(active.serverUrl, { signedIn: value });
 }
 
-/** D154 — surfaced to the workbench preload (`shellStateOnBoot`); updated by bootstrap + cold-boot picker. */
+/** surfaced to the workbench preload (`shellStateOnBoot`); updated by bootstrap + cold-boot picker. */
 type ShellStateOnBoot = "live" | "disconnected" | "wrong-server" | "no-pairing";
 
 let shellStateOnBoot: ShellStateOnBoot = "live";
@@ -1571,7 +1571,7 @@ function logColdBootDiagnostic(diagnostic: ColdBootDiagnostic): void {
   // Never interpolate URL, identity, response-body, provider, token, or
   // certificate content. The pure authority cannot emit any of them either.
   log.info(
-    `[desktop][d514] cold-boot generation=${diagnostic.generation} phase=${diagnostic.phase} category=${diagnostic.category} durationMs=${diagnostic.durationMs} acceptedGeneration=${diagnostic.acceptedGeneration} stateChanged=${diagnostic.stateChanged}`,
+    `[desktop] cold-boot generation=${diagnostic.generation} phase=${diagnostic.phase} category=${diagnostic.category} durationMs=${diagnostic.durationMs} acceptedGeneration=${diagnostic.acceptedGeneration} stateChanged=${diagnostic.stateChanged}`,
   );
 }
 
@@ -1627,13 +1627,13 @@ function projectVerifiedConnectionCohort(
   return projected;
 }
 
-/** D154 — `loadURL` target for the connect-mode bootstrap shell (file URL); null when dev-from-source. */
+/** `loadURL` target for the connect-mode bootstrap shell (file URL); null when dev-from-source. */
 let connectBootstrapEntryHref: string | null = null;
 
-/** D154 — last main-window `loadURL` + navigation-guard origin for `activate` reopen. */
+/** last main-window `loadURL` + navigation-guard origin for `activate` reopen. */
 let lastMainWindowLoadUrl = "about:blank";
 
-/** D112 — guest `GET /api/setup/status` snapshot taken once per boot after URL resolution. */
+/** guest `GET /api/setup/status` snapshot taken once per boot after URL resolution. */
 let bootSetupStatus: SetupStatusResponse | null = null;
 
 async function loadBootSetupStatus(serverUrl: string): Promise<void> {
@@ -1647,7 +1647,7 @@ async function loadBootSetupStatus(serverUrl: string): Promise<void> {
   }
 }
 /**
- * D079 — "current folder" is the task-scoped folder the user has
+ * "current folder" is the task-scoped folder the user has
  * pointed Nautilo at (a codebase, a legal-doc dump, a design folder).
  * Distinct from the Genie's Workspace (her persistent drawer) which
  * lands in Phase 3. NULL is a legitimate state: fresh install with no
@@ -1660,7 +1660,7 @@ let currentFolderRevision = 0;
 // authority so construction below cannot capture a pre-initialized selection.
 let claudeExecutionHost: ElectronClaudeExecutionHost | null = null;
 
-// D431 — main owns the file handles and version checks for preview-sized
+// main owns the file handles and version checks for preview-sized
 // binary reads. This is additive until Task 1.5 migrates legacy consumers.
 const binaryReadSessions = new BinaryReadSessionManager({
   assertPathInAllowedRoot,
@@ -1670,7 +1670,7 @@ const binaryReadSessionExpiryTimer = setInterval(() => {
 }, BINARY_READ_SESSION_TTL_MS);
 binaryReadSessionExpiryTimer.unref();
 
-// D385/D378 — a renderer owns only an opaque, revocable preview capability.
+// A renderer owns only an opaque, revocable preview capability.
 // The source path is derived here from its already-bound document, FFmpeg sees
 // private paths only, and the sandbox receives a custom-scheme URL whose
 // random capability is invalidated on close, navigation, or renderer death.
@@ -1923,7 +1923,7 @@ function disposeBinaryReadSenderBindings(): void {
 }
 
 /**
- * D079 Phase 3 — Genie's Workspace root (Surface A). Populated at
+ * Genie's Workspace root (Surface A). Populated at
  * boot by `ensureDefaultGenieWorkspace()`. Unlike `currentFolderPath`,
  * this is NEVER null after boot — the default root always exists (or
  * we at least returned the default path string for the renderer's
@@ -1933,7 +1933,7 @@ function disposeBinaryReadSenderBindings(): void {
  */
 let genieWorkspaceRoot: string | null = null;
 
-// D057 2a.2 — Electron-managed state files live under userData.
+// Electron-managed state files live under userData.
 // Paths wrap `app.getPath("userData")` so callers evaluate them
 // AFTER app init; top-level consts lived in this file but they
 // only worked because `app` was imported at the top (which
@@ -1943,7 +1943,7 @@ const CURRENT_FOLDER_FILE = currentFolderFilePath();
 const LEGACY_WORKSPACE_FILE = legacyWorkspaceFilePath();
 
 /**
- * One-shot D079 Phase 1 migration: rename the on-disk persistence file
+ * One-shot migration: rename the on-disk persistence file
  * from `workspace.json` → `current-folder.json`. Safe to call every
  * boot — no-op if the new file exists OR the legacy file doesn't.
  */
@@ -1967,7 +1967,7 @@ function migrateLegacyCurrentFolderFile(): void {
   try {
     fs.renameSync(LEGACY_WORKSPACE_FILE, CURRENT_FOLDER_FILE);
     log.info(
-      `[desktop] migrated workspace.json → current-folder.json (D079 Phase 1)`,
+      `[desktop] migrated workspace.json → current-folder.json`,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1980,7 +1980,7 @@ function migrateLegacyCurrentFolderFile(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * D079 Phase 3 — the `fs:readDir` / `fs:readFile` / `fs:stat` IPCs
+ * the `fs:readDir` / `fs:readFile` / `fs:stat` IPCs
  * must accept paths under the CURRENT FOLDER (Surface B) AND the
  * GENIE WORKSPACE (Surface A). Before this, only currentFolderPath
  * was allowed, which meant the Workspace tab's readDir call rejected
@@ -1990,7 +1990,7 @@ function migrateLegacyCurrentFolderFile(): void {
  * The guard is strict — exactly these two roots (plus their
  * subtrees). Anything else rejects.
  *
- * D079 PR-011 security port — the check uses `fs.realpathSync` on
+ * The check uses `fs.realpathSync` on
  * both the target and each allowed root. `path.resolve` only
  * normalizes textually (collapses `..`) and does NOT follow
  * symlinks — so a symlink inside `~/Documents/Nautilo/` pointing at
@@ -2013,7 +2013,7 @@ function isPathWithinAllowedRoot(targetPath: string): boolean {
   // When no roots are set at all (fresh install, pre-boot), reject
   // rather than allow — previously this returned true for the
   // "no currentFolderPath" case, which was a latent permissive
-  // default. D079 Phase 3 ensures `genieWorkspaceRoot` is always
+  // default. Workspace initialization ensures `genieWorkspaceRoot` is always
   // set post-boot, so the no-root case only happens during
   // boot-order edge cases (where we'd rather fail closed).
   if (allowedRoots.length === 0) return false;
@@ -2061,7 +2061,7 @@ async function createCompatibilityFileExclusively(
 }
 
 /**
- * D448 document-mutation adapter. Unlike a startup-captured `allowedRoots`
+ * document-mutation adapter. Unlike a startup-captured `allowedRoots`
  * array it asks the existing main-process policy on every action, so changing
  * Current Folder cannot leave an old root authorized by a long-lived runtime.
  */
@@ -2320,12 +2320,12 @@ function getDesktopDocumentMutationRuntime():
   // A no-window/retry failure leaves truth in the journal. Never block app
   // startup or discard it; the first successful renderer publication acks it.
   void desktopDocumentMutationRuntime.recoverAtStartup().catch((error) => {
-    console.warn("[desktop] D448 editor mutation recovery deferred:", error);
+    console.warn("[desktop] editor mutation recovery deferred:", error);
   });
   return desktopDocumentMutationRuntime;
 }
 
-/** D357 Phase 3 — narrow an unknown catch value to a Node errno exception. */
+/** narrow an unknown catch value to a Node errno exception. */
 function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return (
     err instanceof Error &&
@@ -2487,7 +2487,7 @@ async function pickFolder(): Promise<string | null> {
   return result.filePaths[0];
 }
 
-/** D271 — native multi-file open for composer attachments; returns bytes
+/** native multi-file open for composer attachments; returns bytes
  * (base64) for the renderer to upload to POST /api/message-attachments. */
 async function pickFilesForComposer(): Promise<
   Array<{
@@ -2502,9 +2502,9 @@ async function pickFilesForComposer(): Promise<
     title: "Attach files",
   });
   if (result.canceled) return [];
-  // D271 — return the bytes (base64) so the renderer can upload to
+  // return the bytes (base64) so the renderer can upload to
   // POST /api/message-attachments. Trust is the native picker: the user
-  // explicitly chose these files in the OS dialog this session. No HMAC/shared-secret model (retired in D271).
+  // explicitly chose these files in the OS dialog this session. No HMAC/shared-secret model remains.
   const picked: Array<{
     name: string;
     sizeBytes: number;
@@ -2588,7 +2588,7 @@ function commitCurrentFolderPath(
   updateTrayMenu();
   if (mainWindow && !mainWindow.isDestroyed()) {
     sendToActiveRenderer("currentFolder:pathChanged", p);
-    // Deprecation alias — D079 Phase 1 window. Emit both so any
+    // Deprecation alias. Emit both so any
     // renderer code still listening to the legacy event continues to
     // work while the migration rolls out.
     sendToActiveRenderer("workspace:pathChanged", p);
@@ -2690,7 +2690,7 @@ function commitMobileCurrentFolderSelection(input: {
   return { ok: true, label: input.label };
 }
 
-/** D154 — persisted beside config.json for wrong-server detection at cold boot. */
+/** persisted beside config.json for wrong-server detection at cold boot. */
 const PAIRED_SERVER_IDENTITY_FILE = "paired-server-identity.json";
 
 function pairedServerIdentityPath(): string {
@@ -2731,7 +2731,7 @@ function fingerprintFromHealthBody(
   return isServerFingerprint(id) ? id : null;
 }
 
-// D480 — process-local observation only. The durable per-tuple result stays
+// process-local observation only. The durable per-tuple result stays
 // in the encrypted relay-token payload; this merely prevents a pre-contract
 // cached token from being rotated against a server whose /health has not
 // advertised the v2 pairing contract.
@@ -2746,7 +2746,7 @@ function observeRelayPairingContract(
   }
 }
 
-/** M055 — apply Logto config from an already-verified health response. */
+/** apply Logto config from an already-verified health response. */
 function applyVerifiedLogtoHealthBody(
   serverUrl: string,
   body: Record<string, unknown>,
@@ -2781,7 +2781,7 @@ function applyVerifiedLogtoHealthBody(
           serverUrl,
           serverFingerprint: observedFingerprint,
         }));
-        log.info("[desktop][d514] completed verified legacy active authority");
+        log.info("[desktop] completed verified legacy active authority");
       }
     }
     const endpoint = body["logtoEndpoint"];
@@ -2800,7 +2800,7 @@ function applyVerifiedLogtoHealthBody(
       log.info(
         `[desktop][m055] Logto auth resolved (endpoint=${nextLogtoConfig.endpoint})`,
       );
-      // M097/M161 — resolve the complete identity envelope from ONE active
+      // Resolve the complete identity envelope from ONE active
       // session. Do not capture this probe's `serverUrl` while reading Logto
       // config from the mutable active session: after A → B → A that mixed
       // A's URL with B's endpoint/app id and made both scoped bundles look
@@ -2854,7 +2854,7 @@ async function reprobeLogtoConfigDiagnostic(serverUrl: string): Promise<boolean>
 }
 
 /**
- * M055 — Refresh token wrapper that uses the Electron token-store
+ * Refresh token wrapper that uses the Electron token-store
  * facade. Defined once so `auth:getAccessToken` IPC and the boot-time
  * silent refresh share one implementation.
  */
@@ -2877,7 +2877,7 @@ async function refreshTokens(): Promise<TokenBundle | null> {
 }
 
 /**
- * M101 Phase 4 — best-effort refresh after closing a Logto account page.
+ * best-effort refresh after closing a Logto account page.
  * Uses a no-op `clearTokens` on failure so a transient network error does
  * not sign the user out of the desktop shell.
  */
@@ -2900,7 +2900,7 @@ async function refreshTokensSafe(): Promise<void> {
 }
 
 /**
- * M101 Phase 4 — open a Logto-hosted account page (`/account` or
+ * open a Logto-hosted account page (`/account` or
  * `/account/password`) in the embedded auth window.
  *
  * We deliberately do NOT prepend an OIDC step-up here. Logto's hosted
@@ -2929,7 +2929,7 @@ function openLogtoAccountPage(path: AccountPagePath): void {
 }
 
 /**
- * M056 — resolve a usable relay token. In the connect-to-server model
+ * resolve a usable relay token. In the connect-to-server model
  * we either load a previously-paired token or pair a fresh one against
  * `/api/relay/pair` using the current Logto access token. Returns null
  * when:
@@ -2942,13 +2942,13 @@ function openLogtoAccountPage(path: AccountPagePath): void {
  */
 async function ensureRelayToken(serverUrl: string): Promise<string | null> {
   const cached = loadRelayToken(serverUrl);
-  // D480's deviceGroupId is derived only from the canonical D133/M161
+  // deviceGroupId is derived only from the canonical
   // fingerprint. Never substitute a raw URL, hostname, or mutable label.
   const trustedServerFingerprint = getRecentServerFingerprint(serverUrl);
   if (!trustedServerFingerprint) {
     if (cached) return cached;
     log.warn(
-      "[desktop][d480] No trusted server fingerprint; deferring first relay pair",
+      "[desktop] No trusted server fingerprint; deferring first relay pair",
     );
     return null;
   }
@@ -2997,7 +2997,7 @@ function isRelayTokenRejection(err: unknown): boolean {
 }
 
 /**
- * M161 Phase 2 — resolve the `ServerSession` the relay should bind to
+ * resolve the `ServerSession` the relay should bind to
  * during boot. The boot session is the active session; look it up by
  * URL (canonicalized inside the registry) and fall back to
  * `registry.active` so the relay always binds to a real session whose
@@ -3012,7 +3012,7 @@ function bootSessionForRelay(serverUrl: string): ServerSession {
 }
 
 /**
- * M056 — boot or re-boot the relay. Resolves the relay's userId from
+ * boot or re-boot the relay. Resolves the relay's userId from
  * the server, gates startup behind the Logto fail-closed checks, and
  * starts the relay with a token when one is available.
  *
@@ -3044,7 +3044,7 @@ async function bootRelayIfPossible(serverUrl: string): Promise<void> {
 }
 
 /**
- * M161 Phase 3 — relay start for a specific session, shared by the boot
+ * relay start for a specific session, shared by the boot
  * path (`bootRelayIfPossible`) and the in-process switch handoff
  * (`handoffRelay` hook). Resolves the relay userId + token for the
  * session's own server URL, builds `StartRelayOptions`, and routes
@@ -3063,7 +3063,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
   // Resolve the relay's userId so it matches the server-side
   // state.userId that tool dispatches use. Without this, the relay
   // registers under a hardcoded default and findByCapabilityForUser
-  // never matches — every relay tool call fails silently. See D064.
+  // never matches — every relay tool call fails silently.
   const userId = await resolveRelayUserId(serverUrl);
   if (!userId) {
     log.warn(
@@ -3101,7 +3101,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       auditRoot: path.join(currentFolderAdoptionNautiloRoot, "audit"),
     },
   });
-  // D497 — the helper is process-local and never receives a server-provided
+  // the helper is process-local and never receives a server-provided
   // approval bit. The relay adapter below supplies approval only after its
   // explicit desktop dispatch guard has admitted the opaque preparation id.
   const currentFolderAdoption = createCurrentFolderAdoptionAuthority({
@@ -3138,7 +3138,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     checkCurrentFolderSanity: (candidate) => checkCurrentFolderSanity(candidate, os.homedir()),
   });
 
-  // D458 — relay Workspace and Current Folder are intentionally separate.
+  // relay Workspace and Current Folder are intentionally separate.
   // Genie Workspace is the guaranteed Finder-visible baseline that makes a
   // newly paired desktop useful immediately. Current Folder remains the
   // optional Human project selection; passing it through a provider never
@@ -3157,10 +3157,10 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     // stays connected, but explicitly Current-Folder-bound paths must fail
     // when absent rather than silently falling back to Genie Workspace.
     currentFolderPathProvider: () => currentFolderPath ?? undefined,
-    // D500: app-owned trust/grant storage only. Structured SSH deliberately
+    // app-owned trust/grant storage only. Structured SSH deliberately
     // receives no Current Folder and never falls back to run_shell.
     structuredSshAppDataDirectory: app.getPath("userData"),
-    // D560 security research is durable app-owned state, never a project
+    // security research is durable app-owned state, never a project
     // directory and never inferred by the relay from a server request.
     securityResearchDataDirectory: app.getPath("userData"),
     computerUseSnapshotProvider: async () => {
@@ -3200,6 +3200,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
                 grantGeneration: current.data.receipt.grantGeneration,
                 provider: route.provider,
                 providerGeneration: route.providerGeneration,
+                hostContracts: await computerUseHostBroker.supportedContracts(),
               };
         },
       });
@@ -3247,7 +3248,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       // reinterpret a malformed/old request through the retired controller.
       return { ok: false as const, hostFailure: "host_protocol_rejected" as const };
     },
-    // D497 — this is a process-local Electron authority. Its successful
+    // this is a process-local Electron authority. Its successful
     // commit receipt confirms only the local Current Folder transition;
     // commitCurrentFolderPath refreshes the relay asynchronously.
     currentFolderAdoption: {
@@ -3298,7 +3299,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       );
       return { ok: true as const };
     },
-    // D504: the relay receives only this Electron-main-owned target port.
+    // the relay receives only this Electron-main-owned target port.
     // The hidden research target never enters interactive Browser state.
     ...(browserResearchTargetManager !== null
       ? {
@@ -3317,14 +3318,14 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       app.getPath("userData"),
       GOOGLE_OAUTH_CLIENT_FILENAME,
     ),
-    // D418 prerequisite — share the single main-process authority with the
+    // prerequisite — share the single main-process authority with the
     // relay so the resolver and snapshot builder see overlay grants.
     desktopFilesystemGrantAuthority: desktopFilesystemGrantStore,
-    // D418 — share the single main-process active-profile controller so the
+    // share the single main-process active-profile controller so the
     // relay advertises the controller's redacted profile snapshot from the
     // SAME store the main process owns (no duplicate profile stores).
     workstationProfileController: activeWorkstationProfileController,
-    // D448: native apply_patch is private-staging only. The process-scoped
+    // native apply_patch is private-staging only. The process-scoped
     // Desktop mutation runtime is the sole live-file writer and shares the
     // editor's coordinator, V2 journal, locks, recovery and durable outbox.
     commitDesktopApplyPatch: async (input) => {
@@ -3348,7 +3349,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
         reauthorize: input.reauthorize,
       });
     },
-    // D448: OfficeCLI still owns private generation/OOXML validation, but its
+    // OfficeCLI still owns private generation/OOXML validation, but its
     // final Current Folder binary write uses this same coordinator, V2 journal,
     // lock domain and durable event outbox as editor saves and apply_patch.
     commitDesktopOfficeCli: async (input) => {
@@ -3362,7 +3363,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       }
       return runtime.commitOfficeCli(input);
     },
-    // D448 Phase 11: ordinary file content commands keep their relay grant
+    // ordinary file content commands keep their relay grant
     // authorization and response envelope, but the process-scoped runtime is
     // their sole live-file/V2 journal/outbox commit owner.
     commitDesktopAgentContent: async (input) => {
@@ -3376,7 +3377,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       }
       return runtime.commitAgentContent(input);
     },
-    // D448 Phase 11.1: structural file commands use the same canonical
+    // structural file commands use the same canonical
     // coordinator, CAS, V2 journal and outbox as all other local mutations.
     commitDesktopAgentStructural: async (input) => {
       const runtime = getDesktopDocumentMutationRuntime();
@@ -3389,7 +3390,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       }
       return runtime.commitAgentStructural(input);
     },
-    // D448 Phase 11.2: undo/redo are canonical V2 coordinator mutations,
+    // undo/redo are canonical V2 coordinator mutations,
     // sharing the same locks, leases, CAS, journal and outbox as file writes.
     commitDesktopHistoryRestore: async (input) => {
       const runtime = getDesktopDocumentMutationRuntime();
@@ -3411,14 +3412,14 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     }),
     runWorkstationShell: (request) => workstationShellHost.execute(request),
     verifyUncontainedHostCommands: verifyUncontainedHostCommandsForRelay,
-    // D453 — stable disabled-by-default port survives relay replacement and
+    // stable disabled-by-default port survives relay replacement and
     // re-pair; readiness remains false until an explicit local enable.
     codexHostPort: codexConnection,
-    // D452 v17 — account/catalog discovery is a parked local SDK exchange;
+    // v17 — account/catalog discovery is a parked local SDK exchange;
     // the relay receives only its closed, scope-fenced result.
     claudeConnectionHostPort: claudeConnection,
     ...(claudeExecutionHost === null ? {} : { claudeExecutionHostPort: claudeExecutionHost }),
-    // D452 v14 — Electron retains launch/session authority; relay receives
+    // v14 — Electron retains launch/session authority; relay receives
     // only opaque workspace receipts and bounded semantic frames.
     acpHostPort: acpExecutionRouter,
     ...(googleOAuthStatusToken ? { googleOAuthStatusToken } : {}),
@@ -3433,13 +3434,13 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     // explicitly deferred; startRelay immediately advertises the resulting
     // ready host in its canonical register frame.
     await restoreCodexConnectionBeforeRelayStart(userId);
-    // D418 reconnect/session split-brain fix — a fresh startRelay begins a
+    // reconnect/session split-brain fix — a fresh startRelay begins a
     // new relay lifecycle; reset the reconnect flag so the FIRST connect of
     // this cycle is treated as initial (the register frame already
     // advertises current caps) and only a subsequent reconnect triggers
     // the defensive post-reconnect capability refresh.
     relayHasConnectedOnce = false;
-    // M161 Phase 2 — route the start through `setActiveRelay` so the
+    // route the start through `setActiveRelay` so the
     // relay binds to the named session and `relayActive` is managed on
     // the session object (background sessions stay `relayActive=false`).
     // `setActiveRelay` awaits `stopRelay()` before `startRelay()`.
@@ -3457,10 +3458,10 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       const freshRelayToken = await ensureRelayToken(serverUrl);
       if (freshRelayToken) {
         try {
-          // D418 reconnect fix — fresh lifecycle after a re-pair; reset the
+          // reconnect fix — fresh lifecycle after a re-pair; reset the
           // reconnect flag (see the primary startRelay call above).
           relayHasConnectedOnce = false;
-          // M161 Phase 2 — re-pair also routes through `setActiveRelay` so
+          // re-pair also routes through `setActiveRelay` so
           // the relay stays bound to the session and the stop/start
           // ordering is preserved (the explicit `stopRelay` above already
           // tore down the rejected client; `setActiveRelay`'s internal
@@ -3486,7 +3487,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
 }
 
 /**
- * D340/D458 — Current Folder augments the relay's Workspace baseline. If the
+ * Current Folder augments the relay's Workspace baseline. If the
  * user changes it after the relay connects, refresh the relay so its optional
  * Current Folder root and server-private binding metadata stay exact. The
  * always-present Genie Workspace remains unchanged throughout this lifecycle.
@@ -3495,7 +3496,7 @@ async function refreshRelayForCurrentFolder(reason: string): Promise<void> {
   const serverUrl = resolvedServerUrl();
   if (!serverUrl) {
     log.info(
-      `[desktop][d340] Skipping relay root refresh after ${reason}; server URL is not resolved yet`,
+      `[desktop] Skipping relay root refresh after ${reason}; server URL is not resolved yet`,
     );
     return;
   }
@@ -3528,13 +3529,13 @@ async function refreshRelayForCurrentFolder(reason: string): Promise<void> {
         return;
       }
       log.info(
-        `[desktop][d340] Refreshing relay root after ${reason}: ${nextRoot}`,
+        `[desktop] Refreshing relay root after ${reason}: ${nextRoot}`,
       );
       try {
         await stopRelay();
       } catch (err) {
         log.warn(
-          `[desktop][d340] Failed to stop relay for root refresh: ${
+          `[desktop] Failed to stop relay for root refresh: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -3542,7 +3543,7 @@ async function refreshRelayForCurrentFolder(reason: string): Promise<void> {
       }
     } else {
       log.info(
-        `[desktop][d340] Relay is ${status}; booting with current folder after ${reason}: ${nextRoot}`,
+        `[desktop] Relay is ${status}; booting with current folder after ${reason}: ${nextRoot}`,
       );
     }
 
@@ -3559,7 +3560,7 @@ async function refreshRelayForCurrentFolder(reason: string): Promise<void> {
 }
 
 /**
- * M055 — flip the cached signed-in flag and rebuild the native menu
+ * flip the cached signed-in flag and rebuild the native menu
  * so the Account submenu's enabled/disabled state stays current.
  * Cheap on equal-value calls (rebuildApplicationMenu is the same
  * call commitCurrentFolderPath already runs after every commit).
@@ -3629,7 +3630,7 @@ function onLogtoRefreshFailed(): void {
 }
 
 /**
- * M055 — derive `MenuOptions.auth` for `createApplicationMenu`.
+ * derive `MenuOptions.auth` for `createApplicationMenu`.
  */
 function buildMenuAuthOptions(): MenuAuthOptions {
   if (!logtoConfig()) {
@@ -3662,7 +3663,7 @@ function buildMenuAuthOptions(): MenuAuthOptions {
 }
 
 /**
- * M055 — drive the loopback PKCE flow. Shared between the
+ * drive the loopback PKCE flow. Shared between the
  * `auth:signIn` IPC and the native menu's Sign In click; returns the
  * same `{ok, error?}` envelope the IPC promises so callers don't
  * special-case.
@@ -3694,7 +3695,7 @@ async function handleSignIn(
         ...(opts?.extraParams ? { extraParams: opts.extraParams } : {}),
       },
       {
-        // M055 follow-up — embedded sign-in instead of
+        // follow-up — embedded sign-in instead of
         // `shell.openExternal`. Keeps the user inside the app; the
         // loopback server still catches the redirect. Trade-offs
         // documented in `auth-window.ts`.
@@ -3722,7 +3723,7 @@ async function handleSignIn(
       await loadBootSetupStatus(serverUrl);
     }
     broadcastAuthState("signed-in");
-    // M056 — fresh sign-in unblocks relay startup if the boot tail
+    // fresh sign-in unblocks relay startup if the boot tail
     // deferred it (no Logto access token yet, or relay userId could
     // not be resolved). Fire-and-forget; status updates flow back
     // through onRelayStatusChange.
@@ -3742,7 +3743,7 @@ async function handleSignIn(
 }
 
 /**
- * M101 — OIDC step-up for a fresh JWT (`prompt=login` + `max_age`) without
+ * OIDC step-up for a fresh JWT (`prompt=login` + `max_age`) without
  * disturbing the rest of the shell; persists rotated tokens when Logto
  * returns them.
  */
@@ -3815,7 +3816,7 @@ async function handleAuthStepUp(opts: {
 }
 
 /**
- * M055/M061 — Electron sign-out is local to the app shell. Do not open
+ * Electron sign-out is local to the app shell. Do not open
  * Logto in the user's system browser: Electron sign-in uses an embedded
  * BrowserWindow, and interactive sign-in now sends `prompt=login consent`,
  * so clearing Nautilo tokens plus the Electron Logto cookies is the right
@@ -3835,7 +3836,7 @@ async function handleSignOut(): Promise<void> {
     await stopRelay();
   } catch (err) {
     log.warn(
-      `[desktop][d453] failed to stop relay on sign-out: ${String(err)}`,
+      `[desktop] failed to stop relay on sign-out: ${String(err)}`,
     );
   }
   try {
@@ -3844,14 +3845,14 @@ async function handleSignOut(): Promise<void> {
     // Transport is already stopped and the lifecycle removed live local
     // references. Keep signing out; a future relay adoption must retry and
     // prove durable revocation before it can start.
-    log.error(`[desktop][d516] failed to revoke Computer use on sign-out: ${String(err)}`);
+    log.error(`[desktop] failed to revoke Computer use on sign-out: ${String(err)}`);
   }
   if (!config) return;
   try {
     await codexConnection.disable();
   } catch (err) {
     log.warn(
-      `[desktop][d453] failed to disable Codex on sign-out: ${String(err)}`,
+      `[desktop] failed to disable Codex on sign-out: ${String(err)}`,
     );
   }
   clearTokens();
@@ -3873,7 +3874,7 @@ async function handleSignOut(): Promise<void> {
       );
     }
   }
-  // D418 — drop the active Workstation Profile binding and revoke its
+  // drop the active Workstation Profile binding and revoke its
   // ephemeral policy-pack/session overlay grants on explicit sign-out. This
   // is NOT a transient relay reconnect (which resumes the session), so
   // clearing here is correct: the user is leaving, and the compiled authority
@@ -3883,7 +3884,7 @@ async function handleSignOut(): Promise<void> {
     await activeWorkstationProfileController.deactivate();
   } catch (err) {
     log.warn(
-      `[desktop][d418] failed to deactivate active profile on sign-out: ${String(err)}`,
+      `[desktop] failed to deactivate active profile on sign-out: ${String(err)}`,
     );
   }
   refreshAuthMenuState(false);
@@ -4076,7 +4077,7 @@ if (!gotLock) {
 // ---------------------------------------------------------------------------
 
 /**
- * M161 Phase 2 — sender-resolved session lookup for privileged IPC.
+ * sender-resolved session lookup for privileged IPC.
  *
  * Replaces the Phase 1 `assertMainWindowSender` boolean gate with a
  * resolver that returns the `ServerSession` mapped to `event.sender.id`.
@@ -4107,7 +4108,7 @@ function resolveSessionFromSender(
 }
 
 /**
- * D103 P4.2 — sender-id gate for module-level handlers.
+ * sender-id gate for module-level handlers.
  *
  * Module-level handlers are registered at app startup (before any
  * BrowserWindow exists) and are intended for the **mainWindow / Workbench
@@ -4126,7 +4127,7 @@ function resolveSessionFromSender(
  * the failure mode where a non-main-window's preload accidentally
  * (or maliciously) re-exposes `ipcRenderer.invoke`.
  *
- * M161 Phase 2 — delegates to `resolveSessionFromSender` so every
+ * delegates to `resolveSessionFromSender` so every
  * privileged handler (auth and non-auth) shares one fail-closed
  * sender boundary. Auth handlers use the resolver directly to obtain
  * the session; non-auth handlers keep the void `assert*` call shape.
@@ -4136,9 +4137,9 @@ function assertMainWindowSender(e: Electron.IpcMainInvokeEvent): void {
 }
 
 /**
- * D557 — derive the sole durable Ready-to-work binding in main. The renderer
+ * derive the sole durable Ready-to-work binding in main. The renderer
  * supplies neither a Human nor server authority marker, and an active server
- * without its complete D514 marker is intentionally ineligible.
+ * without its complete marker is intentionally ineligible.
  */
 async function resolveReadyToWorkBindingForSession(
   activeSession: Pick<ServerSession, "serverUrl" | "signedIn">,
@@ -4355,7 +4356,7 @@ async function readyToWorkStatusForSender(
   }
 }
 
-// D516 — permission status is useful only while its Human-facing setup UI is
+// permission status is useful only while its Human-facing setup UI is
 // mounted. Keep a sender set rather than a global background poller, and send
 // only a newly observed semantic state (never a stream of identical snapshots).
 const systemPermissionStatusSubscribers = new Map<number, Electron.WebContents>();
@@ -4682,7 +4683,7 @@ async function resolveSelectedComputerUseOwnedAgent(
     : selectComputerUseOwnedAgent(agents, requestedAgentId)?.agentId ?? null;
 }
 
-// D500 management is Human-only. Targets, identities, OpenSSH configuration,
+// management is Human-only. Targets, identities, OpenSSH configuration,
 // and host trust are resolved per exact Genie request, never constructed here.
 const structuredSshSetup = createStructuredSshSetupController({
   getRuntime: getActiveStructuredSshRuntime,
@@ -4710,7 +4711,7 @@ const structuredSshSetup = createStructuredSshSetupController({
   refreshRelay: async () => { await refreshDesktopRelayCapabilities("structured SSH setup changed"); },
 });
 
-// D516 — this deliberately remains a small local authority, not a generic
+// this deliberately remains a small local authority, not a generic
 // capability registry.  Future computer execution registers cancellers here;
 // revocation advances the exact epoch/generation fence before the UI reports
 // Off, so late output cannot become authority after a local revoke.
@@ -5053,9 +5054,9 @@ async function reconcileComputerUseTopology(
   notifyComputerUseStatusChanged();
 }
 
-// D418 — local-only human grant administration. This store is deliberately
+// local-only human grant administration. This store is deliberately
 // distinct from current-folder state and from fs:* browsing authority.
-// D418 prerequisite — one main-process authority wraps the durable store with
+// prerequisite — one main-process authority wraps the durable store with
 // an in-memory overlay for `once` / `session` / `policy_pack` grants. The IPC
 // handlers, the desktop relay authority resolver, and the advisory snapshot
 // builder all read this same instance (passed into `startRelay`), so overlay
@@ -5072,7 +5073,7 @@ const desktopFilesystemGrantStore = new DesktopFilesystemGrantAuthority({
   store: desktopFilesystemGrantDurableStore,
 });
 
-// D418 — the single main-process active-profile state machine. Owns the
+// the single main-process active-profile state machine. Owns the
 // instance-scoped WorkstationProfileStore and shares the authority above, so
 // compiled policy-pack session grants land in the SAME overlay the relay
 // resolver, advisory snapshot builder, and grant IPC handlers read. The relay
@@ -5088,7 +5089,7 @@ const activeWorkstationProfileController =
     authority: desktopFilesystemGrantStore,
     filePath: workstationProfilesFilePath(),
     onActiveProfileChanged: (reason) => {
-      // D418 — skip the fire-and-forget re-advertise for the activate reason:
+      // skip the fire-and-forget re-advertise for the activate reason:
       // the `selectActiveProfile` handler (sole activate() caller) performs the
       // authoritative awaited completion refresh, and a second refresh here
       // would race the publisher and issue a redundant capability revision.
@@ -5144,7 +5145,7 @@ ipcMain.handle("structuredSsh:disable", async (e) => {
   return await structuredSshSetup.disable();
 });
 
-// D516 — renderer supplies only the transient own-Human PIN.  Main owns the
+// renderer supplies only the transient own-Human PIN.  Main owns the
 // local store, server binding, authenticated relay topology, receipt, and
 // provider route. These routes are intentionally unrelated to generic tool
 // approvals or Auto-Approve.
@@ -5280,7 +5281,7 @@ ipcMain.handle("workstationShell:revoke", async (e) => {
   }
 });
 
-// D453 task 2.3 — stable, initially-disabled relay port. No Codex runtime,
+// stable, initially-disabled relay port. No Codex runtime,
 // host, profile, or process exists until a future human-facing connection
 // action supplies a reviewed factory to `enable`.
 const codexConnection = new ElectronCodexConnection({
@@ -5368,7 +5369,7 @@ async function restoreCodexConnectionBeforeRelayStart(
     await codexConnection.enable(codexProductionHostFactory(actorId));
   } catch (err) {
     log.warn(
-      `[desktop][d453] failed to restore enabled Codex connection: ${String(err)}`,
+      `[desktop] failed to restore enabled Codex connection: ${String(err)}`,
     );
   }
 }
@@ -5635,7 +5636,7 @@ async function observeReadyComputerUse(): Promise<ReadyOwnerResult> {
 }
 
 /**
- * Ready enrollment reuses D516's one canonical PIN/ownership/attestation/mint
+ * Ready enrollment reuses one canonical PIN/ownership/attestation/mint
  * ceremony. It chooses the same first current personal Genie that the
  * Computer Use setup UI initially selects; the controller then revalidates
  * that exact ownership before writing its existing receipt.
@@ -6004,7 +6005,7 @@ async function verifyReadyEnrollmentPin(serverUrl: string, pin: string): Promise
   if (!response.ok) throw new Error(response.status === 401 ? "That PIN is incorrect." : "Nautilo could not verify your PIN.");
 }
 
-// D557 — the renderer may submit one transient own-Human PIN during
+// the renderer may submit one transient own-Human PIN during
 // enrollment, but no receipt, binding, identity, or owner authority crosses.
 ipcMain.handle("readyToWork:get", async (e) => {
   const generation = readyToWorkGeneration;
@@ -6286,7 +6287,7 @@ function grantIpcFailure<T>(
 }
 
 /**
- * D418 protocol v7 — re-advertise the desktop relay's advisory active-grant
+ * protocol v7 — re-advertise the desktop relay's advisory active-grant
  * snapshot after a local grant mutation via the atomic
  * `relay:update-capabilities` transport (no stop/start reconnect). The shared
  * "current capability builder" in `startRelay` rebuilds the snapshot from the
@@ -6524,7 +6525,7 @@ ipcMain.handle(
       grant: parsed.grant,
     });
     if (!created.ok) return grantStoreFailure(created.code);
-    // D418 — re-advertise the advisory snapshot from local state (never renderer data).
+    // re-advertise the advisory snapshot from local state (never renderer data).
     reAdvertiseDesktopFilesystemGrantSnapshot(
       "Desktop Filesystem Grant create",
     );
@@ -6575,7 +6576,7 @@ ipcMain.handle(
       grantId: args.grantId,
     });
     if (!revoked.ok) return grantStoreFailure(revoked.code);
-    // D418 — re-advertise the advisory snapshot from local state (never renderer data).
+    // re-advertise the advisory snapshot from local state (never renderer data).
     reAdvertiseDesktopFilesystemGrantSnapshot(
       "Desktop Filesystem Grant revoke",
     );
@@ -6583,7 +6584,7 @@ ipcMain.handle(
   },
 );
 
-// ── D418 — Workstation Profile review / activation-preparation bridge ──────
+// ── Workstation Profile review / activation-preparation bridge ──────
 //
 // Read-only-ish review operations + a narrow activation-preparation IPC for
 // the shipped Developer Workstation seed. The renderer supplies NO roots,
@@ -6607,7 +6608,7 @@ type WorkstationProfileIpcFailureCode =
   | "store_unavailable"
   | "store_corrupt"
   | "store_instance_mismatch"
-  // D418 — profile-selector activation seam failures. Surfaced when the
+  // profile-selector activation seam failures. Surfaced when the
   // server proof flow rejects activation OR the desktop cannot compile the
   // stored profile after the server proof succeeded.
   | "no_relay"
@@ -6850,7 +6851,7 @@ ipcMain.handle("workstationProfiles:getActiveProfileSummary", (e) => {
 });
 
 /**
- * D418 C4 — read the authoritative server session through Electron main.
+ * Read the authoritative server session through Electron main.
  * Failure is intentionally represented as an unconfirmed result, not a local
  * fallback: renderer presentation must never claim an active session without
  * this confirmation.
@@ -6907,7 +6908,7 @@ ipcMain.handle("workstationProfiles:getServerSessionStatus", async (e) => {
 });
 
 /**
- * D538 — Electron owns the relay/session tuple for uncontained-host-command
+ * Electron owns the relay/session tuple for uncontained-host-command
  * activation. The renderer may never nominate a relay, desktop session, or
  * bearer token; it can only request status, provide its own PIN, or reduce
  * authority by disabling this exact session.
@@ -6932,10 +6933,10 @@ async function uncontainedHostCommandsBearer(): Promise<string | null> {
 }
 
 /**
- * D538's Electron-local pre-spawn fence. The relay client supplies its own
+ * Electron-local pre-spawn fence. The relay client supplies its own
  * run_shell owner tuple; Electron main compares that tuple to this live
- * session, then asks the server for the exact current D538 status. Neither
- * a legacy D486 folder-consent receipt nor a server-provided execution class
+ * session, then asks the server for the exact current status. Neither
+ * a legacy folder-consent receipt nor a server-provided execution class
  * can pass this check by itself.
  */
 async function verifyUncontainedHostCommandsForRelay(binding: {
@@ -7085,7 +7086,7 @@ ipcMain.handle("uncontainedHostCommands:disable", async (e) => {
 });
 
 /**
- * D418 — narrow activation-preparation IPC. The renderer supplies NO roots,
+ * narrow activation-preparation IPC. The renderer supplies NO roots,
  * env, executables, or discovered facts. Electron main materializes the seed
  * profile and runs the advisory discovery adapters itself, returning only the
  * review facts + seed identity for the operator to review before a future
@@ -7108,7 +7109,7 @@ ipcMain.handle("workstationProfiles:prepareActivation", async (e) => {
   } as const;
 });
 
-// ── D418 — Workstation Profile management bridge (narrow, sender-gated) ────
+// ── Workstation Profile management bridge (narrow, sender-gated) ────
 //
 // The review/activation-preparation handlers above are read-only / advisory.
 // This subsection adds the narrow, safe management operations Settings needs:
@@ -7124,13 +7125,13 @@ ipcMain.handle("workstationProfiles:prepareActivation", async (e) => {
 //     mirrors the existing sign-out / quit / server-switch deactivation paths
 //     and adds no authority.
 //
-// DEFERRED (D418):
+// DEFERRED:
 //   - selectActiveProfile (activate): NOW IMPLEMENTED below as the
 //     PIN/capability proof seam. The activating user's OWN fresh PIN is
 //     verified at the authoritative server-side Full Workstation activation
 //     boundary (`POST /api/workstation-access/activate-profile`), which also
-//     enforces the `use_workstation` capability gate (B3 — D418
-//     Commit 1: `control_desktop` is no longer required for activation) +
+//     enforces the `use_workstation` capability gate
+//     (`control_desktop` is not required for activation) and
 //     the authoritative relay binding. The desktop compiles the
 //     stored profile into live policy-pack / session authority ONLY after a
 //     200 server proof success, then re-advertises the relay's redacted
@@ -7221,7 +7222,7 @@ ipcMain.handle("workstationProfiles:deactivateActiveProfile", async (e) => {
   // No renderer-supplied subject / grantIds: the controller revokes the
   // session it owns. This is authority-reducing only; it adds no authority.
 
-  // B3 (D418 Commit 1) — best-effort server-side Full Workstation session
+  // Best-effort server-side Full Workstation session
   // teardown. POST to the authoritative `/api/workstation-access/disable`
   // route with the user's Logto bearer token. The server route is
   // authenticated + user-bound + idempotent + capability-independent (B3),
@@ -7274,7 +7275,7 @@ ipcMain.handle("workstationProfiles:deactivateActiveProfile", async (e) => {
   );
 });
 
-// ── D418 — Workstation Profile activation seam (selectActiveProfile) ────────
+// ── Workstation Profile activation seam (selectActiveProfile) ────────
 //
 // The narrow IPC that unblocks activation of an approved stored Workstation
 // Profile. The renderer supplies ONLY the selected stored profile's id +
@@ -7289,7 +7290,7 @@ ipcMain.handle("workstationProfiles:deactivateActiveProfile", async (e) => {
 //   3. POSTs { pin, profileId, profileRevision, relayId, desktopSessionId,
 //      instanceId } to the server `/api/workstation-access/activate-profile`
 //      route with the user's Logto bearer token. The server verifies the
-//      `use_workstation` capability gate (B3 — D418 Commit 1:
+//      `use_workstation` capability gate (
 //      `control_desktop` is no longer required for activation), the
 //      user's OWN fresh PIN proof, and the authoritative relay binding
 //      (userId / relayId / desktopSessionId / instanceId / serverBindingId /
@@ -7345,7 +7346,7 @@ type WorkstationProfileServerActivationResult =
     };
 
 /**
- * D418 — the main→server activation seam. POSTs the profile selectors +
+ * the main→server activation seam. POSTs the profile selectors +
  * relay binding evidence + the activating user's OWN PIN to the
  * authoritative server `/api/workstation-access/activate-profile` route
  * with the user's Logto bearer token, then parses + normalizes the
@@ -7481,7 +7482,7 @@ async function completeWorkstationProfileActivation(input: {
 }
 
 /**
- * B3 (D418 Commit 1) — best-effort server-side Full Workstation session
+ * Best-effort server-side Full Workstation session
  * disable. POSTs to the authoritative `/api/workstation-access/disable`
  * route with the user's Logto bearer token. The server route is
  * authenticated + user-bound + idempotent + capability-independent (B3): it
@@ -7817,7 +7818,7 @@ ipcMain.handle(
 );
 
 ipcMain.handle("app:getVersion", () => nautiloAppVersion());
-// D103 — updater IPC is intentionally argument-free. These handlers expose a
+// updater IPC is intentionally argument-free. These handlers expose a
 // renderer-safe status projection and a request to open the native flow; feed
 // selection, downloading, dialogs, and installation remain exclusively main.
 ipcMain.handle("updates:get-status", (e) => {
@@ -7849,7 +7850,7 @@ ipcMain.handle("workbench:reload", async (e) => {
 ipcMain.handle("relay:getStatus", () => getRelayStatus());
 
 /**
- * D423 4.1.3 — expose the persisted Electron relay identity to the Workbench
+ * Expose the persisted Electron relay identity to the Workbench
  * renderer. Reads the SAME tuple-scoped relay-id file `startRelay` persists (via
  * `resolvePersistedRelayId` in `./relay.ts`); NEVER generates a replacement —
  * the renderer must obtain the persisted id, not invent one. Returns
@@ -8433,7 +8434,7 @@ ipcMain.handle("foregroundShadow:history:reconcile", async (e, raw: unknown) => 
 });
 
 /**
- * D458 Wave 7 — controller pairing stays main-owned so the renderer receives
+ * controller pairing stays main-owned so the renderer receives
  * only server-authored ceremony data and safe controller projections. In
  * particular, it never receives an access bearer, relay token, or native
  * power-save blocker id.
@@ -8908,10 +8909,10 @@ ipcMain.handle(
   },
 );
 
-// D336 — adopt a Workbench-owned <webview>'s webContents (resolved from the
+// adopt a Workbench-owned <webview>'s webContents (resolved from the
 // renderer-provided id) so we can run the scoped CDP shim against the SaaS app
 // surface. The webview element itself handles layout/visibility in the DOM.
-// D336 — canvas-rendered apps (Google Docs, etc.) only expose their text in the
+// canvas-rendered apps (Google Docs, etc.) only expose their text in the
 // DOM/accessibility tree when Chromium is in SCREEN-READER mode. Forcing the
 // `screenReader` accessibility feature makes Docs emit its "annotated canvas"
 // text layer (the same path assistive tech / Grammarly rely on), so
@@ -8999,7 +9000,7 @@ function attachEmbeddedBrowserNavigationHandlers(
   registerEmbeddedBrowserDownloadHandler(guest);
 }
 
-// D368 Wave 2 — auto-save downloads from the embedded browser into the OS
+// auto-save downloads from the embedded browser into the OS
 // Downloads dir + toast, instead of Electron's default save dialog. Registered
 // on the guest's SESSION (partitions are per-app; multiple guests can share
 // one session), deduped per session so a re-adopt/guest-swap doesn't stack
@@ -9181,7 +9182,7 @@ ipcMain.handle("browserResearch:getActiveIntervention", (e) => {
   return browserResearchTargetManager?.getActiveIntervention() ?? null;
 });
 
-// D368 Wave 2 — user-initiated "open in external browser" for the current
+// user-initiated "open in external browser" for the current
 // embedded page. Reuses the same external-link router as protocol/window-open
 // handoff so logging + error handling stay consistent. Only http(s)/about/…
 // pass the guard; anything else is a no-op.
@@ -9200,7 +9201,7 @@ ipcMain.handle("browserControl:openExternal", (e, args: { url: string }) => {
 });
 
 // ---------------------------------------------------------------------------
-// D403 (ISSUE-D403) Phase 0 — embedded-browser password save & restore IPC.
+// embedded-browser password save & restore IPC.
 //
 // SECURITY (R6, non-negotiable): web credentials are HUMAN-ONLY. The
 // passwords:* channels exist only for the human operating the embedded browser
@@ -9212,7 +9213,7 @@ ipcMain.handle("browserControl:openExternal", (e, args: { url: string }) => {
 // ---------------------------------------------------------------------------
 
 /**
- * D403 P0 — human-only sender gate for the `passwords:*` channels. Allowed
+ * human-only sender gate for the `passwords:*` channels. Allowed
  * senders: the mainWindow renderer (host save/autofill UX) and embedded-browser
  * `<webview>` guests (guest preload). Everything else is rejected — other
  * windows (first-run/onboarding/auth) and any agent/tool/CDP surface (which has
@@ -9267,7 +9268,7 @@ registerPasswordsIpc({
   },
 });
 
-// D403 P0 — surface the built guest-preload path (a file:// URL) to the
+// surface the built guest-preload path (a file:// URL) to the
 // mainWindow renderer so the SaaS surface can set it as the <webview preload>
 // attribute. Sync (mirrors `coldBoot:peekShellState`) because the renderer
 // needs it at <webview> render time. Not a secret (just a local path), but
@@ -9282,7 +9283,7 @@ ipcMain.on("passwords:getGuestPreloadPath", (e) => {
     : null;
 });
 
-// D057 2a.7 — legacy: pick + persist in one shot. Retained for callers
+// legacy: pick + persist in one shot. Retained for callers
 // that don't need the pick/confirm separation (none today, but kept for
 // backward compat with preload consumers).
 ipcMain.handle("dialog:openFolder", async (e) => {
@@ -9298,19 +9299,19 @@ ipcMain.handle("dialog:pickFiles", (e) => {
 });
 
 /**
- * D079 Phase 1 — IPC handler implementations under the new
+ * IPC handler implementations under the new
  * `currentFolder:*` namespace. Deprecation aliases at
  * `workspace:*` live below and delegate to these so any renderer /
  * MCP / skill that hasn't migrated yet keeps working for one release.
  */
 
-// D057 2a.7 — pick without persisting.
+// pick without persisting.
 ipcMain.handle("currentFolder:pickFolder", (e) => {
   assertMainWindowSender(e);
   return pickFolder();
 });
 
-// D057 2a.7 — persist a chosen path.
+// persist a chosen path.
 //
 // Shape-only validation (see `workspace-validation.ts` for the full
 // rationale): rejects empty/relative/NUL-containing/non-existent/
@@ -9327,7 +9328,7 @@ ipcMain.handle("currentFolder:setPath", (e, args: { path: string }) => {
   const result = validateWorkspacePath(args, WORKSPACE_VALIDATOR_DEPS);
   if (!result.ok) throw new Error(result.error);
 
-  // D075 — sanity-gate against system roots + home + known-bad paths.
+  // sanity-gate against system roots + home + known-bad paths.
   // Runs AFTER validateWorkspacePath so the path is already
   // canonicalized by path.resolve (no `..` / `.` segments confuse the
   // comparison).
@@ -9344,7 +9345,7 @@ ipcMain.handle("currentFolder:getPath", (e) => {
   return currentFolderPath;
 });
 
-// D448 Phase 5 — this privileged producer binds the selected folder to the
+// this privileged producer binds the selected folder to the
 // persisted Electron relay identity. The server re-authenticates the pairing
 // before it can affect execution routing.
 ipcMain.handle("currentFolder:getContext", (e) => {
@@ -9355,7 +9356,7 @@ ipcMain.handle("currentFolder:getContext", (e) => {
   };
 });
 
-// D075 — pre-commit validator. Used by edge paths (hand-typed paths,
+// pre-commit validator. Used by edge paths (hand-typed paths,
 // future tooling) before commit. The CurrentFolderHeader dropdown's
 // Recent entries call setPath directly since they were validated at
 // original commit.
@@ -9374,7 +9375,7 @@ ipcMain.handle(
   },
 );
 
-// D075 chunk 2 — pick + validate + commit in one round-trip. Used by
+// pick + validate + commit in one round-trip. Used by
 // the CurrentFolderHeader dropdown's "Open folder…", the tray menu's
 // Open Folder, and any future single-click commit path. Returns the
 // committed path, null if the user cancelled, or throws if the user
@@ -9397,7 +9398,7 @@ ipcMain.handle("currentFolder:pickAndCommit", async (e) => {
   return validated.resolved;
 });
 
-// D075 chunk 2 — recent current folders surfaced to the renderer for
+// recent current folders surfaced to the renderer for
 // the CurrentFolderHeader dropdown's RECENT section. Same list drives
 // the native File → Recent Folders ▸ submenu.
 ipcMain.handle("currentFolder:listRecent", (e) => {
@@ -9406,7 +9407,7 @@ ipcMain.handle("currentFolder:listRecent", (e) => {
 });
 
 /**
- * D079 Phase 3 — `genieWorkspace:*` IPC family for Surface A (Genie's
+ * `genieWorkspace:*` IPC family for Surface A (Genie's
  * persistent drawer at `~/Documents/Nautilo/` by default). This commit
  * ships the read-only members (`getRoot`, `rootChanged` push) plus
  * the always-set default. `setRoot`, `pickAndSetRoot`, `revealInFinder`,
@@ -9415,7 +9416,7 @@ ipcMain.handle("currentFolder:listRecent", (e) => {
  *
  * Why a new `genieWorkspace:*` namespace instead of reusing
  * `workspace:*`: the old `workspace:*` family got renamed to
- * `currentFolder:*` by D079 Phase 1 and is retained as a deprecation
+ * `currentFolder:*` and is retained as a deprecation
  * alias (see below). Keeping Surface A's IPC in its own namespace
  * means the two surfaces are NEVER confusable at the wire level —
  * channel name is the discriminator.
@@ -9426,14 +9427,14 @@ ipcMain.handle("genieWorkspace:getRoot", (e) => {
 });
 
 /**
- * D079 Phase 1 — deprecation aliases for the old `workspace:*` IPC
+ * deprecation aliases for the old `workspace:*` IPC
  * channels. Each logs a one-shot warning the first time it's called in
  * a session, then delegates to the renamed handler. Removed in the
  * release after Phase 4 ships.
  *
  * NOTE: `workspace:useDefault` is intentionally NOT aliased. It used
  * to create `~/Documents/Nautilo` as the current folder's default; in
- * the D079 model, current folder has no default. The equivalent for
+ * the model, current folder has no default. The equivalent for
  * Genie's Workspace (Surface A) gets its own IPC in Phase 3.
  */
 const deprecatedIpcWarned = new Set<string>();
@@ -9441,7 +9442,7 @@ function warnDeprecatedIpc(channel: string): void {
   if (deprecatedIpcWarned.has(channel)) return;
   deprecatedIpcWarned.add(channel);
   log.warn(
-    `[desktop][deprecated-ipc] ${channel} is renamed per D079 Phase 1; update callers to use the currentFolder:* equivalent.`,
+    `[desktop][deprecated-ipc] ${channel} is renamed; update callers to use the currentFolder:* equivalent.`,
   );
 }
 
@@ -9494,7 +9495,7 @@ ipcMain.handle("workspace:listRecent", (e) => {
   return listRecentCurrentFolders();
 });
 
-// D373 / Stack 137 — PTY session host (terminal work surface). Reuses the
+// PTY session host (terminal work surface). Reuses the
 // main-window sender guard; pushes output on the main window's webContents.
 registerTerminalHost({
   ipcMain,
@@ -9645,7 +9646,7 @@ ipcMain.handle(
   },
 );
 
-// D385/D378 — the renderer never submits a source path. It supplies the path
+// The renderer never submits a source path. It supplies the path
 // of the document it already has open plus a project-relative ref; main
 // canonicalizes both under the active Current Folder before the executor sees
 // an opaque source token. The resulting URL is a revocable capability, not a
@@ -9775,7 +9776,7 @@ ipcMain.handle("mediaProxy:cancel", (e, args: unknown) => {
   return { ok: true as const, data: null };
 });
 
-// D378 — dedicated Current Folder sequence export. The renderer supplies only
+// dedicated Current Folder sequence export. The renderer supplies only
 // its already-bound document path and last saved SHA; this host rereads and
 // lowers that exact file before resolving any project-relative media source.
 ipcMain.handle("mediaExport:start", async (e, args: unknown) => {
@@ -10131,7 +10132,7 @@ registerFsStructuralIpcHandlers({
 });
 
 /**
- * D448 Phase 10 — local-file human-edit presence stays in the Desktop process.
+ * local-file human-edit presence stays in the Desktop process.
  * The renderer provides only candidate transport data; the runtime derives the
  * active human/relay, canonical identity, and exact bytes under the existing
  * allowed-root guard before touching its local lease registry.
@@ -10345,7 +10346,7 @@ ipcMain.on("document:mutationAck", (event, raw: unknown) => {
   }
 });
 
-// D357 Phase 3 — jailed fs.mkdir. Mirrors fs:writeFile's guard order:
+// jailed fs.mkdir. Mirrors fs:writeFile's guard order:
 // sender check first, then path jail. recursive:false matches writeFile's
 // no-implicit-parent-mkdir stance — callers must create parents explicitly.
 ipcMain.handle(
@@ -10375,7 +10376,7 @@ ipcMain.handle(
   },
 );
 
-// M055 — Logto auth IPC. The renderer's `useAuth()` Electron branch
+// Logto auth IPC. The renderer's `useAuth()` Electron branch
 // is the only consumer today; the native menu calls handleSignIn /
 // handleSignOut directly (so the menu doesn't go through IPC just
 // to reach the same main-process state).
@@ -10404,7 +10405,7 @@ ipcMain.handle("auth:getAccessToken", async (e) => {
   // null and let them retry normally when their session becomes active.
   if (senderSession !== serverSessions.active) return null;
   if (!senderSession.logtoConfig) return null;
-  // M056 — single source of truth for "give me a fresh access token"
+  // single source of truth for "give me a fresh access token"
   // shared with the relay-pair flow's `ensureRelayToken`. Refresh
   // failure runs `onLogtoRefreshFailed` (menu + all-window broadcast +
   // optional native notification). Token load/save is scoped to the
@@ -10496,7 +10497,7 @@ ipcMain.handle("auth:openResetUrl", (e, raw: unknown) => {
 });
 
 /**
- * D103 P4d.9 — Re-probe `/health` on demand so `logtoConfig` recovers
+ * Re-probe `/health` on demand so `logtoConfig` recovers
  * from a boot-time probe failure without a full app restart.
  *
  * The renderer's connection-state machine fires this after a
@@ -10517,7 +10518,7 @@ ipcMain.handle("auth:reprobe-server", async (e) => {
   return { ok: true, hasLogto: session.logtoConfig !== null } as const;
 });
 
-// D154 — cold-boot bootstrap + picker IPC (connect-mode shell only).
+// cold-boot bootstrap + picker IPC (connect-mode shell only).
 function activeLocalColdBootShell(e?: Electron.IpcMainInvokeEvent): Electron.WebContents | null {
   const renderer = activeRenderer();
   if (!renderer || (e && renderer.id !== e.sender.id)) return null;
@@ -10625,7 +10626,7 @@ ipcMain.handle("coldBoot:retry", async (e) => {
     return;
   }
   if (!connectBootstrapEntryHref || !mainWindow || mainWindow.isDestroyed()) {
-    log.warn("[desktop][d154] coldBoot:retry — no bootstrap entry or window");
+    log.warn("[desktop] coldBoot:retry — no bootstrap entry or window");
     return;
   }
   const bootstrapEntryHref = connectBootstrapEntryHref;
@@ -10764,7 +10765,7 @@ ipcMain.handle("coldBoot:useThisServerAnyway", async (e) => {
       acceptedIdentityColdBootTerminal = null;
     }
   } catch (err) {
-    log.warn("[desktop][d154] coldBoot:useThisServerAnyway failed:", err);
+    log.warn("[desktop] coldBoot:useThisServerAnyway failed:", err);
   }
 });
 
@@ -10815,7 +10816,7 @@ ipcMain.handle("servers:open-picker", async (e) => {
 });
 
 /**
- * M161 Phase 3 — subscribe the caller's renderer to `servers:changed`
+ * subscribe the caller's renderer to `servers:changed`
  * pushes. The renderer registers one listener per `onChanged` call; we
  * dedupe by `webContents.id` so multiple subscribers in the same
  * renderer share one sender. The registry's `onChange` listener (wired
@@ -10859,7 +10860,7 @@ ipcMain.on("desktop:subscribe-active-session-state", (e) => {
 });
 
 // ---------------------------------------------------------------------------
-// M239 — macOS important-message notifications and Dock attention
+// macOS important-message notifications and Dock attention
 // ---------------------------------------------------------------------------
 
 let macosAppActive = true;
@@ -11077,7 +11078,7 @@ serverSessions.onChange(() => {
 });
 
 /**
- * M161 Phase 3 — `servers:list`. Merges recent + live sessions, enriches
+ * `servers:list`. Merges recent + live sessions, enriches
  * each from public `/api/setup/status` + icon URL, and marks
  * active/signedIn/connection. Per-entry probes are wrapped so one offline
  * server never kills the list (or the current session). This read-only,
@@ -11656,7 +11657,7 @@ function prepareProductionActivePrecommitColdBootTerminal(): ActivePrecommitCold
 }
 
 /**
- * M161 Phase 3 — `servers:switchTo(url)`. Real in-process switch: lazily
+ * `servers:switchTo(url)`. Real in-process switch: lazily
  * create/load the target view, preserve the old view alive+hidden,
  * navigate the target to `/`, resolve Logto, restore/silently refresh
  * tokens (re-auth only when absent/unrefreshable), then stop-before-start
@@ -11706,7 +11707,7 @@ ipcMain.handle("servers:accept-identity", async (e, decisionId: unknown) => {
 });
 
 /**
- * M161 Phase 3 — `servers:add()`, surfaced by Phase 4 as the persistent
+ * `servers:add()`, surfaced as the persistent
  * footer action “Connect to server…”. Opens the existing picker in
  * `add-server` mode (no relaunch). The current server stays active on
  * cancel/failure. On a successful commit, the picked URL is ensured as
@@ -11738,9 +11739,9 @@ ipcMain.handle("servers:add", async (e, rawTheme: unknown) => {
 });
 
 /**
- * M161 Phase 3 — `servers:close(url)`. Destroys the target session's view
+ * `servers:close(url)`. Destroys the target session's view
  * and drops the session (falls back to a remaining session as active).
- * Does NOT remove the recent-servers entry or token files (D133, not M161).
+ * Does NOT remove the recent-servers entry or token files.
  */
 ipcMain.handle("servers:close", async (e, rawUrl: unknown) => {
   assertMainWindowSender(e);
@@ -11752,8 +11753,8 @@ ipcMain.handle("servers:close", async (e, rawUrl: unknown) => {
 });
 
 /**
- * M161 Phase 6.5 — irreversibly remove one trusted server and every stored
- * alias of that server. This is deliberately separate from D133 Disconnect /
+ * irreversibly remove one trusted server and every stored
+ * alias of that server. This is deliberately separate from Disconnect /
  * Sign-out: Forget wipes server-scoped auth, relay credentials, browser
  * partition data, and recents, but never the installation identity.
  */
@@ -11817,7 +11818,7 @@ ipcMain.handle("fs:openPath", async (e, args: { path: string }) => {
   if (err) throw new Error(err);
 });
 
-// D057 2a.5 — media permission IPC.
+// media permission IPC.
 ipcMain.handle("media:getMicStatus", (e): MicStatus => {
   assertMainWindowSender(e);
   return getMicrophoneStatus();
@@ -11831,7 +11832,7 @@ ipcMain.handle("shell:openSystemMicSettings", async (e): Promise<void> => {
   await openSystemMicSettings();
 });
 
-// D516 — Desktop-wide permission registry. The renderer receives status data
+// Desktop-wide permission registry. The renderer receives status data
 // and a fixed identifier only; main selects every native recovery action.
 ipcMain.handle("systemPermissions:status", (e): SystemPermissionsSnapshot => {
   assertMainWindowSender(e);
@@ -11965,7 +11966,7 @@ function updateTrayMenu(): void {
       { type: "separator" },
       {
         label: "Open Folder...",
-        // D075 chunk 2 — direct pick + validate + commit. The modal
+        // direct pick + validate + commit. The modal
         // preview/confirm step from 2a.7 is gone; the native folder
         // picker IS the preview, and the validation throws (with a
         // descriptive reason) if the user picked a system root /
@@ -12087,12 +12088,12 @@ function createWindow(
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      // D519 — make the Composer's platform-owned spellchecking contract
+      // make the Composer's platform-owned spellchecking contract
       // explicit rather than depending on Electron's runtime default.
       spellcheck: true,
       preload: path.join(__dirname, "preload.js"),
       partition: activeSession.partition,
-      // D336 — SaaS app surfaces embed cross-origin web content as a real DOM
+      // SaaS app surfaces embed cross-origin web content as a real DOM
       // element via <webview>, which (unlike WebContentsView) is laid out and
       // clipped by the compositor so it can never float outside its panel.
       // Electron defaults this to false; we opt in and keep webviews contained
@@ -12193,7 +12194,7 @@ function createWindow(
       log.warn(`[browser-research] ${message}`, error),
   });
 
-  // D514 — the local bootstrap starts default-deny. A verified origin is
+  // the local bootstrap starts default-deny. A verified origin is
   // installed atomically only after the main-owned health/identity gates.
   mainNavigationGuard = attachNavigationGuards(view.webContents, {
     allowedOrigins: [],
@@ -12263,11 +12264,11 @@ function createWindow(
 }
 
 // ---------------------------------------------------------------------------
-// M161 Phase 3 — in-process server switch view + relay orchestration
+// in-process server switch view + relay orchestration
 // ---------------------------------------------------------------------------
 
 /**
- * M161 Phase 3 — create a `WebContentsView` for a server session on the
+ * create a `WebContentsView` for a server session on the
  * shared `BaseWindow` host. Mirrors `createWindow`'s view construction:
  * canonical hashed `partition`, same `preload.js` + nav guards + security
  * settings, sender binding via `registry.attachSender`. Does NOT load a
@@ -12286,12 +12287,12 @@ function constructServerSessionView(
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      // D519 — switched server views must retain the same explicit
+      // switched server views must retain the same explicit
       // spellchecker behavior as the initial Workbench view.
       spellcheck: true,
       preload: path.join(__dirname, "preload.js"),
       partition: serverSession.partition,
-      // D336 — SaaS app surfaces embed cross-origin web content via
+      // SaaS app surfaces embed cross-origin web content via
       // <webview>; keep webviews contained behind BrowserControlManager.
       webviewTag: true,
     },
@@ -12341,7 +12342,7 @@ function createServerSessionView(session: ServerSession): WebContentsView {
   return constructServerSessionView(session, true, true);
 }
 
-/** D514 candidates remain detached and invisible until the visibility checkpoint. */
+/** candidates remain detached and invisible until the visibility checkpoint. */
 function createCandidateServerSessionView(session: ServerSession): WebContentsView {
   return constructServerSessionView(session, false, false);
 }
@@ -12498,7 +12499,7 @@ function destroyServerSessionView(view: WebContentsView): void {
 }
 
 /**
- * M161 Phase 3 — fetch a server's public `/api/setup/status` summary for
+ * fetch a server's public `/api/setup/status` summary for
  * `listEnriched`. Network/non-OK is `offline`; reachable JSON missing
  * the alpha/current required profile name or canonical icon is
  * `incompatible`; a valid projection is `live`.
@@ -12549,7 +12550,7 @@ async function activateFallbackWithConnectionFlow(serverUrl: string): Promise<Se
 }
 
 /**
- * M161 Phase 3 — wire the registry's switch/add/close/list hooks to the
+ * wire the registry's switch/add/close/list hooks to the
  * real Electron + relay + token-store + network surfaces. Called once
  * from boot() after the host `BaseWindow` exists (so `createView` can
  * attach child views). Idempotent — safe to call again on a re-boot.
@@ -12602,7 +12603,7 @@ function onRelayStatusChange(status: RelayStatus): void {
   sendToActiveRenderer("relay:status", status);
   void publishReadyToWorkOwnerObservation().catch(() => undefined);
   updateTrayMenu();
-  // M161 Phase 3 — reflect the active session's relay connection state
+  // reflect the active session's relay connection state
   // onto its `connection` field and fire `onChanged` so `servers:list`
   // subscribers (the Phase 4 panel) re-fetch. The relay is active-only,
   // so this maps the active session's relay status to its connection.
@@ -12616,7 +12617,7 @@ function onRelayStatusChange(status: RelayStatus): void {
           : "offline";
     serverSessions.updateSession(active.serverUrl, { connection });
   }
-  // D418 reconnect/session split-brain fix — on a RECONNECT (a transition
+  // reconnect/session split-brain fix — on a RECONNECT (a transition
   // to "connected" AFTER the relay has already completed a prior connected
   // cycle), authoritatively re-push the current capability state so the
   // server relay registry's profile binding snapshot is reconciled even if
@@ -12650,7 +12651,7 @@ function onRelayStatusChange(status: RelayStatus): void {
 // ---------------------------------------------------------------------------
 // Local CA trust (OSS HTTPS mode)
 //
-// D103 P4.6 — production posture: when a local CA cert exists at
+// production posture: when a local CA cert exists at
 // ~/.nautilo${suffix}/certs/ca.crt, trust it for localhost / 127.0.0.1 / *.local
 // URLs ONLY when the presented certificate chain anchors back to that
 // pinned CA's public key. This is the chain-check we previously omitted.
@@ -12680,7 +12681,7 @@ function onRelayStatusChange(status: RelayStatus): void {
 //
 // LangGraph tool dispatch matches relays with `state.userId`, which is
 // the install owner's `users.id` UUID (see `langgraph-executor.ts`).
-// D102 removed `userId` from GET /api/profile — never leak it through the
+// removed `userId` from GET /api/profile — never leak it through the
 // agent envelope. Bootstrap order:
 //   1. NAUTILO_USER_ID env (escape hatch)
 //   2. GET /api/profile/status → `relayUserId` when the request hits the
@@ -12908,7 +12909,7 @@ async function resolveRelayUserId(serverUrl: string): Promise<string | null> {
 }
 
 /**
- * D103 P4.6 — chain-verify a presented Electron Certificate against the
+ * chain-verify a presented Electron Certificate against the
  * pinned local CA. Walks the `issuerCert` chain (Electron supplies the
  * server-presented chain) and returns true iff some node in the chain
  * is signed by the pinned CA's public key.
@@ -12926,7 +12927,7 @@ function chainAnchorsTo(
   // SPKI / PKCS1 public-key PEM); the canonical extraction is via
   // `new X509Certificate(certPem).publicKey`. An earlier revision used
   // `createPublicKey()` directly and silently failed every chain check —
-  // see commit log for D103 P4.6 follow-up.
+  // Certificate verification stays on the production trust path.
   let caKey: import("node:crypto").KeyObject;
   try {
     caKey = new X509Certificate(caCertificatePem).publicKey;
@@ -13088,7 +13089,7 @@ function setupLocalCATrust(): void {
 }
 
 // ---------------------------------------------------------------------------
-// First-run picker (D057 2a.2)
+// First-run picker
 //
 // Shows a dedicated BrowserWindow loading first-run/index.html so the
 // the user can connect to one server before the main workbench comes up.
@@ -13178,7 +13179,7 @@ function showFirstRunPicker(
     });
     activeServerPickerWindow = win;
 
-    // D376 — smoke-hidden mode: the boot smoke (smoke-packaged.ts) sets
+    // smoke-hidden mode: the boot smoke (smoke-packaged.ts) sets
     // NAUTILO_SMOKE_HIDDEN=1 so local harness runs don't pop a visible
     // Setup window on the operator's desktop. Content still loads and
     // CDP can still enumerate the preload surface on a hidden window;
@@ -13325,7 +13326,7 @@ function showFirstRunPicker(
         cleanup();
         win.close();
         if (pickerMode === "switch-server" || pickerMode === "add-server") {
-          // M161 Phase 3 — switch/add cancel keeps the current server
+          // switch/add cancel keeps the current server
           // active; resolve null so the IPC handler can no-op.
           resolve(null);
         } else {
@@ -13395,7 +13396,7 @@ function initialPrecommitPickerSuggestion(): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Onboarding wizard (D091)
+// Onboarding wizard
 //
 // "The Genie Moment" — fullscreen BrowserWindow that walks a new
 // owner through language / keys / privacy / work-life / owner details
@@ -13404,7 +13405,7 @@ function initialPrecommitPickerSuggestion(): string | null {
 // Settings lands in Phase 3.
 //
 // Phase 1 (this commit): scaffold + OrbCanvas port + boot wiring +
-// placeholder screen + D092 routing-hook stub. Phase 2 fills in the
+// placeholder screen + routing-hook stub. Phase 2 fills in the
 // 13 real screens + full API-proxy IPC surface. Phase 3 deletes the
 // legacy Fastify-served `/setup/` static page.
 //
@@ -13414,7 +13415,7 @@ function initialPrecommitPickerSuggestion(): string | null {
 // ---------------------------------------------------------------------------
 
 /**
- * D092 routing hook — D112 maps from cached `GET /api/setup/status`
+ * Routing maps from cached `GET /api/setup/status`
  * (see `loadBootSetupStatus` in `boot()`). `ServerClaimState` is
  * imported from `./boot-setup-status` (single source of truth — a
  * previous local re-declaration here drifted as a shadow type and
@@ -13428,7 +13429,7 @@ function probeServerState(_serverUrl: string): ServerClaimState {
  * Check whether the wizard should run for the current profile. Boot
  * calls this AFTER the server is reachable + BEFORE createWindow.
  *
- * D112 — `bootSetupStatus` (`GET /api/setup/status`, usually guest) can
+ * `bootSetupStatus` (`GET /api/setup/status`, usually guest) can
  * skip the wizard for `fresh-unclaimed` / `server-needs-keys`, or force it
  * when `viewer.genieCustomized === false`. Otherwise falls back to
  * `/api/profile/status`.
@@ -13551,7 +13552,7 @@ function parseSseEvents(
   return events;
 }
 
-/** Build query string for `GET /api/voices/catalog` (D215). */
+/** Build query string for `GET /api/voices/catalog`. */
 function buildCatalogQueryString(query: unknown): string {
   if (query === undefined || query === null) return "";
   if (typeof query !== "object") return "";
@@ -13595,7 +13596,7 @@ function buildCatalogQueryString(query: unknown): string {
  * + network errors into IpcResult, and (when bearerToken is set)
  * set the Authorization: Bearer header.
  *
- * D091 wires this for every API-proxy handler in
+ * Used by every API-proxy handler in
  * showOnboardingWizard. The bearer is always the user's Logto
  * access token (see `getWizardBearer` at call sites).
  */
@@ -13611,7 +13612,7 @@ async function proxyFetch<T>(
       ...((init.headers as Record<string, string> | undefined) ?? {}),
     };
     if (bearerToken) headers["authorization"] = `Bearer ${bearerToken}`;
-    // D091 live-verify diagnostic — keep observable so re-trigger
+    // live-verify diagnostic — keep observable so re-trigger
     // auth regressions surface in electron.log. Token is logged
     // as prefix only.
     console.log(
@@ -14076,7 +14077,7 @@ function showOnboardingWizard(
         );
         const entry = created.entries[0];
         if (!entry) return ipcErr("Nautilo returned no generated Agent photo");
-        // D487 media is authenticated. Never hand the renderer a protected
+        // media is authenticated. Never hand the renderer a protected
         // URL that an <img> request would fetch without the bearer.
         const media = await client.getAgentPhotoLibraryMedia(entry.id, "full");
         const mediaBytes = Buffer.from(await media.blob.arrayBuffer());
@@ -14216,7 +14217,7 @@ function showOnboardingWizard(
 }
 
 // ---------------------------------------------------------------------------
-// Logging + crash reporting (D057 2a.6)
+// Logging + crash reporting
 //
 // Writes main-process logs to the platform-standard Electron location via
 // electron-log:
@@ -14232,7 +14233,7 @@ function showOnboardingWizard(
 // ---------------------------------------------------------------------------
 
 function setupLogging(): void {
-  // D514 acceptance runs use a private tuple-scoped userData/log tree. Bind
+  // acceptance runs use a private tuple-scoped userData/log tree. Bind
   // electron-log before initialization so source/package smoke evidence never
   // reads from or appends to the installed app's shared macOS log.
   if (process.env["NAUTILO_SMOKE_HIDDEN"] === "1") {
@@ -14348,7 +14349,7 @@ function queueInitialDeepLinksOnce(): void {
 function finishReleasedDesktopBoot(serverUrl: string): Promise<void> {
   if (releasedDesktopBootFinalizer) return releasedDesktopBootFinalizer;
   const finalizer = (async () => {
-    // M161 Phase 3 — wire the registry's switch/add/close/list hooks to the
+    // wire the registry's switch/add/close/list hooks to the
     // real Electron + relay + token-store + network surfaces, and bridge registry
     // `onChange` to every subscribed renderer. Done AFTER createWindow so
     // `createView` can attach child views to the host `BaseWindow`. The bridge is
@@ -14403,7 +14404,7 @@ function finishReleasedDesktopBoot(serverUrl: string): Promise<void> {
       ?.recoverAtStartup()
       .catch((error) => {
         console.warn(
-          "[desktop] D448 startup editor mutation recovery deferred:",
+          "[desktop] startup editor mutation recovery deferred:",
           error,
         );
       });
@@ -14436,7 +14437,7 @@ async function boot(): Promise<void> {
   // owned by macOS/the Human; this readiness check never mutates the grant.
   void startComputerUseReadiness();
 
-  // D079 Phase 1 — migrate on-disk persistence if legacy files exist.
+  // migrate on-disk persistence if legacy files exist.
   // Runs before any loadCurrentFolderPath / recent-folder read so the
   // migration completes transparently.
   migrateLegacyCurrentFolderFile();
@@ -14469,14 +14470,14 @@ async function boot(): Promise<void> {
   // the Working Folder invariant is established.
   void getDesktopDocumentMutationRuntime();
 
-  // D079 Phase 3 — Genie's Workspace (Surface A) is always set once
+  // Genie's Workspace (Surface A) is always set once
   // this runs. First boot creates `~/Documents/Nautilo/` with starter
   // subdirs; subsequent boots honor any user-changed root. Must run
   // BEFORE the renderer mounts so `workspace:getRoot` returns a
   // meaningful value on first query.
   genieWorkspaceRoot = ensureDefaultGenieWorkspace();
 
-  // D075 chunk 2 — prune recent-current-folders entries whose folders
+  // prune recent-current-folders entries whose folders
   // no longer exist. Cheap (sync stats on ≤5 entries) and keeps the
   // dropdown / native menu honest on every boot.
   pruneMissingRecentCurrentFolders();
@@ -14489,7 +14490,7 @@ async function boot(): Promise<void> {
   let workbenchUrl: string;
 
   if (!app.isPackaged && !forceFirstRun && !preferPersistedConnection) {
-    // M167 — dev-from-source: connect to the LOCAL server (single-origin),
+    // dev-from-source: connect to the LOCAL server (single-origin),
     // or to an explicit override passed by dev-stack. No Vite dev server.
     sourceDevelopmentAuthority = null;
     serverUrl = explicitServerUrl ?? resolveDevServerUrl();
@@ -14507,14 +14508,14 @@ async function boot(): Promise<void> {
     // Packaged build, or NAUTILO_FORCE_FIRST_RUN=1: use persisted config
     // or run the picker. This is the "normal user" path.
     //
-    // D134 — desktop is a connect-to-server client. The only valid
+    // desktop is a connect-to-server client. The only valid
     // packaged-mode runtime is `connect`. Stale configs that still
     // record `mode: "local"` (from the deprecated bundled-server
     // path) are treated as "no config" so the user is re-prompted.
     let cfg: DesktopConfig | null = forceFirstRun ? null : loadConfig();
     if (cfg && cfg.mode !== "connect") {
       console.warn(
-        `[desktop] Discarding stale config (mode="${String((cfg as { mode: string }).mode)}"); D134 retired non-connect packaged modes — re-running picker`,
+        `[desktop] Discarding stale config (mode="${String((cfg as { mode: string }).mode)}"); retired non-connect packaged modes — re-running picker`,
       );
       cfg = null;
     }
@@ -14563,18 +14564,18 @@ async function boot(): Promise<void> {
       workbenchUrl = configuredServerUrl;
       console.log(`[desktop] Connect mode — ${workbenchUrl}`);
     } else {
-      // D134 — `local` is retired (bundled-server detour); `cloud` is
+      // `local` is retired (bundled-server detour); `cloud` is
       // a future hosted-trust mode not yet wired. Both should have
       // been filtered out above; reach this only on a logic bug.
       console.error(
-        `[desktop] Unsupported mode "${String((cfg as { mode: string }).mode)}" — D134 desktop client supports only mode="connect"`,
+        `[desktop] Unsupported mode "${String((cfg as { mode: string }).mode)}" — desktop client supports only mode="connect"`,
       );
       app.quit();
       return;
     }
   }
 
-  // M161 Phase 1 — route the existing single-server boot through one
+  // route the existing single-server boot through one
   // registry session before auth state or renderer construction.
   const bootSession = serverSessions.ensure(serverUrl);
   serverUrl = bootSession.serverUrl;
@@ -14585,7 +14586,7 @@ async function boot(): Promise<void> {
   // Persist the configured boot target so it remains available until Forget.
   pushRecentServer({ url: serverUrl });
 
-  // M161 Phase 3.2 — one-time boot migration: fold the legacy
+  // one-time boot migration: fold the legacy
   // `paired-server-identity.json` fingerprint onto the recent-server
   // entry matching the active server URL (only if that entry has no
   // fingerprint yet), then unlink the legacy file. Idempotent +
@@ -14605,7 +14606,7 @@ async function boot(): Promise<void> {
     },
   });
 
-  // D514 — paint the local, default-deny bootstrap before any setup, health,
+  // paint the local, default-deny bootstrap before any setup, health,
   // profile, onboarding, or relay network work. The renderer remains local
   // until the continuation releases an exact verified Workbench origin.
   coldBootBootstrapReady = false;
@@ -14658,7 +14659,7 @@ async function boot(): Promise<void> {
     ? (() => {
         // Connect already proved readiness, health, identity, setup, auth, and
         // candidate navigation. Paint the ordinary local shell, then reuse the
-        // exact facts; a second launch probe is the bounce bug D514 removes.
+        // exact facts; a second launch probe would reintroduce the bounce bug.
         initiateLocalShell();
         coldBootLifecycle = "resuming";
         bootSetupStatus = launchConnectionCohort.verified.setup.raw as SetupStatusResponse;
@@ -14691,7 +14692,7 @@ async function boot(): Promise<void> {
     bootSetupStatus = launchConnectionCohort.verified.setup.raw as SetupStatusResponse;
   }
 
-  // <D154-connect-bootstrap-preflight>
+  // <connect-bootstrap-preflight>
   if (!launchConnectionCohort) await loadBootSetupStatus(serverUrl);
   if (initialColdBootObservation.kind === "live") {
     const hadLogtoBeforeResolution = logtoConfig() !== null;
@@ -14715,9 +14716,9 @@ async function boot(): Promise<void> {
       stateChanged: hadLogtoBeforeResolution !== (logtoConfig() !== null),
     });
   }
-  // </D154-connect-bootstrap-preflight>
+  // </connect-bootstrap-preflight>
 
-  // M055 — silent refresh on boot if tokens are persisted but the
+  // silent refresh on boot if tokens are persisted but the
   // access token is close to expiry. Avoids an unnecessary AuthGate
   // auto-redirect on relaunch when the user comes back after >55min.
   if (logtoConfig()) {
@@ -14735,9 +14736,9 @@ async function boot(): Promise<void> {
     }
   }
 
-  // D091 — server-state probe + onboarding gate.
+  // server-state probe + onboarding gate.
   //
-  // D112 — `probeServerState` reads cached `GET /api/setup/status`.
+  // `probeServerState` reads cached `GET /api/setup/status`.
   // shouldShowOnboarding uses the same cache plus /api/profile/status.
   //
   // Cancel paths:
@@ -14747,7 +14748,7 @@ async function boot(): Promise<void> {
   //     false → we skip the wizard. The workbench surfaces the
   //     connectivity issue via its own error path.
   const serverState = probeServerState(serverUrl);
-  // D103 P4c — exhaustive switch on all 4 ServerClaimState values.
+  // exhaustive switch on all 4 ServerClaimState values.
   // Adding a new state to the union fails compilation at `_exhaustive`
   // until this branch is updated.
   switch (serverState) {
@@ -14756,7 +14757,7 @@ async function boot(): Promise<void> {
       break;
     case "unclaimed":
     case "invite-pending":
-      console.log(`[desktop] D092 state "${serverState}" — no-op stub`);
+      console.log(`[desktop] state "${serverState}" — no-op stub`);
       break;
     default: {
       const _exhaustive: never = serverState;
@@ -14814,7 +14815,7 @@ async function boot(): Promise<void> {
   await loadActiveRenderer(bootstrapEntryHref);
 }
 
-// D103 P3.7 — About-this-app dialog metadata. macOS reads
+// About-this-app dialog metadata. macOS reads
 // `setAboutPanelOptions` for the system About menu item; Linux uses
 // the same call. Windows ignores it (Windows uses Info.plist-equivalent
 // resource fields via electron-builder.yml). Wired before `boot()` so
@@ -14895,13 +14896,13 @@ app.on("before-quit", (event) => {
     try {
       await mediaProxyTeardown;
     } catch (err) {
-      log.warn(`[desktop][d385] failed to dispose media proxies during quit: ${String(err)}`);
+      log.warn(`[desktop] failed to dispose media proxies during quit: ${String(err)}`);
     }
     try {
       await stopRelay();
     } catch (err) {
       log.warn(
-        `[desktop][d453] failed to stop relay during quit: ${String(err)}`,
+        `[desktop] failed to stop relay during quit: ${String(err)}`,
       );
     }
     try {
@@ -14916,23 +14917,23 @@ app.on("before-quit", (event) => {
       await codexConnection.shutdown();
     } catch (err) {
       log.warn(
-        `[desktop][d453] failed to shut down Codex during quit: ${String(err)}`,
+        `[desktop] failed to shut down Codex during quit: ${String(err)}`,
       );
     }
     try {
       await computerUseHostBroker.close();
     } catch (err) {
       log.warn(
-        `[desktop][d516] failed to close Computer Use Host during quit: ${String(err)}`,
+        `[desktop] failed to close Computer Use Host during quit: ${String(err)}`,
       );
     }
-    // D418 — best-effort deactivation of the active Workstation Profile on
+    // best-effort deactivation of the active Workstation Profile on
     // quit so ephemeral grants are explicitly revoked before process exit.
     try {
       await activeWorkstationProfileController.deactivate();
     } catch (err) {
       log.warn(
-        `[desktop][d418] failed to deactivate active profile during quit: ${String(err)}`,
+        `[desktop] failed to deactivate active profile during quit: ${String(err)}`,
       );
     } finally {
       quitTeardownComplete = true;

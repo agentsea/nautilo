@@ -58,34 +58,34 @@ import type {
 /**
  * Current relay protocol version the client advertises on register.
  *
- * **v2 (M174)** added the `fs` execution class (`executionClass:"fs"`)
+ * **v2** added the `fs` execution class (`executionClass:"fs"`)
  * so the server can proxy discrete filesystem primitives to the relay
  * for the unified `file` tool's `current`/`absolute` zones. A v2 relay
  * is the prerequisite for routing `file` fs ops to a connected machine.
  *
- * **v3 (D384 Phase 5 Slice A)** added MCP hosting messages:
+ * **v3** added MCP hosting messages:
  * `relay:configure-mcp` (server→relay) and `relay:advertise-mcp-tools`
  * (relay→server), plus the optional `RelayCapabilities.mcpTools`
  * summary advertised at register. A v3 relay is the prerequisite for
  * the server routing MCP tool calls through a connected machine.
  * Backward-compatible — v2 relays still register and operate.
  *
- * **v4 (M206 Slice A)** added the `local-file` execution class and
+ * **v4** added the `local-file` execution class and
  * typed `RelayLocalFileRequest`/`RelayLocalFileResult` wire contract,
  * plus optional `RelayCapabilities.localFileExecution` and
  * `canRunOffice` advertisements. A v4 Electron desktop relay is the
  * prerequisite for local-zone file execution; v1–v3 relays still
  * register and operate without local-file dispatch.
  *
- * **v5 (D417)** adds bounded media chunk transport. It never places an
+ * **v5** adds bounded media chunk transport. It never places an
  * entire media file in one WebSocket message: each chunk is canonical base64
  * for at most 1 MiB decoded, while a transfer is capped at 64 MiB.
  *
- * **v6 (D418 task 3.1.1)** added the historical grant-envelope foundation.
+ * **v6** added the historical grant-envelope foundation.
  * The strict renamed `desktopFilesystemGrant*` request/snapshot fields are
  * v9-only; pre-v9 relays never receive or retain those fields.
  *
- * **v7 (D418 foundation)** adds desktop-session identity and an atomic
+ * **v7** adds desktop-session identity and an atomic
  * capability-replacement transport. The Electron desktop relay registers
  * with a per-main-process-launch `desktopSessionId` and a monotonic
  * `capabilityRevision`, and may later send `relay:update-capabilities`
@@ -97,10 +97,10 @@ import type {
  * to register and operate as before. Backward-compatible — v1–v6 relays
  * still register and operate.
  *
- * **v8 (D453)** adds a separate optional Electron Codex host transport.
+ * **v8** adds a separate optional Electron Codex host transport.
  * Codex work is never represented as `relay:dispatch`.
  *
- * **v9 (D448 Phase 5)** renames generic local filesystem grant request and
+ * **v9** renames generic local filesystem grant request and
  * snapshot wire fields to `desktopFilesystemGrant*`, plus one strict,
  * high-level `local-file` `apply_patch` operation. The renamed strict fields
  * are not aliases, so the capability protocol version is bumped. Its
@@ -109,58 +109,58 @@ import type {
  * Workspace storage path. A v9-capable desktop relay must still revalidate
  * live local Desktop filesystem authority before any future execution.
  *
- * **v10 (D458 Computer Files)** establishes bounded `fs.readdir` as a
+ * **v10** establishes bounded `fs.readdir` as a
  * protocol contract. The relay caps every listing at
  * `RELAY_FS_READDIR_MAX_ENTRIES`, reads only through the sentinel entry, and
  * returns `truncated` when there were more entries.
- * **v11 (D502 Stack 1)** adds a narrow `relay:run-shell-progress` envelope.
+ * **v11** adds a narrow `relay:run-shell-progress` envelope.
  * It is emitted only for paired Desktop raw-shell output; it is not a
  * general tool streaming facility. Final `relay:result` remains canonical.
  *
- * **v12 (D503 Wave 1 Unit 1)** adds the correlated local-MCP truth channel:
+ * **v12** adds the correlated local-MCP truth channel:
  * `relay:mcp-preflight` / result and an optional operation envelope on the
  * existing `relay:configure-mcp` / result. A v12 peer is required because
  * the server must never mistake a v11 relay's old fire-and-forget configure
  * behavior for a confirmed process outcome. The existing uncorrelated
  * configure frame remains valid for v3–v11 compatibility.
  *
- * **v13 (D452)** adds a separate Electron ACP readiness-only channel. It
+ * **v13** adds a separate Electron ACP readiness-only channel. It
  * carries no executable, path, environment, raw probe output, credentials,
  * ACP traffic, or task execution command.
  *
- * **v14 (D452 Task 4.2)** adds a typed prepared-workspace execution lane and
+ * **v14** adds a typed prepared-workspace execution lane and
  * bounded semantic events. It still excludes raw ACP, local paths,
  * executable/environment data, provider/model controls, permission response,
  * and Stop.
  *
- * **v14 (D500 destination union)** changes the structured-SSH approved
+ * **v14 (destination union)** changes the structured-SSH approved
  * request and prepare envelopes to reject stale host-only intent. It carries
  * either a named connection or an exact ad hoc endpoint, never both.
  *
- * **v15 (D500 Wave 1)** adds a narrow `relay:structured-ssh-progress`
+ * **v15** adds a narrow `relay:structured-ssh-progress`
  * envelope. It carries bounded process output observations or copy-transfer
  * counters for one already-dispatched structured SSH operation. It is not a
  * generic stream, cannot authorize, retry, or complete an operation, and the
  * final `relay:result` remains canonical.
  *
- * It also adds D504's optional `canContinueBrowserPageRead` and
+ * It also adds optional `canContinueBrowserPageRead` and
  * `canSearchResearchWeb` capabilities and
  * installs an Electron-local owner binding for immutable browser-page
  * snapshots. The reference is never server authority and old relays retain
  * ordinary bounded page reads.
  *
- * **v13 (D504 1.5.1)** adds the separately negotiated
+ * **v13** adds the separately negotiated
  * `canInspectBrowserPageSnapshot` capability. A v12 peer may retain and page
  * a non-EOF snapshot, but must never receive an EOF page reference or
  * eviction receipt.
  *
- * **v17 (D452)** adds a closed, correlated Claude Connections discovery
+ * **v17** adds a closed, correlated Claude Connections discovery
  * transport. It carries no task, session, credential, path, or cost data.
  *
- * **v18 (D452)** adds a distinct current-socket Claude execution transport.
+ * **v18** adds a distinct current-socket Claude execution transport.
  * It is only an Electron host forwarding seam; discovery remains v17.
  *
- * **v19 (D565)** binds hosted-MCP dispatch to the exact owning Relay. The
+ * **v19** binds hosted-MCP dispatch to the exact owning Relay. The
  * generic `hostedBy` provenance marker prevents a runtime-advertised MCP name
  * from shadowing a built-in dispatch lane.
  */
@@ -172,22 +172,22 @@ const CLAUDE_CONNECTION_DISCOVERY_PROTOCOL_VERSION = CLAUDE_CONNECTION_PROTOCOL_
 export const RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION = 17;
 /** The narrow raw-shell observation envelope first exists in protocol v11. */
 export const RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION = 11;
-/** D503's correlated local-MCP preflight/configure truth channel. */
+/** correlated local-MCP preflight/configure truth channel. */
 export const RELAY_MCP_TRUTH_PROTOCOL_VERSION = 12;
 /** Hosted MCP dispatch provenance is mandatory on an exact v19 socket. */
 export const RELAY_MCP_DISPATCH_PROVENANCE_PROTOCOL_VERSION = 19;
-/** D503 v12 ceiling for one bounded local-MCP truth frame. */
+/** v12 ceiling for one bounded local-MCP truth frame. */
 export const RELAY_MCP_TRUTH_MAX_FRAME_BYTES = 32 * 1024;
-/** D500's correlated local structured-SSH preparation channel. */
+/** correlated local structured-SSH preparation channel. */
 export const RELAY_SSH_PREPARE_PROTOCOL_VERSION = 14;
 export const RELAY_SSH_PREPARE_MAX_FRAME_BYTES = 16 * 1024;
-/** D500 v15 bounded, provisional structured-SSH observations. */
+/** v15 bounded, provisional structured-SSH observations. */
 export const RELAY_STRUCTURED_SSH_PROGRESS_PROTOCOL_VERSION = 15;
-/** D500 v16 — owner-bound Structured SSH output continuation and explicit budgets. */
+/** v16 — owner-bound Structured SSH output continuation and explicit budgets. */
 export const RELAY_STRUCTURED_SSH_CONTINUATION_PROTOCOL_VERSION = 16;
 export const RELAY_STRUCTURED_SSH_PROGRESS_MAX_TEXT_BYTES = 4 * 1024;
 export const RELAY_STRUCTURED_SSH_PROGRESS_MAX_FRAME_BYTES = 8 * 1024;
-/** D502 v11 hard ceilings for provisional raw-shell observation frames. */
+/** v11 hard ceilings for provisional raw-shell observation frames. */
 export const RELAY_RUN_SHELL_PROGRESS_MAX_TEXT_BYTES = 4 * 1024;
 export const RELAY_RUN_SHELL_PROGRESS_MAX_FRAME_BYTES = 8 * 1024;
 /** Immutable browser-page continuation is available from protocol v12. */
@@ -202,17 +202,17 @@ export const RELAY_BROWSER_PAGE_SNAPSHOT_REFERENCE_PROTOCOL_VERSION = 13;
  * optional.
  */
 export const RELAY_MIN_SUPPORTED_PROTOCOL_VERSION = 9;
-/** M206 local-file and local-office payloads were introduced in protocol v4. */
+/** local-file and local-office payloads were introduced in protocol v4. */
 export const LOCAL_FILE_PROTOCOL_VERSION = 4;
-/** D417's constrained MP4-to-M4A payload was introduced in protocol v5. */
+/** constrained MP4-to-M4A payload was introduced in protocol v5. */
 export const MEDIA_EXTRACTION_PROTOCOL_VERSION = 5;
-/** D448's renamed desktop-filesystem-grant request and snapshot fields require v9. */
+/** renamed desktop-filesystem-grant request and snapshot fields require v9. */
 export const DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION = 9;
-/** D448's coordinated local mutation identity and committed-revision receipt require v9. */
+/** coordinated local mutation identity and committed-revision receipt require v9. */
 export const COORDINATED_LOCAL_MUTATION_PROTOCOL_VERSION = 9;
-/** D418's atomic capability-update transport was introduced in protocol v7. */
+/** atomic capability-update transport was introduced in protocol v7. */
 export const CAPABILITY_UPDATE_PROTOCOL_VERSION = 7;
-/** D448's typed relay-local apply-patch operation and renamed grant wire fields require v9. */
+/** typed relay-local apply-patch operation and renamed grant wire fields require v9. */
 export const APPLY_PATCH_PROTOCOL_VERSION = 9;
 export const RELAY_DESKTOP_FILESYSTEM_GRANT_REQUEST_VERSION = 1 as const;
 export const RELAY_LOCAL_APPLY_PATCH_VERSION = 1 as const;
@@ -231,6 +231,7 @@ export function projectRelayCapabilitiesForProtocol(
     delete compatible.computerUseSemanticVersion;
     delete compatible.desktopAutomation;
     delete compatible.canControlDesktop;
+    delete compatible.computerUseHostContracts;
   }
   if (protocolVersion < 13) {
     delete compatible.acp;
@@ -279,7 +280,7 @@ export function projectRelayCapabilitiesForProtocol(
 }
 
 /**
- * Exact dispatch eligibility gate for D448's local apply-patch operation.
+ * Exact dispatch eligibility gate for local apply-patch operation.
  * Neither generic local-file support nor a protocol-v9 registration alone is
  * sufficient; old peers and relays without the dedicated capability fail
  * closed before a dispatch can be constructed.
@@ -293,24 +294,24 @@ export function canRelayExecuteApplyPatch(protocolVersion: number, capabilities:
   );
 }
 /**
- * D440 Phase 1 — version of the plan-bound `RelayWorkstationShellBinding`
+ * version of the plan-bound `RelayWorkstationShellBinding`
  * envelope. The envelope rides as an additive optional field on protocol v7
  * `relay:dispatch` messages (no version bump — the field is optional and
  * backward-compatible; bumping `RELAY_PROTOCOL_VERSION` would break non-owned
  * version-assertion tests in this repo).
  */
 export const RELAY_WORKSTATION_SHELL_BINDING_VERSION = 2 as const;
-/** D500's strict, single-use structured SSH admission envelope version. */
+/** strict, single-use structured SSH admission envelope version. */
 export const RELAY_SSH_DISPATCH_BINDING_VERSION = 2 as const;
 export const RELAY_SSH_PREPARE_VERSION = 2 as const;
 /**
- * D516 Wave 1A — version of the exact desktop invocation binding. It is a
+ * version of the exact desktop invocation binding. It is a
  * strict envelope on `executionClass:"computer_use"` within relay protocol v17.
  * Binding compatibility is versioned independently from the outer protocol.
  */
 export const RELAY_DESKTOP_AUTOMATION_INVOCATION_BINDING_VERSION = 12 as const;
 /**
- * D418 Commit 3 — the only execution class the v2 shell-binding envelope
+ * the only execution class the v2 shell-binding envelope
  * admits. A planned generic `run_shell` is a `profile_bound_sandbox`
  * dispatch (relay-dispatched, sandbox-contained); the strict parser rejects
  * any other value, and a future class would introduce a new envelope
@@ -318,7 +319,7 @@ export const RELAY_DESKTOP_AUTOMATION_INVOCATION_BINDING_VERSION = 12 as const;
  * operation taxonomy (`"shell"` literal).
  */
 export const RELAY_WORKSTATION_SHELL_BINDING_EXECUTION_CLASS = "profile_bound_sandbox" as const;
-/** D417 media-only transfer limits; generic relay filesystem limits stay 16 MiB. */
+/** media-only transfer limits; generic relay filesystem limits stay 16 MiB. */
 export const RELAY_MEDIA_MAX_BYTES = 64 * 1024 * 1024;
 export const RELAY_MEDIA_CHUNK_BYTES = 1024 * 1024;
 export const RELAY_MEDIA_TRANSFER_TTL_MS = 5 * 60 * 1000;
@@ -327,7 +328,7 @@ export const RELAY_MEDIA_TRANSFER_TTL_MS = 5 * 60 * 1000;
 
 export type RelayImpact = "read-only" | "low" | "high" | "destructive";
 
-// ── Sandbox profile envelope (D060 Sprint 1 G5.4) ──────────────────────
+// ── Sandbox profile envelope ────────────────────────────────────
 //
 // Per-turn sandbox shape the server attaches to every tool-call
 // dispatch. Ship plan v3 §5.4: "relay is dumb — if the server
@@ -395,7 +396,7 @@ export interface RelaySandboxConfig {
   readonly projectPaths: readonly string[];
   readonly readOnlyPaths?: readonly string[];
   /**
-   * D418 task 3.2.1 — canonical protected-path subtrees the sandbox
+   * canonical protected-path subtrees the sandbox
    * must deny (read + write) after every allow. Optional + additive; the
    * server does NOT populate this field — the desktop relay compiles it
    * LOCALLY from its live `ProtectedPathPolicy` when it rebuilds the
@@ -474,7 +475,7 @@ export type RelayRegisterMessage = {
   capabilitiesByProtocolVersion?: Record<string, RelayCapabilities> | undefined;
   token?: string | undefined;
   /**
-   * D418 protocol v7 — per Electron main-process-launch identity for the
+   * protocol v7 — per Electron main-process-launch identity for the
    * desktop relay. Minted once per launch by a testable helper and carried
    * across reconnects so the server can bind capability updates to the
    * exact registered session. Desktop relays only; the headless relay
@@ -482,7 +483,7 @@ export type RelayRegisterMessage = {
    */
   desktopSessionId?: string | undefined;
   /**
-   * D418 protocol v7 — monotonic revision of the advertised capability
+   * protocol v7 — monotonic revision of the advertised capability
    * state at register time. The desktop relay sends its current revision;
    * each subsequent `relay:update-capabilities` carries a strictly greater
    * revision, and the server rejects stale/duplicate revisions. Optional
@@ -508,7 +509,7 @@ export type RelayResultMessage = {
   durationMs?: number | undefined;
 };
 
-/** D502 v1 — bounded, provisional observation of one Desktop raw-shell stream. */
+/** v1 — bounded, provisional observation of one Desktop raw-shell stream. */
 export type RelayRunShellProgressMessage = {
   type: "relay:run-shell-progress";
   correlationId: string;
@@ -530,7 +531,7 @@ export type RelayRunShellProgressMessage = {
 };
 
 /**
- * D500 v1 — a secret-free, provisional observation for one structured SSH
+ * v1 — a secret-free, provisional observation for one structured SSH
  * dispatch. This intentionally has no destination, user, identity, command,
  * path, binding, approval, or retry metadata. The result receipt is the only
  * authoritative outcome.
@@ -583,7 +584,7 @@ export type RelayStructuredSshProgressObservation =
       : never
     : never;
 
-/** D502 v1 — the one canonical outcome for every raw shell process that starts. */
+/** v1 — the one canonical outcome for every raw shell process that starts. */
 export type DesktopShellResult = {
   version: 1;
   execution: "sandboxed" | "workstation";
@@ -608,7 +609,7 @@ export type DesktopShellResult = {
   outputArtifact?: DesktopShellOutputArtifactReference | undefined;
 };
 
-/** D502 v1 — public metadata for a private Desktop-local output continuation. */
+/** v1 — public metadata for a private Desktop-local output continuation. */
 export type DesktopShellOutputArtifactReference = {
   version: 1;
   /** 256-bit opaque reference; it is not authority and host ownership is checked independently. */
@@ -636,7 +637,7 @@ export type RelayDisconnectMessage = {
 };
 
 /**
- * D384 Phase 5 (protocol v3) — relay→server: the relay advertises the MCP
+ * (protocol v3) — relay→server: the relay advertises the MCP
  * tools it discovered from a configured server so the server can register
  * them in the catalog with `executor:"relay"` + `hostedBy:<relayId>`.
  * Additive; a v2 relay never sends this.
@@ -704,7 +705,7 @@ export type RelayMcpPreflightResultMessage = {
   failure?: RelayMcpFailure | undefined;
 };
 
-/** D500 v14 server → Electron request for one local SSH capability preparation. */
+/** v14 server → Electron request for one local SSH capability preparation. */
 export type RelaySshPrepareMessage = {
   type: "relay:ssh-prepare";
   request: RelaySshPrepareRequestV1;
@@ -796,7 +797,7 @@ export interface RelaySshResolutionFailure {
   readonly candidates?: readonly { readonly source: "openssh" | "nautilo-profile"; readonly name: string }[] | undefined;
 }
 
-/** D500 v14 Electron → server result. It contains no exception text. */
+/** v14 Electron → server result. It contains no exception text. */
 export type RelaySshPreparedMessage =
   | {
       type: "relay:ssh-prepared";
@@ -814,7 +815,7 @@ export type RelaySshPreparedMessage =
     };
 
 /**
- * D418 protocol v7 — desktop relay→server: atomically REPLACE this relay's
+ * protocol v7 — desktop relay→server: atomically REPLACE this relay's
  * full advertised capability state. Carries the complete `capabilities`
  * object (including the advisory grant snapshot); the server never merges
  * partial state across updates. `desktopSessionId` must exactly match the
@@ -876,13 +877,13 @@ export type RelayDispatchMessage = {
   hostedBy?: string | undefined;
   allowedRoots?: string[] | undefined;
   /**
-   * D418 — optional grant reference for a future relay-local workstation
+   * optional grant reference for a future relay-local workstation
    * resolver. `allowedRoots` remains unchanged and is never authority for this
    * request. Relays before protocol v9 receive no envelope.
    */
   desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
   /**
-   * D418 task 3.1.3b — optional plan-bound shell-binding envelope for a generic
+   * optional plan-bound shell-binding envelope for a generic
    * `run_shell` dispatch. Carries ONLY opaque ids / binding / operation metadata
    * the desktop relay needs to prove the dispatch maps to the active
    * profile/session grant authority — no roots, no paths, no filesystem
@@ -894,10 +895,10 @@ export type RelayDispatchMessage = {
    * Additive optional field on protocol v7 — no version bump.
    */
   workstationShellBinding?: RelayWorkstationShellBinding | undefined;
-  /** D538 server-owned marker: this real-workstation dispatch was admitted by the live uncontained session resolver. */
+  /** server-owned marker: this real-workstation dispatch was admitted by the live uncontained session resolver. */
   uncontainedHostCommandsSession?: true | undefined;
   /**
-   * D500 — strict, secret-free admission metadata for one structured SSH
+   * strict, secret-free admission metadata for one structured SSH
    * operation. This is a one-use preparation reference, never SSH target or
    * key authority: Electron revalidates its capability revision and retains
    * the resolved destination plan privately. The client parses this envelope
@@ -905,38 +906,35 @@ export type RelayDispatchMessage = {
    */
   sshBinding?: RelaySshDispatchBindingV1 | undefined;
   /**
-   * D516 — strict, secret-free binding for one semantic `computer_*` desktop
+   * strict, secret-free binding for one semantic `computer_*` desktop
    * invocation. It is issued by server admission, never model authored, and
    * Electron revalidates it before Cua effects.
    */
   desktopAutomationBinding?: DesktopAutomationInvocationBinding | undefined;
   computerUseRequest?: ComputerUseHostDispatchRequest | undefined;
   /**
-   * Per-turn sandbox envelope (D060 Sprint 1 G5.4). OPTIONAL at the
-   * TypeScript level for G5.4.a (foundation commit — existing
-   * callsites don\u0027t yet construct one). Release builds will
-   * REFUSE dispatches without it — see G5.4.c for the
-   * production-build guard landed alongside the relay consumer
-   * update. Development builds honor a dev-mode debug fallback
-   * gated behind NAUTILO_RELAY_PROTOCOL_DEBUG=1 (ship plan v3 §5.4).
+   * Per-turn sandbox envelope. Optional at the TypeScript level for
+   * compatibility with callers that do not yet construct one. Release
+   * builds refuse dispatches without it. Development builds honor a
+   * debug fallback gated behind NAUTILO_RELAY_PROTOCOL_DEBUG=1.
    */
   sandboxProfile?: RelaySandboxProfile | undefined;
   /**
-   * D291 — explicit execution-class marker set by the server. When
+   * explicit execution-class marker set by the server. When
    * `"computer_use"`, the request is the sandbox-exempt Computer Use class
    * and does NOT require a `sandboxProfile`. It is executable only with its
    * exact server-minted desktopAutomationBinding. `"desktop"` remains a
    * distinct local-operation class (including structured SSH output), so it
    * cannot accidentally acquire Computer Use authority.
    *
-   * M174 — `"fs"` is the filesystem-primitive class: the server proxies
+   * `"fs"` is the filesystem-primitive class: the server proxies
    * a single `RelayFsRequest` (read/write/readdir/stat/…) so the unified
    * `file` tool can reach the user's machine for `current`/`absolute`
    * zones. Like `"desktop"` it is sandbox-exempt (discrete `node:fs`
    * calls, not spawned processes) and jailed by the relay's
    * `WorkspaceGuard(allowedRoots)` instead of `spawnSandboxed`.
    *
-   * M206 — `"local-file"` is the structured local execution class: the
+   * `"local-file"` is the structured local execution class: the
    * server dispatches a typed `RelayLocalFileRequest` (file command,
    * history command, or office operation) so local-zone work executes
    * on the Electron relay without shipping whole-file byte primitives.
@@ -958,7 +956,7 @@ export type RelayErrorMessage = {
 };
 
 /**
- * D384 Phase 5 (protocol v3) — server→relay: the set of MCP servers this
+ * (protocol v3) — server→relay: the set of MCP servers this
  * relay should host (from `mcp_servers` rows with `host = 'relay-<id>'`).
  * Secrets are NOT sent — `envPassthrough` carries variable NAMES only; the
  * relay resolves values locally (relay host env / `~/.nautilo/relay/vault.enc`).
@@ -979,7 +977,7 @@ export type RelayConfigureMcpMessage = {
   type: "relay:configure-mcp";
   servers: RelayMcpServerConfig[];
   /**
-   * D503 v12: optional correlation for an initiating server that needs an
+   * v12: optional correlation for an initiating server that needs an
    * actual target outcome. Omitted for the pre-v12 fleet reconciliation path.
    */
   operation?: RelayMcpConfigureOperation | undefined;
@@ -1099,7 +1097,7 @@ export function isRelayMcpConfigureResultMessage(
 }
 
 /**
- * D418 protocol v7 — server→desktop relay: acknowledgement of a
+ * protocol v7 — server→desktop relay: acknowledgement of a
  * `relay:update-capabilities` frame. `capabilityRevision` echoes the
  * revision the server applied (or rejected). `status:"ok"` means the full
  * capability state was atomically replaced; `status:"rejected"` means the
@@ -1147,39 +1145,39 @@ export type RelayDispatchRequest = {
   allowedRoots?: string[] | undefined;
   /** See `RelayDispatchMessage.desktopFilesystemGrantRequest`. */
   desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
-  /** See `RelayDispatchMessage.workstationShellBinding` (D418 task 3.1.3b). */
+  /** See `RelayDispatchMessage.workstationShellBinding`. */
   workstationShellBinding?: RelayWorkstationShellBinding | undefined;
   /** See `RelayDispatchMessage.uncontainedHostCommandsSession`. */
   uncontainedHostCommandsSession?: true | undefined;
-  /** See `RelayDispatchMessage.sshBinding` (D500). */
+  /** See `RelayDispatchMessage.sshBinding`. */
   sshBinding?: RelaySshDispatchBindingV1 | undefined;
-  /** See `RelayDispatchMessage.desktopAutomationBinding` (D516). */
+  /** See `RelayDispatchMessage.desktopAutomationBinding`. */
   desktopAutomationBinding?: DesktopAutomationInvocationBinding | undefined;
   computerUseRequest?: ComputerUseHostDispatchRequest | undefined;
   /** See `RelayDispatchMessage.sandboxProfile`. */
   sandboxProfile?: RelaySandboxProfile | undefined;
-  /** See `RelayDispatchMessage.executionClass` (D516 `"computer_use"` + D291 + M174 `"fs"` + D336 `"browser"` + M206 `"local-file"`). */
+  /** See `RelayDispatchMessage.executionClass` for the admitted execution lane. */
   executionClass?: "computer_use" | "desktop" | "fs" | "browser" | "local-file" | "real_workstation" | "structured-ssh" | undefined;
   /**
-   * D502 local-only callback installed by the relay client. It is never sent
+   * local-only callback installed by the relay client. It is never sent
    * server→relay: the client serializes its bounded payload as the narrow
    * `relay:run-shell-progress` client message.
    */
   reportSecurityScanProgress?: ((progress: SecurityScanProgress) => void) | undefined;
   reportRunShellProgress?: ((progress: Omit<RelayRunShellProgressMessage, "type" | "correlationId">) => void) | undefined;
   /**
-   * D500 v15 local-only callback for an already-authorized structured SSH
+   * v15 local-only callback for an already-authorized structured SSH
    * dispatch. It is never a generic progress hook and never travels back to
    * Electron as authority.
    */
   reportStructuredSshProgress?: ((progress: RelayStructuredSshProgressObservation) => void) | undefined;
-  /** D502 local-only owner binding installed by the authenticated relay client. */
+  /** local-only owner binding installed by the authenticated relay client. */
   runShellOwnerBinding?: RelayRunShellOwnerBinding | undefined;
-  /** D500 v16 local-only owner binding for retained Structured SSH output. */
+  /** v16 local-only owner binding for retained Structured SSH output. */
   structuredSshOutputOwnerBinding?: RelayRunShellOwnerBinding | undefined;
-  /** D504 v12 local-only owner binding; never sent by the server/model. */
+  /** v12 local-only owner binding; never sent by the server/model. */
   browserPageOwnerBinding?: RelayBrowserPageOwnerBinding | undefined;
-  /** D504 v13 local-only publication authority; never sent by the server/model. */
+  /** v13 local-only publication authority; never sent by the server/model. */
   browserPageSnapshotReferencePublication?: true | undefined;
 };
 
@@ -1200,7 +1198,7 @@ export type RelayDispatchResult = {
   durationMs?: number | undefined;
 };
 
-// ── D448 — desktop-filesystem-grant request envelope (protocol v9) ────────────
+// ── desktop-filesystem-grant request envelope (protocol v9) ────────────
 
 /**
  * Stale-detection metadata copied from the selected local grant. It identifies
@@ -1224,10 +1222,10 @@ export interface RelayDesktopFilesystemGrantRequest {
   readonly version: typeof RELAY_DESKTOP_FILESYSTEM_GRANT_REQUEST_VERSION;
   readonly grantIds: readonly string[];
   readonly requestedRoot: string;
-  /** Legacy scalar operation retained for pre-D448 callers. */
+  /** Legacy scalar operation retained for older callers. */
   readonly operation: DesktopFilesystemAccessOperation;
   /**
-   * D448 additive complete authorization set. This is never a "best
+   * additive complete authorization set. This is never a "best
  * available" or maximum operation: every item is required. The v9
    * apply-patch operation rejects scalar-only grant envelopes.
    */
@@ -1266,7 +1264,7 @@ interface WireObject extends Record<string, unknown> {
   requestedRoot?: unknown;
   operation?: unknown;
   requiredOperations?: unknown;
-  // D448 apply-patch operation/result fields.
+  // apply-patch operation/result fields.
   kind?: unknown;
   patch?: unknown;
   routing?: unknown;
@@ -1301,20 +1299,20 @@ interface WireObject extends Record<string, unknown> {
   policyVersion?: unknown;
   lifetime?: unknown;
   expiresAt?: unknown;
-  // D418 advisory snapshot fields.
+  // advisory snapshot fields.
   revision?: unknown;
   grants?: unknown;
   id?: unknown;
   canonicalRoot?: unknown;
   access?: unknown;
-  // D418 advisory Workstation Profile snapshot fields.
+  // advisory Workstation Profile snapshot fields.
   profileId?: unknown;
   profileRevision?: unknown;
   protectedPolicyVersion?: unknown;
   networkMode?: unknown;
   capabilities?: unknown;
   backend?: unknown;
-  // D418 task 3.1.3b — shell-binding envelope fields.
+  // shell-binding envelope fields.
   toolCallId?: unknown;
   desktopSessionId?: unknown;
   serverBindingId?: unknown;
@@ -1348,7 +1346,7 @@ function parseUtcTimestamp(value: unknown): string | undefined {
   return date.toISOString() === expectedCanonical ? date.toISOString() : undefined;
 }
 
-// ── D516 — desktop automation invocation binding ─────────────────────────
+// ── desktop automation invocation binding ─────────────────────────
 
 /**
  * This envelope contains only opaque runtime bindings. It contains no PIN,
@@ -1375,6 +1373,16 @@ export interface DesktopAutomationInvocationBinding {
 export interface ComputerUseHostDispatchRequest {
   readonly contract: ComputerUseHostContract;
   readonly arguments: Readonly<Record<string, ComputerUseJson>>;
+}
+
+/** Empty means unavailable; malformed is never treated as a legacy omission. */
+export function parseComputerUseHostContracts(value: unknown): readonly ComputerUseHostContract[] | null {
+  if (!Array.isArray(value)) return null;
+  try {
+    const contracts = value.map(parseComputerUseHostContract);
+    const keys = contracts.map((item) => JSON.stringify([item.contractNamespace, item.contractId, item.contractVersion]));
+    return new Set(keys).size === keys.length ? Object.freeze(contracts) : null;
+  } catch { return null; }
 }
 
 function isComputerUseJson(value: unknown, seen = new Set<object>()): value is ComputerUseJson {
@@ -1613,7 +1621,7 @@ export function parseRelayApplyPatchDesktopFilesystemGrantRequest(
   };
 }
 
-// ── D418 task 3.1.3b — plan-bound shell-binding envelope (protocol v7) ────
+// ── plan-bound shell-binding envelope (protocol v7) ────
 //
 // A generic `run_shell` dispatch has no single bounded root a grant request can
 // name, so the renamed `RelayDesktopFilesystemGrantRequest` shape (which requires a
@@ -1668,7 +1676,7 @@ export interface RelayWorkstationShellBinding {
   /** Opaque server-side binding id (audit correlation; not relay-revalidated). */
   readonly serverBindingId: string;
   /**
-   * D418 Commit 2 — the server-derived `pairingGeneration` the active Full
+   * the server-derived `pairingGeneration` the active Full
    * Workstation session was activated with (the validated relay-token row
    * id, never client-authored). The relay revalidates it against its live
    * pairing generation so a dispatch admitted under a prior generation
@@ -1686,7 +1694,7 @@ export interface RelayWorkstationShellBinding {
   /** Monotonic capability revision at admission; must match the live revision. */
   readonly capabilityRevision: number;
   /**
-   * D440 Phase 1 — exact Current Folder selected when the plan was admitted.
+   * exact Current Folder selected when the plan was admitted.
    * This is binding metadata, not authority: the desktop relay compares it
    * with its live Current Folder and independently reloads the durable grant.
    */
@@ -1699,7 +1707,7 @@ export interface RelayWorkstationShellBinding {
   /** Concrete workstation operation (`"execute"` for `run_shell`). */
   readonly operation: DesktopFilesystemAccessOperation;
   /**
-   * D418 Commit 3 — the execution class the admission reasons about
+   * the execution class the admission reasons about
    * (`"profile_bound_sandbox"` for this envelope version). Replaces the old
    * six-value operation taxonomy; the concrete `operation` above stays
    * separate from this field.
@@ -1851,14 +1859,14 @@ export function parseRelayWorkstationShellBinding(
   };
 }
 
-// ── D500 — structured SSH dispatch binding ────────────────────────────────
+// ── structured SSH dispatch binding ────────────────────────────────
 //
 // This envelope carries only the server-minted admission tuple needed for the
 // desktop relay to select and revalidate an Electron-local SSH target grant.
 // It intentionally contains no SSH hostname, account, fingerprint, identity
 // handle, path, command, argv, environment, socket, root, or secret.
 
-/** D500 V1 exposes fixed authentication, exec, and bounded SCP operations. */
+/** V1 exposes fixed authentication, exec, and bounded SCP operations. */
 export type RelaySshOperation = "auth" | "exec" | "copy-upload" | "copy-download";
 export type RelaySshActorRole = "owner" | "admin";
 
@@ -2052,7 +2060,7 @@ function parseRelaySshApprovalSummary(value: unknown): RelaySshApprovalSummaryV1
 }
 
 /**
- * Strict, fail-closed parser for D500's structured SSH v1 binding. The
+ * Strict, fail-closed parser for structured SSH v1 binding. The
  * returned object is rebuilt from validated fields so raw JSON never crosses
  * the relay's dispatch boundary. A missing binding remains the additive,
  * backward-compatible ordinary dispatch path.
@@ -2233,7 +2241,7 @@ export function parseRelaySshResolutionFailure(
   };
 }
 
-// ── D500 — canonical approved structured SSH request ──────────────────────
+// ── canonical approved structured SSH request ──────────────────────
 //
 // The server mints a binding over the digest of this rebuilt request. Keeping
 // the request grammar here gives both server and Electron exactly the same
@@ -2476,7 +2484,7 @@ function sshApprovedOperationKeys(
 }
 
 /**
- * Serialize a parsed/rebuilt request in the sole D500 v1 order.
+ * Serialize a parsed/rebuilt request in the sole v1 order.
  * JSON.stringify intentionally preserves string code units without Unicode
  * normalization, so both peers hash the same UTF-8 bytes.
  */
@@ -2554,7 +2562,7 @@ export function computeRelaySshApprovedRequestDigestV1(value: unknown): string {
 }
 
 /**
- * Strictly parse and rebuild one of the two D500 model-visible SSH requests.
+ * Strictly parse and rebuild one of the two model-visible SSH requests.
  * The returned object, never the raw wire value, is the only input accepted by
  * canonicalization and digest binding.
  */
@@ -2659,7 +2667,7 @@ export function parseRelaySshApprovedRequestV1(
   return { ok: true, request };
 }
 
-// ── D440 Phase 3 — structured Git operation variant for `run_shell` ─────
+// ── structured Git operation variant for `run_shell` ─────
 //
 // `run_shell` admits exactly one of two mutually exclusive modes: a raw
 // `command` string (unchanged baseline path through the ordinary sandbox) or
@@ -2781,7 +2789,7 @@ export function parseRelayRunShellGitOperation(
   return { ok: true, operation: { operation: "worktree-remove", target: value["target"] } };
 }
 
-// ── D418 — advisory active-grant snapshot (RelayCapabilities) ──────────
+// ── advisory active-grant snapshot (RelayCapabilities) ──────────
 //
 // The snapshot is advertised at register as a DISCOVERY hint only. It never
 // becomes filesystem authority: the relay-local resolver reloads the live local
@@ -2907,7 +2915,7 @@ export function parseRelayDesktopFilesystemGrantSnapshot(
   };
 }
 
-// ── D418 — advisory Workstation Profile binding snapshot (RelayCapabilities) ─
+// ── advisory Workstation Profile binding snapshot (RelayCapabilities) ─
 //
 // The snapshot is advertised at register (and replaced via
 // `relay:update-capabilities`) as an advisory binding hint only. It never
@@ -3034,7 +3042,7 @@ export interface RelayNetworkDeniedDestination {
 
 export type RelayStatus = "connecting" | "connected" | "disconnected" | "error";
 
-// ── M174 — filesystem execution class (`executionClass:"fs"`) ──────────
+// ── filesystem execution class (`executionClass:"fs"`) ──────────
 //
 // The server keeps the unified `file` tool as `executor:"cloud"` (all
 // matching / scanning / approval / revision logic stays server-side) and
@@ -3058,7 +3066,7 @@ export type RelayFsOp =
   | "realpath";
 
 /**
- * D458 — hard upper bound for one paged typed Relay `readdir` response. The
+ * hard upper bound for one paged typed Relay `readdir` response. The
  * phone/server must not turn an unbounded desktop directory into one WebSocket
  * payload. This is a per-request ceiling, not a maximum directory size.
  */
@@ -3134,11 +3142,11 @@ export interface RelayFsErrResult {
 
 export type RelayFsResult = RelayFsOkResult | RelayFsErrResult;
 
-// ── M206 — local-file execution class (`executionClass:"local-file"`) ──
+// ── local-file execution class (`executionClass:"local-file"`) ──
 //
 // The server dispatches one structured high-level operation per
 // `relay:dispatch` with `toolName:"local-file"` +
-// `executionClass:"local-file"`. Unlike the M174 `fs` byte-transport
+// `executionClass:"local-file"`. Unlike the `fs` byte-transport
 // class, payloads are discriminated command shapes — not arbitrary argv
 // or raw shell strings. The envelope carries correlationId, impact,
 // allowedRoots, and approvalObtained; the args field holds
@@ -3169,7 +3177,7 @@ export interface RelayLocalFileHistoryOp {
 }
 
 /**
- * D446 — strict native-search operation carried by the existing local-file
+ * strict native-search operation carried by the existing local-file
  * relay class. Search arguments stay typed and separate from relay routing
  * metadata so neither host accepts executable/argv-shaped escape hatches.
  */
@@ -3199,7 +3207,7 @@ export interface RelayLocalFileOfficeOp {
 }
 
 /**
- * M216 — bounded Writer document transport (`kind:"document"`).
+ * bounded Writer document transport (`kind:"document"`).
  *
  * Separate from generic `kind:"file"` commands so arbitrary local-file
  * clients cannot bypass the 16 MiB read cap or raise it globally. Only
@@ -3220,7 +3228,7 @@ export interface RelayLocalDocumentTransferOp {
   readonly args: Record<string, unknown>;
 }
 
-// ── D448 — typed relay-local apply_patch operation (protocol v9) ────────
+// ── typed relay-local apply_patch operation (protocol v9) ────────
 
 /** Trusted routing metadata; it names a logical local zone, never a root path. */
 export interface RelayLocalApplyPatchRouting {
@@ -3574,7 +3582,7 @@ export type RelayLocalFileOperation =
 
 /**
  * Legacy/general local-file dispatch payload (rides in `relay:dispatch.args`).
- * D448 apply-patch dispatches use `RelayLocalApplyPatchRequest` instead so
+ * apply-patch dispatches use `RelayLocalApplyPatchRequest` instead so
  * they cannot carry this legacy `allowedRoots` mirror.
  */
 export interface RelayLocalFileRequest {
@@ -3608,7 +3616,7 @@ export function parseRelayLocalFileSha256(value: unknown): string | null {
 }
 
 /**
- * Optional write-time guards for accepted Current Folder Writer persistence (M216).
+ * Optional write-time guards for accepted Current Folder Writer persistence .
  * Additive keys inside `RelayLocalFileCommandOp.args`; old callers omit them.
  */
 export interface RelayLocalFileWriteGuardArgs {
@@ -3676,7 +3684,7 @@ export interface RelayLocalDocumentWriteChunkResult {
   receivedBytes: number;
 }
 
-// ── D417 — constrained chunked relay media transport ─────────────────────
+// ── constrained chunked relay media transport ─────────────────────
 
 /**
  * Fixed-schema payload for `toolName:"extract_audio_from_video"`.

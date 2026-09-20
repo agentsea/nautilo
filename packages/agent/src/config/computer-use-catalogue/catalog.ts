@@ -7,6 +7,8 @@ import {
   NATIVE_CONTRACT_SCHEMAS,
 } from "@nautilo/computer-use-contracts/native";
 import { z } from "zod";
+import { NATIVE_COMPATIBILITY_SCHEMAS, COMPUTER_USE_COMPATIBILITY_BASELINE } from "@nautilo/computer-use-contracts/native-compatibility";
+import { sameComputerUseContract } from "./selection";
 import {
   computeComputerUseContractSchemaDigestV1,
   computerUseContractCatalogueV1Schema,
@@ -59,8 +61,8 @@ const entry = (
 export const bundledComputerUseContractCatalogue: ComputerUseContractCatalogueV1 =
   computerUseContractCatalogueV1Schema.parse({
     formatVersion: 1,
-    catalogueVersion: "2026-09-20.1",
-    publishedAt: "2026-09-20T00:42:14.000Z",
+    catalogueVersion: "2026-09-20.2",
+    publishedAt: "2026-09-20T03:30:38.000Z",
     provenance: "bundled",
     modelGuidance: `### Computer Use
 For native window_state without a selector, controlCollection exposes the received controls together with local id/parent relationships, observed labels/state and opaque action targets. Use a returned target directly for the requested native action; do not reselect by role/label when duplicate labels already have distinct references. Local ids describe this observation only, not stable application identity. Missing targets are informational controls, not writable capabilities. The collection is partial: absent controls are not proof of absence; use an appropriate query/traversal effort or fresh visual evidence when needed. An action retires sibling controls from that snapshot, so observe again before the next action. No role or advisory action list determines which operation a control accepts; Cua reports the actual result. If the controls cannot be distinguished semantically, use current visual evidence rather than guessing.
@@ -157,7 +159,24 @@ Prefer current semantic or accessibility targets and use returned opaque targets
         argumentsSummary: "One opaque window target and one or more public predicates within the admitted control frame.",
         resultSummary: "Predicate statuses, stability, timing, and normalized recovery without observed values.",
       }, "host"),
-    ].sort((left, right) => {
+    ].flatMap((current) => {
+      const previous = NATIVE_COMPATIBILITY_SCHEMAS.find((schema) => schema.descriptor.contractId === current.descriptor.contractId);
+      if (!previous) return [{ ...current,
+        ...(COMPUTER_USE_COMPATIBILITY_BASELINE.some(descriptor => sameComputerUseContract(descriptor as typeof current.descriptor, current.descriptor))
+          ? { legacyDefault: true as const } : {}),
+      }];
+      const { scheduling: _scheduling, ...compatibilityBase } = current;
+      return [{
+        ...compatibilityBase,
+        legacyDefault: true as const,
+        descriptor: previous.descriptor,
+        publicSchemas: {
+          input: { ...current.publicSchemas.input, schemaVersion: previous.descriptor.contractVersion, jsonSchema: previous.input },
+          result: { ...current.publicSchemas.result, schemaVersion: previous.descriptor.contractVersion, jsonSchema: previous.result },
+        },
+        classificationProvenance: provenance(previous.descriptor.schemaDigest),
+      }, current];
+    }).sort((left, right) => {
       const a = left.descriptor;
       const b = right.descriptor;
       return `${a.contractNamespace}\u0000${a.contractId}\u0000${a.contractVersion}`

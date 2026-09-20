@@ -26,26 +26,26 @@ import {
 } from "./browser-page-reader";
 
 /**
- * D418 — the only agent scope an advisory desktop grant snapshot may declare.
+ * the only agent scope an advisory desktop grant snapshot may declare.
  * It means "any Genie agent acting for this already-bound desktop user,
  * instance, and relay" — never an unbound cross-subject wildcard. The strict
  * snapshot parser rejects any other value.
  */
 export const DESKTOP_FILESYSTEM_GRANT_SNAPSHOT_AGENT_SCOPE = "all_owned_agents" as const;
 
-/** D504 v13: inert find/range over an owner-bound retained page snapshot. */
+/** v13: inert find/range over an owner-bound retained page snapshot. */
 export const BROWSER_RESEARCH_SNAPSHOT_INSPECTION_PROTOCOL_VERSION = 13 as const;
 
-/** D453 — an Electron-only, deliberately narrow declaration of Codex hosting. */
+/** an Electron-only, deliberately narrow declaration of Codex hosting. */
 export const CODEX_RELAY_CAPABILITY_VERSION = 1 as const;
 
-/** D452 — a separate, closed Agent SDK fact stream; not a Codex or ACP capability. */
+/** a separate, closed Agent SDK fact stream; not a Codex or ACP capability. */
 export const CLAUDE_RELAY_CAPABILITY_VERSION = 1 as const;
 
-/** D452 v18 — Desktop-local Claude execution host, distinct from discovery. */
+/** v18 — Desktop-local Claude execution host, distinct from discovery. */
 export const CLAUDE_EXECUTION_RELAY_CAPABILITY_VERSION = 2 as const;
 
-/** D500 — strict, secret-free structured SSH readiness projection. */
+/** strict, secret-free structured SSH readiness projection. */
 export const RELAY_STRUCTURED_SSH_READINESS_VERSION = 1 as const;
 
 export type RelayStructuredSshReadiness =
@@ -96,7 +96,7 @@ const STRUCTURED_SSH_ENABLED_READINESS_KEYS = new Set([
 ]);
 
 /**
- * Parses the complete D500 readiness projection. It contains only local
+ * Parses the complete readiness projection. It contains only local
  * OpenSSH observations and aggregates from enabled managed capabilities:
  * destination identity readiness stays Electron-local and per-operation.
  * Exact state-specific keys prevent secret or authority-bearing material from
@@ -241,7 +241,7 @@ export function parseRelayClaudeCapability(value: unknown):
   }
 }
 
-/** D452 — narrow Electron-only ACP readiness transport, not ACP execution. */
+/** narrow Electron-only ACP readiness transport, not ACP execution. */
 export const ACP_RELAY_CAPABILITY_VERSION = 2 as const;
 
 export type RelayAcpCapability =
@@ -261,7 +261,7 @@ export type RelayAcpCapability =
     }>;
 
 /**
- * D418 — one active grant as advertised in the advisory snapshot. This is a
+ * one active grant as advertised in the advisory snapshot. This is a
  * DISCOVERY hint only: it carries the minimum the server needs to construct a
  * single-grant `RelayDesktopFilesystemGrantRequest`, and nothing that could stand in
  * for authority. Platform authorization, filesystem identity, origin,
@@ -279,7 +279,7 @@ export interface RelayDesktopFilesystemGrantSnapshotEntry {
 }
 
 /**
- * D418 — advisory snapshot of a desktop relay's ACTIVE Desktop Filesystem Grants,
+ * advisory snapshot of a desktop relay's ACTIVE Desktop Filesystem Grants,
  * advertised in `RelayCapabilities` at register. It exists purely so the server
  * can discover which grant ids might satisfy a filesystem request and reference
  * exactly one of them; it is NEVER authority. The relay-local resolver reloads
@@ -295,7 +295,7 @@ export interface RelayDesktopFilesystemGrantSnapshot {
 }
 
 /**
- * D418 — one typed toolchain capability a bound Workstation Profile declares,
+ * one typed toolchain capability a bound Workstation Profile declares,
  * redacted to its opaque id and execution backend only. The executable path,
  * roots, environment keys, discovery origin, and typed operation identifiers
  * deliberately never cross the wire — the server's future RelayBindingProvider
@@ -308,7 +308,7 @@ export interface RelayWorkstationProfileCapabilityEntry {
 }
 
 /**
- * D418 — strict advisory Workstation Profile binding snapshot, advertised in
+ * strict advisory Workstation Profile binding snapshot, advertised in
  * `RelayCapabilities` (desktop-agent profile only). It carries the minimum
  * redacted, non-secret profile state the server's future RelayBindingProvider
  * needs to verify an exact `profileId + profileRevision + grantIds +
@@ -329,7 +329,7 @@ export interface RelayWorkstationProfileSnapshot {
 }
 
 /**
- * D516 — redacted advisory view of the single local Computer use grant.
+ * redacted advisory view of the single local Computer use grant.
  *
  * This is deliberately not a grant, policy, provider selection, PIN proof,
  * or execution authority.  It is the minimum server-discovery tuple needed
@@ -354,7 +354,9 @@ export interface RelayDesktopAutomationSnapshot {
  */
 export type RelayCapabilities = {
   profile: "device-relay" | "desktop-agent";
-  /** D516 semantic Computer protocol is installed, regardless of On/Off grant state. */
+  /** Exact descriptors from the running attested Host; schemas remain server-owned. */
+  computerUseHostContracts?: readonly import("@nautilo/computer-use-host-protocol").ComputerUseHostContract[] | undefined;
+  /** semantic Computer protocol is installed, regardless of On/Off grant state. */
   computerUseSemanticVersion?: typeof COMPUTER_USE_SEMANTIC_VERSION | undefined;
   canDiscoverHue?: boolean | undefined;
   canControlHue?: boolean | undefined;
@@ -362,33 +364,33 @@ export type RelayCapabilities = {
   canControlTV?: boolean | undefined;
   /** desktop-agent profile: the fresh atomic Cua route is ready for Computer Use. */
   canControlDesktop?: boolean | undefined;
-  /** desktop-agent profile: agent-browser against embedded SaaS webviews (D336). */
+  /** desktop-agent profile: agent-browser against embedded SaaS webviews. */
   canControlBrowser?: boolean | undefined;
-  /** M286 — opaque identity of the exact active embedded Browser view. */
+  /** opaque identity of the exact active embedded Browser view. */
   browserSessionId?: string | undefined;
   /**
-   * D504 — Electron-main-owned anonymous research target. This is deliberately
+   * Electron-main-owned anonymous research target. This is deliberately
    * distinct from interactive browser control and is omitted by headless or
    * older Desktop relays.
    */
   canResearchWeb?: boolean | undefined;
-  /** D504 — this Desktop relay implements fixed-host rendered search discovery. */
+  /** this Desktop relay implements fixed-host rendered search discovery. */
   canSearchResearchWeb?: boolean | undefined;
   /**
-   * D504 — the relay can return a classified challenge without opening the
+   * the relay can return a classified challenge without opening the
    * Human intervention flow. Search uses this to try adequate alternate
    * sources before revisiting one challenged URL for presentation.
    */
   canDeferResearchChallenges?: boolean | undefined;
-  /** D504 v12: Electron can retain immutable page snapshots for continuation. */
+  /** v12: Electron can retain immutable page snapshots for continuation. */
   canContinueBrowserPageRead?: boolean | undefined;
-  /** D504 v13: Electron may publish bounded references to retained page snapshots. */
+  /** v13: Electron may publish bounded references to retained page snapshots. */
   canInspectBrowserPageSnapshot?: boolean | undefined;
-  /** D504 v13: Electron can replay bounded consent labels in anonymous research pages. */
+  /** v13: Electron can replay bounded consent labels in anonymous research pages. */
   canReplayResearchConsent?: boolean | undefined;
-  /** D504: Electron can retain and visually recover the exact anonymous consent target. */
+  /** Electron can retain and visually recover the exact anonymous consent target. */
   canRecoverResearchConsent?: boolean | undefined;
-  /** desktop-agent profile: shared interactive PTY terminal (D373). Only the
+  /** desktop-agent profile: shared interactive PTY terminal. Only the
    *  Electron desktop relay advertises this — it hosts the PTY pool; the
    *  standalone relay can run shell but has no terminal host. */
   canUseTerminal?: boolean | undefined;
@@ -396,19 +398,19 @@ export type RelayCapabilities = {
    * one Electron-local PTY to Genie. The exact session id never crosses the
    * relay wire; supported session-less terminal operations resolve it locally. */
   hasPendingTerminalHandoff?: boolean | undefined;
-  /** desktop-agent profile: Google Workspace API via local gog/gogcli (D138). */
+  /** desktop-agent profile: Google Workspace API via local gog/gogcli. */
   canUseGoogleWorkspace?: boolean | undefined;
   /** desktop-agent profile: screenshot/vision capture is currently operational. */
   canSeeDesktop?: boolean | undefined;
   canReadWorkspace?: boolean | undefined;
   canWriteWorkspace?: boolean | undefined;
-  /** D319 — Electron-local, opaque, directory-only paired phone picker. */
+  /** Electron-local, opaque, directory-only paired phone picker. */
   canBrowsePairedFilesystem?: boolean | undefined;
   canRunShell?: boolean | undefined;
-  /** D500 v16: read owner-bound retained SSH output without starting SSH. */
+  /** v16: read owner-bound retained SSH output without starting SSH. */
   canReadStructuredSshOutput?: boolean | undefined;
   /**
-   * D458 — server-private canonical execution Workspace. Electron supplies
+   * server-private canonical execution Workspace. Electron supplies
    * its always-present Finder-visible app Workspace; a headless relay supplies
    * its explicit configured Workspace. It is transport metadata, never public
    * remote-presence data and never filesystem authority by itself; the relay
@@ -416,7 +418,7 @@ export type RelayCapabilities = {
    */
   workspaceRoot?: string | undefined;
   /**
-   * D458 — server-private canonical root of the Human's optional Current
+   * server-private canonical root of the Human's optional Current
    * Folder. Omitted means no Current Folder is selected. It must not be
    * inferred from `workspaceRoot`, and neither pairing nor relay restart
    * may write it. Like the Workspace root, it is binding metadata only and is
@@ -432,7 +434,7 @@ export type RelayCapabilities = {
   securityLevel?: "cautious" | "standard" | "permissive" | undefined;
   /**
    * Per-relay absolute path for sandbox data dir (the agent's
-   * secret store / DB cache / scratch). D060 Sprint 1 G5.4.
+   * secret store / DB cache / scratch).
    * Reported at registration so the server\u0027s Policy Resolver can
    * build a sandboxProfile whose dataDir is masked via --tmpfs
    * (bubblewrap) / deny-subpath (seatbelt). Optional in v1; relay
@@ -443,34 +445,34 @@ export type RelayCapabilities = {
   dataDir?: string | undefined;
   /**
    * Per-relay absolute path to the tools-bin directory (bun etc.)
-   * prepended to PATH inside the sandbox. D060 Sprint 1 G5.4.
+   * prepended to PATH inside the sandbox.
    * Reported at registration — see dataDir above. Optional in v1.
    */
   toolsBin?: string | undefined;
   /**
-   * User home directory on the relay\u0027s machine. D060 Sprint 1
-   * G5.4. Required for the `desktop-permissive` deployment mode
+   * User home directory on the relay\u0027s machine.
+   * Required for the `desktop-permissive` deployment mode
    * (broad RO home). Server falls back to `desktop-locked` shape
    * if missing, since the permissive profile\u0027s inputs helper
    * throws on undefined userHome.
    */
   userHome?: string | undefined;
   /**
-   * D384 Phase 5 Slice A — MCP hosting summary the relay advertises at
+   * Slice A — MCP hosting summary the relay advertises at
    * register. Each entry names an MCP server the relay can host plus
    * the tool names it expects to expose. Optional; relays that don't
    * host MCP omit it and the server treats them as "no MCP tools".
    */
   mcpTools?: { serverName: string; toolNames: string[] }[] | undefined;
   /**
-   * M206 — desktop-agent profile: relay can execute typed `local-file`
+   * desktop-agent profile: relay can execute typed `local-file`
    * dispatches for `current`/`absolute` zones (protocol v4+). Only the
    * Electron desktop relay advertises this; headless `bin/nautilo-relay`
    * must not.
    */
   localFileExecution?: boolean | undefined;
   /**
-   * D448 — desktop-agent profile: relay can execute the v1 typed
+   * desktop-agent profile: relay can execute the v1 typed
    * `local-file` `apply_patch` operation (protocol v9+). This is deliberately
    * distinct from `localFileExecution`: a relay that can serve ordinary
    * local-file commands is not implicitly trusted or provisioned to run the
@@ -478,13 +480,13 @@ export type RelayCapabilities = {
    */
   applyPatchExecution?: boolean | undefined;
   /**
-   * M206 — desktop-agent profile: bundled OfficeCLI is present and the
+   * desktop-agent profile: bundled OfficeCLI is present and the
    * relay can run structured local Office operations. Advertised only
    * after a successful packaged-binary probe; optional until Phase 3.
    */
   canRunOffice?: boolean | undefined;
   /**
-   * D418 — advisory active-grant snapshot (desktop-agent profile only). Purely
+   * advisory active-grant snapshot (desktop-agent profile only). Purely
    * a discovery hint for the server; it is never filesystem authority. The
    * relay-local resolver reloads the live local grant store and decides every
    * access, so stale/revoked entries here fail closed locally. Omitted by the
@@ -493,7 +495,7 @@ export type RelayCapabilities = {
    */
   desktopFilesystemGrantSnapshot?: RelayDesktopFilesystemGrantSnapshot | undefined;
   /**
-   * D418 — advisory Workstation Profile binding snapshot (desktop-agent profile
+   * advisory Workstation Profile binding snapshot (desktop-agent profile
    * only). Redacted, non-secret profile state for the server's future
    * RelayBindingProvider to verify an exact `profileId + profileRevision +
    * grantIds + capabilityRevision` binding. Advisory only: the desktop relay's
@@ -505,28 +507,28 @@ export type RelayCapabilities = {
    */
   workstationProfileSnapshot?: RelayWorkstationProfileSnapshot | undefined;
   /**
-   * D516 — redacted active Computer use receipt.  Omitted while Off, during
+   * redacted active Computer use receipt.  Omitted while Off, during
    * recovery, or when Electron cannot read exact local state.  No provider
    * policy, PIN/token, pairing/session data, or receipt timestamps cross the
    * relay wire.
    */
   desktopAutomation?: RelayDesktopAutomationSnapshot | undefined;
   /**
-   * D453 relay v8 — optional Codex host declaration. This advertises only an
+   * relay v8 — optional Codex host declaration. This advertises only an
    * actually injected Electron host port, never workspace/runtime readiness.
    */
   codex?: RelayCodexCapability | undefined;
-  /** D452 v17 — Electron has the injected Claude Agent SDK host seam. */
+  /** v17 — Electron has the injected Claude Agent SDK host seam. */
   claude?: RelayClaudeCapability | undefined;
-  /** D452 v18 — Electron has a locally injected Claude execution host. */
+  /** v18 — Electron has a locally injected Claude execution host. */
   claudeExecution?: RelayClaudeExecutionCapability | undefined;
   /**
-   * D500 — secret-free local structured SSH readiness. This is discovery only:
+   * secret-free local structured SSH readiness. This is discovery only:
    * it contains no managed-capability subject, grant, identity, host, user,
    * path, key, or execution authority.
    */
   structuredSsh?: RelayStructuredSshReadiness | undefined;
-  /** D452 v13 — Electron can answer bounded built-in ACP readiness checks. */
+  /** v13 — Electron can answer bounded built-in ACP readiness checks. */
   acp?: RelayAcpCapability | undefined;
 };
 
@@ -541,7 +543,7 @@ export type ToolPolicy = {
   allowedProfiles: Array<"device-relay" | "desktop-agent">;
 };
 
-/** D504's v12 internal research-read contract includes immutable continuation fields. */
+/** v12 internal research-read contract includes immutable continuation fields. */
 export const BROWSER_RESEARCH_READ_PROTOCOL_VERSION = 12;
 
 export interface RelayBrowserResearchSearchRequest extends RelayBrowserResearchInvocationIdentity {
@@ -761,7 +763,7 @@ export function parseRelayBrowserResearchSearchResult(value: unknown): RelayBrow
   return { ok: true, result: value as unknown as BrowserResearchSearchResult };
 }
 
-/** Strict parser for D504's only presently admitted internal research operation. */
+/** Strict parser for only presently admitted internal research operation. */
 export function parseRelayBrowserResearchReadRequest(value: unknown): RelayBrowserResearchReadRequestValidationResult {
   if (!isStrictRecord(value, BROWSER_RESEARCH_READ_REQUEST_KEYS)) {
     return { ok: false, error: "browser research read request is malformed" };
@@ -1220,7 +1222,7 @@ export function canRelayExecuteBrowserResearchSearch(protocolVersion: number, ca
 }
 
 /**
- * D504 v13: inspection is a separate, inert operation over an already-owned
+ * v13: inspection is a separate, inert operation over an already-owned
  * Electron-memory page.  It deliberately does not inherit v12 continuation
  * merely because a Desktop can retain a non-EOF page.
  */

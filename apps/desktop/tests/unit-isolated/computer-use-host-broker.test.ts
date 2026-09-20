@@ -61,6 +61,20 @@ function session(onRequest: (message: ComputerUseHostRequest) => Promise<Compute
 }
 
 describe("Computer Use Host broker", () => {
+  test("advertises the actual retained Host handshake without dispatching an operation", async () => {
+    let requests = 0;
+    let launches = 0;
+    const broker = new ComputerUseHostBroker(
+      { bootstrap: async () => ({ state: "ready" }), acquireLaunch: launch },
+      { launch: async () => { launches += 1; return session(async () => { requests += 1; throw new Error("unexpected"); }); } },
+      () => endpoint,
+    );
+    expect(await broker.supportedContracts()).toEqual([contract]);
+    expect(await broker.supportedContracts()).toEqual([contract]);
+    expect(launches).toBe(1);
+    expect(requests).toBe(0);
+    await broker.close();
+  });
   test("forwards an exact catalogue descriptor and arguments through v3", async () => {
     const requests: ComputerUseHostRequest[] = [];
     let released = 0;

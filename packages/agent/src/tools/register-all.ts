@@ -42,7 +42,8 @@ import {
 } from "./structured-ssh/structured-ssh";
 import { createTerminalTool } from "./terminal/terminal";
 import { createComputerHostContractTool } from "./computer/computer-host-contract";
-import { activeComputerUseHostToolDefinitions } from "../config/computer-use-catalogue/host-tool-admission";
+import { activeComputerUseHostToolDefinitions, computerUseHostToolDefinition } from "../config/computer-use-catalogue/host-tool-admission";
+import { withComputerUseContractSelection } from "../config/computer-use-catalogue/selection";
 import { createBrowserSnapshotTool } from "./browser/browser-snapshot";
 import { createBrowserClickTool } from "./browser/browser-click";
 import { createBrowserTypeTool } from "./browser/browser-type";
@@ -136,6 +137,9 @@ function activeComputerUseHostToolRegistrations(): readonly ToolRegistration[] {
   return activeComputerUseHostToolDefinitions().map((definition) => ({
     name: definition.name,
     factory: (ctx) => createComputerHostContractTool(definition.name, ctx),
+    unavailableInContext: () => computerUseHostToolDefinition(definition.name) === null
+      ? "The connected Computer Use Host does not support an available signed contract for this tool."
+      : null,
     category: "computer",
     executor: "relay",
     trustTier: "standard",
@@ -152,10 +156,10 @@ function activeComputerUseHostToolRegistrations(): readonly ToolRegistration[] {
 
 /** Atomically rebuild the generic model-tool surface from the active signed snapshot. */
 export function reconcileComputerUseHostTools(catalog: ToolCatalog): void {
-  catalog.replaceServerContribution(
+  withComputerUseContractSelection(undefined, () => catalog.replaceServerContribution(
     COMPUTER_USE_CATALOGUE_SOURCE_SERVER,
     activeComputerUseHostToolRegistrations(),
-  );
+  ));
 }
 
 function isOfficeToolingEnabled(): boolean {

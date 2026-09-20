@@ -8,6 +8,7 @@ import {
 import { getActiveComputerUseContractCatalogueSync } from "./runtime-catalogue";
 import type { ComputerUseContractCatalogueEntry, ComputerUseContractDescriptor } from "./schema";
 import { nativeDecisionHostArguments } from "../../graph/native-decision-plan";
+import { currentComputerUseContractSelection, selectComputerUseContracts } from "./selection";
 
 export type ComputerUseHostToolDefinition = Readonly<{
   name: string;
@@ -71,8 +72,7 @@ function resultPresentationSummary(
 
 /** The signed catalogue owns every runnable Host contract. */
 export function activeComputerUseHostToolDefinitions(): readonly ComputerUseHostToolDefinition[] {
-  return Object.freeze(getActiveComputerUseContractCatalogueSync().contracts
-    .filter((entry) => entry.executionLane === "host")
+  return Object.freeze(selectComputerUseContracts(getActiveComputerUseContractCatalogueSync().contracts, currentComputerUseContractSelection())
     .map((entry) => Object.freeze({
       name: entry.projection.toolName, entry, impact: impact(entry),
       tags: Object.freeze(["computer", "automation", "catalogue"]),

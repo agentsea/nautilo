@@ -1,4 +1,5 @@
 import type { RelaySecurityScanProgressMessage } from "@nautilo/relay";
+import { parseComputerUseHostContracts } from "@nautilo/relay";
 import { securityScanRelayRequestSchema } from "@nautilo/types";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -431,11 +432,20 @@ function sanitizeAdvisorySnapshots(
   desktopAutomationSnapshot: RelayDesktopAutomationSnapshot | undefined;
 } {
   let working = capabilities;
+  if (Object.hasOwn(capabilities, "computerUseHostContracts")) {
+    working = {
+      ...working,
+      computerUseHostContracts: capabilities.profile === "desktop-agent"
+        ? parseComputerUseHostContracts(capabilities.computerUseHostContracts) ?? []
+        : [],
+    };
+  }
   if (protocolVersion < RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION) {
     const {
       computerUseSemanticVersion: _oldComputerUseSemanticVersion,
       desktopAutomation: _oldDesktopAutomation,
       canControlDesktop: _oldCanControlDesktop,
+      computerUseHostContracts: _oldComputerUseHostContracts,
       ...compatible
     } = working;
     working = compatible;
@@ -722,6 +732,11 @@ function parseKnownCapabilityFields(
     }
     fields["mcpTools"] = mcp;
   }
+  if (Object.hasOwn(raw, "computerUseHostContracts")) {
+    fields["computerUseHostContracts"] = raw["profile"] === "desktop-agent"
+      ? parseComputerUseHostContracts(raw["computerUseHostContracts"]) ?? []
+      : [];
+  }
   if (raw["codex"] !== undefined) {
     if (raw["profile"] !== "desktop-agent") {
       return { ok: false, error: "capabilities.codex requires desktop-agent" };
@@ -773,6 +788,7 @@ function parseCapabilityUpdate(value: unknown, protocolVersion: number): {
   if (protocolVersion < RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION
     && (raw["computerUseSemanticVersion"] !== undefined
       || raw["desktopAutomation"] !== undefined
+      || Object.hasOwn(raw, "computerUseHostContracts")
       || raw["canControlDesktop"] !== undefined)) {
     return { ok: false, error: `semantic Computer Use requires relay protocol v${RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION}` };
   }

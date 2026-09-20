@@ -109,6 +109,17 @@ export class ComputerUseHostBroker {
     private readonly createRequestId: () => string = () => `cuhr:${randomUUID()}`,
   ) {}
 
+  /** Readiness only: starts the attested Host, never dispatches a GUI operation. */
+  async supportedContracts(): Promise<readonly ComputerUseHostContract[]> {
+    const state = await this.runtime.bootstrap().catch(() => ({ state: "unavailable" as const }));
+    if (state.state !== "ready") return [];
+    const active = await this.ensureSession();
+    if (active === null) return [];
+    const ready = parseComputerUseHostControlMessage(active.session.ready);
+    return ready.kind === "ready" && ready.protocol.major === COMPUTER_USE_HOST_PROTOCOL_MAJOR
+      && ready.protocol.minor === COMPUTER_USE_HOST_PROTOCOL_MINOR ? ready.contracts : [];
+  }
+
   async dispatch(input: ComputerUseHostBrokerRequest): Promise<ComputerUseHostBrokerResult> {
     if (input.signal?.aborted) return { ok: false, code: "host_cancelled" };
     const state = await this.runtime.bootstrap(input.signal).catch(() => ({ state: "unavailable" as const }));

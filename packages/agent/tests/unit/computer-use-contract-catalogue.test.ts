@@ -177,7 +177,7 @@ function loaderFor(
 test("bundled catalogue exactly binds Host descriptors, public schemas, classification provenance, and compact projection", () => {
   expect(computerUseContractCatalogueV1Schema.parse(bundledComputerUseContractCatalogue))
     .toEqual(bundledComputerUseContractCatalogue);
-  expect(bundledComputerUseContractCatalogue.contracts.map((entry) => entry.descriptor))
+  expect(activeComputerUseHostToolDefinitions().map((entry) => entry.entry.descriptor))
     .toEqual([
       COMPUTER_USE_BROWSER_CONTRACTS.bindWindow,
       COMPUTER_USE_BROWSER_CONTRACTS.click,
@@ -215,7 +215,7 @@ test("bundled catalogue exactly binds Host descriptors, public schemas, classifi
   }
 
   const projection = projectComputerUseContractCatalogue(bundledComputerUseContractCatalogue);
-  expect(projection.contracts).toHaveLength(11);
+  expect(projection.contracts).toHaveLength(13);
   expect(projection.contracts.some((contract) => contract.contractId === "browser.dialog")).toBe(false);
   expect(projection.contracts[0]).toEqual({
     contractId: "browser.bind_window",

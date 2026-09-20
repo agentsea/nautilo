@@ -1,6 +1,8 @@
 import { deflateSync } from "node:zlib";
 import { expect, mock, test } from "bun:test";
 import { COMPUTER_USE_NATIVE_CONTRACTS, NATIVE_CONTRACT_SCHEMAS } from "@nautilo/computer-use-contracts/native";
+import { NATIVE_COMPATIBILITY_SCHEMAS, validateNativeCompatibility } from "@nautilo/computer-use-contracts/native-compatibility";
+import { parseComputerUseHostContract, type ComputerUseHostContract } from "@nautilo/computer-use-host-protocol";
 import { encodePngAttachmentFrame } from "@nautilo/computer-use-host-protocol/node";
 
 import { CuaNativeContractRuntime } from "../../src/native-contract-runtime.ts";
@@ -171,9 +173,57 @@ function fakeAdapter() {
   };
 }
 
-function request(contract: typeof COMPUTER_USE_NATIVE_CONTRACTS[keyof typeof COMPUTER_USE_NATIVE_CONTRACTS], requestId: string, argumentsValue: object) {
+function request(contract: ComputerUseHostContract, requestId: string, argumentsValue: object) {
   return { kind: "request" as const, protocol: { major: 3 as const, minor: 0 as const }, requestId, authority, fence, contract, arguments: argumentsValue };
 }
+
+test("a new Host serves the previous native contracts without changing their schema or dispatching twice", async () => {
+  const adapter = fakeAdapter();
+  const original = adapter.observeWindowState;
+  const enhanced = {
+    ...adapter,
+    observeWindowState: mock(async () => {
+      const result = await original();
+      return { ...result, observation: {
+        ...result.observation,
+        element: { ...result.observation.element, state: { completeness: "partial", value: "current" } },
+        controlCollection: { completeness: "partial", received: 0, omitted: 0, controls: [] },
+      } };
+    }),
+  };
+  const native = new CuaNativeContractRuntime({ adapter: enhanced as never, scopeForAuthority: nativeScope });
+  const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: native.handlers });
+  for (const schema of NATIVE_COMPATIBILITY_SCHEMAS) {
+    const contract = parseComputerUseHostContract(schema.descriptor);
+    expect(host.ready().contracts).toContainEqual(contract);
+    const observe = contract.contractId === "native.observe";
+    const result = await host.dispatch(request(contract, observe ? "old-read" : "old-action", observe
+      ? { operation: "window_state", target: windowTarget, capture: "window_snapshot", selector: { role: "button" } }
+      : { operation: { kind: "launch_app", app: { name: "Spotify" } } }));
+    expect(result?.settlement).toBe("completed");
+    expect(validateNativeCompatibility(result?.result, schema.result)).toBe(true);
+    expect(result?.contract).toEqual(contract);
+    if (observe) {
+      expect(result?.result).not.toHaveProperty("controlCollection");
+      expect(result?.result).not.toHaveProperty("element.state");
+      expect(host.takeAttachment("old-read")).not.toBeNull();
+    }
+  }
+  expect(enhanced.observeWindowState).toHaveBeenCalledTimes(1);
+  expect(adapter.launchApp).toHaveBeenCalledTimes(1);
+});
+
+test("a compatibility request with a substituted digest never reaches the native adapter", async () => {
+  const adapter = fakeAdapter();
+  const native = new CuaNativeContractRuntime({ adapter: adapter as never, scopeForAuthority: nativeScope });
+  const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: native.handlers });
+  const contract = parseComputerUseHostContract(NATIVE_COMPATIBILITY_SCHEMAS[0]!.descriptor);
+  const result = await host.dispatch(request({ ...contract, schemaDigest: "sha256:" + "f".repeat(64) }, "wrong-digest", {
+    operation: "window_state", target: windowTarget,
+  }));
+  expect(result?.result).toEqual({ status: "host_rejected", reason: "unsupported_contract" });
+  expect(adapter.observeWindowState).not.toHaveBeenCalled();
+});
 
 test("native Host delegates exact semantic contracts and keeps PNG bytes on the dedicated attachment lane", async () => {
   const adapter = fakeAdapter();

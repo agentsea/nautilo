@@ -364,6 +364,7 @@ export interface DesktopAutomationCapabilitySnapshot {
   readonly grantGeneration: number;
   readonly provider: "cua";
   readonly providerGeneration: string;
+  readonly hostContracts?: RelayCapabilities["computerUseHostContracts"];
 }
 
 /**
@@ -374,10 +375,18 @@ export interface DesktopAutomationCapabilitySnapshot {
  */
 export function projectComputerUseRelayCapabilities(
   snapshot: DesktopAutomationCapabilitySnapshot | undefined,
-): Pick<RelayCapabilities, "canControlDesktop" | "desktopAutomation"> {
+): Pick<RelayCapabilities, "canControlDesktop" | "desktopAutomation" | "computerUseHostContracts"> {
   return snapshot === undefined
     ? { canControlDesktop: false }
-    : { canControlDesktop: true, desktopAutomation: snapshot };
+    : {
+        canControlDesktop: true,
+        desktopAutomation: {
+          enabled: snapshot.enabled, agentId: snapshot.agentId,
+          installationEpoch: snapshot.installationEpoch, grantGeneration: snapshot.grantGeneration,
+          provider: snapshot.provider, providerGeneration: snapshot.providerGeneration,
+        },
+        ...(snapshot.hostContracts === undefined ? {} : { computerUseHostContracts: snapshot.hostContracts }),
+      };
 }
 
 interface AuthenticatedDesktopTopology {

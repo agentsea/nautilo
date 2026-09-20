@@ -1,10 +1,10 @@
 /**
- * D154 R1 — connectivity-related preflight must never call `app.quit()`.
+ * connectivity-related preflight must never call `app.quit()`.
  *
  * We pin this with (1) a static slice of `main.ts` between explicit
- * D154 markers where `app.quit()` is forbidden, and (2) a pure helper
+ * markers where `app.quit()` is forbidden, and (2) a pure helper
  * mirroring `bootstrap.html` health classification for the four bad-boot
- * shapes (see ISSUE-D154).
+ * shapes.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -51,10 +51,10 @@ function classifyBootstrap(args: {
   return "live";
 }
 
-describe("D154 R1 — no app.quit in connect-bootstrap preflight region", () => {
-  test("main.ts D154 slice contains zero app.quit()", () => {
-    const start = mainSource.indexOf("// <D154-connect-bootstrap-preflight>");
-    const end = mainSource.indexOf("// </D154-connect-bootstrap-preflight>");
+describe("no app.quit in connect-bootstrap preflight region", () => {
+  test("main.ts slice contains zero app.quit()", () => {
+    const start = mainSource.indexOf("// <connect-bootstrap-preflight>");
+    const end = mainSource.indexOf("// </connect-bootstrap-preflight>");
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const slice = mainSource.slice(start, end);
@@ -62,8 +62,8 @@ describe("D154 R1 — no app.quit in connect-bootstrap preflight region", () => 
   });
 
   test("connect-bootstrap applies only the verified health body", () => {
-    const start = mainSource.indexOf("// <D154-connect-bootstrap-preflight>");
-    const end = mainSource.indexOf("// </D154-connect-bootstrap-preflight>");
+    const start = mainSource.indexOf("// <connect-bootstrap-preflight>");
+    const end = mainSource.indexOf("// </connect-bootstrap-preflight>");
     const slice = mainSource.slice(start, end);
     expect(slice).toContain("applyVerifiedLogtoHealthBody(");
     expect(slice).toContain("initialColdBootObservation.healthBody");
@@ -72,7 +72,7 @@ describe("D154 R1 — no app.quit in connect-bootstrap preflight region", () => 
   });
 });
 
-describe("D154 bootstrap health classification (four bad-boot inputs)", () => {
+describe("bootstrap health classification (four bad-boot inputs)", () => {
   test("1 — server unreachable (fetch throws)", () => {
     expect(
       classifyBootstrap({
@@ -85,7 +85,7 @@ describe("D154 bootstrap health classification (four bad-boot inputs)", () => {
     ).toBe("disconnected");
   });
 
-  test("2 — 200 but body is not Nautilo health (D150-style)", () => {
+  test("2 — 200 but body is not Nautilo health", () => {
     expect(
       classifyBootstrap({
         hasServerUrl: true,

@@ -183,6 +183,26 @@ protocol-major gate. A server label cannot downgrade the Host-attested effect.
 Raw CUA responses, native identifiers, provider paths/prose, and undeclared
 attachments do not enter Relay or model context.
 
+### Computer Use contract compatibility
+
+Desktop advertises the running signed Host's exact `ready.contracts` as optional
+`computerUseHostContracts` capability metadata, separate from the existing grant
+tuple. This is structural discovery, not tool schemas or permission to execute.
+The server intersects these descriptors with the signed catalogue and selects
+the newest matching variant of each tool for the authenticated Desktop. The
+selection is checkpointed for the model/action cycle and isolated across runs;
+normal authority and exact Host descriptor checks still apply at dispatch.
+
+The catalogue and Host retain explicit, tested prior native contracts alongside
+new native contracts. Desktops predating descriptor advertisement use only the
+catalogue's marked compatibility baseline. An empty or malformed advertisement
+is not legacy omission. Unsupported tools are withheld before schema creation;
+the server never relabels a new schema with an old version or replays an action
+against a replacement Host. A fresh model cycle can select newly adopted support.
+Compatibility is release-reviewed, not a promise to support every past version.
+This advertisement requires a generic Desktop update; future operation schemas
+continue to belong to the independently released Host and catalogue.
+
 ### Computer Use execution lifetime
 
 An admitted, signal-owned `computer_use` dispatch has no generic Relay RPC

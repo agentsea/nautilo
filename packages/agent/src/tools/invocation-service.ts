@@ -4,6 +4,7 @@ import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
 import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
 import { parseNativeDecisionPlan } from "../graph/native-decision-plan";
 import { currentNativeDecision, nativeDecisionDispatchError } from "../graph/native-decision";
+import { computerUseContractSupportedForState } from "../config/computer-use-catalogue/live-selection";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
 import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
@@ -3471,6 +3472,9 @@ async function executeViaRelayRaw(
     }
     relayId = binding!.relayId;
     desktopAutomationBinding = binding!;
+    if (computerUseRequest === null || !computerUseContractSupportedForState(state, computerUseRequest.contract)) {
+      return { ok: false, errorMessage: "Computer Use Host support changed before dispatch. Refresh the connected Host and tool catalogue; no operation was sent.", relayUnavailable: false };
+    }
   }
   const taskContinuation = state.taskReportBackContinuation;
   const hasTaskContinuation = hasAvailableTaskReportBackContinuation(taskContinuation);

@@ -23,14 +23,14 @@ const snapshot = {
   grantGeneration: 1,
   provider: "cua" as const,
   providerGeneration: "provider-generation-1",
-  supportedActions: ["focus", "click"] as const,
-  supportsTargetedObservation: true,
-  supportsVerification: true,
-  supportsWindowCreation: false,
-  supportsElementTargeting: true,
 };
 
 describe("Cua-only relay capability projection", () => {
+  test("keeps Host descriptors separate from the unchanged legacy grant tuple", () => {
+    expect(projectComputerUseRelayCapabilities({ ...snapshot, hostContracts: [] })).toEqual({
+      canControlDesktop: true, desktopAutomation: snapshot, computerUseHostContracts: [],
+    });
+  });
   test("does not advertise desktop control while Computer Use is Off or Cua is unavailable", () => {
     expect(projectComputerUseRelayCapabilities(undefined)).toEqual({ canControlDesktop: false });
   });

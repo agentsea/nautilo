@@ -17,6 +17,8 @@ import { preModelNode } from "../nodes/pre-model";
 import { createBrowserDecisionNode } from "../nodes/browser-decision";
 import { currentBrowserDecision } from "../graph/browser-decision";
 import { currentNativeDecision } from "../graph/native-decision";
+import { computerUseContractsForState } from "../config/computer-use-catalogue/live-selection";
+import { withComputerUseContractSelection } from "../config/computer-use-catalogue/selection";
 import { createNativeDecisionNode } from "../nodes/native-decision";
 import { agentNode } from "../nodes/agent";
 import {
@@ -247,22 +249,31 @@ export function createNautiloGraph(
       : { fullEncryptionOnlyForState: deps.fullEncryptionOnlyForState }),
   });
 
+  function scoped<A extends unknown[], R>(node: (state: NautiloState, ...args: A) => R) {
+    return (state: NautiloState, ...args: A) => withComputerUseContractSelection(
+      state.computerUseContractSelection ?? [], () => node(state, ...args),
+    );
+  }
   const workflow = new StateGraph(NautiloStateAnnotation)
-    .addNode("pre_model", async (state, config) => ({
-      ...await draftNodes.prepare(state, config),
-      // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
-      browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
-      nativeDecision: state.nativeDecision ? { ...state.nativeDecision, phase: "handoff" as const, pending: null } : null,
-    }))
-    .addNode("browser_decision", createBrowserDecisionNode(deps))
-    .addNode("native_decision", createNativeDecisionNode(deps))
-    .addNode("agent", draftNodes.agent)
-    .addNode("model_output_preflight", modelOutputPreflightNode)
-    .addNode("projection_preflight", graphProjectionPreflightNode)
-    .addNode("ordinary_content_access_preflight", createOrdinaryContentAccessPreflightNode(deps?.ordinaryContentAccessForState, deps?.isPinEnrolled))
-    .addNode("post_model", postModelNode)
-    .addNode("tools", graphToolsNode)
-    .addNode("await_reply", awaitReplyNode)
+    .addNode("pre_model", async (state, config) => {
+      const contracts = computerUseContractsForState(state);
+      return withComputerUseContractSelection(contracts, async () => ({
+        ...await draftNodes.prepare(state, config),
+        computerUseContractSelection: contracts,
+        // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
+        browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
+        nativeDecision: state.nativeDecision ? { ...state.nativeDecision, phase: "handoff" as const, pending: null } : null,
+      }));
+    })
+    .addNode("browser_decision", scoped(createBrowserDecisionNode(deps)))
+    .addNode("native_decision", scoped(createNativeDecisionNode(deps)))
+    .addNode("agent", scoped(draftNodes.agent))
+    .addNode("model_output_preflight", scoped(modelOutputPreflightNode))
+    .addNode("projection_preflight", scoped(graphProjectionPreflightNode))
+    .addNode("ordinary_content_access_preflight", scoped(createOrdinaryContentAccessPreflightNode(deps?.ordinaryContentAccessForState, deps?.isPinEnrolled)))
+    .addNode("post_model", scoped(postModelNode))
+    .addNode("tools", scoped(graphToolsNode))
+    .addNode("await_reply", scoped(awaitReplyNode))
     .setEntryPoint("pre_model")
     .addEdge("pre_model", "agent")
     .addEdge("agent", "model_output_preflight")

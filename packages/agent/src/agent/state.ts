@@ -683,6 +683,12 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => null,
   }),
 
+  /** Signed descriptor selection for one model/action cycle, never execution authority. */
+  computerUseContractSelection: Annotation<readonly import("../config/computer-use-catalogue/schema").ComputerUseContractDescriptor[]>({
+    reducer: (_, update) => update,
+    default: () => [],
+  }),
+
   /** immutable executable provider route, distinct from run lineage. */
   desktopAutomationRouteBinding: Annotation<DesktopAutomationRouteBinding | null>({
     reducer: (_, update) => parseDesktopAutomationRouteBinding(update),
@@ -882,6 +888,7 @@ export type NautiloState = Omit<
   | "trustedExecutionEntrypoint"
   | "taskReportBackContinuation"
   | "desktopAutomationProvenance"
+  | "computerUseContractSelection"
   | "desktopAutomationRouteBinding"
   | "computerUseInvocationBindings"
   | "ordinaryContentAccessBindings" | "ordinaryContentAccessRejectedToolCallIds"
@@ -938,6 +945,7 @@ export type NautiloState = Omit<
   taskReportBackContinuation?: import("../runtime/task-report-back-continuation").TaskReportBackContinuation | null;
   /** absent on legacy checkpoints and ordinary node-test fixtures. */
   desktopAutomationProvenance?: DesktopAutomationProvenance | null;
+  computerUseContractSelection?: readonly import("../config/computer-use-catalogue/schema").ComputerUseContractDescriptor[];
   /** absent/malformed graph route state cannot use Computer use. */
   desktopAutomationRouteBinding?: DesktopAutomationRouteBinding | null;
   /** per-call admission metadata; an absent/malformed map is empty. */

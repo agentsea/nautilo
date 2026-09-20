@@ -7,6 +7,12 @@ import {
   computerVerificationReceiptSchema,
   computerVerifyInputSchema,
 } from "@nautilo/computer-use-contracts/native";
+import {
+  NATIVE_COMPATIBILITY_SCHEMAS,
+  projectNativeCompatibilityResult,
+  validateNativeCompatibility,
+} from "@nautilo/computer-use-contracts/native-compatibility";
+import { parseComputerUseHostContract } from "@nautilo/computer-use-host-protocol";
 import type {
   ComputerUseHostAuthorityScope,
   ComputerUseJson,
@@ -245,15 +251,31 @@ export class CuaNativeContractRuntime {
         },
       },
     ];
+    for (const schema of NATIVE_COMPATIBILITY_SCHEMAS) {
+      const current = handlers.find((handler) => handler.contract.contractId === schema.descriptor.contractId)!;
+      handlers.push({
+        contract: parseComputerUseHostContract(schema.descriptor),
+        execute: async (args, context) => {
+          if (!validateNativeCompatibility(args, schema.input)) throw new Error("Native compatibility input rejected");
+          const result = await current.execute(args, context);
+          const projected = projectNativeCompatibilityResult(result.result);
+          if (!validateNativeCompatibility(projected, schema.result)) {
+            result.attachment?.bytes.fill(0);
+            throw new Error("Native compatibility result rejected");
+          }
+          return { ...result, result: jsonRecord(projected) };
+        },
+      });
+    }
     const coordinator = options.coordinator ?? new ComputerUseResourceCoordinator();
     this.handlers = handlers.map((handler) => ({
       contract: handler.contract,
       execute: (args, context) => {
         const scope = options.scopeForAuthority(context.authority);
-        const claims = handler.contract === COMPUTER_USE_NATIVE_CONTRACTS.observe
+        const claims = handler.contract.contractId === COMPUTER_USE_NATIVE_CONTRACTS.observe.contractId
           ? nativeObservationResourceClaims(args, scope, options.registry)
           : [{ key: COMPUTER_USE_WORKSTATION_STATE_RESOURCE,
-              mode: handler.contract === COMPUTER_USE_NATIVE_CONTRACTS.verify ? "read" as const : "write" as const }];
+              mode: handler.contract.contractId === COMPUTER_USE_NATIVE_CONTRACTS.verify.contractId ? "read" as const : "write" as const }];
         return coordinator.withClaims(claims, context.signal, async () => {
           try {
             return await handler.execute(args, context);

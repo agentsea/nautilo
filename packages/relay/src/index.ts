@@ -252,6 +252,7 @@ export {
   type DesktopAutomationInvocationBinding,
   type ComputerUseHostDispatchRequest,
   parseComputerUseHostDispatchRequest,
+  parseComputerUseHostContracts,
   RELAY_DESKTOP_AUTOMATION_INVOCATION_BINDING_VERSION,
   type RelayBrowserPageOwnerBinding,
   type RelayDispatchResult,

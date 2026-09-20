@@ -76,6 +76,8 @@ export const computerUseContractCatalogueEntrySchema = z.object({
   }).strict(),
   projection: projectionMetadataSchema,
   classificationProvenance: classificationProvenanceSchema,
+  /** Exact released baseline for Desktop versions predating Host advertisement. */
+  legacyDefault: z.literal(true).optional(),
   /** Release-reviewed only for descriptor versions whose Host coordinates resources. */
   scheduling: z.object({ readConcurrency: z.literal("host_coordinated") }).strict().optional(),
 }).strict().superRefine((entry, context) => {
@@ -114,9 +116,24 @@ const baseCatalogueSchema = z.object({
   if (new Set(keys).size !== keys.length) {
     context.addIssue({ code: "custom", message: "catalogue contract descriptor identities must be unique" });
   }
-  const toolNames = catalogue.contracts.map((entry) => entry.projection.toolName);
-  if (new Set(toolNames).size !== toolNames.length) {
-    context.addIssue({ code: "custom", message: "catalogue model-facing tool names must be unique" });
+  const families = new Map<string, typeof catalogue.contracts>();
+  for (const entry of catalogue.contracts) {
+    const family = families.get(entry.projection.toolName) ?? [];
+    const prior = family[0]?.descriptor;
+    if (prior && (prior.contractNamespace !== entry.descriptor.contractNamespace
+      || prior.contractId !== entry.descriptor.contractId
+      || prior.effectClass !== entry.descriptor.effectClass
+      || prior.replayClass !== entry.descriptor.replayClass
+      || prior.authorityClass !== entry.descriptor.authorityClass)) {
+      context.addIssue({ code: "custom", message: "tool versions must preserve contract family and authority classification" });
+    }
+    family.push(entry);
+    families.set(entry.projection.toolName, family);
+  }
+  for (const family of families.values()) {
+    if (family.filter((entry) => entry.legacyDefault).length > 1) {
+      context.addIssue({ code: "custom", message: "tool family has multiple legacy defaults" });
+    }
   }
   const sorted = [...keys].sort();
   if (keys.some((key, index) => key !== sorted[index])) {

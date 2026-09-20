@@ -14,6 +14,8 @@ import { resolveComputerUseHostToolRequest } from "../../src/config/computer-use
 import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { chooseBrowserAction } from "../../src/graph/browser-choice";
 import type { ChoiceInput, ChoiceResult } from "../../src/providers/choice";
+import { withComputerUseContractSelection } from "../../src/config/computer-use-catalogue/selection";
+import { bundledComputerUseContractCatalogue } from "../../src/config/computer-use-catalogue/catalog";
 
 const modelId = "openrouter:typesafe/jev-1.13";
 const context = `dctx_${"a".repeat(43)}`;
@@ -80,6 +82,14 @@ test("plan stays server-side while the signed Host argument schema remains autho
   for (const invalid of [{ ...args, surprise: true }, { ...args, selector: { role: "slider" } }, { ...args, decisionPlan: { goal: "" } }]) {
     expect(resolveComputerUseHostToolRequest("computer_observe", invalid)).toBeNull();
   }
+});
+
+test("a runnable Jev key does not expose native delegation to a baseline Host", () => {
+  const contracts = bundledComputerUseContractCatalogue.contracts.filter(entry => entry.legacyDefault).map(entry => entry.descriptor);
+  withComputerUseContractSelection(contracts, () => {
+    expect(JSON.stringify(createComputerHostContractTool("computer_observe", { turnId: "turn-1" }).schema)).not.toContain('"decisionPlan"');
+    expect(resolveComputerUseHostToolRequest("computer_observe", { operation: "window_state", target })?.contract.contractVersion).toBe(9);
+  });
 });
 
 test("starts only from a paired singleton checked Host observation, then routes to native decisions", () => {
