@@ -120,7 +120,7 @@ async function systemPromptOf(state: NautiloState): Promise<string> {
 // Roster injection — owner path
 // ===========================================================================
 
-describe("preModelNode — roster injection ", () => {
+describe("preModelNode — roster injection", () => {
   test("injects participants block when roomRoster is populated", async () => {
     const roster: RoomParticipant[] = [
       {

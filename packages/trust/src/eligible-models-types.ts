@@ -140,7 +140,7 @@ export interface ResolvedCatalogFeatures {
  * resolver, privacy grades, intelligence tiers, cost coefficients, sync token
  * limits, credential detection) — it does NOT duplicate provider parsing or
  * metadata tables. All accessors are local / cache-backed: list/get never
- * awaits a network fetch ( decision; verified by a fetch-throws test).
+ * awaits a network fetch (verified by a fetch-throws test).
  */
 export interface ResolvedCatalogModel {
   // --- identity ---

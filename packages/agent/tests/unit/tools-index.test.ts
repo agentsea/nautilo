@@ -169,7 +169,7 @@ describe("tool catalog registration", () => {
     expect(names).toContain("verify_identity");
   });
 
-  test("without toolPolicy cloud tools visible regardless of trustTier ", () => {
+  test("without toolPolicy cloud tools visible regardless of trustTier", () => {
     const snap = catalog.getFiltered();
     const names = snap.entries.map((e) => e.name);
     expect(names).toContain("discover_tools");

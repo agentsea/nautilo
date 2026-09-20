@@ -29,7 +29,7 @@ const CANON: Record<string, CanonEntry> = {
   get_room_members:   { impact: "read-only",   standardVerb: "auto" },
   // emoji reaction; trivially reversible + bounded, auto for all levels.
   react:              { impact: "low",          standardVerb: "auto" },
-  //  / hybrid approval reads LLM `sensitivity`; catalog impact
+  // Hybrid approval reads LLM `sensitivity`; catalog impact
   // stays destructive as fallback tier routing.
   share_memory:       { impact: "destructive", standardVerb: "ask" },
   // same hybrid approval pattern as share_memory; impact stays
@@ -44,8 +44,8 @@ const CANON: Record<string, CanonEntry> = {
   task:               { impact: "low",         standardVerb: "auto" },
   // Phase 3 intent shortcuts (thin createTask wrappers). in_scope /
   // in_background are low (auto); in_private_namespace carries the
-  // destructive privacy-downgrade gate ( removed the legacy
-  // do_in_private_namespace it used to mirror).
+  // destructive privacy-downgrade gate after removal of the legacy
+  // do_in_private_namespace tool it used to mirror.
   in_scope:           { impact: "low",         standardVerb: "auto" },
   in_background:      { impact: "low",         standardVerb: "auto" },
   schedule:           { impact: "low",         standardVerb: "auto" },
@@ -70,7 +70,7 @@ const CANON: Record<string, CanonEntry> = {
   // source (approval dock + HIL routing read it, not this tag).
   // Phase 2's verb map runs at the tool level; "ask" is correct as
   // the catalog fallback until the composite-verb approval-dock path
-  // (G4 commit 11) takes over for `file.<command>` calls.
+  // takes over for `file.<command>` calls.
   file:               { impact: "destructive", standardVerb: "ask" },
   // contextual multi-file text mutation. The explicit prove_it
   // approval gate in register-all is authoritative for this destructive tool.
@@ -106,7 +106,7 @@ const CANON: Record<string, CanonEntry> = {
   // operator decision: no PIN.
   terminal:           { impact: "high",        standardVerb: "auto" },
 
-  //  Computer Use entries are intentionally absent from this static map.
+  // Computer Use entries are intentionally absent from this static map.
   // Their signed active catalogue descriptors derive impact below, so adding
   // a compatible contract never requires editing this compiled canon.
   // embedded SaaS browser tools (observe + routine control; no approval).
@@ -136,7 +136,7 @@ const CANON: Record<string, CanonEntry> = {
 
   // --- Config ---
   // update_config / regenerate_soul: destructive. Today
-  // these fire prove_it via requiresApproval+approvalLevel ( flow).
+  // these fire prove_it via requiresApproval+approvalLevel.
   // Phase 2 decision: keep that flow AND the verb map (belt-and-
   // suspenders), or migrate to the verb map alone. For now both exist;
   // the impact flip is preparatory.
@@ -147,7 +147,7 @@ const CANON: Record<string, CanonEntry> = {
   use_credential:     { impact: "high",        standardVerb: "auto" },
   delete_connection:  { impact: "destructive", standardVerb: "ask" },
   manage_profile:     { impact: "low",         standardVerb: "auto" },
-  // Stack 163 — the Agent generates + sets her own profile avatar (preview →
+  // The Agent generates + sets her own profile avatar (preview →
   // apply gate). Same tier as manage_profile; low impact → auto verb.
   manage_avatar:      { impact: "low",         standardVerb: "auto" },
   get_current_time:   { impact: "low",         standardVerb: "auto" },
@@ -175,15 +175,15 @@ const CANON: Record<string, CanonEntry> = {
 
   // --- Trust ---
   // verify_identity keeps `impact: "high"` — prove_it is enforced by the
-  // existing  flow (`requiresApproval` is NOT set here, but the tool
+  // existing approval flow (`requiresApproval` is NOT set here, but the tool
   // itself handles PIN challenges internally). Verb-map auto at standard
   // is the correct outcome; the tool does not want a second prompt layer.
   verify_identity:    { impact: "high",        standardVerb: "auto" },
 
   // --- Meta ---
   discover_tools:     { impact: "read-only",   standardVerb: "auto" },
-  // bounded, read-only resolved model catalog discovery.
   evaluate_decisions: { impact: "low", standardVerb: "auto" },
+  // Bounded, read-only resolved model catalog discovery.
   discover_models:    { impact: "read-only",   standardVerb: "auto" },
   activate_tools:     { impact: "read-only",   standardVerb: "auto" },
   deactivate_tools:   { impact: "read-only",   standardVerb: "auto" },
@@ -197,7 +197,7 @@ const CANON: Record<string, CanonEntry> = {
   eject:              { impact: "read-only",   standardVerb: "auto" },
 
   // --- execute_artifact ---
-  //  Sprint 2 — sandboxed script execution. Catalog impact is
+  // Sandboxed script execution. Catalog impact is
   // destructive because it runs code (even though contained to artifact
   // zones by @nautilo/sandbox). The tool also sets requiresApproval +
   // approvalLevel=prove_it in register-all.ts; this canon pins only the

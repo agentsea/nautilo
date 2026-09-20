@@ -125,7 +125,7 @@ export interface CheckResult {
 }
 
 /**
- *  (Logto cluster): single MODE_REGISTRY entry as it surfaces to UI / CLI
+ * Logto cluster: single MODE_REGISTRY entry as it surfaces to UI / CLI
  * consumers. `value` is already redacted when appropriate — never the raw
  * env. Callers should not need to know the underlying `redact` flag, but
  * `redacted: true` is exposed for UI affordances like a "show secret" gate.
