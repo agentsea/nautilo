@@ -17,6 +17,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Server Controls → Models now selects the speech model for all Genies from the model catalog. Conversational is the catalog default; Genie voices remain independent, and changes apply to the next reply. The panel keeps Save changes visible and marks unsaved speech selections separately from the active model.
 - Voice replies now stream to native iOS and Android players as audio arrives. Stop, Room changes, reconnection, and backgrounding discard stale playback; Genie voice assignments remain unchanged.
 
+- Routine native Computer Use can delegate control selection to an available
+  decision model through the existing observation tool. Fresh controls and exact
+  supplied arguments become compact choices; ordinary action admission, human
+  interruption and usage accounting remain in place. Unknown effects are fenced
+  against replay across refreshed handles, while unrelated recovery remains
+  available. Ordinary Computer Use does not require a decision model.
+
 Changes on `main` after the source used for Desktop 0.14.44, plus the maintenance
 changes recorded here. Inclusion does not assert a server deployment, Mobile
 store update, or Desktop/Host installation.

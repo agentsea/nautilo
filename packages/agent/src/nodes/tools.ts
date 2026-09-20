@@ -1,4 +1,5 @@
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
+import { settleNativeDecision, nativeDecisionHandoffMessage } from "../graph/native-decision";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
@@ -470,6 +471,7 @@ function settleToolsNode(
   );
   const decisionModel = resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly });
   const browserDecision = settleBrowserDecision(state, executedCalls, results, remainingToolCalls, decisionModel?.id ?? "");
+  const nativeDecision = settleNativeDecision(state, executedCalls, results, remainingToolCalls, decisionModel?.id ?? "");
   const requestedBrowserDelegation = executedCalls.some((call) => interpretBrowserDecisionCall(call).requestedDelegation);
   const messagesWithResults = mergeMessagesPreservingInvariants(state.messages, [...results]);
   const browserHandoff = requestedBrowserDelegation
@@ -482,9 +484,11 @@ function settleToolsNode(
     && browserDecision.reason !== "ordinary_genie_control"
     ? [browserDecisionHandoffMessage(messagesWithResults, browserDecision)] : [];
   return {
-    messages: mergeMessagesPreservingInvariants(messagesWithResults, browserHandoff),
+    messages: mergeMessagesPreservingInvariants(messagesWithResults, [...browserHandoff,
+      ...(nativeDecision?.phase === "handoff" && nativeDecision.reason !== "ordinary_genie_control" ? [nativeDecisionHandoffMessage(nativeDecision)] : [])]),
     approvedToolCalls: remainingToolCalls,
     browserDecision,
+    nativeDecision,
     requiredHostRelays: remainingHostRelays,
     computerUseInvocationBindings: remainingComputerUseBindings,
     ordinaryContentAccessBindings: Object.fromEntries(

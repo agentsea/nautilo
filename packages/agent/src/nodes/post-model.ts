@@ -3,6 +3,7 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { interrupt, task } from "@langchain/langgraph";
 import { randomUUID } from "node:crypto";
+import { nativeDecisionDispatchError } from "../graph/native-decision";
 import type { NautiloState } from "../agent/state";
 import type { PolicyResolver, ToolAccessDecision } from "@nautilo/trust";
 import { getToolCatalog } from "@nautilo/catalog";
@@ -107,16 +108,16 @@ import {
 // Interrupt payloads
 // ---------------------------------------------------------------------------
 
-/** Existing prove_it payload (M036). Unchanged. */
+/** Existing prove_it payload. */
 interface ProveItInterruptPayload {
   type: "prove_it_challenge";
   tools: ProveItToolInfo[];
-  /** M075 — WS user-scoped delivery + resume auth. */
+  /** WS user-scoped delivery + resume auth. */
   userId?: string;
 }
 
 /**
- * M054 — pre-prove_it enrollment challenge.
+ * Pre-prove_it enrollment challenge.
  *
  * Fires when a `prove_it_challenge` is about to be raised, the caller
  * supplied `deps.isPinEnrolled`, and the Logto-authenticated user
@@ -140,10 +141,10 @@ interface IdentityChallengeEnrollPinPayload {
 }
 
 /**
- * M054 — dependency for the enrollPin pre-step.
+ * Dependency for the enrollPin pre-step.
  *
  * Optional so existing callers (and unit tests) can omit it; the
- * pre-step is then never fired and the M036 prove_it flow runs as
+ * pre-step is then never fired and the existing prove_it flow runs as
  * before. Production wires this from `createNautiloGraph`'s deps.
  */
 export interface PostModelDeps {
@@ -155,14 +156,14 @@ export interface PostModelDeps {
   /** Current server policy gate; never inferred from checkpointed state. */
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
   /**
-   * M271 — server/runtime-owned exact invocation binding for organized Room
+   * Server/runtime-owned exact invocation binding for organized Room
    * recall. Undefined keeps recall_records absent. The Agent never constructs
    * authority or repository selection from graph state itself.
    */
   recallRecordsPortForState?: RecallRecordsPortForState;
   isPinEnrolled?: (userId: string) => Promise<boolean>;
   /**
-   * M037 — invoked when a pending `ask` (or `auto`-anomaly) tool call is
+   * Invoked when a pending `ask` (or `auto`-anomaly) tool call is
    * auto-approved by a matching standing approval, so the caller can write
    * a `security-audit-log` `approval_auto_approved` row. Optional: the
    * agent package cannot import the server's audit writer, so the default
@@ -177,7 +178,7 @@ export interface PostModelDeps {
     standingApprovalId: string;
   }) => void;
   /**
-   * M037 — injectable command-approval DB functions. Default to the real
+   * Injectable command-approval DB functions. Default to the real
    * `@nautilo/trust` implementations; unit tests inject stubs so they never
    * touch Postgres.
    */
@@ -186,9 +187,9 @@ export interface PostModelDeps {
   matchCapabilityApproval?: typeof matchCapabilityApproval;
   createCapabilityApproval?: typeof createCapabilityApproval;
   /**
-   * D418 task 3.2.5 — server-owned Full Workstation approval override
+   * Server-owned Full Workstation approval override
    * resolver. When present, Pass 2 consults it for each `ask` / `prove_it` /
-   * `auto`-anomaly candidate BEFORE batching (and BEFORE the M037 standing-
+   * `auto`-anomaly candidate BEFORE batching (and BEFORE the standing-
    * approval matcher). A `{ override: "auto" }` decision moves the call to
    * `approved` (suppressing the prompt); a `{ override: "none" }` decision
    * leaves the normal approval logic intact (the matcher / interrupt path
@@ -196,7 +197,7 @@ export interface PostModelDeps {
    * the resolver is not consulted for it.
    *
    * Fail-closed by construction: the resolver reads the LIVE server session
-   * registry, so a bare D375-style client Auto-Approve flag cannot satisfy
+   * registry, so a bare client Auto-Approve flag cannot satisfy
    * it (the server-side evidence is authoritative). A throw is swallowed +
    * warned and treated as `none` so a resolver bug can never widen approval.
    * Skipped entirely for anonymous turns (no `state.userId`) so client-only
@@ -208,16 +209,15 @@ export interface PostModelDeps {
    */
   resolveWorkstationApprovalOverride?: WorkstationApprovalOverrideResolver;
   /**
-   * D516 — semantic desktop admission is not a generic approval override.
-   * It returns an exact Electron binding or a hard denial. Until toolsNode
-   * owns durable per-call binding delivery, even an admitted result remains
-   * intentionally unconnected and the tool stays unavailable.
+   * Semantic desktop admission is not a generic approval override.
+   * It returns an exact Electron binding or a hard denial. The tools node
+   * revalidates that binding before dispatch through the Computer Use Host.
    */
   resolveComputerUseAdmission?: ComputerUseAdmissionResolver;
-  /** D516 — fresh foreground ingress resolver; never consulted by a child/resume. */
+  /** Fresh foreground ingress resolver; never consulted by a child/resume. */
   resolveComputerUseRootGrant?: ComputerUseRootGrantResolver;
   /**
-   * D538's sole live execution-lane resolver. The tools node calls it after
+   * The sole live execution-lane resolver. The tools node calls it after
    * exact relay selection and immediately before dispatch. It is server-owned
    * and a non-admission always leaves the contained path intact.
    */
@@ -225,7 +225,7 @@ export interface PostModelDeps {
 }
 
 /**
- * D418 task 3.2.5 — the per-dispatch request the post-model hands to the
+ * The per-dispatch request the post-model hands to the
  * Full Workstation override resolver. Carries everything the resolver needs
  * to build the live evidence bundle: the authenticated subject, the tool
  * call, and the turn's resolved actor / room / two-path context. The
@@ -243,10 +243,10 @@ export interface WorkstationApprovalOverrideRequest {
   readonly roomId: string;
   readonly currentFolder: string;
   readonly workspacePath: string;
-  /** D458 — paired-mobile turns pin any Workstation plan to this exact host. */
+  /** Paired-mobile turns pin any Workstation plan to this exact host. */
   readonly requiredRelayId?: string;
   /**
-   * D418 Commit 4 — request-side audit envelope (ip / userAgent) from the
+   * Request-side audit envelope (ip / userAgent) from the
    * executing turn's `securityAuditClientMeta`, stamped onto the redacted
    * `workstation_admission` audit row by the server-side resolver. `null`
    * for background / resume-only paths that omit it (the audit sink falls
@@ -256,7 +256,7 @@ export interface WorkstationApprovalOverrideRequest {
 }
 
 /**
- * D418 task 3.2.5 — server-owned resolver that returns one Workstation
+ * Server-owned resolver that returns one Workstation
  * execution-admission decision for one dispatch. `auto` ⇒ the caller MAY
  * suppress the normal `ask` / `prove_it` prompt; `none` ⇒ the caller MUST
  * leave the normal approval logic intact (NOT an execution denial). Sync or
@@ -300,7 +300,7 @@ export type UncontainedHostCommandsDispatchResolver = (
     | { readonly admitted: false; readonly reason: string }
   >;
 
-/** D061 Phase 2: new ask-verb payload. Client presents four-button dialog. */
+/** Ask-verb payload. Client presents four-button dialog. */
 export interface ApprovalAskInterruptPayload {
   type: "approval_ask";
   approvalId: string;
@@ -309,7 +309,7 @@ export interface ApprovalAskInterruptPayload {
   reasonCode: ApprovalAskReason;
   network?: ApprovalAskNetworkContext;
   allowedVerbs: ApprovalReplyVerb[];
-  /** M037 — per-tool generalization grain, index-aligned with `tools`. */
+  /** Per-tool generalization grain, index-aligned with `tools`. */
   scopeInfo?: ApprovalScopeInfo[];
   localMcpInstall?: LocalMcpInstallApproval;
   mediaGeneration?: MediaGenerationApproval;
@@ -320,23 +320,23 @@ export interface ApprovalAskInterruptPayload {
 
 /** Shape the client returns via /api/auth/approval-reply.
  *  `verb` is present for ask-interrupts; absent for legacy prove_it
- *  interrupts (which just returns `{ approved }` per M036). */
+ *  interrupts (which just return `{ approved }`). */
 interface ResumeDecision {
   approved?: boolean;
   verb?: ApprovalReplyVerb;
-  /** D503 exact approval receipt; mandatory with the digest for local MCPs. */
+  /** Exact approval receipt; mandatory with the digest for local MCPs. */
   localMcpInstallApprovalId?: string;
-  /** D503 echo of the exact digest rendered in the approval dock. */
+  /** Echo of the exact digest rendered in the approval dock. */
   localMcpInstallDigest?: string;
   /** The reply lane supplied by the authenticated resume route. */
   localMcpInstallLaneKey?: string;
-  /** D525 exact paid media receipt echoed by the authenticated resume route. */
+  /** Exact paid media receipt echoed by the authenticated resume route. */
   mediaGenerationApprovalId?: string;
   mediaGenerationDigest?: string;
   mediaGenerationQuoteDigest?: string;
   mediaGenerationLaneKey?: string;
   mediaGenerationRevision?: number;
-  /** D500 exact Electron SSH preparation approval receipt. */
+  /** Exact Electron SSH preparation approval receipt. */
   structuredSshApprovalId?: string;
 }
 
@@ -356,11 +356,11 @@ interface HostChoiceResumeDecision {
  *   1. Run `PolicyResolver.checkToolAccess` for each tool call (existing).
  *      - `allow` / `read_only`  → approve
  *      - `forbidden`            → deny with ToolMessage
- *      - `require_approval`     → hand to the D061 verb map (step 2)
+ *      - `require_approval`     → hand to the verb map (step 2)
  *
- *   2. For each `require_approval` tool, consult the D061 verb map via
+ *   2. For each `require_approval` tool, consult the verb map via
  *      `resolveApproval()`:
- *      - If an M037 standing approval (room/server) matches → auto-approve
+ *      - If a standing approval (room/server) matches → auto-approve
  *        (bypass interrupts); emit a grep-able auto-approval log line.
  *      - Else `verb === "ask"`      → new approval_ask interrupt
  *      -       `verb === "prove_it"` → existing prove_it interrupt
@@ -370,7 +370,7 @@ interface HostChoiceResumeDecision {
  *                                      trust disagreement anomaly).
  *
  *   3. Fire interrupts (prove_it first if any, then ask). On the ask
- *      reply, write room/always standing-approval rules to the DB (M037).
+ *      reply, write room/always standing-approval rules to the DB.
  *
  * If no PolicyResolver is provided, fail closed (rejects all tool calls).
  */
@@ -380,7 +380,7 @@ export function createPostModelNode(
 ) {
   return async (state: NautiloState): Promise<Partial<NautiloState>> => {
     const terminalMessage = state.messages[state.messages.length - 1];
-    // D476 preflight may append rejection ToolMessages for selected calls in a
+    // Projection preflight may append rejection ToolMessages for selected calls in a
     // mixed batch. Those are already paired, but the valid sibling calls must
     // still reach approval. Only walk back across those known preflight
     // rejections; ordinary completed tool turns remain terminal as before.
@@ -418,7 +418,7 @@ export function createPostModelNode(
       };
     }
 
-    // M037 — injectable DB fns (default real; unit tests stub these).
+    // Injectable DB fns (default real; unit tests stub these).
     const matchFn = deps?.matchCommandApproval ?? matchCommandApproval;
     const createFn = deps?.createCommandApproval ?? createCommandApproval;
     const matchCapabilityFn = deps?.matchCapabilityApproval ?? matchCapabilityApproval;
@@ -591,7 +591,7 @@ export function createPostModelNode(
       switch (decision.type) {
         case "allow":
         case "read_only":
-          // D476: an open-Room projection is never an automatic/read-only
+          // An open-Room projection is never an automatic/read-only
           // action even when another policy layer says allow. Its server
           // snapshot has already bound the audience before this point.
           if (isProjectionLikeShareCall(tc)) {
@@ -637,7 +637,7 @@ export function createPostModelNode(
       }
     }
 
-    // D458 — resolve verified ordinary-request host scope before any approval override,
+    // Resolve verified ordinary-request host scope before any approval override,
     // standing-approval lookup, or user approval. Zero eligible hosts is a
     // stable denial; one is pinned automatically; several pause for an
     // opaque, one-use human choice. The tools node resolves again immediately
@@ -747,12 +747,10 @@ export function createPostModelNode(
       pending = await resolveCandidates(pending);
     }
 
-    // D516 — semantic desktop tools never enter generic ask / prove_it /
+    // Semantic desktop tools never enter generic ask / prove_it /
     // Auto-Approve routing. A server-owned resolver must establish exact
-    // live authority first. This wave has deliberately not added a durable
-    // per-call binding channel from post-model to toolsNode/Electron, so an
-    // otherwise-admitted result remains unavailable rather than being
-    // downgraded to an unauthenticated relay call.
+    // live authority first. The per-call binding is retained for tools-node
+    // revalidation; it cannot become an unauthenticated Relay call.
     const computerAdmissionResolver = deps?.resolveComputerUseAdmission;
     const computerUseInvocationBindings = new Map<string, ComputerUseInvocationBinding>();
     const computerUseNeedsUser: Array<{
@@ -771,6 +769,11 @@ export function createPostModelNode(
         }
         if (!isSupportedComputerUseToolName(tc.name)) {
           forbidden.push({ tc, reason: "unsupported semantic computer tool" });
+          continue;
+        }
+        const nativeError = nativeDecisionDispatchError(state, tc);
+        if (nativeError) {
+          forbidden.push({ tc, reason: nativeError });
           continue;
         }
         if (!computerAdmissionResolver || !tc.id) {
@@ -829,12 +832,12 @@ export function createPostModelNode(
     });
 
     // -----------------------------------------------------------------
-    // Pass 2 — D061 verb map on `pending`
+    // Pass 2 — verb map on `pending`
     // -----------------------------------------------------------------
 
     const level = resolveSecurityLevel();
     // Lane key still drives sandbox/network widening stores (separate from
-    // the M037 command-approval DB). Only compute it when there's pending
+    // the command-approval DB). Only compute it when there's pending
     // approval work — otherwise a read-only-tools request from a state
     // missing threadId would fail-closed unnecessarily.
     const laneKey = pending.length > 0 ? resolveLaneKey(state) : "";
@@ -843,7 +846,7 @@ export function createPostModelNode(
     const proveItBatch: ToolCall[] = [];
     const blockedBatch: Array<{ tc: ToolCall; reason: string }> = [];
 
-    // M037 — `ask` and `auto`-anomaly calls consult the DB command-approval
+    // `ask` and `auto`-anomaly calls consult the DB command-approval
     // matcher. prove_it / block NEVER consult it (the safety backstop). We
     // classify all candidates first, then run the lookups concurrently to
     // avoid N sequential round-trips on a multi-tool batch.
@@ -868,7 +871,7 @@ export function createPostModelNode(
         proveItBatch.push(tc);
         continue;
       }
-      // D503: an install is always a single explicit approval. It does not
+      // An install is always a single explicit approval. It does not
       // consult Full Workstation admission, a standing command rule, or the
       // security-level verb map: those mechanisms are deliberately incapable
       // of authorizing an executable launch that has not yet been rendered.
@@ -906,7 +909,7 @@ export function createPostModelNode(
         });
         continue;
       }
-      // D525: paid media is authorized only by the exact server-prepared
+      // Paid media is authorized only by the exact server-prepared
       // quote for this checkpoint. Workstation mode, standing approvals,
       // and the generic security verb map cannot bypass that review.
       // The unified video's closed `action="prepare"` shape is deterministic
@@ -933,10 +936,10 @@ export function createPostModelNode(
       const approval = ordinaryApprovalByCall.get(tc) ?? resolveApprovalForToolCall(tc, level);
 
       // -----------------------------------------------------------------
-      // D418 task 3.2.5 — Full Workstation approval override seam.
+      // Full Workstation approval override seam.
       //
       // Consult the server-owned resolver BEFORE batching ask / prove_it /
-      // auto-anomaly candidates (and BEFORE the M037 standing-approval
+      // auto-anomaly candidates (and BEFORE the standing-approval
       // matcher). `auto` moves the call straight to `approved` (no prompt,
       // no matcher); `none` falls through to the existing verb-map path
       // unchanged. `block` is a hard policy stop — the resolver is NEVER
@@ -1096,7 +1099,7 @@ export function createPostModelNode(
       denialMessages.push(denialMessage(rejected.tc, rejected.error));
     }
 
-    // D503 local MCP installs are an intentionally one-tool approval batch.
+    // Local MCP installs are an intentionally one-tool approval batch.
     // Prepare before emitting the interrupt so the dock is populated from the
     // server-normalized request + relay preflight, not from model-provided
     // text. `prepareInstall` is idempotent for this checkpoint/tool/approval
@@ -1291,7 +1294,7 @@ export function createPostModelNode(
       );
     }
 
-    // D516 — a detached/foreign semantic computer call is neither an
+    // A detached/foreign semantic computer call is neither an
     // approval request nor a missing grant that Auto-Approve can repair. The
     // content-free typed payload lets a caller locate the original tool call
     // and reissue its intent from a new eligible foreground Human run.
@@ -1349,7 +1352,7 @@ export function createPostModelNode(
       };
     }
 
-    // Fire prove_it interrupt if needed (existing M036 shape)
+    // Fire prove_it interrupt if needed.
     // -----------------------------------------------------------------
 
     if (proveItBatch.length > 0) {
@@ -1357,12 +1360,12 @@ export function createPostModelNode(
         .map((toolCall) => toolCall.id)
         .filter((id): id is string => typeof id === "string")
         .sort();
-      // M054 — the Logto JWT establishes identity but a PIN is what
+      // The Logto JWT establishes identity but a PIN is what
       // answers `prove_it`'s "are you really sure?" prompt. If the user doesn't have one yet,
       // raise an enrollPin challenge first; on resume we fall
       // through to the prove_it_challenge below as if the PIN had
       // always been there. The check is gated on a deps callback
-      // so back-compat callers (and unit tests) get the M036 flow
+      // so back-compat callers (and unit tests) get the existing flow
       // verbatim.
       if (
         deps?.isPinEnrolled &&
@@ -1447,7 +1450,7 @@ export function createPostModelNode(
     }
 
     // -----------------------------------------------------------------
-    // Fire approval_ask interrupt if needed (D061 Phase 2 new path)
+    // Fire approval_ask interrupt if needed.
     // -----------------------------------------------------------------
 
     if (askBatch.length > 0) {
@@ -1553,7 +1556,7 @@ export function createPostModelNode(
         };
       }
 
-      // M037 — persist room / always standing approvals before approving.
+      // Persist room / always standing approvals before approving.
       // An expired exact share must not mint a standing permission on recovery.
       askBatch = askBatch.filter(({ tc }) => approveFresh([tc]).length > 0);
       for (const { tc } of askBatch) {
@@ -1800,7 +1803,7 @@ function toolEntry(tc: ToolCall): ProveItToolInfo {
   return entry;
 }
 
-/** @internal Exported for D476 approval-payload redaction tests. */
+/** @internal Exported for approval-payload redaction tests. */
 export async function interruptToolEntry(
   tc: ToolCall,
   state: NautiloState,
@@ -1910,7 +1913,7 @@ function resolveSecurityLevel(): SecurityLevel {
  * a silent cross-user privilege escalation waiting to happen (every
  * orphan request would share one global "lane-unknown" bucket).
  *
- * See D061 PR #58 follow-up M-1 for the original sentinel-fallback bug.
+ * Never use a shared sentinel as a missing lane's fallback.
  */
 function resolveLaneKey(state: NautiloState): string {
   if (state.approvalLaneKey) return state.approvalLaneKey;
@@ -2128,7 +2131,7 @@ export function extractStaticNetworkApproval(tc: ToolCall): ApprovalAskNetworkCo
 }
 
 /**
- * M079 — parse hybrid `sensitivity` from tool args; fail-closed to sensitive.
+ * Parse hybrid `sensitivity` from tool args; fail-closed to sensitive.
  *
  * Exported for unit tests; not the primary module API.
  */
@@ -2143,7 +2146,7 @@ export function readHybridSensitivity(
  * from the catalog, runs the command scanner if it's run_shell, and
  * checks the external-binary heuristic. All three feed the resolver.
  *
- * Exported for unit tests (M079 hybrid mapping, D079 file impact).
+ * Exported for hybrid mapping and file-impact unit tests.
  */
 export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): ResolvedApproval {
   const catalog = getToolCatalog();
@@ -2165,7 +2168,7 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
     args?.["include_focused_artifacts"] === true ||
     (Array.isArray(args?.["artifact_ids"]) && args["artifact_ids"].length > 0)
   );
-  // D570 — ordinary ask_peer keeps its established one-confirmation static
+  // Ordinary ask_peer keeps its established one-confirmation static
   // behavior. Only its exact Artifact handoff branch uses hybrid sensitivity,
   // so adding the optional composition cannot make every legacy peer message
   // fail closed to a PIN challenge when `sensitivity` is absent.
@@ -2198,7 +2201,7 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
     );
   }
 
-  // D079 Phase 4 / G2 — the unified `file` tool dispatches on a
+  // The unified `file` tool dispatches on a
   // `command` arg with per-command severity (read_only / destructive_low
   // / destructive / destructive_high) that varies from the tool-level
   // `impact: "destructive"` registered in register-all.ts. Tool-level
@@ -2226,10 +2229,10 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
     );
   }
 
-  // M203 — the `officecli` tool dispatches on a `command` arg and, since M203,
+  // The `officecli` tool dispatches on a `command` arg and
   // supports `zone: "current" | "absolute"` (the user's machine, via the relay
   // byte transport). Its catalog `impact` is "low" (auto), which is correct for
-  // workspace/home/scratch writes (server-owned zones, "her drawer"). But
+  // workspace, home and scratch writes (server-owned zones). But
   // current/absolute MUTATIONS touch the user's machine and must HIL-gate like
   // the `file` tool's current/absolute writes. Read-only office commands stay
   // auto regardless of zone.
@@ -2241,7 +2244,7 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
     );
   }
 
-  // D306 — local-backend `convert` calls are auto-approved upstream in
+  // Local-backend `convert` calls are auto-approved upstream in
   // checkToolAccess (artifact creation, no egress) and never reach here.
   // Anything that does reach here is a CloudConvert egress call → treat as
   // destructive so the verb map returns "ask" (network egress is HIL-gated).
@@ -2252,7 +2255,7 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
     );
   }
 
-  // D503 — install is forced to an explicit ask by the main post-model
+  // Install is forced to an explicit ask by the main post-model
   // admission loop (before workstation or standing-approval handling).
   // Keep this resolver truthful for direct/unit callers too.
   if (tc.name === "manage_local_mcp") {
@@ -2281,7 +2284,7 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
 }
 
 /**
- * D079 Phase 4 — map the `file` tool's command + zone args to an
+ * Map the `file` tool's command + zone args to an
  * effective `ToolImpact` for the existing security/verb-map layer.
  * Keeps the approval pipeline unchanged structurally; just computes
  * a finer-grained impact for the one tool that dispatches on a
@@ -2303,7 +2306,7 @@ export function effectiveFileToolImpact(
 
   const severity = resolveFileCommandPolicy(command);
   // workspace + home alias are "her drawer" — auto-approve writes.
-  // D079 Phase 1's home/scratch aliases still route to workspace at
+  // The home and scratch aliases still route to workspace at
   // the zone-resolver layer; honor here for approval too.
   const isWorkspaceZone = zone === "workspace" || zone === "home" || zone === "scratch";
 
@@ -2341,7 +2344,7 @@ export function effectiveFileToolImpact(
 }
 
 /**
- * M203 — read-only OfficeCLI commands (mirror `READ_ONLY_COMMANDS` in
+ * Read-only OfficeCLI commands (mirror `READ_ONLY_COMMANDS` in
  * `tools/office/officecli.ts`). Everything else is a mutation.
  */
 const OFFICECLI_READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
@@ -2355,10 +2358,10 @@ const OFFICECLI_READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * M203 — map the `officecli` tool's (command, zone) to an effective
+ * Map the `officecli` tool's (command, zone) to an effective
  * `ToolImpact` for the verb map. Parallels `effectiveFileToolImpact`:
  *   - read-only command → read-only (auto at every level, any zone)
- *   - mutation on workspace/home/scratch → low (auto — server-owned zones)
+ *   - mutation on workspace, home or scratch → low (auto — server-owned zones)
  *   - mutation on current/absolute → destructive (ask — touches the user's
  *     machine, parity with the `file` tool's current/absolute single-file
  *     mutations)
@@ -2383,8 +2386,7 @@ export function effectiveOfficeCliImpact(
 /**
  * Build the `approval_ask` interrupt payload from a batch of
  * ask-pending tools. Pure function — exported for unit tests
- * (D061 PR #58 follow-up M-3 — assert payload shape directly
- * rather than inferring from "the node threw").
+ * that assert payload shape directly rather than inferring from a throw.
  *
  * Responsibilities:
  * - Map each tool call to the `{ name, args, id? }` shape the
@@ -2447,8 +2449,7 @@ function networkContextForAskBatch(
 
 /**
  * Classify why the ask dialog is firing, for client-side theming /
- * analytics. Pure function — exported for unit tests (D061 PR #58
- * follow-up M-3 tightens test coverage on the batch path).
+ * analytics. Pure function — exported for batch-path unit tests.
  *
  * Per-entry mapping:
  * - severity === "destructive-high"   → "command-scanner-high"
@@ -2472,9 +2473,8 @@ export function classifyReasonCodeForEntry(entry: { tc: ToolCall; approval: Reso
 /**
  * Ordering of `ApprovalAskReason` by severity — higher index means
  * more severe / more friction. Used to pick the batch's reasonCode
- * via worst-severity-wins (D061 PR #58 follow-up M-6: the previous
- * `askBatch[0]!` pick produced misleading UI context for tools
- * beyond the first in a mixed batch).
+ * via worst-severity-wins, rather than presenting only the first tool's
+ * reason in a mixed batch.
  */
 const REASON_SEVERITY_ORDER: readonly ApprovalAskReason[] = [
   "tier-bump",             // lightest — pure level shift

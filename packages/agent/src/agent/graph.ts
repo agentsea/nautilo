@@ -16,6 +16,8 @@ import { NautiloStateAnnotation, type NautiloState } from "./state";
 import { preModelNode } from "../nodes/pre-model";
 import { createBrowserDecisionNode } from "../nodes/browser-decision";
 import { currentBrowserDecision } from "../graph/browser-decision";
+import { currentNativeDecision } from "../graph/native-decision";
+import { createNativeDecisionNode } from "../nodes/native-decision";
 import { agentNode } from "../nodes/agent";
 import {
   createPostModelNode,
@@ -134,12 +136,14 @@ export function shouldContinue(
  */
 export function shouldContinueAfterTools(
   state: NautiloState,
-): "tools" | "pre_model" | "browser_decision" {
+): "tools" | "pre_model" | "browser_decision" | "native_decision" {
   if (state.approvedToolCalls?.length) return "tools";
   if (state.noProgressPendingCorrection || state.noProgressPendingStop || state.approvalDenied
     || state.modelRejectedToolCallIds?.length || state.projectionRejectedToolCallIds?.length
     || state.ordinaryContentAccessRejectedToolCallIds?.length) return "pre_model";
   const decision = currentBrowserDecision(state);
+  const native = currentNativeDecision(state);
+  if (native?.phase === "decide" || native?.phase === "observe") return "native_decision";
   return decision?.phase === "decide" || decision?.phase === "observe" ? "browser_decision" : "pre_model";
 }
 
@@ -248,8 +252,10 @@ export function createNautiloGraph(
       ...await draftNodes.prepare(state, config),
       // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
       browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
+      nativeDecision: state.nativeDecision ? { ...state.nativeDecision, phase: "handoff" as const, pending: null } : null,
     }))
     .addNode("browser_decision", createBrowserDecisionNode(deps))
+    .addNode("native_decision", createNativeDecisionNode(deps))
     .addNode("agent", draftNodes.agent)
     .addNode("model_output_preflight", modelOutputPreflightNode)
     .addNode("projection_preflight", graphProjectionPreflightNode)
@@ -265,6 +271,11 @@ export function createNautiloGraph(
     .addEdge("ordinary_content_access_preflight", "post_model")
     .addConditionalEdges("post_model", shouldContinue)
     .addConditionalEdges("tools", shouldContinueAfterTools)
+    .addConditionalEdges("native_decision", (state) => {
+      const phase = currentNativeDecision(state)?.phase;
+      return phase === "waiting" ? "model_output_preflight"
+        : phase === "observe" || phase === "decide" ? "native_decision" : "pre_model";
+    })
     .addConditionalEdges("browser_decision", (state) => {
       const phase = currentBrowserDecision(state)?.phase;
       return phase === "waiting" ? "model_output_preflight"

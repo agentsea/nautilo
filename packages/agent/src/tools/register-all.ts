@@ -135,7 +135,7 @@ const COMPUTER_USE_CATALOGUE_SOURCE_SERVER = "computer-use-contract-catalogue";
 function activeComputerUseHostToolRegistrations(): readonly ToolRegistration[] {
   return activeComputerUseHostToolDefinitions().map((definition) => ({
     name: definition.name,
-    factory: () => createComputerHostContractTool(definition.name),
+    factory: (ctx) => createComputerHostContractTool(definition.name, ctx),
     category: "computer",
     executor: "relay",
     trustTier: "standard",

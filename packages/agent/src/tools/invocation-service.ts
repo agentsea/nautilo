@@ -2,6 +2,8 @@ import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
 import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
 import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
+import { parseNativeDecisionPlan } from "../graph/native-decision-plan";
+import { currentNativeDecision, nativeDecisionDispatchError } from "../graph/native-decision";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
 import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
@@ -3381,6 +3383,21 @@ async function executeViaRelayRaw(
   const isStructuredSshOutput = tc.name === "structured_ssh_output";
   const isSemanticComputerUse = isSupportedComputerUseToolName(tc.name);
   const computerUseRequest = resolveComputerUseHostInvocationRequest(tc.name, tc.args);
+  const nativeDecision = currentNativeDecision(state);
+  const nativeDispatchError = nativeDecisionDispatchError(state, tc);
+  if (nativeDispatchError || (nativeDecision && nativeDecision.pending && nativeDecision.pending.id === tc.id
+    && (!opts.signal || opts.signal.aborted
+      || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly }, nativeDecision.modelId)))) {
+    return { ok: false, errorMessage: nativeDispatchError ?? "Native decision authority or model availability changed. No request was sent." };
+  }
+  if (tc.name === "computer_observe" && Object.hasOwn(tc.args, "decisionPlan")) {
+    const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
+    if (!parseNativeDecisionPlan(tc.name, tc.args) || source?.tool_calls?.length !== 1
+      || source.tool_calls[0]?.id !== tc.id
+      || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly })) {
+      return { ok: false, errorMessage: "Native delegation requires one standalone window_state call without selector, a valid decisionPlan and an available decision model. Omit decisionPlan for ordinary Computer Use. No request was sent." };
+    }
+  }
   if (isComputerUseToolName(tc.name) && !isSemanticComputerUse) {
     return {
       ok: false,
@@ -4279,6 +4296,7 @@ async function executeViaRelayRaw(
           ]
         : relayCaps?.allowedRoots;
     const relayDispatchArgs = { ...dispatchArgs };
+    if (tc.name === "computer_observe") delete relayDispatchArgs["decisionPlan"];
     if (tc.name.startsWith("browser_")) {
       if (tc.name === "browser_snapshot" && browserPlan?.kind === "plan") {
         const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));

@@ -434,6 +434,10 @@ export const NautiloStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
     default: () => null,
   }),
+  nativeDecision: Annotation<import("../graph/native-decision").NativeDecisionState | null>({
+    reducer: (_, update) => update,
+    default: () => null,
+  }),
   /**
    * explicit authenticated Human who initiated this foreground turn.
    * Checkpointed with turnId so post-interrupt assistant persistence retains
@@ -888,6 +892,7 @@ export type NautiloState = Omit<
   | "activationLeasesInitialized"
   | "activationIntentAppliedForTurnId"
   | "browserDecision"
+  | "nativeDecision"
   | "noProgressStreaks" | "noProgressPendingCorrection" | "noProgressPendingStop"
   | "projectionSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
   | "identityEnrollmentToolCallIds"
@@ -976,6 +981,7 @@ export type NautiloState = Omit<
   activationIntentAppliedForTurnId?: string;
   /** Absent in legacy checkpoints; defaults to no delegated browser control. */
   browserDecision?: import("../graph/browser-decision").BrowserDecisionState | null;
+  nativeDecision?: import("../graph/native-decision").NativeDecisionState | null;
   /** optional on the public input type; the graph channel defaults both. */
   noProgressStreaks?: ReadonlyMap<string, import("../graph/no-progress").NoProgressStreakEntry>;
   /** optional on the public input type; the graph channel defaults to null. */

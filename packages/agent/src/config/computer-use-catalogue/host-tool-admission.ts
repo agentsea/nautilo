@@ -7,6 +7,7 @@ import {
 } from "@nautilo/computer-use-host-protocol";
 import { getActiveComputerUseContractCatalogueSync } from "./runtime-catalogue";
 import type { ComputerUseContractCatalogueEntry, ComputerUseContractDescriptor } from "./schema";
+import { nativeDecisionHostArguments } from "../../graph/native-decision-plan";
 
 export type ComputerUseHostToolDefinition = Readonly<{
   name: string;
@@ -103,6 +104,7 @@ export function resolveComputerUseHostToolRequest(
 ): Readonly<{ contract: ComputerUseContractDescriptor; arguments: Readonly<Record<string, ComputerUseJson>> }> | null {
   const definition = computerUseHostToolDefinition(name);
   if (definition === null) return null;
+  args = nativeDecisionHostArguments(name, args);
   try {
     if (!validates(args, definition.entry.publicSchemas.input.jsonSchema)) return null;
   } catch { return null; }
