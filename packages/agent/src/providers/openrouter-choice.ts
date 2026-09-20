@@ -61,6 +61,21 @@ function assertNotCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new ChoiceRequestError("cancelled");
 }
 
+/** Recognize structured context errors without retaining provider bodies or echoed data. */
+function contextCapacityExceeded(payload: unknown): boolean {
+  const envelope = object(payload);
+  if (object(envelope?.["detail"])?.["error_type"] === "max_tokens_exceeded") return true;
+  const error = object(envelope?.["error"]);
+  if (error?.["code"] === "context_length_exceeded") return true;
+  const message = error?.["message"];
+  if (typeof message !== "string") return false;
+  // OpenRouter wraps the upstream JSON detail in its HTTP diagnostic string.
+  const wrapped = /^HTTP \d+: (\{.*\})$/s.exec(message);
+  if (!wrapped?.[1]) return false;
+  try { return object(object(JSON.parse(wrapped[1]))?.["detail"])?.["error_type"] === "max_tokens_exceeded"; }
+  catch { return false; }
+}
+
 /** One single-question request. Retry, deadline, and supervision belong to the caller's run. */
 export async function invokeOpenRouterChoice(
   input: OpenRouterChoiceInput,
@@ -122,8 +137,9 @@ export async function invokeOpenRouterChoice(
     throw new ChoiceRequestError("network_error", null, true);
   }
   if (!response.ok) {
-    void response.body?.cancel().catch(() => undefined);
+    const errorPayload: unknown = await response.json().catch(() => null);
     assertNotCancelled(input.signal);
+    if (contextCapacityExceeded(errorPayload)) throw new ChoiceRequestError("context_length_exceeded", response.status);
     throw new ChoiceRequestError("provider_error", response.status,
       [429, 500, 502, 503, 524, 529].includes(response.status));
   }

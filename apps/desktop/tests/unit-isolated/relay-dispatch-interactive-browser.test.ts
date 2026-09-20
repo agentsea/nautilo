@@ -252,14 +252,14 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       guard,
     })).toEqual({
       handled: true,
-      result: { status: "ok", result: "opened" },
+      result: { status: "ok", result: { navigation: { execution: "executed", result: "opened" }, observationFailure: expect.objectContaining({ code: "browser_observation_invalid" }) as unknown } },
     });
     expect(readiness).toEqual([{
       url: "https://example.com/path",
       timeoutMs: 30_000,
     }]);
     expect(waitCalls).toBe(0);
-    expect(executions).toEqual([{
+    expect(executions.slice(0, 1)).toEqual([{
       binary: "/managed/agent-browser",
       argv: [
         "--config", "/owned/browser-config.json",
@@ -315,7 +315,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       guard,
     })).toEqual({
       handled: true,
-      result: { status: "ok", result: "Browser reload completed" },
+      result: { status: "ok", result: { navigation: { execution: "executed", result: "Browser reload completed" }, observationFailure: expect.objectContaining({ code: "browser_observation_invalid" }) as unknown } },
     });
     expect(navigation).toEqual([{ action: "back" }, { action: "reload" }]);
   });
@@ -474,7 +474,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
     const handler = createInteractiveBrowserDispatchHandler(ports({
       exec: async (_binary, argv) => {
         executions.push(argv);
-        return { stdout: argv.includes("--json") ? browserSnapshotJson() : "pressed", stderr: "" };
+        return { stdout: argv.at(-1) === "snapshot" ? browserSnapshotJson() : "pressed", stderr: "" };
       },
     }));
     const snapshot = await handler({ request: request("browser_snapshot"), signal: undefined, guard });
@@ -482,6 +482,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
     expect(await handler({
       request: request("browser_press", {
         key: "Meta+Shift+P",
+        ref: "@e2",
         _requiredSession: "browser-session",
         _requiredObservationId: observationId(snapshot),
       }),
@@ -499,9 +500,37 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       ],
       [
         "--config", "/owned/browser-config.json", "--provider", "nautilo-browser",
-        "--session", "browser-session", "press", "Meta+Shift+P",
+        "--session", "browser-session", "--json", "batch", "--bail",
+        "focus '@e2'", "press 'Meta+Shift+P'",
       ],
     ]);
+  });
+
+  test("treats a failed targeted keyboard batch as an uncertain mutation", async () => {
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      exec: async (_binary, argv) => {
+        if (argv.includes("snapshot")) return { stdout: browserSnapshotJson(), stderr: "" };
+        throw Object.assign(new Error("batch failed"), { stderr: "focus subcommand failed" });
+      },
+    }));
+    const snapshot = await handler({ request: request("browser_snapshot"), signal: undefined, guard });
+
+    expect(await handler({
+      request: request("browser_press", {
+        key: "Enter",
+        ref: "@e2",
+        _requiredSession: "browser-session",
+        _requiredObservationId: observationId(snapshot),
+      }),
+      signal: undefined,
+      guard,
+    })).toMatchObject({
+      result: {
+        status: "error",
+        errorCode: "browser_outcome_unknown",
+        error: expect.stringContaining("focus subcommand failed") as unknown,
+      },
+    });
   });
 
   test("prevents a bound key when its observation became stale", async () => {
@@ -611,11 +640,11 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       }),
       signal: undefined,
       guard,
-    })).toEqual({ handled: true, result: { status: "ok", result: "Browser back completed" } });
+    })).toMatchObject({ handled: true, result: { status: "ok", result: { navigation: { execution: "executed", result: "Browser back completed" }, observation: { browserSessionId: "browser-session" } } } });
     expect(await handler({ request: request("browser_snapshot"), signal: undefined, guard })).toMatchObject({
       result: { status: "ok" },
     });
-    expect(sequence).toEqual(["snapshot", "snapshot", "back", "settle", "snapshot"]);
+    expect(sequence).toEqual(["snapshot", "snapshot", "back", "settle", "snapshot", "snapshot"]);
   });
 
   test("rejects a bound action when its AX snapshot or URL changed", async () => {
@@ -1054,4 +1083,34 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       });
     }
   });
+});
+
+test("navigation supplies fresh refs immediately and admits a read against that exact observation", async () => {
+  const commands: string[][] = [];
+  const handler = createInteractiveBrowserDispatchHandler(ports({ exec: async (_binary, argv) => {
+    commands.push([...argv]);
+    if (argv.includes("eval")) return { stdout: JSON.stringify({ ready: true }) };
+    if (argv.includes("snapshot")) return { stdout: browserSnapshotJson() };
+    return { stdout: argv.includes("open") ? "opened" : "Exact product information" };
+  } }));
+  const opened = await handler({ request: request("browser_open", { url: "https://example.com" }), signal: undefined, guard });
+  expect(opened).toMatchObject({ result: { status: "ok", result: { navigation: { execution: "executed" }, observation: { refs: { e2: { name: "Continue" } } } } } });
+  const result = (opened.result as { result: { observation: { observationId: string } } }).result;
+  const read = await handler({ request: request("browser_read", { ref: "@e2", _requiredSession: "browser-session", _requiredObservationId: result.observation.observationId }), signal: undefined, guard });
+  expect(read).toMatchObject({ result: { status: "ok", result: "Exact product information" } });
+  expect(commands.filter(argv => argv.includes("open"))).toHaveLength(1);
+});
+
+test("post-navigation observation failure reports completed navigation without replaying it", async () => {
+  let opens = 0;
+  const handler = createInteractiveBrowserDispatchHandler(ports({ exec: async (_binary, argv) => {
+    if (argv.includes("open")) { opens++; return { stdout: "opened" }; }
+    throw new Error("Page observation transport unavailable");
+  } }));
+  expect(await handler({ request: request("browser_open", { url: "https://example.com" }), signal: undefined, guard })).toMatchObject({
+    result: { status: "ok", result: { navigation: { execution: "executed" }, observationFailure: {
+      code: "browser_observation_invalid", detail: "Page observation transport unavailable", recovery: expect.stringContaining("do not repeat navigation") as unknown,
+    } } },
+  });
+  expect(opens).toBe(1);
 });

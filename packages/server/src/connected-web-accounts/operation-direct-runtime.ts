@@ -55,7 +55,7 @@ function command(input: ConnectedWebOperationDirectCommand): { readonly toolName
     case "snapshot": return { toolName: "browser_snapshot", args: {} };
     case "click": return { toolName: "browser_click", args: { ref: input.ref } };
     case "type": return { toolName: "browser_type", args: { ref: input.ref, text: input.text, ...(input.clear === undefined ? {} : { clear: input.clear }) } };
-    case "press": return { toolName: "browser_press", args: { key: input.key } };
+    case "press": return { toolName: "browser_press", args: { key: input.key, ...(input.ref === undefined ? {} : { ref: input.ref }) } };
     case "open": return { toolName: "browser_open", args: { url: input.url } };
     case "back": return { toolName: "browser_back", args: {} };
     case "forward": return { toolName: "browser_forward", args: {} };
@@ -288,7 +288,7 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
     try {
       if (entry.closing) return { ok: false, code: "unavailable", recovery: "none" };
       if (options.signal?.aborted) return { ok: false, code: "conflict", recovery: "none", browserFailure: "browser_cancelled" };
-      const observation = options.decision?.kind === "observe"
+      let observation = options.decision?.kind === "observe"
         ? await entry.lease.observeDecision(options.signal)
         : undefined;
       const result = options.decision?.kind === "act"
@@ -296,7 +296,15 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
         : options.decision?.kind === "observe"
           ? { text: observation!.snapshot, truncated: false }
           : await entry.lease.invoke(command(input.command));
-      decisionActionCompleted = options.decision?.kind === "act";
+      decisionActionCompleted = options.decision?.kind === "act" || ["open", "back", "forward", "reload"].includes(input.command.kind);
+      let observationFailure: { code: "browser_observation_invalid"; detail: string } | undefined;
+      if (["open", "back", "forward", "reload"].includes(input.command.kind)) {
+        try { observation = await entry.lease.observeDecision(options.signal); }
+        catch (error) {
+          if (options.signal?.aborted || !(error instanceof DirectBrowserRouterError) || error.code !== "observation_invalid") throw error;
+          observationFailure = { code: "browser_observation_invalid", detail: error.detail ?? error.message };
+        }
+      }
       const recorded = await this.options.store.recordDirectOperationActivity({
         operationId: operation.id,
         ownerUserId: actor.userId,
@@ -307,7 +315,8 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
       if (!recorded) throw new DirectBrowserRouterError("stale_control");
       const fresh = await this.load(actor, input);
       if (!fresh || fresh.driver !== "direct") throw new DirectBrowserRouterError("stale_control");
-      return { ok: true, command: result, ...(observation === undefined ? {} : { observation }), operation: projection(fresh) };
+      return { ok: true, command: result, ...(observation === undefined ? {} : { observation }),
+        ...(observationFailure ? { observationFailure } : {}), operation: projection(fresh) };
     } catch (error) {
       // A stale snapshot reference is an ordinary control conflict. It must
       // not tear down a healthy exact-browser lease; the Genie can snapshot
@@ -316,7 +325,7 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
         return { ok: false, code: "conflict", recovery: "none" };
       }
       if (error instanceof DirectBrowserRouterError && ["observation_stale", "cancelled", "observation_invalid"].includes(error.code)) {
-        const browserFailure = error.code === "observation_stale" ? "browser_observation_stale" as const
+        const browserFailure = decisionActionCompleted ? "browser_outcome_unknown" as const : error.code === "observation_stale" ? "browser_observation_stale" as const
           : error.code === "cancelled" ? "browser_cancelled" as const : "browser_observation_invalid" as const;
         return { ok: false, code: "conflict", recovery: "none", browserFailure, detail: error.detail ?? error.message };
       }

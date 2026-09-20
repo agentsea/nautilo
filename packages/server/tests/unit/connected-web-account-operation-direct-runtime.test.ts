@@ -195,8 +195,9 @@ test("direct preflight rechecks the executable without acquiring a browser", asy
 test("direct activity is informative without recording command arguments", async () => {
   let current = operation({ driver: "direct", controlEpoch: 8 });
   const activities: unknown[] = [];
+  const commands: unknown[] = [];
   const lease = {
-    invoke: async () => ({ text: "ok", truncated: false }),
+    invoke: async (input: unknown) => { commands.push(input); return { text: "ok", truncated: false }; },
     ownerLiveViewUrl: () => null,
     close: async () => ({ browser: "stopped" as const, directories: "released" as const, operation: "released" as const }),
   } as unknown as DirectBrowserRouterLease;
@@ -213,7 +214,7 @@ test("direct activity is informative without recording command arguments", async
   for (const command of [
     { kind: "click", ref: "@private" }, { kind: "double_click", ref: "@private" }, { kind: "hover", ref: "@private" },
     { kind: "drag", from: "@private", to: "@private" }, { kind: "select", ref: "@private", values: ["private"] },
-    { kind: "set_checked", ref: "@private", checked: true }, { kind: "press", key: "PrivateKey" },
+    { kind: "set_checked", ref: "@private", checked: true }, { kind: "press", key: "PrivateKey", ref: "@private" },
     { kind: "scroll_into_view", ref: "@private" },
   ] as const) {
     await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command });
@@ -230,6 +231,7 @@ test("direct activity is informative without recording command arguments", async
   ]);
   expect(JSON.stringify(activities)).not.toContain("private");
   expect(JSON.stringify(activities)).not.toContain("PrivateKey");
+  expect(commands).toContainEqual({ toolName: "browser_press", args: { key: "PrivateKey", ref: "@private" } });
 });
 
 test("owner Stop retains an unresolved lease for exact cleanup retry without allowing more commands", async () => {
@@ -337,4 +339,22 @@ test("owner Stop waits for in-flight admission and closes its real lease instead
   await acquiring;
   expect(await stopping).toMatchObject({ driver: "checking", controlEpoch: 9 });
   expect(closes).toBe(1);
+});
+
+test("ordinary connected navigation automatically returns fresh observation without a decision model", async () => {
+  let current = operation();
+  const calls: string[] = [];
+  const observation = { version: 1, snapshot: "- searchbox Keywords [ref=e9]", refs: { e9: { role: "searchbox", name: "Keywords" } },
+    pageUrl: "https://example.test/", browserSessionId: "owned", observationId: "fresh" };
+  const runtime = new ConnectedWebOperationDirectRuntime({ authorizeOperation: () => true,
+    facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
+    store: { getOperationForOwner: async () => current, recordDirectOperationActivity: async () => true },
+    router: { acquire: async () => { current = operation({ driver: "direct", controlEpoch: 8 }); return {
+      invoke: async () => { calls.push("navigate"); return { text: "opened", truncated: false }; },
+      observeDecision: async () => { calls.push("observe"); return observation; },
+    }; } } as never });
+  await runtime.takeControl(actor(), { operationId: OP, expectedControlEpoch: 7 });
+  expect(await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command: { kind: "open", url: "https://example.test/" } }))
+    .toMatchObject({ ok: true, command: { text: "opened" }, observation });
+  expect(calls).toEqual(["navigate", "observe"]);
 });

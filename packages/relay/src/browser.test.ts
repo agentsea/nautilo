@@ -120,6 +120,42 @@ describe(" agentBrowserArgv — argv mapping", () => {
     ).toEqual([...prefix, "press", "Control+a"]);
   });
 
+  it("browser_press focuses a current ref and presses in one fail-closed batch", () => {
+    expect(
+      agentBrowserArgv(
+        "browser_press",
+        { ref: "e12", key: "Enter" },
+        cfgPath,
+        session,
+      ),
+    ).toEqual([
+      ...prefix,
+      "--json",
+      "batch",
+      "--bail",
+      "focus '@e12'",
+      "press 'Enter'",
+    ]);
+  });
+
+  it("quotes targeted browser_press values so they cannot add batch commands", () => {
+    expect(
+      agentBrowserArgv(
+        "browser_press",
+        { ref: "@e12", key: "Enter' 'click @e99" },
+        cfgPath,
+        session,
+      ),
+    ).toEqual([
+      ...prefix,
+      "--json",
+      "batch",
+      "--bail",
+      "focus '@e12'",
+      "press 'Enter'\"'\"' '\"'\"'click @e99'",
+    ]);
+  });
+
   it("browser_back maps to the native agent-browser history verb", () => {
     expect(agentBrowserArgv("browser_back", {}, cfgPath, session)).toEqual([
       ...prefix,

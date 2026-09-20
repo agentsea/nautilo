@@ -92,8 +92,8 @@ describe("live browser decision exposure", () => {
       const enabled = bind();
       const snapshot = enabled.find((tool) => tool.name === "browser_snapshot")!;
       expect(snapshot.description).toMatch(/Jev.*available now/);
-      expect(snapshot.description).toContain("default to delegation");
-      expect(buildSystemPrompt({ assistantName: "Test", tools: [snapshot], isGuest: false })).toContain("runtime owns the observe/act loop");
+      expect(snapshot.description).toContain("delegate one complete routine outcome");
+      expect(buildSystemPrompt({ assistantName: "Test", tools: [snapshot], isGuest: false })).toContain("runtime observes and verifies each action without waking you");
       expect(snapshot.schema).toBeDefined();
       expect(JSON.stringify(z.toJSONSchema(snapshot.schema as z.ZodObject))).toContain('"decisionPlan"');
       expect(enabled.map((tool) => tool.name).sort()).toEqual([
@@ -117,6 +117,7 @@ describe("live browser decision exposure", () => {
       expect(schema("browser_click").safeParse({ ref: "@e1" }).success).toBe(true);
       expect(schema("browser_type").safeParse({ ref: "@e2", text: "exact text", clear: true }).success).toBe(true);
       expect(schema("browser_press").safeParse({ key: "Control+a" }).success).toBe(true);
+      expect(schema("browser_press").safeParse({ key: "Enter", ref: "@e2" }).success).toBe(true);
       const ordinaryPrompt = buildSystemPrompt({ assistantName: "Test", tools: [...disabled], isGuest: false });
       expect(ordinaryPrompt).toContain("browser_snapshot / browser_click / browser_type / browser_press");
       expect(ordinaryPrompt).not.toContain("routine browser decision model is available");

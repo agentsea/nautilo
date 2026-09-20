@@ -9,6 +9,7 @@ import { setConfigOverrides } from "@nautilo/config";
 import { ToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { SECURITY_SCAN_INITIAL_LANES } from "@nautilo/types";
 import { preModelNode } from "../../src/nodes/pre-model";
+import { browserDecisionHandoffMessage, browserDecisionPlanSchema } from "../../src/graph/browser-decision";
 import { createFileTool } from "../../src/tools/file/file-tool";
 import { buildFileEditsBlock, buildTwoPathBlock, HTML_WORKSPACE_RICH_ARTIFACT_PROMPT } from "../../src/prompts/templates";
 import { SECURITY_RESEARCH_WORKFLOW } from "../../src/tools/security/research-protocol";
@@ -118,6 +119,34 @@ function expectCachedStablePrefix(message: SystemMessage): {
 }
 
 describe(" OpenRouter Claude prompt caching", () => {
+  test.each(["openrouter:deepseek/deepseek-v4.1-flash", "anthropic:claude-sonnet-4-6"])(
+    "%s retains delegated provenance after verification without changing the leading system prompt", async (model) => {
+      const observation = { version: 1 as const, snapshot: "Draft prepared", refs: {}, pageUrl: "https://example.test/",
+        browserSessionId: "test-browser", observationId: "after-edit" };
+      const messages = [new HumanMessage("Prepare a draft without saving."),
+        new AIMessage({ content: "", tool_calls: [{ id: "last-observation", name: "browser_snapshot", args: {} }] }),
+        new ToolMessage({ name: "browser_snapshot", tool_call_id: "last-observation", content: JSON.stringify(observation) })];
+      const handoff = browserDecisionHandoffMessage(messages, {
+        turnId: "delegated-turn", modelId: "openrouter:typesafe/jev-1.13", phase: "handoff", reason: "completion_ready",
+        plan: browserDecisionPlanSchema.parse({ goal: "Prepare the draft" }), pending: null, observation,
+        lastAction: { toolCallId: "edit", description: "Fill the requested field", beforeObservationId: "before-edit", execution: "executed" },
+      });
+      const source = stateFor(model, { turnId: "delegated-turn", messages: [...messages, handoff], browserDecision: null });
+      const before = await preModelNode(source);
+      const verified = await preModelNode({ ...source, promptTimeReference: before.promptTimeReference ?? null,
+        messages: [...source.messages,
+          new AIMessage({ content: "", tool_calls: [{ id: "verify", name: "browser_read_page", args: {} }] }),
+          new ToolMessage({ name: "browser_read_page", tool_call_id: "verify", content: "Draft verified; no saved receipt." })] });
+      expect(verified.preparedMessages?.[0]?.content).toEqual(before.preparedMessages?.[0]?.content);
+      expect(JSON.stringify(verified.preparedMessages?.[0]?.content)).not.toContain("Runtime browser supervision");
+      const receipt = verified.preparedMessages?.find((message) => ToolMessage.isInstance(message) && message.tool_call_id === "last-observation");
+      expect(receipt?.content).toContain('"handoffReason":"completion_ready"');
+      expect(receipt?.content).toContain('"decisionModelId":"openrouter:typesafe/jev-1.13"');
+      expect(verified.preparedMessages?.at(-1)?.content).toBe("Draft verified; no saved receipt.");
+      expect(source.messages.at(-1)).toBe(handoff);
+    },
+  );
+
   test("OpenAI handoffs preserve the preceding prompt and their instruction role", async () => {
     const state = stateFor("openai:gpt-5.6-sol", {
       turnId: "browser-turn",

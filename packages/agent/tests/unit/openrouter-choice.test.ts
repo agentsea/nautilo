@@ -396,6 +396,21 @@ describe("invokeOpenRouterChoice", () => {
     expect(usage.records).toHaveLength(1);
   });
 
+  test("recognizes a structured upstream context error without exposing the response body", async () => {
+    for (const payload of [
+      { error: { message: 'HTTP 400: {"detail":{"error_type":"max_tokens_exceeded"}}', code: 400 } },
+      { detail: { error_type: "max_tokens_exceeded" } },
+      { error: { code: "context_length_exceeded" } },
+    ]) {
+      const failure = await invokeOpenRouterChoice(input(), { apiKey: API_KEY,
+        fetch: (async () => Response.json(payload, { status: 400 })) as unknown as typeof fetch,
+        recordUsage: usageRecorder().recordUsage,
+      }).catch((error: unknown) => error);
+      if (!(failure instanceof ChoiceRequestError)) throw new Error("Expected a classified Choice failure");
+      expectSafeFailure(failure, { code: "context_length_exceeded", status: 400, retryable: false });
+    }
+  });
+
   test("classifies every HTTP status without echoing provider bodies and never retries", async () => {
     for (const status of [400, 401, 402, 403, 404, 413, 429, 500, 502, 503, 524, 529]) {
       let fetchCalls = 0;

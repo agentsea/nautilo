@@ -3,10 +3,13 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { invalidateRuntimeConfigCache, setConfigOverrides } from "@nautilo/config";
 import { z } from "zod";
+import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
 import type { NautiloState } from "../../src/agent/state";
 import {
   browserDecisionCandidates,
+  browserDecisionDriverCall,
   browserDecisionHandoffContent,
+  browserDecisionHandoffMessage,
   browserDecisionPlanError,
   browserDecisionPlanSchema,
   currentBrowserDecision,
@@ -17,6 +20,7 @@ import {
 } from "../../src/graph/browser-decision";
 import { createBrowserDecisionNode } from "../../src/nodes/browser-decision";
 import { projectBrowserHandoffForProvider } from "../../src/nodes/pre-model";
+import { projectBrowserHistory } from "../../src/tools/browser/browser-history";
 import {
   ChoiceRequestError,
   type OpenRouterChoiceInput,
@@ -29,11 +33,11 @@ import { getUsageContext } from "../../src/usage/usage-context";
 
 const JEV_ID = "openrouter:typesafe/jev-1.13";
 const RESULTS_PROGRESS_KEY = JSON.stringify({ kind: "snapshot_contains", text: "Results" });
-const REDACTED_TYPE_DESCRIPTION = JSON.stringify({
+const TYPE_DESCRIPTION = JSON.stringify({
   kind: "type",
   role: "textbox",
   name: "Search",
-  value: "Genie-supplied text",
+  value: "blue mug",
   clear: true,
 });
 
@@ -165,8 +169,21 @@ describe("browser decision policy", () => {
     expect(built.reason).toBeNull();
     expect(built.candidates[1]?.call).toEqual({ name: "browser_type", args: { ref: "@e17", text: supplied, clear: true } });
     expect(JSON.parse(built.candidates[1]!.description)).toMatchObject({ valueName: "background color", role: "combobox", name: "Hex code" });
-    expect(built.candidates.map(({ description }) => description).join()).not.toContain(supplied);
+    expect((JSON.parse(built.candidates[1]!.description) as { value: string }).value).toBe(supplied);
     expect(built.candidates.map(({ call }) => call?.args["ref"] as unknown)).not.toContain("@e2");
+  });
+
+  test("a compact research plan builds fresh read choices and copies its query without reauthoring targets", () => {
+    const research = browserDecisionPlanSchema.parse({ goal: "Compare suitable products and report evidence", values: { "search query": "under desk pedal bike" },
+      actions: [{ kind: "click_observed" }, { kind: "read_observed" }], allowedOrigins: ["https://shop.example"] });
+    for (const [ref, role, name] of [["e23", "searchbox", "Find something"], ["e91", "custom-control", "Keywords"]]) {
+      const fresh = observation({ refs: { [ref!]: { role: role!, name: name! } } });
+      const built = browserDecisionCandidates(research, fresh, 255);
+      expect(built.reason).toBeNull();
+      expect(built.candidates.filter(({ call }) => call?.name === "browser_read").map(({ call }) => call?.args)).toEqual([{ ref: `@${ref}` }]);
+      expect(built.candidates.filter(({ call }) => call?.name === "browser_type").map(({ call }) => call?.args)).toEqual([{ ref: `@${ref}`, text: "under desk pedal bike", clear: true }]);
+      expect(built.candidates.some(({ id }) => id === "needs_input")).toBe(true);
+    }
   });
 
   test("supplied values retain complete coverage, empty text and distinct values on duplicate labels", () => {
@@ -182,7 +199,7 @@ describe("browser decision policy", () => {
     ]);
     const overCapacity = browserDecisionCandidates(valuePlan, fresh, 9);
     expect(overCapacity.reason).toBeNull();
-    expect(overCapacity.candidates).toHaveLength(12);
+    expect(overCapacity.candidates).toHaveLength(13);
   });
 
   test("supplied-value choices do not duplicate an identical exact typing template", () => {
@@ -194,7 +211,7 @@ describe("browser decision policy", () => {
   test("equal text for different purposes preserves both semantic choices", () => {
     const built = browserDecisionCandidates({ ...plan, actions: [{ kind: "click_observed" }],
       values: { "sender name": "Alex", "recipient name": "Alex" } },
-    observation({ refs: { e7: { role: "textbox", name: "Recipient" } } }), 5);
+    observation({ refs: { e7: { role: "textbox", name: "Recipient" } } }), 6);
     expect(built.reason).toBeNull();
     expect(built.candidates.filter(({ call }) => call?.name === "browser_type").map(({ description }) =>
       (JSON.parse(description) as { valueName: string }).valueName)).toEqual(["sender name", "recipient name"]);
@@ -267,7 +284,7 @@ describe("browser decision policy", () => {
       expect(settled?.plan).not.toHaveProperty("ignoredPlanField");
       expect(settled?.plan.actions[0]).not.toHaveProperty("ignoredActionField");
       if (!settled?.observation) throw new Error("expected a settled observation");
-      const candidates = browserDecisionCandidates(settled.plan, settled.observation, 5);
+      const candidates = browserDecisionCandidates(settled.plan, settled.observation, 6);
       expect(candidates.reason).toBeNull();
       if (candidates.reason !== null) throw new Error("expected a minimal-plan action candidate");
       expect(candidates.candidates[0]?.call).toEqual({ name: "browser_click", args: { ref: "@e1" } });
@@ -350,7 +367,7 @@ describe("browser decision policy", () => {
         },
         {
           id: "action_1",
-          description: REDACTED_TYPE_DESCRIPTION,
+          description: TYPE_DESCRIPTION,
           call: {
             name: "browser_type",
             args: { ref: "@e2", text: "blue mug", clear: true },
@@ -362,6 +379,7 @@ describe("browser decision policy", () => {
           call: { name: "browser_snapshot", args: {} },
         },
         { id: "completion_ready", description: expect.any(String) as string, call: null },
+        { id: "needs_input", description: expect.any(String) as string, call: null },
         { id: "needs_visual_evidence", description: expect.any(String) as string, call: null },
         {
           id: "defer_to_genie",
@@ -405,7 +423,7 @@ describe("browser decision policy", () => {
     const built = browserDecisionCandidates(expandedPlan, observation({ refs }), 255);
     expect(built.reason).toBeNull();
     if (built.reason !== null) throw new Error("expected expanded browser candidates");
-    expect(built.candidates.slice(0, -4).map(({ call }) => call)).toEqual([
+    expect(built.candidates.slice(0, -5).map(({ call }) => call)).toEqual([
       { name: "browser_press", args: { key: "Control+Alt+Shift+K" } },
       { name: "browser_press", args: { key: "Home" } },
       { name: "browser_hover", args: { ref: "@e10" } },
@@ -432,7 +450,7 @@ describe("browser decision policy", () => {
       from: { role: "listitem", name: "Source" },
       to: { role: "listitem", name: "Destination" },
     }));
-    expect(built.candidates.slice(-4).map(({ id }) => id)).toEqual(["reobserve", "completion_ready", "needs_visual_evidence", "defer_to_genie"]);
+    expect(built.candidates.slice(-5).map(({ id }) => id)).toEqual(["reobserve", "completion_ready", "needs_input", "needs_visual_evidence", "defer_to_genie"]);
 
     const remapped = browserDecisionCandidates(expandedPlan, observation({ refs: {
       e90: refs.e10, e91: refs.e11, e92: refs.e12, e93: refs.e13, e94: refs.e14,
@@ -467,6 +485,76 @@ describe("browser decision policy", () => {
     expect(browserDecisionCandidates(navigationPlan, observation(), 255)).toEqual({
       candidates: [], reason: "navigation_outside_planned_origins",
     });
+  });
+
+  test.each([false, true])("discovers native dropdown choices in reusable and ordered actions (ordered=%s)", (ordered) => {
+    const observed = observation({ refs: {
+      e30: { role: "combobox", name: "Window" },
+      e31: { role: "option", name: "Later" },
+      e32: { role: "combobox", name: "Delivery" },
+      e33: { role: "option", name: "Later" },
+      e34: { role: "button", name: "Continue" },
+    }, snapshot: [
+      '- combobox "Window" [expanded=false, ref=e30]: Earlier',
+      '  - MenuListPopup',
+      '    - group "Times"',
+      '      - option "Later" [ref=e31]',
+      '- combobox "Delivery" [ref=e32]',
+      '  - MenuListPopup',
+      '    - option "Later" [selected, ref=e33]',
+      '- button "Continue" [ref=e34]',
+    ].join("\n") });
+    const observedPlan = browserDecisionPlanSchema.parse({ ...plan, actions: [{ kind: "click_observed" }],
+      ...(ordered ? { sequences: [{ name: "Choose the requested window", steps: [{ kind: "click_observed" }] }] } : {}) });
+    const built = browserDecisionCandidates(observedPlan, observed, 255);
+    expect(built.reason).toBeNull();
+    const selections = built.candidates.filter((candidate) => candidate.call?.name === "browser_select");
+    expect(selections.map((candidate) => candidate.call?.args)).toEqual([
+      { ref: "@e30", values: ["Later"] }, { ref: "@e32", values: ["Later"] },
+    ]);
+    expect(selections[0]?.description).toContain('"name":"Window"');
+    expect(selections[1]?.description).toContain('"name":"Delivery"');
+    expect(built.candidates.some((candidate) => candidate.call?.name === "browser_click" && candidate.call.args["ref"] === "@e31")).toBe(false);
+    expect(built.candidates.some((candidate) => candidate.call?.name === "browser_click" && candidate.call.args["ref"] === "@e34")).toBe(true);
+    if (ordered) expect(selections[0]?.sequence).toEqual({ index: 0, step: 0 });
+    expect(browserDecisionDriverCall(selections[0]!.call!, { kind: "connected_web", operationId: "operation-1", controlEpoch: 3 })).toEqual({
+      name: "control_connected_web_operation", args: { operationId: "operation-1", expectedControlEpoch: 3,
+        command: { kind: "select", ref: "@e30", values: ["Later"] } },
+    });
+  });
+
+  test.each([
+    ['- combobox "Custom" [ref=e1]', '  - option "Choice" [ref=e2]'],
+    ['- combobox "Custom" [ref=e1]', '  - MenuListPopup', '- option "Choice" [ref=e2]'],
+    ['- combobox "Wrong owner name" [ref=e1]', '  - MenuListPopup', '    - option "Choice" [ref=e2]'],
+    ['- combobox "Custom" [ref=e1]', '  - MenuListPopup', '    - option "Wrong option name" [ref=e2]'],
+    ['- combobox "Custom" [ref=e1]', '  - MenuListPopup', '    - option "Choice" [ref=e2]', '    - option "Choice" [ref=e3]'],
+    ['- combobox "Custom" [ref=e1]', '  - MenuListPopup', '    - option "Choice" [ref=e2]', '    - option "Choice" [ref=e2]'],
+  ])("retains click discovery without unique native option binding: %j", (...lines) => {
+    const built = browserDecisionCandidates({ ...plan, actions: [{ kind: "click_observed" }] }, observation({
+      snapshot: lines.join("\n"), refs: { e1: { role: "combobox", name: "Custom" },
+        e2: { role: "option", name: "Choice" }, e3: { role: "option", name: "Choice" } },
+    }), 255);
+    expect(built.candidates.some((candidate) => candidate.call?.name === "browser_select")).toBe(false);
+    expect(built.candidates.some((candidate) => candidate.call?.name === "browser_click" && candidate.call.args["ref"] === "@e2")).toBe(true);
+  });
+
+  test("quoted option names cannot inject a different ref and select labels remain exact", () => {
+    const label = 'Choice "quoted" [ref=e99]';
+    const built = browserDecisionCandidates({ ...plan, actions: [{ kind: "click_observed" }] }, observation({
+      snapshot: `- combobox "Picker" [ref=e1]\n  - MenuListPopup\n    - option ${JSON.stringify(label)} [ref=e2]`,
+      refs: { e1: { role: "combobox", name: "Picker" }, e2: { role: "option", name: label } },
+    }), 255);
+    expect(built.candidates.find((candidate) => candidate.call?.name === "browser_select")?.call?.args).toEqual({ ref: "@e1", values: [label] });
+  });
+
+  test("recovery instructs inspection before same-browser redelegation and preserves ordinary fallback", () => {
+    const instruction = browserDecisionHandoffContent("browser_outcome_unknown");
+    expect(instruction).toContain("Do not blindly replay an uncertain action");
+    expect(instruction).toContain("corrected decisionPlan");
+    expect(instruction).toContain("same browser tool");
+    expect(instruction).toContain("omit completed steps");
+    expect(instruction).toContain("If delegation is unavailable");
   });
 
   test("offers every fresh observed target without a role allowlist, preserving each observed ref and cap fence", () => {
@@ -508,7 +596,7 @@ describe("browser decision policy", () => {
       e9: { role: "tab", name: "Third dynamic result" },
     } }), 6);
     expect(overCapacity.reason).toBeNull();
-    expect(overCapacity.candidates).toHaveLength(7);
+    expect(overCapacity.candidates).toHaveLength(8);
   });
 
   test("fails closed on an ambiguous exact target", () => {
@@ -520,20 +608,45 @@ describe("browser decision policy", () => {
     }), 255)).toEqual({ candidates: [], reason: "ambiguous_target_requires_genie" });
   });
 
-  test("defers indistinguishable typing choices instead of asking Jev to guess the local value", () => {
-    expect(browserDecisionCandidates({ ...plan, actions: [
-      { kind: "type", role: "textbox", name: "Search", text: "first", clear: true },
-      { kind: "type", role: "textbox", name: "Search", text: "second", clear: true },
-    ] }, observation(), 255)).toEqual({ candidates: [], reason: "ambiguous_planned_action_requires_genie" });
+  test("distinguishes reusable exact typing choices for the same field by their supplied text", () => {
+    const texts = ["Jev alpha", "Jev beta", "Jev gamma"];
+    const repeatedEntryPlan = browserDecisionPlanSchema.parse({ ...plan,
+      actions: [
+        ...texts.map((text) => ({ kind: "type", role: "textbox", name: "Search", text, clear: true })),
+        { kind: "press", key: "Enter" },
+      ],
+    });
+    for (const refId of ["e2", "e17"]) {
+      const built = browserDecisionCandidates(repeatedEntryPlan, observation({
+        refs: { [refId]: { role: "textbox", name: "Search" } },
+      }), 255);
+      expect(built.reason).toBeNull();
+      const typing = built.candidates.filter(({ call }) => call?.name === "browser_type");
+      expect(typing.map(({ description }) => (JSON.parse(description) as { value: string }).value)).toEqual(texts);
+      expect(typing.map(({ call }) => call?.args)).toEqual(texts.map(text => ({ ref: `@${refId}`, text, clear: true })));
+      expect(built.candidates.some(({ call }) => call?.name === "browser_press" && call.args["key"] === "Enter")).toBe(true);
+    }
+  });
+
+  test("named typing values expose their content as well as purpose for repeated entries", () => {
+    const values = { first: "Jev alpha", second: "Jev beta", third: "Jev gamma" };
+    const built = browserDecisionCandidates({ ...plan, actions: [{ kind: "click_observed" }], values },
+      observation({ refs: { e2: { role: "textbox", name: "New item" } } }), 255);
+    expect(built.reason).toBeNull();
+    const typing = built.candidates.filter(({ call }) => call?.name === "browser_type");
+    expect(typing.map(({ description }) => JSON.parse(description) as unknown)).toEqual(
+      Object.entries(values).map(([valueName, value]) => ({ kind: "type", role: "textbox", name: "New item",
+        targetRef: "@e2", valueName, value, clear: true })),
+    );
   });
 
   test("preserves the complete candidate set instead of truncating it to the model cap", () => {
     const full = browserDecisionCandidates(plan, observation(), 6);
     expect(full.reason).toBeNull();
     if (full.reason !== null) throw new Error("expected full candidate set");
-    expect(full.candidates).toHaveLength(6);
+    expect(full.candidates).toHaveLength(7);
 
-    const overCapacity = browserDecisionCandidates(plan, observation(), 5);
+    const overCapacity = browserDecisionCandidates(plan, observation(), 6);
     expect(overCapacity.reason).toBeNull();
     expect(overCapacity.candidates).toEqual(full.candidates);
   });
@@ -549,7 +662,7 @@ describe("browser decision policy", () => {
     expect(matchedEvidence.reason).toBeNull();
     if (matchedEvidence.reason !== null) throw new Error("expected advisory completion evidence");
     expect(matchedEvidence.candidates.map(({ id }) => id)).toEqual([
-      "action_0", "action_1", "reobserve", "completion_ready", "needs_visual_evidence", "defer_to_genie",
+      "action_0", "action_1", "reobserve", "completion_ready", "needs_input", "needs_visual_evidence", "defer_to_genie",
     ]);
 
     expect(browserDecisionCandidates(plan, observation({
@@ -694,6 +807,7 @@ describe("browser decision settlement", () => {
       phase: "observe",
       pending: null,
       reason: null,
+      lastAction: { toolCallId: "click-1", description: "browser_click", beforeObservationId: "observation-1", execution: "executed" },
       recovery: { ...waiting.recovery!, assessNextObservation: true, pendingTransition: expect.stringMatching(/^[a-f0-9]{64}$/) as string },
     });
 
@@ -1253,7 +1367,164 @@ describe("browser decision node", () => {
     invalidateRuntimeConfigCache();
   });
 
-  test.each(["completion_ready", "needs_visual_evidence"])("returns explicit %s without any browser mutation", async (selectedId) => {
+  for (const connected of [false, true]) {
+    test(`ordered repeated entries resolve fresh refs, observe effects and skip continuation choices (${connected ? "connected" : "embedded"})`, async () => {
+      const target = connected ? { kind: "connected_web" as const, operationId: "operation-1", controlEpoch: 7 } : undefined;
+      const entryTarget = { role: "textbox", name: "New entry" };
+      const entries = ["First exact value", "Second different value", "Third value"];
+      const groupedPlan = browserDecisionPlanSchema.parse({ ...plan, progress: [], success: [], actions: [{ kind: "click_observed" }],
+        sequences: entries.map((value) => ({ name: `Add ${value}`, steps: [
+          { kind: "type", ...entryTarget, text: value, clear: true }, { kind: "press", key: "Enter" },
+        ] })),
+      });
+      let choices = 0;
+      const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+        choices++;
+        expect(z.json().safeParse(input.state).success).toBe(true);
+        expect(input.choices.filter((choice) => choice.id.startsWith("sequence_"))).toHaveLength(1);
+        return { selectedId: input.choices.find((choice) => choice.id.startsWith("sequence_"))!.id,
+          requestedModelId: JEV_ID, resolvedModelId: JEV_ID, usage: { inputTokens: 10, outputTokens: 0, actualCostUsd: 0 } };
+      } });
+      let refNumber = 1;
+      let visibleItems: string[] = [];
+      let inputValue = "";
+      const fresh = () => observation({ observationId: `obs-${refNumber}`, refs: { [`e${refNumber}`]: entryTarget },
+        snapshot: [`- textbox "New entry" [ref=e${refNumber}]: ${inputValue}`, ...visibleItems.map((item) => `- text: ${item}`)].join("\n") });
+      let current = state({ browserDecision: decision({ plan: groupedPlan, observation: fresh(), ...(target ? { target } : {}) }) });
+      for (let index = 0; index < entries.length; index++) {
+        for (const kind of ["type", "press"]) {
+          const update = await node(current, { signal: new AbortController().signal });
+          const proposed = proposedToolCall(update);
+          const args = connected ? proposed.args["command"] as Record<string, unknown> : proposed.args;
+          expect(proposed.name).toBe(connected ? "control_connected_web_operation" : `browser_${kind}`);
+          expect(args["ref"]).toBe(`@e${refNumber}`);
+          if (connected) expect(proposed.args).toMatchObject({ operationId: "operation-1", expectedControlEpoch: 7 });
+          if (kind === "type") {
+            expect(args["text"]).toBe(entries[index]);
+            inputValue = String(args["text"]);
+          } else {
+            expect(args["key"]).toBe("Enter");
+            visibleItems = [...visibleItems, inputValue]; inputValue = "";
+          }
+          expect(choices).toBe(index + 1);
+          current = { ...current, ...update, messages: mergeMessagesPreservingInvariants(current.messages, update.messages ?? []) };
+          const result = successfulResult(proposed, JSON.stringify({ ok: true }));
+          const acted = settleBrowserDecision(current, [proposed], [result], [], JEV_ID)!;
+          expect(acted.lastAction?.execution).toBe("executed");
+          expect(acted.lastAction?.effect).toBeUndefined();
+          current = { ...current, browserDecision: acted, messages: [...current.messages, result] };
+          const observe = await node(current, { signal: new AbortController().signal });
+          const observeCall = proposedToolCall(observe);
+          expect(choices).toBe(index + 1);
+          refNumber++;
+          const after = fresh();
+          const observed = successfulResult(observeCall, JSON.stringify(connected ? { ok: true, observation: after } : after));
+          current = { ...current, ...observe, messages: mergeMessagesPreservingInvariants(current.messages, observe.messages ?? []) };
+          const settled = settleBrowserDecision(current, [observeCall], [observed], [], JEV_ID)!;
+          expect(settled.lastAction?.afterObservationId).toBe(after.observationId);
+          if (kind === "type") {
+            expect(settled.lastAction?.effect?.added).toContain(`- textbox "New entry": ${entries[index]}`);
+            expect(settled.lastAction?.effect?.added).not.toContain(`- text: ${entries[index]}`);
+          } else expect(settled.lastAction?.effect?.added).toContain(`- text: ${entries[index]}`);
+          current = { ...current, browserDecision: settled, messages: [...current.messages, observed] };
+        }
+      }
+      expect(visibleItems).toEqual(entries);
+      expect(choices).toBe(3);
+      expect(current.browserDecision?.sequence).toEqual({ index: 3, step: null });
+    });
+  }
+
+  for (const connected of [false, true]) {
+    test(`ordered input requires fresh target evidence; stale observations never become action effects (${connected ? "connected" : "embedded"})`, () => {
+      const target = connected ? { kind: "connected_web" as const, operationId: "operation-1", controlEpoch: 7 } : undefined;
+      const grouped = browserDecisionPlanSchema.parse({ goal: "Enter a value, then submit", sequences: [{ name: "Enter and submit", steps: [
+        { kind: "type", role: "textbox", name: "Search", text: "exact value", clear: true }, { kind: "press", key: "Enter" },
+      ] }] });
+      const snapshotCall = call("fresh-check", connected ? "control_connected_web_operation" : "browser_snapshot", connected
+        ? { operationId: "operation-1", expectedControlEpoch: 7, command: { kind: "snapshot" } } : {});
+      const inspect = (snapshot: string, execution: "executed" | "not_executed_stale" = "executed") => {
+        const before = decision({ plan: grouped, ...(target ? { target } : {}), phase: "waiting", sequence: { index: 0, step: 0 },
+          pending: { call: snapshotCall, browserSessionId: "browser-session-1", observationId: null },
+          lastAction: { toolCallId: "typed", description: "Enter exact value", beforeObservationId: "observation-1", execution } });
+        const after = observation({ observationId: "fresh-observation", refs: { e9: { role: "textbox", name: "Search" } }, snapshot });
+        const result = successfulResult(snapshotCall, JSON.stringify(connected ? { ok: true, observation: after } : after));
+        return settleBrowserDecision(state({ browserDecision: before }), [snapshotCall], [result], [], JEV_ID)!;
+      };
+      for (const snapshot of ['- textbox "Search" [ref=e9]', '- textbox "Search" [ref=e9]: wrong\n- text: exact value', '- textbox "Search" [ref=e9]: exact value extra']) {
+        const stopped = inspect(snapshot);
+        expect(stopped.phase).toBe("handoff");
+        expect(stopped.reason).toContain("sequence_input_effect_unverified");
+        expect(stopped.sequence).toEqual({ index: 0, step: 0 });
+        expect(stopped.lastAction?.execution).toBe("executed");
+      }
+      const verified = inspect('- textbox "Search" [required, ref=e9]: exact value');
+      expect(verified.phase).toBe("decide");
+      expect(verified.sequence).toEqual({ index: 0, step: 1 });
+      const stale = inspect('- textbox "Search" [ref=e9]: changed externally', "not_executed_stale");
+      expect(stale.lastAction?.afterObservationId).toBe("fresh-observation");
+      expect(stale.lastAction?.effect).toBeUndefined();
+      expect(stale.sequence).toEqual({ index: 0, step: 0 });
+    });
+  }
+
+  test("ordered input does not invent submission and preserves an uncertain failing substep", async () => {
+    const typed = { kind: "type" as const, role: "textbox", name: "Search", text: "draft text", clear: true };
+    const grouped = { ...plan, sequences: [{ name: "Write without submitting", steps: [typed] }] };
+    const built = browserDecisionCandidates(grouped, observation(), 255);
+    expect(built.candidates.filter((candidate) => candidate.sequence).map((candidate) => candidate.call?.name)).toEqual(["browser_type"]);
+    const press = call("uncertain-submit", "browser_press", { key: "Enter", ref: "@e2" });
+    const waiting = decision({ sequence: { index: 0, step: 1 }, phase: "waiting", pending: {
+      call: press, browserSessionId: "browser-session-1", observationId: "observation-1",
+    }, plan: { ...plan, sequences: [{ name: "Write and submit", steps: [typed, { kind: "press", key: "Enter" }] }] } });
+    const error = failedResult(press, "browser_outcome_unknown");
+    error.content = "Keyboard dispatch timed out after input began";
+    const stopped = settleBrowserDecision(state({ browserDecision: waiting }), [press], [error], [], JEV_ID)!;
+    expect(stopped).toMatchObject({ phase: "handoff", sequence: { index: 0, step: 1 },
+      lastAction: { execution: "uncertain", error: "Keyboard dispatch timed out after input began" } });
+    expect(browserDecisionHandoffContent(stopped.reason!, stopped.target, stopped)).toContain("Keyboard dispatch timed out after input began");
+    const stale = settleBrowserDecision(state({ browserDecision: waiting }), [press], [failedResult(press, "browser_observation_stale")], [], JEV_ID)!;
+    expect(stale).toMatchObject({ phase: "observe", sequence: { index: 0, step: 1 }, lastAction: { execution: "not_executed_stale" } });
+  });
+
+  test("ready ordered work excludes overlapping reusable values and retains explicit handoff choices", () => {
+    const grouped = browserDecisionPlanSchema.parse({ ...plan, values: { first: "first", second: "second" }, sequences: [
+      { name: "Enter first", steps: [{ kind: "type", role: "textbox", name: "Search", text: "first", clear: true }, { kind: "press", key: "Enter" }] },
+      { name: "Enter second", steps: [{ kind: "type", role: "textbox", name: "Search", text: "second", clear: true }] },
+    ] });
+    const built = browserDecisionCandidates(grouped, observation(), 255);
+    expect(built.reason).toBeNull();
+    const actions = built.candidates.filter((candidate) => candidate.call && candidate.id !== "reobserve");
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.call?.args).toMatchObject({ text: "first" });
+    expect(actions[0]?.sequence).toEqual({ index: 0, step: 0 });
+    for (const id of ["reobserve", "defer_to_genie", "needs_visual_evidence"]) expect(built.candidates.some((candidate) => candidate.id === id)).toBe(true);
+  });
+
+  test("malformed ordered steps return a field-specific contract for repair before browser execution", () => {
+    const parsed = browserDecisionPlanSchema.safeParse({ goal: "Add an entry", sequences: [{ name: "Add", steps: [
+      { kind: "type", role: "textbox", name: "Entry", clear: true },
+    ] }] });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected invalid plan");
+    const error = JSON.parse(browserDecisionPlanError(parsed.error)) as { browserRequestSent: boolean; issues: unknown[]; expectedContract: { properties: Record<string, unknown> } };
+    expect(error.browserRequestSent).toBe(false);
+    expect(error.issues).toContainEqual({ path: ["decisionPlan", "sequences", 0, "steps", 0, "text"], code: "invalid_type" });
+    expect(error.expectedContract.properties["sequences"]).toBeDefined();
+  });
+
+  test("a later group cannot be offered first and a missing future field does not hide current discovery", () => {
+    const grouped = { ...plan, sequences: [{ name: "Fill the next page", steps: [
+      { kind: "type" as const, role: "textbox", name: "Future field", text: "exact", clear: true },
+    ] }, { name: "Later group", steps: [{ kind: "reload" as const }] }] };
+    const ready = browserDecisionCandidates(grouped, observation(), 255);
+    expect(ready.reason).toBeNull();
+    expect(ready.candidates.some((candidate) => candidate.call?.name === "browser_click")).toBe(true);
+    expect(ready.candidates.some((candidate) => candidate.sequence)).toBe(false);
+    expect(browserDecisionCandidates(grouped, observation(), 255, { index: 0, step: 0 }).reason).toBe("no_planned_target_requires_genie");
+  });
+
+  test.each(["completion_ready", "needs_input", "needs_visual_evidence"])("returns explicit %s without any browser mutation", async (selectedId) => {
     const snapshot = call("snapshot-handoff", "browser_snapshot", { decisionPlan: plan });
     const messages = [new AIMessage({ content: "", tool_calls: [snapshot] }), successfulResult(snapshot, JSON.stringify(observation()))];
     const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false,
@@ -1265,9 +1536,9 @@ describe("browser decision node", () => {
     });
     const update = await node(state({ messages }), { signal: new AbortController().signal });
     expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: selectedId, pending: null });
-    expect(update.messages).toBeUndefined();
-    const projected = projectBrowserHandoffForProvider(messages, state({ messages, browserDecision: update.browserDecision ?? null }));
-    expect(projected.messages.at(-1)?.content).toContain(selectedId === "completion_ready" ? "Independently verify" : "Inspect a screenshot");
+    expect(SystemMessage.isInstance(update.messages?.at(-1))).toBe(true);
+    const projected = projectBrowserHandoffForProvider(update.messages!, state({ messages: update.messages!, browserDecision: update.browserDecision ?? null }));
+    expect(projected.messages.at(-1)?.content).toContain(selectedId === "completion_ready" ? "Independently verify" : selectedId === "needs_input" ? "browser_decision_input_required" : "Inspect a screenshot");
   });
 
   test("uses the accounted Choice seam and proposes rather than approves the selected call", async () => {
@@ -1299,15 +1570,16 @@ describe("browser decision node", () => {
       },
       choices: [
         { id: "action_0", description: JSON.stringify(plan.actions[0]) },
-        { id: "action_1", description: REDACTED_TYPE_DESCRIPTION },
+        { id: "action_1", description: TYPE_DESCRIPTION },
         { id: "reobserve" },
         { id: "completion_ready" },
+        { id: "needs_input" },
         { id: "needs_visual_evidence" },
         { id: "defer_to_genie" },
       ],
     });
     const transmittedRequest = JSON.stringify(received);
-    expect(transmittedRequest).not.toContain("blue mug");
+    expect(transmittedRequest).toContain("blue mug");
     expect(transmittedRequest).not.toContain("shop.example");
     expect(transmittedRequest).not.toContain("allowedOrigins");
     expect(transmittedRequest).not.toContain("pageUrl");
@@ -1405,7 +1677,7 @@ describe("browser decision node", () => {
     }))).toEqual({ messages: windowed, projected: false });
   });
 
-  test("returns projectable handoffs without appending a late System message", async () => {
+  test("records projectable handoffs without sending a late System message to the provider", async () => {
     const snapshot = call("snapshot-projectable-node", "browser_snapshot", { decisionPlan: plan });
     const messages = [
       new AIMessage({ content: "", tool_calls: [snapshot] }),
@@ -1423,15 +1695,60 @@ describe("browser decision node", () => {
     const update = await node(state({ messages }), { signal: new AbortController().signal });
 
     expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: "jev_requested_genie" });
-    expect(Object.hasOwn(update, "messages")).toBe(false);
+    expect(SystemMessage.isInstance(update.messages?.at(-1))).toBe(true);
     if (!update.browserDecision) throw new Error("expected projectable handoff state");
-    const projected = projectBrowserHandoffForProvider(messages, state({
-      messages,
+    const projected = projectBrowserHandoffForProvider(update.messages!, state({
+      messages: update.messages!,
       browserDecision: update.browserDecision,
     }));
     expect(projected.projected).toBe(true);
     expect(projected.messages[1]?.content).toContain("jev_requested_genie");
+    expect(projected.messages.some(SystemMessage.isInstance)).toBe(false);
   });
+
+  test.each(["browser_snapshot", "control_connected_web_operation"])(
+    "%s retains completed delegation after verification, compaction and control-state replacement", (toolName) => {
+      const snapshot = call("completed-segment", toolName, toolName === "browser_snapshot" ? {} : { command: { kind: "snapshot" } });
+      const receipt = successfulResult(snapshot, JSON.stringify(toolName === "browser_snapshot"
+        ? observation() : { ok: true, observation: observation() }));
+      const history = [new AIMessage({ content: "", tool_calls: [snapshot] }), receipt];
+      const completed = decision({ phase: "handoff", reason: "completion_ready", sequence: { index: 1, step: null },
+        lastAction: { toolCallId: "saved", description: "Save the requested draft", beforeObservationId: "before-save", execution: "executed" } });
+      const event = browserDecisionHandoffMessage(history, completed);
+      const verify = call("verify", "browser_read_page", {});
+      const verification = successfulResult(verify, "Saved draft verified");
+      const after = [...history, event, new AIMessage({ content: "", tool_calls: [verify] }), verification];
+      const ordinary = settleBrowserDecision(state({ messages: after, browserDecision: completed }), [verify], [verification], [], JEV_ID);
+      expect(ordinary?.reason).toBe("ordinary_genie_control");
+      for (let index = 2; index <= 3; index++) {
+        const observe = call(`verify-${index}`, toolName, snapshot.args);
+        const observed = observation({ observationId: `verified-${index}`, snapshot: `Fresh verification ${index}` });
+        after.push(new AIMessage({ content: "", tool_calls: [observe] }), successfulResult(observe,
+          JSON.stringify(toolName === "browser_snapshot" ? observed : { ok: true, observation: observed })));
+      }
+      const compacted = projectBrowserHistory(after).messages;
+      expect(compacted[1]?.content).toContain("Older browser evidence omitted");
+      for (const browserDecision of [ordinary, null]) {
+        const projected = projectBrowserHandoffForProvider(compacted, state({ messages: after, browserDecision }));
+        expect(projected.projected).toBe(true);
+        expect(projected.messages[1]?.content).toContain('"handoffReason":"completion_ready"');
+        expect(projected.messages[1]?.content).toContain(JEV_ID);
+        expect(projected.messages[1]?.content).toContain("Save the requested draft");
+        expect(projected.messages.at(-1)?.content).toBe(after.at(-1)?.content);
+        expect(projected.messages.some(SystemMessage.isInstance)).toBe(false);
+        expect(projected.messages.filter((message) => typeof message.content === "string"
+          && message.content.includes("[Runtime browser supervision]"))).toHaveLength(1);
+      }
+      expect(receipt.content).not.toContain("supervision");
+      expect(after).toContain(event);
+      // Missing or ambiguous anchors retain the event instead of attaching it to a different operation.
+      for (const ambiguous of [after.filter((message) => message !== receipt), [...after, receipt]]) {
+        const projected = projectBrowserHandoffForProvider(ambiguous, state({ browserDecision: ordinary }));
+        expect(projected.messages).toContain(event);
+        expect(projected.projected).toBe(false);
+      }
+    },
+  );
 
   test("runs an arbitrary press template through Choice and records its selected proposal", async () => {
     const exactKey = "Control+Alt+Shift+K";
@@ -1453,6 +1770,7 @@ describe("browser decision node", () => {
       { id: "action_0", description: JSON.stringify({ kind: "press", key: exactKey }) },
       { id: "reobserve", description: expect.any(String) as string },
       { id: "completion_ready", description: expect.any(String) as string },
+      { id: "needs_input", description: expect.any(String) as string },
       { id: "needs_visual_evidence", description: expect.any(String) as string },
       { id: "defer_to_genie", description: expect.any(String) as string },
     ]);
@@ -1598,7 +1916,7 @@ describe("browser decision node", () => {
     expect(requests.slice(0, 2).every(({ choices }) => choices.at(-1)?.id === "none_in_group")).toBe(true);
     expect(new Set(requests.slice(0, 2).flatMap(({ choices }) => choices.slice(0, -1).map(({ id }) => id))).size).toBe(430);
     expect(requests[2]?.choices.map(({ id }) => id)).toEqual([
-      "action_172", "action_344", "reobserve", "completion_ready", "needs_visual_evidence", "defer_to_genie",
+      "action_172", "action_344", "reobserve", "completion_ready", "needs_input", "needs_visual_evidence", "defer_to_genie",
     ]);
     expect(update.browserDecision).toMatchObject({ phase: "waiting" });
     expect(proposedToolCall(update)).toMatchObject({
@@ -1689,6 +2007,24 @@ describe("browser decision node", () => {
     }
   });
 
+  test("successful reads automatically reach the next Choice as exact source evidence", async () => {
+    const planned = call("research-plan", "browser_snapshot", { decisionPlan: plan });
+    const read = call("read-product", "browser_read", { ref: "@e7" });
+    const messages = [new AIMessage({ content: "", tool_calls: [planned] }),
+      new AIMessage({ content: "", tool_calls: [read], additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice", action: JSON.stringify({ kind: "read", name: "Product evidence", targetRef: "@e7" }),
+      } } }), successfulResult(read, "Price EUR 87.65; rating 4.3 from 210 ratings.")];
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false,
+      choose: async (input) => {
+        expect(input.state).toMatchObject({ recentActions: [{ status: "success", evidence: "Price EUR 87.65; rating 4.3 from 210 ratings." }] });
+        return { selectedId: "completion_ready", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+          usage: { inputTokens: 1, outputTokens: 1, actualCostUsd: 0 } };
+      },
+    });
+    const update = await node(state({ messages }), { signal: new AbortController().signal });
+    expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: "completion_ready" });
+  });
+
   test("cycles click to newly discovered typing target without a generative-model step", async () => {
     const controller = new AbortController();
     let choiceCalls = 0;
@@ -1747,7 +2083,7 @@ describe("browser decision node", () => {
     expect(choiceCalls).toBe(2);
   });
 
-  test("carries only confirmed redacted actions from the current decision episode into the next Choice", async () => {
+  test("carries only confirmed semantic actions from the current decision episode into the next Choice", async () => {
     const controller = new AbortController();
     const choiceInputs: OpenRouterChoiceInput[] = [];
     let choiceCalls = 0;
@@ -1787,8 +2123,8 @@ describe("browser decision node", () => {
     const firstAction = AIMessage.isInstance(firstReceipt)
       ? firstReceipt.additional_kwargs["nautilo_browser_decision"] as Record<string, unknown>
       : null;
-    expect(firstAction?.["action"]).toBe(REDACTED_TYPE_DESCRIPTION);
-    expect(JSON.stringify(firstAction)).not.toContain("blue mug");
+    expect(firstAction?.["action"]).toBe(TYPE_DESCRIPTION);
+    expect(JSON.stringify(firstAction)).toContain("blue mug");
     if (!firstUpdate.browserDecision) throw new Error("expected a pending first action");
 
     const wrongNameResult = new ToolMessage({
@@ -1832,9 +2168,9 @@ describe("browser decision node", () => {
 
     expect(choiceInputs).toHaveLength(2);
     const secondState = choiceInputs[1]?.state as Record<string, unknown>;
-    expect(secondState["recentActions"]).toEqual([{ action: REDACTED_TYPE_DESCRIPTION, status: "success" }]);
+    expect(secondState["recentActions"]).toEqual([{ action: TYPE_DESCRIPTION, status: "success" }]);
     const serializedSecondChoice = JSON.stringify(choiceInputs[1]);
-    expect(serializedSecondChoice).not.toContain("blue mug");
+    expect(serializedSecondChoice).toContain("blue mug");
     expect(serializedSecondChoice).not.toContain("prior episode action");
     expect(serializedSecondChoice).not.toContain("unconfirmed action");
 
@@ -1934,7 +2270,7 @@ describe("browser decision node", () => {
     }), { signal: controller.signal });
     expect(choiceInputs).toHaveLength(2);
     expect((choiceInputs[1]?.state as Record<string, unknown>)["recentActions"]).toEqual([
-      { action: REDACTED_TYPE_DESCRIPTION, status: "not_executed_stale", evidence: staleResult.content },
+      { action: TYPE_DESCRIPTION, status: "not_executed_stale", evidence: staleResult.content },
     ]);
     expect(proposedToolCall(retryUpdate)).toMatchObject({
       name: "browser_type",
@@ -2143,7 +2479,7 @@ describe("browser decision node", () => {
       choose: async () => { throw new ChoiceRequestError("provider_error", 400, false); },
     });
     expect(await denied(state(), { signal: new AbortController().signal })).toMatchObject({
-      browserDecision: { phase: "handoff", reason: "choice_provider_error" },
+      browserDecision: { phase: "handoff", reason: "choice_provider_error http_status=400" },
     });
   });
 

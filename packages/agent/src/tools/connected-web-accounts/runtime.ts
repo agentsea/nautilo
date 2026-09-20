@@ -369,7 +369,7 @@ export type ConnectedWebOperationDirectCommand =
   | Readonly<{ kind: "snapshot" }>
   | Readonly<{ kind: "click"; ref: string }>
   | Readonly<{ kind: "type"; ref: string; text: string; clear?: boolean | undefined }>
-  | Readonly<{ kind: "press"; key: string }>
+  | Readonly<{ kind: "press"; key: string; ref?: string | undefined }>
   | Readonly<{ kind: "open"; url: string }>
   | Readonly<{ kind: "back" }>
   | Readonly<{ kind: "forward" }>
@@ -397,6 +397,7 @@ export type ConnectedWebOperationDirectToolResult =
       ok: true;
       command: Readonly<{ text: string; truncated: boolean }>;
       observation?: BrowserDecisionObservation;
+      observationFailure?: { code: "browser_observation_invalid"; detail: string };
       operation: ConnectedWebOperationSafeProjection;
     }>
   | Readonly<{ ok: false; code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result"; recovery: "none";

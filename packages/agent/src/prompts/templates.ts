@@ -1,3 +1,4 @@
+import { browserDecisionPlanningGuidance } from "../graph/browser-decision";
 import type { StructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import type {
@@ -78,13 +79,18 @@ You have access to ${tools.length} tools:
     prompt += EMBEDDED_BROWSER;
     const snapshot = tools.find((tool) => tool.name === "browser_snapshot");
     if (snapshot?.schema instanceof z.ZodObject && Object.hasOwn(snapshot.schema.shape, "decisionPlan")) {
-      prompt += "\nThe routine browser decision model is available in this turn. After the initial observation, default to browser_snapshot with one decisionPlan for the whole routine outcome, rather than taking the first manual click. Preserve every user requirement in its goal and constraints, supply named exact values once, and omit actions for fresh-target discovery. Completion predicates are optional evidence hints, not stop conditions; you need not invent them. The runtime owns the observe/act loop during delegation; do not manually alternate clicks, typing, key presses and reasoning for work it can perform. Supply reusable exact keyboard or other action templates together with click_observed when the segment needs them; Jev can reuse a key across fresh observations without another reasoning turn. Delegate the whole routine outcome, including its selections and confirmation, with the required named values once. The model can work through successive dialogs using current state and action history. Split only when a real ambiguity or missing information prevents safe continuation; similar labels alone do not require one-field plans. For a canvas task, locate/select the object visually yourself, then delegate its ordinary DOM property controls. Take over for missing visual evidence, ambiguity, errors, authority changes or new strategy. On handoff, inspect the returned fresh evidence and diagnose the gap. A recoverable handoff does not disable delegation: give the routine model a corrected remaining goal and exact values as soon as the next segment is clear, instead of completing that segment through individual manual tool calls. Verify completion independently.\n";
+      prompt += "\nA routine decision model is available. After fresh evidence, default to browser_snapshot with decisionPlan for complete routine outcomes. Use ordinary controls when judgment or visual grounding is needed.\n";
     }
   }
 
   const connectedBrowser = tools.find((tool) => tool.name === "control_connected_web_operation");
   if (!isGuest && connectedBrowser?.schema instanceof z.ZodObject && Object.hasOwn(connectedBrowser.schema.shape, "decisionPlan")) {
-    prompt += "\nFor a connected website already under your direct control, default to control_connected_web_operation with command:{kind:'snapshot'} and decisionPlan for complete routine segments. Keep its exact operationId and current expectedControlEpoch. The runtime uses the same routine decision model and recovery loop without switching to the embedded browser. Delegate the whole routine outcome through its confirmation, not one plan per field or click; the model can work through successive dialogs and page changes. Preserve every user requirement in the goal and constraints, and supply exact named values and reusable action templates once. Split only for an actual ambiguity or missing information. After a handoff, inspect evidence, repair only the missing strategy or information, and delegate the remaining routine work again. Verify completion independently. Hosted and public website operations keep their existing management path; do not invent direct authority for them.\n";
+    prompt += "\nFor a connected website under direct control, delegate through control_connected_web_operation with command:{kind:'snapshot'} and decisionPlan. Retain its operationId and expectedControlEpoch; never switch browser authority. Hosted and public operations keep their existing management path.\n";
+  }
+
+  if (tools.some((tool) => ["browser_snapshot", "control_connected_web_operation"].includes(tool.name)
+    && tool.schema instanceof z.ZodObject && Object.hasOwn(tool.schema.shape, "decisionPlan"))) {
+    prompt += "\n" + browserDecisionPlanningGuidance + "\n";
   }
 
   if (toolNames.has("browse_web") || toolNames.has("run_web_search") || toolNames.has("read_webpage")) {
@@ -323,10 +329,10 @@ const EMBEDDED_BROWSER = `
 - The embedded browser is not Browser Use and does not carry Connected Websites profiles. Never use \`browser_*\` as a fallback for \`read_connected_web_account\`, an explicitly connected/logged-in website request, or an authenticated Browser Use request. For public Browser Use requests, use \`browse_web\` without requiring a website account. Use the Connected Websites capability for private account access; if it is not callable in this turn, discover it or explain that this turn cannot use it. Do not open the site's public URL in the embedded browser as a substitute.
 - Browser tools that are exposed to you are ordinary tools: invoke them directly for the user's requested browser work. Do **not** call \`verify_identity\` or ask for a PIN merely to use an embedded-browser tool. The \`control_browser\` capability and each tool's normal impact and approval rules remain authoritative; use identity verification only for an actual identity claim or a separately restricted action.
 - Prefer \`google_workspace\` instead when you need API-backed structural reads, batch edits, or background ops that do not require live co-editing in the open tab.
-- For ordinary manual control, drive the panel with the snapshot→refs→act→re-snapshot loop from the \`embedded-browser-control\` skill: \`browser_snapshot\` first, act on \`@eN\` refs from that snapshot only, then re-snapshot after every change. Refs go stale after any navigation, dialog, or re-render — after any pause where the user may have touched the screen, take a fresh snapshot before you reason or act.
+- For ordinary manual control, drive the panel with the snapshot→refs→act→re-snapshot loop from the \`embedded-browser-control\` skill: use the fresh observation returned by navigation or \`browser_snapshot\`, act on its \`@eN\` refs only, then obtain fresh evidence after every change. Refs go stale after any navigation, dialog, or re-render — after any pause where the user may have touched the screen, take a fresh snapshot before you reason or act.
 - Use \`browser_back\` for embedded-tab history. Do not emulate browser history with \`browser_press\` shortcuts such as Alt+Left or Meta+[.
 - Use \`browser_open\` for direct HTTP(S) URLs. The host address bar is not an embedded-page ref and cannot be targeted with \`browser_type\`.
-- Use the dedicated native controls for history, reload, hover, double-click, drag/drop, form controls, element scrolling, and waits. Re-snapshot after any action that changes page state.
+- Use the dedicated native controls for history, reload, hover, double-click, drag/drop, form controls, element scrolling, and waits. Navigation returns a fresh observation; after other state changes, re-snapshot.
 `;
 
 const WEB_RESEARCH = `

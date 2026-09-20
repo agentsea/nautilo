@@ -21,8 +21,9 @@ export function createBrowserOpenTool() {
       "WHEN TO USE: when the user supplies a URL, when a dead-end page has no usable link, or when you " +
       "need to replace the current page without interacting with Nautilo's address bar. The address bar " +
       "is host chrome and cannot be targeted with browser_type.\n\n" +
-      "WORKFLOW: browser_open {url} → browser_snapshot {}. Navigation invalidates every prior @e ref, so " +
-      "always take a fresh snapshot before acting again.\n\n" +
+      "WORKFLOW: navigation returns a fresh structured observation when available. Use its controls directly " +
+      "to decide or delegate; no extra snapshot call is needed. Old refs are invalid. If observationFailure is " +
+      "returned, navigation has completed: request browser_snapshot rather than repeating navigation.\n\n" +
       "SCOPE: acts on the user's active embedded app surface only — not Nautilo's own UI or other apps.\n\n" +
       "AVAILABILITY: requires a connected desktop with the `control_browser` capability and an app open " +
       "in the embedded panel.",

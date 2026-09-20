@@ -36,7 +36,7 @@ export const controlConnectedWebOperationToolSchema = z.object({
     z.object({ kind: z.literal("snapshot") }).strict(),
     z.object({ kind: z.literal("click"), ref }).strict(),
     z.object({ kind: z.literal("type"), ref, text, clear: z.boolean().optional() }).strict(),
-    z.object({ kind: z.literal("press"), key }).strict(),
+    z.object({ kind: z.literal("press"), key, ref: ref.optional() }).strict(),
     z.object({ kind: z.literal("open"), url: z.string().url().refine((value) => /^https?:\/\//u.test(value)) }).strict(),
     z.object({ kind: z.literal("back") }).strict(),
     z.object({ kind: z.literal("forward") }).strict(),
@@ -112,6 +112,10 @@ function project(result: ConnectedWebOperationDirectToolResult, operationId: str
     ok: true,
     command: { text: observation?.success ? "Current structured browser observation follows." : command, truncated: result.command.truncated === true },
     ...(observation?.success ? { observation: observation.data } : {}),
+    ...(result.observationFailure ? { observationFailure: {
+      code: "browser_observation_invalid", detail: safeText(result.observationFailure.detail) ?? "Observation unavailable.",
+      recovery: "Navigation completed. Request a snapshot on this same operation and epoch; do not repeat navigation to repair observation.",
+    } } : {}),
     operation: {
       operationId: operation.operationId,
       driver: operation.driver,

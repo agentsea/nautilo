@@ -88,23 +88,29 @@ describe("browserControl IPC wiring", () => {
   test("relay gives cold-open the browser execution budget and trusts exact manager acknowledgement", async () => {
     const readiness: unknown[] = [];
     let waitCalls = 0;
+    let publishedView = false;
+    const observed = { snapshot: '- button "Continue" [ref=e2]',
+      refs: { e2: { role: "button", name: "Continue" } }, origin: "https://example.com/path" };
     const handler = createInteractiveBrowserDispatchHandler({
       resolveBinary: () => "/managed/agent-browser",
       binaryInstallHint: () => "install managed agent-browser",
       ensureConfig: () => "/owned/browser-config.json",
       sessionFor: () => "browser-session",
-      hasPublishedView: () => false,
+      hasPublishedView: () => publishedView,
       waitForPublishedView: async () => {
         waitCalls += 1;
         return false;
       },
       ensureBrowserSurface: async (input) => {
         readiness.push(input);
+        publishedView = true;
         return { ok: true };
       },
       getCoordinateScale: () => undefined,
       setCoordinateScale: () => {},
-      exec: async () => ({ stdout: "opened" }),
+      exec: async (_binary, argv) => ({ stdout: argv.includes("snapshot")
+        ? JSON.stringify({ success: true, data: observed }) : argv.includes("eval")
+          ? JSON.stringify({ ready: true }) : "opened" }),
       pruneCaptures: () => {},
       capturePath: () => "/owned/browser-shot.png",
       readCapturePng: () => Buffer.alloc(24),
@@ -125,7 +131,11 @@ describe("browserControl IPC wiring", () => {
       guard: createWorkspaceGuard({ workspaceRoot: "/tmp" }),
     })).toEqual({
       handled: true,
-      result: { status: "ok", result: "opened" },
+      result: { status: "ok", result: {
+        navigation: { execution: "executed", result: "opened" },
+        observation: { version: 1, snapshot: observed.snapshot, refs: observed.refs,
+          pageUrl: observed.origin, browserSessionId: "browser-session", observationId: expect.any(String) as unknown },
+      } },
     });
     expect(readiness).toEqual([{
       url: "https://example.com/path",
@@ -134,7 +144,7 @@ describe("browserControl IPC wiring", () => {
     expect(waitCalls).toBe(0);
   });
 
-  test("preload and main expose D345 tool runtime bridge", () => {
+  test("preload and main expose the tool runtime bridge", () => {
     const preload = readFileSync(join(desktopRoot, "electron/preload.ts"), "utf-8");
     const main = readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8");
     const desktop = readFileSync(
