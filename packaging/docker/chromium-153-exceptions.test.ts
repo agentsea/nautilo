@@ -43,7 +43,7 @@ describe("Chromium 153 vulnerability exceptions", () => {
       image: { digest, reference: `registry.example/nautilo/server@${digest}`, sizeBytes: 42 },
       tools: { grype: "1", trivy: "1" },
       databases: [{ name: "grype", identity: "db", version: "1" }],
-      capturedAt: "2026-09-19T08:16:55Z",
+      capturedAt: "2026-09-20T16:12:15Z",
     };
     const input = {
       policy,
@@ -57,7 +57,7 @@ describe("Chromium 153 vulnerability exceptions", () => {
       },
       grype: { matches },
       trivy: { Results: [] },
-      evaluatedAt: "2026-09-19T08:16:55Z",
+      evaluatedAt: "2026-09-20T16:12:15Z",
     };
 
     const report = evaluateVulnerabilityPolicy(input);
@@ -69,7 +69,7 @@ describe("Chromium 153 vulnerability exceptions", () => {
     expect(report.warnings).toEqual([]);
 
     const changedVersion = structuredClone(matches);
-    changedVersion[0]!.artifact.version = "153.0.8010.52-1~deb13u1";
+    changedVersion[0]!.artifact.version = "153.0.8010.47-2~deb13u1";
     const broadened = evaluateVulnerabilityPolicy({ ...input, grype: { matches: changedVersion } });
     expect(broadened.passed).toBe(false);
     expect(broadened.failures.map((failure) => failure.code)).toEqual(["unmatched-high-critical"]);
