@@ -147,6 +147,45 @@ test("production node proposes an exact ordinary action, preserving usage and ad
   expect(next.messages?.at(-1)?.additional_kwargs["nautilo_native_decision"]).toMatchObject({ choiceCalls: 1, usage: { inputTokens: 1 } });
 });
 
+test("an explicit replacement plan does not offer insertion or duplicate the same operation", () => {
+  const segment = decision({ observation: observation(320), plan: nativeDecisionPlanSchema.parse({
+    goal: "Replace the requested value", values: { replacement: "42" }, actions: [
+      { purpose: "Replace", target: "each_control", operation: { kind: "set_value", value: "42" } },
+      { purpose: "Same replacement with a different label", target: "each_control", operation: { value: "42", kind: "set_value" } },
+    ],
+  }) });
+  const mutations = nativeDecisionCandidates(segment).filter(candidate => candidate.call?.name === "computer_do");
+  expect(mutations).toHaveLength(320);
+  for (const candidate of mutations) expect(candidate.call!.args).toMatchObject({ operation: { kind: "set_value" } });
+  expect(mutations.at(-1)!.controlId).toBe("c319");
+});
+
+test("explicit empty action scope stays read-only even when named values are supplied", () => {
+  const segment = decision({ plan: nativeDecisionPlanSchema.parse({ goal: "Inspect", values: { text: "42" }, actions: [] }) });
+  expect(nativeDecisionCandidates(segment).filter(candidate => candidate.call?.name === "computer_do")).toHaveLength(0);
+});
+
+test("candidate dedup preserves distinct delivery modes and includes them in named-value descriptions", () => {
+  const segment = decision({ plan: nativeDecisionPlanSchema.parse({ goal: "Insert supplied text", values: { text: "42" }, actions: [
+    { purpose: "Background insertion", target: "each_control", operation: { kind: "type_text", deliveryMode: "background" } },
+    { purpose: "Foreground insertion", target: "each_control", operation: { kind: "type_text", deliveryMode: "foreground" } },
+  ] }) });
+  const mutations = nativeDecisionCandidates(segment).filter(candidate => candidate.call?.name === "computer_do");
+  expect(mutations).toHaveLength(4);
+  expect(mutations.map(candidate => (JSON.parse(candidate.description) as { operation: { deliveryMode: string } }).operation.deliveryMode)).toEqual(["background", "background", "foreground", "foreground"]);
+});
+
+test("an insertion template binds named values without inventing replacement or overriding exact text", () => {
+  const segment = decision({ plan: nativeDecisionPlanSchema.parse({ goal: "Insert supplied text", values: { text: "42" }, actions: [
+    { purpose: "Insert supplied text", target: "each_control", operation: { kind: "type_text" } },
+    { purpose: "Insert a literal", target: "each_control", operation: { kind: "type_text", text: "literal" } },
+  ] }) });
+  const mutations = nativeDecisionCandidates(segment).filter(candidate => candidate.call?.name === "computer_do");
+  expect(mutations).toHaveLength(4);
+  expect(mutations.map(candidate => (candidate.call!.args["operation"] as Record<string, unknown>)["text"])).toEqual(["42", "42", "literal", "literal"]);
+  for (const candidate of mutations) expect(candidate.call!.args).toMatchObject({ operation: { kind: "type_text" } });
+});
+
 test("uncertain insertion cannot replay through fresh handles or replacement, but other recovery controls remain", async () => {
   const segment = decision();
   const insertion = nativeDecisionCandidates(segment).find((candidate) => candidate.description.includes('"type_text"'))!;

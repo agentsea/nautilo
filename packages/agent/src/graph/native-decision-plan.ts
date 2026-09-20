@@ -4,12 +4,16 @@ import { z } from "zod";
 export const nativeDecisionPlanSchema = z.object({
   goal: z.string().trim().min(1),
   constraints: z.array(z.string()).default([]),
-  values: z.record(z.string(), z.string()).default({}).describe("Exact supplied values keyed by purpose. Offered unchanged as insertion or replacement against fresh controls; never guessed from UI content."),
+  values: z.record(z.string(), z.string()).default({}).describe("Exact supplied values keyed by purpose. Bind missing text/value only in the requested type_text/set_value templates; never widen an explicit actions list or guess from UI content."),
   actions: z.array(z.object({
     purpose: z.string().min(1),
     target: z.enum(["each_control", "window", "exact"]),
-    operation: z.record(z.string(), z.json()).describe("An ordinary computer_do operation. For each_control or window omit target: the runtime binds fresh authority. For exact supply every argument. No invented keys, values, pixels or menu paths."),
-  }).strict()).default([{ purpose: "Activate an observed control", target: "each_control", operation: { kind: "click" } }]),
+    operation: z.record(z.string(), z.json()).describe("An ordinary computer_do operation. For each_control or window omit target: the runtime binds fresh authority. In type_text/set_value omit text/value to offer the exact named values. For exact supply every argument. No invented keys, values, pixels or menu paths."),
+  }).strict()).default([
+    { purpose: "Activate an observed control", target: "each_control", operation: { kind: "click" } },
+    { purpose: "Insert a supplied value", target: "each_control", operation: { kind: "type_text" } },
+    { purpose: "Replace entire value with a supplied value", target: "each_control", operation: { kind: "set_value" } },
+  ]),
 }).strict();
 export type NativeDecisionPlan = z.infer<typeof nativeDecisionPlanSchema>;
 

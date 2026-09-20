@@ -3237,6 +3237,53 @@ describe("Cua semantic adapter foundation", () => {
     }
   });
 
+  test("confirmed foreground input preserves exact-window read recovery without permitting replay", async () => {
+    const state = result({ window_id: 90, pid: 42, element_count: 0, total_element_count: 0,
+      returned_element_count: 0, elements_complete: false, elements: [], tree_markdown: "fixture", _note: "fixture" });
+    const checked = port([apps(), windows(), apps(), windows(),
+      result({ effect: "confirmed", route: "global_input", delivery: { mode: "foreground", delivered_count: 3 }, evidence: [{ kind: "value_readback" }] }),
+      state,
+    ]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+      readHidIdleNanoseconds: async () => checked.dispatched.some(call => call.name === "type_text") ? 0 : 1_000_000_000 });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    if (!desktop.ok) throw new Error("expected desktop observation");
+    const target = desktop.observation.targets[0]!.target;
+    const operation = { kind: "type_text" as const, target, text: "abc", deliveryMode: "foreground" as const };
+    const typed = await subject.typeText({ scope, operation });
+    expect(typed.receipt).toMatchObject({ completionCertainty: "completed", verification: "verified" });
+    expect(subject.registry.resolveTarget(target.context, scope, target.reference)).toEqual({ ok: false, code: "replay_forbidden" });
+    await subject.typeText({ scope, operation });
+    expect(checked.dispatched.filter(call => call.name === "type_text")).toHaveLength(1);
+    await expect(subject.observeWindowState({ scope, target })).resolves.toMatchObject({ ok: true, observation: { operation: "window_state" } });
+    expect(checked.dispatched.filter(call => call.name === "list_apps")).toHaveLength(2);
+    expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+  });
+
+  test.each(["takeover", "cancel", "authority"] as const)("settled foreground recovery still fences %s", async (variant) => {
+    const state = result({ window_id: 90, pid: 42, element_count: 0, total_element_count: 0,
+      returned_element_count: 0, elements_complete: false, elements: [], tree_markdown: "fixture", _note: "fixture" });
+    const checked = port([apps(), windows(), apps(), windows(),
+      result({ effect: "confirmed", route: "global_input", delivery: { mode: "foreground", delivered_count: 3 }, evidence: [{ kind: "value_readback" }] }), state]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+      readHidIdleNanoseconds: async () => checked.dispatched.some(call => call.name === "get_window_state") ? 0
+        : checked.dispatched.some(call => call.name === "type_text") ? 500_000_000 : 1_000_000_000 });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    if (!desktop.ok) throw new Error("expected desktop observation");
+    const target = desktop.observation.targets[0]!.target;
+    await subject.typeText({ scope, operation: { kind: "type_text", target, text: "abc", deliveryMode: "foreground" } });
+    const controller = new AbortController();
+    if (variant === "cancel") controller.abort();
+    const recovered = await subject.observeWindowState({
+      scope: variant === "authority" ? { ...scope, grantGeneration: 2 } : scope, target, signal: controller.signal,
+    });
+    expect(recovered.ok).toBe(false);
+    if (variant === "takeover") expect(recovered.outcome.externalInterference).toBe("user_input");
+    else expect(checked.dispatched.filter(call => call.name === "get_window_state")).toHaveLength(0);
+    expect(subject.registry.resolveTarget(target.context, scope, target.reference).ok).toBe(false);
+    expect(checked.dispatched.filter(call => call.name === "type_text")).toHaveLength(1);
+  });
+
   test("requires the pinned type-text ActionResult delivery count rather than inventing accounting", async () => {
     const axObservedAdapter = new CuaComputerUseAdapter({ port: port([apps(), windows()]).value });
     const axObserved = await axObservedAdapter.observe({ scope, operation: "desktop_state" });
@@ -5277,7 +5324,7 @@ describe("Cua semantic adapter foundation", () => {
       });
       const checked = port([apps(), windows(), state, apps(), windows(), result({
         effect: "confirmed", route, delivery: { mode: "background" }, evidence: [{ kind: "value_readback" }],
-      })]);
+      }), state]);
       const subject = new CuaComputerUseAdapter({
         port: checked.value, monotonicMilliseconds: () => 10_000,
         readHidIdleNanoseconds: async () => checked.dispatched.some((call) => call.name === "click") && route === "synthetic_events" ? 0 : 1_000_000_000,
@@ -5302,6 +5349,7 @@ describe("Cua semantic adapter foundation", () => {
       expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
       await subject.click({ scope, operation });
       expect(checked.calls.filter((call) => call.name === "click")).toHaveLength(1);
+      await expect(subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target })).resolves.toMatchObject({ ok: true });
     }
   });
 

@@ -39,7 +39,7 @@ describe("OpenAI multimodal tool-result projection", () => {
     expect((result[1] as ToolMessage).additional_kwargs["nautilo_tool_status"]).toBe("success");
     expect(result[2]).toBeInstanceOf(HumanMessage);
     expect((result[2] as HumanMessage).content).toEqual([
-      { type: "text", text: "PDF: report.pdf" },
+      { type: "text", text: "Attachments from tool call call-pdf (file). The tool result contains their text context." },
       {
         type: "input_file",
         file_data: "data:application/pdf;base64,JVBERi0xLjQ=",
@@ -58,6 +58,34 @@ describe("OpenAI multimodal tool-result projection", () => {
     const messages = [tool];
     expect(projectOpenAIMultimodalToolResults(messages, "anthropic:claude-sonnet-4-6"))
       .toBe(messages);
+  });
+
+  test("does not resend a large screenshot result as user text or mutate durable evidence", () => {
+    const text = JSON.stringify({ controls: Array.from({ length: 320 }, (_, id) => ({ id, label: `Control ${id}` })) });
+    const image = { type: "image_url", image_url: { url: "data:image/png;base64,cGl4ZWxz" } };
+    const tool = new ToolMessage({ id: "observation", name: "computer_observe", tool_call_id: "observe", content: [{ type: "text", text }, image], status: "error", response_metadata: { completion: "unknown" } });
+    const before = JSON.stringify(tool);
+    const projected = projectOpenAIMultimodalToolResults([tool], "openai:gpt-5.6-sol");
+    expect(projected[0]!.content).toBe(text);
+    expect(projected[0]!.id).toBe("observation");
+    expect((projected[0] as ToolMessage).status).toBe("error");
+    expect(projected[0]!.response_metadata).toEqual({ completion: "unknown" });
+    expect(JSON.stringify(projected[1]!.content)).not.toContain("Control 319");
+    expect(projected[1]!.content).toContainEqual(image);
+    expect(JSON.stringify(tool)).toBe(before);
+  });
+
+  test("keeps parallel tool results adjacent before projecting their attachments", () => {
+    const ai = new AIMessage({ content: "", tool_calls: [
+      { id: "one", name: "file", args: {} }, { id: "two", name: "file", args: {} },
+    ] });
+    const one = new ToolMessage({ name: "file", tool_call_id: "one", content: pdfBlocks });
+    const two = new ToolMessage({ name: "file", tool_call_id: "two", content: "Second result" });
+    const next = new AIMessage("Read both results");
+    const projected = projectOpenAIMultimodalToolResults([ai, one, two, next], "openai:gpt-5.6-sol");
+    expect(projected.map(message => message.getType())).toEqual(["ai", "tool", "tool", "human", "ai"]);
+    expect(projected[2]).toBe(two);
+    expect(projected[4]).toBe(next);
   });
 
   test.each([

@@ -513,7 +513,10 @@ export function projectOpenAIMultimodalToolResults(
   if (!usesOpenAICompatibleChatTransport(modelId)) return messages;
 
   const projected: BaseMessage[] = [];
+  const attachments: HumanMessage[] = [];
   for (const message of messages) {
+    // All results in a parallel tool cycle must precede a user-role message.
+    if (!ToolMessage.isInstance(message)) projected.push(...attachments.splice(0));
     if (!ToolMessage.isInstance(message) || !Array.isArray(message.content) || !hasMultimodalToolContent(message.content)) {
       projected.push(message);
       continue;
@@ -531,10 +534,17 @@ export function projectOpenAIMultimodalToolResults(
       tool_call_id: message.tool_call_id,
       ...(message.name ? { name: message.name } : {}),
       additional_kwargs: message.additional_kwargs,
+      response_metadata: message.response_metadata,
+      ...(message.status !== undefined ? { status: message.status } : {}),
+      ...(message.artifact !== undefined ? { artifact: message.artifact as unknown } : {}),
     });
     if (message.id) pairedToolMessage.id = message.id;
 
-    const openAIContent = message.content.map((block) => {
+    const openAIContent = message.content.filter((block) =>
+      !(typeof block === "object" && block !== null &&
+        (block as Record<string, unknown>)["type"] === "text" &&
+        typeof (block as Record<string, unknown>)["text"] === "string"),
+    ).map((block) => {
       if (typeof block !== "object" || block === null) return block;
       const record = block as Record<string, unknown>;
       if (
@@ -557,11 +567,15 @@ export function projectOpenAIMultimodalToolResults(
       return block;
     });
     projected.push(pairedToolMessage);
-    projected.push(new HumanMessage({
-      content: openAIContent,
+    attachments.push(new HumanMessage({
+      content: [
+        { type: "text", text: `Attachments from tool call ${message.tool_call_id}${message.name ? ` (${message.name})` : ""}. The tool result contains their text context.` },
+        ...openAIContent,
+      ],
       additional_kwargs: { nautilo_multimodal_tool_projection: true },
     }));
   }
+  projected.push(...attachments);
   return projected;
 }
 

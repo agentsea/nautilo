@@ -3937,11 +3937,11 @@ export class CuaComputerUseAdapter {
       }
       if (effect.providerAction.delivery?.mode === "foreground") {
         // Global HID necessarily advances the same host signal used for Human
-        // takeover. We retain Cua's confirmed semantic input truth, but have
-        // no signed agent-input rearm primitive with which to attribute any
-        // post-dispatch epoch. Fence the old window context and require a
-        // fresh observation before a later action.
-        this.registry.markUnknownCompletion(context, request.scope);
+        // takeover. The settled, confirmed action consumes old input authority,
+        // not the exact app/window identity needed to observe its result. A
+        // fresh read establishes and checks a new epoch before minting targets;
+        // it neither replays this action nor reuses pre-input capabilities.
+        this.registry.retireMutationCapabilities(context, request.scope);
         const result = outcome("post_effect_verification", {
           retrySafety: "never", stateChangeCertainty: "changed", providerCondition: "ready", targetCondition: "unknown",
           recovery: ["observe_again", "do_not_replay"],
@@ -3969,7 +3969,7 @@ export class CuaComputerUseAdapter {
       // A token-addressed row selection can itself synthesize pointer input.
       // Keep the driver's verified selection, but reacquire state rather than
       // attributing its HID epoch to the Human or reusing pre-gesture targets.
-      if (confirmedSelectionPointer) this.registry.markUnknownCompletion(context, request.scope);
+      if (confirmedSelectionPointer) this.registry.retireMutationCapabilities(context, request.scope);
       const postconditionOnly = name === "set_value" || name === "click" && effect.providerAction.effect === "confirmed";
       const result = outcome("post_effect_verification", {
         // Readback proves the requested value/selection, not a before/after

@@ -17,6 +17,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Server Controls → Models now selects the speech model for all Genies from the model catalog. Conversational is the catalog default; Genie voices remain independent, and changes apply to the next reply. The panel keeps Save changes visible and marks unsaved speech selections separately from the active model.
 - Voice replies now stream to native iOS and Android players as audio arrives. Stop, Room changes, reconnection, and backgrounding discard stale playback; Genie voice assignments remain unchanged.
 
+- Computer Use no longer duplicates screenshot-result text in OpenAI-compatible
+  model requests. Parallel tool results stay paired before their attachments.
+  Native decision plans deduplicate identical actions and preserve explicitly
+  requested insertion versus replacement, reducing redundant choices without
+  dropping controls. Confirmed native foreground input preserves exact-window
+  observation recovery while retiring old input capabilities.
+
 - Computer Use selects signed tool schemas supported by the connected Host,
   retaining an explicit compatibility baseline across Host/catalogue update
   order. Desktop advertises generic Host descriptors; concurrent Genies retain

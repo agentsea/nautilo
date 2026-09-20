@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
+import { canonicalizeComputerUseJson } from "@nautilo/computer-use-contracts";
 import { windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 import type { z } from "zod";
 import type { NautiloState } from "../agent/state";
@@ -64,12 +65,13 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
   const add = (purpose: string, operation: Record<string, unknown>, control?: Control, valueName?: string) => {
     const admitted = resolveComputerUseHostToolRequest("computer_do", { operation });
     if (!admitted) return;
-    const key = JSON.stringify([purpose, admitted.arguments]);
+    const key = JSON.stringify(canonicalizeComputerUseJson(admitted.arguments));
     if (seen.has(key)) return;
     seen.add(key);
     const { target: _target, ...semanticOperation } = operation;
     const describedOperation = valueName === undefined ? semanticOperation : {
-      kind: operation["kind"], suppliedValue: valueName,
+      ...Object.fromEntries(Object.entries(semanticOperation).filter(([key]) => key !== "text" && key !== "value")),
+      suppliedValue: valueName,
     };
     // Input replay is identified without snapshot handles. An uncertain text,
     // key or menu operation cannot be laundered through a new target. Clicks
@@ -97,18 +99,21 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
     });
   };
   for (const action of decision.plan.actions) {
-    if (action.target === "exact") add(action.purpose, action.operation);
-    else if (action.target === "window") add(action.purpose, { ...action.operation, target: observation.target });
-    else for (const control of controls) {
-      if (control.target && control.enabled !== false) add(action.purpose, { ...action.operation, target: control.target }, control);
-    }
-  }
-  for (const [purpose, value] of Object.entries(decision.plan.values)) {
-    for (const control of controls) {
-      if (!control.target || control.enabled === false) continue;
-      // Roles describe evidence, not permission. The driver determines support.
-      add(`Insert supplied ${purpose}`, { kind: "type_text", target: control.target, text: value }, control, purpose);
-      add(`Replace entire value with supplied ${purpose}`, { kind: "set_value", target: control.target, value }, control, purpose);
+    const valueField = action.operation["kind"] === "type_text" ? "text"
+      : action.operation["kind"] === "set_value" ? "value" : null;
+    const bind = (operation: Record<string, unknown>, valueName?: string) => {
+      if (action.target === "exact") add(action.purpose, operation, undefined, valueName);
+      else if (action.target === "window") add(action.purpose, { ...operation, target: observation.target }, undefined, valueName);
+      else for (const control of controls) {
+        // Roles describe evidence, not permission. The driver determines support.
+        if (control.target && control.enabled !== false) add(action.purpose, { ...operation, target: control.target }, control, valueName);
+      }
+    };
+    if (valueField && !Object.hasOwn(action.operation, valueField) && action.target !== "exact") {
+      for (const [name, value] of Object.entries(decision.plan.values)) bind({ ...action.operation, [valueField]: value }, name);
+    } else {
+      const valueName = valueField ? Object.entries(decision.plan.values).find(([, value]) => value === action.operation[valueField])?.[0] : undefined;
+      bind(action.operation, valueName);
     }
   }
   for (const id of BROWSER_DECISION_CONTROL_IDS) candidates.push({
