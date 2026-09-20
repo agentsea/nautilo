@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { z } from "zod";
@@ -109,6 +110,85 @@ test("starts only from a paired singleton checked Host observation, then routes 
   const forged = new ToolMessage({ content: receipt.content, name: call.name, tool_call_id: call.id });
   expect(settleNativeDecision(initial, [call], [forged], [], modelId)?.reason).toBe("checked_host_result_unavailable");
   expect(settleNativeDecision(initial, [call], [receipt], [call], modelId)).toBeNull();
+});
+
+test("checked observation target identity ignores all object key permutations, not changed fields", () => {
+  const keys = ["version", "context", "reference"];
+  const permutations = keys.flatMap(first => keys.filter(key => key !== first).map(second =>
+    [first, second, ...keys.filter(key => key !== first && key !== second)]));
+  const settle = (requested: unknown) => {
+    const call = { id: "observe-order", name: "computer_observe", args: {
+      operation: "window_state", target: requested, decisionPlan: { goal: "Inspect controls" },
+    } };
+    return settleNativeDecision(state(null, [new AIMessage({ content: "", tool_calls: [call] })]),
+      [call], [result(call, observation())], [], modelId);
+  };
+  for (const order of permutations) {
+    expect(settle(Object.fromEntries(order.map(key => [key, target[key as keyof typeof target]])))?.phase).toBe("decide");
+  }
+  for (const changed of [
+    { ...target, version: 2 }, { ...target, context: `dctx_${"z".repeat(43)}` },
+    { ...target, reference: `dtgt_${"z".repeat(43)}` }, { ...target, extra: true },
+    { version: 1, context }, null,
+  ]) expect(settle(changed)?.phase).not.toBe("decide");
+});
+
+test("dispatch and settlement preserve structured identity through reordered pending and control fields", () => {
+  const segment = decision();
+  const candidate = nativeDecisionCandidates(segment).find(entry => entry.description.includes('"type_text"'))!;
+  const call = { ...candidate.call!, id: "insert-order" };
+  const operation = call.args["operation"] as Record<string, unknown>;
+  const controlTarget = operation["target"] as Record<string, unknown>;
+  const reordered = { ...call, args: { operation: {
+    target: Object.fromEntries(Object.entries(controlTarget).reverse()), text: operation["text"], kind: "type_text",
+  } } };
+  const waiting = state({ ...segment, phase: "waiting", pending: call }, [new AIMessage({ content: "", tool_calls: [reordered] })]);
+  expect(nativeDecisionDispatchError(waiting, reordered)).toBeNull();
+  for (const changed of [
+    { ...operation, text: "42 " }, { ...operation, text: 42 },
+    { ...operation, target }, { ...operation, extra: true }, { ...operation, text: undefined },
+  ]) expect(nativeDecisionDispatchError(waiting, { ...call, args: { operation: changed } })).toBe("native_decision_proposal_changed");
+  const settled = settleNativeDecision(waiting, [reordered],
+    [result(reordered, { status: "host_rejected", reason: "host_failure" }, "unknown_completion")], [], modelId)!;
+  expect(settled.phase).toBe("observe");
+  expect(settled.history[0]!.evidence).toMatchObject({ source: { control: { id: candidate.controlId } } });
+  expect(settled.unresolved[0]!.replayKey).toBe(candidate.replayKey!);
+  expect(nativeDecisionCandidates({ ...settled, observation: observation(2, 2) })
+    .some(entry => /type_text|set_value/.test(entry.description))).toBe(false);
+});
+
+test("replay identity ignores operation key order while dispatch preserves ordered key sequences", () => {
+  const make = (operation: Record<string, unknown>) => decision({ plan: nativeDecisionPlanSchema.parse({
+    goal: "Use the requested shortcut", actions: [{ purpose: "Shortcut", target: "window", operation }],
+  }) });
+  const first = make({ kind: "hotkey", keys: ["CMD", "a"] });
+  const second = make({ keys: ["CMD", "a"], kind: "hotkey" });
+  const selected = nativeDecisionCandidates(first).find(entry => entry.call?.name === "computer_do")!;
+  expect(selected).toBeDefined();
+  expect(nativeDecisionCandidates(second).find(entry => entry.call?.name === "computer_do")!.replayKey).toBe(selected.replayKey);
+  const call = { ...selected.call!, id: "shortcut-order" };
+  const operation = call.args["operation"] as Record<string, unknown>;
+  expect(nativeDecisionDispatchError(state({ ...first, phase: "waiting", pending: call }),
+    { ...call, args: { operation: { ...operation, keys: ["a", "CMD"] } } })).toBe("native_decision_proposal_changed");
+  expect(nativeDecisionCandidates({ ...second, unresolved: [{ callId: call.id, operation, receipt: {}, replayKey: selected.replayKey! }] })
+    .some(entry => entry.call?.name === "computer_do")).toBe(false);
+  const { target: _target, ...legacyOperation } = operation;
+  const legacyKey = createHash("sha256").update(JSON.stringify([legacyOperation, null])).digest("hex");
+  expect(nativeDecisionCandidates({ ...second, unresolved: [{ callId: call.id, operation, receipt: {}, replayKey: legacyKey }] })
+    .some(entry => entry.call?.name === "computer_do")).toBe(false);
+});
+
+test("legacy click checkpoints preserve lineage while permitting an unrelated recovery control", () => {
+  const segment = decision({ plan: nativeDecisionPlanSchema.parse({ goal: "Activate requested control", actions: [
+    { purpose: "Activate", target: "each_control", operation: { kind: "click", deliveryMode: "background" } },
+  ] }) });
+  const row = segment.observation!.controlCollection!.controls[0]!;
+  const operation = { kind: "click", target: row.target, deliveryMode: "background" };
+  const legacyKey = createHash("sha256").update(JSON.stringify([{ kind: "click" }, [{ role: row.role, label: row.label }]])).digest("hex");
+  const unresolved = [{ callId: "legacy-click", operation, receipt: {}, replayKey: legacyKey }];
+  const choices = nativeDecisionCandidates({ ...segment, observation: observation(2, 2), unresolved });
+  expect(choices.some(entry => entry.controlId === "c0")).toBe(false);
+  expect(choices.some(entry => entry.controlId === "c1")).toBe(true);
 });
 
 test("600 choices retain all controls, use compact groups plus NONE, then compare nominees", async () => {

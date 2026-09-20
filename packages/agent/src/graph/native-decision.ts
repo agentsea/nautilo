@@ -58,6 +58,17 @@ export function nativeDecisionEvidence(observation: Observation) {
 function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
+/** Object order is transport formatting; array order and exact values are identity. */
+function sameJson(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(canonicalizeComputerUseJson(left)) === JSON.stringify(canonicalizeComputerUseJson(right));
+  } catch { return false; }
+}
+function replayOperationFor(operation: Record<string, unknown>) {
+  const { target: _target, deliveryMode: _deliveryMode, delayMs: _delayMs, ...logicalOperation } = operation;
+  return operation["kind"] === "type_text" || operation["kind"] === "set_value"
+    ? { kind: "write_value", value: operation["text"] ?? operation["value"] } : logicalOperation;
+}
 export function nativeDecisionCandidates(decision: NativeDecisionState): NativeDecisionCandidate[] {
   const observation = decision.observation;
   if (!observation) return [];
@@ -86,11 +97,18 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
       lineage.push({ role: row.role, ...(row.label ? { label: row.label } : {}) });
       row = controls.find((candidate) => candidate.id === row?.parent);
     }
-    const { deliveryMode: _deliveryMode, delayMs: _delayMs, ...logicalOperation } = semanticOperation;
-    const replayOperation = operation["kind"] === "type_text" || operation["kind"] === "set_value"
-      ? { kind: "write_value", value: operation["text"] ?? operation["value"] } : logicalOperation;
-    const replayKey = digest([replayOperation, operation["kind"] === "click" ? lineage : null]);
-    if (decision.unresolved.some((entry) => entry.replayKey === replayKey)) return;
+    const replayOperation = replayOperationFor(operation);
+    const replayLineage = operation["kind"] === "click" ? lineage : null;
+    const replayKey = digest(canonicalizeComputerUseJson([replayOperation, replayLineage]));
+    if (decision.unresolved.some((entry) => {
+      if (entry.replayKey === replayKey) return true;
+      // Older checkpoints hashed insertion order. Reconstruct their original
+      // hash from the retained operation without discarding click lineage.
+      if (!entry.operation || typeof entry.operation !== "object" || Array.isArray(entry.operation)) return false;
+      const retainedOperation = replayOperationFor(entry.operation as Record<string, unknown>);
+      return sameJson(retainedOperation, replayOperation)
+        && entry.replayKey === digest([retainedOperation, replayLineage]);
+    })) return;
     candidates.push({
       id: `a${decision.generation}_${candidates.length}`,
       description: JSON.stringify({ purpose, operation: describedOperation,
@@ -141,10 +159,10 @@ export function nativeDecisionDispatchError(state: NautiloState, call: ToolCall)
   const pending = decision?.pending;
   if (!decision || !pending || pending.id !== call.id) return null;
   if (decision.phase !== "waiting" || pending.name !== call.name
-    || JSON.stringify(pending.args) !== JSON.stringify(call.args)) return "native_decision_proposal_changed";
+    || !sameJson(pending.args, call.args)) return "native_decision_proposal_changed";
   if (call.name === "computer_observe") return null;
   return nativeDecisionCandidates(decision).some((candidate) => candidate.call?.name === call.name
-    && JSON.stringify(candidate.call.args) === JSON.stringify(call.args)) ? null : "native_decision_action_not_current_or_replay_fenced";
+    && sameJson(candidate.call.args, call.args)) ? null : "native_decision_action_not_current_or_replay_fenced";
 }
 
 /** Each screening request sees its rows and ancestors, not the whole collection again. */
@@ -207,7 +225,7 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
   if (remaining.length || calls.length !== 1 || results.length !== 1 || !call?.id || !result
     || result.tool_call_id !== call.id || result.name !== call.name) return current ? handoff(current, "ordinary_genie_control") : null;
   const continues = current?.phase === "waiting" && current.pending?.id === call.id
-    && current.pending.name === call.name && JSON.stringify(current.pending.args) === JSON.stringify(call.args);
+    && current.pending.name === call.name && sameJson(current.pending.args, call.args);
   const plan = parseNativeDecisionPlan(call.name, call.args);
   const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
   const starts = plan && modelId && state.turnId && source?.tool_calls?.length === 1 && source.tool_calls[0]?.id === call.id;
@@ -229,7 +247,7 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
   if (call.name === "computer_observe") {
     const parsed = windowStateObservationSchema.safeParse(payload);
     if (settlement !== "completed" || !parsed.success || !parsed.data.controlCollection || parsed.data.evidence === null) return handoff(next, "native_control_collection_unavailable");
-    if (JSON.stringify(parsed.data.target) !== JSON.stringify(call.args["target"])) return handoff(next, "native_observation_target_changed");
+    if (!sameJson(parsed.data.target, call.args["target"])) return handoff(next, "native_observation_target_changed");
     const last = next.history.at(-1);
     const retained = last?.evidence as Record<string, unknown> | undefined;
     if (last && retained && !Object.hasOwn(retained, "observed") && next.observation) {
@@ -264,7 +282,7 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
   const authored = source?.additional_kwargs["nautilo_native_decision"] as { action?: string } | undefined;
   const operation = call.args["operation"] as Record<string, unknown>;
   const { target: _target, ...semanticOperation } = operation;
-  const selectedControl = next.observation?.controlCollection?.controls.find((control) => JSON.stringify(control.target) === JSON.stringify(operation["target"]));
+  const selectedControl = next.observation?.controlCollection?.controls.find((control) => sameJson(control.target, operation["target"]));
   const { target: _controlTarget, ...controlEvidence } = selectedControl ?? {};
   next.history = addHistory(next, { action: JSON.stringify({ operation: semanticOperation,
     ...(authored?.action ? { selection: authored.action } : {}) }), settlement,
@@ -272,7 +290,7 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
       control: selectedControl ? controlEvidence : null } } });
   if (unknown) {
     const candidate = current ? nativeDecisionCandidates(current).find((entry) => entry.call?.name === call.name
-      && JSON.stringify(entry.call.args) === JSON.stringify(call.args)) : undefined;
+      && sameJson(entry.call.args, call.args)) : undefined;
     next.unresolved = [...next.unresolved, { callId: call.id, operation: call.args["operation"], receipt, replayKey: candidate?.replayKey ?? "unclassified" }];
   }
   if (["revoked", "cancelled", "fenced"].includes(settlement)) return handoff(next, settlement);

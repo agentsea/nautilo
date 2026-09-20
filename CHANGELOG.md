@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Native Computer Use compares target and action identity independently of JSON
+  object key order, avoiding false target-change handoffs while preserving exact
+  values, ordered key sequences, and uncertain-action replay protection.
+
 - Desktop now presents the official Nautilo Community as an explicit first-run,
   Add Server, and Switch Server destination while keeping private servers and
   manual connection available. New members use a stable, revocable community
