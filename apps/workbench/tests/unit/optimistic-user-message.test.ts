@@ -56,7 +56,7 @@ function sendTextBlock(): string {
   return runtimeSource.slice(start, end);
 }
 
-describe("optimistic outbound user message helpers (M175)", () => {
+describe("optimistic outbound user message helpers", () => {
   test("plain text bubble preserves the authored text exactly", () => {
     expect(buildUserBubbleText({ text: "  hello  ", queuedAttachments: [] })).toBe("  hello  ");
   });
@@ -144,7 +144,7 @@ describe("optimistic outbound user message helpers (M175)", () => {
   });
 });
 
-describe("sendText optimistic ordering (M175 source audit)", () => {
+describe("sendText optimistic ordering (source contract)", () => {
   test("room sends are rejected until the visible transcript is bound to the active room", () => {
     const block = sendTextBlock();
     const bindingGuard = block.indexOf("resolveBoundRoomIdForSend(");
@@ -198,7 +198,7 @@ describe("sendText optimistic ordering (M175 source audit)", () => {
     const block = sendTextBlock();
     const postAwait = block.slice(block.indexOf("const rid = roomIdForSend;"));
     expect(postAwait).toMatch(/reconcileMessageId\(optimisticId, String\(pending\.userMessageId\)\)/);
-    expect(postAwait).not.toMatch(/addMessage\(\{\s*\/\/ D212[\s\S]*role: "user"/);
+    expect(postAwait).not.toMatch(/addMessage\(\{[^}]*\brole:\s*"user"/);
   });
 
   test("message.new delegates optimistic reconciliation to the shared helper", () => {
@@ -216,7 +216,7 @@ describe("sendText optimistic ordering (M175 source audit)", () => {
   });
 });
 
-describe("room-bound send admission (D448)", () => {
+describe("room-bound send admission", () => {
   test("admits only the room whose transcript finished hydrating", () => {
     expect(resolveBoundRoomIdForSend("room-b", "room-b", "room-b")).toBe("room-b");
     expect(resolveBoundRoomIdForSend("room-b", "room-a", "room-b")).toBeUndefined();
@@ -233,7 +233,7 @@ describe("room-bound send admission (D448)", () => {
   });
 });
 
-describe("conversation failed-send rendering (M175 source audit)", () => {
+describe("conversation failed-send rendering (source contract)", () => {
   test("composer clears via the optimistic-send callback, not only after server confirmation", () => {
     expect(conversationSource).toMatch(/onOptimisticUserMessage: cleanupComposer/);
     expect(conversationSource).toMatch(

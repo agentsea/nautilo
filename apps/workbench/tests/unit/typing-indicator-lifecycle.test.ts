@@ -20,7 +20,7 @@ function sliceCaseBlock(caseLabel: string, nextCaseLabel: string): string {
   return runtimeSource.slice(start, end);
 }
 
-describe("D313 typing indicator lifecycle (nautilo-runtime source audit)", () => {
+describe("Typing indicator lifecycle (nautilo-runtime source audit)", () => {
   test("PresenceTypingStrip reads Nautilo WS-owned isRunning, not assistant-ui run state", () => {
     expect(presenceStripSource).toMatch(/useVoiceControls/);
     expect(presenceStripSource).not.toMatch(/useThread/);
@@ -30,7 +30,7 @@ describe("D313 typing indicator lifecycle (nautilo-runtime source audit)", () =>
     const tokensCase = sliceCaseBlock('"message.tokens"', '"message.new"');
     expect(tokensCase).not.toMatch(/setIsRunning\(false\)/);
     expect(tokensCase).toMatch(/clearAgentStreamingVisibleOutput\(\)/);
-    expect(tokensCase).toMatch(/D313 — isRunning tracks live job lifetime/);
+    expect(tokensCase).toMatch(/isRunning tracks live job lifetime/);
   });
 
   test("visible token chunks hide the strip only for a quiet window", () => {
@@ -60,7 +60,7 @@ describe("D313 typing indicator lifecycle (nautilo-runtime source audit)", () =>
       messageNewCase.indexOf('event.role === "user"'),
     );
     expect(aiAssistantBlock).not.toMatch(/setIsRunning\(false\)/);
-    expect(aiAssistantBlock).toMatch(/D313 — reconcile id only/);
+    expect(aiAssistantBlock).toMatch(/reconcile id only/);
   });
 
   test("still clears isRunning on terminal job.status completed", () => {
