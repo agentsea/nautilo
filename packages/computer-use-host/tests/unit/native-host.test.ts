@@ -1,6 +1,7 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { COMPUTER_USE_BROWSER_CONTRACTS } from "@nautilo/computer-use-contracts";
 import { COMPUTER_USE_NATIVE_CONTRACTS } from "@nautilo/computer-use-contracts/native";
+import { NATIVE_COMPATIBILITY_SCHEMAS } from "@nautilo/computer-use-contracts/native-compatibility";
 
 import type { CuaCheckedContextPort, CuaMainLifecycle } from "../../src/native-cua-lifecycle.ts";
 import { createNativeCuaHost } from "../../src/native-host.ts";
@@ -53,6 +54,7 @@ test("native Host owns lifecycle startup, checked generation, contracts, invalid
     COMPUTER_USE_NATIVE_CONTRACTS.observe,
     COMPUTER_USE_NATIVE_CONTRACTS.do,
     COMPUTER_USE_NATIVE_CONTRACTS.verify,
+    ...NATIVE_COMPATIBILITY_SCHEMAS.map((schema) => schema.descriptor),
     COMPUTER_USE_BROWSER_CONTRACTS.bindWindow,
     COMPUTER_USE_BROWSER_CONTRACTS.prepare,
     COMPUTER_USE_BROWSER_CONTRACTS.readPage,
