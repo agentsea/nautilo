@@ -5,16 +5,18 @@ const NONE_IN_GROUP = {
   description: "None of this group's actions is an appropriate next step. Other groups may contain the right action; this does not declare the task complete.",
 };
 export const BROWSER_DECISION_CONTROL_IDS = ["reobserve", "defer_to_genie", "completion_ready", "needs_visual_evidence", "needs_input"] as const;
-const CONTROL_IDS = new Set<string>(BROWSER_DECISION_CONTROL_IDS);
 
 /** Screening never executes actions. All rounds share the original observation. */
 export async function chooseBrowserAction(
   input: ChoiceInput,
   maxChoices: number,
   choose: (input: ChoiceInput) => Promise<ChoiceResult>,
+  options?: { controlIds: readonly string[] },
 ): Promise<ChoiceResult & { choiceCalls: number; screeningRounds: number }> {
-  const controls = input.choices.filter(({ id }) => CONTROL_IDS.has(id));
-  if (!Number.isSafeInteger(maxChoices) || maxChoices < 3 || maxChoices <= controls.length) {
+  const controlIds = new Set<string>(options?.controlIds ?? BROWSER_DECISION_CONTROL_IDS);
+  const controls = input.choices.filter(({ id }) => controlIds.has(id));
+  if (!Number.isSafeInteger(maxChoices) || maxChoices < 3 || maxChoices < controls.length
+    || (maxChoices === controls.length && input.choices.length > maxChoices)) {
     throw new ChoiceRequestError("invalid_request");
   }
   let choiceCalls = 0;
@@ -51,7 +53,7 @@ export async function chooseBrowserAction(
     }
     if (!controls.some(({ id }) => id === "reobserve") || !controls.some(({ id }) => id === "defer_to_genie")
       || input.choices.some(({ id }) => id === NONE_IN_GROUP.id)) throw new ChoiceRequestError("invalid_request");
-    const nominees = finalists.filter(({ id }) => !CONTROL_IDS.has(id));
+    const nominees = finalists.filter(({ id }) => !controlIds.has(id));
     if (nominees.length <= 1) throw new ChoiceRequestError("context_length_exceeded");
     screeningRounds += 1;
     // Count overflow uses the catalog bound. Text overflow divides the rejected

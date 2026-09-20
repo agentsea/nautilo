@@ -5,7 +5,7 @@ import {
 import type { JsonSchema7Type } from "@langchain/core/utils/json_schema";
 import { z } from "zod";
 import { nativeDecisionPlanSchema } from "../../graph/native-decision-plan";
-import { resolveBrowserDecisionModel } from "../browser/browser-snapshot";
+import { resolveNativeDecisionModel } from "../../config/native-decision-model";
 
 function exposesControlCollection(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(exposesControlCollection);
@@ -49,7 +49,7 @@ export function createComputerHostContractTool(name: string, context?: { turnId?
   const definition = computerUseHostToolDefinition(name);
   if (definition === null) throw new Error("Computer Use Host catalogue entry is unavailable");
   const model = name === "computer_observe" && exposesControlCollection(definition.entry.publicSchemas.result.jsonSchema)
-    ? resolveBrowserDecisionModel(context) : null;
+    ? resolveNativeDecisionModel(context) : null;
   const schema = model ? withDecisionPlan(definition.entry.publicSchemas.input.jsonSchema) : definition.entry.publicSchemas.input.jsonSchema;
   return new DynamicStructuredTool({
     name,

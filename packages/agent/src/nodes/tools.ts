@@ -1,4 +1,5 @@
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
+import { resolveNativeDecisionModel } from "../config/native-decision-model";
 import { settleNativeDecision, nativeDecisionHandoffMessage } from "../graph/native-decision";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
@@ -471,7 +472,8 @@ function settleToolsNode(
   );
   const decisionModel = resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly });
   const browserDecision = settleBrowserDecision(state, executedCalls, results, remainingToolCalls, decisionModel?.id ?? "");
-  const nativeDecision = settleNativeDecision(state, executedCalls, results, remainingToolCalls, decisionModel?.id ?? "");
+  const nativeModel = resolveNativeDecisionModel({ turnId: state.turnId, fullEncryptionOnly });
+  const nativeDecision = settleNativeDecision(state, executedCalls, results, remainingToolCalls, nativeModel?.id ?? "");
   const requestedBrowserDelegation = executedCalls.some((call) => interpretBrowserDecisionCall(call).requestedDelegation);
   const messagesWithResults = mergeMessagesPreservingInvariants(state.messages, [...results]);
   const browserHandoff = requestedBrowserDelegation

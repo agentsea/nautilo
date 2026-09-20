@@ -24,6 +24,8 @@ export interface NativeDecisionState {
   pending: (ToolCall & { id: string }) | null;
   reason: string | null;
   generation: number;
+  /** Optional for old checkpoints. A retained model is revalidated, never silently replaced. */
+  controller?: { modelId: string; attemptedGeneration: number; active: boolean };
   history: Array<{ action: string; settlement: string; evidence: unknown; repetitions?: number }>;
   /** Retained across observation and redelegation; fresh handles do not settle an effect. */
   unresolved: Array<{ callId: string; operation: unknown; receipt: unknown; replayKey: string }>;
@@ -124,6 +126,12 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
             : "Return to Genie for interpretation, ambiguity or recovery.",
     call: id === "reobserve" ? { name: "computer_observe", args: decision.observeArgs } : null,
   });
+  candidates.push({ id: "request_replan", description: "The workflow or action menu cannot satisfy the goal. Return the retained state to Genie to redefine it.", call: null });
+  if (decision.controller?.active) {
+    candidates.push({ id: "rebuild_choices", description: "The menu is incomplete or stale. Read fresh controls, rebuild bound choices, then return selection automatically.",
+      call: { name: "computer_observe", args: decision.observeArgs } });
+    if (decision.controller.modelId !== decision.modelId) candidates.push({ id: "return_to_selector", description: "Current structured evidence is sufficient; return selection to the classifier without executing or observing again.", call: null });
+  }
   return candidates;
 }
 
@@ -236,7 +244,8 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
           completeness: after.collection?.completeness ?? "unavailable" },
       } }];
     }
-    next = { ...next, observation: parsed.data, observeArgs: { ...next.observeArgs, target: parsed.data.target }, generation: next.generation + 1 };
+    next = { ...next, observation: parsed.data, observeArgs: { ...next.observeArgs, target: parsed.data.target }, generation: next.generation + 1,
+      ...(next.controller ? { controller: { ...next.controller, active: false } } : {}) };
     if (next.unresolved.some((entry) => entry.replayKey === "unclassified")) return handoff(next, "unresolved_effect_requires_verification");
     const after = digest(nativeDecisionEvidence(parsed.data));
     const transition = digest([next.recovery.before, next.history.at(-1), after]);
