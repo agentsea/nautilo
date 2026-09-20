@@ -50,15 +50,15 @@ describe("checked-in model catalog fallback", () => {
     const parsed = ModelCatalogSchema.parse(manifest);
     // Match the canonical publisher's artifact serialization, before schema parsing.
     expect(createHash("sha256").update(`${JSON.stringify(manifest)}\n`).digest("hex"))
-      .toBe("2904d9ba960475bf09abdaf712d6ce169be88053abd08f4126463ca6d60d910c");
+      .toBe("61fc536d6cc5b580755a0925ee1db4de33604ab934e353b112cf107b6a27f5ef");
 
     expect(parsed).toEqual(localModelCatalog);
     expect(parsed).toMatchObject({
-      version: 5,
-      catalogVersion: "2026.09.20.1",
-      publishedAt: "2026-09-20T00:00:00Z",
+      version: 6,
+      catalogVersion: "2026.09.20.2",
+      publishedAt: "2026-09-20T15:00:00Z",
     });
-    expect(parsed.entries).toHaveLength(89);
+    expect(parsed.entries).toHaveLength(91);
     expect(
       parsed.entries
         .filter((entry) =>
@@ -78,7 +78,7 @@ describe("checked-in model catalog fallback", () => {
       (candidate) => candidate.id === "openrouter:typesafe/jev-1.13",
     );
 
-    expect(entry).toEqual({
+    expect(entry).toMatchObject({
       id: "openrouter:typesafe/jev-1.13",
       displayName: "Jev 1.13 (OpenRouter)",
       provider: "openrouter",
@@ -91,7 +91,7 @@ describe("checked-in model catalog fallback", () => {
       cost: { coefficient: 0.014 },
       privacy: { grade: 4 },
       decision: {
-        operations: ["choice"],
+        operations: ["choice", "noul", "score"],
         inputTokens: 32_000,
         maxChoices: 255,
       },

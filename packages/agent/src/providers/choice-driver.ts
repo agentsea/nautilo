@@ -1,6 +1,6 @@
 import { resolveCatalogModel } from "../config/resolved-catalog";
-import { invokeOpenRouterChoice } from "./openrouter-choice";
-import { isSupportedChoiceProvider } from "./choice-provider-support";
+import { invokeProviderChoice } from "./provider-choice";
+import { decisionProvider } from "./decision-transport";
 import {
   ChoiceRequestError,
   type ChoiceDriver,
@@ -8,13 +8,10 @@ import {
   type ChoiceResult,
 } from "./choice";
 
-const openRouterChoiceDriver: ChoiceDriver = {
-  invoke: invokeOpenRouterChoice,
-};
-
-/** Return only a locally implemented adapter; remote metadata cannot add one. */
+/** Remote metadata cannot install a provider transport. */
 export function resolveChoiceDriver(provider: string): ChoiceDriver | null {
-  return isSupportedChoiceProvider(provider) ? openRouterChoiceDriver : null;
+  const supported = decisionProvider(provider);
+  return supported ? { invoke: (input) => invokeProviderChoice(supported, input) } : null;
 }
 
 /** Resolve current catalog authority and dispatch through an implemented Choice adapter. */
@@ -23,8 +20,7 @@ export async function invokeChoice(input: ChoiceInput): Promise<ChoiceResult> {
   const driver = resolveChoiceDriver(row.provider);
   if (!driver
     || row.workload !== "decision"
-    || row.decision?.operations.length !== 1
-    || row.decision.operations[0] !== "choice") {
+    || !row.decision?.operations.includes("choice")) {
     throw new ChoiceRequestError("unsupported_model");
   }
 

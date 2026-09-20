@@ -43,15 +43,16 @@ async function installCatalog(catalog: ModelCatalog): Promise<void> {
   await hydrateRuntimeModelCatalog();
 }
 
-function onlyDecisionCatalog(provider: "openrouter" | "venice" = "openrouter"): ModelCatalog {
+function onlyDecisionCatalog(provider: "openrouter" | "google" = "openrouter"): ModelCatalog {
   const current = getActiveModelCatalogSync().catalog;
-  if (current.version !== 4 && current.version !== 5) {
+  if (current.version !== 4 && current.version !== 5 && current.version !== 6) {
     throw new Error("checked-in Jev decision fixture is missing");
   }
-  const decision = current.entries.find((entry) => entry.id === JEV_ID);
-  if (!decision || decision.workload !== "decision") {
+  const source = current.entries.find((entry) => entry.id === JEV_ID);
+  if (!source || source.workload !== "decision") {
     throw new Error("checked-in Jev decision fixture is missing");
   }
+  const decision = { ...source, decision: { operations: ["choice"], inputTokens: 32000, maxChoices: 255 } };
   return ModelCatalogV4Schema.parse({
     ...current,
     version: 4,
@@ -60,10 +61,10 @@ function onlyDecisionCatalog(provider: "openrouter" | "venice" = "openrouter"): 
       ? [decision]
       : [{
           ...decision,
-          id: "venice:jev-decision-test",
-          displayName: "Unsupported Venice Decision Test",
-          provider: "venice",
-          routing: "venice-hosted",
+          id: "google:jev-decision-test",
+          displayName: "Unsupported Google Decision Test",
+          provider: "google",
+          routing: "first-party",
         }],
   });
 }
@@ -169,16 +170,16 @@ describe("decision model selection boundaries", () => {
   });
 
   test("a signed decision row stays disabled when its provider lacks a decision adapter", async () => {
-    const catalog = onlyDecisionCatalog("venice");
+    const catalog = onlyDecisionCatalog("google");
     await installCatalog(catalog);
 
-    expect(resolveCatalogModel("venice:jev-decision-test", {
+    expect(resolveCatalogModel("google:jev-decision-test", {
       env: { VENICE_API_KEY: "vk-test" },
       allowChinaUpstream: true,
     })).toMatchObject({
       availability: "disabled",
       unavailableReason:
-        'provider "venice" is not supported for the decision workload on this server',
+        'provider "google" is not supported for the decision workload on this server',
       workload: "decision",
       decision: { operations: ["choice"], inputTokens: 32_000, maxChoices: 255 },
     });

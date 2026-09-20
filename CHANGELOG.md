@@ -12,6 +12,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   manual connection available. New members use a stable, revocable community
   enrollment entry. Existing Guest capability enforcement lets public members
   chat without gaining Genie invocation.
+- Add direct TypeSafe and Venice Jev decision routes, alongside OpenRouter. Genies can discover text classifiers and evaluate named Choice, yes/no probability, and rubric-scoring questions in one request. TypeSafe credentials use the existing Server Controls provider setup; decision models remain separate from chat and speech.
+
 - Server Controls → Models now selects the speech model for all Genies from the model catalog. Conversational is the catalog default; Genie voices remain independent, and changes apply to the next reply. The panel keeps Save changes visible and marks unsaved speech selections separately from the active model.
 - Voice replies now stream to native iOS and Android players as audio arrives. Stop, Room changes, reconnection, and backgrounding discard stale playback; Genie voice assignments remain unchanged.
 

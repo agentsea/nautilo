@@ -102,6 +102,8 @@ function missingCredentialReason(id: string): string {
   const colon = id.indexOf(":");
   const prefix = colon >= 0 ? id.slice(0, colon).toLowerCase() : "";
   switch (prefix) {
+    case "typesafe":
+      return "TypeSafe credential is not configured";
     case "elevenlabs":
       return "ElevenLabs credential is not configured";
     case "anthropic":
@@ -448,7 +450,11 @@ export function resolveCatalogModel(
     resolveChinaUpstreamConsent(options.allowChinaUpstream, env),
     entry?.workload ?? "chat",
   );
-  const { availability, reason } = refineVeniceAvailability(baseAvailability, id, veniceSnapshot);
+  const refinedAvailability = refineVeniceAvailability(baseAvailability, id, veniceSnapshot);
+  const decisionInputSupported = entry?.workload !== "decision"
+    || (entry.modalities?.input.length === 1 && entry.modalities.input[0] === "text");
+  const { availability, reason } = decisionInputSupported ? refinedAvailability
+    : { availability: "disabled" as const, reason: "installed decision adapters accept text input only" };
   const { input, output, veniceHint } = resolveModalitiesFor(id, entry);
   const workload = entry?.workload ?? "chat";
   const generation = resolveGenerationFor(entry);

@@ -1,7 +1,7 @@
 {
-  "version": 5,
-  "catalogVersion": "2026.09.20.1",
-  "publishedAt": "2026-09-20T00:00:00Z",
+  "version": 6,
+  "catalogVersion": "2026.09.20.2",
+  "publishedAt": "2026-09-20T15:00:00Z",
   "entries": [
     {
       "id": "anthropic:claude-sonnet-4-6",
@@ -2815,10 +2815,25 @@
       },
       "decision": {
         "operations": [
-          "choice"
+          "choice",
+          "noul",
+          "score"
         ],
         "inputTokens": 32000,
-        "maxChoices": 255
+        "maxChoices": 255,
+        "totalInputTokens": 64000,
+        "supportsMultipleQuestions": true,
+        "maxScoreLevels": 10,
+        "pricing": {
+          "inputPerMtok": 0.042,
+          "cachedInputPerMtok": 0.042,
+          "outputPerMtok": 0,
+          "provenance": {
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-20T15:00:00Z",
+            "kind": "provider-documentation"
+          }
+        }
       }
     },
     {
@@ -3490,6 +3505,98 @@
         ],
         "maxInputCharacters": 5000,
         "usdPerThousandCharacters": "0.10"
+      }
+    },
+    {
+      "id": "typesafe:jev-1.13.0",
+      "displayName": "Jev 1.13 (TypeSafe)",
+      "provider": "typesafe",
+      "routing": "first-party",
+      "priority": 999,
+      "defaultEnabled": true,
+      "workload": "decision",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.014
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "decision": {
+        "operations": [
+          "choice",
+          "noul",
+          "score"
+        ],
+        "inputTokens": 32000,
+        "maxChoices": 255,
+        "totalInputTokens": 64000,
+        "supportsMultipleQuestions": true,
+        "maxScoreLevels": 10,
+        "pricing": {
+          "inputPerMtok": 0.042,
+          "cachedInputPerMtok": 0.042,
+          "outputPerMtok": 0,
+          "provenance": {
+            "provider": "typesafe",
+            "verifiedAt": "2026-09-20T15:00:00Z",
+            "kind": "provider-documentation"
+          }
+        }
+      }
+    },
+    {
+      "id": "venice:jev-latest",
+      "displayName": "Jev Latest (Venice)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 999,
+      "defaultEnabled": true,
+      "workload": "decision",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.014
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "decision": {
+        "operations": [
+          "choice",
+          "noul",
+          "score"
+        ],
+        "inputTokens": 32000,
+        "maxChoices": 255,
+        "totalInputTokens": 64000,
+        "supportsMultipleQuestions": true,
+        "maxScoreLevels": 10,
+        "pricing": {
+          "inputPerMtok": 0,
+          "cachedInputPerMtok": 0,
+          "outputPerMtok": 0,
+          "provenance": {
+            "provider": "venice",
+            "verifiedAt": "2026-09-20T15:00:00Z",
+            "kind": "provider-documentation"
+          }
+        }
       }
     }
   ]

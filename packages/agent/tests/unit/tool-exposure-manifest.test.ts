@@ -30,6 +30,7 @@ beforeAll(() => {
     officeCliAvailable: () => true,
     mediaGenerationAvailable: () => true,
     publicBrowserUseAvailable: () => true,
+    decisionModelsAvailable: () => true,
   });
   const entries = catalog.query({});
   registeredToolNames = entries.map((entry) => entry.name);
@@ -42,7 +43,7 @@ afterAll(() => {
   else delete process.env["TAVILY_API_KEY"];
 });
 
-describe("D419 tool exposure manifest", () => {
+describe("tool exposure manifest", () => {
   test("keeps the reviewed canonical core set", () => {
     expect(CORE_TOOL_NAMES).toEqual([
       "apply_patch",

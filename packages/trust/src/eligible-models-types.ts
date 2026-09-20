@@ -76,9 +76,12 @@ export type ResolvedCatalogOutputModality = "text" | "image" | "audio" | "video"
 /** Only chat rows are candidates for chat routing. */
 export type ResolvedCatalogWorkload = "chat" | "generation" | "decision" | "speech";
 export interface ResolvedCatalogDecision {
-  operations: readonly ["choice"];
+  operations: readonly ("choice" | "noul" | "score")[];
   inputTokens: number;
   maxChoices: number;
+  totalInputTokens?: number | undefined;
+  supportsMultipleQuestions?: boolean | undefined;
+  maxScoreLevels?: number | undefined;
 }
 export type ResolvedCatalogGenerationFamily = "image" | "video" | "music";
 /** Provider input kinds, not Human-authored creative labels. */

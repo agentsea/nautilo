@@ -661,6 +661,8 @@ export async function preModelNode(
           {
             readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
             context: {
+              turnId: state.turnId,
+              fullEncryptionOnly,
               connectedAppProviderIds,
               deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
             },

@@ -1,3 +1,4 @@
+import { DecisionOperationSchema, type DecisionOperation } from "@nautilo/types";
 /**
  * discover_models — meta-tool that lets the agent query the resolved model
  * catalog (the current implementation).
@@ -35,7 +36,7 @@ const MIN_LIMIT = 1;
 const MAX_QUERY_LEN = 200;
 const MAX_MODEL_ID_LEN = 200;
 const MAX_PROVIDER_LEN = 64;
-const WORKLOADS = ["chat", "generation", "decision"] as const;
+const WORKLOADS = ["chat", "generation", "decision", "speech"] as const;
 const OUTPUT_MODALITIES = ["text", "image", "audio", "video", "embedding"] as const;
 const GENERATION_FAMILIES = ["image", "video", "music"] as const;
 const REFERENCE_ROLES = ["image", "video", "audio"] as const;
@@ -120,6 +121,7 @@ function matchesCapabilityFilters(
   filters: {
     runnableOnly?: boolean | undefined;
     requiresTools?: boolean | undefined;
+    decisionOperation?: DecisionOperation | undefined;
     requiresVision?: boolean | undefined;
     requiresFileInput?: boolean | undefined;
     requiresReasoning?: boolean | undefined;
@@ -131,6 +133,7 @@ function matchesCapabilityFilters(
   },
 ): boolean {
   if (filters.runnableOnly && row.availability !== "selectable") return false;
+  if (filters.decisionOperation && !row.decision?.operations.includes(filters.decisionOperation)) return false;
   // Unknown (null) never satisfies a positive requires_*: true .
   if (filters.requiresTools && row.features.tools !== true) return false;
   if (filters.requiresReasoning && row.features.reasoning !== true) return false;
@@ -215,6 +218,8 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         .boolean()
         .optional()
         .describe("When true, only return models currently selectable (runnable + not routing-filtered)."),
+      decision_operation: DecisionOperationSchema.optional()
+        .describe("Require a typed decision operation: choice (single-label classification), noul (binary probability), or score (ordinal rubric). Multiple independent noul questions can classify multiple labels."),
       requires_tools: z
         .boolean()
         .optional()
@@ -240,7 +245,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
       workload: z
         .enum(WORKLOADS)
         .optional()
-        .describe("Only return models for this execution workload: chat, generation, or decision."),
+        .describe("Only return models for this execution workload: chat, generation, decision, or speech."),
       output: z
         .enum(OUTPUT_MODALITIES)
         .optional()
@@ -310,6 +315,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
       const filters = {
         runnableOnly: input.runnable_only,
         requiresTools: input.requires_tools,
+        decisionOperation: input.decision_operation,
         requiresVision: input.requires_vision,
         requiresFileInput: input.requires_file_input,
         requiresReasoning: input.requires_reasoning,

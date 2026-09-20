@@ -19,7 +19,7 @@ import {
   extractUsageFromLLMResult,
 } from "../../src/usage/usage-callback";
 
-describe("model pricing ", () => {
+describe("model pricing", () => {
   test("Sonnet baseline is $3 in / $15 out per Mtok", () => {
     const price = getModelPrice("anthropic:claude-sonnet-4-6");
     expect(price.inputPerMtok).toBe(3);
@@ -71,8 +71,8 @@ describe("model pricing ", () => {
   });
 });
 
-describe("cache-aware pricing ", () => {
-  test(" — Kimi K3 serving profiles use published uncached, cached, and output rates", () => {
+describe("cache-aware pricing", () => {
+  test("Kimi K3 serving profiles use published uncached, cached, and output rates", () => {
     const model = "fireworks:accounts/fireworks/models/kimi-k3";
     expect(resolveModelPrice(model)).toEqual({
       source: "explicit",
@@ -160,7 +160,7 @@ describe("cache-aware pricing ", () => {
     expect(cost).toBeCloseTo(3, 6);
   });
 
-  test(" — gpt-5.6-sol has explicit pricing incl. a separate cache-write rate", () => {
+  test("gpt-5.6-sol has explicit pricing incl. a separate cache-write rate", () => {
     expect(hasExplicitPrice("openai:gpt-5.6-sol")).toBe(true);
     const resolved = resolveModelPrice("openai:gpt-5.6-sol");
     expect(resolved.source).toBe("explicit");
@@ -264,11 +264,11 @@ describe("cache-aware pricing ", () => {
 
   test("Jev Choice uses the reviewed OpenRouter input-only rate", () => {
     const id = "openrouter:typesafe/jev-1.13";
-    expect(PRICING_VERSION).toBe("2026-09-19.1");
+    expect(PRICING_VERSION).toBe("2026-09-20.1");
     expect(hasExplicitPrice(id)).toBe(true);
     expect(resolveModelPrice(id)).toEqual({
-      source: "explicit",
-      price: { inputPerMtok: 0.042, outputPerMtok: 0 },
+      source: "catalog_decision",
+      price: { inputPerMtok: 0.042, cachedInputPerMtok: 0.042, outputPerMtok: 0 },
     });
     expect(estimateCostUsd(id, {
       inputTokens: 1_000_000,
@@ -298,7 +298,7 @@ describe("cache-aware pricing ", () => {
   });
 });
 
-describe("runtime-catalog pricing ", () => {
+describe("runtime-catalog pricing", () => {
   afterEach(() => {
     resetRuntimeModelCatalog();
   });

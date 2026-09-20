@@ -9,6 +9,7 @@ function key(id: string, status: KeyReport["status"]): KeyReport {
 describe("computeHasLlmFromKeys", () => {
   test("false when no LLM keys are present or verified", () => {
     expect(computeHasLlmFromKeys([key("slack", "present")])).toBe(false);
+    expect(computeHasLlmFromKeys([key("typesafe", "verified")])).toBe(false);
     expect(computeHasLlmFromKeys([key("openai", "missing")])).toBe(false);
   });
 

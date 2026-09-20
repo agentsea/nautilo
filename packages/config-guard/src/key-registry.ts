@@ -11,6 +11,18 @@ function isSinglePrintableAsciiLine(value: string): boolean {
 
 export const KEY_REGISTRY: KeyDefinition[] = [
   {
+    id: "typesafe",
+    name: "TypeSafe",
+    envVar: "TYPESAFE_API_KEY",
+    category: "decision",
+    purpose: "Jev classification, probability judgments and rubric scoring",
+    required: false,
+    signupUrl: "https://console.typesafe.ai/",
+    formatHint: "raw opaque API key",
+    formatCheck: (value) => value.length > 0 && isSinglePrintableAsciiLine(value) && !/^Bearer\s/i.test(value),
+    doctorHints: [],
+  },
+  {
     id: "anthropic",
     name: "Anthropic",
     envVar: "ANTHROPIC_API_KEY",

@@ -17,7 +17,7 @@ export function resolveBrowserDecisionModel(context?: BrowserSnapshotContext, mo
   // routing policy. An active episode revalidates its exact model, never switches.
   return listResolvedCatalogModels().find((model) => (modelId === undefined || model.id === modelId)
     && model.workload === "decision" && resolveChoiceDriver(model.provider)
-    && model.decision?.operations.length === 1 && model.decision.operations[0] === "choice") ?? null;
+    && model.decision?.operations.includes("choice")) ?? null;
 }
 
 export function createBrowserSnapshotTool(context?: BrowserSnapshotContext) {
