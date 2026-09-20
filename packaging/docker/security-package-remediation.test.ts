@@ -61,7 +61,7 @@ describe("Debian 13 security update and exception retirement", () => {
     for (const entry of current.exceptions) {
       const p = review.packages.find((p) => p.package === entry.packageName)!;
       const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
-        ? "153.0.8010.47-2~deb13u1"
+        ? "153.0.8010.52-1~deb13u1"
         : (floors.get(entry.packageName) ?? p.previousVersion);
       expect(entry.installedVersion).toBe(expectedVersion);
     }
