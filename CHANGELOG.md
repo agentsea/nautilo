@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Desktop now presents the official Nautilo Community as an explicit first-run,
+  Add Server, and Switch Server destination while keeping private servers and
+  manual connection available. New members use a stable, revocable community
+  enrollment entry. Existing Guest capability enforcement lets public members
+  chat without gaining Genie invocation.
 - Server Controls → Models now selects the speech model for all Genies from the model catalog. Conversational is the catalog default; Genie voices remain independent, and changes apply to the next reply. The panel keeps Save changes visible and marks unsaved speech selections separately from the active model.
 - Voice replies now stream to native iOS and Android players as audio arrives. Stop, Room changes, reconnection, and backgrounding discard stale playback; Genie voice assignments remain unchanged.
 
