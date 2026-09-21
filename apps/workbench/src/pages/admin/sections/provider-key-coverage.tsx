@@ -11,7 +11,6 @@ const COVERAGE_ROWS = [
   {
     functionality: "Chat",
     providers: [
-      ["nautilo-gateway", "Nautilo Gateway"],
       ["venice", "Venice"],
       ["openrouter", "OpenRouter"],
       ["openai", "OpenAI"],
@@ -19,15 +18,16 @@ const COVERAGE_ROWS = [
       ["google", "Google"],
       ["fireworks", "Fireworks"],
       ["gateway", "OpenAI-compatible Gateway"],
+      ["nautilo-gateway", "Nautilo Gateway"],
     ],
   },
   {
     functionality: "Embeddings",
     providers: [
-      ["nautilo-gateway", "Nautilo Gateway"],
       ["venice", "Venice"],
       ["openrouter", "OpenRouter"],
       ["openai", "OpenAI"],
+      ["nautilo-gateway", "Nautilo Gateway"],
     ],
   },
   { functionality: "Text-to-speech", providers: [["elevenlabs", "ElevenLabs"]] },
