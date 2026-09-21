@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "caseId": "room10-apple",
+      "expectedTarget": {
+        "region": { "xMin": 1120, "yMin": 610, "xMax": 1480, "yMax": 780 },
+        "labelHint": "Row 1 Number field"
+      }
+    },
+    {
+      "caseId": "room11-profile",
+      "expectedTarget": {
+        "region": { "xMin": 1180, "yMin": 840, "xMax": 1430, "yMax": 990 },
+        "labelHint": "FIND CLUE"
+      }
+    },
+    {
+      "caseId": "room15-second-row",
+      "expectedTarget": {
+        "region": { "xMin": 1060, "yMin": 970, "xMax": 1240, "yMax": 1150 },
+        "labelHint": "puzzle piece 8"
+      }
+    },
+    {
+      "caseId": "room2-initial",
+      "expectedTarget": {
+        "region": { "xMin": 850, "yMin": 560, "xMax": 1320, "yMax": 820 },
+        "labelHint": "CLICK ON ME!"
+      }
+    },
+    {
+      "caseId": "room3-initial",
+      "expectedTarget": {
+        "region": { "xMin": 500, "yMin": 450, "xMax": 1660, "yMax": 650 },
+        "labelHint": "Name field"
+      }
+    },
+    {
+      "caseId": "room5-dropdown",
+      "expectedTarget": {
+        "region": { "xMin": 500, "yMin": 500, "xMax": 1660, "yMax": 680 },
+        "labelHint": "Dog option"
+      }
+    },
+    {
+      "caseId": "room5-initial",
+      "expectedTarget": {
+        "region": { "xMin": 470, "yMin": 730, "xMax": 760, "yMax": 930 },
+        "labelHint": "Blue radio"
+      }
+    },
+    {
+      "caseId": "room6-checkout",
+      "expectedTarget": {
+        "region": { "xMin": 1690, "yMin": 740, "xMax": 1830, "yMax": 900 },
+        "labelHint": "October 10, 2026"
+      }
+    }
+  ]
+}

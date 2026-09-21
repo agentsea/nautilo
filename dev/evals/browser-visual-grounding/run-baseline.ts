@@ -2,22 +2,18 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { chooseBrowserAction } from "../../../packages/agent/src/graph/browser-choice.ts";
 import { configureRuntimeModelCatalog } from "../../../packages/agent/src/config/model-catalog/runtime-catalog.ts";
 import { resolveCatalogModel } from "../../../packages/agent/src/config/resolved-catalog.ts";
 import {
   ChoiceRequestError,
-  invokeChoice,
-  type ChoiceInput,
-  type ChoiceResult,
 } from "../../../packages/agent/src/providers/choice-driver.ts";
 import {
   candidatesMatchingExpectation,
-  choiceInputReceipt,
   loadBaselineTasks,
   prepareBaselineCase,
   scoreBaselineSelection,
 } from "./baseline.ts";
+import { choiceInputReceipt, runCapturedJevChoice } from "./jev-evaluation.ts";
 
 const DEFAULT_MODEL_ID = "openrouter:typesafe/jev-1.13";
 const resultsRoot = path.join(import.meta.dir, ".results");
@@ -78,8 +74,6 @@ export async function runBaseline(args: BaselineArgs): Promise<{ readonly status
     if (expectedCandidates.length === 0) {
       throw new Error(`No generated candidate satisfies the oracle for ${task.caseId}`);
     }
-    const requests: ReturnType<typeof choiceInputReceipt>[] = [];
-    const providerCalls: Record<string, unknown>[] = [];
     const common = {
       caseId: task.caseId,
       name: task.name,
@@ -99,40 +93,18 @@ export async function runBaseline(args: BaselineArgs): Promise<{ readonly status
     if (!args.live) {
       cases.push({
         ...common,
-        jev: { choiceRequests: [choiceInputReceipt(prepared.input)], providerCalls, result: null },
+        jev: { choiceRequests: [choiceInputReceipt(prepared.input)], providerCalls: [], result: null },
         verdict: "not_run",
       });
       continue;
     }
     try {
-      const result = await chooseBrowserAction(prepared.input, maxChoices, async (input: ChoiceInput): Promise<ChoiceResult> => {
-        requests.push(choiceInputReceipt(input));
-        const captureFetch = (async (request: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
-          const call: Record<string, unknown> = {
-            request: {
-              url: typeof request === "string" ? request : request instanceof URL ? request.href : request.url,
-              method: init?.method ?? "GET",
-              body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : null,
-            },
-            response: null,
-          };
-          providerCalls.push(call);
-          const response = await globalThis.fetch(request, init);
-          call["response"] = {
-            status: response.status,
-            body: response.ok ? await response.clone().json().catch(() => null) : null,
-          };
-          return response;
-        }) as typeof fetch;
-        // The report is the standalone eval's usage ledger; do not require or
-        // mutate a Nautilo instance database merely to exercise the provider.
-        return invokeChoice(input, { fetch: captureFetch, recordUsage: () => {} });
-      });
-      const score = scoreBaselineSelection(prepared, result.selectedId);
+      const jev = await runCapturedJevChoice(prepared.input, maxChoices);
+      const score = scoreBaselineSelection(prepared, jev.result.selectedId);
       if (!score.passed) failures += 1;
       cases.push({
         ...common,
-        jev: { choiceRequests: requests, providerCalls, result },
+        jev,
         selectedCandidate: score.selected,
         verdict: score.passed ? "pass" : "fail",
       });
@@ -140,7 +112,7 @@ export async function runBaseline(args: BaselineArgs): Promise<{ readonly status
       failures += 1;
       cases.push({
         ...common,
-        jev: { choiceRequests: requests, providerCalls, result: null, error: safeError(error) },
+        jev: { choiceRequests: [], providerCalls: [], result: null, error: safeError(error) },
         selectedCandidate: null,
         verdict: "error",
       });

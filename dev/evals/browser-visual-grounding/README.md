@@ -67,3 +67,46 @@ production candidate, the reviewed oracle, and the pass/fail verdict. The
 Authorization header is intentionally never recorded. Screenshot paths are
 included for semi-manual review. Provider usage and cost stay in that report;
 the standalone runner does not require or write an instance database.
+
+## Run Approach A: Sol screenshot → visual snapshot → Jev
+
+The visual baseline deliberately hides the DOM snapshot from Sol. Sol receives
+only the captured PNG and produces a task-independent JSON inventory of visible
+text and actionable targets with image-pixel centers. The harness renders that
+inventory into snapshot-like text, adds executable `browser_mouse` candidates,
+and sends it through the same production Jev request and screening path as the
+DOM baseline.
+
+Every visual decision also includes two stable ordinary actions:
+
+- `scroll_up` → `browser_scroll {direction:"up"}`
+- `scroll_down` → `browser_scroll {direction:"down"}`
+
+Both require a fresh screenshot before acting on newly visible content.
+
+Validate the eight tasks and reviewed screenshot-coordinate oracles without
+calling either model:
+
+```sh
+bun dev/evals/browser-visual-grounding/run-visual-baseline.ts
+```
+
+Run Sol and then Jev for all captures:
+
+```sh
+OPENAI_API_KEY=... OPENROUTER_API_KEY=... \
+  bun dev/evals/browser-visual-grounding/run-visual-baseline.ts --live
+```
+
+Use `--case room15-second-row` for one case, `--vision-model <id>` to compare a
+different vision model, or `--decision-model <id>` to compare a different
+Choice model. Reports are written as mode-600 ignored files and
+`.results/visual-latest.json` always points to the latest visual run.
+
+The automatic oracle checks whether Jev's selected image coordinate falls
+inside the reviewed target region. The report retains the screenshot path,
+Sol prompt and raw/parsed grounding, rendered visual snapshot, complete Jev
+request/response, candidate selected, and verdict for semi-manual inspection.
+For tasks that ultimately require typing, this first experiment scores the
+correct visual focus as the next action; deterministic focused-text execution
+is intentionally a later runtime step, not claimed by this baseline.

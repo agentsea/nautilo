@@ -4,11 +4,11 @@ import { describe, expect, test } from "bun:test";
 import { chooseBrowserAction } from "../../../packages/agent/src/graph/browser-choice.ts";
 import {
   candidatesMatchingExpectation,
-  choiceInputReceipt,
   loadBaselineTasks,
   prepareBaselineCase,
   scoreBaselineSelection,
 } from "./baseline.ts";
+import { choiceInputReceipt } from "./jev-evaluation.ts";
 import { parseBaselineArgs } from "./run-baseline.ts";
 import { parseCorpusIndex } from "./schema.ts";
 

@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
-  bindBrowserDecisionPlanToObservation,
   browserDecisionCandidates,
   browserDecisionChoiceInput,
   browserDecisionObservationSchema,
@@ -52,6 +51,14 @@ export interface PreparedBaselineCase {
 
 const casesRoot = path.join(import.meta.dir, "cases");
 
+export async function loadCapture(caseId: string): Promise<BrowserVisualGroundingCase> {
+  const capture = JSON.parse(
+    await readFile(path.join(casesRoot, caseId, "case.json"), "utf8"),
+  ) as BrowserVisualGroundingCase;
+  if (capture.id !== caseId) throw new Error(`Capture id mismatch for ${caseId}`);
+  return capture;
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
@@ -60,15 +67,6 @@ function stableJson(value: unknown): string {
       .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
-}
-
-export function choiceInputReceipt(input: ChoiceInput): Omit<ChoiceInput, "signal" | "tenantContext"> {
-  return {
-    modelId: input.modelId,
-    state: input.state,
-    instructions: input.instructions,
-    choices: input.choices,
-  };
 }
 
 export async function loadBaselineTasks(): Promise<readonly BaselineTask[]> {
@@ -90,8 +88,7 @@ export async function prepareBaselineCase(options: {
   readonly signal: AbortSignal;
 }): Promise<PreparedBaselineCase> {
   const caseRoot = path.join(casesRoot, options.task.caseId);
-  const capture = JSON.parse(await readFile(path.join(caseRoot, "case.json"), "utf8")) as BrowserVisualGroundingCase;
-  if (capture.id !== options.task.caseId) throw new Error(`Capture id mismatch for ${options.task.caseId}`);
+  const capture = await loadCapture(options.task.caseId);
   const snapshot = await readFile(path.join(caseRoot, capture.snapshot.file), "utf8");
   const observation = browserDecisionObservationSchema.parse({
     version: 1,
@@ -101,7 +98,12 @@ export async function prepareBaselineCase(options: {
     browserSessionId: `baseline:${capture.id}`,
     observationId: `capture:${capture.snapshot.sha256}`,
   });
-  const plan = bindBrowserDecisionPlanToObservation(options.task.plan, observation);
+  const plan = {
+    ...options.task.plan,
+    allowedOrigins: options.task.plan.allowedOrigins.length
+      ? [...new Set(options.task.plan.allowedOrigins.map((value) => new URL(value).origin))].sort()
+      : [new URL(observation.pageUrl).origin],
+  };
   const built = browserDecisionCandidates(plan, observation, options.maxChoices);
   if (built.reason !== null) throw new Error(`Candidate generation failed for ${capture.id}: ${built.reason}`);
   const candidates = built.candidates;
