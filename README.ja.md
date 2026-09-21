@@ -4,9 +4,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
-コードとドキュメントは現在、英語で書かれています。翻訳の PR を歓迎します。[翻訳への貢献ガイド](CONTRIBUTING.md#translations-and-localization)（英語）をご覧ください。このページは README の日本語訳です。アプリの画面やリンク先のドキュメントが日本語に対応していることを示すものではありません。
+画像付きローカルガイド: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-<!-- Translation source: README.md; SHA-256: f499f48faf14451b0ad789240586834589134f100874f840e4d6eb1db9d29cf4 -->
+Nautilo の画面は現在英語です。README とローカルセットアップガイドには翻訳がありますが、その他の文書は英語の場合があります。
+
+<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -25,11 +27,11 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **はじめての Nautilo。空っぽのサーバーから、一緒に作った最初の作品へ。**
 
-[![Writer で共同作業する Elias と Lyra。変更案を確認できる画面です。クリックすると画像付きローカルセットアップガイドが開きます。](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
+[![Writer で共同作業する Elias と Lyra。変更案を確認できる画面です。クリックすると画像付きローカルセットアップガイドが開きます。](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local-ja)
 
-### [自分の Mac でローカルに試す →](https://nautilo.ai/docs/operator/deploy/local)
+### [自分の Mac でローカルに試す →](https://nautilo.ai/docs/operator/deploy/local-ja)
 
-Genie と出会い、自分らしくカスタマイズして、最初の文書を一緒に作ろう。画像付きガイド（英語）で順に進められます。
+Genie と出会い、自分らしくカスタマイズして、最初の文書を一緒に作ろう。画像付きガイドで順に進められます。
 
 必要なのは **Docker Desktop** と**モデルプロバイダーの API キー**。Nautilo は **alpha** 段階です。
 

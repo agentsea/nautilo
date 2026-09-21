@@ -4,9 +4,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
-코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
+로컬 설치 그림 가이드: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-<!-- Translation source: README.md; SHA-256: f499f48faf14451b0ad789240586834589134f100874f840e4d6eb1db9d29cf4 -->
+Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
+
+<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -25,11 +27,11 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **나의 첫 Nautilo. 빈 서버에서 시작해 함께 만든 첫 결과물까지.**
 
-[![Elias와 Lyra가 Writer에서 함께 작업하며 변경 제안을 검토하는 화면입니다. 클릭하면 스크린샷이 포함된 로컬 설치 가이드가 열립니다.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
+[![Elias와 Lyra가 Writer에서 함께 작업하며 변경 제안을 검토하는 화면입니다. 클릭하면 스크린샷이 포함된 로컬 설치 가이드가 열립니다.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-### [내 Mac에서 로컬로 시작하기 →](https://nautilo.ai/docs/operator/deploy/local)
+### [내 Mac에서 로컬로 시작하기 →](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-Genie를 만나 나에게 맞게 꾸미고, 첫 문서를 함께 만들어 보세요. 스크린샷 가이드(영문)를 따라가면 됩니다.
+Genie를 만나 나에게 맞게 꾸미고, 첫 문서를 함께 만들어 보세요. 스크린샷 가이드를 따라가면 됩니다.
 
 **Docker Desktop**과 **모델 제공업체의 API 키**가 필요합니다. Nautilo는 **alpha** 단계입니다.
 

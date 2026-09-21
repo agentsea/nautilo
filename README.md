@@ -4,8 +4,9 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
-Code and documentation are currently in English. Translation PRs are welcome;
-see [translation contributions](CONTRIBUTING.md#translations-and-localization).
+Illustrated local guide: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
+
+Nautilo’s interface is currently in English. The README and local guide are translated; other documentation may remain in English.
 
 ### AI goes multiplayer.
 

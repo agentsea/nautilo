@@ -4,9 +4,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
-El código y la documentación están actualmente en inglés. Damos la bienvenida a los PR de traducción; consulta la [guía para contribuir traducciones](CONTRIBUTING.md#translations-and-localization) (en inglés). Esta página traduce el README; no implica que la interfaz ni la documentación enlazada estén disponibles en español.
+Guía local ilustrada: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-<!-- Translation source: README.md; SHA-256: f499f48faf14451b0ad789240586834589134f100874f840e4d6eb1db9d29cf4 -->
+La interfaz de Nautilo está actualmente en inglés. El README y la guía local están traducidos; el resto de la documentación puede seguir en inglés.
+
+<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -25,11 +27,11 @@ Conoce a tu Genie. Dale personalidad, memoria, cara y voz. Escribid, investigad 
 
 **Tu primer Nautilo. De un servidor vacío a algo que habéis creado juntos.**
 
-[![Elias y Lyra trabajan juntos en Writer, con cambios listos para revisar. Abre la guía ilustrada de instalación local.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
+[![Elias y Lyra trabajan juntos en Writer, con cambios listos para revisar. Abre la guía ilustrada de instalación local.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local-es)
 
-### [Pruébalo en local en tu Mac →](https://nautilo.ai/docs/operator/deploy/local)
+### [Pruébalo en local en tu Mac →](https://nautilo.ai/docs/operator/deploy/local-es)
 
-Conoce a tu Genie, hazla tuya y cread vuestro primer documento juntos. Sigue la guía ilustrada (en inglés).
+Conoce a tu Genie, hazla tuya y cread vuestro primer documento juntos. Sigue la guía ilustrada.
 
 Necesitarás **Docker Desktop** y **una clave API de un proveedor de modelos**. Nautilo está en **alpha**.
 

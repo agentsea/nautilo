@@ -4,9 +4,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
-代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
+本地图文指南: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-<!-- Translation source: README.md; SHA-256: f499f48faf14451b0ad789240586834589134f100874f840e4d6eb1db9d29cf4 -->
+Nautilo 的界面目前为英语。README 和本地安装指南已提供翻译，其他文档可能仍为英文。
+
+<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -25,11 +27,11 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **你的第一个 Nautilo。从空白服务器，到你们一起完成的作品。**
 
-[![Elias 和 Lyra 在 Writer 中协作，修改建议正等待审阅。点击打开本地安装图文指南。](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
+[![Elias 和 Lyra 在 Writer 中协作，修改建议正等待审阅。点击打开本地安装图文指南。](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local-zh-cn)
 
-### [在你的 Mac 上本地试用 →](https://nautilo.ai/docs/operator/deploy/local)
+### [在你的 Mac 上本地试用 →](https://nautilo.ai/docs/operator/deploy/local-zh-cn)
 
-认识你的 Genie，把她打造成你喜欢的样子，一起完成第一份文档。跟着图文指南（英文）开始吧。
+认识你的 Genie，把她打造成你喜欢的样子，一起完成第一份文档。跟着图文指南开始吧。
 
 你需要 **Docker Desktop** 和**一个模型服务商的 API 密钥**。Nautilo 目前处于 **alpha** 阶段。
 
