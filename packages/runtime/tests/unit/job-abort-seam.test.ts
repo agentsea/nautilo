@@ -15,6 +15,7 @@ import { describe, test, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { JobExecutor } from "../../src/job";
 import { JobManager } from "../../src/job-manager";
+import { runWithLiveShadowTurnSession } from "../../src/conversation/live-shadow-turn-context";
 import { InMemoryLaneLock } from "../../src/lane-lock";
 
 function makeHarness(opts?: { taskStopSink?: (taskId: string) => Promise<void> }) {
@@ -283,4 +284,30 @@ describe("M147 — JobManager.abortJob shared seam", () => {
     h.gate.resolve();
     await waitFor(() => h.jm.getJob(jobId) === undefined);
   });
+});
+
+
+test.each(["stop", "shutdown"] as const)("protected foreground cancellation preserves %s cause and ordinary Job status", async (action) => {
+  const h = makeHarness();
+  const failures: string[] = [];
+  const jobId = await runWithLiveShadowTurnSession({
+    operationId: "protected-shutdown-execution",
+    capability: {} as never,
+    session: { fail: (_stage: string, reason: string) => failures.push(reason) } as never,
+    enforcementPolicy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 1 },
+    work: () => dispatchLiveJob(h),
+  });
+  if (action === "shutdown") await h.jm.cancelForegroundJobsForPlannedShutdown();
+  else await h.jm.cancelJob(jobId);
+  expect(failures).toEqual([action === "shutdown" ? "process_lost" : "cancelled"]);
+  expect(h.statusUpdates).toContainEqual({
+    jobId,
+    status: "cancelled",
+    message: action === "shutdown"
+      ? "Cancelled because the server is shutting down for planned maintenance"
+      : "Cancelled by user",
+  });
+  expect(h.getSignal()?.aborted).toBe(true);
+  h.gate.resolve();
+  await waitFor(() => h.jm.getJob(jobId) === undefined);
 });

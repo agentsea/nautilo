@@ -49,6 +49,16 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Browser shared-room history verifies retained Human signer evidence for other
+  participants. Cancelled protected turns and graceful shutdown close unpublished
+  reservations and prevent late publication. Pending sends show progress, and
+  authenticated Guests can reach the workspace with their existing permissions.
+
+- Protected history remains compatible with open Browser tabs across server
+  upgrades. Sequential protected tool calls no longer reuse a previously
+  published stream reservation. Capabilityless tools retain their explicitly
+  required PIN approval instead of falling back to ordinary confirmation.
+
 - Speech uses Jessica when no usable voice is configured, preserving explicitly
   assigned Genie voices.
 

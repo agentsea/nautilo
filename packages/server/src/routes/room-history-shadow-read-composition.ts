@@ -453,6 +453,7 @@ RoomHistoryShadowReadComposition {
             protectedMessage: record.protectedMessage,
           })),
           signerEvidence: [...projected.signerEvidence],
+          terminalExecutions: [...projected.terminalExecutions],
           acknowledgement,
         });
       } finally {

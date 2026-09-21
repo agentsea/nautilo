@@ -829,9 +829,16 @@ describe("M296 shared-Agent Human live Shadow message", () => {
 
   test("terminalizes expired and process-lost shared work without replaying it", async () => {
     const statements: string[] = [];
+    let transactionOpen = false;
+    const quarantineParameters: unknown[][] = [];
     const product = {
-      async query(statement: string) {
+      async query(statement: string, parameters: readonly unknown[]) {
         statements.push(statement);
+        if (statement.startsWith('update "session_message_crypto_revisions"')) {
+          expect(transactionOpen).toBe(false);
+          quarantineParameters.push([...parameters]);
+          return [];
+        }
         if (statement.includes("reconcile_expired_operations")) {
           return [{ operation_id: "expired-human" }];
         }
@@ -862,7 +869,12 @@ describe("M296 shared-Agent Human live Shadow message", () => {
       async transactionOnce<Value>(
         use: (connection: PostgresJsBridgeConnection) => Promise<Value>,
       ) {
-        return use(product as unknown as PostgresJsBridgeConnection);
+        transactionOpen = true;
+        try {
+          return await use(product as unknown as PostgresJsBridgeConnection);
+        } finally {
+          transactionOpen = false;
+        }
       },
     } as unknown as PostgresJsBridgeConnection;
     const planner = new PostgresSharedAgentLiveShadowPlanner(
@@ -893,6 +905,16 @@ describe("M296 shared-Agent Human live Shadow message", () => {
     const unavailable = statements.find((statement) =>
       statement.includes("shared_agent_execution_unavailable")
     );
+    expect(quarantineParameters).toHaveLength(3);
+    for (const [index, executionId] of ["expired-agent", "process-agent", "running-agent"].entries()) {
+      expect(quarantineParameters[index]).toContain(executionId);
+      expect(quarantineParameters[index]).toContain("quarantined");
+      expect(quarantineParameters[index]).toContain("authorization_unavailable");
+      expect(quarantineParameters[index]).toContain("active");
+    }
+    const quarantine = statements.filter((statement) => statement.startsWith('update "session_message_crypto_revisions"'));
+    expect(quarantine.every((statement) => statement.includes('"shared_agent_shadow_execution_id" in')
+      && statement.includes('"disposition" =') && statement.includes('"shadow_durable_event_digest" is null'))).toBe(true);
     expect(operationExpiry).toContain(
       "state IN ('planned', 'human_verified')",
     );
@@ -2079,4 +2101,55 @@ describe("M296 shared-Agent Human live Shadow message", () => {
       plan.authorization.authorizationDigest.fill(0);
     }
   });
+});
+
+
+test("completed shared execution wins over cancellation and preserves its publication", async () => {
+  const statements: string[] = [];
+  const product = {
+    query: async (statement: string) => {
+      statements.push(statement);
+      if (statement.includes("shared_agent_execution_unavailable")) return [];
+      if (statement.includes("SELECT state, terminal_reason")) return [{ state: "completed", terminal_reason: null }];
+      throw new Error("Completed execution must not mutate reservations");
+    },
+  } as unknown as PostgresJsBridgeConnection;
+  const planner = new PostgresSharedAgentLiveShadowPlanner(product, product, undefined, null, { serverId: "test-server" });
+  expect(await planner.recordExecutionUnavailable({ executionId: "completed-execution", reason: "agent_input_cancelled", now: NOW })).toBe("conflict");
+  expect(statements).toHaveLength(2);
+});
+
+test("cancellation replay repairs unpublished reservation cleanup without reopening work", async () => {
+  let terminal = false;
+  let quarantines = 0;
+  const product = {
+    query: async (statement: string, parameters: readonly unknown[]) => {
+      if (statement.includes("shared_agent_execution_unavailable")) {
+        if (terminal) return [];
+        terminal = true;
+        return [{ execution_id: "cancelled-execution" }];
+      }
+      if (statement.includes("SELECT state, terminal_reason")) {
+        return [{ state: "fallback", terminal_reason: "agent_input_cancelled" }];
+      }
+      if (statement.startsWith('update "session_message_crypto_revisions"')) {
+        quarantines += 1;
+        expect(parameters).toContain("cancelled-execution");
+        expect(parameters).toContain("fallback");
+        expect(parameters).toContain("failed");
+        expect(parameters).toContain("active");
+        if (quarantines === 1) throw new Error("storage interruption");
+        return [];
+      }
+      if (statement.startsWith('update "conversation_shared_agent_shadow_invocations"')) return [];
+      throw new Error(`Unexpected query: ${statement}`);
+    },
+  } as unknown as PostgresJsBridgeConnection;
+  const planner = new PostgresSharedAgentLiveShadowPlanner(product, product, undefined, null, { serverId: "test-server" });
+  const input = { executionId: "cancelled-execution", reason: "agent_input_cancelled", now: NOW };
+  const interrupted = await planner.recordExecutionUnavailable(input).catch((error: unknown) => error);
+  expect(interrupted).toBeInstanceOf(Error);
+  expect((interrupted as Error).message).toBe("storage interruption");
+  expect(await planner.recordExecutionUnavailable(input)).toBe("replayed");
+  expect(quarantines).toBe(2);
 });

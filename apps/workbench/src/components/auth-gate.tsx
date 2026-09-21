@@ -7,9 +7,9 @@
  *
  * Hydration: auth session recovery and Nautilo's authoritative `whoami`
  * viewer recovery are separate asynchronous steps. A recovered session must
- * not render the workbench until its viewer is verified, otherwise the shell
- * reads the initial guest viewer and briefly presents a signed-in person as
- * Guest. During that finalization window we show a truthful reconnect surface.
+ * not render the workbench until both canonical Human ids resolve, otherwise
+ * the shell reads the initial anonymous viewer. `isVerified` remains a
+ * capability/device gate and is deliberately false for resolved Guests.
  *
  * M106 (replaces D134) — when `state === "signed-out"` we render the
  * workbench `<SignInDialog />` so the user sees the M106 affordances
@@ -24,8 +24,9 @@
  * never runs. The router renders the callback before the AuthGate-wrapped
  * shell.
  */
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useAuth } from "../hooks/use-auth";
+import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
 import { SignInDialog } from "./sign-in-dialog";
 
 interface AuthGateProps {
@@ -34,9 +35,23 @@ interface AuthGateProps {
 
 export function AuthGate({ children }: AuthGateProps) {
   const auth = useAuth();
+  const [signOutPending, setSignOutPending] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+
+  const signOut = async (): Promise<void> => {
+    setSignOutError(null);
+    setSignOutPending(true);
+    try {
+      await auth.session.signOut();
+    } catch (error) {
+      setSignOutError(error instanceof Error ? error.message : "Sign out failed");
+    } finally {
+      setSignOutPending(false);
+    }
+  };
 
   if (auth.session.state === "signed-in") {
-    if (auth.viewer.isVerified) {
+    if (isAuthenticatedHumanViewer(auth.viewer)) {
       return <>{children}</>;
     }
 
@@ -53,6 +68,19 @@ export function AuthGate({ children }: AuthGateProps) {
           <p className="text-sm text-foreground-muted">
             Your sign-in is saved. Nautilo is restoring your workspace.
           </p>
+          <button
+            type="button"
+            disabled={signOutPending}
+            onClick={() => void signOut()}
+            className="text-sm font-medium text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {signOutPending ? "Signing out…" : "Sign out"}
+          </button>
+          {signOutError ? (
+            <p className="text-sm text-error" role="alert">
+              {signOutError}
+            </p>
+          ) : null}
         </div>
       </main>
     );

@@ -1,4 +1,5 @@
 import type React from "react";
+import { ApiError } from "@nautilo/api-client/browser";
 import type { AvatarRef, NotificationLevel } from "@nautilo/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createWorkbenchPortal as createPortal } from "../../../../../components/workbench-portals";
@@ -14,12 +15,16 @@ import { apiClient } from "../../../../../lib/api";
 import { useToast } from "../../../../../components/toast";
 import { useRoomNavigation } from "../../../../../contexts/room-navigation-context";
 import { AuthenticatedAvatar } from "../../../../../components/avatar/authenticated-image";
+import { useAuth } from "../../../../../hooks/use-auth";
 
 /** Dispatched on successful archive so the explorer shell can refresh + navigate. */
 export const EXPLORER_ROOM_ARCHIVED_EVENT = "nautilo:explorer-room-archived";
 
 /** Dispatched when a row menu opens the manage sheet (rename / add / members). */
 export const EXPLORER_ROOM_MANAGE_EVENT = "nautilo:explorer-room-manage";
+
+/** Dispatched after self-leave so the explorer can refresh and navigate away. */
+export const EXPLORER_ROOM_LEFT_EVENT = "nautilo:explorer-room-left";
 
 export type ExplorerRoomManageFocus = "rename" | "add" | "members";
 
@@ -87,6 +92,7 @@ export function ExplorerRow({
   onToggleExpand,
 }: ExplorerRowProps) {
   const toast = useToast();
+  const auth = useAuth();
   const roomNav = useRoomNavigation();
   const notifications = useNotificationState();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -97,6 +103,7 @@ export function ExplorerRow({
   } | null>(null);
   const [archiving, setArchiving] = useState(false);
   const [visibilityBusy, setVisibilityBusy] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -249,6 +256,30 @@ export function ExplorerRow({
       setArchiving(false);
     }
   }, [archiving, closeMenu, row.label, row.roomId]);
+
+  const handleLeave = useCallback(async () => {
+    const actorId = auth.viewer.sessionActorId;
+    if (leaving || actorId === null) return;
+    closeMenu();
+    if (!window.confirm(`Leave ${row.label}?`)) return;
+    setLeaving(true);
+    try {
+      await apiClient.removeRoomMember(row.roomId, actorId);
+      window.dispatchEvent(new CustomEvent(EXPLORER_ROOM_LEFT_EVENT, {
+        detail: { roomId: row.roomId, label: row.label },
+      }));
+    } catch (error) {
+      toast.show({
+        variant: "error",
+        title: "Could not leave room",
+        message: error instanceof ApiError && error.status === 409
+          ? "Another room administrator is required before you can leave."
+          : error instanceof Error ? error.message : "Try again.",
+      });
+    } finally {
+      setLeaving(false);
+    }
+  }, [auth.viewer.sessionActorId, closeMenu, leaving, row.label, row.roomId, toast]);
 
   const startRename = useCallback(() => {
     closeMenu();
@@ -433,7 +464,7 @@ export function ExplorerRow({
               aria-expanded={menuOpen}
               aria-haspopup="menu"
               aria-label={`Actions for ${row.label}`}
-              disabled={archiving || visibilityBusy}
+              disabled={archiving || visibilityBusy || leaving}
               className="flex h-6 w-6 items-center justify-center rounded text-foreground-muted outline-none hover:bg-background-element hover:text-foreground focus-visible:ring-1 focus-visible:ring-[var(--primary)]"
               data-testid="explorer-row-menu"
             >
@@ -536,6 +567,18 @@ export function ExplorerRow({
                   ) : null}
                 </div>
                 <div className="my-0.5 border-t border-border" role="separator" />
+                {isPublic && auth.viewer.sessionActorId !== null ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleLeave()}
+                    disabled={leaving}
+                    className={menuItemClass}
+                    data-testid="explorer-row-leave"
+                  >
+                    ⇱ Leave room…
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   role="menuitem"

@@ -48,6 +48,7 @@ export type RoomComposerDraftStore = {
   }>): boolean;
   beginSend(roomId: string): number | null;
   finishSend(roomId: string, attemptId: number): void;
+  getSendSnapshot(roomId: string | null): number;
   subscribe(listener: Listener): () => void;
   getSnapshot(): number;
   getReplySnapshot(roomId: string | null): number;
@@ -283,13 +284,16 @@ export function createRoomComposerDraftStore(): RoomComposerDraftStore {
       if (activeSendAttempts.has(roomId)) return null;
       const attemptId = ++nextSendAttemptId;
       activeSendAttempts.set(roomId, attemptId);
+      publish();
       return attemptId;
     },
     finishSend: (roomId, attemptId) => {
       if (activeSendAttempts.get(roomId) === attemptId) {
         activeSendAttempts.delete(roomId);
+        publish();
       }
     },
+    getSendSnapshot: (roomId) => roomId ? activeSendAttempts.get(roomId) ?? 0 : 0,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -326,6 +330,16 @@ export function useRoomComposerDraftStore(): RoomComposerDraftStore {
     throw new Error("useRoomComposerDraftStore must be used within RoomComposerDraftProvider");
   }
   return store;
+}
+
+/** Keep send admission visible across center/reader-rail composer remounts. */
+export function useRoomComposerSendPending(roomId: string | null): boolean {
+  const store = useRoomComposerDraftStore();
+  return useSyncExternalStore(
+    (listener) => store.subscribe(listener),
+    () => store.getSendSnapshot(roomId),
+    () => store.getSendSnapshot(roomId),
+  ) !== 0;
 }
 
 /** Subscribe only to reply changes; composition writes happen on every key. */

@@ -43,6 +43,8 @@ import {
   type RoomHistoryShadowReadComposition,
 } from "./room-history-shadow-read-composition.js";
 
+import { selectRoomHistoryResponseMetadata } from "./room-history-response-metadata.js";
+
 export interface SessionRoutesDeps {
   getLatestSession: typeof getLatestSession;
   getLatestSessionForRoom: typeof getLatestSessionForRoom;
@@ -523,7 +525,7 @@ export function sessionRoutes(
       && messages.length > 0
     ) {
       try {
-        shadowEncryption = await deps.roomHistoryShadowRead.project({
+        shadowEncryption = selectRoomHistoryResponseMetadata(await deps.roomHistoryShadowRead.project({
           authority: {
             userId: sessionUserId,
             humanActorId: sessionActorId,
@@ -534,7 +536,7 @@ export function sessionRoutes(
           clientRequestKey: shadowReadIntent.data.clientRequestKey,
           selectedCoordinates,
           now: Date.now(),
-        });
+        }), request.query);
       } catch (error) {
         // The ordinary Room page is authoritative during Shadow transition.
         // Unexpected protected-path failures must never replace it with a 500.
@@ -619,14 +621,14 @@ export function sessionRoutes(
     if (deps.roomHistoryShadowRead === undefined) {
       return reply.code(503).send({ error: "history read unavailable" });
     }
-    return reply.send(await deps.roomHistoryShadowRead.project({
+    return reply.send(selectRoomHistoryResponseMetadata(await deps.roomHistoryShadowRead.project({
       authority: { userId: sessionUserId, humanActorId: sessionActorId },
       roomId: request.params.id,
       readerDeviceId: parsed.data.intent.readerDeviceId ?? null,
       clientRequestKey: parsed.data.intent.clientRequestKey,
       selectedCoordinates: [parsed.data.coordinate],
       now: Date.now(),
-    }));
+    }), request.query));
   });
 
   app.post<{
@@ -879,14 +881,14 @@ export function sessionRoutes(
     if (!page) return reply.code(404).send({ error: "Not found" });
     const messages = enrichSessionMessagesForDisplay(page.messages);
     const shadowEncryption = shadowReadIntent?.success === true && deps.roomHistoryShadowRead !== undefined
-      ? await deps.roomHistoryShadowRead.project({
+      ? selectRoomHistoryResponseMetadata(await deps.roomHistoryShadowRead.project({
         authority: { userId: sessionUserId, humanActorId: sessionActorId },
         roomId,
         readerDeviceId: shadowReadIntent.data.readerDeviceId ?? null,
         clientRequestKey: shadowReadIntent.data.clientRequestKey,
         selectedCoordinates: page.selectedCoordinates,
         now: Date.now(),
-      })
+      }), request.query)
       : undefined;
     // D430 1.2b deliberately does not hydrate attachments/artifacts; the
     // around reader's bounded transcript shape is sufficient for navigation.

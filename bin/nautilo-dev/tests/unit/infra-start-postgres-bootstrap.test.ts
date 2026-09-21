@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
   buildPgBootstrapRoleProbeScript,
   assertInfraMigrationLedgerCompatible,
+  assertInfraPendingMigrationsAllowed,
   bootstrapClaimInviteDepsForInfra,
   resolveInfraClaimInvitePaths,
   shouldPreserveProvisionedLogto,
@@ -29,6 +39,155 @@ describe("infra:start PostgreSQL bootstrap-role readiness (D475)", () => {
       `100|${"a".repeat(64)}\n200|${"b".repeat(64)}\n300|${"c".repeat(64)}`,
       checkout,
     )).toThrow(/branch migration journal is older/);
+  });
+
+  test("guards only pending migrations on protected durable instances", () => {
+    const root = mkdtempSync(join(tmpdir(), "nautilo-infra-start-guard-"));
+    const protectedRoot = join(root, "protected");
+    mkdirSync(protectedRoot);
+    writeFileSync(join(protectedRoot, ".protected-instance"), "protected-by=operator\n");
+    const checkout: MigrationLineageEntry[] = [
+      { index: 0, tag: "0000_first", createdAt: 100, sha256: "a".repeat(64) },
+      { index: 1, tag: "0001_second", createdAt: 200, sha256: "b".repeat(64) },
+    ];
+    const pendingLedger = `100|${"a".repeat(64)}`;
+    const exactLedger = `${pendingLedger}\n200|${"b".repeat(64)}`;
+    const durableProfile = {
+      classification: "local" as const,
+      retention: "durable" as const,
+      reason: "local profile owns this instance",
+    };
+    const disposableProfile = {
+      classification: "local" as const,
+      retention: "disposable" as const,
+      reason: "local profile owns this disposable instance",
+    };
+
+    try {
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: pendingLedger,
+        checkout,
+        instanceRoot: protectedRoot,
+        profileAuthority: null,
+      })).toThrow(/protected durable instance/);
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: pendingLedger,
+        checkout,
+        instanceRoot: root,
+        profileAuthority: durableProfile,
+      })).toThrow(/protected durable instance/);
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: pendingLedger,
+        checkout,
+        instanceRoot: protectedRoot,
+        profileAuthority: durableProfile,
+        iKnowWhatIAmDoing: true,
+      })).not.toThrow();
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: pendingLedger,
+        checkout,
+        instanceRoot: root,
+        profileAuthority: disposableProfile,
+      })).not.toThrow();
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: pendingLedger,
+        checkout,
+        instanceRoot: root,
+        profileAuthority: null,
+      })).not.toThrow();
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: "",
+        checkout,
+        instanceRoot: protectedRoot,
+        profileAuthority: null,
+      })).toThrow(/protected durable instance/);
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: "",
+        checkout,
+        instanceRoot: root,
+        profileAuthority: disposableProfile,
+      })).not.toThrow();
+      expect(() => assertInfraPendingMigrationsAllowed({
+        rawLedger: exactLedger,
+        checkout,
+        instanceRoot: protectedRoot,
+        profileAuthority: durableProfile,
+      })).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses pending migrations when profile authority is remote or ambiguous", () => {
+    const checkout: MigrationLineageEntry[] = [
+      { index: 0, tag: "0000_first", createdAt: 100, sha256: "a".repeat(64) },
+      { index: 1, tag: "0001_second", createdAt: 200, sha256: "b".repeat(64) },
+    ];
+    const base = {
+      rawLedger: `100|${"a".repeat(64)}`,
+      checkout,
+      instanceRoot: "/tmp/nautilo-infra-start-authority-fixture",
+      iKnowWhatIAmDoing: true,
+    };
+
+    expect(() => assertInfraPendingMigrationsAllowed({
+      ...base,
+      profileAuthority: {
+        classification: "remote",
+        retention: "unknown",
+        reason: "remote profile owns this projection",
+      },
+    })).toThrow(/classifies this instance as remote/);
+    expect(() => assertInfraPendingMigrationsAllowed({
+      ...base,
+      profileAuthority: {
+        classification: "unknown",
+        retention: "unknown",
+        reason: "conflicting profile claims",
+      },
+    })).toThrow(/profile authority is ambiguous/);
+    expect(() => assertInfraPendingMigrationsAllowed({
+      ...base,
+      rawLedger: "",
+      profileAuthority: {
+        classification: "remote",
+        retention: "unknown",
+        reason: "remote profile owns this projection",
+      },
+    })).toThrow(/classifies this instance as remote/);
+    expect(() => assertInfraPendingMigrationsAllowed({
+      ...base,
+      rawLedger: "",
+      profileAuthority: {
+        classification: "unknown",
+        retention: "unknown",
+        reason: "conflicting profile claims",
+      },
+    })).toThrow(/profile authority is ambiguous/);
+  });
+
+  test("runs the migration safety preflight before any persisted service repair", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "../../src/commands/infra-start.ts"),
+      "utf8",
+    );
+    const preflight = source.indexOf("await preflightInfraMigrationLedger(legacyPg");
+    const serviceRepair = source.indexOf(
+      'console.log("[infra:start] reconciling persisted Nautilo service roles...")',
+    );
+    const logtoBootstrap = source.indexOf(
+      'console.log("[infra:start] running bootstrap-logto (idempotent)...")',
+    );
+    const migrations = source.indexOf(
+      'console.log("[infra:start] applying nautilo DB migrations...")',
+    );
+
+    expect(source).not.toContain('if (ledgerTable === "") return;');
+    expect(source).toContain('const rawLedger = ledgerTable === ""');
+    expect(preflight).toBeGreaterThan(0);
+    expect(serviceRepair).toBeGreaterThan(preflight);
+    expect(logtoBootstrap).toBeGreaterThan(serviceRepair);
+    expect(migrations).toBeGreaterThan(logtoBootstrap);
   });
   test("persists cloned Logto preservation across ordinary target restarts", () => {
     const completeProvision: CloneOperationRecord = {

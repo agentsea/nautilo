@@ -513,10 +513,12 @@ export function resolveThreadPresenceAgentName({
     (eligible.length === 1 ? eligible[0]?.displayName : undefined) ?? fallbackName;
 }
 
-export function SubthreadSurface({ subthreadRoomId, parentRoomId }: SubthreadSurfaceProps) {
+export function SubthreadSurface({ subthreadRoomId, parentRoomId, anchorMessageId }: SubthreadSurfaceProps) {
   const ws = useWsStateContext();
   const controller = useThreadRoomController({
     roomId: subthreadRoomId,
+    parentRoomId,
+    anchorMessageId,
     visible: true,
     connected: ws.state === "open",
   });

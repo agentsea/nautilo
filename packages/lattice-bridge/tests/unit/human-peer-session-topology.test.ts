@@ -28,9 +28,15 @@ function connection(query: (statement: string) => readonly PostgresJsBridgeRow[]
   };
 }
 
+for (const [kind, humans] of [
+  ["private", [HUMAN, PEER]],
+  ["group", [HUMAN, PEER, "10000000-0000-4000-8000-000000000008", "10000000-0000-4000-8000-000000000009"]],
+  ["open", [HUMAN]],
+  ["open", [HUMAN, PEER]],
+] as const) {
 for (const sessionAgent of [null, AGENT]) {
   for (const rosterHasAgent of [false, true]) {
-    test(`peer topology uses canonical roster (Session hint=${sessionAgent}, Agent member=${rosterHasAgent})`, async () => {
+    test(`peer topology uses ${kind}/${humans.length} Humans (Session hint=${sessionAgent}, Agent member=${rosterHasAgent})`, async () => {
       let restrictedReads = 0;
       const product = connection((statement) => {
         if (statement.includes("m295_human_peer_policy")) {
@@ -46,15 +52,14 @@ for (const sessionAgent of [null, AGENT]) {
         }];
         if (statement.includes("m295_namespace_key_human_only_product_room")) {
           return [{
-            room_id: ROOM, namespace_id: NAMESPACE, kind: "private",
+            room_id: ROOM, namespace_id: NAMESPACE, kind,
             parent_room_id: null, archived_at: null, namespace_access_revision: 1,
-            human_actor_ids: [HUMAN, PEER], subject_user_id: USER,
+            human_actor_ids: [...humans], subject_user_id: USER,
           }];
         }
         if (statement.includes("m295_namespace_key_human_only_product_members")) {
           return [
-            { actor_id: HUMAN, kind: "user", agent_id: null },
-            { actor_id: PEER, kind: "user", agent_id: null },
+            ...humans.map((actor_id) => ({ actor_id, kind: "user", agent_id: null })),
             ...(rosterHasAgent ? [{ actor_id: AGENT, kind: "agent", agent_id: AGENT }] : []),
           ];
         }
@@ -82,4 +87,6 @@ for (const sessionAgent of [null, AGENT]) {
       expect(restrictedReads).toBe(rosterHasAgent ? 0 : 1);
     });
   }
+}
+
 }

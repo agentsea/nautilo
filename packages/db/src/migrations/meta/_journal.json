@@ -2073,6 +2073,13 @@
       "when": 1789873125044,
       "tag": "0295_motionless_blonde_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 296,
+      "version": "7",
+      "when": 1789873125045,
+      "tag": "0296_quiet_giant_girl",
+      "breakpoints": true
     }
   ]
 }

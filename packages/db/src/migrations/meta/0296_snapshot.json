@@ -1,6 +1,6 @@
 {
-  "id": "87365136-987b-49c3-b7f9-acde17c2cf7a",
-  "prevId": "1f8d5138-e3f9-4a75-81d3-9d98294dafad",
+  "id": "960b9eaf-08c2-4c95-96f5-11a5101774d7",
+  "prevId": "87365136-987b-49c3-b7f9-acde17c2cf7a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6248,6 +6248,27 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_shared_agent_execution_inputs_message": {
+          "name": "idx_shared_agent_execution_inputs_message",
+          "columns": [
+            {
+              "expression": "message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "execution_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -19446,12 +19467,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "speech_model": {
-          "name": "speech_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "fallback_chain": {
           "name": "fallback_chain",
           "type": "jsonb",
@@ -19476,6 +19491,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "speech_model": {
+          "name": "speech_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},

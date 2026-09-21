@@ -170,6 +170,64 @@ describe("resolveApprovalForToolCall — static high-impact app tool", () => {
   });
 });
 
+describe("resolveApprovalForToolCall — capabilityless explicit approval floor", () => {
+  let catalogBefore: ReturnType<typeof getToolCatalog>;
+
+  beforeAll(() => {
+    catalogBefore = getToolCatalog();
+    const catalog = new ToolCatalog();
+    const register = (
+      name: string,
+      approvalLevel: "confirm" | "prove_it",
+      approvalMode?: "hybrid",
+    ) => catalog.register({
+      name,
+      factory: () => new DynamicStructuredTool({
+        name,
+        description: `${name} test stub`,
+        schema: z.object({ sensitivity: z.enum(["normal", "sensitive"]).optional() }),
+        func: async () => "ok",
+      }),
+      category: "meta",
+      trustTier: "standard",
+      impact: approvalMode ? "destructive" : "low",
+      exposure: "core",
+      requiresApproval: true,
+      approvalLevel,
+      ...(approvalMode ? { approvalMode } : {}),
+    });
+    register("capabilityless_confirm", "confirm");
+    register("capabilityless_prove_it", "prove_it");
+    register("capabilityless_hybrid", "confirm", "hybrid");
+    initToolCatalog(catalog);
+  });
+
+  afterAll(() => {
+    if (catalogBefore) {
+      initToolCatalog(catalogBefore);
+    } else {
+      clearToolCatalog();
+    }
+  });
+
+  test("confirm raises an otherwise-auto call to ask", () => {
+    expect(resolveApprovalForToolCall(tc("capabilityless_confirm", {}), "standard").verb)
+      .toBe("ask");
+  });
+
+  test("prove_it raises an otherwise-auto call to PIN verification", () => {
+    expect(resolveApprovalForToolCall(tc("capabilityless_prove_it", {}), "standard").verb)
+      .toBe("prove_it");
+  });
+
+  test("a stronger hybrid result remains prove_it", () => {
+    expect(resolveApprovalForToolCall(
+      tc("capabilityless_hybrid", { sensitivity: "sensitive" }),
+      "standard",
+    ).verb).toBe("prove_it");
+  });
+});
+
 describe("resolveApprovalForToolCall — manage_local_mcp (D384 §5.4)", () => {
   // No catalog registration needed: the manage_local_mcp branch short-circuits
   // on the tool name + action before any catalog impact lookup matters.

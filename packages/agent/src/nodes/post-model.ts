@@ -33,6 +33,7 @@ import type {
   MediaGenerationToolName,
   StructuredSshApproval,
   ProveItToolInfo,
+  ToolApprovalLevel,
 } from "@nautilo/types";
 import { redactToolTranscriptCredentialMaterial } from "@nautilo/types";
 import {
@@ -944,11 +945,17 @@ export function createPostModelNode(
       // Skipped for anonymous turns (no userId) so a client-only identity
       // can never drive an override; a resolver throw is swallowed + warned
       // and treated as `none` so a resolver bug can never widen approval.
+      // A capabilityless tool's explicit catalogue prove_it contract also
+      // stays outside this override; those operations have no capability
+      // policy from which Full Workstation approval could be inherited.
       // -----------------------------------------------------------------
       const overrideResolver = deps?.resolveWorkstationApprovalOverride;
+      const preservesCapabilitylessPinFloor =
+        capabilitylessExplicitApprovalLevel(tc.name) === "prove_it";
       if (
         overrideResolver &&
         approval.verb !== "block" &&
+        !preservesCapabilitylessPinFloor &&
         state.userId
       ) {
         let overrideDecision: WorkstationAdmissionDecision | null = null;
@@ -2148,6 +2155,17 @@ export function readHybridSensitivity(
 export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): ResolvedApproval {
   const catalog = getToolCatalog();
   const policy = catalog?.getToolPolicy(tc.name);
+  return applyCapabilitylessCatalogApprovalFloor(
+    resolveImpactApprovalForToolCall(tc, level, policy),
+    policy,
+  );
+}
+
+function resolveImpactApprovalForToolCall(
+  tc: ToolCall,
+  level: SecurityLevel,
+  policy: CatalogApprovalPolicy | undefined,
+): ResolvedApproval {
   const baseImpact: ToolImpact = (policy?.impact ?? "destructive") as ToolImpact;
 
   // Website task admission follows the user's request without a second
@@ -2278,6 +2296,57 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
   }
 
   return resolveApproval({ toolImpact: baseImpact, toolName: tc.name }, level);
+}
+
+type CatalogApprovalPolicy = {
+  readonly impact: string;
+  readonly requiredCapability: string | null;
+  readonly requiresApproval: boolean;
+  readonly approvalLevel?: ToolApprovalLevel | undefined;
+  readonly approvalMode?: "static" | "hybrid" | undefined;
+};
+
+/**
+ * A capabilityless catalogue operation cannot inherit an approval floor from
+ * the capability policy. Preserve its explicit per-operation contract here.
+ * Capability-bearing tools keep their established workstation and standing
+ * approval behavior.
+ */
+function capabilitylessExplicitApprovalLevel(
+  toolName: string,
+): ToolApprovalLevel | null {
+  const policy = getToolCatalog()?.getToolPolicy(toolName);
+  if (!policy || policy.requiredCapability !== null || !policy.requiresApproval) {
+    return null;
+  }
+  return policy.approvalLevel ?? null;
+}
+
+function applyCapabilitylessCatalogApprovalFloor(
+  approval: ResolvedApproval,
+  policy: CatalogApprovalPolicy | undefined,
+): ResolvedApproval {
+  if (!policy || policy.requiredCapability !== null || !policy.requiresApproval) {
+    return approval;
+  }
+
+  const minimumVerb = policy.approvalLevel === "prove_it"
+    ? "prove_it"
+    : policy.approvalLevel === "confirm"
+      ? "ask"
+      : null;
+  if (!minimumVerb) return approval;
+
+  const rank = { auto: 0, ask: 1, prove_it: 2, block: 3 } as const;
+  if (rank[approval.verb] >= rank[minimumVerb]) return approval;
+
+  return {
+    ...approval,
+    verb: minimumVerb,
+    reason: minimumVerb === "prove_it"
+      ? "This tool requires PIN verification"
+      : "This tool needs approval",
+  };
 }
 
 /**
