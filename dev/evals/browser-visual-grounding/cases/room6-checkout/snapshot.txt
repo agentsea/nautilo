@@ -1,0 +1,326 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e5]
+    - heading "Room #6: Far, far away" [level=1, ref=e2]
+    - generic
+      - LabelText
+        - StaticText "Location"
+      - generic [ref=e6] clickable [onclick]
+        - textbox "Location" [ref=e86]
+    - generic [ref=e7] clickable [onclick]
+      - LabelText
+        - StaticText "Check-in"
+      - generic [ref=e87] clickable [onclick]
+        - textbox "Check-in" [ref=e89]: Mon Sep 21 2026
+          - StaticText "Mon Sep 21 2026"
+    - generic [ref=e8] clickable [onclick]
+      - LabelText
+        - StaticText "Check-out"
+      - generic [ref=e88] clickable [onclick]
+        - textbox "Check-out" [ref=e90]: Mon Sep 21 2026
+          - StaticText "Mon Sep 21 2026"
+    - textbox "Early" [ref=e9]: Sep 21, 2026
+      - StaticText "Sep 21, 2026"
+    - textbox "Continuous" [ref=e10]: Sep 21, 2026
+      - StaticText "Sep 21, 2026"
+    - button [ref=e11]
+    - combobox [expanded=false, ref=e12]: September
+      - MenuListPopup
+        - option "January" [ref=e91]
+        - option "February" [ref=e92]
+        - option "March" [ref=e93]
+        - option "April" [ref=e94]
+        - option "May" [ref=e95]
+        - option "June" [ref=e96]
+        - option "July" [ref=e97]
+        - option "August" [ref=e98]
+        - option "September" [selected, ref=e99]
+        - option "October" [ref=e100]
+        - option "November" [ref=e101]
+        - option "December" [ref=e102]
+    - combobox [expanded=false, ref=e13]: 2026
+      - MenuListPopup
+        - option "2046" [ref=e103]
+        - option "2045" [ref=e104]
+        - option "2044" [ref=e105]
+        - option "2043" [ref=e106]
+        - option "2042" [ref=e107]
+        - option "2041" [ref=e108]
+        - option "2040" [ref=e109]
+        - option "2039" [ref=e110]
+        - option "2038" [ref=e111]
+        - option "2037" [ref=e112]
+        - option "2036" [ref=e113]
+        - option "2035" [ref=e114]
+        - option "2034" [ref=e115]
+        - option "2033" [ref=e116]
+        - option "2032" [ref=e117]
+        - option "2031" [ref=e118]
+        - option "2030" [ref=e119]
+        - option "2029" [ref=e120]
+        - option "2028" [ref=e121]
+        - option "2027" [ref=e122]
+        - option "2026" [selected, ref=e123]
+        - option "2025" [ref=e124]
+        - option "2024" [ref=e125]
+        - option "2023" [ref=e126]
+        - option "2022" [ref=e127]
+        - option "2021" [ref=e128]
+        - option "2020" [ref=e129]
+        - option "2019" [ref=e130]
+        - option "2018" [ref=e131]
+        - option "2017" [ref=e132]
+        - option "2016" [ref=e133]
+        - option "2015" [ref=e134]
+        - option "2014" [ref=e135]
+        - option "2013" [ref=e136]
+        - option "2012" [ref=e137]
+        - option "2011" [ref=e138]
+        - option "2010" [ref=e139]
+        - option "2009" [ref=e140]
+        - option "2008" [ref=e141]
+        - option "2007" [ref=e142]
+        - option "2006" [ref=e143]
+        - option "2005" [ref=e144]
+        - option "2004" [ref=e145]
+        - option "2003" [ref=e146]
+        - option "2002" [ref=e147]
+        - option "2001" [ref=e148]
+        - option "2000" [ref=e149]
+        - option "1999" [ref=e150]
+        - option "1998" [ref=e151]
+        - option "1997" [ref=e152]
+        - option "1996" [ref=e153]
+        - option "1995" [ref=e154]
+        - option "1994" [ref=e155]
+        - option "1993" [ref=e156]
+        - option "1992" [ref=e157]
+        - option "1991" [ref=e158]
+        - option "1990" [ref=e159]
+        - option "1989" [ref=e160]
+        - option "1988" [ref=e161]
+        - option "1987" [ref=e162]
+        - option "1986" [ref=e163]
+        - option "1985" [ref=e164]
+        - option "1984" [ref=e165]
+        - option "1983" [ref=e166]
+        - option "1982" [ref=e167]
+        - option "1981" [ref=e168]
+        - option "1980" [ref=e169]
+        - option "1979" [ref=e170]
+        - option "1978" [ref=e171]
+        - option "1977" [ref=e172]
+        - option "1976" [ref=e173]
+        - option "1975" [ref=e174]
+        - option "1974" [ref=e175]
+        - option "1973" [ref=e176]
+        - option "1972" [ref=e177]
+        - option "1971" [ref=e178]
+        - option "1970" [ref=e179]
+        - option "1969" [ref=e180]
+        - option "1968" [ref=e181]
+        - option "1967" [ref=e182]
+        - option "1966" [ref=e183]
+        - option "1965" [ref=e184]
+        - option "1964" [ref=e185]
+        - option "1963" [ref=e186]
+        - option "1962" [ref=e187]
+        - option "1961" [ref=e188]
+        - option "1960" [ref=e189]
+        - option "1959" [ref=e190]
+        - option "1958" [ref=e191]
+        - option "1957" [ref=e192]
+        - option "1956" [ref=e193]
+        - option "1955" [ref=e194]
+        - option "1954" [ref=e195]
+        - option "1953" [ref=e196]
+        - option "1952" [ref=e197]
+        - option "1951" [ref=e198]
+        - option "1950" [ref=e199]
+        - option "1949" [ref=e200]
+        - option "1948" [ref=e201]
+        - option "1947" [ref=e202]
+        - option "1946" [ref=e203]
+        - option "1945" [ref=e204]
+        - option "1944" [ref=e205]
+        - option "1943" [ref=e206]
+        - option "1942" [ref=e207]
+        - option "1941" [ref=e208]
+        - option "1940" [ref=e209]
+        - option "1939" [ref=e210]
+        - option "1938" [ref=e211]
+        - option "1937" [ref=e212]
+        - option "1936" [ref=e213]
+        - option "1935" [ref=e214]
+        - option "1934" [ref=e215]
+        - option "1933" [ref=e216]
+        - option "1932" [ref=e217]
+        - option "1931" [ref=e218]
+        - option "1930" [ref=e219]
+        - option "1929" [ref=e220]
+        - option "1928" [ref=e221]
+        - option "1927" [ref=e222]
+        - option "1926" [ref=e223]
+    - button [ref=e14]
+    - StaticText "Sep 2026"
+    - StaticText "Sun"
+    - StaticText "Mon"
+    - StaticText "Tue"
+    - StaticText "Wed"
+    - StaticText "Thu"
+    - StaticText "Fri"
+    - StaticText "Sat"
+    - button "30" [ref=e15]
+      - StaticText "30"
+    - button "31" [ref=e16]
+      - StaticText "31"
+    - button "1" [ref=e17]
+      - StaticText "1"
+    - button "2" [ref=e18]
+      - StaticText "2"
+    - button "3" [ref=e19]
+      - StaticText "3"
+    - button "4" [ref=e20]
+      - StaticText "4"
+    - button "5" [ref=e21]
+      - StaticText "5"
+    - button "6" [ref=e22]
+      - StaticText "6"
+    - button "7" [ref=e23]
+      - StaticText "7"
+    - button "8" [ref=e24]
+      - StaticText "8"
+    - button "9" [ref=e25]
+      - StaticText "9"
+    - button "10" [ref=e26]
+      - StaticText "10"
+    - button "11" [ref=e27]
+      - StaticText "11"
+    - button "12" [ref=e28]
+      - StaticText "12"
+    - button "13" [ref=e29]
+      - StaticText "13"
+    - button "14" [ref=e30]
+      - StaticText "14"
+    - button "15" [ref=e31]
+      - StaticText "15"
+    - button "16" [ref=e32]
+      - StaticText "16"
+    - button "17" [ref=e33]
+      - StaticText "17"
+    - button "18" [ref=e34]
+      - StaticText "18"
+    - button "19" [ref=e35]
+      - StaticText "19"
+    - button "20" [ref=e36]
+      - StaticText "20"
+    - button "21" [ref=e37]
+      - StaticText "21"
+    - button "22" [ref=e38]
+      - StaticText "22"
+    - button "23" [ref=e39]
+      - StaticText "23"
+    - button "24" [ref=e40]
+      - StaticText "24"
+    - button "25" [ref=e41]
+      - StaticText "25"
+    - button "26" [ref=e42]
+      - StaticText "26"
+    - button "27" [ref=e43]
+      - StaticText "27"
+    - button "28" [ref=e44]
+      - StaticText "28"
+    - button "29" [ref=e45]
+      - StaticText "29"
+    - button "30" [ref=e46]
+      - StaticText "30"
+    - button "1" [ref=e47]
+      - StaticText "1"
+    - button "2" [ref=e48]
+      - StaticText "2"
+    - button "3" [ref=e49]
+      - StaticText "3"
+    - StaticText "Oct 2026"
+    - StaticText "Sun"
+    - StaticText "Mon"
+    - StaticText "Tue"
+    - StaticText "Wed"
+    - StaticText "Thu"
+    - StaticText "Fri"
+    - StaticText "Sat"
+    - button "27" [ref=e50]
+      - StaticText "27"
+    - button "28" [ref=e51]
+      - StaticText "28"
+    - button "29" [ref=e52]
+      - StaticText "29"
+    - button "30" [ref=e53]
+      - StaticText "30"
+    - button "1" [ref=e54]
+      - StaticText "1"
+    - button "2" [ref=e55]
+      - StaticText "2"
+    - button "3" [ref=e56]
+      - StaticText "3"
+    - button "4" [ref=e57]
+      - StaticText "4"
+    - button "5" [ref=e58]
+      - StaticText "5"
+    - button "6" [ref=e59]
+      - StaticText "6"
+    - button "7" [ref=e60]
+      - StaticText "7"
+    - button "8" [ref=e61]
+      - StaticText "8"
+    - button "9" [ref=e62]
+      - StaticText "9"
+    - button "10" [ref=e63]
+      - StaticText "10"
+    - button "11" [ref=e64]
+      - StaticText "11"
+    - button "12" [ref=e65]
+      - StaticText "12"
+    - button "13" [ref=e66]
+      - StaticText "13"
+    - button "14" [ref=e67]
+      - StaticText "14"
+    - button "15" [ref=e68]
+      - StaticText "15"
+    - button "16" [ref=e69]
+      - StaticText "16"
+    - button "17" [ref=e70]
+      - StaticText "17"
+    - button "18" [ref=e71]
+      - StaticText "18"
+    - button "19" [ref=e72]
+      - StaticText "19"
+    - button "20" [ref=e73]
+      - StaticText "20"
+    - button "21" [ref=e74]
+      - StaticText "21"
+    - button "22" [ref=e75]
+      - StaticText "22"
+    - button "23" [ref=e76]
+      - StaticText "23"
+    - button "24" [ref=e77]
+      - StaticText "24"
+    - button "25" [ref=e78]
+      - StaticText "25"
+    - button "26" [ref=e79]
+      - StaticText "26"
+    - button "27" [ref=e80]
+      - StaticText "27"
+    - button "28" [ref=e81]
+      - StaticText "28"
+    - button "29" [ref=e82]
+      - StaticText "29"
+    - button "30" [ref=e83]
+      - StaticText "30"
+    - button "31" [ref=e84]
+      - StaticText "31"
+    - LabelText [ref=e3] clickable [cursor:pointer]
+      - checkbox "Pet-friendly" [checked=false, ref=e85]
+      - StaticText "Pet-friendly"
+    - button "SUBMIT" [ref=e4]
+    - paragraph
+      - StaticText "The code word will be revealed upon completing the task!"
