@@ -6,7 +6,7 @@
 
 Le code et la documentation sont actuellement en anglais. Les PR de traduction sont les bienvenues ; consultez le [guide de contribution aux traductions](CONTRIBUTING.md#translations-and-localization) (en anglais). Cette page traduit le README ; elle ne signifie pas que l’interface ou les documents liés sont disponibles en français.
 
-<!-- Translation source: README.md; SHA-256: 13cc19ef82a182adb053c02d1d531e6cefc8f3fd9fc3882b393640a33d4c6180 -->
+<!-- Translation source: README.md; SHA-256: f6e926f3616a846368e6ef24840b4ea15615b72b0d8a1821ef614448bd7d9115 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -134,3 +134,9 @@ Nautilo est [sous licence MIT](LICENSE). Consultez les [mentions des tiers](THIR
 [![Soutenez Nautilo sur GitHub Sponsors.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
 
 [Soutenez Nautilo via agentsea sur GitHub Sponsors](https://github.com/sponsors/agentsea) · Don ponctuel ou mensuel.
+
+### Merci à la communauté Bankr
+
+L’open source avance grâce aux gens qui se soutiennent. La communauté Bankr a créé un [jeton Nautilo](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) indépendant et affecté une part de ses frais de transaction au soutien de notre travail. Merci de nous aider à continuer à construire.
+
+Ce jeton communautaire n’est ni émis ni cautionné par Nautilo. Il n’a aucun rôle dans le logiciel et ne confère aucun droit d’accès au produit, de propriété ou de gouvernance.

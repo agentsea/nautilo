@@ -6,7 +6,7 @@
 
 コードとドキュメントは現在、英語で書かれています。翻訳の PR を歓迎します。[翻訳への貢献ガイド](CONTRIBUTING.md#translations-and-localization)（英語）をご覧ください。このページは README の日本語訳です。アプリの画面やリンク先のドキュメントが日本語に対応していることを示すものではありません。
 
-<!-- Translation source: README.md; SHA-256: 13cc19ef82a182adb053c02d1d531e6cefc8f3fd9fc3882b393640a33d4c6180 -->
+<!-- Translation source: README.md; SHA-256: f6e926f3616a846368e6ef24840b4ea15615b72b0d8a1821ef614448bd7d9115 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -134,3 +134,9 @@ Nautilo は [MIT ライセンス](LICENSE)です。依存関係のライセン�
 [![GitHub Sponsors で Nautilo を支援する。](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
 
 [GitHub Sponsors の agentsea を通じて Nautilo を支援する](https://github.com/sponsors/agentsea) · 単発または毎月の支援。
+
+### Bankr コミュニティへの感謝
+
+オープンソースは、人々が互いに支え合うことで成り立っています。Bankr コミュニティは独立した [Nautilo トークン](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)を作り、取引手数料の一部を私たちの活動への支援に充ててくれました。開発を続ける力をくださり、ありがとうございます。
+
+これはコミュニティが作ったトークンであり、Nautilo が発行・推奨するものではありません。ソフトウェア内での用途はなく、製品の利用権、所有権、ガバナンス権を付与するものでもありません。
