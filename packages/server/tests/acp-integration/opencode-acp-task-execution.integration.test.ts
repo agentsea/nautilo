@@ -37,11 +37,16 @@ import {
   InMemoryLaneLock,
   JobManager,
   renderDelegatedTaskFailureReceipt,
+  createHumanApiTaskCreationProvenance,
+  getPlaintextTaskCreationAdmission,
   createTask as runtimeCreateTask,
   dispatchTaskRun,
   eventBus,
 } from "@nautilo/runtime";
-import { PersonalPolicyResolver } from "@nautilo/trust";
+import {
+  PersonalPolicyResolver,
+  createAcceptedInvocationAuthority,
+} from "@nautilo/trust";
 import type { RelayCapabilities, RelayServerMessage } from "@nautilo/relay";
 import type { ServerEvent } from "@nautilo/types";
 import { createOpenCodeAcpHarnessTask } from "../../src/acp/opencode-harness-task";
@@ -389,7 +394,13 @@ async function admitOpenCodeTask(
   const created = await createOpenCodeAcpHarnessTask({
     facts: createCodexCanonicalFactsReader(db),
     relay: registry,
-    createTask: (input) => runtimeCreateTask({ db, observer: { kick: () => undefined } }, input),
+    createTask: (input) => runtimeCreateTask({
+      db,
+      observer: { kick: () => undefined },
+      invocationAuthority: createAcceptedInvocationAuthority(input.requestorId),
+      provenance: createHumanApiTaskCreationProvenance({ ownerId: input.ownerId }),
+      admission: getPlaintextTaskCreationAdmission(),
+    }, input),
     mintRequestId: randomUUID,
   }, {
     ownerId: fixture.userId,

@@ -44,7 +44,9 @@ import {
 import { warn } from "@nautilo/logger";
 import {
   createTask as runtimeCreateTask,
+  createArtifactEventTaskCreationProvenance,
   eventBus,
+  getPlaintextTaskCreationAdmission,
   getMaintenanceGate,
   getTaskObserver,
 } from "@nautilo/runtime";
@@ -2121,6 +2123,12 @@ export function workspaceArtifactsRoutes(
         db: getServerDirectDb(),
         observer: getTaskObserver() ?? { kick() {} },
         invocationAuthority,
+        provenance: createArtifactEventTaskCreationProvenance({
+          ownerId,
+          artifactId: row.artifactId,
+          roomId,
+        }),
+        admission: getPlaintextTaskCreationAdmission(),
       },
       {
         ownerId,

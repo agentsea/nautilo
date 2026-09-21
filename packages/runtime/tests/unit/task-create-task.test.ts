@@ -2,6 +2,11 @@ import { describe, test, expect } from "bun:test";
 import type { DirectDatabase } from "@nautilo/db";
 import { createTask, type TaskCreateInput } from "../../src/tasks/create-task";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import {
+  createHumanApiTaskCreationProvenance,
+  getPlaintextTaskCreationAdmission,
+  type TaskCreationAdmissionPort,
+} from "../../src/tasks/task-creation-admission";
 
 /**
  * Fake `db` satisfying only the chain `db.insert(tasks).values(input).returning()`
@@ -38,13 +43,23 @@ const baseInput = (over: Partial<TaskCreateInput> = {}): TaskCreateInput =>
 const accepted = () =>
   createAcceptedInvocationAuthority("11111111-1111-1111-1111-111111111111");
 
+const taskDeps = (db: DirectDatabase, observer: { kick(): void }) => ({
+  db,
+  observer,
+  invocationAuthority: accepted(),
+  provenance: createHumanApiTaskCreationProvenance({
+    ownerId: "11111111-1111-1111-1111-111111111111",
+  }),
+  admission: getPlaintextTaskCreationAdmission(),
+});
+
 describe("M142 — createTask wrapper", () => {
   test("now-task: nextFireAt ≈ now and observer.kick() called", async () => {
     const { db } = fakeDb();
     let kicks = 0;
     const before = Date.now();
     const res = await createTask(
-      { db, observer: { kick: () => void kicks++ }, invocationAuthority: accepted() },
+      taskDeps(db, { kick: () => void kicks++ }),
       baseInput({ scheduleKind: "now" }),
     );
     expect(res.taskId).toBe("task-1");
@@ -60,7 +75,7 @@ describe("M142 — createTask wrapper", () => {
     let kicks = 0;
     const runAt = new Date("2030-01-01T00:00:00Z");
     const res = await createTask(
-      { db, observer: { kick: () => void kicks++ }, invocationAuthority: accepted() },
+      taskDeps(db, { kick: () => void kicks++ }),
       baseInput({ scheduleKind: "one_shot", runAt }),
     );
     expect(res.nextFireAt!.toISOString()).toBe(runAt.toISOString());
@@ -71,7 +86,7 @@ describe("M142 — createTask wrapper", () => {
     const { db } = fakeDb();
     let kicks = 0;
     const res = await createTask(
-      { db, observer: { kick: () => void kicks++ }, invocationAuthority: accepted() },
+      taskDeps(db, { kick: () => void kicks++ }),
       baseInput({ scheduleKind: "cron", cron: "0 9 * * *", timezone: "UTC" }),
     );
     // Next 09:00 UTC strictly after now.
@@ -84,7 +99,7 @@ describe("M142 — createTask wrapper", () => {
     const { db } = fakeDb();
     return expect(
       createTask(
-        { db, observer: { kick: () => {} } },
+        taskDeps(db, { kick: () => {} }),
         baseInput({ depth: 5 }),
       ),
     ).rejects.toThrow(/depth cap exceeded/);
@@ -94,7 +109,7 @@ describe("M142 — createTask wrapper", () => {
     const { db } = fakeDb();
     return expect(
       createTask(
-        { db, observer: { kick: () => {} } },
+        taskDeps(db, { kick: () => {} }),
         baseInput({ scheduleKind: "one_shot" }),
       ),
     ).rejects.toThrow(/requires runAt/);
@@ -102,9 +117,13 @@ describe("M142 — createTask wrapper", () => {
 
   test("requires accepted invocation authority before inserting", async () => {
     const { db, lastValues } = fakeDb();
+    const { invocationAuthority: _invocationAuthority, ...deps } = taskDeps(
+      db,
+      { kick: () => {} },
+    );
     try {
       await createTask(
-        { db, observer: { kick: () => {} } },
+        deps,
         baseInput(),
       );
       throw new Error("expected createTask to reject");
@@ -124,12 +143,54 @@ describe("M142 — createTask wrapper", () => {
           invocationAuthority: createAcceptedInvocationAuthority(
             "99999999-9999-9999-9999-999999999999",
           ),
+          provenance: createHumanApiTaskCreationProvenance({
+            ownerId: "11111111-1111-1111-1111-111111111111",
+          }),
+          admission: getPlaintextTaskCreationAdmission(),
         },
         baseInput(),
       );
       throw new Error("expected createTask to reject");
     } catch (error) {
       expect(String(error)).toContain("subject mismatch");
+    }
+    expect(lastValues()).toEqual({});
+  });
+
+  test("rejects structurally forged creation provenance before inserting", async () => {
+    const { db, lastValues } = fakeDb();
+    try {
+      await createTask({
+        ...taskDeps(db, { kick: () => {} }),
+        provenance: {
+          kind: "human_api",
+          ownerId: "11111111-1111-1111-1111-111111111111",
+          requestedParentTaskId: null,
+        },
+      }, baseInput());
+      throw new Error("expected createTask to reject");
+    } catch (error) {
+      expect(String(error)).toContain("server-authored provenance");
+    }
+    expect(lastValues()).toEqual({});
+  });
+
+  test("keeps a prepared protected root dark before protected persistence exists", async () => {
+    const { db, lastValues } = fakeDb();
+    const protectedAdmission: TaskCreationAdmissionPort<unknown> = {
+      admit: async () => ({ kind: "protected", prepared: Object.freeze({}) }),
+    };
+    try {
+      await createTask({
+        ...taskDeps(db, { kick: () => {} }),
+        admission: protectedAdmission,
+      }, baseInput());
+      throw new Error("expected createTask to reject");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "TaskCreationUnavailableError",
+        reason: "task_shape_unsupported",
+      });
     }
     expect(lastValues()).toEqual({});
   });

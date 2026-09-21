@@ -164,6 +164,8 @@ import type {
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import {
   runWithTaskCreationContexts,
+  runWithTaskCreationInvocationProvenance,
+  taskCreationInvocationProvenanceForState,
   taskCreationReturnContextForState,
 } from "../runtime/task-creation-return-context";
 import {
@@ -1284,6 +1286,7 @@ export function createNautiloToolInvocationSession(
   );
   const taskCreationLiveMiniAppContext = taskCreationLiveMiniAppContextForState(state);
   const taskCreationBackgroundTaskProvenance = taskCreationBackgroundTaskProvenanceForState(state);
+  const taskCreationInvocationProvenance = taskCreationInvocationProvenanceForState(state);
   const deepResearchReturnContext = deepResearchReturnContextForState(state);
 
   async function runApprovedToolCall(
@@ -1834,21 +1837,24 @@ export function createNautiloToolInvocationSession(
           // staged-patch helpers) reach the same cell as long as they
           // are on the call chain that produces the final `file` result.
           const isFileTool = tc.name === "file";
-          const invoke = () => runWithTaskCreationContexts(
-            taskCreationReturnContext,
-            taskCreationLiveMiniAppContext,
-            taskCreationBackgroundTaskProvenance,
-            () => runWithDeepResearchReturnContext(
-              deepResearchReturnContext,
-              () => tool.invoke(invocationArgs, {
-                ...config,
-                configurable: {
-                  ...(config?.configurable ?? {}),
-                  fileToolMutationRequestId: toolCallId,
-                  memoryToolMutationRequestId: toolCallId,
-                  connectedWebActionDeliveryId: toolCallId,
-                },
-              }),
+          const invoke = () => runWithTaskCreationInvocationProvenance(
+            taskCreationInvocationProvenance,
+            () => runWithTaskCreationContexts(
+              taskCreationReturnContext,
+              taskCreationLiveMiniAppContext,
+              taskCreationBackgroundTaskProvenance,
+              () => runWithDeepResearchReturnContext(
+                deepResearchReturnContext,
+                () => tool.invoke(invocationArgs, {
+                  ...config,
+                  configurable: {
+                    ...(config?.configurable ?? {}),
+                    fileToolMutationRequestId: toolCallId,
+                    memoryToolMutationRequestId: toolCallId,
+                    connectedWebActionDeliveryId: toolCallId,
+                  },
+                }),
+              ),
             ),
           );
           const captured = isFileTool

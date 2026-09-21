@@ -83,6 +83,10 @@ import {
 import { setupAgentTestEnv, closeAgentDb } from "./agent-helpers";
 import { createIntegrationStubPolicyResolver } from "./integration-stub-policy";
 import { createStubProvider } from "./helpers/stub-provider";
+import {
+  createAgentTurnTaskCreationProvenance,
+  getPlaintextTaskCreationAdmission,
+} from "../../src/tasks/task-creation-admission";
 
 let userId: string;
 let agentId: string;
@@ -1007,6 +1011,11 @@ describe.skipIf(taskSuiteSkipReason !== null)(
             db,
             observer: { kick: () => {} },
             invocationAuthority: createAcceptedInvocationAuthority(input.requestorId),
+            provenance: createAgentTurnTaskCreationProvenance({
+              ownerId: input.requestorId,
+              invocation: null,
+            }),
+            admission: getPlaintextTaskCreationAdmission(),
           },
           input,
         ),

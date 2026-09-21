@@ -3,7 +3,7 @@ import type {
   ActiveMiniAppRequestContext,
   TrustedLiveMiniAppSessionContext,
 } from "@nautilo/types";
-import type { NautiloState } from "../agent/state";
+import type { NautiloState, TrustedExecutionEntrypoint } from "../agent/state";
 
 /**
  * Process-local creation facts for an immediate Task started by one direct
@@ -41,6 +41,19 @@ export interface TaskCreationBackgroundTaskProvenance {
   readonly taskRunId: string;
 }
 
+/**
+ * Positive, server-stamped origin for a Task creation attempt.  Unlike the
+ * legacy background-only slot, this never treats missing context as a
+ * foreground root.  It stays process-local and is not part of model input.
+ */
+export interface TaskCreationInvocationProvenance {
+  readonly ownerId: string;
+  readonly roomId: string | null;
+  readonly entrypoint: TrustedExecutionEntrypoint;
+  readonly taskId?: string;
+  readonly taskRunId?: string;
+}
+
 interface TaskCreationAmbientContext {
   readonly returnContext: TaskCreationReturnContext | null;
   readonly liveMiniAppContext: TaskCreationLiveMiniAppContext | null;
@@ -48,14 +61,51 @@ interface TaskCreationAmbientContext {
 }
 
 /**
- * All Task-creation-only facts share one ALS scope. Each public typed helper
- * below owns a distinct slot, so no authority crosses a serialization boundary.
+ * Return, live-app, and background facts share one ALS scope. Each public
+ * typed helper below owns a distinct slot, so no authority crosses a
+ * serialization boundary. Positive invocation provenance has its own scope.
  */
 const taskCreationAmbientContextStorage =
   new AsyncLocalStorage<TaskCreationAmbientContext | null>();
+const taskCreationInvocationProvenanceStorage =
+  new AsyncLocalStorage<TaskCreationInvocationProvenance | null>();
 
 export function getTaskCreationAmbientContext(): TaskCreationAmbientContext | null {
   return taskCreationAmbientContextStorage.getStore() ?? null;
+}
+
+export function taskCreationInvocationProvenanceForState(
+  state: NautiloState,
+): TaskCreationInvocationProvenance | null {
+  const entrypoint = state.trustedExecutionEntrypoint;
+  if (!entrypoint || !state.userId) return null;
+  if (entrypoint === "background.task") {
+    if (!state.currentTaskId || !state.currentTaskRunId) return null;
+    return Object.freeze({
+      ownerId: state.userId,
+      roomId: state.roomId || null,
+      entrypoint,
+      taskId: state.currentTaskId,
+      taskRunId: state.currentTaskRunId,
+    });
+  }
+  return Object.freeze({
+    ownerId: state.userId,
+    roomId: state.roomId || null,
+    entrypoint,
+  });
+}
+
+export function runWithTaskCreationInvocationProvenance<T>(
+  provenance: TaskCreationInvocationProvenance | null,
+  fn: () => T,
+): T {
+  return taskCreationInvocationProvenanceStorage.run(provenance, fn);
+}
+
+export function getTaskCreationInvocationProvenance():
+  TaskCreationInvocationProvenance | null {
+  return taskCreationInvocationProvenanceStorage.getStore() ?? null;
 }
 
 export function runWithTaskCreationContexts<T>(
