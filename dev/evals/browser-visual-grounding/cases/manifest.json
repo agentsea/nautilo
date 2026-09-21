@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "cases": [
     {
+      "id": "room5-dropdown"
+    },
+    {
       "id": "room5-initial"
     }
   ]
