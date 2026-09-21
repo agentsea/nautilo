@@ -3,6 +3,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AIMessage, HumanMessage, type BaseMessageLike } from "@langchain/core/messages";
+import { ChatOpenAI } from "@langchain/openai";
 import { createEvaluationModel } from "@nautilo/agent/model-evaluation";
 import { configureRuntimeModelCatalog } from "../../../packages/agent/src/config/model-catalog/runtime-catalog.ts";
 import { resolveCatalogModel } from "../../../packages/agent/src/config/resolved-catalog.ts";
@@ -11,6 +12,7 @@ import { loadBaselineTasks, loadCapture } from "./baseline.ts";
 import { runCapturedJevChoice } from "./jev-evaluation.ts";
 import {
   loadVisualOracles,
+  normalized1000ToImagePixels,
   parseVisualGrounding,
   prepareVisualDecision,
   scoreVisualSelection,
@@ -19,12 +21,46 @@ import {
 
 const DEFAULT_VISION_MODEL_ID = "openai:gpt-5.6-sol";
 const DEFAULT_DECISION_MODEL_ID = "openrouter:typesafe/jev-1.13";
+const DIRECT_MODEL_TIMEOUT_MS = 120_000;
 const resultsRoot = path.join(import.meta.dir, ".results");
+const directVisualResponseFormat = {
+  type: "json_schema",
+  json_schema: {
+    name: "visual_grounding",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["summary", "visibleText", "targets"],
+      properties: {
+        summary: { type: "string" },
+        visibleText: { type: "array", items: { type: "string" } },
+        targets: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["role", "name", "interaction", "x", "y", "context"],
+            properties: {
+              role: { type: "string" },
+              name: { type: "string" },
+              interaction: { type: "string", enum: ["click", "focus"] },
+              x: { type: "integer", minimum: 0 },
+              y: { type: "integer", minimum: 0 },
+              context: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
 
 export interface VisualBaselineArgs {
   readonly live: boolean;
   readonly caseId: string | null;
   readonly visionModelId: string;
+  readonly directOpenRouterModel: string | null;
   readonly decisionModelId: string;
 }
 
@@ -32,6 +68,7 @@ export function parseVisualBaselineArgs(argv: readonly string[]): VisualBaseline
   let live = false;
   let caseId: string | null = null;
   let visionModelId = DEFAULT_VISION_MODEL_ID;
+  let directOpenRouterModel: string | null = null;
   let decisionModelId = DEFAULT_DECISION_MODEL_ID;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -42,12 +79,32 @@ export function parseVisualBaselineArgs(argv: readonly string[]): VisualBaseline
     } else if (value === "--vision-model") {
       visionModelId = argv[++index] ?? "";
       if (!visionModelId) throw new Error("--vision-model requires a model id");
+    } else if (value === "--direct-openrouter-model") {
+      directOpenRouterModel = argv[++index] ?? null;
+      if (!directOpenRouterModel) throw new Error("--direct-openrouter-model requires an OpenRouter model slug");
+      if (directOpenRouterModel.includes(":")) {
+        throw new Error("--direct-openrouter-model expects a provider model slug without a Nautilo prefix");
+      }
     } else if (value === "--decision-model") {
       decisionModelId = argv[++index] ?? "";
       if (!decisionModelId) throw new Error("--decision-model requires a model id");
     } else throw new Error(`Unknown argument: ${value}`);
   }
-  return { live, caseId, visionModelId, decisionModelId };
+  return { live, caseId, visionModelId, directOpenRouterModel, decisionModelId };
+}
+
+function createDirectOpenRouterEvaluationModel(model: string): ChatOpenAI {
+  const apiKey = process.env["OPENROUTER_API_KEY"]?.trim();
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is required for --direct-openrouter-model");
+  return new ChatOpenAI({
+    model,
+    apiKey,
+    maxTokens: 8_192,
+    timeout: DIRECT_MODEL_TIMEOUT_MS,
+    streamUsage: true,
+    modelKwargs: { response_format: directVisualResponseFormat },
+    configuration: { baseURL: "https://openrouter.ai/api/v1" },
+  });
 }
 
 function safeError(error: unknown): Record<string, unknown> {
@@ -100,12 +157,19 @@ export async function runVisualBaseline(
   const started = new Date();
   const cases: Record<string, unknown>[] = [];
   let failures = 0;
-  const visionModel = args.live ? await createEvaluationModel(args.visionModelId, {
-    useOpenAIResponsesApi: true,
-    reasoningEffort: "low",
-    reasoningOutput: false,
-    timeoutMs: null,
-  }) : null;
+  const effectiveVisionModelId = args.directOpenRouterModel
+    ? `openrouter:${args.directOpenRouterModel}`
+    : args.visionModelId;
+  const visionModel = args.live
+    ? args.directOpenRouterModel
+      ? createDirectOpenRouterEvaluationModel(args.directOpenRouterModel)
+      : await createEvaluationModel(args.visionModelId, {
+        useOpenAIResponsesApi: true,
+        reasoningEffort: "low",
+        reasoningOutput: false,
+        timeoutMs: null,
+      })
+    : null;
 
   for (const task of tasks) {
     const oracle = oracleByCase.get(task.caseId);
@@ -126,6 +190,7 @@ export async function runVisualBaseline(
       continue;
     }
     const controller = new AbortController();
+    let solReceipt: Record<string, unknown> | null = null;
     try {
       const png = await readFile(screenshotPath);
       const prompt = `${VISUAL_GROUNDING_PROMPT}\n\nScreenshot dimensions: ${capture.viewport.image.width}x${capture.viewport.image.height} image pixels.`;
@@ -134,10 +199,23 @@ export async function runVisualBaseline(
         { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } },
       ] });
       const response = await visionModel!.invoke([message] as BaseMessageLike[], { signal: controller.signal });
-      if (!AIMessage.isInstance(response)) throw new Error("Sol returned a non-AI message");
+      if (!AIMessage.isInstance(response)) throw new Error("Vision model returned a non-AI message");
       const rawText = flattenAiContent(response.content).trim();
-      if (!rawText) throw new Error("Sol returned no textual grounding");
-      const grounding = parseVisualGroundingText(rawText, capture.viewport.image);
+      if (!rawText) throw new Error("Vision model returned no textual grounding");
+      const coordinateTransform = args.directOpenRouterModel?.includes("qwen3-vl-")
+        ? "normalized-1000-to-image-pixels"
+        : null;
+      solReceipt = {
+        modelId: effectiveVisionModelId,
+        prompt,
+        rawText,
+        usage: response.usage_metadata,
+        coordinateTransform,
+      };
+      const parsedGrounding = parseVisualGroundingText(rawText, capture.viewport.image);
+      const grounding = coordinateTransform
+        ? normalized1000ToImagePixels(parsedGrounding, capture.viewport.image)
+        : parsedGrounding;
       const prepared = prepareVisualDecision({
         task,
         capture,
@@ -150,13 +228,7 @@ export async function runVisualBaseline(
       if (!score.passed) failures += 1;
       cases.push({
         ...common,
-        sol: {
-          modelId: args.visionModelId,
-          prompt,
-          rawText,
-          usage: response.usage_metadata,
-          grounding,
-        },
+        sol: { ...solReceipt, grounding },
         visualSnapshot: prepared.snapshot,
         candidates: prepared.input.choices,
         jev,
@@ -165,7 +237,7 @@ export async function runVisualBaseline(
       });
     } catch (error) {
       failures += 1;
-      cases.push({ ...common, sol: null, visualSnapshot: null, jev: null, verdict: "error", error: safeError(error) });
+      cases.push({ ...common, sol: solReceipt, visualSnapshot: null, jev: null, verdict: "error", error: safeError(error) });
     }
   }
 
@@ -179,9 +251,9 @@ export async function runVisualBaseline(
   };
   const report = {
     schemaVersion: 1,
-    approach: "sol-screenshot-to-snapshot-to-jev",
+    approach: "screenshot-to-snapshot-to-jev",
     mode: args.live ? "live" : "dry-run",
-    visionModelId: args.visionModelId,
+    visionModelId: effectiveVisionModelId,
     decisionModelId: args.decisionModelId,
     maxChoices,
     startedAt: started.toISOString(),
@@ -194,7 +266,7 @@ export async function runVisualBaseline(
   const rendered = `${JSON.stringify(report, null, 2)}\n`;
   await writeFile(reportPath, rendered, { encoding: "utf8", mode: 0o600 });
   await writeFile(path.join(resultsRoot, "visual-latest.json"), rendered, { encoding: "utf8", mode: 0o600 });
-  process.stdout.write(`[eval:browser-visual-grounding] approach=sol-screenshot-to-snapshot-to-jev mode=${report.mode}\n`);
+  process.stdout.write(`[eval:browser-visual-grounding] approach=screenshot-to-snapshot-to-jev mode=${report.mode}\n`);
   process.stdout.write(`[eval:browser-visual-grounding] total=${summary.total} passed=${summary.passed} failed=${summary.failed} errors=${summary.errors} not_run=${summary.notRun}\n`);
   process.stdout.write(`[eval:browser-visual-grounding] report=${reportPath}\n`);
   return { status: args.live && failures > 0 ? 1 : 0, reportPath };

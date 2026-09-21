@@ -80,13 +80,41 @@ export function parseVisualGrounding(
   value: unknown,
   image: { readonly width: number; readonly height: number },
 ): VisualGrounding {
-  const parsed = groundingSchema.parse(value);
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+  const rawTargets: unknown = record?.["targets"];
+  const targets = Array.isArray(rawTargets)
+    ? (rawTargets as unknown[]).map((target: unknown): unknown => {
+      if (!target || typeof target !== "object" || Array.isArray(target)) return target;
+      const targetRecord = target as Record<string, unknown>;
+      const pair: unknown = targetRecord["x"];
+      if (!Array.isArray(pair) || pair.length !== 2 || targetRecord["y"] !== undefined) return target;
+      const [x, y] = pair as unknown[];
+      return { ...targetRecord, x, y };
+    })
+    : rawTargets;
+  const parsed = groundingSchema.parse(record ? { ...record, targets } : value);
   for (const target of parsed.targets) {
     if (target.x >= image.width || target.y >= image.height) {
       throw new Error(`Visual target coordinate (${target.x},${target.y}) is outside ${image.width}x${image.height}`);
     }
   }
   return parsed;
+}
+
+export function normalized1000ToImagePixels(
+  grounding: VisualGrounding,
+  image: { readonly width: number; readonly height: number },
+): VisualGrounding {
+  return {
+    ...grounding,
+    targets: grounding.targets.map((target) => ({
+      ...target,
+      x: Math.round((target.x / 1000) * (image.width - 1)),
+      y: Math.round((target.y / 1000) * (image.height - 1)),
+    })),
+  };
 }
 
 export function renderVisualSnapshot(

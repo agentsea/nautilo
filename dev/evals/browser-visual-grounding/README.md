@@ -103,9 +103,24 @@ different vision model, or `--decision-model <id>` to compare a different
 Choice model. Reports are written as mode-600 ignored files and
 `.results/visual-latest.json` always points to the latest visual run.
 
+For a deliberate evaluation of an OpenRouter model that is not in Nautilo's
+signed product catalogue, use its provider slug without the `openrouter:`
+prefix. This eval-only path keeps an explicit 8K output ceiling and 120-second
+per-request timeout, and does not alter or bypass product-runtime catalogue
+enforcement:
+
+```sh
+OPENROUTER_API_KEY=... \
+  bun dev/evals/browser-visual-grounding/run-visual-baseline.ts --live \
+  --direct-openrouter-model qwen/qwen3.8-max-0902
+```
+
+The runner records and converts Qwen3-VL's native normalized 0–1000 point
+coordinates into screenshot pixels before constructing browser operations.
+
 The automatic oracle checks whether Jev's selected image coordinate falls
 inside the reviewed target region. The report retains the screenshot path,
-Sol prompt and raw/parsed grounding, rendered visual snapshot, complete Jev
+vision-model prompt and raw/parsed grounding, rendered visual snapshot, complete Jev
 request/response, candidate selected, and verdict for semi-manual inspection.
 For tasks that ultimately require typing, this first experiment scores the
 correct visual focus as the next action; deterministic focused-text execution

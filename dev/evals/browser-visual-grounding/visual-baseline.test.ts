@@ -3,6 +3,7 @@ import { loadBaselineTasks, loadCapture } from "./baseline.ts";
 import { parseVisualBaselineArgs, parseVisualGroundingText } from "./run-visual-baseline.ts";
 import {
   loadVisualOracles,
+  normalized1000ToImagePixels,
   prepareVisualDecision,
   renderVisualSnapshot,
   scoreVisualSelection,
@@ -32,6 +33,8 @@ describe("Sol screenshot visual grounding baseline", () => {
     });
     expect(parseVisualGroundingText(json, { width: 1000, height: 800 }).targets).toHaveLength(1);
     expect(parseVisualGroundingText(`\`\`\`json\n${json}\n\`\`\``, { width: 1000, height: 800 }).summary).toBe("Form");
+    expect(parseVisualGroundingText(json.replace('"x":500,"y":300', '"x":[500,300]'), { width: 1000, height: 800 }).targets[0])
+      .toMatchObject({ x: 500, y: 300 });
     expect(() => parseVisualGroundingText(json.replace('"x":500', '"x":1000'), { width: 1000, height: 800 })).toThrow(/outside/);
   });
 
@@ -71,11 +74,22 @@ describe("Sol screenshot visual grounding baseline", () => {
     expect(scoreVisualSelection(prepared, oracle, "scroll_down").passed).toBe(false);
   });
 
+  test("converts Qwen3-VL normalized points into executable image pixels", () => {
+    const grounding: VisualGrounding = {
+      summary: "Centered button",
+      visibleText: ["CLICK ON ME!"],
+      targets: [{ role: "button", name: "CLICK ON ME!", interaction: "click", x: 500, y: 500, context: "center" }],
+    };
+    expect(normalized1000ToImagePixels(grounding, { width: 2168, height: 1404 }).targets[0])
+      .toMatchObject({ x: 1084, y: 702 });
+  });
+
   test("parses visual baseline CLI modes", () => {
     expect(parseVisualBaselineArgs([])).toEqual({
       live: false,
       caseId: null,
       visionModelId: "openai:gpt-5.6-sol",
+      directOpenRouterModel: null,
       decisionModelId: MODEL_ID,
     });
     expect(parseVisualBaselineArgs(["--live", "--case", "room15-second-row"])).toMatchObject({
@@ -83,5 +97,9 @@ describe("Sol screenshot visual grounding baseline", () => {
       caseId: "room15-second-row",
     });
     expect(() => parseVisualBaselineArgs(["--vision-model"])).toThrow();
+    expect(parseVisualBaselineArgs(["--direct-openrouter-model", "qwen/qwen3.8-max-0902"]))
+      .toMatchObject({ directOpenRouterModel: "qwen/qwen3.8-max-0902" });
+    expect(() => parseVisualBaselineArgs(["--direct-openrouter-model", "openrouter:qwen/model"]))
+      .toThrow(/without a Nautilo prefix/);
   });
 });
