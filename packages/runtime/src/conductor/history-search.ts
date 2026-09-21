@@ -2,6 +2,7 @@ import {
   listReactionsForMessageIds,
   normalizeRoomMessageSearchQuery,
   queryRoomMessageContentIndex,
+  readTranscriptToolPresentation,
   type RoomMessageSearchDb,
 } from "@nautilo/agent";
 import {
@@ -56,6 +57,8 @@ export interface RoomHistoryHit {
   /** Server-internal actor id. NEVER passed to the LLM. */
   authorActorId: string;
   snippet: string;
+  /** Trusted source fields, not inferred from rendered message text. */
+  toolEvidence?: { name: string; callId: string; status: "success" | "error" };
   /** M121 — count-only reaction snapshot for woken-bot transcript lines. */
   reactions?: { emoji: string; count: number }[];
 }
@@ -74,6 +77,8 @@ interface RawHistoryRow {
   ts: string | Date;
   role: string;
   content: string;
+  tool_name?: string | null;
+  tool_metadata?: unknown;
   agent_handle: string | null;
   agent_display_name: string | null;
   agent_actor_id: string | null;
@@ -93,6 +98,8 @@ function selectHistoryRows(db: Pick<DirectDatabase, "select">) {
       ts: sql<Date>`${sessionMessages.createdAt}`.as("ts"),
       role: sql<string>`${sessionMessages.role}`.as("role"),
       content: sql<string>`${sessionMessages.content}`.as("content"),
+      tool_name: sessionMessages.toolName,
+      tool_metadata: sql<unknown>`jsonb_build_object('nautilo_tool_result', ${sessionMessages.metadata}->'nautilo_tool_result')`.as("tool_metadata"),
       agent_handle: sql<string | null>`${agents.handle}`.as("agent_handle"),
       agent_display_name: sql<string | null>`${agentAuthor.displayName}`.as(
         "agent_display_name",
@@ -198,7 +205,7 @@ async function enrichWithReactions(
 }
 
 /**
- * D279 Phase 3 — exclude messages authored during a deaf window so bots never
+ * Exclude messages authored during a deaf window so bots never
  * ingest them, even on a later wake. When `botActorId` is set, room-wide deaf
  * windows AND that bot's per-bot deaf windows apply. When omitted (Conductor
  * evidence search), only room-wide deaf windows are excluded.
@@ -309,6 +316,7 @@ function mapHistoryRows(
 ): RoomHistoryHit[] {
   const hits: RoomHistoryHit[] = [];
   for (const row of rows) {
+    const tool = readTranscriptToolPresentation(row.tool_metadata);
     const isAgentAuthoredEvidence = row.role === "assistant" || row.role === "tool";
     const handle = isAgentAuthoredEvidence ? row.agent_handle : row.user_handle;
     const display = isAgentAuthoredEvidence ? row.agent_display_name : row.user_name;
@@ -326,6 +334,8 @@ function mapHistoryRows(
       handle,
       authorActorId: actorId,
       snippet: contentProjection === "full" ? row.content : snippetOf(row.content),
+      ...(contentProjection === "full" && row.role === "tool" && row.tool_name && tool.toolCallId && tool.toolStatus
+        ? { toolEvidence: { name: row.tool_name, callId: tool.toolCallId, status: tool.toolStatus } } : {}),
     });
   }
   return hits;
@@ -348,10 +358,10 @@ export async function roomMessagesSince(
     roomId: string;
     since: Date | null;
     limit: number;
-    /** Trust context for M121 reaction snapshot (woken-bot path). */
+    /** Trust context for the reaction snapshot (woken-bot path). */
     userId?: string;
     agentId?: string | null;
-    /** D279 — bot actor for deaf-window ingestion filter. */
+    /** Bot actor for deaf-window ingestion filter. */
     botActorId?: string;
   },
 ): Promise<RoomHistoryHit[]> {
@@ -472,6 +482,8 @@ export async function recentBoundedRoomMessages(
         sm.role,
         sm.content,
         sm.fingerprint,
+        sm.tool_name,
+        jsonb_build_object('nautilo_tool_result', sm.metadata->'nautilo_tool_result') AS tool_metadata,
         ag.handle AS agent_handle,
         aa.display_name AS agent_display_name,
         aa.id AS agent_actor_id,
@@ -521,6 +533,8 @@ export async function recentBoundedRoomMessages(
       e.ts,
       e.role,
       e.content,
+      e.tool_name,
+      e.tool_metadata,
       e.agent_handle,
       e.agent_display_name,
       e.agent_actor_id,

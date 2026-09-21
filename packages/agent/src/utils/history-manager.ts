@@ -14,6 +14,7 @@ import {
 import { securityScanToolResultSchema, type SecurityScanLedgerRecord, type SecurityScanResultEnvelope } from "@nautilo/types";
 import { getModelTokenLimit } from "../providers/models";
 import { projectBrowserHistory } from "../tools/browser/browser-history";
+import { projectNativeHistory } from "../tools/computer/native-history";
 import { projectOversizedTaskRead, taskReadPageFingerprint, pageSchema, type TaskReadPendingPage } from "../tools/tasks/read-projection";
 
 export interface HistoryConfig {
@@ -24,6 +25,8 @@ export interface HistoryConfig {
   modelId: string;
   /** A restricted research Task can reload accepted notes from its existing scan ledger. */
   researchContinuity?: boolean;
+  /** Caller has exposed exact native history reads and has no unresolved native effect. */
+  nativeHistoryAvailable?: boolean;
 }
 
 export interface ProcessedHistory {
@@ -459,7 +462,9 @@ function clampOversizedMessages(
 
 export function processHistory(messages: BaseMessage[], config: HistoryConfig): ProcessedHistory {
   const browserHistory = projectBrowserHistory(messages);
-  let current = browserHistory.messages;
+  const nativeHistory = config.nativeHistoryAvailable
+    ? projectNativeHistory(browserHistory.messages) : { messages: browserHistory.messages, originals: new Map<string, ToolMessage>() };
+  let current = nativeHistory.messages;
   const result: ProcessedHistory = {
     messages: [],
     validation: { repairs: [] },
@@ -497,9 +502,10 @@ export function processHistory(messages: BaseMessage[], config: HistoryConfig): 
   }
 
   result.messages = current;
-  if (browserHistory.originals.size > 0 || current.some((message) => clamped.taskReadOriginals.has(message))) {
+  if (browserHistory.originals.size > 0 || nativeHistory.originals.size > 0 || current.some((message) => clamped.taskReadOriginals.has(message))) {
     result.canonicalMessages = current.map((message) =>
       (ToolMessage.isInstance(message) ? browserHistory.originals.get(message.tool_call_id) : undefined)
+        ?? (ToolMessage.isInstance(message) ? nativeHistory.originals.get(message.tool_call_id) : undefined)
         ?? clamped.taskReadOriginals.get(message) ?? message);
   }
   return result;

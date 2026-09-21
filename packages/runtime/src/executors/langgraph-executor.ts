@@ -59,6 +59,7 @@ import {
   type BuildTranscriptContextDeps,
 } from "../context/build-transcript-context";
 import { defaultBuildTranscriptContextDeps } from "../context/build-transcript-context-deps";
+import { createNativeRoomHistoryPort, bindNativeRoomHistoryPort } from "../context/native-room-history";
 import type { MemoryAccessEnvelope, RoomParticipant } from "@nautilo/trust";
 import {
   envelopeReadableNamespaces,
@@ -625,8 +626,16 @@ export async function* langgraphExecutor(
       policy: liveShadowContext?.enforcementPolicy,
       normalForeground: protectedTurn === undefined,
     });
+  let nativeRoomHistory: ReturnType<typeof createNativeRoomHistoryPort> | undefined;
+  let nativeRoomHistoryForState: NautiloGraphDeps["nativeRoomHistoryPortForState"];
+  const onRoomContextBuilt: NonNullable<import("../context/build-transcript-context").BuildTranscriptContextOptions["onRoomContextBuilt"]> = (body, hits) => {
+    nativeRoomHistory?.close();
+    nativeRoomHistory = createNativeRoomHistoryPort(body, hits, signal);
+    nativeRoomHistoryForState = bindNativeRoomHistoryPort(nativeRoomHistory, { userId: ownerId, agentId, roomId, turnId });
+  };
   const postModelDeps: NautiloGraphDeps = {
     ...defaultPostModelDeps,
+    nativeRoomHistoryPortForState: state => nativeRoomHistoryForState?.(state),
     recallRecordsPortForState: (state) => {
       const ordinary = foregroundRecordRecallPortForState(state);
       return ordinary === undefined
@@ -802,6 +811,7 @@ export async function* langgraphExecutor(
   const historyMessages = protectedTurn === undefined
     ? await prepareForegroundEncryptedContext(
       () => resolveForegroundHistoryMessages({
+        onRoomContextBuilt,
         turnKind,
         roomId,
         transcriptOwnerId,
@@ -819,6 +829,7 @@ export async function* langgraphExecutor(
       liveShadowContext?.session?.authorizationDeadlineAt,
     )
     : await buildProtectedRoomHybridContext({
+        onRoomContextBuilt,
         hits: protectedTurn.history,
         journal: protectedTurn.journal ?? { rollup: null, events: [] },
         currentHumanText: message,
@@ -1395,6 +1406,7 @@ export async function* langgraphExecutor(
     else if (turnId) clearAgentTurnContext(turnId);
     throw error;
   } finally {
+    nativeRoomHistory?.close();
     agentProgressHeartbeat?.dispose();
     finishVoiceTurn(checkpointPrimaryError);
     // belt-and-suspenders cleanup of the per-agent
@@ -1436,6 +1448,7 @@ export async function* langgraphExecutor(
  */
 export async function resolveForegroundHistoryMessages(
   args: {
+    onRoomContextBuilt?: import("../context/build-transcript-context").BuildTranscriptContextOptions["onRoomContextBuilt"];
     turnKind: TurnKind;
     roomId: string;
     transcriptOwnerId: string;
@@ -1480,6 +1493,7 @@ export async function resolveForegroundHistoryMessages(
   try {
     return await buildTranscriptContext(
       {
+        ...(args.onRoomContextBuilt === undefined ? {} : { onRoomContextBuilt: args.onRoomContextBuilt }),
         ...(args.modelId ? { modelId: args.modelId } : {}),
         ...(args.currentHumanText === undefined
           ? {}

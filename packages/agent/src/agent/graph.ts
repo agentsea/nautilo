@@ -215,9 +215,11 @@ export function createNautiloGraph(
       deps?.fullEncryptionOnlyForState?.(state) === true,
       draft,
       deps?.ordinaryContentAccessForState,
+      deps?.nativeRoomHistoryPortForState,
     ),
   });
   const graphToolsNode = createToolsNode({
+    ...(deps?.nativeRoomHistoryPortForState === undefined ? {} : { nativeRoomHistoryPortForState: deps.nativeRoomHistoryPortForState }),
     ...(deps?.ordinaryContentAccessForState === undefined ? {} : { ordinaryContentAccessForState: deps.ordinaryContentAccessForState }),
     ...(recallRecordsPortForState === undefined ? {} : { recallRecordsPortForState }),
     ...(deps?.liveShadowToolBoundaryForState === undefined

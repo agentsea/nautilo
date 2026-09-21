@@ -62,6 +62,21 @@ function createLiveShadowForegroundTurnCandidate(
 }
 
 describe("V2 live Shadow turn execution context", () => {
+  test("verified protected history never inherits ordinary tool provenance", async () => {
+    const session = { protectForegroundHistory: () => Promise.resolve({ status: "verified", messages: [{ messageId: 41,
+      payload: { role: "tool", content: "protected legacy bytes", toolName: "computer_observe",
+        sensitiveMetadata: { toolCallId: "protected-call" } }, provenance: "existing" }] }) } as unknown as LiveShadowAgentTurnSession;
+    const candidate = createLiveShadowForegroundTurnCandidate({ operationId: "history-tool-provenance",
+      capability: capability("history-tool-provenance"), enforcementPolicy: { mode: "shadow_encryption", shadowBehavior: "strict", revision: 14 },
+      runAgentTurn: async input => ({ status: "executed" as const, value: await input.work(session, "protected") }) });
+    candidate.onMainTurn("history-tool-provenance");
+    const result = await candidate.runMainTurn!("history-tool-provenance", () => protectLiveShadowForegroundHistory([{
+      messageId: 41, ts: new Date(0), role: "tool", authorDisplayName: "Fixture", handle: "fixture", authorActorId: "fixture",
+      snippet: "ordinary bytes", toolEvidence: { name: "computer_observe", callId: "ordinary-call", status: "success" },
+    }]));
+    expect(result[0]!.snippet).toBe("protected legacy bytes");
+    expect(result[0]!.toolEvidence).toBeUndefined();
+  });
   test("revalidates Runtime operations against the current policy revision", async () => {
     let revision = 11;
     const binding = createLiveShadowDataOperationPolicyBinding(async () => ({

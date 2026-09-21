@@ -7,6 +7,14 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Native Computer Use can retrieve retained historical window evidence without
+  contacting the desktop. Eligible older active-turn observations use a compact
+  model view while preserving current before/after evidence, canonical results,
+  tool-call pairing, and uncertain-action protection. Eligible prior-Room control
+  collections also use recoverable model-only views after the existing history
+  selection. Canonical Room reconstruction and budgets stay unchanged; missing
+  provenance or recovery keeps the original context visible.
+
 - Native Computer Use keeps decision history compact when snapshot-local control
   IDs change, retaining actual semantic differences and duplicate counts without
   dropping current controls or weakening uncertain-action replay protection.

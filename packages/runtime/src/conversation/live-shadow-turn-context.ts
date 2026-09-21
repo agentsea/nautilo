@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { log } from "@nautilo/logger";
+import { readTranscriptToolPresentation } from "@nautilo/agent";
 
 import {
   PROTECTED_JOURNAL_MAX_EVENTS,
@@ -511,10 +512,15 @@ export async function protectLiveShadowForegroundHistory(
           (entry) => entry.provenance === "repaired",
         ).length,
       });
-      return hits.map((hit) => Object.freeze({
-        ...hit,
-        snippet: byId.get(hit.messageId)!.payload.content,
-      }));
+      return hits.map((hit) => {
+        const payload = byId.get(hit.messageId)!.payload;
+        const tool = readTranscriptToolPresentation(payload.sensitiveMetadata);
+        const { toolEvidence: _ordinaryEvidence, ...identity } = hit;
+        return Object.freeze({ ...identity, snippet: payload.content,
+          ...(payload.role === "tool" && payload.toolName && tool.toolCallId && tool.toolStatus
+            ? { toolEvidence: { name: payload.toolName, callId: tool.toolCallId, status: tool.toolStatus } } : {}),
+        });
+      });
     }
         }
   const waiting = outcome.status === "waiting_for_authority";

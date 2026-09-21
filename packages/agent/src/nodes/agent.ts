@@ -7,6 +7,7 @@ import { projectSecurityResearchConsolidationTools } from "../tools/security/sec
 import { budgetResearchContext, captureResearchContextPresentation, isResearchPreEvictionConsolidating } from "../tools/security/research-context-rollover";
 import { resolveModelExecutionLimits } from "../providers/models";
 import { taskReadResponseByteBudget, estimateTokenCount } from "../utils/history-manager";
+import { projectNativeRoomHistory, type NativeRoomHistoryPortForState } from "../tools/computer/native-history";
 import type { HumanMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { NautiloState } from "../agent/state";
@@ -54,6 +55,7 @@ export async function agentNode(
   fullEncryptionOnly = false,
   optionalResearchDraft?: HumanMessage,
   ordinaryContentAccessForState?: OrdinaryContentAccessForState,
+  nativeRoomHistoryPortForState?: NativeRoomHistoryPortForState,
 ): Promise<Partial<NautiloState>> {
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
@@ -121,17 +123,17 @@ export async function agentNode(
     liveMiniAppSession: effectiveLiveMiniAppSessionForState(state),
     auditActorId: state.memoryAccessEnvelope?.actorId ?? null,
     securityAuditClientMeta: state.securityAuditClientMeta,
-    // D079 Phase 2 — see pre-model.ts for rationale. Must match
+    // See pre-model.ts for rationale. Must match
     // the other two tool-factory sites (pre-model.ts, tools.ts)
     // so the `file` tool's ZoneContext is consistent across the
     // pre-model → agent → tools pipeline within a single turn.
     currentFolder: state.currentFolder,
     workspacePath: state.workspacePath,
-    // M087 — userTimezone on the tool-factory context so `get_current_time`
+    // Pass userTimezone on the tool-factory context so `get_current_time`
     // formats with the same IANA zone the prompt block uses. Kept in
     // lock-step with the other tool-factory sites (pre-model.ts, tools.ts).
     userTimezone: state.userTimezone,
-    // D087 Phase 2A — plumbed through so the `file` tool's
+    // Plumb through so the `file` tool's
     // DispatchContext carries agentId + roomId for the backup
     // subsystem's file_revisions FKs. Must stay in lock-step with
     // pre-model.ts and tools.ts (same three-site coupling as
@@ -194,17 +196,17 @@ export async function agentNode(
     tools,
   });
 
-  // D141 P3 — derive room-scoped lane key for `model.fallback` event
+  // Derive the room-scoped lane key for `model.fallback` event
   // emission. Same shape as `runtime/src/job.ts` derives for `job.status`:
   // `room:<uuid>`. Null when the turn has no room context (rare —
   // background jobs without a roomId; the fallback walk still works,
   // just no WS announcement).
   const fallbackLaneKey = state.roomId ? `room:${state.roomId}` : null;
 
-  // D331 — operator per-model reasoning-output override map (default ON).
+  // Operator per-model reasoning-output override map (default ON).
   // Passed as a map so each fallback hop resolves its own model's setting.
   //
-  // D334 — direct OpenAI reasoning models implement that same "reasoning output"
+  // Direct OpenAI reasoning models implement that same "reasoning output"
   // setting via the Responses API, because OpenAI rejects GPT-5.5 function tools
   // with `reasoning_effort` on Chat Completions. This is intentionally always
   // offered to foreground agent turns; the provider policy still gates it to
@@ -212,7 +214,7 @@ export async function agentNode(
   kickServerModelConfigRefresh();
   const reasoningOverrides = getCachedServerModelConfigRow()?.reasoningOutput ?? {};
 
-  // Costs dashboard (D405): attribute this turn's token usage to the human,
+  // Costs dashboard: attribute this turn's token usage to the human,
   // room, and call-type. Nested subagent turns (subagentDepth > 0) meter as
   // `subagent`; top-level turns as `chat`. The usage callback attached in
   // createUniversalModel reads this ambient context at completion time.
@@ -228,7 +230,10 @@ export async function agentNode(
     researchContextRecovery: state.researchContextRecovery ?? null,
     researchContextPageBytes: state.researchContextPageBytes ?? null,
   } : {};
-  let actualPreparedMessages = preparedMessages;
+  // Do not checkpoint compact Room notices: recovery authority is invocation-local.
+  let actualPreparedMessages = !researchContinuity && tools.some(tool => tool.name === "computer_observe")
+    && (state.nativeDecision?.unresolved.length ?? 0) === 0
+    ? projectNativeRoomHistory(preparedMessages, nativeRoomHistoryPortForState?.(state)) : preparedMessages;
   if (researchContinuity && optionalResearchDraft) {
     const candidate = [...preparedMessages, optionalResearchDraft];
     const allowance = Math.floor((await resolveModelExecutionLimits(requestedModelId)).contextTokens * config.nautilo_token_budget_fraction)
@@ -253,7 +258,7 @@ export async function agentNode(
         actualPreparedMessages,
         tools,
         requestedModelId,
-        // D141 P2 / LD-1 — thread user + agent so the resolver picks up the
+        // Thread user + agent so the resolver picks up the
         // right per-agent override (falling back to per-user default).
         state.userId,
         state.agentId ?? null,

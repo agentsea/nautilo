@@ -12,6 +12,7 @@ import type { ProtectedAgentMemoryAccessPort } from "@nautilo/lattice-bridge";
 import { ProtectedMemoryToolUnavailableError } from "../tools/memory/protected-memory-ports";
 import { fromRuntimeConfig } from "@nautilo/config";
 import type { NetworkAllowRule } from "@nautilo/config";
+import { nativeHistoryInputSchema, nativeRoomHistoryInputSchema, readNativeHistory, type NativeRoomHistoryPortForState } from "../tools/computer/native-history";
 import {
   coerceHybridSensitivity,
   resolveApproval,
@@ -148,6 +149,7 @@ interface IdentityChallengeEnrollPinPayload {
  * before. Production wires this from `createNautiloGraph`'s deps.
  */
 export interface PostModelDeps {
+  nativeRoomHistoryPortForState?: NativeRoomHistoryPortForState;
   /** Live Server policy selection; never inferred from protected-port absence. */
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
   protectedMemoryAccessPortForState?: (
@@ -769,6 +771,24 @@ export function createPostModelNode(
         }
         if (!isSupportedComputerUseToolName(tc.name)) {
           forbidden.push({ tc, reason: "unsupported semantic computer tool" });
+          continue;
+        }
+        if (tc.name === "computer_observe" && Object.hasOwn(tc.args, "historyRoomRef")) {
+          const selection = nativeRoomHistoryInputSchema.safeParse(tc.args);
+          if (!selection.success || !deps?.nativeRoomHistoryPortForState?.(state)?.read(selection.data.historyRoomRef)) {
+            forbidden.push({ tc, reason: "Room evidence is not retained by this invocation; original Room context remains available" });
+          } else retained.push(tc);
+          continue;
+        }
+        if (tc.name === "computer_observe" && Object.hasOwn(tc.args, "historyToolCallId")) {
+          const selection = nativeHistoryInputSchema.safeParse(tc.args);
+          if (!selection.success || !readNativeHistory(state.messages, selection.data.historyToolCallId)) {
+            forbidden.push({ tc, reason: "native historical evidence is not uniquely retained in this conversation" });
+          } else {
+            // Local evidence read: retain ordinary tool policy, not desktop mutation authority.
+            // Dispatch repeats the exact lookup; no Host request or invocation binding is created.
+            retained.push(tc);
+          }
           continue;
         }
         const nativeError = nativeDecisionDispatchError(state, tc);

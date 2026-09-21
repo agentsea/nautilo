@@ -1,5 +1,6 @@
 import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
+import { nativeHistoryInputSchema, nativeRoomHistoryInputSchema, readNativeHistory, type NativeRoomHistoryPort } from "./computer/native-history";
 import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
 import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
 import { parseNativeDecisionPlan } from "../graph/native-decision-plan";
@@ -924,6 +925,7 @@ export interface NautiloToolInvocationServerContext {
   readonly [invocationServerContextBrand]: true;
 }
 export type ServerToolInvocationContextOptions = Readonly<{
+  readonly nativeRoomHistoryPort?: NativeRoomHistoryPort;
   readonly ordinaryContentAccess?: OrdinaryContentAccessSelection;
   /** Exact server-admitted Full policy for this invocation. */
   readonly fullEncryptionOnly?: boolean;
@@ -937,6 +939,7 @@ export type ServerToolInvocationContextOptions = Readonly<{
   readonly protectedMemoryScopeLifecyclePort?: ProtectedAgentMemoryScopeLifecyclePort;
 }>;
 class ServerToolInvocationContext implements NautiloToolInvocationServerContext {
+  readonly #nativeRoomHistoryPort: NativeRoomHistoryPort | undefined;
   declare readonly [invocationServerContextBrand]: true;
   readonly #protectedMemoryRepository:
     | ProtectedAgentMemoryRepository
@@ -959,6 +962,7 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
     options: ServerToolInvocationContextOptions,
   ) {
     this.#ordinaryContentAccess = options.ordinaryContentAccess;
+    this.#nativeRoomHistoryPort = options.nativeRoomHistoryPort;
     this.#recallRecordsPort = options.recallRecordsPort;
     this.#fullEncryptionOnly = options.fullEncryptionOnly === true;
     this.#protectedMemoryRepository = options.protectedMemoryRepository;
@@ -995,6 +999,8 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
   recallRecordsPort(): RecallRecordsPort | undefined {
     return this.#recallRecordsPort;
   }
+
+  nativeRoomHistoryPort(): NativeRoomHistoryPort | undefined { return this.#nativeRoomHistoryPort; }
 
   fullEncryptionOnly(): boolean {
     return this.#fullEncryptionOnly;
@@ -1075,6 +1081,7 @@ export function createNautiloToolInvocationSession(
   const protectedMemoryScopeLifecyclePort =
     trustedContext.protectedMemoryScopeLifecyclePort();
   const recallRecordsPort = trustedContext.recallRecordsPort();
+  const nativeRoomHistoryPort = trustedContext.nativeRoomHistoryPort();
   const fullEncryptionOnly = trustedContext.fullEncryptionOnly();
   const ordinaryContentAccess = trustedContext.ordinaryContentAccess();
   const ordinaryContentAccessErrors = new Set<string>();
@@ -1511,6 +1518,7 @@ export function createNautiloToolInvocationSession(
         // applied once, regardless of executor. Relays are dumb executors;
         // the scan is the server's responsibility. See .
         let rawContent: string;
+        let nativeHistoryRead = false;
         // explicit file-result status, captured
         // out-of-band around the cloud `file` invocation (see
         // `file-result-status.ts`). Default "success"; only the cloud
@@ -1564,6 +1572,7 @@ export function createNautiloToolInvocationSession(
         } else if (policy.executor === "relay") {
           const relayResult = await executeViaRelayRaw(tc, policy, state, {
             toolCallId, fullEncryptionOnly,
+            ...(nativeRoomHistoryPort === undefined ? {} : { nativeRoomHistoryPort }),
             // provenance must retain the actual Task-selected model.
             // `requestedModelId` is only a capability-projection fallback and
             // can name a built-in candidate that the Task never selected.
@@ -1744,6 +1753,7 @@ export function createNautiloToolInvocationSession(
             return tm;
           } else {
             rawContent = relayResult.rawContent;
+            nativeHistoryRead = relayResult.nativeHistoryRead === true;
             relayToolError = relayResult.toolError ?? null;
           }
         } else if (
@@ -2026,10 +2036,10 @@ export function createNautiloToolInvocationSession(
         }
 
         const tm = new ToolMessage({
-          content: projectSemanticComputerResult(tc.name, scanned.content),
+          content: nativeHistoryRead ? scanned.content : projectSemanticComputerResult(tc.name, scanned.content),
           tool_call_id: toolCallId,
           name: tc.name,
-          additional_kwargs: computerResultDurableSidecar(tc.name, scanned.content),
+          additional_kwargs: nativeHistoryRead ? {} : computerResultDurableSidecar(tc.name, scanned.content),
         });
         assignStableToolMessageId(tm);
         setToolMessageStatus(tm, "success");
@@ -2203,13 +2213,14 @@ export function createNautiloToolInvocationSession(
  * and bypass scanning. See .
  */
 type RelayDispatchOutcome =
-  | { ok: true; rawContent: string; toolError?: string }
+  | { ok: true; rawContent: string; toolError?: string; nativeHistoryRead?: true }
   | {
       ok: true;
       multimodal: {
         kind: "browser_screenshot_vision" | "computer_observation_vision" | "computer_use_host_vision";
         text: string;
         image: { mime: string; base64: string };
+        nativeHistoryRead?: true;
       };
     }
   | {
@@ -2333,13 +2344,14 @@ function buildRelayMultimodalToolMessage(
     kind: "browser_screenshot_vision" | "computer_observation_vision" | "computer_use_host_vision";
     text: string;
     image: { mime: string; base64: string };
+    nativeHistoryRead?: true;
   },
 ): { tm: ToolMessage; contentForEvent: string } {
   const { kind, text, image } = multimodal;
   const bytes = Buffer.from(image.base64, "base64").byteLength;
   const headerText = relayVisionResultHeader(kind, bytes, image.mime);
   const content: Array<Record<string, unknown>> = [
-    { type: "text", text: projectSemanticComputerResult(tc.name, text) },
+    { type: "text", text: multimodal.nativeHistoryRead ? text : projectSemanticComputerResult(tc.name, text) },
     {
       type: "image_url",
       image_url: { url: `data:${image.mime};base64,${image.base64}` },
@@ -2358,7 +2370,7 @@ function buildRelayMultimodalToolMessage(
     name: tc.name,
     additional_kwargs: {
       nautilo_event_summary: eventSummary,
-      ...computerResultDurableSidecar(tc.name, text),
+      ...(multimodal.nativeHistoryRead ? {} : computerResultDurableSidecar(tc.name, text)),
     },
   });
   assignStableToolMessageId(tm);
@@ -3334,6 +3346,7 @@ async function executeViaRelayRaw(
   policy: ExecutionPolicy,
   state: NautiloState,
   opts: {
+    readonly nativeRoomHistoryPort?: NativeRoomHistoryPort;
     readonly extraNetworkAllowRules?: readonly NetworkAllowRule[];
     /** Stable lifecycle id generated before dispatch, including tc.id-less calls. */
     readonly toolCallId?: string;
@@ -3345,6 +3358,21 @@ async function executeViaRelayRaw(
     readonly resolvedModelId?: string;
   } = {},
 ): Promise<RelayDispatchOutcome> {
+  if (tc.name === "computer_observe" && Object.hasOwn(tc.args, "historyRoomRef")) {
+    const parsed = nativeRoomHistoryInputSchema.safeParse(tc.args);
+    const source = parsed.success && !opts.signal?.aborted ? opts.nativeRoomHistoryPort?.read(parsed.data.historyRoomRef) : null;
+    return source ? { ok: true, rawContent: source.text, nativeHistoryRead: true }
+      : { ok: false, errorMessage: "computer_history_unavailable: Room evidence is unavailable in this invocation. Original Room context remains unchanged; no other Room was searched and no desktop request was sent." };
+  }
+  if (tc.name === "computer_observe" && Object.hasOwn(tc.args, "historyToolCallId")) {
+    const parsed = nativeHistoryInputSchema.safeParse(tc.args);
+    if (!parsed.success) return { ok: false, errorMessage: "Historical Computer Use reads require only a nonempty historyToolCallId. No desktop request was sent." };
+    const source = readNativeHistory(state.messages, parsed.data.historyToolCallId);
+    if (!source) return { ok: false, errorMessage: "computer_history_unavailable: No unique paired successful native observation with that ID is retained in this conversation. No other room was searched and no desktop request was sent." };
+    return source.image
+      ? { ok: true, multimodal: { kind: "computer_use_host_vision", text: source.text, image: source.image, nativeHistoryRead: true } }
+      : { ok: true, rawContent: source.text, nativeHistoryRead: true };
+  }
   const browserPlan = tc.name === "browser_snapshot" ? interpretBrowserDecisionPlanArgs(tc.args) : null;
   if (browserPlan?.kind === "invalid") {
     return { ok: false, errorMessage: browserDecisionPlanError(

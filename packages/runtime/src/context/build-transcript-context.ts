@@ -80,6 +80,8 @@ export interface BuildTranscriptContextOptions {
   recordContext?: ForegroundRecordContextPort;
   /** Parent turn cancellation; Record selection remains optional. */
   signal?: AbortSignal;
+  /** Invocation-local observer of the finished selection; cannot change packing. */
+  onRoomContextBuilt?: (body: string, hits: readonly RoomHistoryHit[]) => void;
 }
 
 export interface ForegroundContextDiagnosticV1 {
@@ -625,6 +627,7 @@ export async function buildTranscriptContext(
         : null;
 
   if (!block) return [];
+  if (opts.scope.kind === "room") opts.onRoomContextBuilt?.(block, hits);
   return [
     new HumanMessage({
       content: block,
@@ -670,6 +673,7 @@ export function buildProtectedRoomTranscriptContext(
  */
 export async function buildProtectedRoomHybridContext(input: Readonly<{
   readonly hits: readonly RoomHistoryHit[];
+  readonly onRoomContextBuilt?: BuildTranscriptContextOptions["onRoomContextBuilt"];
   readonly journal: RoomJournalContext;
   readonly currentHumanText: string;
   readonly recordContext?: ForegroundRecordContextPort;
@@ -687,6 +691,7 @@ export async function buildProtectedRoomHybridContext(input: Readonly<{
       ownerId: "protected-invocation",
     },
     currentHumanText: input.currentHumanText,
+    ...(input.onRoomContextBuilt === undefined ? {} : { onRoomContextBuilt: input.onRoomContextBuilt }),
     ...(input.recordContext === undefined
       ? {}
       : { recordContext: input.recordContext }),

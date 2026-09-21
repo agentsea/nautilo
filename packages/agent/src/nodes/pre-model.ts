@@ -1193,6 +1193,8 @@ export async function preModelNode(
     windowKeepRecent: config.nautilo_window_keep_recent,
     modelId: requestedModelId,
     researchContinuity,
+    nativeHistoryAvailable: tools.some(tool => tool.name === "computer_observe")
+      && (state.nativeDecision?.unresolved.length ?? 0) === 0,
   };
 
   const processedHistory = processHistory(llmMessages, historyConfig);

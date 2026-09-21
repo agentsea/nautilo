@@ -144,6 +144,7 @@ export function normalizeAdmittedToolCalls(
 }
 
 type ProtectedToolComposition = Readonly<{
+  nativeRoomHistoryPort?: import("../tools/computer/native-history").NativeRoomHistoryPort;
   ordinaryContentAccess?: OrdinaryContentAccessSelection;
   recallRecordsPort?: RecallRecordsPort;
   repository?: ProtectedAgentMemoryRepository;
@@ -325,6 +326,7 @@ async function invokeToolCall(
     },
     {
       ...(protectedComposition.ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess: protectedComposition.ordinaryContentAccess }),
+      ...(protectedComposition.nativeRoomHistoryPort === undefined ? {} : { nativeRoomHistoryPort: protectedComposition.nativeRoomHistoryPort }),
       ...(protectedComposition.recallRecordsPort === undefined
         ? {}
         : { recallRecordsPort: protectedComposition.recallRecordsPort }),
@@ -524,6 +526,7 @@ export async function toolsNode(
  * already-bound capability into the existing admission session.
  */
 export function createToolsNode(input: Readonly<{
+  nativeRoomHistoryPortForState?: import("../tools/computer/native-history").NativeRoomHistoryPortForState;
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
   recallRecordsPortForState?: RecallRecordsPortForState;
   liveShadowToolBoundaryForState?: LiveShadowToolBoundaryForState;
@@ -543,6 +546,7 @@ export function createToolsNode(input: Readonly<{
 }> = {}): typeof toolsNode {
   return async (state, config) => {
     const ordinaryContentAccess = await input.ordinaryContentAccessForState?.(state);
+    const nativeRoomHistoryPort = input.nativeRoomHistoryPortForState?.(state);
     const recallRecordsPort = input.recallRecordsPortForState?.(state);
     const liveShadowToolBoundary =
       input.liveShadowToolBoundaryForState?.(state);
@@ -552,6 +556,7 @@ export function createToolsNode(input: Readonly<{
     const projection = input.protectedMemoryProjectionPortForState?.(state);
     const fullEncryptionOnly = input.fullEncryptionOnlyForState?.(state) === true;
     return executeToolsNode(state, config, {
+      ...(nativeRoomHistoryPort === undefined ? {} : { nativeRoomHistoryPort }),
       ...(ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess }),
       ...(recallRecordsPort === undefined ? {} : { recallRecordsPort }),
       ...(liveShadowToolBoundary === undefined
