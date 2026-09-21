@@ -26,7 +26,7 @@
       "caseId": "room11-profile",
       "name": "Find the visible profile clue",
       "plan": {
-        "goal": "Find Clue #2 in the currently selected User Profile tab."
+        "goal": "Click the FIND CLUE button next to Clue #2 in the currently selected User Profile tab."
       },
       "acceptable": [
         {

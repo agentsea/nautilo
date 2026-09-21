@@ -115,8 +115,23 @@ OPENROUTER_API_KEY=... \
   --direct-openrouter-model qwen/qwen3.8-max-0902
 ```
 
-The runner records and converts Qwen3-VL's native normalized 0–1000 point
-coordinates into screenshot pixels before constructing browser operations.
+The runner requests schema-bounded normalized 0–1000 point coordinates from
+Qwen3-VL, and from Qwen3.8 Flash in task-directed mode, then deterministically
+converts them into screenshot pixels before constructing browser operations.
+
+Use `--task-directed` to test the low-latency variant. It supplies the current
+plan goal to the visual model, requests only the direct target plus genuinely
+ambiguous alternatives, caps the result at five targets and 768 output tokens,
+and requests the lowest supported reasoning mode from direct OpenRouter models
+(`low` where reasoning is mandatory). Reports record vision, Jev, and total
+latency separately for every case:
+
+```sh
+OPENROUTER_API_KEY=... \
+  bun dev/evals/browser-visual-grounding/run-visual-baseline.ts --live \
+  --task-directed \
+  --direct-openrouter-model qwen/qwen3-vl-235b-a22b-instruct
+```
 
 The automatic oracle checks whether Jev's selected image coordinate falls
 inside the reviewed target region. The report retains the screenshot path,

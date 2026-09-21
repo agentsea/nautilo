@@ -79,6 +79,7 @@ function quoted(value: string): string {
 export function parseVisualGrounding(
   value: unknown,
   image: { readonly width: number; readonly height: number },
+  maxTargets: number | null = null,
 ): VisualGrounding {
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -95,6 +96,9 @@ export function parseVisualGrounding(
     })
     : rawTargets;
   const parsed = groundingSchema.parse(record ? { ...record, targets } : value);
+  if (maxTargets !== null && parsed.targets.length > maxTargets) {
+    throw new Error(`Visual grounding returned ${parsed.targets.length} targets; maximum is ${maxTargets}`);
+  }
   for (const target of parsed.targets) {
     if (target.x >= image.width || target.y >= image.height) {
       throw new Error(`Visual target coordinate (${target.x},${target.y}) is outside ${image.width}x${image.height}`);

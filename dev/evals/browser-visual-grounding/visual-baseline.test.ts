@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { loadBaselineTasks, loadCapture } from "./baseline.ts";
-import { parseVisualBaselineArgs, parseVisualGroundingText } from "./run-visual-baseline.ts";
+import { parseVisualBaselineArgs, parseVisualGroundingText, taskDirectedVisualPrompt } from "./run-visual-baseline.ts";
 import {
   loadVisualOracles,
   normalized1000ToImagePixels,
@@ -36,6 +36,14 @@ describe("Sol screenshot visual grounding baseline", () => {
     expect(parseVisualGroundingText(json.replace('"x":500,"y":300', '"x":[500,300]'), { width: 1000, height: 800 }).targets[0])
       .toMatchObject({ x: 500, y: 300 });
     expect(() => parseVisualGroundingText(json.replace('"x":500', '"x":1000'), { width: 1000, height: 800 })).toThrow(/outside/);
+    const sixTargets = JSON.stringify({
+      summary: "Too many",
+      visibleText: [],
+      targets: Array.from({ length: 6 }, (_, index) => ({
+        role: "button", name: String(index), interaction: "click", x: index, y: index, context: "",
+      })),
+    });
+    expect(() => parseVisualGroundingText(sixTargets, { width: 1000, height: 800 }, 5)).toThrow(/maximum is 5/);
   });
 
   test("renders task-independent visual state and exposes mouse plus vertical scroll operations", async () => {
@@ -91,6 +99,7 @@ describe("Sol screenshot visual grounding baseline", () => {
       visionModelId: "openai:gpt-5.6-sol",
       directOpenRouterModel: null,
       decisionModelId: MODEL_ID,
+      taskDirected: false,
     });
     expect(parseVisualBaselineArgs(["--live", "--case", "room15-second-row"])).toMatchObject({
       live: true,
@@ -99,7 +108,28 @@ describe("Sol screenshot visual grounding baseline", () => {
     expect(() => parseVisualBaselineArgs(["--vision-model"])).toThrow();
     expect(parseVisualBaselineArgs(["--direct-openrouter-model", "qwen/qwen3.8-max-0902"]))
       .toMatchObject({ directOpenRouterModel: "qwen/qwen3.8-max-0902" });
+    expect(parseVisualBaselineArgs(["--task-directed"])).toMatchObject({ taskDirected: true });
     expect(() => parseVisualBaselineArgs(["--direct-openrouter-model", "openrouter:qwen/model"]))
       .toThrow(/without a Nautilo prefix/);
+  });
+
+  test("builds a compact prompt around the current plan rather than the whole UI", () => {
+    const prompt = taskDirectedVisualPrompt({
+      goal: "Enter Robbie in the Name field.",
+      values: { "person name": "Robbie" },
+      image: { width: 2168, height: 1404 },
+    });
+    expect(prompt).toContain('Goal: "Enter Robbie in the Name field."');
+    expect(prompt).toContain('"person name":"Robbie"');
+    expect(prompt).toContain("Return at most 5 targets");
+    expect(prompt).toContain("immediate next single pointer interaction");
+    expect(prompt).toContain("2168x1404 IMAGE pixels");
+    expect(prompt).toContain("do not inventory the whole interface");
+    const normalizedPrompt = taskDirectedVisualPrompt({
+      goal: "Click the button.",
+      image: { width: 2168, height: 1404 },
+      coordinateSpace: "normalized_1000",
+    });
+    expect(normalizedPrompt).toContain("normalized to 0–1000 on each axis");
   });
 });
