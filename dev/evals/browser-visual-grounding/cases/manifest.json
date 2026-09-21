@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "cases": [
     {
+      "id": "room10-apple"
+    },
+    {
       "id": "room5-dropdown"
     },
     {
