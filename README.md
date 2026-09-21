@@ -155,7 +155,7 @@ media, and document fixtures.
 
 [Support Nautilo through agentsea on GitHub Sponsors](https://github.com/sponsors/agentsea) · One-time or monthly.
 
-### A thank-you to the Bankr community
+[![A thank-you to the Bankr community](https://nautilo.ai/community/bankr-thanks-en.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
 Open source runs on people showing up for each other. The Bankr community created an independent [Nautilo token](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) and directed a share of its trading fees to support our work. Thank you for helping us keep building.
 

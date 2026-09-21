@@ -6,7 +6,7 @@
 
 代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
 
-<!-- Translation source: README.md; SHA-256: f6e926f3616a846368e6ef24840b4ea15615b72b0d8a1821ef614448bd7d9115 -->
+<!-- Translation source: README.md; SHA-256: f499f48faf14451b0ad789240586834589134f100874f840e4d6eb1db9d29cf4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -135,7 +135,7 @@ Nautilo 采用 [MIT 许可证](LICENSE)。依赖项的许可证与署名请参�
 
 [通过 GitHub Sponsors 上的 agentsea 支持 Nautilo](https://github.com/sponsors/agentsea) · 一次性或按月赞助。
 
-### 感谢 Bankr 社区
+[![感谢 Bankr 社区](https://nautilo.ai/community/bankr-thanks-zh-CN.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
 开源离不开人们彼此支持。Bankr 社区创建了一个独立的 [Nautilo 代币](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)，并将部分交易手续费用于支持我们的工作。感谢你们让我们能够继续构建。
 

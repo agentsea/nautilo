@@ -6,7 +6,7 @@
 
 El código y la documentación están actualmente en inglés. Damos la bienvenida a los PR de traducción; consulta la [guía para contribuir traducciones](CONTRIBUTING.md#translations-and-localization) (en inglés). Esta página traduce el README; no implica que la interfaz ni la documentación enlazada estén disponibles en español.
 
-<!-- Translation source: README.md; SHA-256: f6e926f3616a846368e6ef24840b4ea15615b72b0d8a1821ef614448bd7d9115 -->
+<!-- Translation source: README.md; SHA-256: f499f48faf14451b0ad789240586834589134f100874f840e4d6eb1db9d29cf4 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -135,7 +135,7 @@ Nautilo tiene [licencia MIT](LICENSE). Consulta los [avisos de terceros](THIRD_P
 
 [Apoya Nautilo a través de agentsea en GitHub Sponsors](https://github.com/sponsors/agentsea) · Aportación única o mensual.
 
-### Gracias a la comunidad Bankr
+[![Gracias a la comunidad Bankr](https://nautilo.ai/community/bankr-thanks-es.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
 El código abierto avanza cuando la gente se apoya. La comunidad Bankr creó un [token Nautilo](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) independiente y destinó parte de sus comisiones de negociación a apoyar nuestro trabajo. Gracias por ayudarnos a seguir construyendo.
 
