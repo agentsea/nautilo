@@ -17,10 +17,18 @@ const groundingSchema = z.object({
   targets: z.array(z.object({
     role: nonBlank,
     name: nonBlank,
-    interaction: z.enum(["click", "focus"]),
+    interaction: z.enum(["click", "focus", "unknown"]),
     x: z.number().int().nonnegative(),
     y: z.number().int().nonnegative(),
     context: z.string(),
+    box: z.object({
+      x: z.number().int().nonnegative(),
+      y: z.number().int().nonnegative(),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+    }).strict().optional(),
+    sources: z.array(nonBlank).optional(),
+    confidence: z.number().min(0).max(1).optional(),
   }).strict()),
 }).strict();
 
@@ -129,8 +137,13 @@ export function renderVisualSnapshot(
     `- visual viewport [image_width=${image.width}, image_height=${image.height}]`,
     `  - summary ${quoted(grounding.summary)}`,
     ...grounding.visibleText.map((text) => `  - visible_text ${quoted(text)}`),
-    ...grounding.targets.map((target, index) =>
-      `  - ${target.role} ${quoted(target.name)} [visual_ref=v${index + 1}, interaction=${target.interaction}, image_x=${target.x}, image_y=${target.y}] context=${quoted(target.context)}`),
+    ...grounding.targets.map((target, index) => {
+      const box = target.box
+        ? `, image_box=${target.box.x},${target.box.y},${target.box.width},${target.box.height}`
+        : "";
+      const sources = target.sources?.length ? ` sources=${quoted(target.sources.join(","))}` : "";
+      return `  - ${target.role} ${quoted(target.name)} [visual_ref=v${index + 1}, interaction=${target.interaction}, image_x=${target.x}, image_y=${target.y}${box}]${sources} context=${quoted(target.context)}`;
+    }),
   ].join("\n");
 }
 
@@ -142,7 +155,7 @@ export function visualDecisionCandidates(
   grounding.targets.forEach((target, index) => {
     const visualRef = `v${index + 1}`;
     const call = { name: "browser_mouse", args: { x: target.x, y: target.y, space: "image" } };
-    const values = target.interaction === "focus" ? Object.entries(task.plan.values ?? {}) : [];
+    const values = target.interaction !== "click" ? Object.entries(task.plan.values ?? {}) : [];
     if (values.length) {
       values.forEach(([valueName, value], valueIndex) => candidates.push({
         id: `visual_${visualRef}_value_${valueIndex + 1}`,

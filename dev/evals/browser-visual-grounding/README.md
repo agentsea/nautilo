@@ -140,3 +140,19 @@ request/response, candidate selected, and verdict for semi-manual inspection.
 For tasks that ultimately require typing, this first experiment scores the
 correct visual focus as the next action; deterministic focused-text execution
 is intentionally a later runtime step, not claimed by this baseline.
+
+## Run local classic-vision approaches
+
+[`CLASSIC-VISION.md`](CLASSIC-VISION.md) records the recommended model-free
+pipeline and its limits. The accompanying harness compares a macOS-native Apple
+Vision backend with a portable Tesseract plus Sharp LAB-edge backend. Both
+produce the same snapshot and image-coordinate candidate contract and can feed
+the same production Jev choice loop:
+
+```sh
+bun dev/evals/browser-visual-grounding/run-classic-baseline.ts --backend all
+
+OPENROUTER_API_KEY=... \
+  bun dev/evals/browser-visual-grounding/run-classic-baseline.ts \
+  --backend all --live
+```
