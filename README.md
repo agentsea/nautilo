@@ -15,108 +15,36 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **Your own super agent. Your people and their Genies. You own the intelligence.**
 
-Meet your Genie: a radically customizable agent with a personality, memory,
-face, and voice you choose. Put her to work writing, researching, browsing,
-coordinating coding agents, or making a film. Bring your friends, your team,
-and their Genies into the same Room. Work together. Grab the controls whenever
-you want to do it yourself.
-
-That's Nautilo. Natively multi-user. Built for people and machine people.
-Desktop, mobile, and web. Your server, your models, your rules.
-Open source. MIT licensed.
-
-[Website & demos](https://nautilo.ai) ·
-[Get started](#get-started) ·
-[Documentation](https://nautilo.ai/docs) ·
-[Download](https://nautilo.ai/download) ·
-[Packages](#explore-the-code) ·
-[Contribute](CONTRIBUTING.md)
+Meet your Genie. Give her a personality, memory, face, and voice. Write, research,
+and make things together. Bring your people and their Genies into the same Room.
+Your server. Your models. Your rules. Open source. MIT licensed.
 
 ## Get started
 
-Every Nautilo client connects to a Nautilo server. Choose the path that fits
-where you are:
+**Your first Nautilo. From an empty server to something you made together.**
 
-Trying Nautilo for the first time on a Mac? Start with the
-[Local Deploy Quickstart](https://nautilo.ai/docs/operator/deploy/local).
-It is a single-machine evaluation setup. For mobile access or a server your
-team can reach, choose a hosted deployment below.
+[![Elias and Lyra working together in Writer, with changes ready to review. Open the illustrated local setup guide.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
 
-| You want to… | Start here |
-| --- | --- |
-| Join an existing server | [Download Nautilo](https://nautilo.ai/download), then [install and connect](https://nautilo.ai/docs/use/install-and-connect) with your server address or invite. |
-| Run your first server on your Mac | Follow the [Local Deploy Quickstart](https://nautilo.ai/docs/operator/deploy/local), using Docker Desktop and the signed Nautilo CLI. |
-| Give your team a server in the cloud | Use the [Railway deployment guide](https://nautilo.ai/docs/operator/deploy/railway). |
-| Run on your own Docker infrastructure | Follow the [Docker Compose guide](https://nautilo.ai/docs/operator/deploy/docker-compose), or [compare deployment options](https://nautilo.ai/docs/operator/choose-a-deployment). |
-| Change the code | Jump to [Develop from source](#develop-from-source). |
+### [Try it locally on your Mac →](https://nautilo.ai/docs/operator/deploy/local)
 
-The download page carries the current Desktop, mobile, and CLI options.
-You can also open your server's web client. Desktop connects to your server;
-installing it does not install the server or its database. Mobile needs a
-server reachable over HTTPS.
+Meet your Genie, make her yours, and create your first document together.
+Follow the illustrated guide.
 
-For a new server, finish the owner setup and
-[add your provider keys](https://nautilo.ai/docs/operator/provider-keys).
-Then customize your Genie, open a Room, and bring something you actually want to
-make. [Your first hour](https://nautilo.ai/docs/use/first-hour) walks you through
-creating a document together, editing it yourself, and saving the result.
+You'll need **Docker Desktop** and **a model API key**. Nautilo is in **alpha**.
 
-Nautilo is in **alpha**.
+**For your team:** [Deploy to your datacenter or VPS →](https://nautilo.ai/docs/operator/deploy/linux-server)
+
+**Already have a server?** [Download Desktop for Mac →](https://nautilo.ai/download/mac) · [Download Mobile →](https://nautilo.ai/download#download-platforms-title)
 
 ## Bring your people. Bring their Genies.
 
-People and their Genies, working in the same Room. Talk naturally. Smart
-Routing brings the right Genie into the conversation; address someone directly
-when you want their attention. Share a document. Pull an idea apart. Build
-something better together.
+Bring your people and their Genies into the same Room. Pull an idea apart, write the first draft, send a Genie off to research the missing piece. Give yours a personality you want to spend time with.
 
-Send your Genie to get someone’s answer, delegate a background job, or schedule
-work for later. Keep moving while she works.
+Then grab the controls. Rewrite the paragraph. Move the lettering. You shouldn’t need a better prompt to move a word three inches to the left.
 
-## Sometimes you want to do the damn thing yourself
+And keep the keys to your own house. You choose the models, run the server, and decide who gets access. Sharing a Room shouldn’t mean handing over your whole life.
 
-Rewrite the paragraph. Move the lettering. Take over the terminal. You and your
-Genie work on the same thing, handing control back and forth as the work demands.
-
-You shouldn’t need a better prompt to move a word three inches to the left.
-
-## Give her something worth doing
-
-Shape her personality. Choose her face, voice, and models. Give her tools and
-put her to work: research the web, coordinate coding agents, make images, video,
-and music. Connect services and MCP tools to expand her reach.
-
-Memory gives your work together continuity. Permissions and approvals keep you
-in control.
-
-Tool availability depends on the client, connected environment, permissions,
-and configured providers. Model and service usage may carry provider charges;
-the [API key guide](https://nautilo.ai/docs/operator/provider-keys) explains
-what each connection enables.
-
-See the films on [nautilo.ai](https://nautilo.ai), or start doing it yourself
-with [Your first hour](https://nautilo.ai/docs/use/first-hour).
-
-## Keep the keys to your own house
-
-The better your AI gets to know you, the more it matters who controls the
-relationship. Your working habits, your conversations, the things you've
-made together: that is a growing piece of your life.
-
-Nautilo puts the server and its database under your control. You choose where
-it runs, which models it uses, who joins, and how the data is backed up.
-The code is MIT licensed. Read it. Change it. Build on it.
-
-Sharing a server also means getting the boundaries right. Humans and Genies
-have identities; Rooms have membership; memory has scopes; tools have
-permissions and approval gates. Inviting someone into a conversation should
-never mean handing them the keys to everything else.
-
-Connected model and tool providers receive the data needed for their work.
-Self-hosting lets you choose those connections; their own data policies still
-apply. Read the [security documentation](https://nautilo.ai/docs/security)
-and [server hardening guide](https://nautilo.ai/docs/operator/security-hardening)
-when choosing your setup.
+[Models & API keys](https://nautilo.ai/docs/operator/provider-keys) · [Security & privacy](https://nautilo.ai/docs/security)
 
 ## Find your way around
 

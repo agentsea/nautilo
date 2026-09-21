@@ -6,7 +6,7 @@
 
 Le code et la documentation sont actuellement en anglais. Les PR de traduction sont les bienvenues ; consultez le [guide de contribution aux traductions](CONTRIBUTING.md#translations-and-localization) (en anglais). Cette page traduit le README ; elle ne signifie pas que l’interface ou les documents liés sont disponibles en français.
 
-<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
+<!-- Translation source: README.md; SHA-256: 13cc19ef82a182adb053c02d1d531e6cefc8f3fd9fc3882b393640a33d4c6180 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -17,70 +17,35 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **Votre propre super-agent. Vos proches, votre équipe et leurs Genies. L’intelligence vous appartient.**
 
-Voici votre Genie : un agent que vous pouvez personnaliser en profondeur, avec la personnalité, la mémoire, le visage et la voix de votre choix. Confiez-lui de l’écriture, des recherches, de la navigation web, la coordination d’agents de programmation ou la création d’un film. Réunissez vos amis, votre équipe et leurs Genies dans la même Room. Travaillez ensemble. Reprenez les commandes dès que vous voulez faire vous-même.
-
-Voilà Nautilo. Multi-utilisateur dès sa conception. Pour les humains et leurs compagnons machines. Sur ordinateur, mobile et web. Votre serveur, vos modèles, vos règles. Open source. Sous licence MIT.
-
-[Site et démos](https://nautilo.ai) ·
-[Premiers pas](#get-started) ·
-[Documentation](https://nautilo.ai/docs) ·
-[Télécharger](https://nautilo.ai/download) ·
-[Packages](#explore-the-code) ·
-[Contribuer](CONTRIBUTING.md)
+Voici votre Genie. Choisissez sa personnalité, sa mémoire, son visage et sa voix. Écrivez, explorez et créez ensemble. Réunissez vos proches et leurs Genies dans la même Room. Votre serveur. Vos modèles. Vos règles. Open source. Sous licence MIT.
 
 <a id="get-started"></a>
 
 ## Premiers pas
 
-Chaque client Nautilo se connecte à un serveur Nautilo. Choisissez le chemin qui vous convient :
+**Votre premier Nautilo. D’un serveur vide à votre première création ensemble.**
 
-Vous découvrez Nautilo sur un Mac ? Commencez par le [démarrage rapide du déploiement local](https://nautilo.ai/docs/operator/deploy/local). Cette configuration permet d’évaluer Nautilo sur une seule machine. Pour un accès mobile ou un serveur accessible à votre équipe, choisissez une option d’hébergement ci-dessous.
+[![Elias et Lyra travaillent ensemble dans Writer, avec des modifications à examiner. Ouvrir le guide illustré d’installation locale.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
 
-| Vous voulez… | Commencez ici |
-| --- | --- |
-| Rejoindre un serveur existant | [Téléchargez Nautilo](https://nautilo.ai/download), puis suivez [Installation et connexion](https://nautilo.ai/docs/use/install-and-connect) avec l’adresse de votre serveur ou votre invitation. |
-| Faire tourner votre premier serveur sur votre Mac | Suivez le [démarrage rapide du déploiement local](https://nautilo.ai/docs/operator/deploy/local), avec Docker Desktop et la CLI Nautilo signée. |
-| Donner à votre équipe un serveur dans le cloud | Utilisez le [guide de déploiement Railway](https://nautilo.ai/docs/operator/deploy/railway). |
-| Utiliser votre propre infrastructure Docker | Suivez le [guide Docker Compose](https://nautilo.ai/docs/operator/deploy/docker-compose), ou [comparez les options de déploiement](https://nautilo.ai/docs/operator/choose-a-deployment). |
-| Modifier le code | Passez à [Développer à partir du code source](#develop-from-source). |
+### [Essayez-le en local sur votre Mac →](https://nautilo.ai/docs/operator/deploy/local)
 
-La page de téléchargement présente les options actuelles pour Desktop, le mobile et la CLI. Vous pouvez aussi ouvrir le client web de votre serveur. Desktop se connecte à votre serveur ; son installation n’installe ni le serveur ni sa base de données. Le mobile a besoin d’un serveur accessible en HTTPS.
+Rencontrez votre Genie, façonnez-la à votre goût et créez votre premier document ensemble. Suivez le guide illustré (en anglais).
 
-Pour un nouveau serveur, terminez la configuration du propriétaire et [ajoutez vos clés de fournisseurs](https://nautilo.ai/docs/operator/provider-keys). Personnalisez ensuite votre Genie, ouvrez une Room et apportez quelque chose que vous avez vraiment envie de faire. [Votre première heure](https://nautilo.ai/docs/use/first-hour) vous accompagne pour créer un document ensemble, le modifier vous-même et enregistrer le résultat.
+Il vous faut **Docker Desktop** et **une clé API de fournisseur de modèles**. Nautilo est en **alpha**.
 
-Nautilo est en **alpha**.
+**Pour votre équipe :** [Déployez dans votre datacenter ou sur un VPS →](https://nautilo.ai/docs/operator/deploy/linux-server)
+
+**Vous avez déjà un serveur ?** [Télécharger Desktop pour Mac →](https://nautilo.ai/download/mac) · [Télécharger Mobile →](https://nautilo.ai/download#download-platforms-title)
 
 ## Venez avec vos gens. Et leurs Genies.
 
-Des personnes et leurs Genies, au travail dans la même Room. Parlez naturellement. Smart Routing fait entrer la bonne Genie dans la conversation ; interpellez directement quelqu’un pour attirer son attention. Partagez un document. Démontez une idée. Construisez mieux, ensemble.
+Réunissez vos proches et leurs Genies dans la même Room. Décortiquez une idée, écrivez un premier jet, envoyez une Genie chercher la pièce manquante. Donnez à la vôtre une personnalité avec laquelle vous avez envie de passer du temps.
 
-Envoyez votre Genie chercher la réponse de quelqu’un, déléguez une tâche en arrière-plan ou programmez du travail pour plus tard. Continuez d’avancer pendant qu’elle travaille.
+Puis reprenez les commandes. Réécrivez le paragraphe. Déplacez le texte. Vous ne devriez pas avoir besoin d’un meilleur prompt pour déplacer un mot de quelques centimètres vers la gauche.
 
-## Parfois, vous voulez juste le faire vous-même, bon sang
+Et gardez les clés de votre maison. Vous choisissez les modèles, gérez le serveur et décidez qui y a accès. Partager une Room ne devrait pas vouloir dire livrer toute votre vie.
 
-Réécrivez le paragraphe. Déplacez le texte. Reprenez le terminal. Votre Genie et vous travaillez sur la même chose, en vous passant les commandes au fil des besoins.
-
-Vous ne devriez pas avoir besoin d’un meilleur prompt pour déplacer un mot de quelques centimètres vers la gauche.
-
-## Donnez-lui quelque chose qui mérite d’être fait
-
-Façonnez sa personnalité. Choisissez son visage, sa voix et ses modèles. Donnez-lui des outils et du travail : explorer le web, coordonner des agents de programmation, créer des images, de la vidéo et de la musique. Connectez des services et des outils MCP pour étendre son champ d’action.
-
-La mémoire donne une continuité à votre travail commun. Les permissions et les approbations vous laissent aux commandes.
-
-Les outils disponibles dépendent du client, de l’environnement connecté, des permissions et des fournisseurs configurés. L’utilisation des modèles et des services peut entraîner des frais chez les fournisseurs ; le [guide des clés API](https://nautilo.ai/docs/operator/provider-keys) explique ce que chaque connexion permet.
-
-Regardez les films sur [nautilo.ai](https://nautilo.ai), ou lancez-vous avec [Votre première heure](https://nautilo.ai/docs/use/first-hour).
-
-## Gardez les clés de votre maison
-
-Plus votre IA vous connaît, plus il importe de savoir qui contrôle cette relation. Vos habitudes de travail, vos conversations, ce que vous avez créé ensemble : tout cela prend une place croissante dans votre vie.
-
-Nautilo place le serveur et sa base de données sous votre contrôle. Vous choisissez où il tourne, quels modèles il utilise, qui le rejoint et comment les données sont sauvegardées. Le code est sous licence MIT. Lisez-le. Modifiez-le. Construisez dessus.
-
-Partager un serveur suppose aussi de poser les bonnes limites. Les Humans et les Genies ont une identité ; les Rooms ont des membres ; la mémoire a des périmètres ; les outils ont des permissions et des étapes d’approbation. Inviter quelqu’un dans une conversation ne devrait jamais revenir à lui donner les clés de tout le reste.
-
-Les fournisseurs de modèles et d’outils connectés reçoivent les données nécessaires à leur travail. L’auto-hébergement vous permet de choisir ces connexions ; leurs propres politiques de données continuent de s’appliquer. Lisez la [documentation de sécurité](https://nautilo.ai/docs/security) et le [guide de sécurisation du serveur](https://nautilo.ai/docs/operator/security-hardening) au moment de choisir votre installation.
+[Modèles et clés API](https://nautilo.ai/docs/operator/provider-keys) · [Sécurité et confidentialité](https://nautilo.ai/docs/security)
 
 ## Trouvez votre chemin
 

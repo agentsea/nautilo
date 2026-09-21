@@ -6,7 +6,7 @@
 
 コードとドキュメントは現在、英語で書かれています。翻訳の PR を歓迎します。[翻訳への貢献ガイド](CONTRIBUTING.md#translations-and-localization)（英語）をご覧ください。このページは README の日本語訳です。アプリの画面やリンク先のドキュメントが日本語に対応していることを示すものではありません。
 
-<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
+<!-- Translation source: README.md; SHA-256: 13cc19ef82a182adb053c02d1d531e6cefc8f3fd9fc3882b393640a33d4c6180 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -17,70 +17,35 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **自分だけのスーパーエージェント。仲間と、その Genie たち。知性を、自分の手に。**
 
-あなたの Genie を紹介します。性格、記憶、顔、声まで自分で選べる、徹底的にカスタマイズ可能なエージェントです。文章を書き、調べ、ウェブを巡り、コーディングエージェントをまとめ、映画を作る。友人やチームと、その Genie たちを同じ Room に招きましょう。一緒に作業する。自分でやりたくなったら、いつでも操作を引き継ぐ。
-
-それが Nautilo。最初から複数人で使うために、人間と機械の仲間のために作られています。デスクトップ、モバイル、ウェブ。あなたのサーバー、あなたのモデル、あなたのルール。オープンソース。MIT ライセンス。
-
-[ウェブサイトとデモ](https://nautilo.ai) ·
-[はじめる](#get-started) ·
-[ドキュメント](https://nautilo.ai/docs) ·
-[ダウンロード](https://nautilo.ai/download) ·
-[パッケージ](#explore-the-code) ·
-[貢献する](CONTRIBUTING.md)
+あなたの Genie に出会おう。個性、記憶、顔、声を与える。一緒に書き、調べ、ものを作る。仲間とその Genie たちも同じ Room へ。あなたのサーバー。あなたのモデル。あなたのルール。オープンソース、MIT ライセンス。
 
 <a id="get-started"></a>
 
 ## はじめる
 
-どの Nautilo クライアントも Nautilo サーバーに接続します。自分に合う方法を選んでください。
+**はじめての Nautilo。空っぽのサーバーから、一緒に作った最初の作品へ。**
 
-Mac で初めて Nautilo を試すなら、[ローカルデプロイのクイックスタート](https://nautilo.ai/docs/operator/deploy/local)から始めてください。これは1台のマシンで評価するための構成です。モバイルからアクセスしたい場合や、チームで使えるサーバーが必要な場合は、以下のホスティング方法を選んでください。
+[![Writer で共同作業する Elias と Lyra。変更案を確認できる画面です。クリックすると画像付きローカルセットアップガイドが開きます。](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
 
-| やりたいこと | ここから始める |
-| --- | --- |
-| 既存のサーバーに参加する | [Nautilo をダウンロード](https://nautilo.ai/download)し、サーバーのアドレスまたは招待を使って[インストールと接続](https://nautilo.ai/docs/use/install-and-connect)を進めます。 |
-| Mac で初めてのサーバーを動かす | Docker Desktop と署名済み Nautilo CLI を使い、[ローカルデプロイのクイックスタート](https://nautilo.ai/docs/operator/deploy/local)に従います。 |
-| チーム用のサーバーをクラウドに用意する | [Railway デプロイガイド](https://nautilo.ai/docs/operator/deploy/railway)を使います。 |
-| 自分の Docker 基盤で動かす | [Docker Compose ガイド](https://nautilo.ai/docs/operator/deploy/docker-compose)を読むか、[デプロイ方法を比較](https://nautilo.ai/docs/operator/choose-a-deployment)します。 |
-| コードを変更する | [ソースから開発する](#develop-from-source)へ進みます。 |
+### [自分の Mac でローカルに試す →](https://nautilo.ai/docs/operator/deploy/local)
 
-ダウンロードページには、現在の Desktop、モバイル、CLI の選択肢が掲載されています。サーバーのウェブクライアントを開くこともできます。Desktop はサーバーに接続するクライアントです。インストールしてもサーバーやデータベースは導入されません。モバイルには HTTPS でアクセスできるサーバーが必要です。
+Genie と出会い、自分らしくカスタマイズして、最初の文書を一緒に作ろう。画像付きガイド（英語）で順に進められます。
 
-新しいサーバーでは、オーナー設定を完了し、[プロバイダーキーを追加](https://nautilo.ai/docs/operator/provider-keys)してください。それから Genie をカスタマイズし、Room を開き、本当に作りたいものを持ち込みましょう。[最初の1時間](https://nautilo.ai/docs/use/first-hour)では、一緒に文書を作成し、自分で編集して、成果を保存するところまで案内します。
+必要なのは **Docker Desktop** と**モデルプロバイダーの API キー**。Nautilo は **alpha** 段階です。
 
-Nautilo は **alpha** 段階です。
+**チームで使うなら：**[自社データセンターや VPS にデプロイ →](https://nautilo.ai/docs/operator/deploy/linux-server)
+
+**すでにサーバーがあるなら：**[Mac 版 Desktop をダウンロード →](https://nautilo.ai/download/mac) · [Mobile をダウンロード →](https://nautilo.ai/download#download-platforms-title)
 
 ## 仲間を連れてこよう。仲間の Genie も。
 
-人と、それぞれの Genie が、同じ Room で一緒に働く。自然に話しましょう。Smart Routing が適切な Genie を会話に呼び込みます。特定の相手に頼みたいときは、直接呼びかければいい。文書を共有する。アイデアを分解する。一緒にもっとよいものを作る。
+仲間とその Genie たちを同じ Room に集めよう。アイデアを分解し、最初の原稿を書き、足りないピースの調査を Genie に任せる。自分の Genie には、一緒に時間を過ごしたくなる個性を。
 
-Genie に誰かの答えを聞きに行ってもらう。バックグラウンドの仕事を任せる。あとで実行するよう予約する。その間も、あなたは先へ進めます。
+そして、自分で操作する。段落を書き直す。文字の位置を動かす。単語を数センチ左にずらすために、もっと良いプロンプトを考える必要なんてないはずだ。
 
-## 自分の手で片づけたいときだってある
+自分の家の鍵も、自分で持とう。モデルを選び、サーバーを運用し、誰にアクセスを許すかを決めるのはあなた。Room を共有することが、自分の暮らしを丸ごと明け渡すことになってはいけない。
 
-段落を書き直す。文字を動かす。ターミナルの操作を引き継ぐ。あなたと Genie は同じものに取り組み、作業に合わせて操作を渡し合います。
-
-単語を数センチ左へ動かすために、もっと上手なプロンプトを書く必要はないはずです。
-
-## やりがいのある仕事を任せよう
-
-性格を形作る。顔、声、モデルを選ぶ。ツールを渡して、仕事を任せましょう。ウェブを調べ、コーディングエージェントをまとめ、画像や映像、音楽を作る。サービスや MCP ツールをつなげば、できることが広がります。
-
-記憶が一緒に進める仕事をつなぎ、権限と承認があなたのコントロールを守ります。
-
-使えるツールは、クライアント、接続環境、権限、設定したプロバイダーによって異なります。モデルやサービスの利用には、プロバイダーの料金が発生する場合があります。[API キーガイド](https://nautilo.ai/docs/operator/provider-keys)で、各接続により何が使えるかを説明しています。
-
-[nautilo.ai](https://nautilo.ai) の紹介映像を見るか、[最初の1時間](https://nautilo.ai/docs/use/first-hour)を参考に自分で始めてみてください。
-
-## 自分の家の鍵は、自分で持つ
-
-AI があなたを深く知るほど、その関係を誰が管理するかが重要になります。仕事の習慣、会話、一緒に作ってきたもの。それは、あなたの人生の一部として大きくなっていきます。
-
-Nautilo では、サーバーとデータベースをあなたが管理します。どこで動かすか、どのモデルを使うか、誰が参加するか、データをどうバックアップするかを選べます。コードは MIT ライセンスです。読んで、変えて、その上に作ってください。
-
-サーバーを共有するには、境界を正しく設けることも必要です。Human と Genie にはそれぞれの ID があり、Room にはメンバーシップがあり、記憶にはスコープがあり、ツールには権限と承認の仕組みがあります。会話に誰かを招くことが、それ以外のすべての鍵を渡すことになってはいけません。
-
-接続したモデルやツールのプロバイダーには、作業に必要なデータが送られます。セルフホストなら、その接続先を自分で選べます。ただし、各プロバイダーのデータポリシーは適用されます。構成を選ぶ際は、[セキュリティドキュメント](https://nautilo.ai/docs/security)と[サーバーのセキュリティ強化ガイド](https://nautilo.ai/docs/operator/security-hardening)を読んでください。
+[モデルと API キー](https://nautilo.ai/docs/operator/provider-keys) · [セキュリティとプライバシー](https://nautilo.ai/docs/security)
 
 ## 必要な情報を見つける
 

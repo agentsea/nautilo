@@ -6,7 +6,7 @@
 
 代码和文档目前以英语编写。欢迎提交翻译 PR；请参阅[翻译贡献指南](CONTRIBUTING.md#translations-and-localization)（英文）。本页为 README 的中文译本，不代表应用界面或链接所指向的文档已支持中文。
 
-<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
+<!-- Translation source: README.md; SHA-256: 13cc19ef82a182adb053c02d1d531e6cefc8f3fd9fc3882b393640a33d4c6180 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -17,70 +17,35 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **你自己的超级智能体。你在乎的人，还有他们的 Genie。智能，掌握在你手中。**
 
-认识一下你的 Genie：一个可以深度定制的智能体，拥有你选择的个性、记忆、面孔和声音。让她写作、研究、浏览网页、协调编程智能体，或者制作一部影片。把朋友、团队和他们的 Genie 带进同一个 Room。一起动手。想自己来？随时接过控制权。
-
-这就是 Nautilo。原生支持多用户，为人类和机器伙伴而建。桌面、移动端、网页。你的服务器，你的模型，你的规则。开源，采用 MIT 许可证。
-
-[网站与演示](https://nautilo.ai) ·
-[开始使用](#get-started) ·
-[文档](https://nautilo.ai/docs) ·
-[下载](https://nautilo.ai/download) ·
-[代码包](#explore-the-code) ·
-[参与贡献](CONTRIBUTING.md)
+认识你的 Genie。赋予她个性、记忆、面孔和声音。一起写作、研究、创造。让你的伙伴和他们的 Genie 来到同一间 Room。你的服务器。你的模型。你的规则。开源，采用 MIT 许可证。
 
 <a id="get-started"></a>
 
 ## 开始使用
 
-每个 Nautilo 客户端都连接到一个 Nautilo 服务器。选择适合你的方式：
+**你的第一个 Nautilo。从空白服务器，到你们一起完成的作品。**
 
-第一次在 Mac 上试用 Nautilo？建议从[本地部署快速入门](https://nautilo.ai/docs/operator/deploy/local)开始。这是一种用于单机试用的配置。如果需要从移动端访问，或让团队连接到同一台服务器，请选择下方的托管部署方案。
+[![Elias 和 Lyra 在 Writer 中协作，修改建议正等待审阅。点击打开本地安装图文指南。](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local)
 
-| 你想要…… | 从这里开始 |
-| --- | --- |
-| 加入现有服务器 | [下载 Nautilo](https://nautilo.ai/download)，然后使用服务器地址或邀请，按[安装与连接指南](https://nautilo.ai/docs/use/install-and-connect)操作。 |
-| 在 Mac 上运行第一台服务器 | 按[本地部署快速入门](https://nautilo.ai/docs/operator/deploy/local)操作，使用 Docker Desktop 和经过签名的 Nautilo CLI。 |
-| 为团队搭建云端服务器 | 使用 [Railway 部署指南](https://nautilo.ai/docs/operator/deploy/railway)。 |
-| 在自己的 Docker 基础设施上运行 | 按 [Docker Compose 指南](https://nautilo.ai/docs/operator/deploy/docker-compose)操作，或[比较部署方案](https://nautilo.ai/docs/operator/choose-a-deployment)。 |
-| 修改代码 | 跳转到[从源码开发](#develop-from-source)。 |
+### [在你的 Mac 上本地试用 →](https://nautilo.ai/docs/operator/deploy/local)
 
-下载页面提供当前的桌面端、移动端和 CLI 选项。你也可以打开服务器的网页客户端。桌面端连接到服务器；安装桌面端不会安装服务器或数据库。移动端需要能通过 HTTPS 访问的服务器。
+认识你的 Genie，把她打造成你喜欢的样子，一起完成第一份文档。跟着图文指南（英文）开始吧。
 
-对于新服务器，先完成所有者设置并[添加服务商密钥](https://nautilo.ai/docs/operator/provider-keys)。然后定制你的 Genie，打开一个 Room，带上一件你真正想做的事。[你的第一个小时](https://nautilo.ai/docs/use/first-hour)会带你们一起创建文档、亲手编辑并保存成果。
+你需要 **Docker Desktop** 和**一个模型服务商的 API 密钥**。Nautilo 目前处于 **alpha** 阶段。
 
-Nautilo 目前处于 **alpha** 阶段。
+**团队使用：**[部署到你的数据中心或 VPS →](https://nautilo.ai/docs/operator/deploy/linux-server)
+
+**已经有服务器？**[下载 Mac 版 Desktop →](https://nautilo.ai/download/mac) · [下载 Mobile →](https://nautilo.ai/download#download-platforms-title)
 
 ## 带上你的伙伴，也带上他们的 Genie
 
-人们带着各自的 Genie，在同一个 Room 里一起工作。自然地聊天。Smart Routing 会让合适的 Genie 加入对话；想找谁，就直接点名。分享一份文档。拆解一个想法。一起做出更好的东西。
+让你的伙伴和他们的 Genie 来到同一间 Room。拆解一个想法，写出第一稿，派一位 Genie 去研究缺失的那一块。给你自己的 Genie 一种让你愿意与她相处的个性。
 
-让 Genie 去问一个人的答案，把任务交给她在后台执行，或者安排到稍后执行。她忙她的，你继续向前。
+然后，接过控制权。改写那段文字。挪动排版。把一个词往左移几厘米，不该还得琢磨一个更好的提示词。
 
-## 有时候，你就是想亲自动手
+也别交出自己家的钥匙。模型由你选，服务器由你管，谁能访问由你决定。共享一间 Room，不该意味着交出你的全部生活。
 
-重写那一段。移动文字。接管终端。你和 Genie 处理同一份作品，按工作需要随时交接控制权。
-
-把一个词往左挪几厘米，不该需要一条更高明的提示词。
-
-## 给她一件值得做的事
-
-塑造她的个性。选择面孔、声音和模型。给她工具，让她动手：上网研究、协调编程智能体、制作图像、视频和音乐。连接服务和 MCP 工具，拓展她能做的事。
-
-记忆让你们的合作延续下去。权限和审批让控制权始终在你手中。
-
-工具是否可用，取决于客户端、连接的环境、权限和配置的服务商。使用模型和服务可能产生服务商费用；[API 密钥指南](https://nautilo.ai/docs/operator/provider-keys)说明了每种连接能启用哪些功能。
-
-到 [nautilo.ai](https://nautilo.ai) 看看演示影片，或者跟着[你的第一个小时](https://nautilo.ai/docs/use/first-hour)亲手开始。
-
-## 把自己家的钥匙留在自己手里
-
-AI 越了解你，谁掌控这段关系就越重要。你的工作习惯、对话、共同完成的作品：它们正在成为你生活中越来越大的一部分。
-
-Nautilo 把服务器和数据库的控制权交给你。由你决定它在哪里运行、用哪些模型、谁能加入，以及如何备份数据。代码采用 MIT 许可证。读它，改它，在它之上创造。
-
-共享服务器，也意味着必须划清边界。Human 和 Genie 各有身份；Room 有成员关系；记忆有作用范围；工具有权限和审批关卡。邀请一个人加入对话，绝不应该等于把其他一切的钥匙也交出去。
-
-连接的模型和工具服务商会收到完成工作所需的数据。自行托管让你可以选择这些连接；服务商自身的数据政策仍然适用。选择部署方式时，请阅读[安全文档](https://nautilo.ai/docs/security)和[服务器安全加固指南](https://nautilo.ai/docs/operator/security-hardening)。
+[模型与 API 密钥](https://nautilo.ai/docs/operator/provider-keys) · [安全与隐私](https://nautilo.ai/docs/security)
 
 ## 找到你需要的内容
 
