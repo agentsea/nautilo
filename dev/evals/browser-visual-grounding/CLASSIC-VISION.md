@@ -127,3 +127,27 @@ useful labels or nearby context for the dropdowns, checkout quantity, profile
 clue and ordinary form-field cases. The next improvement should therefore be
 local crop-level OCR on each retained region (including inverted and enlarged
 crops), not a larger global region inventory.
+
+## Initial live Jev result
+
+The first full live matrix sent every generated snapshot and candidate set to
+`openrouter:typesafe/jev-1.13`. All 16 provider calls completed without an API
+error or a screening round. Jev selection took 538 ms on average and 1.304 s
+in the slowest case.
+
+| Backend | Geometric coverage | Correct Jev selection | Incorrect selection |
+| --- | ---: | ---: | ---: |
+| macOS Vision | 8/8 | 6/8 | 2/8 |
+| Tesseract + Sharp | 8/8 | 3/8 | 5/8 |
+
+The native extractor failed on the unlabeled second-row `8` tile and on the
+calendar's duplicated `10` values. The portable extractor passed the ordinary
+form and both dropdown cases, but lacked sufficient labels for the room 2
+button, profile clue and `8` tile; it also selected the wrong row-one Number
+field and the wrong duplicated calendar `10`.
+
+This confirms that region coverage is already adequate, while semantic
+attachment is the limiting factor. Crop-level OCR should be evaluated first.
+The calendar result also requires structural context—such as row, column or
+enclosing-group relationships—because perfect OCR alone cannot distinguish two
+visible controls with the same text.
