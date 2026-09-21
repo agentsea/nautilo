@@ -19,6 +19,7 @@ struct TextObservation: Codable {
 
 struct Result: Codable {
     let imagePath: String
+    let recognitionMode: String
     let width: Int
     let height: Int
     let durationMs: Double
@@ -37,8 +38,32 @@ func imageBox(_ normalized: CGRect, width: Int, height: Int) -> Box {
 }
 
 let encoder = JSONEncoder()
+let arguments = Array(CommandLine.arguments.dropFirst())
+var recognitionMode = "fast"
+var imagePaths: [String] = []
+var argumentIndex = 0
+while argumentIndex < arguments.count {
+    let argument = arguments[argumentIndex]
+    if argument == "--recognition" {
+        argumentIndex += 1
+        guard argumentIndex < arguments.count,
+              ["fast", "accurate"].contains(arguments[argumentIndex]) else {
+            fputs("--recognition requires fast or accurate\n", stderr)
+            exit(1)
+        }
+        recognitionMode = arguments[argumentIndex]
+    } else {
+        imagePaths.append(argument)
+    }
+    argumentIndex += 1
+}
 
-for imagePath in CommandLine.arguments.dropFirst() {
+guard !imagePaths.isEmpty else {
+    fputs("At least one image path is required\n", stderr)
+    exit(1)
+}
+
+for imagePath in imagePaths {
     let started = Date()
     guard let image = NSImage(contentsOfFile: imagePath),
           let data = image.tiffRepresentation,
@@ -49,8 +74,9 @@ for imagePath in CommandLine.arguments.dropFirst() {
     }
 
     let textRequest = VNRecognizeTextRequest()
-    textRequest.recognitionLevel = .fast
-    textRequest.usesLanguageCorrection = false
+    textRequest.recognitionLevel = recognitionMode == "accurate" ? .accurate : .fast
+    textRequest.usesLanguageCorrection = recognitionMode == "accurate"
+    textRequest.recognitionLanguages = ["en-US"]
 
     let rectangleRequest = VNDetectRectanglesRequest()
     rectangleRequest.maximumObservations = 100
@@ -100,6 +126,7 @@ for imagePath in CommandLine.arguments.dropFirst() {
     }
     let result = Result(
         imagePath: imagePath,
+        recognitionMode: recognitionMode,
         width: width,
         height: height,
         durationMs: durationMs,

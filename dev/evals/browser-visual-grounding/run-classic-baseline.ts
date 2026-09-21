@@ -7,11 +7,14 @@ import { resolveCatalogModel } from "../../../packages/agent/src/config/resolved
 import { ChoiceRequestError } from "../../../packages/agent/src/providers/choice-driver.ts";
 import { loadBaselineTasks, loadCapture } from "./baseline.ts";
 import {
+  detectPerceptualEdgeRegions,
   extractMacosVisionGrounding,
+  extractPpocrGrounding,
   extractPortableGrounding,
   type ClassicBackend,
   type ClassicExtraction,
   type MacosVisionRawResult,
+  type PpocrRawResult,
 } from "./classic-grounding.ts";
 import { runCapturedJevChoice } from "./jev-evaluation.ts";
 import {
@@ -34,8 +37,8 @@ export function parseClassicBaselineArgs(argv: readonly string[]): ClassicBaseli
   let live = false;
   let caseId: string | null = null;
   let backends: readonly ClassicBackend[] = process.platform === "darwin"
-    ? ["macos-vision", "portable"]
-    : ["portable"];
+    ? ["macos-vision", "macos-vision-accurate", "portable", "ppocr-v6-tiny", "ppocr-v6-small"]
+    : ["portable", "ppocr-v6-tiny", "ppocr-v6-small"];
   let decisionModelId = DEFAULT_DECISION_MODEL_ID;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -45,16 +48,20 @@ export function parseClassicBaselineArgs(argv: readonly string[]): ClassicBaseli
       if (!caseId) throw new Error("--case requires a case id");
     } else if (value === "--backend") {
       const backend = argv[++index];
-      if (backend === "all") backends = process.platform === "darwin" ? ["macos-vision", "portable"] : ["portable"];
-      else if (backend === "macos-vision" || backend === "portable") backends = [backend];
-      else throw new Error("--backend requires all, macos-vision, or portable");
+      if (backend === "all") {
+        backends = process.platform === "darwin"
+          ? ["macos-vision", "macos-vision-accurate", "portable", "ppocr-v6-tiny", "ppocr-v6-small"]
+          : ["portable", "ppocr-v6-tiny", "ppocr-v6-small"];
+      } else if (backend === "macos-vision" || backend === "macos-vision-accurate" || backend === "portable"
+        || backend === "ppocr-v6-tiny" || backend === "ppocr-v6-small") backends = [backend];
+      else throw new Error("--backend requires all or a supported local extractor name");
     } else if (value === "--decision-model") {
       decisionModelId = argv[++index] ?? "";
       if (!decisionModelId) throw new Error("--decision-model requires a model id");
     } else throw new Error(`Unknown argument: ${value}`);
   }
-  if (backends.includes("macos-vision") && process.platform !== "darwin") {
-    throw new Error("macos-vision is available only on macOS");
+  if (backends.some((backend) => backend.startsWith("macos-vision")) && process.platform !== "darwin") {
+    throw new Error("macos-vision backends are available only on macOS");
   }
   return { live, caseId, backends, decisionModelId };
 }
@@ -75,9 +82,14 @@ function isoFilePart(date: Date): string {
 
 async function extractMacosVision(
   screenshots: readonly string[],
+  recognition: "fast" | "accurate",
+  backend: "macos-vision" | "macos-vision-accurate",
 ): Promise<ReadonlyMap<string, ClassicExtraction>> {
   const helperPath = path.join(import.meta.dir, "macos-vision.swift");
-  const subprocess = Bun.spawn(["swift", helperPath, ...screenshots], { stdout: "pipe", stderr: "pipe" });
+  const subprocess = Bun.spawn(["swift", helperPath, "--recognition", recognition, ...screenshots], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(subprocess.stdout).text(),
     new Response(subprocess.stderr).text(),
@@ -85,11 +97,35 @@ async function extractMacosVision(
   ]);
   if (exitCode !== 0) throw new Error(`macOS Vision helper failed: ${stderr.trim()}`);
   const results = stdout.split(/\r?\n/u).filter(Boolean).map((line) =>
-    extractMacosVisionGrounding(JSON.parse(line) as MacosVisionRawResult));
+    extractMacosVisionGrounding(JSON.parse(line) as MacosVisionRawResult, backend));
   if (results.length !== screenshots.length) {
     throw new Error(`macOS Vision helper returned ${results.length} results for ${screenshots.length} screenshots`);
   }
   return new Map(results.map((result, index) => [screenshots[index]!, result]));
+}
+
+async function extractPpocr(
+  screenshots: readonly string[],
+  tier: "tiny" | "small",
+): Promise<ReadonlyMap<string, PpocrRawResult>> {
+  const helperPath = path.join(import.meta.dir, "ppocr-v6.py");
+  const subprocess = Bun.spawn([
+    "uv", "run", "--quiet", "--python", "3.12",
+    "--with", "rapidocr>=3.9,<4",
+    "--with", "onnxruntime>=1.22,<2",
+    helperPath, "--tier", tier, ...screenshots,
+  ], { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(subprocess.stdout).text(),
+    new Response(subprocess.stderr).text(),
+    subprocess.exited,
+  ]);
+  if (exitCode !== 0) throw new Error(`PP-OCRv6 ${tier} helper failed: ${stderr.trim()}`);
+  const results = stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line) as PpocrRawResult);
+  if (results.length !== screenshots.length) {
+    throw new Error(`PP-OCRv6 ${tier} helper returned ${results.length} results for ${screenshots.length} screenshots`);
+  }
+  return new Map(results.map((result) => [path.resolve(result.imagePath), result]));
 }
 
 function candidateIdsInOracle(
@@ -125,8 +161,15 @@ export async function runClassicBaseline(
   const screenshots = captures.map(({ task, capture }) =>
     path.join(import.meta.dir, "cases", task.caseId, capture.screenshot.file));
   const macosExtractions = args.backends.includes("macos-vision")
-    ? await extractMacosVision(screenshots)
+    ? await extractMacosVision(screenshots, "fast", "macos-vision")
     : new Map<string, ClassicExtraction>();
+  const macosAccurateExtractions = args.backends.includes("macos-vision-accurate")
+    ? await extractMacosVision(screenshots, "accurate", "macos-vision-accurate")
+    : new Map<string, ClassicExtraction>();
+  const [ppocrTiny, ppocrSmall] = await Promise.all([
+    args.backends.includes("ppocr-v6-tiny") ? extractPpocr(screenshots, "tiny") : new Map<string, PpocrRawResult>(),
+    args.backends.includes("ppocr-v6-small") ? extractPpocr(screenshots, "small") : new Map<string, PpocrRawResult>(),
+  ]);
   const started = new Date();
   const cases: Record<string, unknown>[] = [];
   let failures = 0;
@@ -139,9 +182,14 @@ export async function runClassicBaseline(
     for (const backend of args.backends) {
       const caseStarted = performance.now();
       try {
-        const extraction = backend === "macos-vision"
-          ? macosExtractions.get(screenshot)
-          : await extractPortableGrounding(screenshot);
+        let extraction: ClassicExtraction | undefined;
+        if (backend === "macos-vision") extraction = macosExtractions.get(screenshot);
+        else if (backend === "macos-vision-accurate") extraction = macosAccurateExtractions.get(screenshot);
+        else if (backend === "portable") extraction = await extractPortableGrounding(screenshot);
+        else {
+          const raw = (backend === "ppocr-v6-tiny" ? ppocrTiny : ppocrSmall).get(path.resolve(screenshot));
+          if (raw) extraction = extractPpocrGrounding(raw, await detectPerceptualEdgeRegions(screenshot), backend);
+        }
         if (!extraction) throw new Error(`Missing ${backend} extraction for ${task.caseId}`);
         const extractionMs = extraction.timing["totalMs"];
         if (extractionMs === undefined) throw new Error(`${backend} did not report extraction timing`);

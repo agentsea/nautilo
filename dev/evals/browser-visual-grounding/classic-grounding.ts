@@ -2,7 +2,12 @@ import path from "node:path";
 import sharp from "sharp";
 import type { VisualGrounding } from "./visual-grounding.ts";
 
-export type ClassicBackend = "macos-vision" | "portable";
+export type ClassicBackend =
+  | "macos-vision"
+  | "macos-vision-accurate"
+  | "portable"
+  | "ppocr-v6-tiny"
+  | "ppocr-v6-small";
 
 export interface VisualBox {
   readonly x: number;
@@ -35,6 +40,7 @@ export interface ClassicExtraction {
 
 export interface MacosVisionRawResult {
   readonly imagePath: string;
+  readonly recognitionMode: "fast" | "accurate";
   readonly width: number;
   readonly height: number;
   readonly durationMs: number;
@@ -42,6 +48,17 @@ export interface MacosVisionRawResult {
   readonly rectangles: readonly VisualBox[];
   readonly contours: readonly VisualBox[];
   readonly contourCount: number;
+}
+
+export interface PpocrRawResult {
+  readonly imagePath: string;
+  readonly tier: "tiny" | "small";
+  readonly width: number;
+  readonly height: number;
+  readonly initializationMs: number;
+  readonly durationMs: number;
+  readonly engineElapsedMs: readonly number[];
+  readonly text: readonly TextObservation[];
 }
 
 const OCR_MIN_CONFIDENCE = 0.3;
@@ -136,6 +153,41 @@ function regionLabel(region: RegionObservation, text: readonly TextObservation[]
   };
 }
 
+function textLayoutContext(
+  observation: TextObservation,
+  text: readonly TextObservation[],
+  image: { readonly width: number; readonly height: number },
+): string {
+  const center = boxCenter(observation.box);
+  const above = text.filter((candidate) => {
+    if (candidate === observation || !/[A-Za-z]/u.test(candidate.text)) return false;
+    const candidateCenter = boxCenter(candidate.box);
+    return candidate.box.y + candidate.box.height <= observation.box.y + 4
+      && observation.box.y - (candidate.box.y + candidate.box.height) <= 320
+      && Math.abs(candidateCenter.x - center.x) <= 220;
+  }).sort((left, right) => {
+    const leftCenter = boxCenter(left.box);
+    const rightCenter = boxCenter(right.box);
+    return Math.abs(leftCenter.x - center.x) + Math.abs(leftCenter.y - center.y) * 1.5
+      - (Math.abs(rightCenter.x - center.x) + Math.abs(rightCenter.y - center.y) * 1.5);
+  })[0];
+  const section = text.filter((candidate) => {
+    if (candidate === observation || !/[A-Za-z]/u.test(candidate.text) || !/\d/u.test(candidate.text)) return false;
+    const candidateCenter = boxCenter(candidate.box);
+    return candidate.box.y + candidate.box.height <= observation.box.y + 4
+      && observation.box.y - (candidate.box.y + candidate.box.height) <= 340
+      && candidateCenter.x <= center.x + 40
+      && center.x - candidateCenter.x <= 700;
+  }).sort((left, right) => observation.box.y - (left.box.y + left.box.height)
+    - (observation.box.y - (right.box.y + right.box.height)))[0];
+  const parts = [
+    `at ${Math.round((center.x / image.width) * 100)}% from left, ${Math.round((center.y / image.height) * 100)}% from top`,
+  ];
+  if (above) parts.push(`below ${JSON.stringify(above.text)}`);
+  if (section && section !== above) parts.push(`in section ${JSON.stringify(section.text)}`);
+  return parts.join("; ");
+}
+
 export function classicObservationsToGrounding(options: {
   readonly backend: ClassicBackend;
   readonly image: { readonly width: number; readonly height: number };
@@ -175,7 +227,7 @@ export function classicObservationsToGrounding(options: {
       interaction: "unknown" as const,
       x: targetCenter.x,
       y: targetCenter.y,
-      context: enclosing ? `text inside ${enclosing.source} region` : "OCR text box",
+      context: `${enclosing ? `text inside ${enclosing.source} region` : "OCR text box"}; ${textLayoutContext(observation, text, options.image)}`,
       box: targetBox,
       sources: enclosing ? ["ocr", enclosing.source] : ["ocr"],
       confidence: observation.confidence,
@@ -409,7 +461,10 @@ export async function extractPortableGrounding(screenshotPath: string): Promise<
   };
 }
 
-export function extractMacosVisionGrounding(raw: MacosVisionRawResult): ClassicExtraction {
+export function extractMacosVisionGrounding(
+  raw: MacosVisionRawResult,
+  backend: "macos-vision" | "macos-vision-accurate" = "macos-vision",
+): ClassicExtraction {
   const image = { width: raw.width, height: raw.height };
   const text = raw.text
     .map((observation) => ({ ...observation, box: normalizeBox(observation.box, image) }))
@@ -423,11 +478,11 @@ export function extractMacosVisionGrounding(raw: MacosVisionRawResult): ClassicE
     })),
   ]);
   return {
-    backend: "macos-vision",
+    backend,
     image,
     text,
     regions,
-    grounding: classicObservationsToGrounding({ backend: "macos-vision", image, text, regions }),
+    grounding: classicObservationsToGrounding({ backend, image, text, regions }),
     timing: { nativeVisionMs: raw.durationMs, totalMs: raw.durationMs },
     rawCounts: {
       ocr: raw.text.length,
@@ -435,6 +490,40 @@ export function extractMacosVisionGrounding(raw: MacosVisionRawResult): ClassicE
       contours: raw.contourCount,
       filteredContours: raw.contours.length,
       regions: regions.length,
+    },
+  };
+}
+
+export function extractPpocrGrounding(
+  raw: PpocrRawResult,
+  edges: Awaited<ReturnType<typeof detectPerceptualEdgeRegions>>,
+  backend: "ppocr-v6-tiny" | "ppocr-v6-small",
+): ClassicExtraction {
+  const image = { width: raw.width, height: raw.height };
+  if (image.width !== edges.image.width || image.height !== edges.image.height) {
+    throw new Error(`PP-OCR and edge image dimensions differ for ${path.basename(raw.imagePath)}`);
+  }
+  const text = raw.text
+    .map((observation) => ({ ...observation, box: normalizeBox(observation.box, image) }))
+    .filter(({ confidence }) => confidence >= OCR_MIN_CONFIDENCE);
+  const grounding = classicObservationsToGrounding({ backend, image, text, regions: edges.regions });
+  return {
+    backend,
+    image,
+    text,
+    regions: edges.regions,
+    grounding,
+    timing: {
+      ocrMs: raw.durationMs,
+      engineInitMs: raw.initializationMs,
+      edgesMs: edges.durationMs,
+      totalMs: raw.durationMs + edges.durationMs,
+    },
+    rawCounts: {
+      ocr: raw.text.length,
+      edgeComponents: edges.rawComponentCount,
+      horizontalPairs: edges.horizontalPairCount,
+      regions: edges.regions.length,
     },
   };
 }

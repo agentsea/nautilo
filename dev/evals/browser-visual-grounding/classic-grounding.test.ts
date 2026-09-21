@@ -48,12 +48,29 @@ describe("classic local visual grounding", () => {
     expect(grounding.targets.some(({ sources }) => sources?.includes("ocr"))).toBe(true);
   });
 
-  test("parses both experiment backends", () => {
+  test("attaches deterministic column and section context to repeated OCR text", () => {
+    const grounding = classicObservationsToGrounding({
+      backend: "ppocr-v6-tiny",
+      image: { width: 2_000, height: 1_000 },
+      text: [
+        { text: "Sep 2026", confidence: 1, box: { x: 400, y: 300, width: 100, height: 30 } },
+        { text: "Oct 2026", confidence: 1, box: { x: 1_100, y: 300, width: 100, height: 30 } },
+        { text: "Sat", confidence: 1, box: { x: 1_600, y: 380, width: 40, height: 25 } },
+        { text: "10", confidence: 1, box: { x: 1_600, y: 480, width: 30, height: 25 } },
+      ],
+      regions: [],
+    });
+    expect(grounding.targets.find(({ name }) => name === "10")?.context)
+      .toBe('OCR text box; at 81% from left, 49% from top; below "Sat"; in section "Oct 2026"');
+  });
+
+  test("parses all experiment backends", () => {
     const defaults = parseClassicBaselineArgs([]);
     expect(defaults.live).toBe(false);
     expect(defaults.backends).toContain("portable");
     expect(parseClassicBaselineArgs(["--backend", "portable", "--case", "room2-initial", "--live"]))
       .toMatchObject({ live: true, caseId: "room2-initial", backends: ["portable"] });
+    expect(parseClassicBaselineArgs(["--backend", "ppocr-v6-small"]).backends).toEqual(["ppocr-v6-small"]);
     expect(() => parseClassicBaselineArgs(["--backend", "unknown"])).toThrow(/requires/);
   });
 });
