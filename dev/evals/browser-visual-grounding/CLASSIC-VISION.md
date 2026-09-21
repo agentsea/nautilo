@@ -212,6 +212,33 @@ The failures are informative:
   position, nearest-label, and section relationships makes both select the
   correct October cell. OCR alone is therefore not the complete solution.
 
+## Apple selective-crop follow-up
+
+The global Apple failure is scale-sensitive rather than an absolute recognition
+failure. Accurate Vision still misses puzzle piece `8` in the full 2168×1404
+screenshot, but recognizes it at confidence 1.0 when given its existing
+control-sized rectangle as a crop.
+
+The hybrid backend therefore keeps fast Vision for the whole viewport and runs
+accurate Vision only for an unlabelled control-sized rectangle that contains a
+smaller text-like contour. This is task-independent and reuses the rectangle
+and contour observations already produced by the first request. On the puzzle
+case it performs seven crop requests and recovers `8`; on the other cases it
+performs zero to four.
+
+One live eight-case run produced:
+
+| Extractor | Coverage | Correct Jev choice | Mean extraction | Slowest extraction | Mean extraction + Jev |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Apple Vision fast + accurate crops | 8/8 | **8/8** | **119.7 ms** | **212.7 ms** | **845.5 ms** |
+
+Six of eight individual calls completed below one second. The other two were
+caused solely by Jev latency of 1.03 s and 1.51 s; extraction remained below
+213 ms. A repeat encountered a Jev provider call that had still not returned
+after 90 seconds and was interrupted, further separating provider tail latency
+from local visual extraction. The successful run is recorded in
+`.results/2026-09-21T14-24-20-438Z-classic-live.json`.
+
 ## Recommended next design
 
 Use PP-OCRv6 small as the cross-platform quality reference, not yet as a
@@ -230,11 +257,12 @@ For latency, evaluate a cascade rather than committing immediately to the
 small tier on every frame: run tiny first, then apply small recognition only to
 unlabelled or low-confidence control-sized crops. The corpus already shows why
 the fallback is necessary (`room10`) and why it should be selective (tiny is
-about 300 ms faster on average). Preserve Apple Vision fast as a macOS
-optimization only if it conforms to the same adapter contract; accurate Vision
-does not earn a global pass. Finally, prune nested duplicate edge regions before
-Jev—the current 25–122 choices work, but are more than the semantic controls on
-screen and increase ambiguity and token volume.
+about 300 ms faster on average). On macOS, the proven equivalent is fast Vision
+plus selective accurate crops: it is both faster and more accurate here than
+global accurate Vision. Keep it behind the same adapter contract rather than
+making the snapshot format platform-specific. Finally, prune nested duplicate
+edge regions before Jev—the current 25–122 choices work, but are more than the
+semantic controls on screen and increase ambiguity and token volume.
 
 ## Upstream references
 

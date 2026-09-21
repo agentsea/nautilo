@@ -4,6 +4,7 @@ import type { VisualGrounding } from "./visual-grounding.ts";
 
 export type ClassicBackend =
   | "macos-vision"
+  | "macos-vision-hybrid"
   | "macos-vision-accurate"
   | "portable"
   | "ppocr-v6-tiny"
@@ -40,10 +41,13 @@ export interface ClassicExtraction {
 
 export interface MacosVisionRawResult {
   readonly imagePath: string;
-  readonly recognitionMode: "fast" | "accurate";
+  readonly recognitionMode: "fast" | "accurate" | "hybrid";
   readonly width: number;
   readonly height: number;
   readonly durationMs: number;
+  readonly globalDurationMs: number;
+  readonly cropDurationMs: number;
+  readonly cropRequestCount: number;
   readonly text: readonly TextObservation[];
   readonly rectangles: readonly VisualBox[];
   readonly contours: readonly VisualBox[];
@@ -463,7 +467,7 @@ export async function extractPortableGrounding(screenshotPath: string): Promise<
 
 export function extractMacosVisionGrounding(
   raw: MacosVisionRawResult,
-  backend: "macos-vision" | "macos-vision-accurate" = "macos-vision",
+  backend: "macos-vision" | "macos-vision-hybrid" | "macos-vision-accurate" = "macos-vision",
 ): ClassicExtraction {
   const image = { width: raw.width, height: raw.height };
   const text = raw.text
@@ -483,12 +487,18 @@ export function extractMacosVisionGrounding(
     text,
     regions,
     grounding: classicObservationsToGrounding({ backend, image, text, regions }),
-    timing: { nativeVisionMs: raw.durationMs, totalMs: raw.durationMs },
+    timing: {
+      nativeVisionGlobalMs: raw.globalDurationMs,
+      nativeVisionCropMs: raw.cropDurationMs,
+      nativeVisionMs: raw.durationMs,
+      totalMs: raw.durationMs,
+    },
     rawCounts: {
       ocr: raw.text.length,
       rectangles: raw.rectangles.length,
       contours: raw.contourCount,
       filteredContours: raw.contours.length,
+      cropRequests: raw.cropRequestCount,
       regions: regions.length,
     },
   };

@@ -37,7 +37,7 @@ export function parseClassicBaselineArgs(argv: readonly string[]): ClassicBaseli
   let live = false;
   let caseId: string | null = null;
   let backends: readonly ClassicBackend[] = process.platform === "darwin"
-    ? ["macos-vision", "macos-vision-accurate", "portable", "ppocr-v6-tiny", "ppocr-v6-small"]
+    ? ["macos-vision", "macos-vision-hybrid", "macos-vision-accurate", "portable", "ppocr-v6-tiny", "ppocr-v6-small"]
     : ["portable", "ppocr-v6-tiny", "ppocr-v6-small"];
   let decisionModelId = DEFAULT_DECISION_MODEL_ID;
   for (let index = 0; index < argv.length; index += 1) {
@@ -50,9 +50,10 @@ export function parseClassicBaselineArgs(argv: readonly string[]): ClassicBaseli
       const backend = argv[++index];
       if (backend === "all") {
         backends = process.platform === "darwin"
-          ? ["macos-vision", "macos-vision-accurate", "portable", "ppocr-v6-tiny", "ppocr-v6-small"]
+          ? ["macos-vision", "macos-vision-hybrid", "macos-vision-accurate", "portable", "ppocr-v6-tiny", "ppocr-v6-small"]
           : ["portable", "ppocr-v6-tiny", "ppocr-v6-small"];
-      } else if (backend === "macos-vision" || backend === "macos-vision-accurate" || backend === "portable"
+      } else if (backend === "macos-vision" || backend === "macos-vision-hybrid"
+        || backend === "macos-vision-accurate" || backend === "portable"
         || backend === "ppocr-v6-tiny" || backend === "ppocr-v6-small") backends = [backend];
       else throw new Error("--backend requires all or a supported local extractor name");
     } else if (value === "--decision-model") {
@@ -82,8 +83,8 @@ function isoFilePart(date: Date): string {
 
 async function extractMacosVision(
   screenshots: readonly string[],
-  recognition: "fast" | "accurate",
-  backend: "macos-vision" | "macos-vision-accurate",
+  recognition: "fast" | "accurate" | "hybrid",
+  backend: "macos-vision" | "macos-vision-hybrid" | "macos-vision-accurate",
 ): Promise<ReadonlyMap<string, ClassicExtraction>> {
   const helperPath = path.join(import.meta.dir, "macos-vision.swift");
   const subprocess = Bun.spawn(["swift", helperPath, "--recognition", recognition, ...screenshots], {
@@ -163,6 +164,9 @@ export async function runClassicBaseline(
   const macosExtractions = args.backends.includes("macos-vision")
     ? await extractMacosVision(screenshots, "fast", "macos-vision")
     : new Map<string, ClassicExtraction>();
+  const macosHybridExtractions = args.backends.includes("macos-vision-hybrid")
+    ? await extractMacosVision(screenshots, "hybrid", "macos-vision-hybrid")
+    : new Map<string, ClassicExtraction>();
   const macosAccurateExtractions = args.backends.includes("macos-vision-accurate")
     ? await extractMacosVision(screenshots, "accurate", "macos-vision-accurate")
     : new Map<string, ClassicExtraction>();
@@ -184,6 +188,7 @@ export async function runClassicBaseline(
       try {
         let extraction: ClassicExtraction | undefined;
         if (backend === "macos-vision") extraction = macosExtractions.get(screenshot);
+        else if (backend === "macos-vision-hybrid") extraction = macosHybridExtractions.get(screenshot);
         else if (backend === "macos-vision-accurate") extraction = macosAccurateExtractions.get(screenshot);
         else if (backend === "portable") extraction = await extractPortableGrounding(screenshot);
         else {

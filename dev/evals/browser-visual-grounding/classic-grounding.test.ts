@@ -71,6 +71,8 @@ describe("classic local visual grounding", () => {
     expect(parseClassicBaselineArgs(["--backend", "portable", "--case", "room2-initial", "--live"]))
       .toMatchObject({ live: true, caseId: "room2-initial", backends: ["portable"] });
     expect(parseClassicBaselineArgs(["--backend", "ppocr-v6-small"]).backends).toEqual(["ppocr-v6-small"]);
+    expect(parseClassicBaselineArgs(["--backend", "macos-vision-hybrid"]).backends)
+      .toEqual(["macos-vision-hybrid"]);
     expect(() => parseClassicBaselineArgs(["--backend", "unknown"])).toThrow(/requires/);
   });
 });
