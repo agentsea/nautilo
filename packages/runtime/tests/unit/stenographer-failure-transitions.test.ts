@@ -97,4 +97,46 @@ describe("Stenographer failure transitions", () => {
       "model-b",
     );
   });
+
+  test("persists uncertain provider outcomes without scheduling extraction replay", async () => {
+    const state = failureDb({ extraction_failure_count: 0 });
+
+    await failExtraction({
+      claim: {
+        batchId: BATCH_ID,
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+      } as never,
+      errorCode: "provider_outcome_unknown",
+      modelId: "openrouter:test-model",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values["errorCode"])
+      .toBe("provider_outcome_unknown");
+    expect(state.updates[1]?.values["lastExtractionErrorCode"])
+      .toBe("provider_outcome_unknown");
+    expect(state.updates[1]?.values["extractionRetryAfter"]).toBeNull();
+  });
+
+  test("persists uncertain provider outcomes without scheduling compaction replay", async () => {
+    const state = failureDb({ compaction_failure_count: 0 });
+
+    await failCompaction({
+      claim: {
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+        attemptCount: 1,
+      } as never,
+      errorCode: "provider_outcome_unknown",
+      modelId: "openrouter:test-model",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values["lastCompactionErrorCode"])
+      .toBe("provider_outcome_unknown");
+    expect(state.updates[0]?.values["compactionRetryAfter"]).toBeNull();
+  });
 });

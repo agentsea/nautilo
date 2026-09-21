@@ -15,6 +15,13 @@ export class OpenRouterReasoningCompletions extends ChatOpenAICompletions {
     defaultRole?: DeltaInput["defaultRole"],
   ) {
     const chunk = super._convertCompletionsDeltaToBaseMessageChunk(delta, rawResponse, defaultRole);
+    // OpenRouter can attach its cumulative usage receipt to a frame that also
+    // has a choice. LangChain retains that receipt on this choice chunk and
+    // then emits the same last-seen receipt in its synthetic final usage
+    // chunk. Message concatenation adds numeric response metadata, which would
+    // otherwise double cost and cache-write tokens (or sum every cumulative
+    // receipt). Keep the SDK's canonical final usage chunk as the sole copy.
+    delete chunk.response_metadata["usage"];
     const reasoning: unknown = delta["reasoning"];
     const details: unknown = delta["reasoning_details"];
     chunk.additional_kwargs = {

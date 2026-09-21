@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getAllKeyDefinitions } from "../../src/key-registry";
 import { LOGTO_REQUIRED_KEYS } from "../../src/mode-registry";
 import { resetConfigGuardRateLimitForTests, transaction } from "../../src/transaction";
+import { check, getModeReport } from "../../src";
 
 const originalFetch = globalThis.fetch;
 
@@ -45,6 +46,7 @@ describe("transaction integration", () => {
     delete process.env["NAUTILO_INSTANCE_ID"];
     process.env["NAUTILO_DOTENV_PATH"] = envPath;
     process.env["NAUTILO_SERVER_URL"] = "http://127.0.0.1:9";
+    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     resetConfigGuardRateLimitForTests();
   });
 
@@ -72,6 +74,7 @@ describe("transaction integration", () => {
     }
     await rm(home, { recursive: true, force: true });
     clearRegistryEnvVars();
+    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     resetConfigGuardRateLimitForTests();
   });
 
@@ -105,6 +108,37 @@ describe("transaction integration", () => {
     if (process.platform !== "win32") {
       expect((await stat(envPath)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  test("persists, reloads, and masks the local Gateway key alongside its API root", async () => {
+    const secret = `ngw_${"a".repeat(43)}`;
+    const baseUrl = "http://localhost:4010/v1";
+    const result = await transaction({
+      operations: [
+        { type: "set", key: "NAUTILO_MANAGED_GATEWAY_API_KEY", value: secret },
+        { type: "set", key: "NAUTILO_MANAGED_GATEWAY_BASE_URL", value: baseUrl },
+      ],
+      healthCheck: "none",
+      reason: "local Gateway setup test",
+      actor: "test",
+    });
+
+    expect(result.success).toBe(true);
+    const disk = await readFile(envPath, "utf-8");
+    expect(disk).toContain(`NAUTILO_MANAGED_GATEWAY_API_KEY=${secret}`);
+    expect(disk).toContain(`NAUTILO_MANAGED_GATEWAY_BASE_URL=${baseUrl}`);
+    expect(process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"]).toBe(secret);
+    expect(process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"]).toBe(baseUrl);
+
+    const keyReport = (await check({ validate: false })).keys.find(
+      (entry) => entry.id === "nautilo-gateway",
+    );
+    expect(keyReport).toMatchObject({ status: "present" });
+    expect(keyReport?.masked).toBeTruthy();
+    expect(keyReport?.masked).not.toContain(secret);
+    expect(getModeReport().entries.find(
+      (entry) => entry.envVar === "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    )).toMatchObject({ status: "set", value: baseUrl, redacted: false });
   });
 
   test("empty operations returns success with no snapshot", async () => {

@@ -23,6 +23,13 @@ store update, or Desktop/Host installation.
 
 ### Added
 
+- Local internal QA servers can use a separately configured Nautilo Gateway
+  credential for signed OpenRouter chat, background, and embedding routes. The
+  administrator can save the Gateway API URL beside its masked key in Server
+  Admin, existing embedding identity is preserved,
+  media routes still require their direct credentials, and failed Gateway
+  requests are not replayed through retries or paid fallback chains.
+
 - Routine Jev delegation for connected websites already under direct Genie
   control through Browser Use. It reuses the browser decision loop, verifies
   fresh observations against the exact operation and control epoch, and returns
@@ -48,6 +55,12 @@ store update, or Desktop/Host installation.
   anyone else's settings or chat notifications.
 
 ### Fixed
+
+- Server Admin places the Nautilo Gateway URL and key together at the end of
+  API Keys, following the separate OpenAI-compatible gateway.
+
+- OpenRouter-compatible streaming no longer counts a provider usage receipt
+  twice when the final choice frame also carries cost or cache-write metadata.
 
 - Browser shared-room history verifies retained Human signer evidence for other
   participants. Cancelled protected turns and graceful shutdown close unpublished

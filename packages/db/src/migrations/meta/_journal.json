@@ -2080,6 +2080,13 @@
       "when": 1789873125045,
       "tag": "0296_quiet_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1789982513111,
+      "tag": "0297_small_chameleon",
+      "breakpoints": true
     }
   ]
 }

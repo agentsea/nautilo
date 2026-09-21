@@ -1482,6 +1482,7 @@ const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
+  "nautilo-gateway",
   "gateway",
   "google",
   "fireworks",
@@ -1489,9 +1490,14 @@ const LLM_KEY_IDS = new Set<string>([
 ]);
 
 function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
+  // A masked Gateway key report cannot prove that its separate API root is
+  // usable. Keep this browser-side projection conservative; authoritative
+  // setup readiness comes from config-guard's server-side summary.
   return keys.some(
     (k) =>
-      LLM_KEY_IDS.has(k.id) && (k.status === "present" || k.status === "verified"),
+      k.id !== "nautilo-gateway"
+      && LLM_KEY_IDS.has(k.id)
+      && (k.status === "present" || k.status === "verified"),
   );
 }
 
@@ -5413,8 +5419,10 @@ export class NautiloApiClient {
   }
 
   /**
-   * Uses GET /api/health/keys without provider pings. `hasLlm` matches
-   * config-guard `buildSummary`. The normal session bearer lets the trust
+   * Uses GET /api/health/keys without provider pings. `hasLlm`
+   * conservatively recognizes self-contained provider credentials. Managed
+   * Gateway readiness is derived server-side because it also requires a valid
+   * API root. The normal session bearer lets the trust
    * preHandler resolve the caller's capability. Throws `ApiError` with `.status`
    * so callers (e.g. the settings page) can distinguish 401 (no
    * session) / 403 (lacks `manage_server_settings`) from transport
@@ -5426,6 +5434,25 @@ export class NautiloApiClient {
       defaultErrorPrefix: "GET /api/health/keys",
     });
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
+  }
+
+  /** Read the administrator-visible Nautilo Gateway API root. */
+  async getNautiloGateway(): Promise<{ baseUrl: string | null }> {
+    return this.request({
+      path: "/api/setup/nautilo-gateway",
+      defaultErrorPrefix: "GET /api/setup/nautilo-gateway",
+    });
+  }
+
+  /** Update the Nautilo Gateway API root. */
+  async updateNautiloGateway(baseUrl: string): Promise<{ baseUrl: string }> {
+    return this.request({
+      method: "PUT",
+      path: "/api/setup/nautilo-gateway",
+      auth: "session-fresh",
+      body: { baseUrl },
+      defaultErrorPrefix: "PUT /api/setup/nautilo-gateway",
+    });
   }
 
   /** Read the bounded web-research policy. Requires `read_server_settings`. */

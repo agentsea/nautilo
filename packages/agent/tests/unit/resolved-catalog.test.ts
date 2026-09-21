@@ -81,6 +81,36 @@ describe("resolved-catalog (the current implementation)", () => {
     }
   });
 
+  test("managed Gateway admits OpenRouter chat but not generation catalog rows", () => {
+    const managedEnv = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+    };
+
+    expect(resolveCatalogModel("openrouter:moonshotai/kimi-k2.6", {
+      env: managedEnv,
+    }).availability).toBe("selectable");
+
+    const generation = resolveCatalogModel("openrouter:openai/gpt-5.4-image-2", {
+      env: managedEnv,
+    });
+    expect(generation.availability).toBe("missing_credentials");
+    expect(generation.unavailableReason).toBe("OpenRouter credential is not configured");
+    expect(listResolvedCatalogModels({ env: managedEnv }).some(
+      (row) => row.id === "openrouter:openai/gpt-5.4-image-2",
+    )).toBe(false);
+  });
+
+  test("direct OpenRouter credentials admit generation despite malformed managed config", () => {
+    const generation = resolveCatalogModel("openrouter:openai/gpt-5.4-image-2", {
+      env: {
+        OPENROUTER_API_KEY: "sk-or-v1-direct-generation",
+        NAUTILO_MANAGED_GATEWAY_API_KEY: "malformed-managed-key",
+      },
+    });
+    expect(generation.availability).toBe("selectable");
+  });
+
   test("venice china-routed SKU is routing_filtered without opt-in, selectable with opt-in + key", () => {
     const env = { VENICE_API_KEY: "vk-test" };
     const filtered = resolveCatalogModel("venice:qwen-3-8-max", { env, allowChinaUpstream: false });

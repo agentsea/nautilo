@@ -29,19 +29,34 @@ export function listMediaGenerationModels(
   env: NodeJS.ProcessEnv = process.env,
 ): MediaGenerationModel[] {
   const output = kind === "music" ? "audio" : kind;
-  return listResolvedCatalogModels({ includeUnavailable: true, env })
+  // The managed Gateway supports chat and embeddings only. Evaluate catalog
+  // credential availability for media using the existing direct credentials,
+  // while retaining every routing/privacy/catalog decision from the resolver.
+  const directMediaEnv = {
+    ...env,
+    NAUTILO_MANAGED_GATEWAY_API_KEY: undefined,
+    NAUTILO_MANAGED_GATEWAY_BASE_URL: undefined,
+  };
+  return listResolvedCatalogModels({ includeUnavailable: true, env: directMediaEnv })
     .filter((row) => row.workload === "generation"
       && row.generation?.family === kind
       && row.output.includes(output)
       && (kind === "image" ? IMAGE_PROVIDERS.has(row.provider)
         : kind === "video" ? DEFAULT_VIDEO_MODELS.has(row.id) : MUSIC_MODELS.has(row.id)))
-    .map((row) => ({
-      id: row.id,
-      displayName: row.displayName,
-      provider: row.provider,
-      enabled: row.availability === "selectable",
-      ...(row.unavailableReason ? { unavailableReason: row.unavailableReason } : {}),
-    }));
+    .map((row) => {
+      const directImageCredentialMissing = kind === "image"
+        && row.provider === "openrouter"
+        && !env["OPENROUTER_API_KEY"]?.trim();
+      return {
+        id: row.id,
+        displayName: row.displayName,
+        provider: row.provider,
+        enabled: row.availability === "selectable" && !directImageCredentialMissing,
+        ...(directImageCredentialMissing
+          ? { unavailableReason: "OpenRouter credential is not configured" }
+          : row.unavailableReason ? { unavailableReason: row.unavailableReason } : {}),
+      };
+    });
 }
 
 /** Resolve at request preparation, never again for an approved or queued media job. */

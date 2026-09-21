@@ -242,6 +242,12 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   if (options.headers && Object.keys(options.headers).length > 0) {
     configuration["defaultHeaders"] = { ...options.headers };
   }
+  if (options.forbidRedirects) {
+    configuration["fetch"] = (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => globalThis.fetch(input, { ...init, redirect: "error" });
+  }
   const timeoutMs = resolveTimeoutMs(options);
   const base: Record<string, unknown> = {
     model: stripProviderPrefix(options.modelId),
@@ -250,6 +256,7 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
     ...(Object.keys(configuration).length > 0 ? { configuration } : {}),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
+  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   if (options.callbacks) base["callbacks"] = options.callbacks;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (useResponsesApi) {

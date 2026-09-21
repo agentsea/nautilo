@@ -7,6 +7,8 @@ import { resolveRailwayProviderConfig } from "../../src/lib/host-provider-config
 import { KEY_REGISTRY } from "@nautilo/config-guard";
 import { HOSTING_PROVIDER_ENV_VARS, resolveProviderCapabilities } from "@nautilo/hosting";
 
+const HOSTING_KEY_REGISTRY = KEY_REGISTRY.filter((key) => key.id !== "nautilo-gateway");
+
 let root: string;
 
 beforeEach(async () => {
@@ -34,15 +36,30 @@ async function writeProviderConfig(path: string, body: string): Promise<void> {
 }
 
 describe("Railway provider-only TOML", () => {
-  test("deployment metadata covers every canonical provider key without accepting runtime secrets", () => {
-    expect(Object.fromEntries(KEY_REGISTRY.map((key) => [key.id, key.envVar])))
+  test("deployment metadata covers every adopted hosting provider without accepting runtime secrets", () => {
+    expect(Object.fromEntries(HOSTING_KEY_REGISTRY.map((key) => [key.id, key.envVar])))
       .toEqual(HOSTING_PROVIDER_ENV_VARS);
+    expect(HOSTING_PROVIDER_ENV_VARS).not.toHaveProperty("nautilo-gateway");
+  });
+
+  test("local-only Nautilo Gateway configuration is rejected by hosted provider adoption", async () => {
+    const config = join(root, "providers.toml");
+    await writeProviderConfig(config, [
+      "schemaVersion = 1",
+      "[providers]",
+      `nautilo-gateway = { value = "ngw_${"a".repeat(43)}" }`,
+      "",
+    ].join("\n"));
+    expect(await resolveRailwayProviderConfig({
+      providerConfigPath: config,
+      environment: { HOME: root },
+    })).toEqual({ outcome: "failure", code: "railway.plan.provider-config-invalid" });
   });
 
   test("both downloadable template forms include every registered service", async () => {
     const railway = await readFile(new URL("../../templates/nautilo-railway-providers.toml", import.meta.url), "utf8");
     const local = await readFile(new URL("../../templates/nautilo-deploy.toml", import.meta.url), "utf8");
-    for (const key of KEY_REGISTRY) {
+    for (const key of HOSTING_KEY_REGISTRY) {
       expect(railway).toMatch(new RegExp(`^(?:# )?${key.id} = \\{ value =`, "m"));
       expect(local).toContain(`key = "${key.envVar}"`);
     }
@@ -69,7 +86,7 @@ describe("Railway provider-only TOML", () => {
       await writeProviderConfig(config, [
         "schemaVersion = 1", "[providers]",
         ...Object.entries(values).map(([provider, value]) => {
-          const envVar = KEY_REGISTRY.find((key) => key.id === provider)!.envVar;
+          const envVar = HOSTING_KEY_REGISTRY.find((key) => key.id === provider)!.envVar;
           return `${provider} = ${source === "literal" ? `{ value = "${value}" }` : `{ fromEnv = "${envVar}" }`}`;
         }),
       ].join("\n"));
@@ -77,7 +94,7 @@ describe("Railway provider-only TOML", () => {
         providerConfigPath: config,
         environment: {
           HOME: root,
-          ...Object.fromEntries(KEY_REGISTRY.map((key) => [key.envVar, values[key.id as keyof typeof values]])),
+          ...Object.fromEntries(HOSTING_KEY_REGISTRY.map((key) => [key.envVar, values[key.id as keyof typeof values]])),
         },
       });
       expect(result.outcome).toBe("resolved");
@@ -90,7 +107,7 @@ describe("Railway provider-only TOML", () => {
         coreDegradedConsent: false,
       });
       expect(plan.issues).toEqual([]);
-      expect(plan.providers.filter((provider) => provider.selected)).toHaveLength(KEY_REGISTRY.length);
+      expect(plan.providers.filter((provider) => provider.selected)).toHaveLength(HOSTING_KEY_REGISTRY.length);
       for (const value of Object.values(values)) expect(JSON.stringify(plan)).not.toContain(value);
     }
   });
@@ -194,7 +211,7 @@ describe("Railway provider-only TOML", () => {
       providerConfigPath: config,
     });
     expect(result.outcome).toBe("resolved");
-    if (result.outcome === "resolved") expect(result.providers.size).toBe(KEY_REGISTRY.length);
+    if (result.outcome === "resolved") expect(result.providers.size).toBe(HOSTING_KEY_REGISTRY.length);
   });
 
   test("fails closed for malformed process-environment and legacy-dotenv provider values", async () => {

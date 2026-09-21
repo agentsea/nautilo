@@ -665,7 +665,7 @@ export class CoolSessionClient implements CoolSessionLike {
     form.append("childid", childId);
     form.append(
       "file",
-      new Blob([file.bytes], { type: file.contentType }),
+      new Blob([file.bytes as Uint8Array<ArrayBuffer>], { type: file.contentType }),
       file.filename,
     );
     let res: Response;

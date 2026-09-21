@@ -17,6 +17,9 @@ describe("managed provider credential route inventory", () => {
       for (const match of source.matchAll(/["'](\/api\/setup\/research-provider)["']/g)) {
         if (match[1]) paths.add(match[1]);
       }
+      for (const match of source.matchAll(/["'](\/api\/setup\/nautilo-gateway)["']/g)) {
+        if (match[1]) paths.add(match[1]);
+      }
     }
     expect([...paths].sort()).toEqual(Object.keys(MANAGED_PROVIDER_CREDENTIAL_ROUTE_DECISIONS).sort());
   });

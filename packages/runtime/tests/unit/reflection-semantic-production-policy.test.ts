@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { markManagedGatewayOutcomeUnknown } from "@nautilo/agent";
 import type { DirectDatabase } from "@nautilo/db";
 
 import {
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
+  DurableSleepProviderOutcomeUnknownError,
   ORGANIZER_BATCH_MAX_ITEMS,
   type DurableSleepClaim,
   type DurableSleepSemanticPort,
@@ -11,6 +13,7 @@ import {
 
 import {
   REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
+  classifyReflectionModelInvocationFailure,
   createProductionReflectionMemoryRuntime,
   resolveOrganizerPublicationLegacyLeaf,
   resolveOrganizerPublicationLegacyLeafOutcome,
@@ -50,6 +53,15 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("production Reflection semantic policy", () => {
+  test("turns managed Gateway uncertainty into a terminal durable outcome", () => {
+    const classified = classifyReflectionModelInvocationFailure(
+      markManagedGatewayOutcomeUnknown(new Error("upstream response lost")),
+      "openrouter:test/model",
+    );
+
+    expect(classified).toBeInstanceOf(DurableSleepProviderOutcomeUnknownError);
+  });
+
   test("binds one supplied data-operation pair into the existing worker", async () => {
     const claim: DurableSleepClaim = {
       logicalObjectRef: "logical:record:bound",

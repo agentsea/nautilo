@@ -185,7 +185,7 @@ function resolveAvailability(
     }
   }
 
-  if (!(workload === "speech" ? !!env["ELEVENLABS_API_KEY"]?.trim() : modelHasRunnableCredentials(id, env))) {
+  if (!(workload === "speech" ? !!env["ELEVENLABS_API_KEY"]?.trim() : modelHasRunnableCredentials(id, env, workload))) {
     return {
       availability: "missing_credentials",
       reason: missingCredentialReason(id),

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { markManagedGatewayOutcomeUnknown } from "@nautilo/agent";
 import type { ProcessorTransformInput } from "@nautilo/lattice-crypto";
 import {
   encodeRoomEventPayloadV1,
@@ -150,7 +151,20 @@ describe("protected Stenographer compaction", () => {
     )).toBe(true);
   });
 
-  test("closes the one-run gate with an empty prefix on provider failure", async () => {
+  test.each([
+    ["provider failure", new Error("provider detail"), "provider_failure"],
+    [
+      "uncertain managed Gateway outcome",
+      markManagedGatewayOutcomeUnknown(
+        Object.assign(new Error("Gateway failed"), { status: 502 }),
+      ),
+      "provider_outcome_unknown",
+    ],
+  ] as const)("closes the one-run gate with an empty prefix on %s", async (
+    _label,
+    failure,
+    reason,
+  ) => {
     const state = fixture();
     const publishedPrefixes: number[] = [];
     let productWrites = 0;
@@ -180,7 +194,7 @@ describe("protected Stenographer compaction", () => {
         compactorVersion: "m241-v1",
         createdAt: CREATED_AT,
       },
-      invokeModel: () => Promise.reject(new Error("provider detail")),
+      invokeModel: () => Promise.reject(failure),
       publication: {
         reserve: () => {
           productWrites += 1;
@@ -199,7 +213,7 @@ describe("protected Stenographer compaction", () => {
 
     expect(result).toEqual({
       status: "rejected",
-      reason: "provider_failure",
+      reason,
     });
     expect(publishedPrefixes).toEqual([0]);
     expect(productWrites).toBe(0);

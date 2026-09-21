@@ -63,8 +63,8 @@ describe("ProviderKeyCoverage", () => {
       rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent),
     ).toEqual([
       "TypeSafeOpenRouterVenice",
-      "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible Gateway",
-      "VeniceOpenRouterOpenAI",
+      "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible GatewayNautilo Gateway",
+      "VeniceOpenRouterOpenAINautilo Gateway",
       "ElevenLabs",
       "ElevenLabsGroq",
       "VeniceOpenRouterOpenAIGoogle",
@@ -192,6 +192,8 @@ describe("ProviderKeyCoverage", () => {
     const keyApi = {
       getKeySummary: mock(async () => ({ keys: [missing], hasLlm: false })),
       setupKeys: mock(async () => ({ success: true })),
+      getNautiloGateway: mock(async () => ({ baseUrl: null })),
+      updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
       validateKeys: mock(async () => ({
         keys: [verified],
         summary: { total: 1, ok: 1, warnings: 0, errors: 0 },
@@ -222,6 +224,8 @@ describe("ProviderKeyCoverage", () => {
     const disabledApi = {
       getKeySummary: mock(async () => pending),
       setupKeys: mock(async () => ({ success: true })),
+      getNautiloGateway: mock(async () => ({ baseUrl: null })),
+      updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
       validateKeys: mock(async () => ({
         keys: [],
         summary: { total: 0, ok: 0, warnings: 0, errors: 0 },
@@ -233,6 +237,7 @@ describe("ProviderKeyCoverage", () => {
     expect(denied.queryByTestId("provider-key-coverage")).toBeNull();
     expect(denied.getByText(/don't have permission/u)).toBeTruthy();
     expect(disabledApi.getKeySummary).not.toHaveBeenCalled();
+    expect(disabledApi.getNautiloGateway).not.toHaveBeenCalled();
     denied.unmount();
 
     const loading = render(

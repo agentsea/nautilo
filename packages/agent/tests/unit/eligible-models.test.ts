@@ -50,6 +50,18 @@ describe("getEligibleModels", () => {
     expect(eligible.some((model) => model.id.startsWith("anthropic:"))).toBe(false);
   });
 
+  test("managed Gateway admits only signed OpenRouter catalog rows", () => {
+    const env = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+    };
+    const eligible = getEligibleModels({ env });
+    expect(eligible.length).toBeGreaterThan(0);
+    expect(eligible.every((model) => model.provider === "openrouter")).toBe(true);
+    expect(resolveRetainedModels(["openrouter:legacy/custom-model"], { env })[0])
+      .toMatchObject({ availability: "unknown-model", enabled: false });
+  });
+
   test("missing credentials are omitted normally and retained with a bounded reason", () => {
     const id = "anthropic:claude-sonnet-4-6";
     expect(getEligibleModels({ env: {} }).some((model) => model.id === id)).toBe(false);

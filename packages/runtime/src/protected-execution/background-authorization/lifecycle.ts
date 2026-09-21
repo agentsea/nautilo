@@ -43,6 +43,7 @@ export type BackgroundAuthorizationRetryReason =
 export const BACKGROUND_AUTHORIZATION_TERMINAL_REASONS = Object.freeze([
   "malformed_request",
   "integrity_failure",
+  "provider_outcome_unknown",
   "policy_rejected",
   "unsupported_subject",
   "retry_limit_exhausted",

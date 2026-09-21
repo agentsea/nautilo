@@ -4,6 +4,11 @@ import {
 } from "@nautilo/config";
 import type { ModelPurpose } from "@nautilo/trust";
 import { assertModelRunnable, getEligibleModels } from "./eligible-models";
+import {
+  managedGatewayKeyIsPresent,
+  managedGatewayTransportIsRunnable,
+  resolveOpenRouterTransport,
+} from "../providers/openrouter-transport";
 
 const PURPOSE_BY_ROLE: Readonly<Record<ModelRole, ModelPurpose>> = {
   chat: "chat-tools",
@@ -65,21 +70,81 @@ export function resolveModelRole(
 ): string {
   const purpose = PURPOSE_BY_ROLE[role];
   const configured = options.configuredId?.trim() ?? "";
+  const env = options.env ?? process.env;
+  const managedGatewayApplies = role !== "imageGeneration";
+  const availabilityEnv = role === "imageGeneration"
+    ? {
+        ...env,
+        NAUTILO_MANAGED_GATEWAY_API_KEY: undefined,
+        NAUTILO_MANAGED_GATEWAY_BASE_URL: undefined,
+      }
+    : options.env;
   const availabilityOptions = {
     purpose,
-    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(availabilityEnv === undefined ? {} : { env: availabilityEnv }),
     ...(options.allowChinaUpstream === undefined
       ? {}
       : { allowChinaUpstream: options.allowChinaUpstream }),
   } as const;
   if (configured) {
+    if (role === "imageGeneration"
+      && configured.startsWith("openrouter:")
+      && !env["OPENROUTER_API_KEY"]?.trim()) {
+      throw new Error("The configured OpenRouter image model requires an OpenRouter credential.");
+    }
+    if (managedGatewayApplies && configured.startsWith("openrouter:") && managedGatewayKeyIsPresent(env)) {
+      resolveOpenRouterTransport({ env });
+    }
     assertModelRunnable(configured, availabilityOptions);
     return configured;
   }
 
+  // Automatic selection is Gateway-first when the operator configured a
+  // managed key. A malformed managed configuration is an explicit error,
+  // rather than permission to spend against unrelated BYOK credentials.
+  const autoEmbeddingUsesOpenRouter = role === "embeddings"
+    && !env["VENICE_API_KEY"]?.trim()
+    && (!!env["OPENROUTER_API_KEY"]?.trim() || !env["OPENAI_API_KEY"]?.trim());
+  if (
+    managedGatewayApplies
+    && managedGatewayKeyIsPresent(env)
+    && (role !== "embeddings" || autoEmbeddingUsesOpenRouter)
+  ) {
+    resolveOpenRouterTransport({ env });
+  }
+
   const eligible = getEligibleModels(availabilityOptions);
-  const runnable = new Set(eligible.map((model) => model.id));
-  const candidate = candidatesForModelRole(role).find((id) => runnable.has(id));
+  const runnable = new Set(eligible
+    .filter((model) => role !== "imageGeneration"
+      || model.provider !== "openrouter"
+      || !!env["OPENROUTER_API_KEY"]?.trim())
+    .map((model) => model.id));
+  const candidates = candidatesForModelRole(role);
+  let orderedCandidates = candidates;
+  if (managedGatewayApplies && managedGatewayTransportIsRunnable(env)) {
+    if (role === "embeddings") {
+      const legacyPrefixes = [
+        env["VENICE_API_KEY"]?.trim() ? "venice:" : null,
+        env["OPENROUTER_API_KEY"]?.trim() ? "openrouter:" : null,
+        env["OPENAI_API_KEY"]?.trim() ? "openai:" : null,
+      ].filter((prefix): prefix is string => prefix !== null);
+      orderedCandidates = legacyPrefixes.length > 0
+        ? [
+            ...legacyPrefixes.flatMap((prefix) => candidates.filter((id) => id.startsWith(prefix))),
+            ...candidates.filter((id) => !legacyPrefixes.some((prefix) => id.startsWith(prefix))),
+          ]
+        : [
+            ...candidates.filter((id) => id.startsWith("openrouter:")),
+            ...candidates.filter((id) => !id.startsWith("openrouter:")),
+          ];
+    } else {
+      orderedCandidates = [
+        ...candidates.filter((id) => id.startsWith("openrouter:")),
+        ...candidates.filter((id) => !id.startsWith("openrouter:")),
+      ];
+    }
+  }
+  const candidate = orderedCandidates.find((id) => runnable.has(id));
   if (candidate) return candidate;
   // Search preferences are an ordering, not an allowlist of providers. Reuse
   // signed catalogue priority after the curated preferences are exhausted.
