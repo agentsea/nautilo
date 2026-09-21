@@ -947,7 +947,7 @@ export function createPostModelNode(
       // and treated as `none` so a resolver bug can never widen approval.
       // A capabilityless tool's explicit catalogue prove_it contract also
       // stays outside this override; those operations have no capability
-      // policy from which Full Workstation authority could be inherited.
+      // policy from which Full Workstation approval could be inherited.
       // -----------------------------------------------------------------
       const overrideResolver = deps?.resolveWorkstationApprovalOverride;
       const preservesCapabilitylessPinFloor =

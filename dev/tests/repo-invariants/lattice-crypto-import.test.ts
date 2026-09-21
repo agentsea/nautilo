@@ -1156,6 +1156,9 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/runtime/tests/unit/protected-stenographer-work-composition.test.ts -> @nautilo/lattice-crypto/testing",
   "packages/runtime/tests/unit/protected-stenographer-work-composition.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/runtime/tests/unit/stenographer-protected-source-loader.test.ts -> @nautilo/lattice-crypto",
+  // The stream-lifecycle regression fixture constructs a real turn session so
+  // it can prove reservation publication and ordinal ownership end to end.
+  "packages/runtime/tests/unit/live-shadow-agent-runtime.test.ts -> @nautilo/lattice-crypto",
   // M282 — reviewed Browser live-shadow production composition. The Server
   // owns current authority and the Runtime owns the turn-scoped crypto
   // consumer; neither receives device private keys.

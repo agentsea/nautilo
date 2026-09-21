@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
-import type {
-  LiveShadowAgentPublishedMessage,
-  LiveShadowAgentSessionFailureReason,
-  LiveShadowAgentSessionFailureStage,
-  LiveShadowAgentTurnSession,
+import {
+  createLiveShadowAgentTurnSession,
+  type LiveShadowAgentPublishedMessage,
+  type LiveShadowAgentSessionFailureReason,
+  type LiveShadowAgentSessionFailureStage,
+  type LiveShadowAgentTurnSession,
 } from "@nautilo/lattice-bridge/server";
-import { createLiveShadowAgentTurnSession } from "@nautilo/lattice-bridge/server";
 import {
   agentId,
   agentRuntimeGeneration,
