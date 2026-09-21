@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {
+      "caseId": "room10-apple",
+      "name": "Fill the first row's number",
+      "plan": {
+        "goal": "Enter 42 in the Number field for row 1, whose Fruit cell already contains Apple.",
+        "values": {
+          "row 1 number": "42"
+        }
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_type",
+          "args": {
+            "ref": "@e20",
+            "text": "42",
+            "clear": true
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "room11-profile",
+      "name": "Find the visible profile clue",
+      "plan": {
+        "goal": "Find Clue #2 in the currently selected User Profile tab."
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_click",
+          "args": {
+            "ref": "@e12"
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "room15-second-row",
+      "name": "Place the next canvas puzzle piece",
+      "plan": {
+        "goal": "Place puzzle piece 8 next in the 5 by 5 puzzle."
+      },
+      "acceptable": [
+        {
+          "kind": "control",
+          "id": "needs_visual_evidence"
+        }
+      ]
+    },
+    {
+      "caseId": "room2-initial",
+      "name": "Click the room button",
+      "plan": {
+        "goal": "Click the button labeled CLICK ON ME!"
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_click",
+          "args": {
+            "ref": "@e3"
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "room3-initial",
+      "name": "Fill the simple form's name",
+      "plan": {
+        "goal": "Enter Robbie in the Name field.",
+        "values": {
+          "person name": "Robbie"
+        }
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_type",
+          "args": {
+            "ref": "@e7",
+            "text": "Robbie",
+            "clear": true
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "room5-dropdown",
+      "name": "Choose an item from the open dropdown",
+      "plan": {
+        "goal": "Choose Dog from the currently open Favorite animal list."
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_click",
+          "args": {
+            "ref": "@e3"
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "room5-initial",
+      "name": "Choose a radio option",
+      "plan": {
+        "goal": "Set Favorite color to Blue."
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_click",
+          "args": {
+            "ref": "@e17"
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "room6-checkout",
+      "name": "Choose a date from the open calendar",
+      "plan": {
+        "goal": "Choose October 10, 2026 from the currently open Check-out date picker."
+      },
+      "acceptable": [
+        {
+          "kind": "call",
+          "name": "browser_click",
+          "args": {
+            "ref": "@e63"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -22,6 +22,7 @@ packages/codex-app-server/generated/*/upstream/
 # testing
 coverage/
 /dev/evals/official-skills/.results/
+/dev/evals/browser-visual-grounding/.results/
 /dev/evals/official-skills/.venv/
 packages/runtime/tests/evals/.results/reflection-hierarchy/
 packages/runtime/tests/evals/.results/reflection-foreground/
