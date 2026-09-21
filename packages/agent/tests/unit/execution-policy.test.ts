@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { GraphRecursionError } from "@langchain/langgraph";
+import { setConfigOverrides } from "@nautilo/config";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -14,25 +15,27 @@ import { applyToolResultsToStreaks } from "../../src/graph/no-progress";
 
 const AGENT_ROOT = join(import.meta.dir, "..", "..");
 
+afterEach(() => setConfigOverrides({}));
+
 /**
- * Stack 208 P0 — shared graph execution policy seam.
+ * shared graph execution policy seam.
  *
- * Coverage: the resolver returns the P0 default ceiling (100), every graph
+ * Coverage: the resolver returns default ceiling (100), every graph
  * entry point consumes one resolver (no hardcoded `100`), and LangGraph's raw
  * `GraphRecursionError` maps to a typed internal `GraphBudgetOutcome` while
  * every other error shape returns `null`. The metrics accumulator counts
  * supersteps / model invocations / tool calls from the same `streamEvents`
  * shapes the executors already dispatch on.
  */
-describe("resolveGraphExecutionPolicy (Stack 208 P0 / R1 + P2)", () => {
-  test("returns the P2 technical ceiling (1_000_000) after the P1/P2 gates shipped", () => {
+describe("resolveGraphExecutionPolicy ", () => {
+  test("returns technical ceiling (1_000_000) after the policy gates gates shipped", () => {
     const policy = resolveGraphExecutionPolicy();
     expect(policy.recursionLimit).toBe(1_000_000);
     expect(policy.recursionLimit).toBe(DEFAULT_GRAPH_RECURSION_LIMIT);
   });
 
-  test("R1 — the ceiling is a single named constant (no call site hardcodes 100)", () => {
-    // The seam exists so P3 raises ONE constant here instead of six scattered
+  test(" — the ceiling is a single named constant (no call site hardcodes 100)", () => {
+    // The seam exists so raises ONE constant here instead of six scattered
     // sites. Assert the constant is the source of truth for the resolver.
     expect(DEFAULT_GRAPH_RECURSION_LIMIT).toBe(1_000_000);
     expect(resolveGraphExecutionPolicy().recursionLimit).toBe(DEFAULT_GRAPH_RECURSION_LIMIT);
@@ -42,19 +45,36 @@ describe("resolveGraphExecutionPolicy (Stack 208 P0 / R1 + P2)", () => {
     );
   });
 
-  test("R2 — omitted explicit caps do NOT lower the ceiling (no implicit deadline)", () => {
-    // D2 / R2: omitted time_limit_seconds means no wall-clock termination. P0
-    // ignores any explicit cap input — the seam is here so P2/P3 can thread
+  test(" — omitted explicit caps do NOT lower the ceiling (no implicit deadline)", () => {
+    // An omitted time_limit_seconds means no wall-clock termination.
+    // ignores any explicit cap input — the seam is here so the policy gates can thread
     // them later without changing call sites. Behavior today: unchanged.
     expect(resolveGraphExecutionPolicy(undefined).recursionLimit).toBe(
       resolveGraphExecutionPolicy({ time_limit_seconds: 999 }).recursionLimit,
     );
   });
 
-  test("Stack 208 P2 — the policy carries repeatedFailureLimit (R4)", () => {
+  test("the policy carries repeatedFailureLimit", () => {
     const policy = resolveGraphExecutionPolicy();
     expect(policy.repeatedFailureLimit).toBe(3);
     expect(policy.repeatedFailureLimit).toBe(DEFAULT_REPEATED_FAILURE_LIMIT);
+  });
+
+  test("snapshots the configured browser decision intervention limit with an override seam", () => {
+    expect(resolveGraphExecutionPolicy().browserDecisionInterventionLimit).toBe(2);
+    setConfigOverrides({ nautilo_browser_decision_intervention_limit: 4 });
+    expect(resolveGraphExecutionPolicy().browserDecisionInterventionLimit).toBe(4);
+    expect(resolveGraphExecutionPolicy(undefined, {
+      browserDecisionInterventionLimit: 7,
+    }).browserDecisionInterventionLimit).toBe(7);
+  });
+
+  test("rejects invalid browser decision intervention limits", () => {
+    for (const browserDecisionInterventionLimit of [0, -1, 1.5, Number.NaN]) {
+      expect(() => resolveGraphExecutionPolicy(undefined, {
+        browserDecisionInterventionLimit,
+      })).toThrow("Invalid browser decision intervention limit");
+    }
   });
 
   test("non-default repeatedFailureLimit flows from policy to helper behavior", () => {
@@ -106,7 +126,7 @@ describe("resolveGraphExecutionPolicy (Stack 208 P0 / R1 + P2)", () => {
   });
 });
 
-describe("isGraphRecursionError (Stack 208 P0 / R9)", () => {
+describe("isGraphRecursionError ", () => {
   test("recognizes a real GraphRecursionError instance", () => {
     const err = new GraphRecursionError("Recursion limit of 100 reached", {
       lc_error_code: "GRAPH_RECURSION_LIMIT",
@@ -136,7 +156,7 @@ describe("isGraphRecursionError (Stack 208 P0 / R9)", () => {
   });
 });
 
-describe("toGraphBudgetOutcome (Stack 208 P0 / R9)", () => {
+describe("toGraphBudgetOutcome ", () => {
   test("maps a GraphRecursionError to a typed graph_budget_exceeded outcome", () => {
     const err = new GraphRecursionError("Recursion limit of 100 reached", {
       lc_error_code: "GRAPH_RECURSION_LIMIT",
@@ -198,15 +218,16 @@ describe("toGraphBudgetOutcome (Stack 208 P0 / R9)", () => {
   });
 });
 
-describe("GraphExecutionMetrics (Stack 208 P0 / R9 — telemetry-only counters)", () => {
+describe("GraphExecutionMetrics ( the policy gates — telemetry-only counters)", () => {
   test("counts every Nautilo graph node on on_chain_end", () => {
     const metrics = new GraphExecutionMetrics(() => 0);
     metrics.noteStreamEvent({ event: "on_chain_end", name: "pre_model" });
     metrics.noteStreamEvent({ event: "on_chain_end", name: "agent" });
     metrics.noteStreamEvent({ event: "on_chain_end", name: "post_model" });
     metrics.noteStreamEvent({ event: "on_chain_end", name: "tools" });
+    metrics.noteStreamEvent({ event: "on_chain_end", name: "browser_decision" });
     metrics.noteStreamEvent({ event: "on_chain_end", name: "await_reply" });
-    expect(metrics.snapshot().supersteps).toBe(5);
+    expect(metrics.snapshot().supersteps).toBe(6);
   });
 
   test("reports four supersteps for one complete tool round", () => {

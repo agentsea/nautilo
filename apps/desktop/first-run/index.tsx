@@ -1,8 +1,8 @@
 /**
- * First-run mode picker (D057 2a.2).
+ * First-run mode picker.
  *
  * Rendered inside a dedicated Electron BrowserWindow on first launch
- * (when userData/config.json is missing or stale). D134 retired the
+ * (when userData/config.json is missing or stale). The current design retired the
  * packaged-local server path: this picker has one job—connect the desktop
  * client to a Nautilo server.
  *
@@ -52,6 +52,13 @@ type RecentServerEntry = {
   lastUsedAt: string;
 };
 
+type OfficialConnectTarget = {
+  id: "nautilo-community";
+  label: string;
+  url: string;
+  joinUrl: string;
+};
+
 type ConnectTargetsPayload = {
   candidates: PickerCandidate[];
   recentServers: RecentServerEntry[];
@@ -76,9 +83,16 @@ const api: FirstRunAPI | undefined = (
   window as unknown as { nautiloFirstRun?: FirstRunAPI }
 ).nautiloFirstRun;
 
-// Public product guidance only. This is placeholder text, not an implicit
-// connection target; a fresh install still starts with an empty input.
-export const PUBLIC_SERVER_URL_PLACEHOLDER = "community.nautilo.dev";
+export const SERVER_URL_PLACEHOLDER = "https://your-server.example";
+
+const OFFICIAL_CONNECT_TARGETS: readonly OfficialConnectTarget[] = Object.freeze([
+  Object.freeze({
+    id: "nautilo-community",
+    label: "Nautilo Community",
+    url: "https://community.nautilo.ai",
+    joinUrl: "https://community.nautilo.ai/join",
+  }),
+]);
 
 // ---------------------------------------------------------------------------
 // Component
@@ -222,11 +236,11 @@ export function App() {
     }
   }, [committing, probe]);
 
-  const handleContinue = useCallback(async () => {
+  const connectToServer = useCallback(async (targetUrl: string) => {
     if (!api || committing) return;
     setCommitting(true);
     try {
-      const cfg: DesktopConfig = { version: 1, mode: "connect", serverUrl: serverUrl.trim() };
+      const cfg: DesktopConfig = { version: 1, mode: "connect", serverUrl: targetUrl.trim() };
       const result = await api.commit(cfg);
       if (!result.ok) applyConnectionFailure(result);
     } catch {
@@ -235,7 +249,16 @@ export function App() {
       setCommitting(false);
       queueMicrotask(() => serverInputRef.current?.focus());
     }
-  }, [serverUrl, committing, applyConnectionFailure]);
+  }, [committing, applyConnectionFailure]);
+
+  const handleContinue = useCallback(async () => {
+    await connectToServer(serverUrl);
+  }, [serverUrl, connectToServer]);
+
+  const handleOfficialConnect = useCallback(async (target: OfficialConnectTarget) => {
+    await editServerUrl(target.url);
+    await connectToServer(target.url);
+  }, [connectToServer, editServerUrl]);
 
   const handleConfirmDowngrade = useCallback(async () => {
     if (!api || committing || probe.kind !== "error" || !probe.downgradeDecisionId) return;
@@ -276,8 +299,13 @@ export function App() {
   }, [committing, firstRunMode]);
   const currentServerUrl =
     connectScan.kind === "ready" ? connectScan.currentServerUrl : null;
+  const officialTargets = OFFICIAL_CONNECT_TARGETS;
+  const currentIsOfficial = officialTargets.some((target) =>
+    isSameServerUrl(target.url, currentServerUrl));
   const visibleRecentServers = connectScan.kind === "ready"
-    ? connectScan.recentServers.filter((server) => !isSameServerUrl(server.url, currentServerUrl))
+    ? connectScan.recentServers.filter((server) =>
+        !isSameServerUrl(server.url, currentServerUrl) &&
+        !officialTargets.some((target) => isSameServerUrl(server.url, target.url)))
     : [];
   if (committing) {
     return (
@@ -313,7 +341,21 @@ export function App() {
         {connectScan.kind === "loading" && (
           <p style={cardStyles.scanHint}>Scanning for local Nautilo servers…</p>
         )}
-        {connectScan.kind === "ready" && currentServerUrl ? (
+        {connectScan.kind === "ready" && officialTargets.length > 0 ? (
+          <div style={cardStyles.officialBlock}>
+            <span style={cardStyles.label}>Official</span>
+            {officialTargets.map((target) => (
+              <OfficialServerCard
+                key={target.id}
+                target={target}
+                firstRun={firstRunMode}
+                current={isSameServerUrl(target.url, currentServerUrl)}
+                onConnect={handleOfficialConnect}
+              />
+            ))}
+          </div>
+        ) : null}
+        {connectScan.kind === "ready" && currentServerUrl && !currentIsOfficial ? (
           <div style={cardStyles.currentServerBlock}>
             <span style={cardStyles.label}>Currently connected</span>
             <RecentServerButton
@@ -371,7 +413,7 @@ export function App() {
               ref={serverInputRef}
               type="text"
               inputMode="url"
-              placeholder={PUBLIC_SERVER_URL_PLACEHOLDER}
+              placeholder={SERVER_URL_PLACEHOLDER}
               value={serverUrl}
               onChange={(e) => { void editServerUrl(e.target.value); }}
               spellCheck={false}
@@ -481,6 +523,72 @@ function RecentServerButton({
       </span>
       <span style={cardStyles.serverRowUrl}>{server.url}</span>
     </button>
+  );
+}
+
+function OfficialServerCard({
+  target,
+  firstRun,
+  current,
+  onConnect,
+}: {
+  target: OfficialConnectTarget;
+  firstRun: boolean;
+  current: boolean;
+  onConnect: (target: OfficialConnectTarget) => void;
+}) {
+  return (
+    <div style={{ ...cardStyles.officialCard, ...(current ? cardStyles.currentServerButton : {}) }}>
+      <span style={cardStyles.serverRowHeader}>
+        <span style={cardStyles.officialTitle}>{target.label}</span>
+        {current ? (
+          <span style={cardStyles.currentBadge}>
+            <span style={cardStyles.currentDot} aria-hidden />
+            Current
+          </span>
+        ) : null}
+      </span>
+      <span style={cardStyles.officialCopy}>
+        Talk with the Nautilo community. Public members can chat; only admins can invoke Genies.
+      </span>
+      <span style={cardStyles.serverRowUrl}>{target.url}</span>
+      <div style={cardStyles.officialActions}>
+        {firstRun ? (
+          <a
+            href={target.joinUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={cardStyles.officialPrimaryButton}
+          >
+            Join the Nautilo Community
+          </a>
+        ) : null}
+        {!current ? (
+          <button
+            type="button"
+            onClick={() => onConnect(target)}
+            style={firstRun ? cardStyles.officialSecondaryButton : cardStyles.officialPrimaryButton}
+          >
+            {firstRun ? "Already joined? Connect" : "Connect"}
+          </button>
+        ) : null}
+        {!firstRun && !current ? (
+          <a
+            href={target.joinUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={cardStyles.officialSecondaryButton}
+          >
+            Create community account
+          </a>
+        ) : null}
+      </div>
+      {firstRun ? (
+        <span style={cardStyles.officialHint}>
+          New here? Join in your browser, then return and connect with the account you created.
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -656,6 +764,62 @@ const cardStyles = {
   } as React.CSSProperties,
   currentServerBlock: {
     marginBottom: "18px",
+  } as React.CSSProperties,
+  officialBlock: {
+    marginBottom: "18px",
+  } as React.CSSProperties,
+  officialCard: {
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "7px",
+    padding: "12px",
+    background: "var(--bg-panel-hover)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+  } as React.CSSProperties,
+  officialTitle: {
+    color: "var(--text)",
+    fontSize: "14px",
+    fontWeight: 700,
+  } as React.CSSProperties,
+  officialCopy: {
+    color: "var(--text-muted)",
+    fontSize: "12px",
+    lineHeight: 1.45,
+  } as React.CSSProperties,
+  officialActions: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "8px",
+    marginTop: "5px",
+  } as React.CSSProperties,
+  officialPrimaryButton: {
+    display: "inline-block",
+    padding: "8px 12px",
+    background: "var(--accent)",
+    border: "1px solid var(--accent)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--on-accent)",
+    fontSize: "12px",
+    fontWeight: 650,
+    cursor: "pointer",
+    textDecoration: "none",
+  } as React.CSSProperties,
+  officialSecondaryButton: {
+    display: "inline-block",
+    padding: "8px 12px",
+    background: "var(--bg)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--text)",
+    fontSize: "12px",
+    fontWeight: 600,
+    cursor: "pointer",
+    textDecoration: "none",
+  } as React.CSSProperties,
+  officialHint: {
+    color: "var(--text-muted)",
+    fontSize: "11px",
   } as React.CSSProperties,
   discoveredList: {
     display: "flex",

@@ -14,7 +14,7 @@ export {
   isSupportedComputerUseToolName,
 } from "./runtime/computer-use-admission";
 // Re-export BaseMessage so server-side message-persist code paths
-// (D128 P1.2 suppressed-turn path; future analogous spots) can type
+// including suppressed turns, can type
 // against the canonical LangGraph message shape without forcing every
 // downstream consumer to declare @langchain/core as a direct dep.
 export type { BaseMessage } from "@langchain/core/messages";
@@ -171,7 +171,7 @@ export {
   type RunScopeSubagentOpts,
   type RunScopeSubagentResult,
 } from "./subagents/scope-subagent/run";
-// D363 — repo-docs (OpenWiki) primitives consumed by the runtime task wrapper
+// repo-docs (OpenWiki) primitives consumed by the runtime task wrapper
 // (`repo-docs-task.ts`). Prompt + git-context + safety constants only; no runtime.
 export { createSystemPrompt, createUserPrompt } from "./subagents/repo-docs/prompt";
 export {
@@ -190,14 +190,14 @@ export {
   ALLOWED_GIT_SUBCOMMANDS,
   type RepoDocsCommand,
 } from "./subagents/repo-docs/constants";
-// M144 — exposed so the runtime task-dispatch seam validates a task's
+// exposed so the runtime task-dispatch seam validates a task's
 // tool whitelist at dispatch time (single source of truth for every surface).
 export {
   validateSubagentToolWhitelist,
   type ValidateSubagentToolsResult,
 } from "./tools/subagents/validate-subagent-whitelist";
 
-// D087 Phase 3 §3.7 — server routes dispatch file-tool commands
+// server routes dispatch file-tool commands
 // directly (bypassing the LLM) for user-initiated history commands.
 // `dispatchFileCommand` is the same primitive used by the
 // DynamicStructuredTool's `func` at chat time; reusing it keeps
@@ -487,7 +487,7 @@ export {
   getCostCoefficient,
   type AssistantModelConfig,
 } from "./config/assistant-models";
-// D141 P2 / LD-1 — per-user / per-agent fallback policy resolution
+// per-user / per-agent fallback policy resolution
 export {
   resolveFallbackPolicy,
   type ResolvedFallbackPolicy,
@@ -504,13 +504,13 @@ export {
   NoRunnableModelForRoleError,
   type ResolveModelRoleOptions,
 } from "./config/model-role-resolution";
-// D429 Phase 1 — resolved catalog projection (local/cache-backed, non-secret).
+// resolved catalog projection (local/cache-backed, non-secret).
 export {
   resolveCatalogModel,
   listResolvedCatalogModels,
   getActiveModelCatalogProvenance,
 } from "./config/resolved-catalog";
-// D429 Phase 7 — runtime remote model-catalog loader seam.
+// runtime remote model-catalog loader seam.
 export {
   OFFICIAL_MODEL_CATALOG_POINTER_URL,
   configureRuntimeModelCatalog,
@@ -552,7 +552,7 @@ export {
   SUPPORTED_MODEL_CATALOG_PROVIDER_PREFIXES,
   isSupportedModelCatalogProvider,
 } from "./config/model-catalog/supported-providers";
-// D429 Phase 7.4 — runtime signed explainer-catalog seam + trusted keys.
+// runtime signed explainer-catalog seam + trusted keys.
 export {
   OFFICIAL_EXPLAINER_CATALOG_URL,
   OFFICIAL_EXPLAINER_MEDIA_ORIGIN,
@@ -579,7 +579,7 @@ export {
   resetTrustedExplainerCatalogKeysForTests,
   getTrustedExplainerCatalogPublicKey,
 } from "./media/explainer-catalog/trusted-keys";
-// D405 — LLM costs dashboard: pricing + usage metering
+// LLM costs dashboard: pricing + usage metering
 export {
   MODEL_PRICES,
   IMAGE_PRICES_USD,
@@ -609,7 +609,7 @@ export {
 } from "./usage/usage-context";
 export { recordLlmUsage, type RecordUsageInput } from "./usage/record-usage";
 export { extractUsageFromLLMResult, createUsageCallbackHandler, countNautiloUsageCallbacks } from "./usage/usage-callback";
-// M152 — multi-axis task model selection
+// multi-axis task model selection
 export {
   resolveTaskModel,
   validateTaskModelSelection,
@@ -910,8 +910,10 @@ export {
   type ConnectedWebOperationDirectToolInput,
   type ConnectedWebOperationDirectToolResult,
   type ConnectedWebOperationDirectToolRuntime,
+  type ConnectedWebOperationDirectControlOptions,
 } from "./tools/connected-web-accounts/runtime";
-// D384 §5.4 — local (relay-tier) MCP tool runtime DI seam. Server wiring
+export type { BrowserDecisionObservation } from "./graph/browser-decision";
+// local (relay-tier) MCP tool runtime DI seam. Server wiring
 // injects the impl at boot via `setLocalMcpToolRuntime`.
 export {
   setLocalMcpToolRuntime,
@@ -934,7 +936,7 @@ export {
   validateTaskSelectionForCreate,
   validateTaskModelSelectionForCreate,
 } from "./tools/tasks/selection-validation";
-// D429 Phase 3 — exact task model selection (strict pin; curated IDs only).
+// exact task model selection (strict pin; curated IDs only).
 export {
   validateExactTaskModelSelection,
   assertExactTaskModelSelection,
@@ -949,7 +951,7 @@ export {
   resetArtifactStorage,
   getArtifactZone,
 } from "./tools/artifacts/storage-registry";
-// D362 Milestone B — inPlace office-session broker registry. Server boot
+// inPlace office-session broker registry. Server boot
 // wires the real broker (setOfficeSessionBroker) symmetric with
 // setArtifactStorage above.
 export {
@@ -960,10 +962,10 @@ export {
   type OfficeSessionMint,
   type OfficeSessionMintOptions,
 } from "./tools/office/session-broker";
-// D087 Phase 2A — backup subsystem public API (storage wiring +
+// backup subsystem public API (storage wiring +
 // revision recording). Called from the server boot sequence (setBackupStorage)
 // and the `file.apply_patch` success path (recordRevision).
-// D090 — session-notifications helpers for silent direct-dispatch
+// session-notifications helpers for silent direct-dispatch
 // Accept/Reject. Consumed by the server WS handler (append on
 // reject) and the pre-model node (drain + inject into system
 // prompt at turn start).
@@ -1085,7 +1087,7 @@ export {
   archiveScopeMemory,
   hardDeleteScopeMemory,
 } from "./store/scope-memory-store";
-// M173 — shared share/grant helper (used by the share_memory tool + grant route)
+// shared share/grant helper (used by the share_memory tool + grant route)
 export {
   shareMemoryToUser,
   type ShareMemoryOutcome,
@@ -1229,7 +1231,7 @@ export {
   type ErrorCategory,
 } from "./utils/errors";
 
-// D141 Phase 1 — friendly error translator. Wired into the runtime
+// friendly error translator. Wired into the runtime
 // job-loop's catch site so user-facing errors never leak raw upstream
 // blobs. Server logs continue to capture the full provider detail via
 // `formatProviderError` (unchanged).
@@ -1296,7 +1298,7 @@ export {
   NotFoundError,
 } from "./errors/index";
 
-// D296 P2 — official + DB skills resolution seam (ingress, discover_skills, view_skill)
+// official + DB skills resolution seam (ingress, discover_skills, view_skill)
 export {
   resolveEnabledBodies,
   resolveByName,
@@ -1312,11 +1314,11 @@ export {
 } from "./skills/select-skills-for-turn";
 export { buildSkillBodyBlock } from "./prompts/templates";
 
-// D296 P3 — code-shipped official skills registry (consumed by the server skills routes)
+// code-shipped official skills registry (consumed by the server skills routes)
 export { OFFICIAL_SKILLS, getBundledSkill } from "./skills/bundled";
 export type { BundledSkill } from "./skills/bundled";
 
-// D379 — code-shipped official commands registry + resolution seam
+// code-shipped official commands registry + resolution seam
 // (consumed by the server slash-command expander)
 export { OFFICIAL_COMMANDS, getBundledCommand } from "./commands/bundled";
 export type { BundledCommand } from "./commands/bundled";
@@ -1377,3 +1379,5 @@ export type {
 } from "./runtime/ordinary-content-access";
 export { collapseWhitespaceShareApprovalSnippet } from "./post-model/share-approval-preview";
 export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-content-access";
+
+export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";

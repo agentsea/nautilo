@@ -21,6 +21,20 @@ describe("health-checker", () => {
     globalThis.fetch = originalFetch;
   });
 
+  test("TypeSafe health uses a read-only fixed endpoint and sanitizes failures", async () => {
+    for (const [status, expected] of [[200, "verified"], [401, "invalid_key"], [403, "invalid_key"], [500, "unreachable"]] as const) {
+      globalThis.fetch = (async (url, init) => {
+        expect(url).toBe("https://api.typesafe.ai/v1/models");
+        expect(init?.redirect).toBe("error");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer synthetic-key");
+        return new Response("private-provider-body", { status });
+      }) as typeof fetch;
+      const result = await checkProviderHealth("typesafe", "synthetic-key");
+      expect(result.status).toBe(expected);
+      expect(JSON.stringify(result)).not.toContain("private-provider-body");
+    }
+  });
+
   test("anthropic 401 maps to invalid_key", async () => {
     globalThis.fetch = (async () => new Response("", { status: 401 })) as unknown as typeof fetch;
     const r = await checkProviderHealth("anthropic", "sk-ant-api03-123456789012345678901");
@@ -129,7 +143,7 @@ describe("health-checker", () => {
       throw new Error("Browser Use validation must not call the provider");
     }) as unknown as typeof fetch;
     expect(await checkKeysHealth(
-      { BROWSER_USE_API_KEY: "bu_12345678901234567890" },
+      { BROWSER_USE_API_KEY: "synthetic-browser-use-key" },
       ["browser-use"],
     )).toEqual({});
     expect(requested).toBe(false);

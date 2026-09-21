@@ -147,10 +147,11 @@ describe("room switching regression", () => {
   test("room selection installs a cache-first transcript projection before history fetches", () => {
     const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
     const runtimeSource = readFileSync(`${repoRoot}src/adapters/nautilo-runtime.tsx`, "utf8");
-    const hydrationBlock = runtimeSource.slice(
-      runtimeSource.indexOf("// D530 — select/cache/fence in the layout phase"),
-      runtimeSource.indexOf("const isCurrent = (): boolean =>"),
-    );
+    const hydrationStart = runtimeSource.indexOf("// select/cache/fence in the layout phase");
+    const hydrationEnd = runtimeSource.indexOf("const isCurrent = (): boolean =>", hydrationStart);
+    expect(hydrationStart).toBeGreaterThanOrEqual(0);
+    expect(hydrationEnd).toBeGreaterThan(hydrationStart);
+    const hydrationBlock = runtimeSource.slice(hydrationStart, hydrationEnd);
 
     expect(hydrationBlock).toContain("useLayoutEffect(() => {");
     expect(hydrationBlock).toContain("readActiveRoom(cacheScope)");

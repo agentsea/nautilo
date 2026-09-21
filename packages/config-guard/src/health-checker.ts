@@ -164,6 +164,14 @@ export async function checkProviderHealth(
         }
         return { status: "unreachable", detail: `HTTP ${res.status}` };
       }
+      case "typesafe": {
+        const res = await fetchWithTimeout("https://api.typesafe.ai/v1/models", {
+          method: "GET", redirect: "error",
+          headers: { authorization: `Bearer ${value}` },
+        });
+        if (res.status === 401 || res.status === 403) return { status: "invalid_key", detail: `${res.status}` };
+        return res.ok ? { status: "verified" } : { status: "unreachable", detail: `HTTP ${res.status}` };
+      }
       case "venice": {
         // Venice's models endpoint is a non-billing authentication probe and
         // does not couple key health to any particular model identifier.

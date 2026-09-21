@@ -1,5 +1,5 @@
 {
-  "id": "960b9eaf-08c2-4c95-96f5-11a5101774d7",
+  "id": "87365136-987b-49c3-b7f9-acde17c2cf7a",
   "prevId": "1f8d5138-e3f9-4a75-81d3-9d98294dafad",
   "version": "7",
   "dialect": "postgresql",
@@ -6248,27 +6248,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_shared_agent_execution_inputs_message": {
-          "name": "idx_shared_agent_execution_inputs_message",
-          "columns": [
-            {
-              "expression": "message_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "execution_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -12543,7 +12522,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -19463,6 +19442,12 @@
         },
         "video_model": {
           "name": "video_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "speech_model": {
+          "name": "speech_model",
           "type": "text",
           "primaryKey": false,
           "notNull": false

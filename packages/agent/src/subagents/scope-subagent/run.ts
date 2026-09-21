@@ -524,7 +524,7 @@ export type RunScopeSubagentOpts = {
   parentTurnId: string;
   parentOwnerId: string;
   /**
-   * M151 — the user id that OWNS the run's transcript session (the `sessions`
+   * the user id that OWNS the run's transcript session (the `sessions`
    * row). Defaults to `parentOwnerId`. For an `ask_peer` DM the target room is
    * owned by the PEER (the only human member), and the room transcript reader
    * (`getRoomMessagesAcrossMemberSessions`) only surfaces sessions whose owner
@@ -533,7 +533,7 @@ export type RunScopeSubagentOpts = {
    * `parentOwnerId` (the requester IS the room owner), so behavior is unchanged.
    */
   transcriptOwnerId?: string;
-  /** M137: omit for wide (namespace) runs; set for scope runs. */
+  /** omit for wide (namespace) runs; set for scope runs. */
   scopeId?: string;
   brief: string;
   expectedOutput?: string;
@@ -551,7 +551,7 @@ export type RunScopeSubagentOpts = {
    * available after the first model step.
    */
   initialActivatedToolNames?: readonly string[];
-  /** M084 scope envelope OR M137 full namespace envelope. */
+  /** scope envelope OR full namespace envelope. */
   subEnvelope: MemoryAccessEnvelope;
   actorRole: string;
   assistantName: string;
@@ -560,7 +560,7 @@ export type RunScopeSubagentOpts = {
   currentFolder: string;
   workspacePath: string;
   /**
-   * D560 — server-resolved exact live Task Desktop binding. It is absent for
+   * server-resolved exact live Task Desktop binding. It is absent for
    * ordinary subagents and unavailable task runs; host admission revalidates
    * it again at each relay dispatch.
    */
@@ -587,13 +587,13 @@ export type RunScopeSubagentOpts = {
   assistantArtifactExternalIds?: readonly string[];
   relayCapabilities?: NautiloState["relayCapabilities"];
   /**
-   * M150 — mark this run as a background/async Task run. Drives the
+   * mark this run as a background/async Task run. Drives the
    * relay-drop → `relay_unavailable` failure path in the tools node (no
-   * present human to relay the error to). Defaults to `false` for M084
+   * present human to relay the error to). Defaults to `false` for
    * in-chat scope runs.
    */
   taskRun?: boolean;
-  /** D500 — only task-run-executor may supply the background-task stamp. */
+  /** only task-run-executor may supply the background-task stamp. */
   trustedExecutionEntrypoint?: "background.task";
   /**
    * Wave 9 — exact child-thread saver for an invocation-bound protected child.
@@ -607,7 +607,7 @@ export type RunScopeSubagentOpts = {
   /** When resuming, reuse the same subagent thread */
   subagentThreadId?: string;
   /**
-   * M147 (R4) — continue a previously-aborted run from its preserved
+   * — continue a previously-aborted run from its preserved
    * LangGraph checkpoint. Unlike `resume` (which carries an interrupt reply
    * `Command`), this streams with a **null** input so the graph simply
    * resumes from the last persisted checkpoint where a pause abort cut it
@@ -617,7 +617,7 @@ export type RunScopeSubagentOpts = {
   continueFromCheckpoint?: boolean;
   signal?: AbortSignal;
   /**
-   * M151 (Task Phase 7a) — when true the run parks on `await_human_reply`
+   * (Task ) — when true the run parks on `await_human_reply`
    * after the agent's final (no-tool-call) message, waiting for a human reply
    * in `awaitRoomId` from one of `awaitFromUserIds`. The task identifiers make
    * the owner-scoped `task.awaiting_reply` WS event self-describing.
@@ -629,8 +629,8 @@ export type RunScopeSubagentOpts = {
   awaitTaskRunId?: string;
   awaitOwnerId?: string;
   /**
-   * D307 — when set, emit owner-scoped `task.progress` on `on_tool_start`
-   * (task runs only; M084 in-chat scope runs omit these).
+   * when set, emit owner-scoped `task.progress` on `on_tool_start`
+   * (task runs only; in-chat scope runs omit these).
    */
   progressTaskId?: string;
   /** Canonical checkpointed approval reply lane. */
@@ -638,7 +638,7 @@ export type RunScopeSubagentOpts = {
   progressTaskRunId?: string;
   progressOwnerId?: string;
   /**
-   * D429 Phase 4 — explicit fallback mode for this subagent run. `"none"`
+   * explicit fallback mode for this subagent run. `"none"`
    * (strict / no-chain) is set by `taskRunExecutor` when the dispatch seam
    * flagged an exact Task `model_id` pin (`exactModelSelection: true` on the
    * job input); it suppresses every cross-model hop inside
@@ -706,7 +706,7 @@ export function resolveScopeSubagentExecutionEntrypoint(
 }
 
 /**
- * M084 — one stream pass for a scope subagent (fresh or resumed).
+ * one stream pass for a scope subagent (fresh or resumed).
  */
 export function runScopeSubagentUntilPause(
   opts: RunScopeSubagentOpts,
@@ -740,7 +740,7 @@ async function runScopeSubagentUntilPauseInternal(
   }
   const checkpointSaver = opts.invocationCheckpointSaver ?? createCheckpointSaver();
   const policyResolver = getPolicyResolver();
-  // Stack 208 P0 — one shared graph execution policy seam (recursion ceiling
+  // one shared graph execution policy seam (recursion ceiling
   // resolved here, threaded into `streamConfig` below). Metrics counts
   // supersteps / model invocations / tool calls from the existing
   // `streamEvents` hook; logged at stream end / on error (telemetry-only).
@@ -774,6 +774,7 @@ async function runScopeSubagentUntilPauseInternal(
 
   const graphInput: Partial<NautiloState> = {
     noProgressStreaks: new Map(),
+    browserDecision: null,
     noProgressPendingCorrection: null,
     noProgressPendingStop: null,
     // Fresh Tasks/subagents never inherit an earlier run's recovery phase.
@@ -839,14 +840,14 @@ async function runScopeSubagentUntilPauseInternal(
     relayCapabilities: opts.relayCapabilities,
     verifiedOrdinaryOrigin: null,
     causalHumanUserId: "",
-    // M151 — await-response context (only meaningful when awaitResponse is set).
+    // await-response context (only meaningful when awaitResponse is set).
     awaitResponse: opts.awaitResponse ?? false,
     awaitRoomId: opts.awaitRoomId ?? "",
     awaitFromUserIds: opts.awaitFromUserIds ?? [],
     awaitTaskId: opts.awaitTaskId ?? "",
     awaitTaskRunId: opts.awaitTaskRunId ?? "",
     awaitOwnerId: opts.awaitOwnerId ?? "",
-    // D429 Phase 4 — persist the explicit fallback mode in cold-start graph
+    // persist the explicit fallback mode in cold-start graph
     // state so a checkpoint resume reads it back rather than re-deriving it
     // (a strict run must not widen into chain behavior on resume). Default
     // `"agent_chain"` keeps foreground / non-exact callers on the chain.
@@ -867,22 +868,22 @@ async function runScopeSubagentUntilPauseInternal(
     callbacks: [],
   };
 
-  // M147 (R4) — three stream-entry modes:
-  //  • continueFromCheckpoint → `null` input resumes the parked checkpoint on
-  //    the reused thread (an unpause after a pause abort; no interrupt reply,
-  //    no fresh brief). A revalidated security Task uses a continuation-only
-  //    Command below to refresh its socket binding without replacing history.
-  //  • resume defined → an interrupt reply `Command` (approval / await).
-  //  • else → a cold start with the freshly-built brief `graphInput`.
+  // Three stream-entry modes:
+  // • continueFromCheckpoint → `null` input resumes the parked checkpoint on
+  // the reused thread (an unpause after a pause abort; no interrupt reply,
+  // no fresh brief). A revalidated security Task uses a continuation-only
+  // Command below to refresh its socket binding without replacing history.
+  // • resume defined → an interrupt reply `Command` (approval / await).
+  // • else → a cold start with the freshly-built brief `graphInput`.
   //
-  // M169 INVARIANT (R3 + R4): this is the ONLY place `graphInput.messages` is
+  // INVARIANT (the related invariants): this is the ONLY place `graphInput.messages` is
   // constructed, and the cold-start branch builds it from exactly the brief —
   // NEVER from checkpoint/transcript history. The two resume branches stream a
   // `null` / `Command` and re-inject no messages. `classifyTurnKind` maps both
   // resume branches to `"resume"`; the subagent path keeps the parked
   // checkpoint (spec decision 10.2.3) and has no foreground-style "read history
   // + concat" seam to rebuild. Do not turn any branch into a rebuilt
-  // `messages` array — that would be a behavior change (ISSUE-M169 §7).
+  // `messages` array — that would be a behavior change ( §7).
   let streamInput = opts.continueFromCheckpoint
     ? null
     : opts.resume !== undefined
@@ -954,8 +955,8 @@ async function runScopeSubagentUntilPauseInternal(
     progressTap?.flush();
     log(`[scope-subagent] stream complete thread=${subThreadId} ${metrics.formatLogToken()}`);
   } catch (err) {
-    // Stack 208 P0 — surface the typed internal graph-budget outcome distinctly
-    // in telemetry (R9). The user-safe sentence is produced by
+    // surface the typed internal graph-budget outcome distinctly
+    // in telemetry . The user-safe sentence is produced by
     // `toFriendlyError` at the runtime job-loop catch site when the
     // subagent error propagates up to a foreground / fork job.
     const budgetOutcome = toGraphBudgetOutcome(err, executionPolicy.recursionLimit);
@@ -976,13 +977,13 @@ async function runScopeSubagentUntilPauseInternal(
     tokenStream?.dispose();
   }
 
-  // M169 INVARIANT (R5): this end-of-run `getState` read is OUTPUT EXTRACTION
+  // INVARIANT : this end-of-run `getState` read is OUTPUT EXTRACTION
   // ONLY. `postState.values.messages` produces the parent-facing final text
   // (`formatSubagentTranscriptForParent` / `lastAssistantPlainText`) and the
   // pending-interrupt check — it is NEVER fed back into `graphInput.messages`
   // as turn history. This is the one legitimate `.values.messages` read in the
   // runner; the invariant is "no checkpoint history → `graphInput.messages`",
-  // not "no `getState` at all" (ISSUE-M169 §3 R5).
+  // not "no `getState` at all" ( §3 ).
   const postState = (await graph.getState({
     configurable: { thread_id: subThreadId },
   })) as
@@ -1128,7 +1129,7 @@ async function persistSubagentBatch(
 }
 
 /**
- * D570 — author Artifact cards only from the runtime-stamped ask_peer path.
+ * author Artifact cards only from the runtime-stamped ask_peer path.
  * The canonical Room namespace is re-checked both before relation insertion
  * and during hydration; arbitrary assistant prose can never reach this seam.
  */

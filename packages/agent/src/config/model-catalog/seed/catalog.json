@@ -1,7 +1,7 @@
 {
-  "version": 3,
-  "catalogVersion": "2026.09.09.2",
-  "publishedAt": "2026-09-09T16:45:01Z",
+  "version": 6,
+  "catalogVersion": "2026.09.20.2",
+  "publishedAt": "2026-09-20T15:00:00Z",
   "entries": [
     {
       "id": "anthropic:claude-sonnet-4-6",
@@ -97,7 +97,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": false,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -134,7 +135,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": false,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -208,7 +210,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "cost": {
         "coefficient": 3.33
@@ -245,7 +248,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": false,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "cost": {
         "coefficient": 2
@@ -282,7 +286,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": false,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "cost": {
         "coefficient": 1
@@ -520,7 +525,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": null,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1048576,
@@ -863,7 +869,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "cost": {
         "coefficient": 1.3
@@ -1121,7 +1128,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -1158,7 +1166,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -1232,7 +1241,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1050000,
@@ -1269,7 +1279,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1050000,
@@ -1306,7 +1317,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1050000,
@@ -1564,7 +1576,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1048576,
@@ -1725,7 +1738,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1048576,
@@ -1834,7 +1848,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -1906,7 +1921,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1050000,
@@ -1942,7 +1958,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -1978,7 +1995,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -2196,7 +2214,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": true,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -2210,6 +2229,43 @@
       },
       "intelligence": {
         "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+      "displayName": "DeepSeek V4.1 Flash (Fireworks)",
+      "provider": "fireworks",
+      "routing": "fireworks",
+      "priority": 14,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": null,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1048576,
+        "outputTokens": 1048576
+      },
+      "cost": {
+        "coefficient": 0.05
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
       },
       "capabilityProvenance": "override"
     },
@@ -2370,6 +2426,43 @@
       "capabilityProvenance": "override"
     },
     {
+      "id": "venice:deepseek-v4-1-flash",
+      "displayName": "DeepSeek V4.1 Flash (Venice-hosted)",
+      "provider": "venice",
+      "routing": "venice-hosted",
+      "priority": 51,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 131072
+      },
+      "cost": {
+        "coefficient": 0.1
+      },
+      "privacy": {
+        "grade": 8
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
       "id": "venice:qwen-3-8-max",
       "displayName": "Qwen 3.8 Max (Venice → Alibaba)",
       "provider": "venice",
@@ -2388,7 +2481,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": false,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -2402,6 +2496,43 @@
       },
       "intelligence": {
         "tier": "frontier"
+      },
+      "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:qwen-3-8-flash",
+      "displayName": "Qwen 3.8 Flash (Venice → Alibaba)",
+      "provider": "venice",
+      "routing": "china-anonymized",
+      "priority": 52,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 131072
+      },
+      "cost": {
+        "coefficient": 0.04
+      },
+      "privacy": {
+        "grade": 5
+      },
+      "intelligence": {
+        "tier": "strong"
       },
       "capabilityProvenance": "override"
     },
@@ -2495,6 +2626,60 @@
       }
     },
     {
+      "id": "openrouter:deepseek/deepseek-v4.1-flash",
+      "displayName": "DeepSeek V4.1 Flash (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 49,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": null,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1048576,
+        "outputTokens": 384000
+      },
+      "cost": {
+        "coefficient": 0.08
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "high",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-10T08:50:21Z"
+          }
+        }
+      }
+    },
+    {
       "id": "openrouter:qwen/qwen3.8-max",
       "displayName": "Qwen 3.8 Max (OpenRouter)",
       "provider": "openrouter",
@@ -2513,7 +2698,8 @@
       "features": {
         "tools": true,
         "structuredOutputs": false,
-        "reasoning": true
+        "reasoning": true,
+        "visualGrounding": true
       },
       "limits": {
         "contextTokens": 1000000,
@@ -2529,6 +2715,43 @@
         "tier": "frontier"
       },
       "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:qwen/qwen3.8-flash",
+      "displayName": "Qwen 3.8 Flash (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 51,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 131072
+      },
+      "cost": {
+        "coefficient": 0.03
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "intelligence": {
+        "tier": "strong"
+      },
+      "capabilityProvenance": "openrouter"
     },
     {
       "id": "openrouter:google/gemini-3.7-flash",
@@ -2566,6 +2789,52 @@
         "tier": "strong"
       },
       "capabilityProvenance": "override"
+    },
+    {
+      "id": "openrouter:typesafe/jev-1.13",
+      "displayName": "Jev 1.13 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 999,
+      "defaultEnabled": true,
+      "workload": "decision",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilityProvenance": "openrouter",
+      "cost": {
+        "coefficient": 0.014
+      },
+      "privacy": {
+        "grade": 4
+      },
+      "decision": {
+        "operations": [
+          "choice",
+          "noul",
+          "score"
+        ],
+        "inputTokens": 32000,
+        "maxChoices": 255,
+        "totalInputTokens": 64000,
+        "supportsMultipleQuestions": true,
+        "maxScoreLevels": 10,
+        "pricing": {
+          "inputPerMtok": 0.042,
+          "cachedInputPerMtok": 0.042,
+          "outputPerMtok": 0,
+          "provenance": {
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-20T15:00:00Z",
+            "kind": "provider-documentation"
+          }
+        }
+      }
     },
     {
       "id": "openrouter:openai/gpt-5.4-image-2",
@@ -2631,6 +2900,92 @@
       },
       "privacy": {
         "grade": 1
+      },
+      "capabilityProvenance": "override",
+      "generation": {
+        "family": "image",
+        "constraints": {
+          "outputMimeTypes": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ]
+        }
+      }
+    },
+    {
+      "id": "openai:gpt-image-2.5-sunburst",
+      "displayName": "GPT Image 2.5 Sunburst (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 112,
+      "defaultEnabled": true,
+      "workload": "generation",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "image"
+        ]
+      },
+      "features": {
+        "tools": false,
+        "structuredOutputs": false,
+        "reasoning": null
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "generation": {
+        "family": "image",
+        "constraints": {
+          "outputMimeTypes": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ]
+        }
+      }
+    },
+    {
+      "id": "openai:gpt-image-2.5-flare",
+      "displayName": "GPT Image 2.5 Flare (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 113,
+      "defaultEnabled": true,
+      "workload": "generation",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "image"
+        ]
+      },
+      "features": {
+        "tools": false,
+        "structuredOutputs": false,
+        "reasoning": null
+      },
+      "cost": {
+        "coefficient": 1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
       },
       "capabilityProvenance": "override",
       "generation": {
@@ -3083,6 +3438,164 @@
             "image/jpeg",
             "image/webp"
           ]
+        }
+      }
+    },
+    {
+      "id": "elevenlabs:eleven_v3_conversational",
+      "displayName": "ElevenLabs v3 Conversational",
+      "provider": "elevenlabs",
+      "routing": "first-party",
+      "priority": 1,
+      "defaultEnabled": true,
+      "workload": "speech",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "audio"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.05
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "speech": {
+        "transport": "elevenlabs-dialogue-http",
+        "outputFormats": [
+          "pcm_24000",
+          "mp3_44100_128"
+        ],
+        "maxInputCharacters": 2000,
+        "usdPerThousandCharacters": "0.05"
+      }
+    },
+    {
+      "id": "elevenlabs:eleven_v3",
+      "displayName": "ElevenLabs v3",
+      "provider": "elevenlabs",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "workload": "speech",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "audio"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.1
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "speech": {
+        "transport": "elevenlabs-tts-http",
+        "outputFormats": [
+          "pcm_24000",
+          "mp3_44100_128"
+        ],
+        "maxInputCharacters": 5000,
+        "usdPerThousandCharacters": "0.10"
+      }
+    },
+    {
+      "id": "typesafe:jev-1.13.0",
+      "displayName": "Jev 1.13 (TypeSafe)",
+      "provider": "typesafe",
+      "routing": "first-party",
+      "priority": 999,
+      "defaultEnabled": true,
+      "workload": "decision",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.014
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "decision": {
+        "operations": [
+          "choice",
+          "noul",
+          "score"
+        ],
+        "inputTokens": 32000,
+        "maxChoices": 255,
+        "totalInputTokens": 64000,
+        "supportsMultipleQuestions": true,
+        "maxScoreLevels": 10,
+        "pricing": {
+          "inputPerMtok": 0.042,
+          "cachedInputPerMtok": 0.042,
+          "outputPerMtok": 0,
+          "provenance": {
+            "provider": "typesafe",
+            "verifiedAt": "2026-09-20T15:00:00Z",
+            "kind": "provider-documentation"
+          }
+        }
+      }
+    },
+    {
+      "id": "venice:jev-latest",
+      "displayName": "Jev Latest (Venice)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 999,
+      "defaultEnabled": true,
+      "workload": "decision",
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilityProvenance": "smoke",
+      "cost": {
+        "coefficient": 0.014
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "decision": {
+        "operations": [
+          "choice",
+          "noul",
+          "score"
+        ],
+        "inputTokens": 32000,
+        "maxChoices": 255,
+        "totalInputTokens": 64000,
+        "supportsMultipleQuestions": true,
+        "maxScoreLevels": 10,
+        "pricing": {
+          "inputPerMtok": 0,
+          "cachedInputPerMtok": 0,
+          "outputPerMtok": 0,
+          "provenance": {
+            "provider": "venice",
+            "verifiedAt": "2026-09-20T15:00:00Z",
+            "kind": "provider-documentation"
+          }
         }
       }
     }

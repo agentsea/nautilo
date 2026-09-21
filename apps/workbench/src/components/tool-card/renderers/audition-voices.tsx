@@ -1,5 +1,5 @@
 /**
- * D261 Phase 4 — `audition_voices` tool card (Model 2).
+ * `audition_voices` tool card (Model 2).
  *
  * The tool envelope is metadata-only; this card owns preview audio via
  * `apiClient.previewVoice` per slate row. Lock-in uses
@@ -28,7 +28,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function isBadge(v: unknown): v is VoiceDiscoveryBadge {
-  return v === "curated" || v === "provider_v3" || v === "unverified";
+  return v === "curated" || v === "provider_v3" || v === "provider_verified" || v === "unverified";
 }
 
 function parseCandidate(raw: unknown): VoiceDiscoveryCandidate | null {
@@ -48,7 +48,7 @@ function parseCandidate(raw: unknown): VoiceDiscoveryCandidate | null {
   return raw as VoiceDiscoveryCandidate;
 }
 
-/** Parse the D261 audition_voices JSON envelope; null on malformed. */
+/** Parse the  audition_voices JSON envelope; null on malformed. */
 export function parseEnvelope(raw: string | undefined): AuditionVoicesToolResult | null {
   if (!raw?.trim()) return null;
   try {
@@ -98,9 +98,10 @@ function formatDiscoveryBadge(badge: VoiceDiscoveryBadge): string {
     case "curated":
       return "★ curated/tested";
     case "provider_v3":
-      return "✓ provider v3";
+    case "provider_verified":
+      return "✓ provider reference";
     case "unverified":
-      return "⚠ not provider v3";
+      return "⚠ unverified reference";
   }
 }
 

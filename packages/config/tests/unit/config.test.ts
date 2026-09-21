@@ -34,6 +34,7 @@ describe("config", () => {
     expect(config.nautilo_web_search_model).toBe("");
     expect(config.nautilo_flush_model).toBe("");
     expect(config.nautilo_reviewer_model).toBe("");
+    expect(config.nautilo_browser_decision_intervention_limit).toBe(2);
     expect(config.nautilo_token_budget_fraction).toBe(0.6);
     expect(config.nautilo_memory_brief_char_limit).toBe(8000);
     expect(config.nautilo_memory_search_limit).toBe(10);
@@ -100,6 +101,79 @@ describe("config", () => {
       if (previous === undefined) delete process.env["NAUTILO_SEARCH_PROVIDER"];
       else process.env["NAUTILO_SEARCH_PROVIDER"] = previous;
       setConfigOverrides({});
+    }
+  });
+
+  test("browser decision intervention limit defaults to two when unset", () => {
+    const previous = process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+    try {
+      delete process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+      setConfigOverrides({});
+      invalidateRuntimeConfigCache();
+
+      expect(fromRuntimeConfig().nautilo_browser_decision_intervention_limit).toBe(2);
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+      else process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"] = previous;
+      setConfigOverrides({});
+      invalidateRuntimeConfigCache();
+    }
+  });
+
+  test("reads browser decision intervention limits from the environment", () => {
+    const previous = process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+    try {
+      setConfigOverrides({});
+      for (const [value, expected] of [["1", 1], ["3", 3]] as const) {
+        process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"] = value;
+        invalidateRuntimeConfigCache();
+
+        expect(fromRuntimeConfig().nautilo_browser_decision_intervention_limit).toBe(expected);
+      }
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+      else process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"] = previous;
+      setConfigOverrides({});
+      invalidateRuntimeConfigCache();
+    }
+  });
+
+  test("browser decision intervention source applies when its environment setting is unset", () => {
+    const previous = process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+    try {
+      delete process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+      setConfigOverrides({ nautilo_browser_decision_intervention_limit: 1 });
+      expect(fromRuntimeConfig().nautilo_browser_decision_intervention_limit).toBe(1);
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+      else process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"] = previous;
+      setConfigOverrides({});
+      invalidateRuntimeConfigCache();
+    }
+  });
+
+  test("rejects malformed intervention environment values without truncation", () => {
+    const previous = process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+    try {
+      setConfigOverrides({});
+      for (const value of ["0", "-1", "1.5", "NaN", "2events", ""]) {
+        process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"] = value;
+        invalidateRuntimeConfigCache();
+        expect(() => fromRuntimeConfig()).toThrow();
+      }
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
+      else process.env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"] = previous;
+      setConfigOverrides({});
+      invalidateRuntimeConfigCache();
+    }
+  });
+
+  test("rejects invalid browser decision intervention limits", () => {
+    for (const limit of [0, -1, 1.5, Number.NaN]) {
+      expect(() =>
+        fromRuntimeConfig({ nautilo_browser_decision_intervention_limit: limit }),
+      ).toThrow();
     }
   });
 
@@ -224,7 +298,7 @@ describe("config", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Security posture — D060 Sprint 1 G5.3
+  // Security posture — Sprint 1 G5.3
   // -------------------------------------------------------------------------
 
   test("defaults: deployment_mode=desktop-permissive, level=standard", () => {

@@ -23,6 +23,7 @@ function capabilityFailure(
     return row.output.includes("embedding") ? undefined : "model does not generate embeddings";
   }
   if (!row.output.includes("text")) return "model does not produce text";
+  if (row.workload !== "chat") return `${row.workload} workload cannot be used for chat`;
   if ((purpose === "vision" || purpose === "vision-tools") && !row.input.includes("image")) {
     return "model does not accept image input";
   }
@@ -50,10 +51,11 @@ function routingToClass(routing: string | undefined): RoutingClass {
 }
 
 /**
- * D429 Phase 1 — capabilities now project from the canonical resolved row
+ * capabilities now project from the canonical resolved row
  * ({@link resolveCatalogModel}) so the picker and exact-call validation share
  * one capability source. Unknown feature values (`null`) map to the legacy UX
- * defaults: `tools → true` (optimistic), others → `false`. Selection itself
+ * defaults for chat: `tools → true` (optimistic), others → `false`. Non-chat
+ * rows never project tool calling. Selection itself
  * remains strict: capability qualification uses the nullable resolved row and
  * every provider route requires its own credential.
  */
@@ -61,7 +63,7 @@ function projectEligibleCapabilities(modelId: string): EligibleModelCapabilities
   const row = resolveCatalogModel(modelId);
   const f = row.features;
   return {
-    tools: f.tools ?? true,
+    tools: row.workload === "chat" && (f.tools ?? true),
     vision: row.input.includes("image"),
     reasoning: f.reasoning ?? false,
     e2ee: f.e2ee ?? false,
@@ -142,7 +144,7 @@ function toEligibleModel(
  * `allowChinaUpstream: true`. Purpose qualification is applied after the base
  * catalog/credential/routing decision.
  *
- * D429 Phase 7 — membership now iterates the active released snapshot (validated
+ * membership now iterates the active released snapshot (validated
  * remote catalog, or the checked-in fallback). A newly published supported row
  * appears here without a server restart once the runtime seam has hydrated the
  * snapshot. Non-venice rows the release marks `defaultEnabled: false` are
@@ -158,7 +160,7 @@ export function getEligibleModels(opts: GetEligibleModelsOptions = {}): Eligible
     purpose = "chat-tools",
     tier: _reservedTier,
   } = opts;
-  void _reservedTier; // Inference-tier filtering when posture UX is wired (D086 / D112).
+  void _reservedTier; // Inference-tier filtering when posture UX is wired .
 
   const { catalog } = getActiveModelCatalogSync();
   const out: EligibleModel[] = [];

@@ -529,7 +529,7 @@ function isSafeNonnegativeInteger(value: number): boolean {
 }
 
 /**
- * D500 v15 accepts only exact, ordered observations for the active structured
+ *  v15 accepts only exact, ordered observations for the active structured
  * SSH call. This is display state, never execution authority: a missing or
  * malformed frame is ignored and the final tool.end remains the sole outcome.
  */
@@ -682,7 +682,7 @@ export function applyConnectedWebActionResumeFailureToActivity(
   };
 }
 
-// M087 — auto-detected IANA timezone, re-resolved when the tab becomes
+// auto-detected IANA timezone, re-resolved when the tab becomes
 // visible again (a user who changed tz while backgrounded gets picked up).
 let detectedTimezone = (() => {
   try {
@@ -704,12 +704,12 @@ if (typeof document !== "undefined") {
 }
 
 
-/** Legacy lane label — product-level chat selection is `roomId` (D106); laneKey remains for server compatibility. */
+/** Legacy lane label — product-level chat selection is `roomId`; laneKey remains for server compatibility. */
 const LANE_KEY = "app:default";
 const VISIBLE_OUTPUT_QUIET_MS = 900;
 
 /**
- * Consumer-side authority check for D530's initial history projection.
+ * Consumer-side authority check for 's initial history projection.
  * A stale context object is indistinguishable from no history at all: it must
  * not reveal a different Room's cached transcript or admit a composer send.
  */
@@ -1180,7 +1180,7 @@ export async function reprobeDesktopServerOnReconnect(
   }
 }
 
-/** D264 — categorical reason → status copy (catalog model IDs only). */
+/** categorical reason → status copy (catalog model IDs only). */
 const MODEL_FALLBACK_REASON_VERB: Record<ModelFallbackEvent["reason"], string> = {
   timeout: "timed out",
   rate_limit: "was rate-limited",
@@ -1192,7 +1192,7 @@ const MODEL_FALLBACK_REASON_VERB: Record<ModelFallbackEvent["reason"], string> =
 };
 
 /**
- * D264 — plain status line for runtime UI (not assistant markdown).
+ * plain status line for runtime UI (not assistant markdown).
  * Privacy posture: only catalog `from` / `to` IDs + categorical `reason`.
  */
 export function formatModelFallbackStatusLine(
@@ -1225,7 +1225,7 @@ export function modelFallbackStatusFromEvent(
 }
 
 /**
- * D264 — documents the assistant-stream contract for unit tests: fallback
+ * documents the assistant-stream contract for unit tests: fallback
  * telemetry must not seed/append stream accumulators or assistant messages.
  */
 export function modelFallbackAssistantStreamEffects(input: {
@@ -1245,7 +1245,7 @@ export function modelFallbackAssistantStreamEffects(input: {
   };
 }
 
-// D323 — backstop lifetime for the fallback pill. The notice is SET on
+// backstop lifetime for the fallback pill. The notice is SET on
 // `model.fallback` and historically had no timer and no dismiss affordance,
 // so any turn whose terminal clear didn't reach the active room left it
 // stranded until the next turn. Room-scoping the SET (see ws-event-room.ts)
@@ -1287,7 +1287,7 @@ function trimBoundedStringMap(
   preserve?: ReadonlySet<string>,
 ): void {
   if (map.size <= WS_ROUTE_MAP_CAP) return;
-  // D353 — evict oldest-first, but skip keys in `preserve` (live job ids).
+  // evict oldest-first, but skip keys in `preserve` (live job ids).
   // `jobIdToRoomId` is bounded while `liveJobIdsRef` is not, so blind FIFO
   // eviction can drop a still-live job's room mapping; its later terminal
   // `job.status` then fails to route and the job is never retired (ghost
@@ -1320,7 +1320,7 @@ function buildAttachmentBubbleSummary(
   const byId = new Map(statuses.map((status) => [status.id, status]));
   return queuedAttachments
     .map((att) => {
-      // D271: server statuses are keyed by the server attachmentId, while
+      // server statuses are keyed by the server attachmentId, while
       // the chip key is a local optimistic id. Fall back to the local id so
       // legacy/error paths still render.
       const status = (att.attachmentId ? byId.get(att.attachmentId) : undefined) ?? byId.get(att.id);
@@ -1604,7 +1604,7 @@ export function NautiloRuntimeProvider({
 }: {
   children: React.ReactNode;
 }) {
-  // M072 — Logto-only: AuthGate gates to `signed-in` before this provider
+  // Logto-only: AuthGate gates to `signed-in` before this provider
   // mounts for normal routes; bearer comes from `auth.session.getAccessToken()`.
   const auth = useAuth();
   const setupStatus = useSetupStatus();
@@ -2238,7 +2238,7 @@ export function NautiloRuntimeProvider({
   roomMessageOperationsRef.current = roomMessageOperations;
   const roomNav = useRoomNavigation();
   const activeRoomId = roomNav.activeRoomId;
-  /** D163 — bump to re-render subtree (RoomsPanel reads optimistic overlay from rooms-panel-model). */
+  /** bump to re-render subtree (RoomsPanel reads optimistic overlay from rooms-panel-model). */
   const [, setRoomSidebarTick] = useState(0);
   const tickRoomSidebar = useCallback(() => {
     setRoomSidebarTick((n) => n + 1);
@@ -2250,7 +2250,7 @@ export function NautiloRuntimeProvider({
     authorityWaitingRoomRef.current = null;
   }, [activeRoomId, auth.viewerGeneration]);
 
-  // D430 — search owns only bounded result pages. Its active-Room ref guard
+  // search owns only bounded result pages. Its active-Room ref guard
   // rejects completions during the render→effect window of a Room switch.
   const roomSearchControllerRef = useRef<RoomMessageSearchController | null>(null);
   if (!roomSearchControllerRef.current) {
@@ -2272,7 +2272,7 @@ export function NautiloRuntimeProvider({
   }, [activeRoomId, roomSearchController]);
   useEffect(() => () => roomSearchController.dispose(), [roomSearchController]);
 
-  // D470 — one runtime-owned Chats search controller serves every Desktop
+  // one runtime-owned Chats search controller serves every Desktop
   // entry point. The active origin and authenticated actor generation are part
   // of its authority scope, so an account or in-process Server switch clears
   // visible results synchronously and aborts the prior transport request.
@@ -2306,7 +2306,7 @@ export function NautiloRuntimeProvider({
   useEffect(() => () => chatsSearchController.dispose(), [chatsSearchController]);
 
   const laneKeyToRoomIdRef = useRef(new Map<string, string>());
-  // D426 — one visible child-room controller can register with the owner of
+  // one visible child-room controller can register with the owner of
   // the authenticated socket. This deliberately lives in the provider (not a
   // module or window singleton), so an unmounted/switching drawer cannot
   // receive replayed frames.
@@ -2325,14 +2325,14 @@ export function NautiloRuntimeProvider({
   );
   const jobIdToRoomIdRef = useRef(new Map<string, string>());
   const virtualJobIdToRoomIdRef = useRef(new Map<string, string>());
-  // M147 — live (dispatched, not-yet-terminal) foreground/fork job ids. The
+  // live (dispatched, not-yet-terminal) foreground/fork job ids. The
   // composer STOP button aborts every live job in the active room via
   // `POST /api/jobs/:id/stop`. Populated on `job.dispatched` (forks emit it
   // too), pruned on terminal `job.status`.
   const liveJobIdsRef = useRef(new Set<string>());
   /** Coalesce owner-private identity reads for duplicate terminal frames. */
   const pendingToolJobReconciliationIdsRef = useRef(new Set<string>());
-  // D341 — Stop can be clicked while a room send only has the coalescer's
+  // Stop can be clicked while a room send only has the coalescer's
   // virtual id. Hold the room-level stop intent until `job.dispatched` maps
   // virtual ids to a real persisted job id that `/api/jobs/:id/stop` accepts.
   const pendingStopRoomIdsRef = useRef(new Set<string>());
@@ -2356,7 +2356,7 @@ export function NautiloRuntimeProvider({
   const consumedRoomEventsRef = useRef(new WeakSet<object>());
   /** Tracks the room id used for the last completed history hydrate (clears UI on room switch). */
   const lastRehydratedRoomRef = useRef<string | null | undefined>(undefined);
-  // D459 — history requests are snapshots, while WebSocket events are deltas.
+  // history requests are snapshots, while WebSocket events are deltas.
   // Keep a small Room-scoped journal so a snapshot cannot erase a persisted
   // message which arrived after that request began. A later request supersedes
   // an earlier one, even when both target the same Room.
@@ -2458,8 +2458,8 @@ export function NautiloRuntimeProvider({
   // Epoch ms of the most recent "open" transition. Null until first open.
   // Derived consumers (useWsState) use this to compute disconnect duration.
   //
-  // ISSUE-D145, PR #173 review-fix-3 — seeded via
-  // `computeInitialLastOpenAtSeed()` (has-ever-open bit + D154
+  // seeded via
+  // `computeInitialLastOpenAtSeed()` (has-ever-open bit +
   // `shellStateOnBoot` tiebreaker) so a hard reload during a server outage
   // (where the WS won't reach "open" because the server is dead)
   // still produces `authenticated_disconnected` rather than
@@ -2474,16 +2474,16 @@ export function NautiloRuntimeProvider({
       now: Date.now(),
     }),
   );
-  // ISSUE-D145 — epoch ms when the current reconnect started (set when
+  // epoch ms when the current reconnect started (set when
   // wsState leaves "open" after having been open; cleared on next
   // open). Drives the `authenticated_resuming` shell-state variant.
   const [reconnectStartedAt, setReconnectStartedAt] = useState<number | null>(null);
-  /** D146 — suppress `reconnectStartedAt` when leaving `open` for visibility suspend. */
+  /** suppress `reconnectStartedAt` when leaving `open` for visibility suspend. */
   const visibilityDisconnectSuppressRef = useRef(false);
   const [visibilityHidden, setVisibilityHidden] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voicePlaying, setVoicePlaying] = useState(false);
-  // D057 2a.1.11 — rolling activity log consumed by the Activity tab.
+  //  2a.1.11 — rolling activity log consumed by the Activity tab.
   // We push on tool.start + mutate the matching entry on tool.end, and
   // cap total length so a long session doesn't bloat state.
   const [toolActivity, setToolActivity] = useState<ToolActivityEvent[]>([]);
@@ -2553,14 +2553,14 @@ export function NautiloRuntimeProvider({
     }).catch(() => undefined);
     return unsubscribe;
   }, []);
-  // D087 Phase 3 §3.10 — path-keyed revision-state map populated by
+  // path-keyed revision-state map populated by
   // `revisions.state_changed` WS events. Drives the undo/redo bar,
   // context menu's "Undo" item enable state, and the files-tree
   // revision badge.
   const [revisionState, setRevisionState] = useState<
     Readonly<Record<string, RevisionStateSnapshot>>
   >({});
-  /** D264 — model-chain hop telemetry; status UI only (never assistant prose / TTS). */
+  /** model-chain hop telemetry; status UI only (never assistant prose / TTS). */
   const [modelFallbackStatus, setModelFallbackStatus] =
     useState<ModelFallbackStatusSnapshot | null>(null);
   const [deepResearchStatus, setDeepResearchStatus] = useState<{
@@ -2574,7 +2574,7 @@ export function NautiloRuntimeProvider({
   useEffect(() => {
     setForegroundContextStatus(null);
   }, [activeRoomId]);
-  // D323 — backstop auto-dismiss so the pill never outlives its turn even when
+  // backstop auto-dismiss so the pill never outlives its turn even when
   // the routed terminal `job.status` clear doesn't reach the active room.
   // Re-arms on each new snapshot (new hop / new turnId yields a new object).
   useAutoDismiss(
@@ -2594,14 +2594,14 @@ export function NautiloRuntimeProvider({
   const setWsState = useCallback((next: WsState) => {
     setWsStateRaw((prev) => {
       if (next === "open") {
-        // D103 P4d.9 — the Electron main process can have started while the
+        // d.9 — the Electron main process can have started while the
         // server was down, leaving its Logto config unresolved. Re-probe only
         // when this transition newly reaches open; do not touch the session
         // token or sign-out state.
         void reprobeDesktopServerOnReconnect(prev, next, desktopAPI);
         setLastOpenAt(Date.now());
         setReconnectStartedAt(null);
-        // ISSUE-D145, PR #173 review-fix-3 — record on this device
+        // record on this device
         // that we've seen a successful open at least once. Seeds
         // `computeInitialLastOpenAtSeed()` on subsequent mounts so a hard
         // reload during an outage produces authenticated_disconnected
@@ -2623,7 +2623,7 @@ export function NautiloRuntimeProvider({
     previousWsStateForRunShellRef.current = wsState;
     if (previous !== "open" || wsState === "open") return;
     const disconnectedAt = Date.now();
-    // D502 — losing the authenticated event stream cannot be presented as
+    // losing the authenticated event stream cannot be presented as
     // proof that a one-shot process stopped. Freeze every exact running shell
     // at its last observed evidence until progress or the canonical final
     // receipt restores certainty. This lives outside the state updater because
@@ -2648,7 +2648,7 @@ export function NautiloRuntimeProvider({
   const [pinError, setPinError] = useState<string | undefined>();
   const challengeThreadIdRef = useRef<string | null>(null);
   // Identity challenge flavor:
-  //   "verify"    → POST /api/auth/identity-verify-resume (Logto JWT)
+  //   "verify" → POST /api/auth/identity-verify-resume (Logto JWT)
   //   "enrollPin" → POST /api/auth/pin (first-time PIN under Logto)
   const challengeModeRef = useRef<"verify" | "enrollPin">("verify");
   const challengeLaneKeyRef = useRef<string | null>(null);
@@ -2663,14 +2663,14 @@ export function NautiloRuntimeProvider({
   const approvalChallengeIdRef = useRef<string | null>(null);
   const approvalPreviewKeyRef = useRef<string | null>(null);
 
-  // D061 Phase 2-client (Chunk 5) — graduated ask-verb approval.
+  // -client (Chunk 5) — graduated ask-verb approval.
   // Distinct from prove_it above: ask is the light tier (no PIN, four
   // verbs: once / session / always / deny), presented inline above
   // the composer rather than as a centered modal. State + refs mirror
   // the prove_it pattern so the two flows don't share mutable state
   // accidentally.
   //
-  // ISSUE-D440 — the dock is now driven by a pure lifecycle reducer
+  // the dock is now driven by a pure lifecycle reducer
   // (`../approval/approval-lifecycle`) keyed by `approvalId`. The
   // reducer owns the invariants: a lost HTTP acknowledgement keeps
   // the dock visible (no false clear, no invented terminal
@@ -2702,7 +2702,7 @@ export function NautiloRuntimeProvider({
   const approvalAskThreadIdRef = useRef<string | null>(null);
   const approvalAskLaneKeyRef = useRef<string | null>(null);
 
-  // D453 — native Codex approvals are live-only provider semantics; Plan
+  // native Codex approvals are live-only provider semantics; Plan
   // user-input has bounded, answer-free recovery facts. Neither belongs in
   // Nautilo ApprovalAsk policy state. Keep the bounded pending map in this
   // socket owner; the context exposes only the visible owner's Room cards.
@@ -2758,7 +2758,7 @@ export function NautiloRuntimeProvider({
     [activeRoomId, auth.viewer.sessionUserId, codexRequestLifecycle],
   );
 
-  // D375 / D500 — ephemeral, renderer-session Auto-Approve mode. Keep it
+  //  Ephemeral, renderer-session Auto-Approve mode. Keep it
   // across route remounts and maintenance reloads, but bind it to the exact
   // verified human so it cannot cross a sign-out or account switch.
   const autoApproveViewerId = auth.viewer.isVerified
@@ -2797,7 +2797,7 @@ export function NautiloRuntimeProvider({
   const setSessionAutoApproveRef = useRef(setSessionAutoApprove);
   setSessionAutoApproveRef.current = setSessionAutoApprove;
 
-  // M054 — keep the latest `auth` API in a ref so the effects
+  // keep the latest `auth` API in a ref so the effects
   // below depend on `authState` (a primitive) rather than the
   // whole `auth` object. `useAuth()` returns a stable object now
   // (via useMemo on primitive deps), but the ref hardens us against
@@ -2807,7 +2807,7 @@ export function NautiloRuntimeProvider({
   authRef.current = auth;
   const authState = auth.session.state;
 
-  // ISSUE-D145 — viewer scope for the disconnect cache. We key cache
+  // viewer scope for the disconnect cache. We key cache
   // entries by the authenticated session-user id (preferred stable
   // storage scope per use-auth.ts). Guests / pre-whoami have no
   // viewerKey and the cache is a no-op for them.
@@ -2871,7 +2871,7 @@ export function NautiloRuntimeProvider({
       ? disconnectCacheRef.current
       : null;
 
-  // D530 — pending writes are keyed by their complete durable scope. Both
+  // pending writes are keyed by their complete durable scope. Both
   // the scope and a shallow message snapshot are captured at schedule time;
   // delayed work must never inspect the mutable live transcript.
   interface PendingCacheWrite {
@@ -2899,7 +2899,7 @@ export function NautiloRuntimeProvider({
     return { serverOrigin: activeOrigin, viewerKey: activeViewerKey, roomId };
   };
 
-  // ISSUE-D145 — clear cached frames for the previous viewer when the
+  // clear cached frames for the previous viewer when the
   // signed-in identity changes (sign-out, switch actor). Prevents a
   // prior identity's cached prose from leaking into a new session
   // before the WS reopens.
@@ -2940,7 +2940,7 @@ export function NautiloRuntimeProvider({
     prevViewerKeyRef.current = next;
   }, [viewerKey]);
 
-  // ISSUE-D145 — derived once per render; consumed via context by
+  // derived once per render; consumed via context by
   // Conversation/Composer for empty-state copy + tooltip; mirrored
   // into a ref so the rehydrate effect (below) can branch on it
   // without depending on an extra deps slot.
@@ -3009,7 +3009,11 @@ export function NautiloRuntimeProvider({
   const readyToWorkRestoreAttemptedRef = useRef(false);
 
   if (!voicePlayerRef.current) {
-    voicePlayerRef.current = new VoicePlayer((playing) => setVoicePlaying(playing));
+    voicePlayerRef.current = new VoicePlayer(
+      playing => setVoicePlaying(playing),
+      event => wsRef.current?.send(event),
+      () => { voiceEnabledRef.current = false; setVoiceEnabled(false); },
+    );
   }
 
   const flush = useCallback(() => {
@@ -3092,7 +3096,7 @@ export function NautiloRuntimeProvider({
     });
   }, []);
 
-  // D430 — around-message hydration intentionally leaves ordinary history
+  // around-message hydration intentionally leaves ordinary history
   // cursor facts alone. Existing rows win by id, preserving live streams and
   // optimistic objects while the bounded server page supplies missing rows.
   const roomHistoryAroundControllerRef = useRef<RoomHistoryAroundController | null>(null);
@@ -3436,9 +3440,9 @@ export function NautiloRuntimeProvider({
     [clearAgentStreamingVisibleOutput, hasLiveJobForActiveRoom, nextTurnStopAttemptId],
   );
 
-  // D212 P2 — apply a reaction add/remove to the target message's
+  // apply a reaction add/remove to the target message's
   // aggregated `metadata.custom.reactions`. Counts mirror distinct
-  // reacting actors: M121 only emits reaction.added/removed on a real
+  // reacting actors: the server only emits reaction.added/removed on a real
   // row change (idempotent re-adds don't fire), so +1 / -1 is correct.
   // Match by string-compared id because restored history ids and live
   // event messageIds can differ in number-vs-string form.
@@ -3457,7 +3461,7 @@ export function NautiloRuntimeProvider({
         ? (custom.reactions as ReactionAggregate[])
         : [];
 
-      // D312 — when the acting actor is known, keep `actorIds` in sync and
+      // when the acting actor is known, keep `actorIds` in sync and
       // make the count change idempotent per actor so our optimistic toggle
       // and the server's WS echo collapse to a single +1/-1 (see
       // applyActorReaction). Falls back to the blind count delta when no
@@ -3520,7 +3524,7 @@ export function NautiloRuntimeProvider({
     return finalizedIds.size;
   }, [flush, scheduleCacheWrite]);
 
-  // D312 — optimistic tap-to-react toggle. Applies the change locally,
+  // optimistic tap-to-react toggle. Applies the change locally,
   // then PUT/DELETEs; the actor-aware echo above reconciles (idempotent on
   // our actorId), and a failed request rolls the optimistic change back.
   const toggleReaction = useCallback(
@@ -3579,7 +3583,7 @@ export function NautiloRuntimeProvider({
         }
         backlog.set(pending.logicalMessageKey, pending);
       };
-      // D082 PR A — WS receipt log for control events. Pairs with the
+      //  PR A — WS receipt log for control events. Pairs with the
       // server's `[ws] → type` emit log so a grep across both can
       // reconstruct the full send/receive timeline. High-frequency
       // events (message.tokens, voice.audio, voice.sentence) are
@@ -4101,7 +4105,7 @@ export function NautiloRuntimeProvider({
         return;
       }
 
-      // D420 R12 — maintenance is global server truth, never room-scoped.
+      //  R12 — maintenance is global server truth, never room-scoped.
       // Apply it before the room-routing gate so a future routing change cannot
       // hide the applying snapshot that protects planned replacement reconnects.
       if (event.type === "maintenance.status") {
@@ -4124,7 +4128,7 @@ export function NautiloRuntimeProvider({
         return;
       }
 
-      // D426 — focus is shared room state rather than child transcript state.
+      // focus is shared room state rather than child transcript state.
       // Publish the displayed child's requester-private focus signal before
       // the active-parent gate, which correctly rejects all other child frames.
       const threadRoomRegistration = threadRoomRegistrationRef.current;
@@ -4186,7 +4190,7 @@ export function NautiloRuntimeProvider({
         return;
       }
 
-      // D426 — a thread drawer is a second view over this one runtime, not a
+      // a thread drawer is a second view over this one runtime, not a
       // second runtime. Route a known child frame before the active-parent
       // gate and return so it can never mutate parent transcript/job state.
       // The registration admits only the displayed child and fail-closes
@@ -4259,9 +4263,9 @@ export function NautiloRuntimeProvider({
             trimBoundedStringMap(jobIdToRoomIdRef.current, liveJobIdsRef.current);
             trimBoundedStringMap(virtualJobIdToRoomIdRef.current);
           }
-          // M147 — track this as a live job (main turn or fork) so STOP can abort it.
+          // track this as a live job (main turn or fork) so STOP can abort it.
           liveJobIdsRef.current.add(event.jobId);
-          // D341 — if the user clicked Stop while this turn was still only a
+          // if the user clicked Stop while this turn was still only a
           // coalesced virtual id, consume that pending intent as soon as the
           // server maps the virtual id(s) to the real persisted job id.
           const shouldStopDispatchedJob =
@@ -4274,7 +4278,7 @@ export function NautiloRuntimeProvider({
               virtualJobIdToRoomIdRef.current.delete(virtualJobId);
             }
           }
-          // D302/P4 — group-room sends return HTTP 202 with jobId=null because
+          // Group-room sends return HTTP 202 with jobId=null because
           // conductor routing/wake happens after optimistic delivery. The later
           // job.dispatched frame is therefore the first reliable response-start
           // signal for the floating "Genie is responding" affordance.
@@ -4351,8 +4355,8 @@ export function NautiloRuntimeProvider({
             streamKeyByLaneAuthorRef.current.delete(laneAuthorKey);
             clearAgentStreamingVisibleOutput();
             setModelFallbackStatus(null);
-            // D313 — isRunning tracks live job lifetime; per-message done is not turn end.
-            // ISSUE-D145 — finalized assistant turn; mirror to disconnect
+            // isRunning tracks live job lifetime; per-message done is not turn end.
+            // finalized assistant turn; mirror to disconnect
             // cache for the active room (debounced).
             scheduleCacheWrite(activeRoomIdRef.current);
           }
@@ -4396,7 +4400,7 @@ export function NautiloRuntimeProvider({
                 ? { [MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY]: artifacts }
                 : {}),
             };
-            // M158 — the runtime now emits `message.new` for the agent's visible
+            // the runtime now emits `message.new` for the agent's visible
             // reply (to drive the unread dot). For the ACTIVE viewer that reply
             // already rendered via streaming, so reconcile the just-streamed
             // bubble's id to the DB id instead of adding a duplicate. If no
@@ -4422,7 +4426,7 @@ export function NautiloRuntimeProvider({
               }
               const roomId = roomIdFromLaneKey(event.laneKey, laneKeyToRoomIdRef.current);
               if (roomId) recordLiveRoomMessage(roomId, event.messageId);
-              // D313 — reconcile id only; isRunning stays true until terminal job.status.
+              // reconcile id only; isRunning stays true until terminal job.status.
               break;
             }
             addMessage({
@@ -4433,7 +4437,7 @@ export function NautiloRuntimeProvider({
             });
             const roomId = roomIdFromLaneKey(event.laneKey, laneKeyToRoomIdRef.current);
             if (roomId) recordLiveRoomMessage(roomId, event.messageId);
-            // D313 — non-streamed assistant message.new; job may still be live.
+            // non-streamed assistant message.new; job may still be live.
             break;
           }
           if (
@@ -4470,14 +4474,14 @@ export function NautiloRuntimeProvider({
             }
             const roomId = roomIdFromLaneKey(event.laneKey, laneKeyToRoomIdRef.current);
             if (roomId) recordLiveRoomMessage(roomId, event.messageId);
-            // D459 — a persisted human message is decisive evidence that this
+            // a persisted human message is decisive evidence that this
             // author stopped composing. The usual decay remains the fallback
             // for abandoned drafts or a lost commit frame.
             if (roomId) {
               publishTypingCommitted({ roomId, userId: event.sourceUserId });
             }
           }
-          // ISSUE-D145 — both ai and user `message.new` events can
+          // both ai and user `message.new` events can
           // commit finalized state (the assistant case appends a
           // bubble; user case is a no-op for messagesRef but the
           // server has acknowledged the turn). Schedule a cache
@@ -4506,7 +4510,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "tool.start": {
-          // D212 P0 — the agent `react` tool surfaces as a reaction strip
+          // the agent `react` tool surfaces as a reaction strip
           // on the target message (via reaction.added / inlined GET), NOT
           // as a thread tool card or an activity-feed row. Drop it before
           // it becomes a tool-call part (a nulled renderer would still
@@ -4549,7 +4553,7 @@ export function NautiloRuntimeProvider({
             ],
             ...(toolCustom ? { metadata: { custom: toolCustom } } : {}),
           });
-          // D057 2a.1.11 — push a "running" entry into the activity log.
+          //  2a.1.11 — push a "running" entry into the activity log.
           // Cap preserves the newest TOOL_ACTIVITY_CAP entries.
           const interventionBindingKey = event.laneKey
             ? `${event.laneKey}\0${event.toolCallId}`
@@ -4589,7 +4593,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "tool.end": {
-          // D212 P0 — `react` never created a tool-call part or activity
+          // `react` never created a tool-call part or activity
           // entry (see tool.start guard); nothing to finalize here.
           if (event.toolName === "react") break;
           if (event.status !== "error") {
@@ -4601,8 +4605,8 @@ export function NautiloRuntimeProvider({
             const committedMutation = liveAppMutationFromToolEnd(event);
             if (committedMutation) publishLiveAppMutationCommitted(committedMutation);
           }
-          // D057 2a.1.11 — flip the running entry to ok/error + set end.
-          // D083 Phase 2 — also store event.result + resultTruncated
+          //  2a.1.11 — flip the running entry to ok/error + set end.
+          // also store event.result + resultTruncated
           // so the inline ToolCard's per-tool renderers (run_shell,
           // read_file, grep, etc.) can show actual output instead of
           // the legacy "Done (Xms)" placeholder.
@@ -4691,7 +4695,7 @@ export function NautiloRuntimeProvider({
               toolCall = firstPart as ToolCallPart;
             }
             if (toolCall) {
-              // D083 Phase 2 — prefer the real tool output for the
+              // prefer the real tool output for the
               // assistant-ui `result` surface; fall back to the
               // legacy "Done (Xms)" / "Error: ..." synthetic string
               // for older-server clients that don't populate
@@ -4718,14 +4722,14 @@ export function NautiloRuntimeProvider({
               flush();
             }
           }
-          // ISSUE-D145 — tool.end is a finalized event (the tool card
+          // tool.end is a finalized event (the tool card
           // has its terminal state). Mirror to cache.
           scheduleCacheWrite(activeRoomIdRef.current);
           break;
         }
 
         case "reaction.added": {
-          // D212 P2 — emoji reaction landed on a message in this room
+          // emoji reaction landed on a message in this room
           // (from a human or an agent's `react` tool). Update the target
           // message's aggregated reactions; the strip renders + animates.
           updateMessageReactions(event.messageId, event.emoji, 1, event.actorId);
@@ -4740,7 +4744,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "message.deleted": {
-          // ISSUE-M172 — a room message was hard-deleted; remove it from the
+          // a room message was hard-deleted; remove it from the
           // active room's message list. Idempotent: removing an already-removed
           // id is a no-op (covers the optimistic-removal + WS-echo race).
           const targetId = String(event.messageId);
@@ -4767,7 +4771,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "model.fallback": {
-          // D264 — structured runtime status only. Must not seed/append
+          // structured runtime status only. Must not seed/append
           // stream accumulators, update assistant bubbles by id, or create
           // assistant prose (TTS reads voice.* events, not this line).
           setModelFallbackStatus(modelFallbackStatusFromEvent(event));
@@ -4867,7 +4871,7 @@ export function NautiloRuntimeProvider({
           ) {
             dispatchTrackedCodexRequestLifecycle({ kind: "clear_job", jobId: event.jobId });
           }
-          // M147 — any terminal status retires the job from the live set.
+          // any terminal status retires the job from the live set.
           if (
             event.status === "completed" ||
             event.status === "failed" ||
@@ -4892,7 +4896,7 @@ export function NautiloRuntimeProvider({
                 ? { state: "stopped", attemptId: current.attemptId }
                 : current,
             );
-            // M147 STOP — the server aborted the run mid-stream. Finalize any
+            //  STOP — the server aborted the run mid-stream. Finalize any
             // partial assistant bubbles in place (keep the streamed text) and
             // detach stream entries so the NEXT turn starts fresh messages.
             for (const entry of finalizeAllStreamsOnCancel({
@@ -4906,7 +4910,7 @@ export function NautiloRuntimeProvider({
             setModelFallbackStatus(null);
           }
           if (event.status === "failed") {
-            // D141 Phase 1 — render the friendly translator's one-line
+            // render the friendly translator's one-line
             // sentence as the primary error copy. `event.message` is
             // already the friendly sentence — translation happens at
             // the runtime job-loop chokepoint (`packages/runtime/src/job.ts`).
@@ -4915,8 +4919,8 @@ export function NautiloRuntimeProvider({
             // `job.status`: that event is room-broadcast, and the
             // upstream `error.message` can echo prompt content or
             // model output (cross-user leak). Power-user "Details"
-            // disclosure waits for D141-P3's user-scoped error event.
-            // See ISSUE-D141 §"Locked Decisions" LD-8. Raw details
+            // disclosure requires a user-scoped error event.
+            // Raw details
             // remain in `server.log` for operator debugging.
             const friendlyText = event.message ?? "Something went wrong reaching the model. Try again in a moment.";
             const messageBody = `**Error:** ${friendlyText}`;
@@ -4984,7 +4988,7 @@ export function NautiloRuntimeProvider({
         case "identity.challenge": {
           // `event.mode` selects the submit path:
           //   "verify" (default) → identity-verify-resume
-          //   "enrollPin"      → POST /api/auth/pin (first enrollment)
+          //   "enrollPin" → POST /api/auth/pin (first enrollment)
           challengeThreadIdRef.current = event.threadId;
           challengeLaneKeyRef.current = event.laneKey;
           challengeModeRef.current = event.mode ?? "verify";
@@ -4995,7 +4999,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "revisions.state_changed": {
-          // D087 Phase 3 §3.10 — merge the per-path snapshot into
+          // merge the per-path snapshot into
           // the map. A zero-count eviction still updates the map
           // (availableRevisions=0, latest=null) so the UI correctly
           // transitions "undo available" → "undo disabled".
@@ -5045,10 +5049,10 @@ export function NautiloRuntimeProvider({
         }
 
         case "approval.ask": {
-          // D061 Phase 2-client — graduated ask-verb approval. Inline
+          // -client — graduated ask-verb approval. Inline
           // above the composer (ApprovalAskDock), not a centered modal.
           //
-          // ISSUE-D440 — the dock is driven by the pure approval
+          // the dock is driven by the pure approval
           // lifecycle reducer. We arm the pending ask (the reducer's
           // late/duplicate guard ignores any `approvalId` already in
           // the terminal set, so a stale ask cannot reopen a resolved
@@ -5093,7 +5097,7 @@ export function NautiloRuntimeProvider({
             requiresExplicitReview: requiresExactReview,
           };
 
-          // D375 — Auto-Approve session mode: auto-resolve ask-tier
+          // Auto-Approve session mode: auto-resolve ask-tier
           // approvals WITHOUT surfacing the dock. Boundary: network-egress
           // asks (`event.network` populated) still surface — network egress
           // stays gated. `prove_it.challenge` / `identity.challenge` are
@@ -5196,14 +5200,14 @@ export function NautiloRuntimeProvider({
         }
 
         case "approval.resolved": {
-          // ISSUE-D440 — authoritative approval terminal event. When
+          // authoritative approval terminal event. When
           // the server emits this for the currently-pending approval
           // id, the reducer clears the dock exactly once and records
           // the id as terminal so a late/duplicate ask cannot reopen
           // it. A resolution for a stale/different id only records
           // terminality (it must not wipe a newer pending ask).
           //
-          // The D440 server producer emits this requester-private
+          // The server producer emits this requester-private
           // event after the canonical main-thread or Task resume
           // settles. That makes lost-ack reconciliation authoritative;
           // submit-error remains conservative until this event arrives.
@@ -5273,7 +5277,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "conductor.ask_user": {
-          // D279 Phase 4 — Conductor couldn't attribute the message to one bot;
+          // Conductor couldn't attribute the message to one bot;
           // surface the disambiguation picker. Wakes no bot; the helper holds
           // { options, messageId, roomId } for the composer strip + held-dots.
           consumeConductorAskUserWsEvent({
@@ -5473,7 +5477,7 @@ export function NautiloRuntimeProvider({
     pendingAttentionPreviewQueueRef.current = initialPendingApprovalPreviewQueue();
   }, [activeRoomId, auth.viewerGeneration, viewerKey]);
 
-  // D513 Phase 3.4 — socket-local automatic actions are consumed before the
+  // socket-local automatic actions are consumed before the
   // normal ServerEvent router. Their action IDs live only for this mounted
   // authenticated socket, so reconnect/unmount clearing prevents replay.
   const handleWsControlEvent = useCallback((event: RealtimeControlEvent): void => {
@@ -5511,7 +5515,7 @@ export function NautiloRuntimeProvider({
     handleWsControlEventRef.current = handleWsControlEvent;
   }, [handleWsControlEvent]);
 
-  // D441 — mirror `wsState` into a ref so the outbound typing-ping
+  // mirror `wsState` into a ref so the outbound typing-ping
   // sender closure can read the live transport state without being
   // re-installed on every transport transition (same pattern as
   // `handleWsEventRef` above). `wsState === "open"` is only reached
@@ -5597,7 +5601,7 @@ export function NautiloRuntimeProvider({
     };
   }, [activeRoomId, admissionResumeGeneration, authState, viewerKey, wsState]);
 
-  // D441 — install the outbound typing-ping sender. The sender
+  // install the outbound typing-ping sender. The sender
   // short-circuits (drops the ping) unless the WS is authenticated/
   // open, so the ping never reaches `RealtimeClient.send(...)`'s
   // buffering path and the disconnected outbound queue can never
@@ -5623,6 +5627,11 @@ export function NautiloRuntimeProvider({
   useEffect(() => {
     let openedOnce = false;
     const client = createWsRealtimeClient(WS_URL, {
+      onVoiceEvent: (event) => {
+        if (!voiceEnabledRef.current) return;
+        if (event.type === "voice.stream.start" && event.roomId !== activeRoomIdRef.current) return;
+        voicePlayerRef.current?.handleStreamEvent(event);
+      },
       onEvent: (event) => {
         const changesActivePendingAttention = changesPendingAttention(event, {
           roomId: activeRoomIdRef.current,
@@ -5638,7 +5647,7 @@ export function NautiloRuntimeProvider({
           changesActivePendingAttention,
         );
         if (previewIngress === "direct") {
-          // Preserve M164's owner-scoped Task/subagent attention path. These
+          // Preserve 's owner-scoped Task/subagent attention path. These
           // prompts have task lanes rather than Room lanes and are intentionally
           // excluded from the Room-bound durable checkpoint queue below.
           handleWsEventRef.current(event as PendingAttentionPreviewEvent);
@@ -5656,6 +5665,7 @@ export function NautiloRuntimeProvider({
       },
       onControlEvent: (event) => handleWsControlEventRef.current(event),
       onStateChange: (state) => {
+        if (state !== "open") voicePlayerRef.current?.stop();
         if (state === "open" && openedOnce) requestCryptoAdmissionRefresh("transport_reconnected");
         else if (state !== "open" && wsStateRef.current === "open") requestCryptoAdmissionRefresh("transport_disconnected");
         if (state === "open") openedOnce = true;
@@ -5664,7 +5674,7 @@ export function NautiloRuntimeProvider({
       },
       onError: (err) => console.error("[ws]", err),
       initiatingClientSurface: initiatingClientSurfaceForWorkbench({ isDesktop, desktopAPI }),
-      // M058 — first-frame auth handshake. Resolve bearer via Logto
+      // first-frame auth handshake. Resolve bearer via Logto
       // (Electron IPC or browser SDK; silent refresh near expiry).
       getToken: async () => {
         try {
@@ -5681,7 +5691,7 @@ export function NautiloRuntimeProvider({
     });
     wsRef.current = client;
 
-    // Stack 19 Phase 5.5 hotfix (2026-05-16) — debounced visibility
+    // debounced visibility
     // gate; see `ws-visibility-gate.ts` module header for full
     // rationale + the 5-reconnects-in-5-minutes smoke that prompted
     // the fix. Electron skips the gate entirely; browser debounces
@@ -5718,6 +5728,7 @@ export function NautiloRuntimeProvider({
       }
       gate?.dispose();
       visibilityDisconnectSuppressRef.current = false;
+      voicePlayerRef.current?.dispose();
       client.close();
       wsRef.current = null;
     };
@@ -5725,7 +5736,7 @@ export function NautiloRuntimeProvider({
     // useCallback([]); handleWsEvent is reached via handleWsEventRef.
   }, [setWsState]);
 
-  // D530 — select/cache/fence in the layout phase so Room A cannot appear
+  // select/cache/fence in the layout phase so Room A cannot appear
   // under Room B before the first paint. The server fetch deliberately starts
   // only after that authoritative local projection is installed.
   useLayoutEffect(() => {
@@ -6357,7 +6368,7 @@ export function NautiloRuntimeProvider({
   }, [messageBackfillClient, admissionReady, admissionResumeGeneration,
     shadowPolicyMode, wsState, isRunning]);
 
-  // ISSUE-D145 — reconcile-on-reconnect.
+  // reconcile-on-reconnect.
   //
   // When the WS transitions back to "open" after having been open
   // before this session (i.e. a real reconnect, not first-paint),
@@ -6518,7 +6529,7 @@ export function NautiloRuntimeProvider({
         activeRoomHydrationRef.current = null;
       }
 
-      // D353 — reconcile RUN-STATE from server truth, not just message
+      // reconcile RUN-STATE from server truth, not just message
       // history. A terminal `job.status` dropped during the WS gap leaves a
       // ghost id in `liveJobIdsRef`, so `isRunning` stays stuck true ("Genie
       // is responding" never clears and Stop reports no-target). Rebuild ONLY
@@ -6684,7 +6695,7 @@ export function NautiloRuntimeProvider({
         mentionedHumanUserIds?: string[];
         onOptimisticUserMessage?: () => void;
         /**
-         * D371 R2 — optional per-turn model override. Forwarded into
+         *  R2 — optional per-turn model override. Forwarded into
          * `sendExtras` and on to `apiClient.sendRoomMessage`. Inert until R3
          * wires a UI to set it; the field is omitted entirely when absent so
          * server behavior is unchanged.
@@ -6699,25 +6710,25 @@ export function NautiloRuntimeProvider({
       },
     ): Promise<boolean> => {
       if (!isCryptoAdmissionAllowed()) return false;
-      // D087 Phase 3 §3.7 — slash-command interception. Intercept
+      // slash-command interception. Intercept
       // BEFORE the normal send pipeline so `/undo` doesn't reach the
       // LLM; instead it dispatches through the direct-invoke
       // endpoint (zero synthetic user message, zero LLM turn).
       //
       // Supported:
-      //   /undo              — undo most-recent edit on most-recently-
+      //   /undo — undo most-recent edit on most-recently-
       //                        touched file. No visible user message
       //                        in the thread; the DiffView card fires
       //                        via the tool-activity stream.
-      //   /undo <abs-path>   — undo most-recent edit on the given
+      //   /undo <abs-path> — undo most-recent edit on the given
       //                        absolute path.
-      //   /redo [abs-path]   — symmetric.
+      //   /redo [abs-path] — symmetric.
       //
       // Unknown slash-commands fall through to normal send (the Agent
       // sees them as user text). No-arg /undo with no history
       // surfaces an inline error bubble via the tool-activity
       // stream's error channel.
-      // D448 — outbound room identity is admitted only when the active/route
+      // outbound room identity is admitted only when the active/route
       // room and the hydrated visible transcript agree. During a room switch,
       // reject before slash commands, optimistic bubbles, attachment cleanup,
       // or network I/O. This prevents a stale room-A frame from sending into B.
@@ -6790,7 +6801,7 @@ export function NautiloRuntimeProvider({
         return true;
       }
 
-      // D271 — attachments are uploaded at attach time; the chip carries the
+      // attachments are uploaded at attach time; the chip carries the
       // server `attachmentId`. The send references ids only (no paths/bytes).
       const isDetachedFocusedTurn = options?.detachedFocusedResources !== undefined;
       const queuedAttachments = isDetachedFocusedTurn ? [] : getAttachments();
@@ -6807,7 +6818,7 @@ export function NautiloRuntimeProvider({
         }
       }
 
-      // D356 — metadata-only artifact references ("focus on these"). Unlike
+      // metadata-only artifact references ("focus on these"). Unlike
       // attachments these carry no bytes; map to the wire shape (drop entryId).
       const queuedArtifactRefs = isDetachedFocusedTurn ? [] : getArtifactRefs();
       const artifactRefs: ChatArtifactRef[] = queuedArtifactRefs.map((r) => ({
@@ -6846,8 +6857,8 @@ export function NautiloRuntimeProvider({
         return false;
       }
 
-      // D204 follow-up — defer setIsRunning(true) until AFTER the HTTP
-      // response. If the D128 gate suppresses, the response comes back
+      //  follow-up — defer setIsRunning(true) until AFTER the HTTP
+      // response. If the gate suppresses, the response comes back
       // with jobId=null and we never set isRunning at all (no flash).
       // For the active path, the WS `job.dispatched` event arrives a
       // beat later and the existing handlers light up the indicator.
@@ -6902,12 +6913,12 @@ export function NautiloRuntimeProvider({
       options?.onOptimisticUserMessage?.();
 
       try {
-        // D079 Phase 2 — pick up the current file-surface context
+        // pick up the current file-surface context
         // from the shared ref populated by BrowserColumnProvider.
         // Read-on-send semantics so the LATEST folder is always in
         // the outbound message, even if the user swapped folders
         // mid-conversation between this send and the previous one.
-        // `workspacePath` is null until D079 Phase 3 wires it; the
+        // `workspacePath` can be null; the
         // server tolerates absence gracefully (omits the workspace
         // sub-block in the system prompt).
         const activeMiniApp = readActiveMiniApp();
@@ -6944,7 +6955,7 @@ export function NautiloRuntimeProvider({
           coalesced: boolean | undefined;
           attachments: ChatAttachmentStatus[] | undefined;
           /**
-           * D212 — the persisted numeric id of THIS user message, returned
+           * the persisted numeric id of THIS user message, returned
            * by `POST /api/rooms/:id/messages`. The same user's other desktop
            * can receive `message.new`, but this response remains the earliest
            * authoritative id for the sending client. We stamp the optimistic
@@ -7008,12 +7019,12 @@ export function NautiloRuntimeProvider({
           );
         }
 
-        // D128 / D204 — only flip the thinking indicator true when the
+        //  Only flip the thinking indicator true when the
         // server confirmed an LLM turn was dispatched. A null jobId is
         // the unambiguous "no agent turn was dispatched" signal (see
         // packages/server/src/messaging/agent-mediated.ts ::
         // persistAgentRoomMessageWithoutLlm) — that happens when the
-        // D128 gate suppresses (`mention_only` without @mention, or
+        //  gate suppresses (`mention_only` without @mention, or
         // `observe` mode) or when this room has no agent member. In
         // either case, we never want to show the indicator.
         if (pending.jobId !== null) {
@@ -7041,7 +7052,7 @@ export function NautiloRuntimeProvider({
           );
         }
         if (pending.userMessageId != null) {
-          // D212 — use the persisted numeric id when the server returned
+          // use the persisted numeric id when the server returned
           // one so live reactions on this just-sent message resolve; fall
           // back to a client id for the legacy /api/chat path.
           reconcileMessageId(optimisticId, String(pending.userMessageId));
@@ -7109,13 +7120,14 @@ export function NautiloRuntimeProvider({
       void voicePlayerRef.current?.prime();
     } else {
       voicePlayerRef.current?.stop();
-      wsRef.current?.send({ type: "voice.stop" });
+      wsRef.current?.send({ type: "voice.listen", version: 1, enabled: false, roomId: null });
     }
   }, [voiceEnabled]);
 
   const stopVoice = useCallback(() => {
+    const turnId = voicePlayerRef.current?.currentTurnId();
     voicePlayerRef.current?.stop();
-    wsRef.current?.send({ type: "voice.stop" });
+    wsRef.current?.send({ type: "voice.stop", ...(turnId ? { turnId } : {}) });
   }, []);
 
   useEffect(() => {
@@ -7130,7 +7142,11 @@ export function NautiloRuntimeProvider({
     voicePlayerRef.current?.stop();
   }, [activeRoomId]);
 
-  // D557 — install only after both canonical renderer owners exist, then ask
+  useEffect(() => {
+    wsRef.current?.send({ type: "voice.listen", version: 1, enabled: voiceEnabled && Boolean(activeRoomId), roomId: activeRoomId || null });
+  }, [voiceEnabled, activeRoomId, wsState]);
+
+  // install only after both canonical renderer owners exist, then ask
   // Desktop for one replay in case its startup event predated this mount.
   const readyToWork = desktopAPI?.readyToWork;
   useEffect(() => {
@@ -7164,7 +7180,7 @@ export function NautiloRuntimeProvider({
     readyToWorkOwnerAdapterRef.current?.reportIfChanged();
   }, [autoApprove, voiceEnabled]);
 
-  // D349 — STOP is conversation-scoped when a room is active: abort live jobs
+  // STOP is conversation-scoped when a room is active: abort live jobs
   // and suppress queued/coalesced continuation via `POST /api/rooms/:id/stop`.
   // Fall back to job-id Stop only when no active room is known.
   const stopActiveJobs = useCallback(() => {
@@ -7201,7 +7217,7 @@ export function NautiloRuntimeProvider({
           .map(([id]) => id)
       : [];
     if (activeRoom && virtualIds.length > 0) {
-      // D341 — a send can return the coalescer's virtual id before the real
+      // a send can return the coalescer's virtual id before the real
       // persisted job id arrives over `job.dispatched`. Preserve the user's
       // Stop intent and apply it as soon as that mapping arrives.
       const attemptId = nextTurnStopAttemptId();
@@ -7648,14 +7664,14 @@ export function NautiloRuntimeProvider({
     }
   }, [approvalTools, addMessage, liveShadowMessageClient?.deviceId]);
 
-  // --- D061 Phase 2-client (Chunk 5) — approval-ask dock submission ---
+  // --- -client (Chunk 5) — approval-ask dock submission ---
   //
   // One place for all four verbs. Dock passes the verb; we POST +
   // update state + append a small confirmation/system message. On
   // error we keep the dock open with an error line so the user can
   // retry while the active approval remains visible.
   //
-  // ISSUE-D440 — the dock state is owned by the approval lifecycle
+  // the dock state is owned by the approval lifecycle
   // reducer. `submitStart` arms the in-flight flag; on a successful
   // HTTP ack `submitAck` clears the dock exactly once and records
   // the approvalId as terminal so a late/duplicate ask cannot
@@ -7724,7 +7740,7 @@ export function NautiloRuntimeProvider({
         // in a multi-step task with graduated approvals that pattern
         // stacks N identical bubbles that push the real narrative
         // off-screen and makes the stream read as duplicate assistant
-        // filler. The dock's disappearance + the tool card (D083)
+        // filler. The dock's disappearance + the tool card
         // that follows are the visible signal the graph resumed.
         approvalAskThreadIdRef.current = null;
         approvalAskLaneKeyRef.current = null;
@@ -7819,7 +7835,7 @@ export function NautiloRuntimeProvider({
     [codexRequestState, dismissCodexRequest, respondToCodexRequest],
   );
 
-  // D375 — non-guest gate: only authenticated verified members may flip
+  // non-guest gate: only authenticated verified members may flip
   // the session mode (role !== guest/stranger). Guests never see the
   // toggle. This is intentionally LIGHTER than `manage_server_security`
   // (which stays reserved for the durable `security.level` posture): the

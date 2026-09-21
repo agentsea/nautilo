@@ -6,13 +6,14 @@ export const SOURCE_ALARM_BASELINE = {
 // Reviewed public-browser receipt constraints (0289–0291), scoped media
 // references (0292), content-free Events preferences (0293), and the exact
 // content-access receipt FK-cleanup permissions (0294); see the September 17
-// coverage regression test. The execution-input message lookup index (0295)
-// supports selected-message interruption summaries. No applied migration was edited.
+// coverage regression test. The speech-model selection column remains main's
+// 0295 migration, followed by the execution-input message lookup index at 0296
+// for selected-message interruption summaries. No migration body was edited.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 296,
-  "snapshots": 267,
-  "tip": 295,
-  "sha256": "2c995981a9dbcfac4def4bfbe581a39a74ca57c54e0be7fdafcc4752763e161a"
+  "migrations": 297,
+  "snapshots": 268,
+  "tip": 296,
+  "sha256": "440dbbebb6b46bf5beece0f24f7e97ae2d417ad4081cf7336ea205f89a5cc46c"
 } as const;
 
 /**

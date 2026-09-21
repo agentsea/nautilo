@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   ModelCatalogSchema,
+  ModelCatalogV3Schema,
+  ModelCatalogV4Schema,
   canonicalModelCatalogSigningPayload,
   type ModelCatalog,
 } from "@nautilo/types";
@@ -62,6 +64,51 @@ function manifestPayload(catalogVersion = "2026.07.18.1", id = "anthropic:claude
   });
 }
 
+/** Minimal reviewed v4 decision manifest used by reader/signature tests. */
+function decisionManifestPayload(catalogVersion = "2026.09.18.1"): ModelCatalog {
+  return ModelCatalogV4Schema.parse({
+    version: 4,
+    catalogVersion,
+    publishedAt: "2026-09-18T10:39:55Z",
+    entries: [
+      {
+        id: "openrouter:typesafe/jev-1.13",
+        displayName: "Jev 1.13 (OpenRouter)",
+        provider: "openrouter",
+        routing: "openrouter",
+        priority: 999,
+        defaultEnabled: true,
+        workload: "decision",
+        modalities: { input: ["text"], output: ["text"] },
+        capabilityProvenance: "openrouter",
+        cost: { coefficient: 0.014 },
+        privacy: { grade: 4 },
+        decision: {
+          operations: ["choice"],
+          inputTokens: 32_000,
+          maxChoices: 255,
+        },
+      },
+      {
+        id: "anthropic:claude-test-security",
+        displayName: "Claude Test Security (Anthropic)",
+        provider: "anthropic",
+        routing: "first-party",
+        priority: 1,
+        defaultEnabled: true,
+        modalities: { input: ["text"], output: ["text"] },
+        features: { tools: true, structuredOutputs: false, reasoning: true },
+        limits: { contextTokens: 200_000, outputTokens: 8_000 },
+        cost: { coefficient: 1 },
+        privacy: { grade: 1 },
+        intelligence: { tier: "frontier" },
+        capabilityProvenance: "override",
+        taskPreferences: ["security_research"],
+      },
+    ],
+  });
+}
+
 /** Generate an Ed25519 key pair and return base64 DER SPKI public + raw private signing material. */
 function makeTestKey(): {
   signingKeyId: string;
@@ -85,14 +132,22 @@ function makeTestKey(): {
  * the immutable URL must serve.
  */
 function buildSignedRelease(
-  manifest: ModelCatalog,
+  manifest: { catalogVersion: string },
   key: ReturnType<typeof makeTestKey>,
 ): { pointer: object; immutableBody: string } {
   const immutableBody = `${JSON.stringify(manifest)}\n`;
+  return buildSignedBody(manifest.catalogVersion, immutableBody, key);
+}
+
+function buildSignedBody(
+  catalogVersion: string,
+  immutableBody: string,
+  key: ReturnType<typeof makeTestKey>,
+): { pointer: object; immutableBody: string } {
   const artifactSha256 = createHash("sha256").update(immutableBody, "utf8").digest("hex");
-  const payload = canonicalModelCatalogSigningPayload(manifest.catalogVersion, artifactSha256);
+  const payload = canonicalModelCatalogSigningPayload(catalogVersion, artifactSha256);
   const pointer = {
-    catalogVersion: manifest.catalogVersion,
+    catalogVersion,
     artifactSha256,
     signature: key.signPayload(payload),
     signingKeyId: key.signingKeyId,
@@ -129,15 +184,19 @@ function makeHarness(
     maxBytes?: number;
   } = {},
 ): Harness {
-  const version = "2026.07.18.1";
-  const manifestUrl = `https://media.nautilo.ai/models/catalog-${version}.json`;
-  const defaultManifest = manifestPayload(version);
+  const defaultVersion = "2026.07.18.1";
+  const defaultManifest = manifestPayload(defaultVersion);
   const { pointer: defaultPointer, immutableBody: defaultBody } = buildSignedRelease(
     defaultManifest,
     key,
   );
   const pointer = opts.pointer ?? defaultPointer;
   const immutableBody = opts.immutableBody ?? defaultBody;
+  const pointerVersion = pointer && typeof pointer === "object"
+    && "catalogVersion" in pointer && typeof pointer.catalogVersion === "string"
+    ? pointer.catalogVersion
+    : defaultVersion;
+  const manifestUrl = `https://media.nautilo.ai/models/catalog-${pointerVersion}.json`;
   const fetches: { url: string; init?: RequestInit }[] = [];
   let fetchFn: FetchFn = (url) => {
     if (url === POINTER_URL) return Promise.resolve(jsonResponse(pointer));
@@ -161,7 +220,7 @@ function makeHarness(
   return { config, fetches, setFetch(fn) { fetchFn = fn; } };
 }
 
-describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => {
+describe("the current implementation — signed pointer + immutable artifact loader", () => {
   let key: ReturnType<typeof makeTestKey>;
 
   beforeEach(() => {
@@ -195,6 +254,89 @@ describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => 
     const result = await loader.get();
     expect(result.source).toBe("remote-fresh");
     expect(result.catalog.entries[0]?.id).toBe("anthropic:claude-test-7");
+  });
+
+  test("accepts a signed v4 decision catalog through the ordinary remote reader", async () => {
+    const manifest = decisionManifestPayload();
+    const { pointer, immutableBody } = buildSignedRelease(manifest, key);
+    const h = makeHarness(key, { pointer, immutableBody });
+    const loader = createRemoteModelCatalogLoader(h.config);
+
+    const result = await loader.get();
+
+    expect(result.source).toBe("remote-fresh");
+    expect(result.catalog.version).toBe(4);
+    expect(result.catalog.entries[0]).toMatchObject({
+      id: "openrouter:typesafe/jev-1.13",
+      workload: "decision",
+      decision: {
+        operations: ["choice"],
+        inputTokens: 32_000,
+        maxChoices: 255,
+      },
+    });
+  });
+
+  test("retains last-known-good when signed v4 bytes are malformed or schema-invalid", async () => {
+    const invalidDecision = {
+      ...decisionManifestPayload("2026.09.18.2"),
+      entries: [{
+        ...decisionManifestPayload("2026.09.18.2").entries[0],
+        limits: { contextTokens: 32_000, outputTokens: 1 },
+      }],
+    };
+    const cases = [
+      buildSignedBody("2026.09.18.2", "{not-json}\n", key),
+      buildSignedRelease(invalidDecision, key),
+    ];
+
+    for (const release of cases) {
+      let now = 0;
+      const h = makeHarness(key, { now: () => now, ttlMs: 1000, staleMs: 1000 });
+      const loader = createRemoteModelCatalogLoader(h.config);
+      const initial = await loader.get();
+      expect(initial.source).toBe("remote-fresh");
+      expect(initial.catalog.catalogVersion).toBe("2026.07.18.1");
+
+      h.setFetch(async (url) => {
+        if (url === POINTER_URL) return jsonResponse(release.pointer);
+        if (url === "https://media.nautilo.ai/models/catalog-2026.09.18.2.json") {
+          return jsonResponse(release.immutableBody);
+        }
+        return jsonResponse("not found", { status: 404 });
+      });
+      now = 10_000;
+
+      const retained = await loader.get();
+      expect(retained.source).toBe("remote-stale");
+      expect(retained.catalog.catalogVersion).toBe("2026.07.18.1");
+      expect(retained.catalog.entries[0]?.id).toBe("anthropic:claude-test-7");
+    }
+  });
+
+  test("retains last-known-good when a v4 pointer has an invalid signature", async () => {
+    let now = 0;
+    const h = makeHarness(key, { now: () => now, ttlMs: 1000, staleMs: 1000 });
+    const loader = createRemoteModelCatalogLoader(h.config);
+    await loader.get();
+
+    const release = buildSignedRelease(decisionManifestPayload("2026.09.18.2"), key);
+    const badSignature = Buffer.from(new Uint8Array(64).fill(7)).toString("base64");
+    h.setFetch(async (url) => {
+      if (url === POINTER_URL) {
+        return jsonResponse({ ...release.pointer, signature: badSignature });
+      }
+      if (url === "https://media.nautilo.ai/models/catalog-2026.09.18.2.json") {
+        return jsonResponse(release.immutableBody);
+      }
+      return jsonResponse("not found", { status: 404 });
+    });
+    now = 10_000;
+
+    const retained = await loader.get();
+    expect(retained.source).toBe("remote-stale");
+    expect(retained.catalog.catalogVersion).toBe("2026.07.18.1");
+    expect(retained.catalog.entries[0]?.id).toBe("anthropic:claude-test-7");
   });
 
   test("rejects a tampered immutable artifact (SHA-256 mismatch) and falls back to local", async () => {
@@ -241,7 +383,7 @@ describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => 
     expect(result.reason).toContain("unknown signingKeyId");
   });
 
-  test("falls back to local when the trusted registry is empty (official production until Phase 8)", async () => {
+  test("falls back to local when the trusted registry is empty (official production until )", async () => {
     const manifest = manifestPayload();
     const { pointer, immutableBody } = buildSignedRelease(manifest, key);
     const manifestUrl = `https://media.nautilo.ai/models/catalog-2026.07.18.1.json`;
@@ -325,7 +467,7 @@ describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => 
     expect(result.source).toBe("checked-in-fallback");
   });
 
-  test("rejects a post-D560 catalog that drops security-research routing metadata", async () => {
+  test("rejects a post- catalog that drops security-research routing metadata", async () => {
     const manifest = manifestPayload("2026.09.03.1");
     const { pointer, immutableBody } = buildSignedRelease(manifest, key);
     const manifestUrl =
@@ -402,7 +544,7 @@ describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => 
     expect(h.fetches).toHaveLength(2);
   });
 
-  test("clearCache forces the next get() to refetch", async () => {
+  test("clearCache forces the next get to refetch", async () => {
     const h = makeHarness(key);
     const loader = createRemoteModelCatalogLoader(h.config);
     await loader.get();
@@ -415,11 +557,11 @@ describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => 
   test("rejects non-HTTPS / credentials / query / fragment / forbidden-IP pointer URLs at construction", () => {
     for (const bad of [
       "http://media.nautilo.ai/models/latest.json",
-      "https://user:pass@media.nautilo.ai/models/latest.json",
+      "https://user:test@example.com/models/latest.json",
       "https://media.nautilo.ai/models/latest.json?v=2",
       "https://media.nautilo.ai/models/latest.json#section",
       "https://127.0.0.1/models/latest.json",
-      "https://10.0.0.1/models/latest.json",
+      "https://[fc00::1]/models/latest.json", // Synthetic IPv6 unique-local address.
       "https://[::1]/models/latest.json",
     ]) {
       expect(() =>
@@ -489,7 +631,7 @@ describe("D429 Phase 7.1 — signed pointer + immutable artifact loader", () => 
   });
 });
 
-describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer consistency", () => {
+describe("the current implementation/7.3 — runtime seam, reconciliation, and consumer consistency", () => {
   let key: ReturnType<typeof makeTestKey>;
 
   beforeEach(() => {
@@ -506,7 +648,7 @@ describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer cons
 
   function configureRemote(manifest: ModelCatalog, now = 0): void {
     const { pointer, immutableBody } = buildSignedRelease(manifest, key);
-    const manifestUrl = `https://media.nautilo.ai/models/catalog-${manifest.catalogVersion}.json`;
+    const manifestUrl = `https://media.nautilo.ai/models/v6/catalog-${manifest.catalogVersion}.json`;
     configureRuntimeModelCatalog({
       remoteConfig: {
         ttlMs: 1000,
@@ -524,8 +666,8 @@ describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer cons
     });
   }
 
-  test("ships the verified official pointer URL", () => {
-    expect(OFFICIAL_MODEL_CATALOG_POINTER_URL).toBe("https://media.nautilo.ai/models/latest.json");
+  test("targets the reader-first typed decision catalog channel", () => {
+    expect(OFFICIAL_MODEL_CATALOG_POINTER_URL).toBe("https://media.nautilo.ai/models/v6/latest.json");
   });
 
   test("Zod contract represents reviewed xai, together, and gateway routing classes", () => {
@@ -576,11 +718,11 @@ describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer cons
     const base = manifestPayload();
     const { limits: _limits, ...withoutLimits } = base.entries[0]!;
 
-    for (const version of [1, 2, 3] as const) {
+    for (const version of [1, 2, 3, 4] as const) {
       expect(() => ModelCatalogSchema.parse({
         ...base,
         version,
-        entries: [{ ...withoutLimits, ...(version === 3 ? { workload: "chat" } : {}) }],
+        entries: [{ ...withoutLimits, ...(version >= 3 ? { workload: "chat" } : {}) }],
       }), `catalog v${version}`).toThrow("limits");
     }
   });
@@ -624,6 +766,39 @@ describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer cons
     })).not.toThrow();
   });
 
+  test("the legacy v3 reader rejects a v4 decision manifest", () => {
+    const manifest = decisionManifestPayload();
+    expect(ModelCatalogV4Schema.parse(manifest).version).toBe(4);
+    expect(() => ModelCatalogV3Schema.parse(manifest)).toThrow();
+  });
+
+  test("all chat catalog versions accept optional visual-grounding facts and remain strict", () => {
+    const base = manifestPayload();
+    for (const value of [true, false, null] as const) {
+      for (const version of [1, 2, 3, 4] as const) {
+        const parsed = ModelCatalogSchema.parse({
+          ...base,
+          version,
+          entries: [{
+            ...base.entries[0],
+            ...(version >= 3 ? { workload: "chat" } : {}),
+            features: { ...base.entries[0]!.features, visualGrounding: value },
+          }],
+        });
+        expect(parsed.entries[0]?.features?.visualGrounding).toBe(value);
+      }
+    }
+
+    expect(ModelCatalogSchema.parse(base).entries[0]?.features?.visualGrounding).toBeUndefined();
+    expect(() => ModelCatalogSchema.parse({
+      ...base,
+      entries: [{
+        ...base.entries[0],
+        features: { ...base.entries[0]!.features, visualGrounding: true, visualScore: 1 },
+      }],
+    })).toThrow();
+  });
+
   test("sync snapshot reads the checked-in fallback before hydration (no network)", () => {
     // No hydration yet — sync read returns the checked-in fallback.
     const snap = getActiveModelCatalogSync();
@@ -645,7 +820,7 @@ describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer cons
     expect(modelSupportsInput("venice:minimax-m3-preview", "image")).toBe(false);
   });
 
-  test("reader-first hydration atomically exposes a signed v2 control snapshot while v1 remains LKG-compatible", async () => {
+  test("reader-first hydration atomically exposes a signed v2 control snapshot while the current fallback remains compatible", async () => {
     const base = manifestPayload("2026.07.28.1");
     const manifest = ModelCatalogSchema.parse({
       ...base,
@@ -707,7 +882,7 @@ describe("D429 Phase 7.2/7.3 — runtime seam, reconciliation, and consumer cons
       "priority",
       "fast",
     ]);
-    expect(localModelCatalog.version).toBe(3);
+    expect(localModelCatalog.version).toBe(6);
   });
 
   test("hydrate failure is non-fatal and leaves the checked-in fallback active", async () => {

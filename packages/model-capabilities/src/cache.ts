@@ -28,10 +28,14 @@ const OUTPUT_MODALITIES = new Set<ModelOutputModality>(["text", "image"]);
 function parseFeatures(raw: unknown): ModelCapabilityFeatures | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
+  const visualGrounding = r["visualGrounding"];
   return {
     tools: r["tools"] === true,
     structuredOutputs: r["structuredOutputs"] === true,
     reasoning: r["reasoning"] === true,
+    ...(visualGrounding === true || visualGrounding === false || visualGrounding === null
+      ? { visualGrounding }
+      : {}),
   };
 }
 

@@ -156,4 +156,73 @@ describe("pre-model time block contract", () => {
       Date.now = originalDateNow;
     }
   });
+
+  test("reuses one honest time reference through tool loops in the same identified turn", async () => {
+    const firstNow = Date.parse("2026-05-09T15:58:00.123Z");
+    const secondNow = firstNow + 45_000;
+    const originalDateNow = Date.now;
+    Date.now = () => firstNow;
+    try {
+      const first = await preModelNode(makeState({ turnId: "turn-1" }));
+      Date.now = () => secondNow;
+      if (!first.promptTimeReference) throw new Error("expected identified-turn time reference");
+      const second = await preModelNode(makeState({
+        turnId: "turn-1",
+        promptTimeReference: first.promptTimeReference,
+      }));
+
+      expect(second.promptTimeReference).toEqual({ turnId: "turn-1", nowMs: firstNow });
+      expect(systemMessageOf(second).content).toBe(systemMessageOf(first).content);
+      expect(systemMessageOf(second).content).toContain(
+        "Time reference: captured at the start of this turn; it does not advance during tool calls.",
+      );
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  test("refreshes the time reference for a new identified turn", async () => {
+    const firstNow = Date.parse("2026-05-09T15:58:00.123Z");
+    const secondNow = firstNow + 45_000;
+    const originalDateNow = Date.now;
+    Date.now = () => secondNow;
+    try {
+      const patch = await preModelNode(makeState({
+        turnId: "turn-2",
+        promptTimeReference: { turnId: "turn-1", nowMs: firstNow },
+      }));
+      expect(patch.promptTimeReference).toEqual({ turnId: "turn-2", nowMs: secondNow });
+      expect(systemMessageOf(patch).content).toContain("UTC: 2026-05-09T15:58:45.123Z");
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  test("an unidentified turn neither reuses nor retains a stale reference", async () => {
+    const now = Date.parse("2026-05-09T15:58:45.123Z");
+    const originalDateNow = Date.now;
+    Date.now = () => now;
+    try {
+      const patch = await preModelNode(makeState({
+        turnId: "",
+        promptTimeReference: { turnId: "turn-1", nowMs: now - 45_000 },
+      }));
+      expect(patch.promptTimeReference).toBeNull();
+      expect(systemMessageOf(patch).content).toContain("UTC: 2026-05-09T15:58:45.123Z");
+      expect(systemMessageOf(patch).content).not.toContain("Time reference: captured at the start");
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+
+  test("guest prompts omit owner time context and retain no reference", async () => {
+    const patch = await preModelNode(makeState({
+      actorRole: "guest",
+      turnId: "guest-turn",
+      promptTimeReference: { turnId: "older", nowMs: 1 },
+    }));
+    expect(patch.promptTimeReference).toBeNull();
+    expect(systemMessageOf(patch).content).not.toContain("UTC: ");
+    expect(systemMessageOf(patch).content).not.toContain("Time reference: captured at the start");
+  });
 });

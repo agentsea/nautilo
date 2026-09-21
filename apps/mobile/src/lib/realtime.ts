@@ -1,4 +1,4 @@
-// D369 Phase 3 — WS spine wiring helpers (pure, no React).
+// WS spine wiring helpers (pure, no React).
 // Turns a server base URL into the WS endpoint and builds a realtime
 // client bound to that server with `getToken` pulling a fresh token
 // per connect attempt via `ensureValidToken`. The reconnect/heartbeat/
@@ -12,6 +12,9 @@ import {
   type RealtimeEventHandler,
   type RealtimeStateHandler,
 } from "@nautilo/realtime-client";
+
+import type { VoicePlaybackEvent } from "@nautilo/types";
+import { nativePcmSink } from "../../modules/nautilo-voice-pcm";
 
 import { ensureValidToken } from "@/lib/auth";
 import { platformCapabilities } from "@/platform/capabilities";
@@ -34,7 +37,7 @@ export type AuthRejectedReason =
 /**
  * Convert a server base URL (`https://host` / `http://host`) into the WS
  * endpoint (`wss://host/ws` / `ws://host/ws`). Trailing slashes stripped.
- * The `/ws` path matches the server's WS upgrade route (M058).
+ * The `/ws` path matches the server's WS upgrade route.
  */
 function wsUrlFromBase(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
@@ -54,6 +57,7 @@ export interface CreateServerRealtimeOptions {
   baseUrl: string;
   serverId: string;
   onEvent: RealtimeEventHandler;
+  onVoiceEvent?: (event: VoicePlaybackEvent) => void;
   onControlEvent?: RealtimeControlEventHandler;
   onStateChange?: RealtimeStateHandler;
   onError?: RealtimeErrorHandler;
@@ -71,6 +75,7 @@ export function createServerRealtime({
   baseUrl,
   serverId,
   onEvent,
+  onVoiceEvent,
   onControlEvent,
   onStateChange,
   onError,
@@ -79,6 +84,7 @@ export function createServerRealtime({
   const wsUrl = wsUrlFromBase(baseUrl);
   return createWsRealtimeClient(wsUrl, {
     onEvent,
+    onVoiceEvent: nativePcmSink ? onVoiceEvent : undefined,
     onControlEvent,
     onError,
     onStateChange,

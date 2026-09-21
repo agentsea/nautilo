@@ -1,5 +1,4 @@
 import {
-  estimateProviderToolCostUsd,
   insertProviderCostEvent,
   providerCostIdempotencyKey,
 } from "@nautilo/db";
@@ -33,9 +32,4 @@ export async function safelyRecordProviderCost(receipt: ServerProviderCostReceip
   } catch {
     warn(`[provider-costs] Failed to record ${receipt.provider} ${receipt.operation}`);
   }
-}
-
-/** ElevenLabs v3 public API baseline: $0.10 per 1,000 input characters. */
-export function estimateElevenLabsV3TtsUsd(text: string): string {
-  return estimateProviderToolCostUsd("elevenlabs:v3_character", text.length) ?? "0.00000000";
 }

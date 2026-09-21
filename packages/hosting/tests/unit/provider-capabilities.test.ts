@@ -43,6 +43,7 @@ describe("resolveProviderCapabilities", () => {
       "google",
       "fireworks",
       "venice",
+      "typesafe",
       "elevenlabs",
       "groq",
       "tavily",
@@ -56,6 +57,14 @@ describe("resolveProviderCapabilities", () => {
     expect(result.issues).toEqual([]);
     expect(result.providers.find((provider) => provider.provider === "browser-use")?.selected).toBe(true);
     expect(capability(result, "search").experience).toBe("unavailable");
+  });
+
+  test("TypeSafe credentials do not satisfy chat or other hosting capabilities", () => {
+    const result = resolve({ allProviders: true, references: [{ provider: "typesafe", state: "configured", source: "environment" }] });
+    expect(result.issues).toEqual([]);
+    expect(result.providers.find((provider) => provider.provider === "typesafe")?.selected).toBe(true);
+    for (const name of HOSTING_CAPABILITIES) expect(capability(result, name).experience).toBe("unavailable");
+    expect(result.readiness.coreReadiness).toBe("blocked");
   });
 
   test("all-providers selects only recognized supplied references in stable order", () => {

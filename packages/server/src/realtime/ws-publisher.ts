@@ -26,6 +26,7 @@ import {
 } from "@nautilo/trust";
 import { messageNewDeliveryFacts } from "./message-new-delivery-facts";
 import type { RemoteHostPresenceEvent } from "../remote-control/host-presence-stream";
+import { voiceDelivery } from "./voice-delivery";
 
 export type WsClientMeta = {
   userId: string;
@@ -43,10 +44,10 @@ type DeliveryScope =
   | { kind: "none" };
 
 /**
- * M077 Bundle 2 — explicit WS delivery audience. `auto` preserves
+ *  Bundle 2 — explicit WS delivery audience. `auto` preserves
  * `inferDeliveryScope` behavior for normal bus/tool events. Global fan-out
  * (`kind: "all"`) requires `acknowledgedGlobalLeak: true` so call sites opt
- * in consciously (ISSUE-M077 NFR-C3).
+ * in consciously .
  */
 export type WsBroadcastAudience =
   | { kind: "auto" }
@@ -69,7 +70,7 @@ function isExplicitGlobalOnlyUnderAuto(type: ServerEvent["type"]): boolean {
  * High-frequency events — suppressed from the WS emit log so the
  * debug output stays readable. Anything NOT in this set gets a
  * `[ws] → <type>` line, which is what we want for approval /
- * identity / tool control flows (D082 PR A).
+ * identity / tool control flows.
  */
 const SUPPRESSED_EMIT_LOG_TYPES: ReadonlySet<ServerEvent["type"]> = new Set<ServerEvent["type"]>([
   "message.tokens",
@@ -80,13 +81,13 @@ const SUPPRESSED_EMIT_LOG_TYPES: ReadonlySet<ServerEvent["type"]> = new Set<Serv
 ]);
 
 /**
- * M134 — extract the room uuid from a room-scoped lane key, tolerating the
+ * extract the room uuid from a room-scoped lane key, tolerating the
  * per-single-user / per-bot suffixes the Conductor uses
  * (`room:<id>:user:<actor>:bot:<agentId>`). Returns null for non-room lanes.
  *
  * REGRESSION GUARD: a `$`-anchored `^room:<uuid>$` match silently drops every
  * group-room agent event (the bot's reply never reaches the client) — see
- * ISSUE-M134 P3 + `ws-publisher-lane.test.ts`.
+ *  + `ws-publisher-lane.test.ts`.
  */
 export function roomIdFromLaneKey(laneKey: string): string | null {
   const m = /^room:([0-9a-f-]{36})(?::|$)/i.exec(laneKey);
@@ -286,7 +287,7 @@ export function classifyRoutingError(): SafeDecisionOutcome {
 function inferDeliveryScope(event: ServerEvent): DeliveryScope {
   if (isExplicitGlobalOnlyUnderAuto(event.type)) {
     warn(
-      `[ws] global event type=${event.type} dropped under audience=auto — use { kind: "all", acknowledgedGlobalLeak: true } (M077)`,
+      `[ws] global event type=${event.type} dropped under audience=auto — use { kind: "all", acknowledgedGlobalLeak: true } ()`,
     );
     return { kind: "none" };
   }
@@ -380,13 +381,10 @@ function inferDeliveryScope(event: ServerEvent): DeliveryScope {
     );
     return { kind: "none" };
   }
-  if (
-    (event.type === "voice.audio" || event.type === "voice.sentence") &&
-    "userId" in event &&
-    typeof (event as { userId?: string }).userId === "string" &&
-    (event as { userId: string }).userId.length > 0
-  ) {
-    return { kind: "user", userId: (event as { userId: string }).userId };
+  if (event.type === "voice.audio" || event.type === "voice.sentence") {
+    return typeof event.userId === "string" && event.userId.length > 0
+      ? { kind: "user", userId: event.userId }
+      : { kind: "none" };
   }
 
   if (event.type === "room_members_changed" && event.roomId) {
@@ -400,7 +398,7 @@ function inferDeliveryScope(event: ServerEvent): DeliveryScope {
     return { kind: "room", roomId: event.roomId };
   }
 
-  // M143 — task lifecycle events are owner-private (D14). Never room-broadcast;
+  // task lifecycle events are owner-private. Never room-broadcast;
   // the result message the run posts into a shared room emits its own
   // room-scoped `message.new`.
   if (
@@ -485,7 +483,7 @@ function shouldDeliver(meta: WsClientMeta, scope: DeliveryScope): boolean {
 
 export function addClient(socket: WebSocket, meta: WsClientMeta) {
   clients.set(socket, meta);
-  // D112 Phase 19.3 — log on connect so a userId / roomId binding regression
+  // log on connect so a userId / roomId binding regression
   // is grep-able. Pairs with the enriched DROPPED log; together they make
   // user-lane delivery failures (approval.ask, prove_it.challenge,
   // identity.challenge) self-diagnosing.
@@ -498,7 +496,7 @@ export function addClient(socket: WebSocket, meta: WsClientMeta) {
 }
 
 /**
- * M075 — reload room membership for every open WS owned by `userId`
+ * reload room membership for every open WS owned by `userId`
  * (same `sessionActorId` on every tab for that user).
  */
 export async function refreshRoomSubscriptionsForUser(
@@ -515,6 +513,7 @@ export async function refreshRoomSubscriptionsForUser(
       meta.roomIds = next;
     }
   }
+  voiceDelivery.refresh();
 }
 
 export interface HumanRoomCatalogTarget {
@@ -609,7 +608,7 @@ async function broadcastAsync(
     const total = clients.size;
 
     if (openCount === 0 && scope.kind !== "none") {
-      // D112 Phase 19.3 — enrich the drop log with the actual scope and the
+      // enrich the drop log with the actual scope and the
       // meta of every connected socket so a userId / roomId mismatch is
       // diagnosable from the log alone instead of requiring an attached
       // debugger. The historical line ("DROPPED → no matching subscribers")
@@ -667,7 +666,7 @@ export function publishTypingPing(event: import("@nautilo/types").TypingPingEven
 }
 
 /**
- * D458 Wave 7 — the only websocket publication path for remote-host presence.
+ *  Wave 7 — the only websocket publication path for remote-host presence.
  *
  * These are canonical `ServerEvent` variants, but they deliberately bypass the
  * event bus and automatic audience inference. Keeping the recipient argument
@@ -687,7 +686,7 @@ export function publishRemoteHostPresenceFrame(
   }
 }
 
-/** D124 P8 — notify room subscribers that roster / transcript may have changed. */
+/** notify room subscribers that roster / transcript may have changed. */
 export function publishRoomMembersChanged(
   roomId: string,
   event: RoomMembershipSystemEventPayload,
@@ -753,13 +752,13 @@ export function publishRoomCatalogChanged(recipientUserId: string): void {
   broadcast({ type: "room.catalog.changed" }, { kind: "user", userId: recipientUserId });
 }
 
-/** M323 — prompt every live session for one Human to refresh durable feed state. */
+/** prompt every live session for one Human to refresh durable feed state. */
 export function publishEventFeedChanged(recipientUserId: string): void {
   if (recipientUserId.length === 0) return;
   broadcast({ type: "event_feed.changed" }, { kind: "user", userId: recipientUserId });
 }
 
-/** D279 Phase 3.6 — fan out silence state to room members (mirrors roster push). */
+/** fan out silence state to room members (mirrors roster push). */
 export function publishRoomSilenceChanged(
   roomId: string,
   silence: ActiveRoomSilenceDto | null,
@@ -775,7 +774,7 @@ export function publishRoomSilenceChanged(
   );
 }
 
-/** D302 P5b — fan out conductor-mode policy updates to room members. */
+/** b — fan out conductor-mode policy updates to room members. */
 export function publishRoomConductorModeChanged(
   roomId: string,
   conductorMode: "advanced" | "standard",
@@ -791,7 +790,7 @@ export function publishRoomConductorModeChanged(
   );
 }
 
-/** ISSUE-M172 — fan out a hard-delete of a room message to room members. */
+/** fan out a hard-delete of a room message to room members. */
 export function publishMessageDeleted(args: { roomId: string; messageId: number }): void {
   broadcast(
     {
@@ -803,7 +802,7 @@ export function publishMessageDeleted(args: { roomId: string; messageId: number 
   );
 }
 
-/** M230 — fan out an authoritative logical Human-turn edit to Room members. */
+/** fan out an authoritative logical Human-turn edit to Room members. */
 export function publishMessageUpdated(args: {
   roomId: string;
   logicalMessageKey: string;
@@ -860,7 +859,7 @@ function publishNotificationChange(
 }
 
 /**
- * M236 — publish a just-computed complete snapshot after an account-default
+ * publish a just-computed complete snapshot after an account-default
  * mutation. This is bounded and performs no DB work per Room.
  */
 export function publishNotificationStateSnapshot(
@@ -895,7 +894,7 @@ export function publishNotificationStateSnapshot(
 }
 
 /**
- * M236/M240 — recompute complete per-recipient notification state for a Room
+ * Recompute complete per-recipient notification state for a Room
  * and publish the one canonical viewer-private delta. Pass an empty recipient
  * list to no-op.
  */
@@ -921,7 +920,7 @@ export async function recomputeAndPublishNotificationState(
   }
 }
 
-/** M236 — deliver one already-classified, arrival-only event viewer-privately. */
+/** deliver one already-classified, arrival-only event viewer-privately. */
 export function publishImportantMessageArrived(
   event: ImportantMessageArrivedEvent,
 ): void {
@@ -930,7 +929,7 @@ export function publishImportantMessageArrived(
 }
 
 /**
- * D420 (Wave 3 task 3.2.1) — convert a durable maintenance snapshot's
+ *  (Wave 3 task 3.2.1) — convert a durable maintenance snapshot's
  * `Date | null` expiry to the ISO-8601 `string | null` the realtime event
  * carries. Centralized so the publisher + the WS connect-snapshot provider
  * cannot drift on the wire format.
@@ -941,7 +940,7 @@ function maintenanceExpiryToIso(value: Date | string | null): string | null {
 }
 
 /**
- * D420 (Wave 3 task 3.2.1) — build the payload-free
+ *  (Wave 3 task 3.2.1) — build the payload-free
  * {@link MaintenanceStatusEvent} from a durable maintenance snapshot.
  * Carries state / operation / lease + hard expiry ONLY — never work counts,
  * job ids, prompts, or room/user payload.
@@ -962,7 +961,7 @@ export function buildMaintenanceStatusEvent(snapshot: {
 }
 
 /**
- * D420 (Wave 3 task 3.2.1) — publish a `maintenance.status` event to every
+ *  (Wave 3 task 3.2.1) — publish a `maintenance.status` event to every
  * authenticated connected socket. Maintenance is a server-wide property, so
  * this is an explicit global fan-out (mirrors `policy.changed`); the event
  * is payload-free and safe to deliver to every client regardless of room

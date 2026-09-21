@@ -16,3 +16,5 @@ export const VENICE_IMAGE_GENERATION_URL = `${VENICE_API_V1_BASE}/image/generate
  * from chat routing. Overridable via `NAUTILO_VENICE_MODELS_URL`.
  */
 export const VENICE_MODELS_LIST_URL = `${VENICE_API_V1_BASE}/models?type=all`;
+
+export const VENICE_DECISIONS_URL = `${VENICE_API_V1_BASE}/decisions`;

@@ -26,7 +26,7 @@ const discoveryCandidateSchema = z.object({
   accent: z.string(),
   gender: z.string(),
   age: z.string(),
-  badge: z.enum(["curated", "provider_v3", "unverified"]),
+  badge: z.enum(["curated", "provider_v3", "provider_verified", "unverified"]),
   previewUrl: z.string().nullable().optional(),
   verifiedLanguages: z.array(verifiedLanguageSchema),
   matchReason: z.string(),

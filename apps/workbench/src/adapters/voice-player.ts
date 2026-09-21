@@ -1,5 +1,6 @@
+import type { VoiceWorkletStatus } from "./voice-worklet";
 /**
- * Browser-side voice player for server-streamed TTS audio (D021 Phase 3).
+ * Browser-side voice player for server-streamed TTS audio.
  *
  * Buffers per-sentence audio chunks, concatenates them into a single
  * MP3 byte stream, and plays sentences sequentially through a queue.
@@ -12,7 +13,10 @@
  * invalid input that atob() rejects and decodeAudioData() never sees.
  */
 
+import type { VoicePlaybackEvent } from "@nautilo/types";
+
 type VoiceAudioEvent = {
+  turnId?: string;
   data: string;
   chunkIndex: number;
   sentenceIndex: number;
@@ -33,8 +37,19 @@ export class VoicePlayer {
   private playbackQueue: ArrayBuffer[] = [];
   private draining = false;
   private currentSource: AudioBufferSourceNode | null = null;
+  private generation = 0;
+  private worklet: AudioWorkletNode | null = null;
+  private workletReady: Promise<void> | null = null;
+  private streamId: string | null = null;
+  private turnId: string | null = null;
+  private voiceEvents: VoicePlaybackEvent[] = [];
+  private voiceBytes = 0;
+  private resolvePlaying: (() => void) | null = null;
+  private resourceGeneration = 0;
+  private streamReceivedAt = 0;
+  private onsetReported = false;
 
-  constructor(onStatusChange?: StatusCallback) {
+  constructor(onStatusChange?: StatusCallback, private readonly sendVoice?: (event: Record<string, unknown>) => void, private readonly onUnavailable?: () => void) {
     this.onStatusChange = onStatusChange ?? null;
   }
 
@@ -45,6 +60,93 @@ export class VoicePlayer {
 
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  currentTurnId(): string | null { return this.turnId; }
+
+  handleStreamEvent(event: VoicePlaybackEvent): void {
+    if (!this.enabled) return;
+    if (event.type === "voice.stream.start") {
+      this.stop();
+      this.streamId = event.streamId;
+      this.turnId = event.turnId;
+      this.streamReceivedAt = performance.now();
+      this.onsetReported = false;
+    }
+    if (event.streamId !== this.streamId) return;
+    if (event.type === "voice.stream.abort") {
+      // A failed provider turn must not change the user's voice preference.
+      // Only a local playback-device failure detaches this listener.
+      this.stop();
+      return;
+    }
+    if (this.worklet) { this.postVoiceEvent(event); return; }
+    if (event.type === "voice.stream.data") this.voiceBytes += event.pcm.length;
+    if (this.voiceBytes > 24000 * 2 * 4) { this.failStreaming(); return; }
+    this.voiceEvents.push(event);
+    const generation = this.generation;
+    void this.prepareWorklet().catch(() => { if (generation === this.generation) this.failStreaming(); });
+  }
+
+  private failStreaming(): void {
+    this.stop();
+    this.enabled = false;
+    this.sendVoice?.({ type: "voice.listen", version: 1, roomId: null, enabled: false });
+    this.onUnavailable?.();
+  }
+
+  private postVoiceEvent(event: VoicePlaybackEvent): void {
+    if (event.type === "voice.stream.start") this.worklet?.port.postMessage({ type: "start", streamId: event.streamId });
+    else if (event.type === "voice.stream.end") this.worklet?.port.postMessage({ type: "end", streamId: event.streamId });
+    else if (event.type === "voice.stream.data") {
+      const pcm = event.pcm.slice().buffer;
+      this.worklet?.port.postMessage({ type: "audio", streamId: event.streamId, pcm }, [pcm]);
+    }
+  }
+
+  private prepareWorklet(): Promise<void> {
+    if (this.worklet) return Promise.resolve();
+    if (this.workletReady) return this.workletReady;
+    const resources = this.resourceGeneration;
+    const pending = (async () => {
+      const ctx = await this.getContext();
+      if (!ctx) throw new Error("Audio unavailable");
+      if (resources !== this.resourceGeneration) return;
+      if (ctx.state !== "running") throw new Error("Audio suspended");
+      const { default: url } = await import("./voice-worklet.ts?worker&url");
+      await ctx.audioWorklet.addModule(url);
+      if (resources !== this.resourceGeneration) return;
+      const node = new AudioWorkletNode(ctx, "nautilo-voice", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = ({ data }: MessageEvent<VoiceWorkletStatus>) => {
+        if (node !== this.worklet) return;
+        if (data.type === "playing") {
+          if (this.streamId === data.streamId) {
+            this.setPlaying(data.playing === true);
+            if (data.playing && !this.onsetReported) {
+              this.onsetReported = true;
+              console.debug("[speech]", { streamId: data.streamId, stage: "render_started", elapsedMs: performance.now() - this.streamReceivedAt });
+            }
+          }
+        }
+        else if (data.streamId === this.streamId && data.type === "consumed") {
+          this.sendVoice?.({ type: "voice.consumed", streamId: data.streamId, samples: data.samples });
+          if (data.final) console.debug("[speech]", { streamId: data.streamId, stage: "render_ended", elapsedMs: performance.now() - this.streamReceivedAt, samples: data.samples, underruns: data.underruns });
+        }
+        else if (data.streamId === this.streamId && data.type === "error") this.failStreaming();
+      };
+      node.connect(ctx.destination);
+      node.onprocessorerror = () => { if (this.worklet === node) this.failStreaming(); };
+      this.worklet = node;
+      ctx.onstatechange = () => {
+        if (ctx === this.ctx && this.streamId && ctx.state !== "running") this.failStreaming();
+      };
+      const queued = this.voiceEvents;
+      this.voiceEvents = [];
+      this.voiceBytes = 0;
+      for (const event of queued) if (event.streamId === this.streamId) this.postVoiceEvent(event);
+    })().finally(() => { if (this.workletReady === pending) this.workletReady = null; });
+    this.workletReady = pending;
+    return pending;
   }
 
   /**
@@ -75,6 +177,10 @@ export class VoicePlayer {
 
   handleAudioEvent(event: VoiceAudioEvent): void {
     if (!this.enabled) return;
+    if (event.turnId && event.turnId !== this.turnId && event.chunkIndex === 0) {
+      this.stop();
+      this.turnId = event.turnId;
+    }
 
     // A sentence is admitted only from its first data chunk. If this client
     // was outside the Room (or voice-off) when chunk 0 arrived, later chunks
@@ -113,6 +219,14 @@ export class VoicePlayer {
   }
 
   stop(): void {
+    this.generation++;
+    this.streamId = null;
+    this.turnId = null;
+    this.voiceEvents = [];
+    this.voiceBytes = 0;
+    this.worklet?.port.postMessage({ type: "stop" });
+    this.resolvePlaying?.();
+    this.resolvePlaying = null;
     if (this.currentSource) {
       try { this.currentSource.stop(); } catch { /* already stopped */ }
       this.currentSource = null;
@@ -125,28 +239,48 @@ export class VoicePlayer {
     this.setPlaying(false);
   }
 
+  dispose(): void {
+    this.stop();
+    this.resourceGeneration++;
+    this.workletReady = null;
+    if (this.worklet) {
+      this.worklet.port.onmessage = null;
+      this.worklet.port.close();
+      this.worklet.disconnect();
+      this.worklet = null;
+    }
+    const ctx = this.ctx;
+    this.ctx = null;
+    if (ctx) ctx.onstatechange = null;
+    if (ctx && ctx.state !== "closed") void ctx.close().catch(() => {});
+  }
+
   private async drainQueue(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
+    const generation = this.generation;
     this.setPlaying(true);
 
-    while (this.playbackQueue.length > 0) {
+    while (this.playbackQueue.length > 0 && generation === this.generation) {
       const buffer = this.playbackQueue.shift()!;
-      await this.playSentence(buffer);
+      await this.playSentence(buffer, generation);
     }
 
-    this.draining = false;
-    this.setPlaying(false);
+    if (generation === this.generation) {
+      this.draining = false;
+      this.setPlaying(false);
+    }
   }
 
-  private async playSentence(buffer: ArrayBuffer): Promise<void> {
+  private async playSentence(buffer: ArrayBuffer, generation: number): Promise<void> {
     const ctx = await this.getContext();
-    if (!ctx) return;
+    if (!ctx || generation !== this.generation || !this.enabled) return;
 
     try {
       // decodeAudioData detaches the passed buffer; pass a copy so
       // callers that retain a reference aren't surprised.
       const audioBuffer = await ctx.decodeAudioData(buffer.slice(0));
+      if (generation !== this.generation || !this.enabled) return;
 
       // Second state check — an AudioContext can transition to suspended
       // between getContext() and here if the window loses focus during the
@@ -154,8 +288,10 @@ export class VoicePlayer {
       if (ctx.state === "suspended") {
         try { await ctx.resume(); } catch { /* ignore */ }
       }
+      if (generation !== this.generation || !this.enabled) return;
 
       return new Promise<void>((resolve) => {
+        this.resolvePlaying = resolve;
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(ctx.destination);

@@ -26,7 +26,6 @@ const CURATED_VOICE_LANGUAGE: Record<string, string> = {
 
 const CURATED_VOICE_ID_SET = new Set(Object.values(ELEVENLABS_CURATED_VOICE_IDS));
 
-const EXPRESSIVE_MODEL_IDS = new Set(["eleven_v3", "eleven_v4", "eleven_v4_hq"]);
 
 const LANGUAGE_LABELS: Record<string, string> = {
   en: "English",
@@ -93,24 +92,24 @@ function normalizeVerifiedLanguages(
   }));
 }
 
-function firstV3VerifiedLanguage(
+function firstVerifiedLanguage(
   raw: ElevenLabsSharedVoiceRaw["verified_languages"],
 ): CatalogVerifiedLanguage | null {
   return (
-    normalizeVerifiedLanguages(raw).find((entry) => EXPRESSIVE_MODEL_IDS.has(entry.modelId)) ??
+    normalizeVerifiedLanguages(raw)[0] ??
     null
   );
 }
 
 export function normalizeSharedVoice(voice: ElevenLabsSharedVoiceRaw): CatalogVoice {
-  const verifiedV3 = firstV3VerifiedLanguage(voice.verified_languages);
-  const language = (voice.language ?? verifiedV3?.language ?? "").trim() || "unknown";
-  const locale = voice.locale ?? verifiedV3?.locale ?? null;
+  const verifiedReference = firstVerifiedLanguage(voice.verified_languages);
+  const language = (voice.language ?? verifiedReference?.language ?? "").trim() || "unknown";
+  const locale = voice.locale ?? verifiedReference?.locale ?? null;
   const canonicalCuratedName = curatedVoiceDisplayNameForId(voice.voice_id);
   return {
     voiceId: voice.voice_id,
     name: canonicalCuratedName ?? voice.name,
-    accent: voice.accent ?? verifiedV3?.accent ?? "",
+    accent: voice.accent ?? verifiedReference?.accent ?? "",
     gender: voice.gender ?? "",
     age: voice.age ?? "",
     descriptive: voice.descriptive ?? "",
@@ -118,7 +117,7 @@ export function normalizeSharedVoice(voice: ElevenLabsSharedVoiceRaw): CatalogVo
     language,
     locale,
     languageLabel: catalogLanguageLabel(language),
-    previewUrl: voice.preview_url ?? verifiedV3?.previewUrl ?? null,
+    previewUrl: voice.preview_url ?? verifiedReference?.previewUrl ?? null,
     verifiedLanguages: normalizeVerifiedLanguages(voice.verified_languages),
     source: CURATED_VOICE_ID_SET.has(voice.voice_id) ? "curated" : "provider",
   };
@@ -223,8 +222,8 @@ export function localeConflictsWithLanguage(
 
 function voiceDiscoveryBadge(voice: CatalogVoice): VoiceDiscoveryBadge {
   if (voice.source === "curated") return "curated";
-  if (voice.verifiedLanguages.some((e) => EXPRESSIVE_MODEL_IDS.has(e.modelId))) {
-    return "provider_v3";
+  if (voice.verifiedLanguages.length > 0) {
+    return "provider_verified";
   }
   return "unverified";
 }
@@ -254,7 +253,7 @@ function buildMatchReason(voice: CatalogVoice, input: DiscoverVoicesInput): stri
   if (input.age?.trim()) parts.push(`age=${input.age.trim()}`);
   if (input.qualityPreference === "high_quality") parts.push("quality=high_quality");
   if (input.query?.trim()) parts.push(`keywords="${input.query.trim()}"`);
-  if (voiceDiscoveryBadge(voice) === "provider_v3") parts.push("provider v3 verified");
+  if (voiceDiscoveryBadge(voice) === "provider_verified") parts.push("provider language reference; audition with the server speech model");
   if (parts.length === 0) return "catalog match";
   return parts.join("; ");
 }
@@ -284,7 +283,7 @@ function toDiscoveryCandidate(
 function rankScore(voice: CatalogVoice, input: DiscoverVoicesInput): number {
   let score = 0;
   if (voice.source === "curated") score += 1_000;
-  if (voiceDiscoveryBadge(voice) === "provider_v3") score += 100;
+  if (voiceDiscoveryBadge(voice) === "provider_verified") score += 100;
   if (input.accent?.trim() && matchesAccent(voice, input.accent)) score += 50;
   if (matchesQuery(voice, input.query)) score += 10;
   if (localeConflictsWithLanguage(voice, input.language)) score -= 500;

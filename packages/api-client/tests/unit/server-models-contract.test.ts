@@ -19,6 +19,9 @@ const SAMPLE = {
     displayName: "Text Embedding 3 Small (Venice)",
     available: true,
   }],
+  speechModel: null,
+  effectiveSpeechModel: "elevenlabs:eleven_v3_conversational",
+  speechModels: [],
   imageModel: "",
   musicModel: null,
   videoModel: "venice:seedance-2-5-text-to-video-basic",
@@ -79,6 +82,9 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
       effectiveEmbeddingModel: _effectiveEmbeddingModel,
       embeddingSelectionPending: _embeddingSelectionPending,
       embeddingModels: _embeddingModels,
+      speechModel: _speechModel,
+      effectiveSpeechModel: _effectiveSpeechModel,
+      speechModels: _speechModels,
       imageModel: _imageModel,
       musicModel: _musicModel,
       videoModel: _videoModel,
@@ -102,6 +108,9 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
     expect(out.effectiveEmbeddingModel).toBeNull();
     expect(out.embeddingSelectionPending).toBe(false);
     expect(out.embeddingModels).toEqual([]);
+    expect(out.speechModel).toBeNull();
+    expect(out.effectiveSpeechModel).toBeNull();
+    expect(out.speechModels).toEqual([]);
     expect(out.imageModel).toBeNull();
     expect(out.musicModel).toBeNull();
     expect(out.videoModel).toBeNull();

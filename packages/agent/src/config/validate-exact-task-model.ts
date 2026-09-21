@@ -1,29 +1,29 @@
 /**
- * D429 Phase 3 — shared exact-task-model selection validation.
+ * shared exact-task-model selection validation.
  *
  * One validator used by every Task entry surface (the `task` tool's
  * create/update, the intent shortcuts, and the HTTP route) AND by the dispatch
- * seam. Single-sources the locked D429 v1 contract:
+ * seam. Single-sources the locked v1 contract:
  *
- *   - An exact `requestedModelId` is a STRICT pin (same-model retries only;
- *     Phase 4 enforces no cross-model fallback). It is mutually exclusive with
- *     the M152 selection profile/spec — passing both is a `conflict`.
- *   - Exact calls only accept curated IDs returned by `listResolvedCatalogModels`.
- *     Arbitrary dynamic `openrouter:` / `gateway:` values are invalid in v1
- *     even though `resolveCatalogModel` can synthesize a config for them; they
- *     are rejected as `unknown_model` via curated-list membership, not via the
- *     availability state.
- *   - `tools: []` (tool-free) may use a model whose tool capability is `null`
- *     (unknown); auto/whitelist tool use requires a CONFIRMED `tools === true`.
- *     A `false` or `null` capability never satisfies a positive tool
- *     requirement (Phase 0 strict capability truth).
- *   - Validation never attempts a paid provider call — the resolved catalog is
- *     pure / cache-backed (Phase 0; `tests/unit/resolved-catalog.test.ts` stubs
- *     `globalThis.fetch` to throw to prove it).
+ * - An exact `requestedModelId` is a STRICT pin (same-model retries only;
+ * enforces no cross-model fallback). It is mutually exclusive with
+ * selection profile/spec — passing both is a `conflict`.
+ * - Exact calls only accept curated IDs returned by `listResolvedCatalogModels`.
+ * Arbitrary dynamic `openrouter:` / `gateway:` values are invalid in v1
+ * even though `resolveCatalogModel` can synthesize a config for them; they
+ * are rejected as `unknown_model` via curated-list membership, not via the
+ * availability state.
+ * - `tools: []` (tool-free) may use a model whose tool capability is `null`
+ * (unknown); auto/whitelist tool use requires a CONFIRMED `tools === true`.
+ * A `false` or `null` capability never satisfies a positive tool
+ * requirement ( strict capability truth).
+ * - Validation never attempts a paid provider call — the resolved catalog is
+ * pure / cache-backed (; `tests/unit/resolved-catalog.test.ts` stubs
+ * `globalThis.fetch` to throw to prove it).
  *
  * Returns a typed failure (`code` + actionable `message`) or `null` when the
  * exact selection is satisfiable OR no exact id was requested (the caller then
- * falls through to the M152 profile/spec resolver). The dispatch seam throws a
+ * falls through to profile/spec resolver). The dispatch seam throws a
  * stable, prefixed error from the same failure so the observer/report-back
  * path records it verbatim.
  */
@@ -54,9 +54,9 @@ export interface ValidateExactTaskModelInput {
   // `| undefined` on every optional so callers may pass `undefined` (e.g. a
   // Zod-inferred optional arg) under `exactOptionalPropertyTypes`.
   requestedModelId?: string | null | undefined;
-  /** M152 Tier-1 intent. `balanced` (the default) is NOT a conflict. */
+  /** Tier-1 intent. `balanced` (the default) is NOT a conflict. */
   profile?: SelectionProfile | null | undefined;
-  /** M152 Tier-2 explicit override. */
+  /** Tier-2 explicit override. */
   spec?: ComboSpec | null | undefined;
   /** Tools composition — drives the strict tool-capability check. */
   toolsMode?: "auto" | "none" | "whitelist" | undefined;
@@ -77,8 +77,8 @@ export function validateExactTaskModelSelection(
   const requestedModelId = normalizeId(input.requestedModelId);
   if (requestedModelId === null) return null;
 
-  // 1. Mutual-exclusion with the M152 selection intent. `balanced` is the
-  //    default no-op (not a real selection), so it is allowed alongside a pin.
+  // 1. Mutual-exclusion with selection intent. `balanced` is the
+  // default no-op (not a real selection), so it is allowed alongside a pin.
   if (hasNonDefaultSelection(input.profile, input.spec)) {
     return {
       code: "conflict",
@@ -92,8 +92,8 @@ export function validateExactTaskModelSelection(
   }
 
   // 2. Curated membership. v1 exact calls only accept curated IDs returned by
-  //    listResolvedCatalogModels; dynamic openrouter:/gateway: ids are rejected
-  //    here even though resolveCatalogModel can synthesize a config for them.
+  // listResolvedCatalogModels; dynamic openrouter:/gateway: ids are rejected
+  // here even though resolveCatalogModel can synthesize a config for them.
   const options = {
     includeUnavailable: true,
     ...(input.env !== undefined ? { env: input.env } : {}),
@@ -116,7 +116,7 @@ export function validateExactTaskModelSelection(
   }
 
   // 3. Availability (credentials / routing / disabled), evaluated separately
-  //    from membership so the message distinguishes each failure.
+  // from membership so the message distinguishes each failure.
   const row: ResolvedCatalogModel = resolveCatalogModel(
     requestedModelId,
     options,
@@ -161,10 +161,19 @@ export function validateExactTaskModelSelection(
       };
   }
 
+  // Tool-free Tasks still require a generative chat model.
+  if (row.workload !== "chat") {
+    return {
+      code: "capability_mismatch",
+      modelId: requestedModelId,
+      message: `Model "${requestedModelId}" uses the ${row.workload} workload. Tasks require a chat model, including tool-free runs.`,
+    };
+  }
+
   // 4. Strict tool-capability truth. Tool-FREE tasks (tools_mode "none" or an
-  //    empty whitelist) may use a model whose tool capability is unknown
-  //    (`null`). Tool-USING tasks (auto, or a non-empty whitelist) require a
-  //    CONFIRMED `tools === true`; `null`/`false` never satisfies it.
+  // empty whitelist) may use a model whose tool capability is unknown
+  // (`null`). Tool-USING tasks (auto, or a non-empty whitelist) require a
+  // CONFIRMED `tools === true`; `null`/`false` never satisfies it.
   if (taskRequiresTools(input.toolsMode, input.toolsWhitelist)) {
     if (row.features.tools !== true) {
       return {
@@ -187,7 +196,7 @@ export function validateExactTaskModelSelection(
 /**
  * Dispatch-seam variant: throws a stable, prefixed error from the same
  * failure so the observer/report-back path records it verbatim (mirrors the
- * M152 `[task-model-selection]` prefix contract).
+ * `[task-model-selection]` prefix contract).
  */
 export function assertExactTaskModelSelection(
   input: ValidateExactTaskModelInput,

@@ -1,0 +1,10 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'ai.nautilo.voicepcm'
+version = '0.1.0'
+android {
+  namespace 'ai.nautilo.voicepcm'
+  defaultConfig { versionCode 1; versionName '0.1.0' }
+}

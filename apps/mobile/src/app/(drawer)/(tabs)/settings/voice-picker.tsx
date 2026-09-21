@@ -180,7 +180,7 @@ function voiceLoadErrorMessage(error: unknown): string {
 }
 function displayLanguage(language: string): string { try { return new Intl.DisplayNames(["en"], { type: "language" }).of(language.split("-")[0] ?? language) ?? language; } catch { return language; } }
 function voiceMetadata(voice: { languageLabel: string; language: string; locale: string | null; accent: string; gender: string; age: string; descriptive: string; category: string }): string { return [voice.languageLabel || voice.language, voice.locale, voice.accent, voice.gender, voice.age, voice.descriptive, voice.category].filter(Boolean).join(" · "); }
-function providerTrust(voice: { verifiedLanguages: readonly { language: string; modelId: string }[] }, language: string | null): string { const base = language?.toLowerCase().split("-")[0]; return base && voice.verifiedLanguages.some((item) => item.language.toLowerCase().split("-")[0] === base && ["eleven_v3", "eleven_v4", "eleven_v4_hq"].includes(item.modelId)) ? "✓ Provider expressive-model verified" : "Provider voice"; }
+function providerTrust(voice: { verifiedLanguages: readonly { language: string; modelId: string }[] }, language: string | null): string { const base = language?.toLowerCase().split("-")[0]; return base && voice.verifiedLanguages.some((item) => item.language.toLowerCase().split("-")[0] === base) ? "Provider language reference" : "Provider voice"; }
 
 function FilterButton({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   const t = useAppTheme();

@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { getDefaultMediaGenerationModel, listMediaGenerationModels, ModelUnavailableError, NoRunnableModelForRoleError, resolveModelRole, resolveRetainedModels, getProtectedMemoryEmbeddingConfiguration, resolveProviderKey, EmbeddingProviderError } from "@nautilo/agent";
+import { getServerSpeechModel, listSpeechModels, getDefaultMediaGenerationModel, listMediaGenerationModels, listResolvedCatalogModels, kickRuntimeModelCatalogRefresh, ModelUnavailableError, NoRunnableModelForRoleError, resolveModelRole, resolveRetainedModels, getProtectedMemoryEmbeddingConfiguration, resolveProviderKey, EmbeddingProviderError } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
 import {
   getServerModelConfig,
@@ -18,6 +18,30 @@ import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/securit
 import { getServerDirectDb } from "../lib/server-direct-db";
 
 const REASONING_EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** Read-only display projection of the same live catalog used by execution. */
+function catalogModels() {
+  kickRuntimeModelCatalogRefresh();
+  return listResolvedCatalogModels({ includeUnavailable: true }).map((model) => ({
+    id: model.id,
+    displayName: model.displayName,
+    provider: model.provider,
+    workload: model.workload,
+    availability: model.availability,
+    ...(model.unavailableReason ? { unavailableReason: model.unavailableReason } : {}),
+    input: model.input,
+    output: model.output,
+    features: {
+      tools: model.features.tools,
+      structuredOutputs: model.features.structuredOutputs,
+      reasoning: model.features.reasoning,
+      visualGrounding: model.features.visualGrounding ?? null,
+      webSearch: model.features.webSearch,
+      e2ee: model.features.e2ee,
+    },
+    decision: model.decision ? { operations: model.decision.operations } : null,
+  }));
+}
 
 function embeddingModels() {
   return candidatesForModelRole("embeddings").map((id) => {
@@ -92,7 +116,7 @@ async function viewerHasCapability(
 /**
  * Effective defaults the resolver falls back to when a field is unset. Default
  * chat model comes from the catalog picker; there is no server-wide fallback
- * chain baseline today (D141 chains are per-user/per-agent), so it defaults to
+ * chain baseline today (chains are per-user/per-agent), so it defaults to
  * empty.
  */
 function modelConfigDefaults(): ServerModelConfigDefaults {
@@ -130,6 +154,16 @@ function parseUpdateBody(
   }
   const raw = body as Record<string, unknown>;
   const patch: ServerModelConfigPatch = {};
+  if ("speechModel" in raw) {
+    const value = raw["speechModel"];
+    if (value !== null && typeof value !== "string") return { ok: false, error: "speechModel must be a string or null" };
+    const id = value?.trim() || null;
+    if (id) {
+      const option = listSpeechModels().find(model => model.id === id);
+      if (!option?.available) return { ok: false, error: option?.unavailableReason ?? "Unsupported speech model" };
+    }
+    patch.speechModel = id;
+  }
   if ("embeddingModel" in raw) {
     const value = raw["embeddingModel"];
     if (value !== null && typeof value !== "string") {
@@ -306,6 +340,7 @@ function parseUpdateBody(
     patch.imageModel === undefined &&
     patch.musicModel === undefined &&
     patch.videoModel === undefined &&
+    patch.speechModel === undefined &&
     patch.fallbackChain === undefined &&
     patch.reasoningOutput === undefined
     && patch.reasoningPolicy === undefined
@@ -326,6 +361,7 @@ export function toWire(config: ResolvedServerModelConfig) {
     imageModel: config.imageModel,
     musicModel: config.musicModel,
     videoModel: config.videoModel,
+    speechModel: config.speechModel,
     fallbackChain: config.fallbackChain,
     reasoningOutput: config.reasoningOutput,
     reasoningPolicy: config.reasoningPolicy,
@@ -371,6 +407,7 @@ export interface ServerModelsRouteDeps {
   getActiveEmbeddingSelection?: () => string | null;
   listMediaModels?: typeof mediaGenerationModels;
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
+  getEffectiveSpeechModel?: () => string | null;
 }
 
 export function serverModelsRoutes(
@@ -389,12 +426,15 @@ export function serverModelsRoutes(
   const listMediaModels = overrides.listMediaModels ?? mediaGenerationModels;
   const getEffectiveMediaModel = overrides.getEffectiveMediaModel ?? effectiveMediaGenerationModel;
   const wire = (config: ResolvedServerModelConfig) => ({ ...toWire(config),
+    catalogModels: catalogModels(),
     effectiveEmbeddingModel: (overrides.getEffectiveEmbeddingModel ?? effectiveEmbeddingModel)(),
     embeddingSelectionPending: activeEmbeddingSelection() !== config.embeddingModel,
     embeddingModels: embeddingModels(),
     imageModels: listMediaModels("image"),
     musicModels: listMediaModels("music"),
     videoModels: listMediaModels("video"),
+    speechModels: listSpeechModels().map(({ speech, providerModelId, ...model }) => model),
+    effectiveSpeechModel: (overrides.getEffectiveSpeechModel ?? (() => { try { return getServerSpeechModel().id; } catch { return null; } }))(),
     effectiveImageModel: getEffectiveMediaModel("image"),
     effectiveMusicModel: getEffectiveMediaModel("music"),
     effectiveVideoModel: getEffectiveMediaModel("video"),

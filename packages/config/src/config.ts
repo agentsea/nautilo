@@ -24,7 +24,7 @@ const SearchQualityModeSchema = z.enum(["balanced", "strict"]);
 const MODEL_DEFAULTS = {
   default: "",
   sessionSearch: "",
-  // M135 P5 / D221 / D281 — explicit Room Conductor override. Empty delegates
+  // — explicit Room Conductor override. Empty delegates
   // to the shared role-candidate policy; Admin can still override it live.
   conductor: "",
   flush: "",
@@ -92,7 +92,7 @@ const HOME_DEFAULTS = {
 } as const;
 
 /**
- * Zone root directories and data sub-paths (D049 artifact-centric pivot).
+ * Zone root directories and data sub-paths ( artifact-centric pivot).
  * `scratch/` is a SIBLING of `home/`, not a child — enables cleaning
  * ephemeral content without risking permanent work product. `data/*`
  * and `vault/` are app-internal; relay adapters do not receive
@@ -131,7 +131,7 @@ const LOGGING_DEFAULTS = {
 } as const;
 
 /**
- * D087 Phase 2A — backup subsystem retention knobs. Owners / ops can
+ * backup subsystem retention knobs. Owners / ops can
  * override via environment (NAUTILO_BACKUP_*) or the runtime config
  * object. The router's size thresholds (5 MB pre-size, 1 MB diff
  * inflation) are intentionally NOT exposed as runtime knobs — they
@@ -149,12 +149,14 @@ const runtimeModelSchema = {
   nautilo_embedding_model: z.string().default(MODEL_DEFAULTS.embeddingModel),
   nautilo_embedding_dims: z.number().int().positive().default(MODEL_DEFAULTS.embeddingDimensions),
   nautilo_session_search_model: z.string().default(MODEL_DEFAULTS.sessionSearch),
-  /** M135 P5 — Room Conductor Floor Manager model. Empty ⇒ default model. */
+  /** Room Conductor Floor Manager model. Empty ⇒ default model. */
   nautilo_conductor_model: z.string().default(MODEL_DEFAULTS.conductor),
   nautilo_flush_model: z.string().default(MODEL_DEFAULTS.flush),
   nautilo_reviewer_model: z.string().default(MODEL_DEFAULTS.reviewer),
   nautilo_web_search_model: z.string().default(MODEL_DEFAULTS.webSearch),
-  /** D066 — vision-capable chat model id for summarizing images when the user's model is text-only */
+  /** Recoverable/no-progress events between Genie interventions; not a provider retry, time, or step limit. */
+  nautilo_browser_decision_intervention_limit: z.number().int().positive().default(2),
+  /** vision-capable chat model id for summarizing images when the user's model is text-only */
   nautilo_vision_fallback_model: z.string().default(""),
   /**
    * Comma/newline-separated ordered list; first entry with image input + runnable provider keys wins.
@@ -255,13 +257,13 @@ const runtimeLoggingSchema = {
 export const SecurityLevelSchema = z.enum(["yolo", "permissive", "standard", "cautious", "paranoid"]);
 
 /**
- * Server deployment mode. D060 Sprint 1 G5.3 (security ship plan v3
+ * Server deployment mode. Sprint 1 G5.3 (security ship plan v3
  * §5.3). Server-enforced posture that selects the deployment profile
  * the sandbox is constructed from (see `@nautilo/sandbox/profiles`).
  *
- *  `server`             — workspace-only, paranoid default. Cloud/CI/OSS.
- *  `desktop-permissive` — broad RO home + narrow RW project, cautious.
- *  `desktop-locked`     — workspace-only on desktop, paranoid.
+ * `server` — workspace-only, paranoid default. Cloud/CI/OSS.
+ * `desktop-permissive` — broad RO home + narrow RW project, cautious.
+ * `desktop-locked` — workspace-only on desktop, paranoid.
  */
 export const DeploymentModeSchema = z.enum([
   "server",
@@ -352,25 +354,25 @@ const runtimeSecuritySchema = {
   // per-platform defaults we'll move this to a first-boot writer,
   // not a schema-default branch.
   nautilo_deployment_mode: DeploymentModeSchema.default("desktop-permissive"),
-  // D103: server-owned network egress policy. No env fallback; this is
+  // server-owned network egress policy. No env fallback; this is
   // mutated through the PIN/capability-gated posture API + sidecar.
   nautilo_network_policy: NetworkPolicySchema.optional(),
 } satisfies z.ZodRawShape;
 
 const runtimeBackupSchema = {
-  /** D087 Phase 2A — per-file count cap (evict past this many unpinned revisions). */
+  /** per-file count cap (evict past this many unpinned revisions). */
   nautilo_backup_per_file_cap: z
     .number()
     .int()
     .positive()
     .default(BACKUP_DEFAULTS.perFileCap),
-  /** D087 Phase 2A — per-deployment size cap (MB). Hot ceiling above which LRU eviction kicks in. */
+  /** per-deployment size cap (MB). Hot ceiling above which LRU eviction kicks in. */
   nautilo_backup_total_size_cap_mb: z
     .number()
     .int()
     .positive()
     .default(BACKUP_DEFAULTS.totalSizeCapMb),
-  /** D087 Phase 2A — interval between hourly GC sweeps (milliseconds). */
+  /** interval between hourly GC sweeps (milliseconds). */
   nautilo_backup_gc_interval_ms: z
     .number()
     .int()
@@ -406,23 +408,23 @@ const runtimeInstanceNetworkSchema = {
 
 const runtimeDispatchSchema = {
   /**
-   * D090 — silent direct-dispatch Accept/Reject master flag.
+   * silent direct-dispatch Accept/Reject master flag.
    *
    * When enabled:
-   *   - `/api/file/apply-patch-direct` accepts POSTs and runs the
-   *     handler without a synthetic user message / LLM round-trip.
-   *   - `/api/capabilities` advertises `directDispatch: true` so the
-   *     UI knows to use the direct path.
-   *   - Rejections get appended to `session_notifications`; the
-   *     pre-model node drains + injects on the next turn.
+   * - `/api/file/apply-patch-direct` accepts POSTs and runs the
+   * handler without a synthetic user message / LLM round-trip.
+   * - `/api/capabilities` advertises `directDispatch: true` so the
+   * UI knows to use the direct path.
+   * - Rejections get appended to `session_notifications`; the
+   * pre-model node drains + injects on the next turn.
    *
    * When disabled (safety fallback — default OFF until live-verified):
-   *   - The route returns 503 so a racing client build surfaces a
-   *     clean error instead of hanging.
-   *   - `/api/capabilities` reports `directDispatch: false` so the
-   *     UI falls back to the legacy `sendText("/accept_changes …")`
-   *     synthetic-message path.
-   *   - The pre-model drain / inject is a no-op.
+   * - The route returns 503 so a racing client build surfaces a
+   * clean error instead of hanging.
+   * - `/api/capabilities` reports `directDispatch: false` so the
+   * UI falls back to the legacy `sendText("/accept_changes …")`
+   * synthetic-message path.
+   * - The pre-model drain / inject is a no-op.
    *
    * One-switch policy: exposing a single-flag-gated pair (server +
    * UI) is intentional — partial enablement (server on, UI off, or
@@ -435,7 +437,7 @@ const runtimeDispatchSchema = {
 
 const runtimeOfficeSchema = {
   /**
-   * D362 merge-gate — dark-launch switch for the heavyweight LibreOffice
+   * merge-gate — dark-launch switch for the heavyweight LibreOffice
    * stack. Mirrors `nautilo_direct_dispatch`: one runtime boolean gates both
    * server/agent behavior and the UI-advertised capability.
    */
@@ -443,7 +445,7 @@ const runtimeOfficeSchema = {
 } satisfies z.ZodRawShape;
 
 /**
- * D419 — selects only which already-eligible tool schemas reach the model.
+ * selects only which already-eligible tool schemas reach the model.
  *
  * `eager` is a temporary operational rollback: it restores every tool that
  * passes the catalog's existing policy, relay, namespace, whitelist, and
@@ -584,8 +586,8 @@ const UserToolsSchema = z.object({
   activationRetentionTurns: z.number().int().min(0).max(20).default(3),
 });
 
-// Sectioned user-facing security block. D060 Sprint 1 G5.3.
-// `security_level` is the classic D053 level; `deployment_mode` is
+// Sectioned user-facing security block. Sprint 1 G5.3.
+// `security_level` is the classic level; `deployment_mode` is
 // the new v3 field that picks a sandbox profile. Both are optional
 // with defaults so existing user configs (pre-G5.3) keep working
 // without a migration — we read the absence as "use defaults".
@@ -595,7 +597,7 @@ const UserSecuritySchema = z.object({
   networkPolicy: NetworkPolicySchema.optional(),
 });
 
-/** M071 — optional local/LAN network overrides (maps to `nautilo_instance_*` runtime fields). */
+/** optional local/LAN network overrides (maps to `nautilo_instance_*` runtime fields). */
 const UserInstanceNetworkSchema = z
   .object({
     serverPort: z.number().int().positive().max(65535).optional(),
@@ -817,6 +819,8 @@ function readTextOnlyImagePolicyEnv(env: Env): "unsupported" | "vision_summary" 
 }
 
 function readModelsFromEnv(source: RuntimeSource, env: Env): Record<string, unknown> {
+  // This operator/runtime control overrides the materialized user-config default.
+  const browserDecisionInterventionLimit = env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
   return {
     nautilo_model: source?.nautilo_model ?? env["NAUTILO_MODEL"],
     nautilo_embedding_model: source?.nautilo_embedding_model ?? env["NAUTILO_EMBEDDING_MODEL"],
@@ -826,6 +830,10 @@ function readModelsFromEnv(source: RuntimeSource, env: Env): Record<string, unkn
     nautilo_flush_model: source?.nautilo_flush_model ?? env["NAUTILO_FLUSH_MODEL"],
     nautilo_reviewer_model: source?.nautilo_reviewer_model ?? env["NAUTILO_REVIEWER_MODEL"],
     nautilo_web_search_model: source?.nautilo_web_search_model ?? env["NAUTILO_WEB_SEARCH_MODEL"],
+    nautilo_browser_decision_intervention_limit:
+      browserDecisionInterventionLimit !== undefined
+        ? Number(browserDecisionInterventionLimit)
+        : source?.nautilo_browser_decision_intervention_limit,
     nautilo_vision_fallback_model:
       source?.nautilo_vision_fallback_model ?? env["NAUTILO_VISION_FALLBACK_MODEL"] ?? "",
     nautilo_vision_fallback_candidates:
@@ -987,7 +995,7 @@ export function normalizeUserConfig(input: unknown): NautiloConfig {
 }
 
 function readSecurityFromEnv(source: RuntimeSource, _env: Env): Record<string, unknown> {
-  // D060 Sprint 1 (security ship plan v3, G5.3/G5.6): BOTH
+  // Sprint 1 (security ship plan v3, G5.3/G5.6): BOTH
   // `nautilo_security_level` AND `nautilo_deployment_mode` are
   // server-enforced policy fields — no env-var fallback. They come
   // from the sectioned `security` block in nautilo.config.ts, which
@@ -1018,7 +1026,7 @@ function readBackupFromEnv(source: RuntimeSource, env: Env): Record<string, unkn
 }
 
 function readDispatchFromEnv(source: RuntimeSource, env: Env): Record<string, unknown> {
-  // D090 — env wins over source because `normalizeUserConfig` runs
+  // env wins over source because `normalizeUserConfig` runs
   // the full `NautiloConfigSchema.parse`, which materialises zod
   // defaults (`false` for this flag) even when the user's
   // `nautilo.config.ts` doesn't declare a `dispatch` section. With
@@ -1062,7 +1070,7 @@ function readToolExposureFromEnv(source: RuntimeSource, env: Env): Record<string
 
 function readConnectedAppsFromEnv(source: RuntimeSource, env: Env): Record<string, unknown> {
   // Dev stacks and packaged operators must be able to bind Nautilo to the
-  // exact OpenConnector process they started. `normalizeUserConfig()`
+  // exact OpenConnector process they started. `normalizeUserConfig`
   // materializes schema defaults, so source-first precedence would silently
   // turn an omitted user setting into port 3000 and ignore the explicit
   // process environment.
@@ -1130,7 +1138,7 @@ export function fromRuntimeConfig(runtime?: NautiloConfigOverrides): NautiloConf
 }
 
 // ---------------------------------------------------------------------------
-// Server posture — D060 Sprint 1 G5.3
+// Server posture — Sprint 1 G5.3
 // ---------------------------------------------------------------------------
 
 export type DeploymentMode = z.infer<typeof DeploymentModeSchema>;
@@ -1145,7 +1153,7 @@ export type ToolExposureMode = z.infer<typeof ToolExposureModeSchema>;
  * building an envelope for the relay (G5.4). Changing either field
  * via `PUT /api/security/posture` rewrites the sectioned config and
  * broadcasts `policy.changed`; the resolver then re-reads via
- * `resolveServerPosture()` on the next turn.
+ * `resolveServerPosture` on the next turn.
  */
 export interface ServerPosture {
   readonly deploymentMode: DeploymentMode;
@@ -1162,7 +1170,7 @@ export function defaultNetworkPolicyForDeploymentMode(
 
 /**
  * Read the current server posture from the resolved runtime config.
- * Convenience wrapper around `fromRuntimeConfig()` that exposes only
+ * Convenience wrapper around `fromRuntimeConfig` that exposes only
  * the security slice — callers that don't need the rest of the flat
  * runtime shape (server API handlers, audit-log writers, Policy
  * Resolver) avoid touching `nautilo_*` key names.

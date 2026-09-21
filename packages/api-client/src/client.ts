@@ -667,7 +667,7 @@ import type {
   VoiceCustomizationHydrationResponse,
 } from "@nautilo/types";
 import type { GroupChip, RoleSlug } from "@nautilo/types";
-// D425 Wave 1A — ID-free semantic record/scope types for the portable Genie
+// ID-free semantic record/scope types for the portable Genie
 // profile bundle client. Type-only: no runtime dependency on the contract pkg.
 import type { semantic } from "@nautilo/profile-portability";
 import type {
@@ -676,7 +676,7 @@ import type {
   MemoryDetailResponse,
   MemoryMode,
 } from "./types";
-// D424 — re-export memory DTOs with the other client-owned public types.
+// re-export memory DTOs with the other client-owned public types.
 export type {
   MemoryMode,
   MemoryActionAuthority,
@@ -1037,7 +1037,7 @@ function exactStringInventory(
     && left.every((value, index) => value === right[index]);
 }
 
-/** D312 — aggregated reaction row for a room message (tap-to-react). */
+/** aggregated reaction row for a room message (tap-to-react). */
 export interface RoomReactionAggregate {
   emoji: string;
   count: number;
@@ -1046,7 +1046,7 @@ export interface RoomReactionAggregate {
 }
 
 /**
- * D442 Phase 1.1 — `DELETE /api/memory/:id?mode=archive|hard` status envelope.
+ * `DELETE /api/memory/:id?mode=archive|hard` status envelope.
  * `archive` yields `{ status: "archived", memoryMode }`; `hard` yields the
  * server's `result.status` (e.g. `detached` / `deleted`) with the mode.
  */
@@ -1056,7 +1056,7 @@ export interface MemoryMutationStatusResponse {
 }
 
 /**
- * D442 Phase 1.1 — `POST /api/memory/:id/grant` response. The room path sets
+ * `POST /api/memory/:id/grant` response. The room path sets
  * `namespaceId`; the handle path sets `roomLabel` + `minted`.
  */
 export interface MemoryGrantResponse {
@@ -1066,20 +1066,20 @@ export interface MemoryGrantResponse {
   minted?: boolean;
 }
 
-/** D442 Phase 1.1 — `POST /api/memory/:id/revoke` response. */
+/** `POST /api/memory/:id/revoke` response. */
 export interface MemoryRevokeResponse {
   status: string;
   reHomed: number;
   skipped: string[];
 }
 
-/** D442 Phase 1.1 — `POST /api/memory/:id/make_private` response. */
+/** `POST /api/memory/:id/make_private` response. */
 export interface MemoryMakePrivateResponse {
   status: string;
   skipped: string[];
 }
 
-/** M128 ladder rank (highest first). Empty `groups` → `guest`. */
+/** Role ladder rank (highest first). Empty `groups` → `guest`. */
 const ROLE_LADDER: readonly RoleSlug[] = [
   "owner",
   "admin",
@@ -1122,8 +1122,8 @@ export const whoamiResponseSchema = z.object({
       }),
     )
     .default([]),
-  // M129 — string (not enum) so we tolerate unknown slugs from a newer
-  // server; consumers filter with `isCapabilitySlug`. See ISSUE-M129 §2.3.
+  // String (not enum) so we tolerate unknown slugs from a newer
+  // server; consumers filter with `isCapabilitySlug`.
   capabilities: z.array(z.string()).default([]),
   features: z
     .object({
@@ -1134,7 +1134,7 @@ export const whoamiResponseSchema = z.object({
         .default({ enabled: false }),
     })
     .default({ office: { enabled: false } }),
-  // D219 — highest-rank Role slug across the viewer's Groups (or null).
+  // highest-rank Role slug across the viewer's Groups (or null).
   // Replaces the retired `serverRole` enum for role-badge display. String
   // (not enum) to tolerate unknown slugs from a newer server.
   highestRole: z.string().nullable().default(null),
@@ -1172,7 +1172,7 @@ export const adminUsersListResponseSchema = z.object({
   }).strict().optional(),
 });
 
-// D281 — server-wide model config. `conductorModel` empty ⇒ inherit the
+// server-wide model config. `conductorModel` empty ⇒ inherit the
 // default chat model. `fallbackChain` is an ordered list of catalog model ids.
 export const serverModelConfigSchema = z.object({
   defaultChatModel: z.string(),
@@ -1188,9 +1188,34 @@ export const serverModelConfigSchema = z.object({
     displayName: z.string(),
     available: z.boolean(),
   })).optional().default([]),
+  catalogModels: z.array(z.object({
+    id: z.string(),
+    displayName: z.string(),
+    provider: z.string(),
+    workload: z.string(),
+    availability: z.string(),
+    unavailableReason: z.string().optional(),
+    input: z.array(z.string()),
+    output: z.array(z.string()),
+    features: z.object({
+      tools: z.boolean().nullable(),
+      structuredOutputs: z.boolean().nullable(),
+      reasoning: z.boolean().nullable(),
+      visualGrounding: z.boolean().nullable(),
+      webSearch: z.boolean().nullable(),
+      e2ee: z.boolean().nullable(),
+    }),
+    decision: z.object({ operations: z.array(z.string()) }).nullable().optional(),
+  })).optional(),
   imageModel: z.string().nullable().optional().default(null),
   musicModel: z.string().nullable().optional().default(null),
   videoModel: z.string().nullable().optional().default(null),
+  speechModel: z.string().nullable().optional().default(null),
+  effectiveSpeechModel: z.string().nullable().optional().default(null),
+  speechModels: z.array(z.object({
+    id: z.string(), displayName: z.string(), provider: z.string(), available: z.boolean(),
+    unavailableReason: z.string().optional(),
+  })).optional().default([]),
   effectiveImageModel: z.string().nullable().optional().default(null),
   effectiveMusicModel: z.string().nullable().optional().default(null),
   effectiveVideoModel: z.string().nullable().optional().default(null),
@@ -1233,7 +1258,7 @@ export const serverContextConfigSchema = z.object({
   memoryReviewEnabled: z.boolean().nullable(),
 });
 
-// D298 — shared rooms owned by a user that block their deletion, with the
+// shared rooms owned by a user that block their deletion, with the
 // members eligible to receive ownership (non-federated humans).
 const sharedRoomMemberSchema = z.object({
   userId: z.string(),
@@ -1265,7 +1290,7 @@ const adminUserMutationResponseSchema = z.object({
   ok: z.boolean(),
   mutation: adminUserMutationReceiptSchema.optional(),
 });
-// Stack 195 follow-up — group membership mutations surface the audit-append
+// Group membership mutations surface the audit-append
 // outcome (`auditRecorded`) so a silent audit failure is visible to the
 // client. Optional for backward compatibility with older servers that only
 // returned `{ ok }`.
@@ -1473,10 +1498,10 @@ function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
 /**
  * Public `/health` payload.
  *
- * The original M042-era contract (`status`, `authRequired`, `enrolled`)
- * is preserved verbatim; M051 added Logto discovery fields so
- * unauthenticated clients can wire auth before they have a token.
- * M054 adds `logtoResource` so the workbench knows which audience to
+ * The original contract (`status`, `authRequired`, `enrolled`)
+ * is preserved verbatim. Logto discovery fields let unauthenticated clients
+ * wire auth before they have a token.
+ * `logtoResource` tells the workbench which audience to
  * request access tokens for.
  */
 export interface HealthResponse {
@@ -1486,31 +1511,31 @@ export interface HealthResponse {
   logtoEndpoint?: string | null;
   logtoWorkbenchAppId?: string | null;
   logtoTuiAppId?: string | null;
-  /** M102 — legacy-named CLI loopback PKCE app id (sibling to `logtoTuiAppId`). */
+  /** legacy-named CLI loopback PKCE app id (sibling to `logtoTuiAppId`). */
   logtoTuiLoopbackAppId?: string | null;
   /**
-   * M055 — Logto Native application id for the Electron desktop's
+   * Logto Native application id for the Electron desktop's
    * loopback PKCE flow. Distinct from `logtoWorkbenchAppId` because
    * RFC 8252 §7.3 port-flex on `127.0.0.1` is honoured only for
    * Native apps. May be null when not configured.
    */
   logtoDesktopAppId?: string | null;
   /**
-   * M199 — Logto Native application id for the mobile (Expo) client's
+   * Logto Native application id for the mobile (Expo) client's
    * custom-scheme PKCE flow (`nautilo://callback`). Distinct from the
    * desktop / workbench app ids; discovered per-server. May be null
    * when not configured.
    */
   logtoMobileAppId?: string | null;
   /**
-   * D515 — dedicated Logto SPA application id for Mobile Web. It owns only
+   * dedicated Logto SPA application id for Mobile Web. It owns only
    * the exact current-origin `/mobile/callback` flow and is intentionally
    * distinct from both Workbench and native Mobile transaction storage.
    */
   logtoMobileWebAppId?: string | null;
   logtoResource?: string | null;
   /**
-   * D152 smoke follow-up — canonical browser origins for Workbench OIDC redirects.
+   * Canonical browser origins for Workbench OIDC redirects.
    * Browser code uses these to avoid localhost / 127.0.0.1 exact-match drift.
    */
   serverUrl?: string | null;
@@ -1523,11 +1548,11 @@ export interface HealthResponse {
    */
   deploymentIdentity?: string | null;
   /**
-   * D420 — payload-free durable maintenance state. Optional so Workbench
+   * payload-free durable maintenance state. Optional so Workbench
    * clients remain compatible with servers deployed before the field.
    */
   maintenanceState?: "normal" | "draining" | "applying";
-  /** D480 — grouped relay-device HTTP contract advertised by this server. */
+  /** grouped relay-device HTTP contract advertised by this server. */
   relayPairingContractVersion?: 2;
 }
 
@@ -1550,7 +1575,7 @@ const eligibleModelReasoningLevelSchema = z.enum([
 ]);
 
 /**
- * D462 — strict public DTO for `GET /api/config/models`. Provider selectors
+ * strict public DTO for `GET /api/config/models`. Provider selectors
  * and provenance intentionally do not exist in this schema: callers choose a
  * catalog profile id and the server owns translation to a provider request.
  */
@@ -1563,7 +1588,7 @@ export const assistantModelSummarySchema = z
     costCoefficient: z.number(),
     /** First segment of `provider:rest` — echoed by `/api/config/models` when present. */
     provider: z.string().optional(),
-    /** D086 — Venice upstream routing class when applicable. */
+    /** Venice upstream routing class when applicable. */
     routing: z.enum(["venice-hosted", "western-anonymized", "china-anonymized", "unknown"]).optional(),
     availability: z
       .enum([
@@ -1670,7 +1695,7 @@ export const commandDeleteResponseSchema = z.object({ ok: z.literal(true) });
 export type CommandDetail = z.infer<typeof commandDetailSchema>;
 export type PutCommandRequest = z.infer<typeof putCommandRequestSchema>;
 
-/** D462 browser selection DTO: neutral catalog ids only, never provider selectors. */
+/** Browser selection DTO: neutral catalog ids only, never provider selectors. */
 export const modelControlSelectionSchema = z
   .object({
     modelId: z.string().min(1),
@@ -1826,7 +1851,7 @@ export interface AccountDeletionResponse {
   reconciliationPending: boolean;
 }
 
-// M128 unify (migration 0063, 2026-05-28): the canonical post-M128 kind
+// The canonical kind
 // set is `{claim, server}`. `claim` is bootstrap-only and cannot be POSTed.
 // `agent` and the transitional `group`/`room` kinds are retired — the
 // server returns 400 `invalid_kind` for any other value.
@@ -1835,7 +1860,7 @@ export type InviteKind = "server" | "claim";
 export interface CreateInviteInput {
   kind: "server";
   /**
-   * Required. The canonical M128 Group rung the invitee joins on redeem.
+   * Required. The canonical Group rung the invitee joins on redeem.
    * One of the six ladder slugs: owner / admin / superuser / member /
    * contributor / guest.
    */
@@ -2024,7 +2049,7 @@ export interface RedeemOwnerClaimResponse {
 }
 
 /**
- * Response shape post-M107 (Option C). The route no longer mints a
+ * Response shape. The route no longer mints a
  * Logto one-time-token — Logto OSS 1.x can't pre-fill `username` via
  * OTT, so the workbench stores the chosen handle in localStorage and
  * drives Logto sign-up via `@logto/react`'s standard `signIn({
@@ -2032,7 +2057,7 @@ export interface RedeemOwnerClaimResponse {
  * callback the workbench POSTs `state` to `/api/bind-logto-user`,
  * which unpacks the handle + invite token.
  *
- * Pre-M107 the shape additionally carried `oneTimeToken`, `email`, and
+ * The previous shape additionally carried `oneTimeToken`, `email`, and
  * `expiresAt`. Those fields are gone; renderers that still read them
  * will see `undefined` and should be updated.
  */
@@ -2044,7 +2069,7 @@ export interface PrepareLogtoSignupResponse {
 }
 
 /**
- * D508 unified browser-owner preparation result. The server, not the Human,
+ * Unified browser-owner preparation result. The server, not the Human,
  * resolves the handle for a durable reservation before ordinary Logto sign-in.
  */
 export interface PrepareOwnerClaimAuthResponse {
@@ -2102,7 +2127,7 @@ const prepareOwnerClaimAuthResponseSchema: z.ZodType<PrepareOwnerClaimAuthRespon
   handle: z.string().min(1),
 }).strict();
 
-/** Phase 6 — Logto access bundle from redeem flows. */
+/** Logto access bundle from redeem flows. */
 export const logtoSessionSchema = z.object({
   accessToken: z.string(),
   refreshToken: z.string().optional(),
@@ -2161,7 +2186,7 @@ function parseRetryAfterMs(value: string | null): number | undefined {
   return Number.isNaN(dateMs) ? undefined : Math.max(0, dateMs - Date.now());
 }
 
-/** M297 — stable denial for either direction of an exact Human DM block. */
+/** stable denial for either direction of an exact Human DM block. */
 export class DirectHumanInteractionBlockedError extends ApiError {
   readonly code = "direct_human_interaction_blocked" as const;
 
@@ -2295,7 +2320,7 @@ function ownerClaimServerError(
   return new OwnerClaimApiError(status, rawCode ?? fallbackCode, rawCode);
 }
 
-/** Structured D487 failure shared by browser, Electron, iOS, and Android. */
+/** Structured failure shared by browser, Electron, iOS, and Android. */
 export class AgentPhotoLibraryApiError extends ApiError {
   readonly code: AgentPhotoLibraryErrorCodeDto;
   readonly retryable: boolean;
@@ -2319,7 +2344,7 @@ export class AgentPhotoLibraryApiError extends ApiError {
   }
 }
 
-/** D468 — typed, content-free installation failure for Mobile reconciliation. */
+/** typed, content-free installation failure for Mobile reconciliation. */
 export class MobilePushInstallationApiError extends ApiError {
   readonly code: MobilePushInstallationErrorCode;
 
@@ -2481,7 +2506,7 @@ class BoundedByteCollector {
   }
 }
 
-/** M236 — complete notification state cannot fit the fixed v1 detail bound. */
+/** complete notification state cannot fit the fixed v1 detail bound. */
 export class NotificationStateTooLargeApiError extends ApiError {
   readonly code = "notification_state_too_large";
 
@@ -2491,7 +2516,7 @@ export class NotificationStateTooLargeApiError extends ApiError {
   }
 }
 
-/** M230 — stale optimistic message edit with the latest safe canonical value. */
+/** stale optimistic message edit with the latest safe canonical value. */
 export class MessageEditConflictError extends ApiError {
   constructor(readonly current: EditableRoomMessageConflictDto) {
     super(409, "message_edit_conflict");
@@ -2523,7 +2548,7 @@ export type NautiloApiFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-/** D112 Phase 8 — password login rejected (HTTP 401). */
+/** password login rejected (HTTP 401). */
 export class InvalidCredentialsError extends ApiError {
   constructor(message = "invalid_credentials") {
     super(401, message);
@@ -2531,7 +2556,7 @@ export class InvalidCredentialsError extends ApiError {
   }
 }
 
-/** D104 / D112 — current password mismatch on change (HTTP 422). */
+/** Current password mismatch on change (HTTP 422). */
 export class WrongCurrentPasswordError extends ApiError {
   constructor(message = "Current password is incorrect.") {
     super(422, message);
@@ -2539,7 +2564,7 @@ export class WrongCurrentPasswordError extends ApiError {
   }
 }
 
-/** D112 Phase 8 — rate-limited password attempts (HTTP 423). */
+/** rate-limited password attempts (HTTP 423). */
 export class LockedOutError extends ApiError {
   readonly retryAfterSeconds?: number | undefined;
   constructor(message = "locked_out", retryAfterSeconds?: number) {
@@ -2549,7 +2574,7 @@ export class LockedOutError extends ApiError {
   }
 }
 
-/** D220 Phase 2 — cannot remove the last owner from the owners Group (HTTP 409). */
+/** cannot remove the last owner from the owners Group (HTTP 409). */
 export class LastOwnerError extends ApiError {
   constructor(message = "last_owner") {
     super(409, message);
@@ -2557,7 +2582,7 @@ export class LastOwnerError extends ApiError {
   }
 }
 
-/** M124 — self-join rejected because the room is not open (HTTP 403). */
+/** self-join rejected because the room is not open (HTTP 403). */
 export class RoomNotOpenError extends ApiError {
   constructor(message = "not_open") {
     super(403, message);
@@ -2565,7 +2590,7 @@ export class RoomNotOpenError extends ApiError {
   }
 }
 
-/** M180 — workspace artifact save conflict (HTTP 409 external_change). */
+/** workspace artifact save conflict (HTTP 409 external_change). */
 export class ConflictError extends Error {
   constructor(public readonly currentSha256: string | null) {
     super("Workspace artifact changed externally");
@@ -2574,7 +2599,7 @@ export class ConflictError extends Error {
 }
 
 /**
- * D442 Phase 1.1 — `DELETE /api/memory/:id?mode=hard` rejected because the
+ * `DELETE /api/memory/:id?mode=hard` rejected because the
  * memory is shared across multiple namespaces. The server returns the
  * namespace count, the namespace IDs, and a hint telling the caller to retry
  * with `confirmShared=true` (namespace mode) — scope mode omits the hint.
@@ -2601,7 +2626,7 @@ export class MemoryHardDeleteConflictError extends Error {
   }
 }
 
-/** ISSUE-M193 — workspace artifact patch apply conflict (HTTP 409). */
+/** workspace artifact patch apply conflict (HTTP 409). */
 export class DocumentPatchConflictError extends Error {
   constructor(public readonly rejection: DocumentPatchRejected) {
     super(`Document patch rejected: ${rejection.kind}`);
@@ -2651,7 +2676,7 @@ type StatusErrorMap = Record<
 
 /**
  * Options for {@link NautiloApiClient.request}. Intended for phased migration of all
- * internal `_fetch` JSON call sites (ISSUE-D130 phases 3a–3d).
+ * internal `_fetch` JSON call sites.
  */
 interface RequestOpts<T> {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -3003,7 +3028,7 @@ export interface SlideTemplateContentDto {
 }
 
 /**
- * D442 Phase 4.1 — one discussion room attached to a workspace artifact.
+ * one discussion room attached to a workspace artifact.
  * Mirrors the server route `GET /api/workspace/artifacts/:id/discussion-rooms`
  * in `packages/server/src/routes/workspace-artifacts.ts`. `kind` is the
  * server's room-kind string (e.g. `"private"` / `"group"`); no namespace ids
@@ -3015,7 +3040,7 @@ export interface ArtifactDiscussionRoom {
   kind: string;
 }
 
-/** D442 Phase 4.1 — `{ rooms: [...] }` envelope for the discussion-rooms read. */
+/** `{ rooms: [...] }` envelope for the discussion-rooms read. */
 export interface ListArtifactDiscussionRoomsResponse {
   rooms: ArtifactDiscussionRoom[];
 }
@@ -3068,7 +3093,7 @@ export type WorkspaceArtifactEvent =
     }
   /**
    * Durable mutation truth emitted after the coordinator has committed the
-   * Workspace artifact update.  Consumers must use `editorSave.anchoredPatch`
+   * Workspace artifact update. Consumers must use `editorSave.anchoredPatch`
    * when present and safely reload for snapshots or non-editor mutations.
    */
   | DocumentMutationCommittedEvent;
@@ -3149,7 +3174,7 @@ export interface MiniAppConversionsDto {
 export interface PublicMiniAppDto {
   id: string;
   name: string | null;
-  /** D344 — optional one-line description from the manifest (Apps panel rows). */
+  /** optional one-line description from the manifest (Apps panel rows). */
   description: string | null;
   display?: {
     groupId?: string;
@@ -3160,11 +3185,11 @@ export interface PublicMiniAppDto {
   } | null;
   version: string | null;
   status: "ready" | "invalid_manifest" | "needs_dependencies";
-  /** D344 — ISO "installed at" (manifest mtime proxy) for Apps-page sorting. */
+  /** ISO "installed at" (manifest mtime proxy) for Apps-page sorting. */
   installedAt: string | null;
   sourceHash: string | null;
-  /** D343 — false when the operator disabled the app. Disabled apps stay
-   *  installed but are hidden from file associations + the agent tool catalog. */
+  /** false when the operator disabled the app. Disabled apps stay
+   * installed but are hidden from file associations + the agent tool catalog. */
   enabled: boolean;
   fileAssociations: {
     extensions?: string[];
@@ -3221,7 +3246,7 @@ export interface MiniAppConversionRunRequest {
   currentFolder?: string;
   workspacePath?: string;
   /**
-   * M205 — overwrite an existing target instead of getting a conflict result.
+   * overwrite an existing target instead of getting a conflict result.
    * Default false: the server returns a `status:"conflict"` tool result so the
    * UI can prompt overwrite / rename / cancel.
    */
@@ -3277,7 +3302,7 @@ export type MiniAppSourceEvent =
   | { type: "changed"; appId: string; sourceHash: string }
   | { type: "status"; appId: string; status: string };
 
-/** D144-P2 — optional desktop bridge for artifact export (see `saveArtifactToDisk`). */
+/** optional desktop bridge for artifact export (see `saveArtifactToDisk`). */
 export type NautiloDesktopArtifactSaveBridge = {
   dialog?: {
     showSaveDialog?: (opts: { defaultPath?: string }) => Promise<{
@@ -3315,9 +3340,9 @@ function readBrowserDocument(): AnchorDownloadDocument | undefined {
 }
 
 /**
- * D144-P2 — persist artifact bytes locally. Uses native save only when
+ * persist artifact bytes locally. Uses native save only when
  * both `showSaveDialog` and `fs.writeFileBytes` are exposed on
- * `window.nautiloDesktop` (preload is not wired yet as of Stack 21).
+ * `window.nautiloDesktop` (preload is not wired yet).
  * Otherwise triggers a download via `URL.createObjectURL` + anchor click.
  */
 export async function saveArtifactToDisk(
@@ -3367,7 +3392,7 @@ export class NautiloApiClient {
   private unauthorizedResponseHandler: UnauthorizedResponseHandler | null = null;
   private unauthorizedRecoveryInFlight: Promise<string | null | void> | null = null;
   private unauthorizedRecoveryGeneration: number | null = null;
-  /** ISSUE-M214 — bumps only when the normalized bearer value changes in {@link setToken}. */
+  /** bumps only when the normalized bearer value changes in {@link setToken}. */
   private credentialGeneration = 0;
   private readonly inFlightGets = new Map<string, Promise<unknown>>();
   private readonly unixSocketPath: string | undefined;
@@ -3378,7 +3403,7 @@ export class NautiloApiClient {
   private deviceAdmissionRequired: DeviceAdmissionRequiredHandler | null = null;
 
   /**
-   * D120 A5.3 (review fix) — accept an optional `unixSocketPath`. When set,
+   * Accept an optional `unixSocketPath`. When set,
    * every internal fetch call routes through `_fetch()`, which forwards
    * Bun's `unix:` request init so HTTP requests against `baseUrl =
    * "http://localhost"` are tunnelled over the local Unix socket forwarder
@@ -3481,7 +3506,7 @@ export class NautiloApiClient {
   };
 
   /**
-   * M236 — active-client lifecycle seam. Workbench registers its state
+   * active-client lifecycle seam. Workbench registers its state
    * provider; successful read/preference mutations invalidate the snapshot
    * without coupling this transport package to React or browser globals.
    */
@@ -3491,7 +3516,7 @@ export class NautiloApiClient {
     this.notificationStateInvalidated = handler;
   }
 
-  /** M259 — stale capability denial invalidates only the viewer projection. */
+  /** stale capability denial invalidates only the viewer projection. */
   setActionCapabilityDenialHandler(handler: (() => void) | null): void {
     this.actionCapabilityDenied = handler;
   }
@@ -3698,7 +3723,7 @@ export class NautiloApiClient {
         }
         throw new ApiError(502, "Invalid password-reset response from server");
       },
-      // Stack 66 (D220) — irreversible hard delete. 409 `last_owner` maps to
+      // Irreversible hard delete. 409 `last_owner` maps to
       // LastOwnerError so the UI can surface it the same way as the matrix.
       delete: async (id: string): Promise<AdminUserDeleteResponse> => {
         const result = await this.request<z.infer<typeof adminUserDeleteResponseSchema>>({
@@ -3740,7 +3765,7 @@ export class NautiloApiClient {
           },
         };
       },
-      // D298 — shared rooms owned by a user that block deletion (+ eligible
+      // shared rooms owned by a user that block deletion (+ eligible
       // new owners for the transfer recovery path).
       ownedSharedRooms: async (userId: string): Promise<OwnedSharedRoomsResponse> => {
         return this.request<OwnedSharedRoomsResponse>({
@@ -3750,7 +3775,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // D298 — admin room recovery actions (offboarding).
+    // admin room recovery actions (offboarding).
     rooms: {
       transferOwner: async (
         roomId: string,
@@ -3783,7 +3808,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // D281 — server-wide model config (default chat / Conductor / fallback).
+    // server-wide model config (default chat / Conductor / fallback).
     // GET requires `read_server_settings`; set requires `manage_server_operations`.
     serverModels: {
       get: async (): Promise<ServerModelConfig> => {
@@ -3803,6 +3828,7 @@ export class NautiloApiClient {
         imageModel?: string | null;
         musicModel?: string | null;
         videoModel?: string | null;
+        speechModel?: string | null;
         fallbackChain?: string[];
         reasoningOutput?: Record<string, boolean>;
         reasoningPolicy?: {
@@ -3819,7 +3845,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // M219 — server-wide bounded foreground Room context policy.
+    // server-wide bounded foreground Room context policy.
     // GET requires `read_server_settings`; set requires `manage_server_operations`.
     serverContext: {
       get: async (): Promise<ServerContextConfig> => {
@@ -3847,7 +3873,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // M274 — manual, server-wide encryption transition control plane.
+    // manual, server-wide encryption transition control plane.
     encryptionTransition: {
       getPolicy: async (
         options?: { signal?: AbortSignal },
@@ -3879,7 +3905,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // M219 — content-free Room Stenographer operational health.
+    // content-free Room Stenographer operational health.
     // Requires `read_server_settings`.
     memoryStatus: {
       get: async (): Promise<MemoryAdminStatus> => this.request({
@@ -3908,7 +3934,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // M271 — content-free durable Reflection/Sleep operational health.
+    // content-free durable Reflection/Sleep operational health.
     // Requires `read_server_settings`.
     reflectionStatus: {
       get: async (): Promise<ReflectionAdminStatus> => {
@@ -3919,7 +3945,7 @@ export class NautiloApiClient {
         });
       },
     },
-    // Stack 195 / W3.1.3 — admin access-control reads. Requires at least one
+    // Admin access-control reads. Requires at least one
     // of `manage_members | manage_groups | manage_roles`.
     accessControl: {
       getEffectiveAccess: async (userId: string): Promise<EffectiveAccessResponse> => {
@@ -3936,7 +3962,7 @@ export class NautiloApiClient {
           defaultErrorPrefix: "GET /api/admin/access-control/catalogue",
         });
       },
-      // Stack 195 / W3.2 — minimal Human directory for custom Group
+      // Minimal Human directory for custom Group
       // owner/member selection. Same coarse gate as the other Access
       // Control reads (any of manage_members | manage_groups |
       // manage_roles); returns only { userId, displayName, handle }.
@@ -3947,7 +3973,7 @@ export class NautiloApiClient {
           defaultErrorPrefix: "GET /api/admin/access-control/users",
         });
       },
-      // Stack 195 / W3.2.6 — preview/apply mutation engine. Preview is
+      // Preview/apply mutation engine. Preview is
       // read-only (always 200 with structured checks/failures + fingerprint);
       // apply re-validates in one tx and returns 409 stale_preview on drift.
       previewChange: async (
@@ -3987,7 +4013,7 @@ export class NautiloApiClient {
     },
   } as const;
 
-  // M308 — aggregate encryption coverage scoped to the authenticated Human.
+  // aggregate encryption coverage scoped to the authenticated Human.
   readonly encryptionCoverage = {
     getPersonal: async (
       options?: { signal?: AbortSignal },
@@ -4087,7 +4113,7 @@ export class NautiloApiClient {
     },
   } as const;
 
-  // Stack 195 / W3.1.2 — self effective-access read (authentication only).
+  // Self effective-access read (authentication only).
   readonly accessControl = {
     getMyEffectiveAccess: async (): Promise<EffectiveAccessResponse> => {
       return this.request<EffectiveAccessResponse>({
@@ -4221,14 +4247,12 @@ export class NautiloApiClient {
   }
 
   /**
-   * ISSUE-D130 — single JSON request/response helper over {@link NautiloApiClient._fetch}.
+   * single JSON request/response helper over {@link NautiloApiClient._fetch}.
    * Centralizes JSON envelopes, authentication headers, and typed status errors.
    *
-   * Deviations from the phase-1 strawman (by design):
-   * - `"session"` / `"session-fresh"` add `Content-Type: application/json` only when `body` is set,
-   *   so GETs match today's `authHeaders()` / `authHeadersFresh()`-only headers.
-   * - `statusErrors` mappers receive the full parsed error JSON object (not just a string) so
-   *   `LockedOutError` can pass `retryAfterSeconds` from the body.
+   * Session authentication adds `Content-Type: application/json` only when a body is present.
+   * Status-error mappers receive the complete parsed error object so typed errors can preserve
+   * safe fields such as `retryAfterSeconds`.
    */
   private async request<T>(opts: RequestOpts<T>): Promise<T> {
     const method = opts.method ?? "GET";
@@ -4239,7 +4263,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * ISSUE-M214 Phase 1 — share one parsed GET promise among concurrent callers with the
+   * share one parsed GET promise among concurrent callers with the
    * same normalized key. Mutations and direct `_fetch` sites bypass this path.
    */
   private async requestGetWithSingleFlight<T>(opts: RequestOpts<T>): Promise<T> {
@@ -4266,7 +4290,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M214 Phase 10 — conditional JSON GETs share one parsed result while exposing
+   * conditional JSON GETs share one parsed result while exposing
    * response validators and representing 304 without attempting to consume its empty body.
    */
   private async conditionalGet<T>(
@@ -4290,7 +4314,7 @@ export class NautiloApiClient {
       const response = await this._fetch(`${this.baseUrl}${opts.path}`, {
         method: "GET",
         headers,
-        // M214 keeps the response body and validator together in application
+        // Keeps the response body and validator together in application
         // memory. Chromium's HTTP cache must not add its own implicit
         // If-None-Match after a renderer reload: that can produce a 304 when
         // the application cache has no body, leaving identity hydration stuck
@@ -4473,7 +4497,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M057 — register a refresh-aware token provider. A client implementation
+   * register a refresh-aware token provider. A client implementation
    * silently refreshes the access token if it's within 60s of expiry,
    * mirrors the result via `setToken(fresh)`, and returns the bearer
    * (or `null` to flip the SignInDialog back on).
@@ -4501,8 +4525,8 @@ export class NautiloApiClient {
   }
 
   setToken(token: string | null): void {
-    // Normalize null + empty-string to null. Callers under M054/M055
-    // use `setToken("")` to clear the bearer; without this normalization `hasToken()`
+    // Normalize null + empty-string to null. Callers use `setToken("")` to clear
+    // the bearer; without this normalization `hasToken()`
     // would return true for "" but `authHeaders()` treats "" as
     // falsy, producing requests with no Authorization header that
     // nonetheless pass `useAuth().viewer`'s gate — so whoami lands
@@ -4514,12 +4538,12 @@ export class NautiloApiClient {
     }
   }
 
-  /** ISSUE-M214 — non-secret credential generation for single-flight keys and later auth sync. */
+  /** non-secret credential generation for single-flight keys and later auth sync. */
   getCredentialGeneration(): number {
     return this.credentialGeneration;
   }
 
-  /** ISSUE-M214 — read-only in-flight GET single-flight count (tests/diagnostics). */
+  /** read-only in-flight GET single-flight count (tests/diagnostics). */
   getInFlightGetCount(): number {
     return this.inFlightGets.size;
   }
@@ -4529,7 +4553,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M058 — read-only accessor for the bearer the api client has
+   * read-only accessor for the bearer the api client has
    * latched. Used to feed `createWsRealtimeClient`'s
    * `getToken` provider so HTTP and WS authenticate with the same
    * token without a parallel ref. Returns null when no token is
@@ -4565,7 +4589,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D112 — setup surface and provider state. Without a session the
+   * setup surface and provider state. Without a session the
    * payload omits `viewer` and `providers`, but still includes
    * `recommendedSetupSurface` for setup cards. With a valid bearer the
    * response adds `viewer`, `providers`, and a role-aware surface.
@@ -4582,7 +4606,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D458 Wave 7 — caller-owned durable controller bindings only. */
+  /** caller-owned durable controller bindings only. */
   async listRemoteControllers(): Promise<ListRemoteControllersResponse> {
     return this.request({
       path: "/api/remote/controllers",
@@ -4591,7 +4615,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D458 Wave 7 — caller-owned desktop hosts, with no relay credential data. */
+  /** caller-owned desktop hosts, with no relay credential data. */
   async listRemoteHosts(options?: {
     mobileOriginProof?: RemoteOrdinaryRequestProof;
   }): Promise<ListRemoteHostsResponse> {
@@ -4610,7 +4634,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D458 Gate 3B — browse one paired Mac's explicitly selected root. Every
+   * browse one paired Mac's explicitly selected root. Every
    * selector is in the POST body and therefore bound into the phone proof.
    */
   async listRemoteHostFiles(
@@ -4736,7 +4760,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D280 — server identity (name, optional description, icon) from the
+   * server identity (name, optional description, icon) from the
    * pre-auth `base` block of setup status. Switcher and login surfaces bind
    * here instead of duplicating instance config. Returns `undefined` when
    * talking to an older server that predates the server-profile substrate.
@@ -4747,7 +4771,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D280 — update server identity (name, description, visibility). Requires
+   * update server identity (name, description, visibility). Requires
    * `manage_server_operations` on the server. Returns the resolved profile.
    */
   async updateServerProfile(patch: {
@@ -4767,7 +4791,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D280 — upload a server icon image (multipart). Requires
+   * upload a server icon image (multipart). Requires
    * `manage_server_operations`. Returns the resolved profile including the new
    * icon ref.
    */
@@ -4796,12 +4820,8 @@ export class NautiloApiClient {
     return serverProfileUpdateResponseSchema.parse(json).serverProfile;
   }
 
-  // ISSUE-D130 phase 3d — left inline. The safeParse-with-fallback pattern fits request<T>'s
-  // `fallbackOnInvalidBody` knob, but the legacy `parsed.data as WhoamiResponse` cast is doing
-  // double duty: working around a small drift between z.infer<typeof whoamiResponseSchema> and
-  // the WhoamiResponse interface from @nautilo/types. Lowering would surface that drift as a
-  // typecheck error, and resolving it belongs in the type-placement follow-up (Phase 5), not in
-  // a behaviour-preserving conversion.
+  // Keep the parsed response typed as the shared WhoamiResponse contract. The schema and
+  // shared interface intentionally tolerate fields from newer servers.
   async whoami(): Promise<WhoamiResponse> {
     const result = await this.whoamiConditional();
     if (result.status === 304) {
@@ -4851,10 +4871,7 @@ export class NautiloApiClient {
     });
   }
 
-  /**
-   * D112 Phase 11 — M057 device flow wiring lands separately; CLI stubs
-   * keep the command surface testable.
-   */
+  /** Device authorization is unavailable in this client build. */
   deviceFlowStart(): Promise<{ verification_uri: string; user_code: string }> {
     return Promise.reject(
       new ApiError(501, "Device authorization flow is not available in this client build."),
@@ -4868,7 +4885,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D104 — Logto-linked account security flags (temp-password rotation, etc.).
+   * Logto-linked account security flags (temp-password rotation, etc.).
    */
   async getAccountSecurity(): Promise<AccountSecurityResponse> {
     return this.request<AccountSecurityResponse>({
@@ -4908,7 +4925,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D104 Phase 2 — change the signed-in user's Logto password (server must
+   * change the signed-in user's Logto password (server must
    * run with Logto auth). Throws `ApiError` with HTTP status on failure.
    */
   async changePassword(args: {
@@ -4938,7 +4955,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M120 — after a user completes Logto hosted password recovery and signs
+   * after a user completes Logto hosted password recovery and signs
    * back in, clear Nautilo's local forced-password-change flag.
    */
   async markPasswordRecoveryCompleted(args: {
@@ -4954,7 +4971,7 @@ export class NautiloApiClient {
     return { ok: true };
   }
 
-  /** M120 — account recovery codes status (signed in). */
+  /** account recovery codes status (signed in). */
   async getLogtoRecoveryCodeStatus(): Promise<LogtoRecoveryCodesSummary> {
     const body = await this.request<{
       remaining?: unknown;
@@ -4973,7 +4990,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M120 — regenerate account recovery codes. Plaintext codes appear only in this response.
+   * regenerate account recovery codes. Plaintext codes appear only in this response.
    */
   async regenerateLogtoRecoveryCodes(args?: {
     pin?: string;
@@ -5010,10 +5027,10 @@ export class NautiloApiClient {
   }
 
   /**
-   * M063 — localhost-only recovery. Sends Bearer when set (required once
+   * localhost-only recovery. Sends Bearer when set (required once
    * trust preHandler runs on this route).
    *
-   * M106 — `auth: "session-fresh"` forces the helper to call the
+   * `auth: "session-fresh"` forces the helper to call the
    * registered `tokenProvider` before each request. The default `"session"`
    * mode reads the cached token only; if the provider hasn't pushed a
    * fresh token to the apiClient yet (still racing the user's click,
@@ -5077,7 +5094,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * Forgot-password Tab A — M120 recovery-code relay.
+   * Recovery-code relay for hosted password reset.
    *
    * Proves the Nautilo recovery code and opens a short-lived recovery
    * session. Nautilo never collects the new password: the response carries
@@ -5138,7 +5155,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M120 — poll for the Logto ForgotPassword verification code relayed
+   * poll for the Logto ForgotPassword verification code relayed
    * through the HTTP Email connector, authenticated by the `sessionToken`
    * from {@link recoverPasswordWithCode}. Returns `{ status: "pending" }`
    * until Logto delivers the code, then `{ status: "ready", code }`.
@@ -5231,7 +5248,7 @@ export class NautiloApiClient {
   }
 
   async regenerateRecoveryCodes(args?: { pin?: string }): Promise<{ recoveryCodes: string[] }> {
-    // M106 — `session-fresh` for the same race reason as recoverPin.
+    // `session-fresh` for the same race reason as recoverPin.
     return this.request<{ recoveryCodes: string[] }>({
       method: "POST",
       path: "/api/auth/recovery-codes/regenerate",
@@ -5242,7 +5259,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M063 — enroll first PIN (Logto) or change PIN; mirrors workbench enrollPin.
+   * enroll first PIN (Logto) or change PIN; mirrors workbench enrollPin.
    * Omit `currentPin` when not yet enrolled.
    */
   async postAuthPin(body: PostAuthPinRequest): Promise<PinMutationResponse> {
@@ -5285,7 +5302,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M063 — verify PIN + resume an `identity_challenge` interrupt (Logto session).
+   * verify PIN + resume an `identity_challenge` interrupt (Logto session).
    */
   async identityVerifyResume(
     pin: string,
@@ -5316,7 +5333,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D061 Phase 2 ask-verb reply. Sibling of `proveItAndResume` but for
+   * ask-verb reply. Sibling of `proveItAndResume` but for
    * the light-approval (no-PIN) flow. Server resumes the graph with
    * `{ approved: verb !== "deny", verb }`.
    */
@@ -5396,11 +5413,9 @@ export class NautiloApiClient {
   }
 
   /**
-   * Uses GET /api/health/keys (no provider pings). `hasLlm` matches
-   * config-guard `buildSummary`. D445 Phase 1: this now rides the
-   * normal session bearer (default `auth: "session"`) so the trust
-   * preHandler can resolve the caller's capability — the route is no
-   * longer in the trust-bypass list. Throws `ApiError` with `.status`
+   * Uses GET /api/health/keys without provider pings. `hasLlm` matches
+   * config-guard `buildSummary`. The normal session bearer lets the trust
+   * preHandler resolve the caller's capability. Throws `ApiError` with `.status`
    * so callers (e.g. the settings page) can distinguish 401 (no
    * session) / 403 (lacks `manage_server_settings`) from transport
    * errors.
@@ -5450,7 +5465,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D174 — canonical room message creation (`POST /api/rooms/:roomId/messages`, MR1).
+   * Creates a canonical room message with `POST /api/rooms/:roomId/messages`.
    * `roomId` is the URL path param only; do not embed `roomId` or legacy `message` in `body`
    * (use `content`).
    */
@@ -5458,9 +5473,9 @@ export class NautiloApiClient {
     roomId: string,
     body: {
       content?: string;
-      /** D513 Phase 3.1 — optional server-minted socket-local foreground session. */
+      /** optional server-minted socket-local foreground session. */
       clientActionSessionId?: string;
-      /** M233 — picker-authored stable Human recipients. */
+      /** picker-authored stable Human recipients. */
       mentionedHumanUserIds?: string[];
       replyToMessageId?: number;
       attachments?: ChatUploadedAttachmentRef[];
@@ -5468,32 +5483,30 @@ export class NautiloApiClient {
       /** Ephemeral, client-selected approval posture for this turn. Server-side policy remains authoritative. */
       autoApprove?: boolean;
       currentFolder?: string | null;
-      /** D482 — sender-bound relay identity for the Current Folder. */
+      /** sender-bound relay identity for the Current Folder. */
       currentFolderRelayId?: string | null;
       workspacePath?: string | null;
       laneKey?: string;
-      /** M134 — optional UI-selected bot (opens/continues focus without `@`). */
+      /** optional UI-selected bot (opens/continues focus without `@`). */
       uiSelectedBotActorId?: string | null;
-      /** D302 R13 — ask_user resume: original human row's turn id (dedup the re-send). */
+      /** ask_user resume: original human row's turn id (dedup the re-send). */
       resumeTurnId?: string | null;
-      /** D302 P4 — original persisted human message id (exclude from bot context block). */
+      /** original persisted human message id (exclude from bot context block). */
       resumeMessageId?: number | null;
-      /** M087 — client-detected IANA timezone; server validates + resolves. */
+      /** client-detected IANA timezone; server validates + resolves. */
       userTimezone?: string;
-      /** M187 — compact active mini-app context from the Workbench app surface. */
+      /** compact active mini-app context from the Workbench app surface. */
       activeMiniApp?: ActiveMiniAppRequestContext | null;
-      /** D356 — metadata-only "focus on these artifacts" references (no upload). */
+      /** metadata-only "focus on these artifacts" references (no upload). */
       artifactRefs?: ChatArtifactRef[] | null;
       /** Closed, server-validated neutral presentation for a card-owned continuation. */
       cardContinuation?: "advanced_video";
       /**
-       * D371 R2 — optional per-turn model override (non-empty string resolved
-       * via the server's `getModelById`). Forwarded as `body.model`; inert until
-       * R3 wires a UI to set it. When absent or unknown to the server, behavior
-       * is unchanged.
+       * Optional per-turn model override, resolved by the server with `getModelById`.
+       * When absent or unknown to the server, normal model selection applies.
        */
       model?: string;
-      /** M282 — exact prepared Browser live Shadow sibling for this one send. */
+      /** exact prepared Browser live Shadow sibling for this one send. */
       liveShadow?: LiveShadowMessageSendAttemptV1;
     },
     options?: {
@@ -6014,7 +6027,7 @@ export class NautiloApiClient {
   }
 
 
-  /** D312 — add the caller's reaction to a room message. */
+  /** add the caller's reaction to a room message. */
   async addReaction(
     roomId: string,
     messageId: string,
@@ -6027,7 +6040,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D312 — remove the caller's reaction from a room message. */
+  /** remove the caller's reaction from a room message. */
   async removeReaction(
     roomId: string,
     messageId: string,
@@ -6040,7 +6053,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** ISSUE-M172 — hard-delete a room message (gone from API, transcript, search). */
+  /** hard-delete a room message (gone from API, transcript, search). */
   async deleteRoomMessage(roomId: string, messageId: string): Promise<{ ok: true }> {
     return this.request<{ ok: true }>({
       method: "DELETE",
@@ -6050,7 +6063,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M230 — edit the caller's persisted Human message using revision CAS. */
+  /** edit the caller's persisted Human message using revision CAS. */
   async editRoomMessage(
     roomId: string,
     messageId: string,
@@ -6123,7 +6136,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M122 — mark every visible message in a room as read for the caller, up to an
+   * mark every visible message in a room as read for the caller, up to an
    * optional `upToMessageId` (inclusive). Idempotent; `marked` is the number of
    * rows that actually flipped unread → read.
    */
@@ -6143,9 +6156,9 @@ export class NautiloApiClient {
   }
 
   /**
-   * M158 — mark a single message read for the caller. Uses the refreshing
+   * mark a single message read for the caller. Uses the refreshing
    * (`session-fresh`) auth path so the desktop renderer can't 401 on a stale
-   * cached bearer (RC1).
+   * cached bearer.
    */
   async markMessageRead(messageId: number): Promise<{ ok: true }> {
     const result = await this.request<{ ok: true }>({
@@ -6160,8 +6173,8 @@ export class NautiloApiClient {
   }
 
   /**
-   * M158 — fetch aggregated read/delivery state for a message via the
-   * refreshing auth path (RC1). Replaces the raw-fetch + getToken() hook.
+   * fetch aggregated read/delivery state for a message via the
+   * refreshing auth path.
    */
   async getMessageReadState(messageId: number): Promise<MessageReadStateDto> {
     return this.request<MessageReadStateDto>({
@@ -6172,7 +6185,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D279 Phase 3.5 — active room silence window for banner display. */
+  /** active room silence window for banner display. */
   async getRoomSilence(roomId: string): Promise<{
     silence: {
       id: string;
@@ -6190,7 +6203,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D279 Phase 3.5 — open a mute/deaf window (manage_rooms gated). */
+  /** open a mute/deaf window (manage_rooms gated). */
   async setRoomSilence(
     roomId: string,
     body: {
@@ -6216,7 +6229,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D279 Phase 3.5 — clear active silence window(s) early (manage_rooms gated). */
+  /** clear active silence window(s) early (manage_rooms gated). */
   async clearRoomSilence(roomId: string): Promise<{
     ok: true;
     cleared: number;
@@ -6237,7 +6250,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M134 — the requesting user's active focus links in a room (private to
+   * the requesting user's active focus links in a room (private to
    * the requester). `focusId` is required for {@link clearRoomFocus}.
    */
   async getRoomFocus(roomId: string): Promise<{
@@ -6266,7 +6279,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M134 — open (or extend) a focus on a bot via the UI (no message sent). */
+  /** open (or extend) a focus on a bot via the UI (no message sent). */
   async openRoomFocus(
     roomId: string,
     botActorId: string,
@@ -6289,7 +6302,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M134 — explicitly clear one of the requester's focus links. */
+  /** explicitly clear one of the requester's focus links. */
   async clearRoomFocus(
     roomId: string,
     focusId: string,
@@ -6313,7 +6326,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M233 — read the authenticated Human's account default and Room overrides. */
+  /** read the authenticated Human's account default and Room overrides. */
   async getNotificationPreferences(): Promise<NotificationPreferencesDto> {
     return this.request<NotificationPreferencesDto>({
       path: "/api/notifications/preferences",
@@ -6321,7 +6334,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M236 — fetch one complete authoritative notification-state snapshot. */
+  /** fetch one complete authoritative notification-state snapshot. */
   async getNotificationState(): Promise<NotificationStateResponse> {
     return this.request<NotificationStateResponse>({
       path: "/api/notifications/state",
@@ -6332,7 +6345,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M323 — list one page of the authenticated Human's durable event feed. */
+  /** list one page of the authenticated Human's durable event feed. */
   async listEventFeed(options: EventFeedListOptions = {}): Promise<EventFeedPage> {
     const parsed = eventFeedListOptionsSchema.parse(options);
     const query = new URLSearchParams();
@@ -6382,7 +6395,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M323 — idempotently mark one caller-owned feed entry read or unread. */
+  /** idempotently mark one caller-owned feed entry read or unread. */
   async setEventFeedReadState(
     eventId: string,
     read: boolean,
@@ -6400,7 +6413,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M323 — mark every currently unread caller-owned feed entry read. */
+  /** mark every currently unread caller-owned feed entry read. */
   async markAllEventFeedRead(): Promise<EventFeedMarkAllReadResult> {
     return this.request<EventFeedMarkAllReadResult>({
       method: "POST",
@@ -6410,7 +6423,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M233 — update the authenticated Human's account notification default. */
+  /** update the authenticated Human's account notification default. */
   async setDefaultNotificationLevel(
     defaultLevel: NotificationLevel,
   ): Promise<NotificationPreferencesDto> {
@@ -6424,7 +6437,7 @@ export class NautiloApiClient {
     return result;
   }
 
-  /** M233 — set or inherit one top-level Room notification preference. */
+  /** set or inherit one top-level Room notification preference. */
   async setRoomNotificationPreference(
     roomId: string,
     level: "inherit" | NotificationLevel,
@@ -6440,7 +6453,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D468 — authenticated create/rotate for one server-scoped Mobile binding.
+   * authenticated create/rotate for one server-scoped Mobile binding.
    * The server owns encryption and stores only a digest of `revokeProof`.
    */
   async registerPushInstallation(
@@ -6568,7 +6581,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D087 Phase 3 §3.7 — direct-invoke endpoint for user-initiated
+   * direct-invoke endpoint for user-initiated
    * history commands (undo / undo_turn / redo / list_revisions /
    * pin_revision / unpin_revision). Bypasses the LLM entirely —
    * powers `/undo`, `⌘Z` keybinds, and the undo/redo toolbar.
@@ -6582,7 +6595,7 @@ export class NautiloApiClient {
    * surface as `{ result: "Error: ..." }` so callers treat
    * transport errors and handler errors uniformly.
    */
-  // ISSUE-D130 phase 3d — left inline. Same envelope-synthesis rationale as invokeDirect:
+  // Uses the same envelope-synthesis rationale as invokeDirect:
   // !res.ok composes `result: "Error: <body.error or HTTP <status>>"` into the success-shaped
   // return value, which the helper's fallbackOnError cannot do.
   async invokeDirect(request: {
@@ -6924,7 +6937,7 @@ export class NautiloApiClient {
     return { configured: result.configured === true };
   }
 
-  /** D263 — server-owned Skills catalogue for the signed-in Human's Agent. */
+  /** server-owned Skills catalogue for the signed-in Human's Agent. */
   async listSkills(): Promise<SkillsListResponse> {
     return this.request({
       path: "/api/skills",
@@ -7245,7 +7258,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M147 — stop any live job by id (foreground turn, fork, task run, or
+   * stop any live job by id (foreground turn, fork, task run, or
    * background). `stopped: false` means the job was already terminal / not
    * live (still a 200). Owner-only on the server (404 for another owner's job).
    */
@@ -7258,7 +7271,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D349 — stop the active conversation in one room: abort live jobs and
+   * stop the active conversation in one room: abort live jobs and
    * suppress queued/coalesced continuation for that room.
    */
   async stopRoom(roomId: string): Promise<RoomStopResponse> {
@@ -7270,7 +7283,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D353 — list currently-running job ids for a room (reconnect run-state
+   * list currently-running job ids for a room (reconnect run-state
    * reconcile). Read counterpart to `stopRoom`.
    */
   async getRoomActiveJobs(roomId: string): Promise<RoomActiveJobsResponse> {
@@ -7755,7 +7768,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M156 — set the Agent's @handle (without the leading "@"). The server
+   * set the Agent's @handle (without the leading "@"). The server
    * validates format and uniqueness; a taken handle returns 409.
    */
   async updateAgentHandle(handle: string): Promise<{ handle: string }> {
@@ -7768,7 +7781,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D261 — set/replace one voice slot (`default` or BCP-47 lang key). */
+  /** set/replace one voice slot (`default` or BCP-47 lang key). */
   async upsertVoiceAssignment(
     language: string,
     ref: { voiceId: string; voiceName: string },
@@ -7782,7 +7795,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D261 — remove a per-language voice slot (not `default`). */
+  /** remove a per-language voice slot (not `default`). */
   async removeVoiceAssignment(
     language: string,
   ): Promise<{ voices: Record<string, { voiceId: string; voiceName: string }> }> {
@@ -7795,7 +7808,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D510 — hydrate Genie customization voice choices without requesting the
+   * hydrate Genie customization voice choices without requesting the
    * provider-account catalog. Remote non-guests receive only curated rows and
    * the optional-voice capability; owner/loopback retains the Desktop shape.
    */
@@ -7808,7 +7821,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D215 — emotion-compatible ElevenLabs shared voice catalog (server proxy).
+   * emotion-compatible ElevenLabs shared voice catalog (server proxy).
    * Requires an authenticated non-guest session; returns shared catalog rows.
    */
   async listVoiceCatalog(query?: CatalogQuery): Promise<CatalogResponse> {
@@ -7831,7 +7844,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D215 — synthesize a short eleven_v3 preview for a catalog voice.
+   * synthesize a short server-selected speech-model preview for a catalog voice.
    * Pass `{ text }` for a custom Genie sample line; omit for the server default audition script.
    */
   async previewVoice(voiceId: string, input?: { text?: string }): Promise<Blob> {
@@ -7868,7 +7881,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D429 Phase 7.4 — fetch verified explainer MP4 bytes for a catalog id.
+   * fetch verified explainer MP4 bytes for a catalog id.
    *
    * Bearer-authenticated through the normal trust preHandler. The browser
    * sees only the local API response: no CDN/media URL, no provider identity,
@@ -7901,7 +7914,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D141 P2 / LD-1 — update the per-user fallback policy.
+   * Update the per-user fallback policy.
    *
    * Server validates each chain entry against the catalog (`getModelById`)
    * and rejects with 400 if any are unknown. Empty chain is allowed.
@@ -7931,7 +7944,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M262 dormant protected Artifact inventory; never falls back to plaintext routes. */
+  /** Dormant protected Artifact inventory; never falls back to plaintext routes. */
   async listProtectedArtifacts(options?: Readonly<{
     cursor?: string;
     limit?: number;
@@ -8744,7 +8757,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M243 dormant protected-mode read. This deliberately targets the same
+   * Dormant protected-mode read. This deliberately targets the same
    * authenticated route as the legacy facade but accepts only the canonical
    * encrypted DTO (or its typed unavailable envelope). A plaintext success is
    * a schema error; this method never retries through the legacy facade.
@@ -9133,14 +9146,11 @@ export class NautiloApiClient {
   }
 
   /**
-   * D424 Phase 1.2 — `GET /api/memory`. Paginated list with optional
+   * `GET /api/memory`. Paginated list with optional
    * namespace-mode access filters (`room` / `person` / `audience=private`).
-   * Mirrors `fetchMemories` in `apps/workbench/src/lib/memory-api.ts` and the
-   * server route in `packages/server/src/routes/memory.ts`. Wave 4 is
-   * read-only (decision D4): no edit/archive verbs here.
-   *
-   * `roomId` scoping is the caller's responsibility per the D1 fail-closed
-   * contract (C1) — this wrapper does not validate membership; it only
+   * This surface is read-only; there are no edit or archive verbs.
+   * `roomId` scoping is the caller's responsibility under the fail-closed
+   * access contract. This wrapper does not validate membership; it only
    * forwards the request and surfaces non-2xx as `ApiError`.
    */
   async listMemories(opts?: {
@@ -9167,7 +9177,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D424 Phase 1.2 — `GET /api/memory/search`. The client accepts the
+   * `GET /api/memory/search`. The client accepts the
    * workbench-facing `mode: "text" | "semantic"` and translates `semantic` to
    * the server's wire `mode=vector` (matching `searchMemories` in
    * `memory-api.ts`). `q` is required server-side; callers that omit it get a
@@ -9193,7 +9203,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D424 Phase 1.2 — `GET /api/memory/:id`. Single-memory detail. `id` is
+   * `GET /api/memory/:id`. Single-memory detail. `id` is
    * URL-encoded; the server validates UUID shape and returns 400/403/404,
    * surfaced here as `ApiError`.
    */
@@ -9206,7 +9216,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 1.1 — `PATCH /api/memory/:id`. Updates content and/or
+   * `PATCH /api/memory/:id`. Updates content and/or
    * importance (namespace mode also accepts `namespaceId` to re-home). Returns
    * the refreshed detail envelope. Mirrors `updateMemory` in
    * `apps/workbench/src/lib/memory-api.ts` and the server route in
@@ -9228,7 +9238,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 1.1 — `DELETE /api/memory/:id?mode=archive`. Soft-delete
+   * `DELETE /api/memory/:id?mode=archive`. Soft-delete
    * (demote) the memory. Returns the server's status envelope
    * (`{ status: "archived", memoryMode }`). 400/403/404 → `ApiError`.
    */
@@ -9242,7 +9252,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 1.1 — `DELETE /api/memory/:id?mode=hard[&confirmShared=true]`.
+   * `DELETE /api/memory/:id?mode=hard[&confirmShared=true]`.
    * Irreversible hard delete. When the memory is shared across multiple
    * namespaces the server returns 409 with `namespaceCount`, `namespaceIds`,
    * and (namespace mode) a `hint`; that is modeled as
@@ -9286,7 +9296,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 1.1 — `POST /api/memory/:id/grant`. Shares the memory with a
+   * `POST /api/memory/:id/grant`. Shares the memory with a
    * room (`{ roomId }`, everyone in the room) XOR a single person
    * (`{ userHandle }`, via an exact-set access room). The room path returns
    * `namespaceId`; the handle path returns `roomLabel` + `minted`.
@@ -9308,7 +9318,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 1.1 — `POST /api/memory/:id/revoke`. Re-homes the memory so
+   * `POST /api/memory/:id/revoke`. Re-homes the memory so
    * `userHandle` loses access while everyone else keeps it. You cannot revoke
    * yourself (the server returns 400; use {@link makeMemoryPrivate}). Returns
    * `{ status, reHomed, skipped }`. 400/403/404 → `ApiError`; the
@@ -9329,7 +9339,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 1.1 — `POST /api/memory/:id/make_private`. Strips all access
+   * `POST /api/memory/:id/make_private`. Strips all access
    * except the requester's own private namespace. Returns
    * `{ status, skipped }`. 400/403/404 → `ApiError`; the "no private
    * namespace" 409 stays `ApiError`.
@@ -9349,7 +9359,7 @@ export class NautiloApiClient {
   async getLatestSession(options?: {
     limit?: number;
     offset?: number;
-    /** M065 — when set, load latest session for the room’s graph thread (owner only). */
+    /** when set, load latest session for the room’s graph thread (owner only). */
     roomId?: string;
   }): Promise<{
     session: { id: string; threadId: string; title: string | null; messageCount: number; startedAt: string } | null;
@@ -9639,7 +9649,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D430 — fetch exactly one newest-first Room transcript search page. */
+  /** fetch exactly one newest-first Room transcript search page. */
   async searchRoomMessages(
     options: RoomMessageSearchOptions,
     requestOptions?: { signal?: AbortSignal },
@@ -9664,7 +9674,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D470 — fetch exactly one cursor-paged authorized Chats-wide search page. */
+  /** fetch exactly one cursor-paged authorized Chats-wide search page. */
   async searchChats(
     options: ChatSearchOptions,
     requestOptions?: { signal?: AbortSignal },
@@ -9690,7 +9700,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D430 — fetch one bounded chronological Room page around an exact message. */
+  /** fetch one bounded chronological Room page around an exact message. */
   async getRoomMessagesAround(
     options: RoomMessagesAroundOptions & Readonly<{ shadowRead?: RoomHistoryShadowReadIntentV1 }>,
   ): Promise<RoomMessagesAroundPage & Readonly<{ shadowEncryption?: RoomHistoryShadowReadResponseV1 }>> {
@@ -9721,7 +9731,7 @@ export class NautiloApiClient {
     };
   }
 
-  /** M065 — list rooms for the signed-in owner (`GET /api/rooms`). */
+  /** list rooms for the signed-in owner (`GET /api/rooms`). */
   async listRooms(): Promise<ListRoomsResponse> {
     return this.request<ListRoomsResponse>({
       path: "/api/rooms",
@@ -9730,7 +9740,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M259 — resolve/join the server-owned safe initial Room fallback. */
+  /** resolve/join the server-owned safe initial Room fallback. */
   async resolveLandingRoom(): Promise<RoomDetailResponse> {
     return this.request<RoomDetailResponse>({
       method: "POST",
@@ -9740,7 +9750,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M068 — list rooms the caller may manage members for (`GET /api/rooms/manageable`). */
+  /** list rooms the caller may manage members for (`GET /api/rooms/manageable`). */
   async listManageableRooms(opts?: { includeArchived?: boolean }): Promise<ListRoomsResponse> {
     const q =
       opts?.includeArchived === true ? "?includeArchived=true" : "";
@@ -9751,7 +9761,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M065 — room detail for members (`GET /api/rooms/:id`). */
+  /** room detail for members (`GET /api/rooms/:id`). */
   async getRoom(roomId: string): Promise<RoomDetailResponse> {
     return this.request<RoomDetailResponse>({
       path: `/api/rooms/${encodeURIComponent(roomId)}`,
@@ -9760,7 +9770,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D426 — canonical thread hydration without paging parent history. */
+  /** canonical thread hydration without paging parent history. */
   async getThreadDetail(subthreadRoomId: string): Promise<ThreadDetailResponse> {
     return this.request<ThreadDetailResponse>({
       path: `/api/rooms/${encodeURIComponent(subthreadRoomId)}/thread-detail`,
@@ -9769,7 +9779,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D111/D426 — list canonical child Rooms anchored in one parent Room. */
+  /** List canonical child Rooms anchored in one parent Room. */
   async listSubthreads(parentRoomId: string): Promise<{ subthreads: SubthreadSummary[] }> {
     return this.request<{ subthreads: SubthreadSummary[] }>({
       path: `/api/rooms/${encodeURIComponent(parentRoomId)}/subthreads`,
@@ -9778,7 +9788,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D111/D426 — create or resolve the canonical child Room for one message. */
+  /** Create or resolve the canonical child Room for one message. */
   async createSubthread(
     parentRoomId: string,
     anchorMessageId: number,
@@ -9793,7 +9803,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M068 — room roster for members-management UI (`GET /api/rooms/:id/manage-detail`). */
+  /** room roster for members-management UI (`GET /api/rooms/:id/manage-detail`). */
   async getRoomManageDetail(roomId: string): Promise<RoomDetailResponse> {
     return this.request<RoomDetailResponse>({
       path: `/api/rooms/${encodeURIComponent(roomId)}/manage-detail`,
@@ -9802,7 +9812,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M065 — create room (`POST /api/rooms`). Returns created room detail (201). */
+  /** create room (`POST /api/rooms`). Returns created room detail (201). */
   async createRoom(body: CreateRoomRequest): Promise<RoomDetailResponse> {
     return this.request<RoomDetailResponse>({
       method: "POST",
@@ -9812,7 +9822,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M124 — open rooms the caller may self-join (`GET /api/rooms/discoverable`). */
+  /** open rooms the caller may self-join (`GET /api/rooms/discoverable`). */
   async listDiscoverableRooms(): Promise<ListRoomsResponse> {
     return this.request<ListRoomsResponse>({
       path: "/api/rooms/discoverable",
@@ -9821,7 +9831,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M124 — self-join an open room (`POST /api/rooms/:id/join`). Idempotent. */
+  /** self-join an open room (`POST /api/rooms/:id/join`). Idempotent. */
   async joinOpenRoom(roomId: string): Promise<RoomDetailResponse> {
     return this.request<RoomDetailResponse>({
       method: "POST",
@@ -9840,7 +9850,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D106 — rename private room (`PATCH /api/rooms/:id`). */
+  /** rename private room (`PATCH /api/rooms/:id`). */
   async renameRoom(roomId: string, body: RenameRoomRequest): Promise<RoomDetailResponse> {
     return this.request<RoomDetailResponse>({
       method: "PATCH",
@@ -9850,7 +9860,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** M068 — agents the caller may manage (`GET /api/agents`). */
+  /** agents the caller may manage (`GET /api/agents`). */
   async listAgents(): Promise<Array<{ agentId: string; handle: string; displayName: string }>> {
     const body = await this.request<{
       agents: Array<{ agentId: string; handle: string; displayName: string }>;
@@ -9861,13 +9871,13 @@ export class NautiloApiClient {
     return body.agents;
   }
 
-  // Stack 195 follow-up — the legacy `POST/DELETE /api/agents/:id/members`
+  // The legacy `POST/DELETE /api/agents/:id/members`
   // mutation methods AND the read-only `getAgentMembers` /
   // `listAddableUsersForAgent` methods are RETIRED. The mutations mutated
   // server-wide canonical Groups with only agent-management auth
   // (Admin→Owner escalation); the reads exposed the server-wide roster /
   // user directory through a personal-Agent auth path (the per-Agent model
-  // is false post-M128). The verbs now return 410 Gone server-side;
+  // is false. The verbs now return 410 Gone server-side;
   // callers must use `groups.listGroups` / `groups.listGroupMembers` /
   // `groups.addGroupMember` / `groups.removeGroupMember` (shared RBAC
   // engine) or the Access Control catalogue instead. `listAgents` (the
@@ -9935,7 +9945,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D128 — flip an agent member's `agent_response_mode` for this room.
+   * flip an agent member's `agent_response_mode` for this room.
    * Server gates on owner / server-admin role; non-managers get 403.
    * 404 if (room, actor) row doesn't exist or the actor is not an agent.
    */
@@ -9955,7 +9965,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D194 C2 — flip a human member's room_role (`PATCH /api/rooms/:id/members/:actorId`). */
+  /** Flip a human member's room_role (`PATCH /api/rooms/:id/members/:actorId`). */
   async updateRoomMemberRole(
     roomId: string,
     actorId: string,
@@ -9969,7 +9979,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D462 — fetch this viewer's durable model-control override for one Room + owned Agent. */
+  /** fetch this viewer's durable model-control override for one Room + owned Agent. */
   async getRoomModelControlSelection(
     roomId: string,
     agentId: string,
@@ -9983,7 +9993,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D462 — write or reset this viewer's Room-scoped model-control override.
+   * write or reset this viewer's Room-scoped model-control override.
    * `null` resets the Room layer and exposes the Agent/default fallback.
    */
   async updateRoomModelControlSelection(
@@ -10001,7 +10011,7 @@ export class NautiloApiClient {
     return normalizeModelControlSelection(response.selection);
   }
 
-  /** D302 P5b — flip persistent room smart-routing policy. */
+  /** flip persistent room smart-routing policy. */
   async setRoomConductorMode(
     roomId: string,
     conductorMode: "advanced" | "standard",
@@ -10014,7 +10024,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D287 — soft-archive a room (`POST /api/rooms/:id/archive`). */
+  /** soft-archive a room (`POST /api/rooms/:id/archive`). */
   async archiveRoom(roomId: string): Promise<{ ok: true }> {
     return this.request<{ ok: true }>({
       method: "POST",
@@ -10024,7 +10034,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D287 — restore a soft-archived room (`POST /api/rooms/:id/unarchive`). */
+  /** restore a soft-archived room (`POST /api/rooms/:id/unarchive`). */
   async unarchiveRoom(roomId: string): Promise<{ ok: true }> {
     return this.request<{ ok: true }>({
       method: "POST",
@@ -10034,7 +10044,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D194 — flip room visibility public ↔ private (`POST /api/rooms/:id/visibility`). */
+  /** flip room visibility public ↔ private (`POST /api/rooms/:id/visibility`). */
   async setRoomVisibility(roomId: string, isPublic: boolean): Promise<{ ok: true }> {
     const body: SetRoomVisibilityRequest = { public: isPublic };
     return this.request<{ ok: true }>({
@@ -10197,7 +10207,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D187 (Stack 129) — unified, recency-ranked directory search
+   * unified, recency-ranked directory search
    * (`GET /api/directory/search`). Returns humans + agents in one call so
    * the member picker no longer loads the whole directory. `lastContactAt`
    * is derived from `MAX(session_messages.created_at)` over rooms the
@@ -10445,7 +10455,7 @@ export class NautiloApiClient {
   }
 
   // ---------------------------------------------------------------------------
-  // M056 — relay device management
+  // relay device management
   //
   // The pair endpoint is intentionally NOT exposed here: pairing happens
   // exclusively in Electron's main process (it has the Logto access token,
@@ -10461,7 +10471,7 @@ export class NautiloApiClient {
     });
   }
 
-  // ISSUE-D130 phase 3d — left inline. The endpoint returns 204 (no body) on success; the
+  // The endpoint returns 204 (no body) on success; the
   // helper's success path unconditionally calls `await res.json()`, which throws SyntaxError
   // on an empty body. Returning `Promise<void>` through the helper would require widening
   // RequestOpts<T> to support no-body success responses — not worth it for one method.
@@ -10481,7 +10491,7 @@ export class NautiloApiClient {
     }
   }
 
-  /** D480 v2 — truthful physical-device projection (v1 remains above for compatibility). */
+  /** Version 2 — truthful physical-device projection (v1 remains above for compatibility). */
   async listGroupedRelayDevices(): Promise<RelayDeviceListResponse> {
     return this.request<RelayDeviceListResponse>({
       path: "/api/relay/devices/v2",
@@ -10520,7 +10530,7 @@ export class NautiloApiClient {
   }
 
   // ---------------------------------------------------------------------------
-  // M066 — invites (mint / preview / redeem / list / agents / rooms)
+  // invites (mint / preview / redeem / list / agents / rooms)
   // ---------------------------------------------------------------------------
 
   async createInvite(input: CreateInviteInput): Promise<CreateInviteResult> {
@@ -10624,9 +10634,9 @@ export class NautiloApiClient {
     };
   }
 
-  // ISSUE-D130 phase 3d — left inline. The 404 -> null mapping is a status-specific success
+  // The 404 -> null mapping is a status-specific success
   // case (not an error), but `statusErrors` only takes `(body) => Error` mappers. Expressing
-  // this cleanly would need a separate `statusReturns?: Record<number, () => T>` knob; one
+  // this cleanly would need a separate `statusReturns?: Record<number, => T>` knob; one
   // call site doesn't justify it. Inline is correct here.
   async previewInvite(token: string): Promise<InvitePreview | null> {
     const enc = encodeURIComponent(token.replace(/^\/redeem\//, ""));
@@ -10752,14 +10762,14 @@ export class NautiloApiClient {
    * user-chosen handle for an opaque `state` that the renderer threads
    * through Logto sign-up.
    *
-   * M107 Phase 3: primary input is `handle`. The `email` field is
+   * Primary input is `handle`. The `email` field is
    * accepted as a deprecated alias for one release; if present, the
    * server derives a handle from its local-part and logs a deprecation
-   * warning. Removed in M108.
+   * warning.
    */
   async prepareLogtoSignup(
     token: string,
-    input: { handle: string; /** @deprecated M107 — pass `handle`. Removed M108. */ email?: string },
+    input: { handle: string; /** @deprecated Pass `handle`. */ email?: string },
   ): Promise<PrepareLogtoSignupResponse> {
     const enc = encodeURIComponent(token.replace(/^\/redeem\//, ""));
     return this.request<PrepareLogtoSignupResponse>({
@@ -10827,7 +10837,7 @@ export class NautiloApiClient {
   /**
    * Invite-redeem wizard profile step — set the user's displayName + PIN.
    *
-   * M107 Phase 3: `handle` is no longer accepted in the input — it was
+   * `handle` is no longer accepted in the input — it was
    * pinned at bind time (in `/api/bind-logto-user`). The server tolerates
    * a stray `handle` field in the request body for one release but
    * returns 409 `handle_mismatch` if it disagrees with the persisted row.
@@ -10912,7 +10922,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * @deprecated M128 — use {@link listInvitableRooms}. The agentId argument is ignored.
+   * @deprecated Use {@link listInvitableRooms}. The agentId argument is ignored.
    */
   async listInvitableRoomsForAgent(_agentId: string): Promise<InvitableRoom[]> {
     return this.listInvitableRooms();
@@ -10961,8 +10971,8 @@ export class NautiloApiClient {
     return (await res.json()) as PublicMiniAppDto;
   }
 
-  /** D343 — toggle an installed app's enabled state (disabled apps stay
-   *  installed but are hidden from associations + the agent tool catalog). */
+  /** toggle an installed app's enabled state (disabled apps stay
+   * installed but are hidden from associations + the agent tool catalog). */
   async setMiniAppEnabled(appId: string, enabled: boolean): Promise<PublicMiniAppDto> {
     const enc = encodeURIComponent(appId);
     const action = enabled ? "enable" : "disable";
@@ -11136,7 +11146,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M205 — run a manifest-declared conversion (import/export) through the app's
+   * run a manifest-declared conversion (import/export) through the app's
    * deployed conversion tool. Format-agnostic: the referenced tool + the
    * `office.run` host primitive own all format + zone knowledge. Returns the
    * raw tool result (target path + sha, etc.).
@@ -11468,7 +11478,7 @@ export class NautiloApiClient {
     return result.body;
   }
 
-  /** M322 — one bounded, opt-in plaintext Artifact inventory page. */
+  /** one bounded, opt-in plaintext Artifact inventory page. */
   async listWorkspaceArtifactPage(
     opts: ListWorkspaceArtifactPageOptions = {},
   ): Promise<ListArtifactPageResponse> {
@@ -11488,7 +11498,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M322 — traverse every bounded plaintext page. A stale/cyclic/malformed
+   * traverse every bounded plaintext page. A stale/cyclic/malformed
    * continuation is an error; callers must never present a partial inventory
    * as complete.
    */
@@ -11526,7 +11536,7 @@ export class NautiloApiClient {
     }
   }
 
-  /** D525 — authenticated, scope-bound durable media-generation status. */
+  /** authenticated, scope-bound durable media-generation status. */
   async getMediaGenerationStatus(
     receiptId: string,
     opts: { roomId: string; signal?: AbortSignal },
@@ -11544,7 +11554,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** Parent-host-only Video take status. It never receives a D525 receipt. */
+  /** Parent-host-only Video take status; it never receives a generation receipt. */
   async getVideoGenerationTakeStatus(
     takeId: string,
     opts: { roomId: string; projectArtifactId: string; attestationToken: string; signal?: AbortSignal },
@@ -11574,7 +11584,7 @@ export class NautiloApiClient {
       emptyResponse: true, defaultErrorPrefix: "POST /api/apps/nautilo-video/video-host-attestation/revoke" });
   }
 
-  /** Parent-host-only D378 prepare; D525 remains the quote/normalization authority. */
+  /** Parent-host-only take preparation; the quote remains the normalization authority. */
   async prepareVideoGeneration(
     input: VideoGenerationPrepareRequestV1,
     attestationToken: string,
@@ -11595,7 +11605,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** Submits precisely the reviewed take; the private D525 receipt never crosses this boundary. */
+  /** Submits precisely the reviewed take; the private generation receipt never crosses this boundary. */
   async submitVideoGenerationTake(
     takeId: string,
     input: { roomId: string; projectArtifactId: string; reviewHandle: string; attestationToken: string },
@@ -11843,14 +11853,14 @@ export class NautiloApiClient {
   }
 
   /**
-   * D424 Phase 3.1 — build the authed byte-route URL for a workspace artifact
+   * build the authed byte-route URL for a workspace artifact
    * (internal artifact id + optional `roomId`). Analogous to
    * {@link getMessageAttachmentUrl}: returns the URL only — does not fetch — so
    * the caller can hand it directly to a native streamed downloader
    * (`expo-file-system` `File.downloadFileAsync`) that attaches the session
    * bearer via its `headers` option. Single source of truth for the bytes route
    * so UI/transport code never rebuilds the URL. The route is namespace-gated
-   * server-side (401/403/404/501 per Phase 1.3).
+   * server-side (401/403/404/501).
    */
   getWorkspaceArtifactBytesUrl(id: string, opts?: { roomId?: string }): string {
     const enc = encodeURIComponent(id);
@@ -11862,7 +11872,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 4.1 — `GET /api/workspace/artifacts/:id/discussion-rooms`.
+   * `GET /api/workspace/artifacts/:id/discussion-rooms`.
    * Lists the discussion rooms attached to a workspace artifact. The route is
    * authorized server-side against the viewer's memory envelope (401 / 403 /
    * 404 / 501), so this wrapper only forwards the request and surfaces non-2xx
@@ -11881,7 +11891,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D442 Phase 4.2 — `POST /api/workspace/artifacts/:id/discussion-rooms`.
+   * `POST /api/workspace/artifacts/:id/discussion-rooms`.
    * "Start a new conversation" from an artifact: the server atomically
    * mints an authorized conversational Room (caller + caller's personal
    * agent) and attaches the artifact to that Room's Namespace in a single
@@ -11911,7 +11921,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D391 — build the authed byte-route URL for a retained message attachment
+   * build the authed byte-route URL for a retained message attachment
    * (image or audio). The caller MUST attach the session bearer header when
    * loading the bytes (e.g. `expo-image`'s `headers` prop, or a fetch +
    * object URL for desktop). The route is namespace-gated server-side, so a
@@ -11925,10 +11935,10 @@ export class NautiloApiClient {
   }
 
   /**
-   * D362 — mint a WOPI access token for an office artifact and get the fully
+   * mint a WOPI access token for an office artifact and get the fully
    * assembled Collabora editor URL (server-side assembly avoids CORS on the
    * coolwsd discovery fetch and keeps the WOPI origin/token off the client).
-   * v1 permission is "readonly" (viewer); "edit" arrives with Phase 3.
+   * v1 permission is "readonly" (viewer); future contracts may add "edit".
    */
   async getOfficeEditorUrl(
     artifactId: string,
@@ -12068,7 +12078,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D448 — advisory human-edit lease registration.  The request has only an
+   * advisory human-edit lease registration. The request has only an
    * untrusted target candidate and editor state; the authenticated transport
    * resolves identity, version, and human ownership before it touches the
    * registry.
@@ -12092,7 +12102,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D448 — compare-and-swap editor-state update for an existing lease. */
+  /** compare-and-swap editor-state update for an existing lease. */
   async updateHumanEditLease(
     leaseId: string,
     input: UpdateHumanEditLeaseRequest,
@@ -12113,7 +12123,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D448 — renew a held lease without changing its editor state. */
+  /** renew a held lease without changing its editor state. */
   async renewHumanEditLease(
     leaseId: string,
     input: RenewHumanEditLeaseRequest,
@@ -12134,7 +12144,7 @@ export class NautiloApiClient {
     });
   }
 
-  /** D448 — release a held lease. Registry TTL remains the crash fallback. */
+  /** release a held lease. Registry TTL remains the crash fallback. */
   async releaseHumanEditLease(
     leaseId: string,
     input: ReleaseHumanEditLeaseRequest,
@@ -12204,7 +12214,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D121-P3 — read interactive-artifact state by key. Returns the
+   * read interactive-artifact state by key. Returns the
    * value + metadata when set; rejects with `ApiError` of status 404
    * when the key is unset (distinct from `value: null`, which is a
    * legitimate stored state). Wrapped on the iframe side by
@@ -12230,7 +12240,7 @@ export class NautiloApiClient {
     // 404 stays an `ApiError` with `.status === 404`, which the iframe-side
     // wrapper in `state-bridge-client.ts` already destructures to translate
     // to `undefined` ("key is unset"). Going through `request<T>()` keeps
-    // that contract intact (D130 phase-3b consolidation).
+    // that contract intact.
     return this.request<{
       artifactId: string;
       key: string;
@@ -12244,7 +12254,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D121-P3 — write interactive-artifact state. Upserts on the
+   * write interactive-artifact state. Upserts on the
    * (namespace, agent, artifactId, key) composite key. The server
    * picks the target namespace from the overlap of the artifact's
    * attachments and the caller's writable set — see the route doc
@@ -12284,7 +12294,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D261 P6b — enqueue an agent-notification event from an interactive
+   * enqueue an agent-notification event from an interactive
    * artifact. Appends to `pending_artifact_events` (drained by
    * `read_artifact_events` on the agent's next turn). `topic` is a
    * bounded string; `payload` is any JSON-serializable value including
@@ -12323,7 +12333,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * M153 — enqueue an agent-notification event from an interactive
+   * enqueue an agent-notification event from an interactive
    * artifact and wake an idle agent now. Appends to
    * `pending_artifact_events` (same enqueue path as `emitArtifactEvent`)
    * plus a coalesced `preset='ping'` task when no open ping task exists.
@@ -12385,7 +12395,7 @@ export class NautiloApiClient {
   /**
    * Clear every cached workspace artifact object URL. Test-only helper —
    * the hook used to do this implicitly on unmount, which evicted shared
-   * entries from sibling consumers (M088C item 8). The api-client owns
+   * entries from sibling consumers. The api-client owns
    * the cache; revocation is now driven by the Workspace tab's SSE
    * `deleted` handler.
    */
@@ -12399,7 +12409,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D271 — upload a composer attachment's bytes. Returns an `attachmentId`
+   * upload a composer attachment's bytes. Returns an `attachmentId`
    * the composer references at send time. The server stores it as a pending
    * upload bound to the caller + the turn's namespace until the message sends.
    */
@@ -12455,7 +12465,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D401 — transcribe an audio recording via `POST /api/stt` (speech-to-text).
+   * transcribe an audio recording via `POST /api/stt` (speech-to-text).
    * `file` is a Blob-shaped audio recording; returns the transcript. On mobile,
    * pass an Expo FS `File` (Blob-shaped with `.bytes()`) so Winter fetch streams
    * the real bytes — see `apps/mobile/src/lib/attachments.ts` for the rationale.
@@ -12524,7 +12534,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D362 — create a blank LibreOffice document (Writer/Calc/Impress) from a
+   * create a blank LibreOffice document (Writer/Calc/Impress) from a
    * server-side template and return the new artifact. Unlike
    * `createWorkspaceArtifact`, there is no user file to upload; the server
    * copies the committed blank template for `kind`.
@@ -12717,7 +12727,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D144-P2 — fetch workspace artifact bytes and persist locally (native
+   * fetch workspace artifact bytes and persist locally (native
    * save when `nautiloDesktop.dialog.showSaveDialog` +
    * `nautiloDesktop.fs.writeFileBytes` are both bridged; otherwise
    * invisible-anchor download in the browser).
@@ -12732,7 +12742,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D356 — bulk export: zip the given artifacts (by internal id) server-side
+   * bulk export: zip the given artifacts (by internal id) server-side
    * and save the single archive to disk. One request + one save dialog,
    * instead of N per-file downloads. `ids` are internal artifact row uuids.
    */
@@ -12762,7 +12772,7 @@ export class NautiloApiClient {
     await saveArtifactToDisk(blob, opts?.filename ?? "artifacts.zip");
   }
 
-  // ── D425 Wave 1A — portable Genie profile bundle HTTP client ────────────
+  // ── Portable Genie profile bundle HTTP client ────────────
   //
   // Self-service surface: the caller can only ever touch their OWN personal
   // agent's profile/avatar. The client never holds a passphrase and never
@@ -12880,7 +12890,7 @@ export class NautiloApiClient {
     });
   }
 
-  // ── D425 Wave 3 — private-artifact selection preview / source stream / ─
+  // ── Private-artifact selection preview and source stream ──
   // target stage. The client drives the server's OPAQUE selection semantics
   // only: it never invents artifact IDs, never uses a path as identity, and
   // never echoes source DB IDs / storage URIs. The preview mints a
@@ -12984,7 +12994,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D425 Wave 3 (streaming slice) — stage one artifact's decrypted bytes
+   * Stage one artifact's decrypted bytes
    * on the target as a RAW `application/octet-stream` request body, fed
    * from a `ReadableStream<Uint8Array>` or async iterable. The server
    * streams the body straight to the target spool with backpressure while
@@ -13021,7 +13031,7 @@ export class NautiloApiClient {
   }
 
   /**
-   * D425 Wave 3 (streaming slice) — explicitly clear ALL staged artifact
+   * Explicitly clear ALL staged artifact
    * spool bytes + store entries for a plan. Called by the CLI on a
    * terminal manifest / decrypt / chunk error so a half-staged plan does
    * not leave orphan spool bytes. Best-effort: returns even if the server
@@ -13048,7 +13058,7 @@ export class NautiloApiClient {
   }
 }
 
-// ── D425 Wave 1A — portable Genie profile bundle client types ────────────
+// ── Portable Genie profile bundle client types ────────────
 // Mirror of the server's `/api/profile/bundle/*` contract. ID-free semantic
 // records only; never source IDs/auth/credentials. See
 // `packages/server/src/routes/profile-bundle.ts` for the authoritative shapes.
@@ -13090,10 +13100,10 @@ export interface ProfileBundlePlan {
     readonly mimeType: string;
   } | null;
   /**
-   * D425 Wave 1B — count of `privateMemories` records the bundle carries and
+   * count of `privateMemories` records the bundle carries and
    * the plan will replay on commit. A COUNT ONLY: no memory content, no
    * embeddings, no IDs, no diagnostics ever surface here. Zero when the
-   * bundle omits `privateMemories` (Wave 1A behavior) or the caller did not
+   * bundle omits `privateMemories` or the caller did not
    * request the scope. Mirrors the server's `ProfileBundlePlan` exactly.
    */
   readonly privateMemoryCount: number;
@@ -13102,15 +13112,15 @@ export interface ProfileBundlePlan {
   /** Plan-time exact matches already present in the target namespace. */
   readonly privateMemoryAlreadyPresentCount: number;
   /**
-   * D425 Wave 3 — count of `privateArtifacts` records the bundle carries and
+   * count of `privateArtifacts` records the bundle carries and
    * the plan will replay on commit. A COUNT ONLY: no artifact content, no
    * storage URIs, no source DB IDs, no paths ever surface here. Zero when the
-   * bundle omits `privateArtifacts` (Wave 1A/1B behavior) or the caller did
+   * bundle omits `privateArtifacts` or the caller did
    * not request the scope. Mirrors the server's `ProfileBundlePlan` exactly.
    */
   readonly privateArtifactCount: number;
   /**
-   * D425 Wave 3 — total logical byte size of the plan's `privateArtifacts`
+   * total logical byte size of the plan's `privateArtifacts`
    * (sum of `size` across entries). A TOTAL ONLY, so the CLI can warn about
    * large transfers without the server omitting any item. Zero when the
    * bundle omits `privateArtifacts` or the scope was not requested.
@@ -13192,7 +13202,7 @@ export interface ProfileBundleCommitRequest {
   readonly idempotencyKey: string;
 }
 
-// ── D425 Wave 3 — private-artifact preview / source / stage client types ──
+// ── Private-artifact preview, source and stage client types ──
 // Mirror of the server's `/api/profile/bundle/artifacts/*` +
 // `/import/stage-artifact/:opaqueId` contract. Opaque selection semantics
 // only: the client never invents artifact IDs and never uses a path as
@@ -13231,7 +13241,7 @@ export interface ProfileBundleArtifactStageRequest {
 }
 
 /**
- * D425 Wave 3 (streaming slice) — body for
+ * Request body for
  * {@link NautiloApiClient.stageProfileBundleArtifactStream}. Decrypted
  * bytes for one artifact as a streaming body (`ReadableStream` or async
  * iterable of bounded `Uint8Array` chunks); NEVER a Blob / aggregate
@@ -13285,7 +13295,7 @@ export function extractArtifactOpaqueId(bytesEntry: string): string {
 }
 
 /**
- * D425 Wave 3 (streaming slice) — normalize a streaming stage body into a
+ * Normalize a streaming stage body into a
  * pull-based `ReadableStream<Uint8Array>` so the consumer (fetch) drives
  * backpressure: one chunk is pulled from the source at a time, so a whole
  * artifact is NEVER aggregated in memory. A `ReadableStream` is passed
@@ -13322,7 +13332,7 @@ function toReadableStream(
 }
 
 /**
- * M056 — shape of a paired relay device as returned by
+ * shape of a paired relay device as returned by
  * `GET /api/relay/devices`. Mirrors the server's row projection
  * (no `userId` / `actorId` / `tokenHash` — those are server-side
  * details the workbench never needs).
@@ -13337,7 +13347,7 @@ export interface RelayDevice {
   lastSeenAt: string | null;
 }
 
-/** D480 v2: one caller-owned physical device, never a relay-token row. */
+/** Version 2: one caller-owned physical device, never a relay-token row. */
 export interface RelayGroupedDevice {
   /** Opaque, user-bound management target; never a raw group/installation/token ID. */
   deviceManagementId: string;

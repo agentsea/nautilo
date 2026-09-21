@@ -19,6 +19,7 @@ export interface VeniceParsedCaps {
 /** Types enumerated by Venice's `GET /models` API reference. */
 export type VeniceListedModelType =
   | "asr"
+  | "decision"
   | "embedding"
   | "image"
   | "inpaint"
@@ -89,6 +90,7 @@ function parseModelSpecCaps(raw: unknown): VeniceParsedCaps | null {
 function parseVeniceModelType(raw: unknown): VeniceListedModelType | null {
   switch (raw) {
     case "asr":
+    case "decision":
     case "embedding":
     case "image":
     case "inpaint":

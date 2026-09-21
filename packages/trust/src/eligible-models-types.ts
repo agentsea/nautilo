@@ -1,5 +1,5 @@
 /**
- * D086 Phase 4 — shared model list for Workbench, server routes, and future D112/D094.
+ * shared model list for Workbench, server routes, and future .
  * Types only live here; orchestration uses `@nautilo/agent` (catalog + env) so we avoid
  * a circular dependency (`@nautilo/agent` already depends on `@nautilo/trust`).
  */
@@ -31,7 +31,7 @@ export type ModelPurpose =
   | "task-tools";
 
 /**
- * D429 Phase 1 — coarse intelligence tier. Canonical home is `@nautilo/trust`
+ * coarse intelligence tier. Canonical home is `@nautilo/trust`
  * (below every consumer) so the resolved catalog type can reference it without
  * pulling `@nautilo/agent`. `@nautilo/agent` re-exports this same union from
  * `config/model-selection` to keep existing import paths stable; the unions are
@@ -40,7 +40,7 @@ export type ModelPurpose =
 export type IntelligenceTier = "frontier" | "strong" | "mid" | "small";
 
 /**
- * D429 Phase 1 — machine-readable availability for a resolved catalog row.
+ * machine-readable availability for a resolved catalog row.
  * Stable string reasons consumed by Genie discovery + exact-call validation.
  * `selectable` = runnable AND not routing-filtered AND not disabled.
  */
@@ -52,7 +52,7 @@ export type ResolvedCatalogAvailability =
   | "unknown_model";
 
 /**
- * D429 Phase 1 — where this row's capability metadata came from. Mirrors
+ * where this row's capability metadata came from. Mirrors
  * `@nautilo/model-capabilities` `CapabilityProvenance` plus a `catalog` value
  * for rows whose only source is the checked-in `ASSISTANT_MODELS` table.
  */
@@ -64,7 +64,7 @@ export type ResolvedCatalogProvenance =
   | "catalog";
 
 /**
- * D429 Phase 1 — modalities a model accepts / emits. Structurally identical to
+ * modalities a model accepts / emits. Structurally identical to
  * `@nautilo/model-capabilities` `ModelInputModality` / `ModelOutputModality`;
  * duplicated here only because `@nautilo/trust` cannot depend on
  * `@nautilo/model-capabilities` (it sits below it). The agent builder maps the
@@ -73,8 +73,16 @@ export type ResolvedCatalogProvenance =
 export type ResolvedCatalogInputModality = "text" | "image" | "file";
 export type ResolvedCatalogOutputModality = "text" | "image" | "audio" | "video" | "embedding";
 
-/** Workload boundary: generation rows are never candidates for chat routing. */
-export type ResolvedCatalogWorkload = "chat" | "generation";
+/** Only chat rows are candidates for chat routing. */
+export type ResolvedCatalogWorkload = "chat" | "generation" | "decision" | "speech";
+export interface ResolvedCatalogDecision {
+  operations: readonly ("choice" | "noul" | "score")[];
+  inputTokens: number;
+  maxChoices: number;
+  totalInputTokens?: number | undefined;
+  supportsMultipleQuestions?: boolean | undefined;
+  maxScoreLevels?: number | undefined;
+}
 export type ResolvedCatalogGenerationFamily = "image" | "video" | "music";
 /** Provider input kinds, not Human-authored creative labels. */
 export type ResolvedCatalogReferenceRole = "image" | "video" | "audio";
@@ -110,27 +118,29 @@ export interface ResolvedCatalogGeneration {
 }
 
 /**
- * D429 Phase 1 — feature flags with an explicit `null` for "unknown / not yet
+ * feature flags with an explicit `null` for "unknown / not yet
  * verified". `null` is distinct from `false`: a `false` value is a positive
  * claim "this model does NOT support X", while `null` means the catalog has no
- * evidence either way. Per Phase 0, unknown is never silently coerced to false.
+ * evidence either way. Per , unknown is never silently coerced to false.
  */
 export interface ResolvedCatalogFeatures {
   tools: boolean | null;
   structuredOutputs: boolean | null;
   reasoning: boolean | null;
+  /** Screenshot-to-target coordinate grounding support; absent/null means unknown. */
+  visualGrounding?: boolean | null | undefined;
   webSearch: boolean | null;
   e2ee: boolean | null;
 }
 
 /**
- * D429 Phase 1 — one non-secret, server-side resolved catalog row. Rich
+ * one non-secret, server-side resolved catalog row. Rich
  * enough for Genie discovery and exact-call validation. Composed by
  * `@nautilo/agent` from existing sources (ASSISTANT_MODELS, model-capabilities
  * resolver, privacy grades, intelligence tiers, cost coefficients, sync token
  * limits, credential detection) — it does NOT duplicate provider parsing or
  * metadata tables. All accessors are local / cache-backed: list/get never
- * awaits a network fetch (Phase 0 decision; verified by a fetch-throws test).
+ * awaits a network fetch (verified by a fetch-throws test).
  */
 export interface ResolvedCatalogModel {
   // --- identity ---
@@ -153,6 +163,8 @@ export interface ResolvedCatalogModel {
   workload: ResolvedCatalogWorkload;
   /** Present only for generation rows. */
   generation: ResolvedCatalogGeneration | null;
+  /** Absent on older projections; only decision rows carry these facts. */
+  decision?: ResolvedCatalogDecision | null;
 
   // --- features (null = unknown) ---
   features: ResolvedCatalogFeatures;
@@ -176,7 +188,7 @@ export interface ResolvedCatalogModel {
   lastVerifiedAt: string | null;
 }
 
-/** D429 Phase 1 — options for resolve/list resolved catalog helpers. */
+/** options for resolve/list resolved catalog helpers. */
 export interface ResolveCatalogModelOptions {
   includeUnavailable?: boolean;
   allowChinaUpstream?: boolean;
@@ -193,7 +205,7 @@ export interface EligibleModelCapabilities {
 }
 
 /**
- * D462 — provider-neutral reasoning controls safe for discovery clients.
+ * provider-neutral reasoning controls safe for discovery clients.
  * These values are catalog choice values, never a provider request shape.
  */
 export type EligibleModelReasoningLevel =
@@ -258,7 +270,7 @@ export interface EligibleModel {
   enabled: boolean;
   routing?: RoutingClass;
   capabilities: EligibleModelCapabilities;
-  /** D462 public projection of reviewed catalog controls; no provider selectors/provenance. */
+  /** public projection of reviewed catalog controls; no provider selectors/provenance. */
   controls?: EligibleModelControls;
   availability: ModelAvailability;
   unavailableReason?: string;

@@ -13,7 +13,7 @@ beforeAll(() => {
   setConfigOverrides({ nautilo_office_enabled: false });
   process.env["TAVILY_API_KEY"] = "test-key";
   catalog = new ToolCatalog();
-  // M203 — officecli registration is gated on a usable OfficeCLI binary. The
+  // officecli registration is gated on a usable OfficeCLI binary. The
   // binary is no longer committed to git, so force availability on here to keep
   // the count-based assertions deterministic across hosts/CI. A dedicated test
   // below verifies the gate omits officecli when the binary is unavailable.
@@ -26,58 +26,10 @@ afterAll(() => {
 });
 
 describe("tool catalog registration", () => {
-  // D079 Phase 4 / G3 commit 5 added the unified `file` tool. D073
-  // Sprint 2 added `execute_artifact`; D066 adds `transcribe_audio`;
-  // D041 adds four model-callable Connection tools (list, use, delete + one legacy alias).
-  // M080 adds four scope tools.
-  // D113 adds generate_image. M088A adds share_artifact. D128 adds skip.
-  // D261 adds manage_voices; P4 adds audition_voices.
-  // M137 adds get_room_members.
-  // M121 adds react.
-  // D261 P6b adds read_artifact_events.
-  // M087 adds get_current_time.
-  // M144 adds in_scope + in_private_namespace + in_background (+3).
-  // M145 adds schedule (+1).
-  // D263 adds skill_manage + view_skill (+2).
-  // D263 Stack 80 adds discover_skills + eject (+2).
-  // M148 removes delegate_to_subagent + do_in_private_namespace (-2 → 46).
-  // M151 adds ask_peer (+1 → 47).
-    // M189 adds mini_app (+1 → 49).
-    // D336 adds browser_snapshot (+1 → 50), browser_click/type/press/read (+4 → 54),
-    // then browser_screenshot/mouse/get (+3 → 57), browser_scroll (+1 → 58),
-    // and D138 google_workspace (+1 → 59).
-    // D363: +1 generate_repo_docs (→ 60).
-  // D373: +1 terminal (→ 61).
-  // D379: +4 command_manage / view_command / discover_commands / eject_command (→ 65).
-  // D379: +1 launch_customization (→ 66).
-  // D396: +1 officecli (bundled headless binary, always registered → 67).
-  // D384 §5.4: +1 manage_local_mcp (→ 68).
-  // Stack 163: +1 manage_avatar (→ 69).
-  // D055 Stack 173: +1 hue_lights (→ 70).
-  // D417: +1 ingest_local_media +1 extract_audio_from_video (→ 72).
-  // D419 Phase 1: +1 activate_tools (→ 73).
-  // D419 Phase 2.3: +1 deactivate_tools (→ 74).
-  // D416: +1 find_explainer, +1 user-consented play_explainer (→ 76).
-  // D429 Phase 2: +1 discover_models (→ 77).
-  // D421 Phase 6.4: redirect_to_agent folded into skip (no net change from
-  // Phase 4's +1; the separate registration is removed, so the count stays
-  // 77 vs the Phase-4 78). D448 adds core apply_patch (→ 78).
-  // D362 merge-gate: live LibreOffice office + edit_doc are feature-flagged
-  // off by default.
-  // D490 browser work: +11 open/navigation/interaction/wait tools (→ 89).
-  // D497: +1 select_current_folder (→ 90). D500: +2 structured SSH tools;
-  // D500 continuation retrieval adds one read-only tool (→ 95).
-  // D504: +1 browser_read_page (→ 96). D513: +1 guide_user (→ 97).
-  // M271: +1 invocation-bound recall_records (→ 98).
-  // D560 adds security_scan (→ 99 excluding the signed Computer Use catalogue).
-  // D568 adds read_connected_web_account plus the confirmed action and the two
-  // read-supervision/control tools (→ 103). D525 contributes two live-gated
-  // paid media registrations (→ 105). D585 adds browse_web (→ 106).
-  // General website tasks add run_website_task (→ 107).
-  // D516 tools are added from the active signed catalogue and are deliberately
-  // not a second compiled count/list in this test.
-  test("registers all built-in tools including D066 and D041 tools", () => {
-    expect(catalog.size).toBe(107 + activeComputerUseHostToolDefinitions().length);
+
+  // Built-in tools are counted separately from the active signed Computer Use catalog.
+  test("registers all built-in tools including transcription and Connections", () => {
+    expect(catalog.size).toBe(108 + activeComputerUseHostToolDefinitions().length);
   });
 
   test("registers mini_app with static destructive approval", () => {
@@ -89,7 +41,7 @@ describe("tool catalog registration", () => {
       .toBe("supported");
   });
 
-  test("D362 live office tools are absent when office is disabled but D396 officecli remains", () => {
+  test("live office tools are absent when office is disabled but officecli remains", () => {
     expect(catalog.get("office")).toBeUndefined();
     expect(catalog.get("edit_doc")).toBeUndefined();
     expect(catalog.get("officecli")).toBeDefined();
@@ -106,7 +58,7 @@ describe("tool catalog registration", () => {
     expect(attemptedActivation.snapshot.entries.map((entry) => entry.name)).not.toContain("edit_doc");
   });
 
-  test("D362 office tools register when office is enabled", () => {
+  test("office tools register when office is enabled", () => {
     setConfigOverrides({ nautilo_office_enabled: true });
     const enabledCatalog = new ToolCatalog();
     registerAllTools(enabledCatalog, { officeCliAvailable: () => true, publicBrowserUseAvailable: () => true });
@@ -133,12 +85,13 @@ describe("tool catalog registration", () => {
     expect(activatedNames).toContain("edit_doc");
   });
 
-  test("D419 manifest classifies all conditionally-enabled catalog registrations", () => {
+  test("manifest classifies all conditionally-enabled catalog registrations", () => {
     setConfigOverrides({ nautilo_office_enabled: true });
     const fullCatalog = new ToolCatalog();
     registerAllTools(fullCatalog, {
       officeCliAvailable: () => true, publicBrowserUseAvailable: () => true,
       mediaGenerationAvailable: () => true,
+      decisionModelsAvailable: () => true,
     });
     setConfigOverrides({ nautilo_office_enabled: false });
 
@@ -163,7 +116,7 @@ describe("tool catalog registration", () => {
     expect(entry!.impact).toBe("high");
     expect(entry!.requiresApproval).toBe(true);
     expect(entry!.approvalLevel).toBe("confirm");
-    // M128 — `transcribe_audio` is gated on the dedicated
+    // `transcribe_audio` is gated on the dedicated
     // `use_transcription` capability (was `use_high_impact_tools`).
     expect(entry!.requiredCapabilities).toContain("use_transcription");
     expect(entry!.resultScanPolicy).toBe("on-suspicious");
@@ -175,7 +128,7 @@ describe("tool catalog registration", () => {
     });
   });
 
-  test("D419 catalog capability gates match trust policies and policy filtering", () => {
+  test("catalog capability gates match trust policies and policy filtering", () => {
     const entries = [
       ["search_memory", "read_memories"],
       ["manage_memory", "manage_memories"],
@@ -216,7 +169,7 @@ describe("tool catalog registration", () => {
     expect(names).toContain("verify_identity");
   });
 
-  test("without toolPolicy cloud tools visible regardless of trustTier (M133)", () => {
+  test("without toolPolicy cloud tools visible regardless of trustTier", () => {
     const snap = catalog.getFiltered();
     const names = snap.entries.map((e) => e.name);
     expect(names).toContain("discover_tools");
@@ -258,7 +211,7 @@ describe("tool catalog registration", () => {
     expect(names).toContain("apply_patch");
   });
 
-  test("D448 apply_patch is core, destructive, project-content gated, and always scanned", () => {
+  test("apply_patch is core, destructive, project-content gated, and always scanned", () => {
     const entry = catalog.get("apply_patch");
     expect(entry).toMatchObject({
       exposure: "core",
@@ -270,7 +223,7 @@ describe("tool catalog registration", () => {
     });
   });
 
-  test("D513 guide_user is discoverable, read-only guidance with no approval", () => {
+  test("guide_user is discoverable, read-only guidance with no approval", () => {
     const entry = catalog.get("guide_user");
     expect(entry).toMatchObject({
       category: "help",
@@ -307,60 +260,18 @@ describe("tool catalog registration", () => {
 
   test("stats reflect correct distribution", () => {
     const stats = catalog.getStats();
-    // D079 Phase 4 / G3 commit 5: +1 for the unified `file` tool.
-    // D073 Sprint 2: +1 for sandboxed `execute_artifact`;
-    // D066: +1 for transcribe_audio; D041: +4 Connection tools.
-    // M078: +2; M080: +4.
-    // M088B: removed legacy read_file / write_file / list_directory (-3).
-    // D128: +1 skip. D261: +1 manage_voices; P4: +1 audition_voices.
-    // M137: +1 get_room_members.
-    // M087: +1 get_current_time.
-    // M144: +3 in_scope / in_private_namespace / in_background.
-    // M145: +1 schedule.
-    // D263: +1 skill_manage, +1 view_skill.
-    // D263 Stack 80: +1 discover_skills, +1 eject.
-    // M148: -2 delegate_to_subagent + do_in_private_namespace (sunset).
-    // M151: +1 ask_peer.
-    // M189: +1 mini_app (→ 57).
-    // D336/D138: +1 snapshot, +4 act/read, +3 screenshot/mouse/get, +1 scroll,
-    // +1 google_workspace (→ 67).
-    // D363: +1 generate_repo_docs (→ 68).
-    // D373: +1 terminal (→ 69).
-    // D379: +4 command_* tools (→ 73), +1 launch_customization (→ 74).
-    // D396: +1 officecli (bundled headless, always registered → 75).
-    // D384 §5.4: +1 manage_local_mcp (→ 76).
-    // Stack 163: +1 manage_avatar (→ 77).
-    // D055 Stack 173: +1 hue_lights (→ 78).
-    // D417: +1 ingest_local_media +1 extract_audio_from_video (→ 80).
-    // D419 Phase 1: +1 activate_tools (→ 81).
-    // D419 Phase 2.3: +1 deactivate_tools (→ 82).
-    // D416: +1 find_explainer, +1 user-consented play_explainer (→ 84).
-    // D429 Phase 2: +1 discover_models (→ 85).
-    // D421 Phase 6.4: redirect_to_agent folded into skip (removed; → 85).
-    // D448 adds top-level core apply_patch (→ 86).
-    // D362 office + edit_doc are feature-flagged off by default.
-    // D490 browser work: +11 open/navigation/interaction/wait tools (→ 89).
-    // D497: +1 select_current_folder (→ 90). D500: +2 structured SSH tools;
-    // D500 continuation retrieval adds one read-only tool (→ 95).
-    // D504: +1 browser_read_page (→ 96). D513: +1 guide_user (→ 97).
-    // M271: +1 invocation-bound recall_records (→ 98).
-    // D568 adds read_connected_web_account plus its action and two operation
-    // control tools (→ 103). D525 contributes two live-gated paid media
-    // registrations (→ 105).
-    // D585 adds anonymous public browse_web (→ 106).
-    // run_website_task makes the static baseline 107; the active signed Computer Use catalogue is
-    // the sole owner of its additional tool count.
-    expect(stats.total).toBe(107 + activeComputerUseHostToolDefinitions().length);
-    expect(stats.bySource.builtin).toBe(107 + activeComputerUseHostToolDefinitions().length);
+    // Built-in tools are counted separately from the active signed Computer Use catalog.
+    expect(stats.total).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.bySource.builtin).toBe(108 + activeComputerUseHostToolDefinitions().length);
     expect(stats.bySource.mcp).toBe(0);
-    expect(stats.enabled).toBe(107 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.enabled).toBe(108 + activeComputerUseHostToolDefinitions().length);
     expect(stats.byTier.admin).toBeGreaterThan(0);
     expect(stats.byTier.standard).toBeGreaterThan(0);
     expect(stats.byTier.high).toBeGreaterThan(0);
     expect(stats.byTier.guest).toBeGreaterThan(0);
   });
 
-  test("D041 Connection tools are registered without exposing values", () => {
+  test("Connection tools are registered without exposing values", () => {
     const names = catalog.getFiltered().entries.map((e) => e.name);
     expect(names).not.toContain("store_connection");
     expect(names).toContain("use_connection");
@@ -369,14 +280,14 @@ describe("tool catalog registration", () => {
     expect(names).toContain("delete_connection");
   });
 
-  // D429 Task 2.2.1 — Phase 0 decision #4: the full `discover_models`
+  // The full `discover_models`
   // projection is standard-tier/authenticated. The guest picker projection
   // lives on the separate HTTP route `GET /api/config/models`, which is
   // intentionally left guest-readable and is not exercised here. This test
   // pins the catalog-side boundary: the tier label, the guest withhold via
   // the production guest toolPolicy (GUEST_ALLOWED_TOOLS), and the
   // authenticated-actor eligibility.
-  test("D429 Task 2.2.1 — discover_models is standard-tier, withheld from guests, available to authenticated actors", () => {
+  test("discover_models is standard-tier, withheld from guests, available to authenticated actors", () => {
     const entry = catalog.get("discover_models");
     expect(entry).toBeDefined();
     expect(entry!.trustTier).toBe("standard");

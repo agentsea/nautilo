@@ -9,6 +9,40 @@ CDP control for connected-account operations is a secondary mode the Genie may c
 takeover. Both live behind one supervised operation and one Human-facing card;
 neither exposes provider topology or an unrestricted browser surface.
 
+### Routine decisions during direct control
+
+When the catalog, provider credential and account policy expose an eligible decision model,
+`control_connected_web_operation` exposes `decisionPlan` on a standalone
+`command: {kind: "snapshot"}` call. The Genie supplies the goal and exact named
+typing values, then the existing browser decision graph observes, chooses and
+proposes ordinary semantic commands through that same operation's admission.
+Keyboard, scrolling and other reusable action templates use the shared plan
+contract. No second agent or durable operation is created.
+
+The server lease owns observation identity. Before a delegated action it
+rechecks the exact operation, current control epoch, account origin and fresh
+page evidence, then consumes the observation before dispatch. Changed evidence
+requires another observation; an uncertain effect returns to the Genie without
+automatic replay. Cancellation propagates to the command process. The Genie
+verifies completion and can resume a corrected routine segment after recovery.
+Delegate complete routine outcomes with every user constraint; ordinary dialogs
+and page changes do not require separate one-click plans. Completion-ready,
+missing visual evidence and general uncertainty are distinct handoffs. A visual
+handoff stays on this operation: connected direct control does not expose a
+screenshot or coordinate command and must not switch to an embedded browser.
+Repeated state/action/result transitions, including cycles, consume the existing
+intervention budget; different actions with unchanged text do not automatically
+count as failures. Verified milestones reset the budget and transition evidence.
+
+Only current and preceding structured observations stay expanded in the model
+prompt. Older canonical receipts remain retrievable with `historyToolCallId`;
+historical refs never authorize current input. Error receipts stay intact.
+
+When those runtime checks find no runnable decision model, the optional plan and its prompt guidance
+disappear; ordinary semantic commands and hosted runs retain their existing
+paths. This applies to connected-account direct control. Anonymous public
+operations retain the hosted driver and cannot take direct control.
+
 ## User-authorized website tasks
 
 `run_website_task` performs multi-step website work, not just research. Supply

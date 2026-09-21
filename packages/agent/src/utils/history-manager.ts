@@ -13,6 +13,7 @@ import {
 } from "@nautilo/message-invariants";
 import { securityScanToolResultSchema, type SecurityScanLedgerRecord, type SecurityScanResultEnvelope } from "@nautilo/types";
 import { getModelTokenLimit } from "../providers/models";
+import { projectBrowserHistory } from "../tools/browser/browser-history";
 import { projectOversizedTaskRead, taskReadPageFingerprint, pageSchema, type TaskReadPendingPage } from "../tools/tasks/read-projection";
 
 export interface HistoryConfig {
@@ -32,12 +33,12 @@ export interface ProcessedHistory {
   validation: { repairs: string[] };
   pruning: { pruned: string[] };
   windowing: { removedCount: number; researchReloadRequired?: boolean; researchConclusionsProjected?: boolean; researchConclusionsOverview?: boolean };
-  /** D276 Tier 2 — count of individual messages whose content was clamped. */
+  /** Tier 2 — count of individual messages whose content was clamped. */
   clamping: { clampedCount: number };
 }
 
 /**
- * D276 Tier 2 — no single message may exceed this fraction of the token
+ * Tier 2 — no single message may exceed this fraction of the token
  * budget. Turn-count windowing keeps the last N turns but never shrinks an
  * individual message, so one oversized message (e.g. a huge tool result) can
  * exceed the model's context window and wedge a room. This clamp is the
@@ -352,19 +353,19 @@ function clampString(
 }
 
 /**
- * D276 Tier 2 — clamp the content of any SINGLE message that alone exceeds
+ * Tier 2 — clamp the content of any SINGLE message that alone exceeds
  * `PER_MESSAGE_MAX_BUDGET_FRACTION` of the token budget. Pure transform:
  *
  * - No-op for every message under budget.
  * - Handles `ToolMessage`, `HumanMessage`, and raw Task result `AIMessage`s.
- *   Ordinary model `AIMessage`s remain exempt because their selected model
- *   already bounded them and clamping could decouple tool calls.
+ * Ordinary model `AIMessage`s remain exempt because their selected model
+ * already bounded them and clamping could decouple tool calls.
  * - Elides the MIDDLE (head+tail+marker); NEVER drops a message and NEVER
- *   touches `tool_call_id` / `id` / role — tool-call/tool-result pairing and
- *   message count are preserved.
+ * touches `tool_call_id` / `id` / role — tool-call/tool-result pairing and
+ * message count are preserved.
  * - REBUILDS via the real constructor (same idiom as message-invariants'
- *   `removeToolCallsFromAIMessage`), never mutating the graph-state objects and
- *   keeping `lc_kwargs` consistent for provider serialization.
+ * `removeToolCallsFromAIMessage`), never mutating the graph-state objects and
+ * keeping `lc_kwargs` consistent for provider serialization.
  */
 function clampOversizedMessages(
   messages: BaseMessage[],
@@ -395,7 +396,7 @@ function clampOversizedMessages(
       || HumanMessage.isInstance(msg))) return msg;
     if (typeof msg.content !== "string") return msg; // skip multimodal/array content
     if (msg.content.length <= perMessageMaxChars) return msg;
-    // M219 Room context is already model-window-budgeted before it becomes a
+    // Room context is already model-window-budgeted before it becomes a
     // single transient HumanMessage. Re-clamping it here would silently reduce
     // the configured percentage and could split a protected complete turn.
     if (msg.additional_kwargs?.["nautilo_room_context_budgeted"] === true) return msg;
@@ -457,7 +458,8 @@ function clampOversizedMessages(
 }
 
 export function processHistory(messages: BaseMessage[], config: HistoryConfig): ProcessedHistory {
-  let current = messages;
+  const browserHistory = projectBrowserHistory(messages);
+  let current = browserHistory.messages;
   const result: ProcessedHistory = {
     messages: [],
     validation: { repairs: [] },
@@ -466,7 +468,7 @@ export function processHistory(messages: BaseMessage[], config: HistoryConfig): 
     clamping: { clampedCount: 0 },
   };
 
-  // Layer 0 — Per-message clamp (D276 Tier 2). Runs first so no single
+  // Layer 0 — Per-message clamp ( Tier 2). Runs first so no single
   // oversized message survives into windowing/validation or the invoke.
   const clamped = clampOversizedMessages(current, config);
   current = clamped.messages;
@@ -485,7 +487,7 @@ export function processHistory(messages: BaseMessage[], config: HistoryConfig): 
     ...(windowing.researchConclusionsOverview ? { researchConclusionsOverview: true } : {}) };
 
   // Layer 3 — Validation runs LAST as the final safety net.
-  // This is where D143 Layer 3 (tool_call_id dedupe + orphan repair)
+  // This is where Layer 3 (tool_call_id dedupe + orphan repair)
   // catches anything pruning/windowing produced or anything the
   // canonical state already had broken.
   if (config.validationEnabled) {
@@ -495,8 +497,10 @@ export function processHistory(messages: BaseMessage[], config: HistoryConfig): 
   }
 
   result.messages = current;
-  if (current.some((message) => clamped.taskReadOriginals.has(message))) {
-    result.canonicalMessages = current.map((message) => clamped.taskReadOriginals.get(message) ?? message);
+  if (browserHistory.originals.size > 0 || current.some((message) => clamped.taskReadOriginals.has(message))) {
+    result.canonicalMessages = current.map((message) =>
+      (ToolMessage.isInstance(message) ? browserHistory.originals.get(message.tool_call_id) : undefined)
+        ?? clamped.taskReadOriginals.get(message) ?? message);
   }
   return result;
 }

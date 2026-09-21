@@ -72,14 +72,24 @@ describe("resolveModelCapabilities", () => {
     replaceActiveModelCapabilityCatalog([{
       id,
       modalities: { input: ["text", "image"], output: ["text"] },
-      features: { tools: true, structuredOutputs: false, reasoning: true },
+      features: {
+        tools: true,
+        structuredOutputs: false,
+        reasoning: true,
+        visualGrounding: true,
+      },
       capabilityProvenance: "override",
     }]);
     expect(resolveModelCapabilities(id)).toMatchObject({
       modelId: id,
       input: ["text", "image"],
       output: ["text"],
-      features: { tools: true, structuredOutputs: false, reasoning: true },
+      features: {
+        tools: true,
+        structuredOutputs: false,
+        reasoning: true,
+        visualGrounding: true,
+      },
       provenance: "override",
     });
 
@@ -139,7 +149,7 @@ describe("resolveModelCapabilities", () => {
     expect(resolveModelCapabilities("fireworks:accounts/fireworks/models/glm-5p2").features?.tools).toBe(true);
   });
 
-  test("Stack 166 — GPT-5.6 family (sol/terra/luna) resolve to overrides with vision, file, tools, and reasoning", () => {
+  test(" — GPT-5.6 family (sol/terra/luna) resolve to overrides with vision, file, tools, and reasoning", () => {
     for (const id of ["openai:gpt-5.6-sol", "openai:gpt-5.6-terra", "openai:gpt-5.6-luna"]) {
       expect(resolveModelCapabilities(id).provenance).toBe("override");
       expect(modelSupportsInput(id, "image")).toBe(true);
@@ -194,7 +204,7 @@ describe("resolveModelCapabilities", () => {
     });
   });
 
-  test("D113 image overrides expose image output where defined", () => {
+  test(" image overrides expose image output where defined", () => {
     expect(modelSupportsOutput("openai:gpt-image-2", "image")).toBe(true);
     expect(modelSupportsOutput("openai:gpt-image-2", "text")).toBe(false);
     expect(modelSupportsOutput("google:imagen-4", "image")).toBe(true);
@@ -221,7 +231,12 @@ describe("resolveModelCapabilities", () => {
         "openai/gpt-5.5": {
           input: ["text", "image"],
           output: ["text"],
-          features: { tools: true, structuredOutputs: true, reasoning: true },
+          features: {
+            tools: true,
+            structuredOutputs: true,
+            reasoning: true,
+            visualGrounding: false,
+          },
         },
       },
     });
@@ -232,5 +247,6 @@ describe("resolveModelCapabilities", () => {
     expect(row.input).toEqual(["text", "image"]);
     expect(modelSupportsInput("openrouter:openai/gpt-5.5", "image")).toBe(true);
     expect(row.features?.tools).toBe(true);
+    expect(row.features?.visualGrounding).toBe(false);
   });
 });

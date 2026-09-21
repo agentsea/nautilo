@@ -6,44 +6,8 @@ import { resolveApproval, type ApprovalVerb, type ToolImpact } from "@nautilo/se
 import { activeComputerUseHostToolDefinitions } from "../../src/config/computer-use-catalogue/host-tool-admission";
 
 /**
- * D061 Phase 1 impact-canon audit.
- *
- * This test locks down the CURRENT `impact` tag on every built-in tool
- * (as declared in `register-all.ts`, now the source of truth post-D052
- * catalog port) and the verb it would produce at `standard` security
- * level for an unscanned invocation. It is the Phase 1 audit artifact:
- * the verb map runs on whatever impact the catalog returns, and this
- * file is the map of what that produces today.
- *
- * --- Disagreements with deprecated trust/tool-policies.ts ---
- *
- * The now-deprecated `@nautilo/trust/src/tool-policies.ts` holds an
- * older, stricter impact map. Originally there were six disagreements;
- * Phase 1b resolved the three that the D061 design doc sided with
- * trust on. M088B removed the legacy `read_file` / `write_file` /
- * `list_directory` entries; the unified `file` tool is the filesystem
- * surface. The remaining catalog/trust skew notes:
- *
- *   verify_identity — register-all: high       trust: low
- *                     Kept high; prove_it path for guest→owner is gated
- *                     by the existing M036 flow via
- *                     `requiresApproval`/`approvalLevel`, not by the
- *                     verb map.
- *
- * Resolved in Phase 1b (see commit tagged `D061-1b`):
- *   update_config   — flipped "high" → "destructive"
- *   regenerate_soul — flipped "high" → "destructive"
- *
- * --- Rules when touching this file ---
- *
- * - Change a tool's impact in `register-all.ts` → update this canon in
- *   the same commit. The test will fail loudly otherwise.
- * - Add a new built-in tool → add an entry here in the same commit, or
- *   the drift test (count mismatch) will fail.
- * - Resolve a disagreement above (tighten an impact to match trust's
- *   historical value) → flip the register-all tag AND the canon value
- *   AND move the bullet from the "Known disagreements" section above
- *   to a changelog note at the top of ISSUE-D061's task README.
+ * Locks built-in catalog impacts and their approval verbs at standard security.
+ * Add or change the corresponding entry whenever a tool's impact changes.
  */
 
 interface CanonEntry {
@@ -63,12 +27,12 @@ const CANON: Record<string, CanonEntry> = {
   manage_memory:      { impact: "low",         standardVerb: "auto" },
   list_my_users:      { impact: "read-only",   standardVerb: "auto" },
   get_room_members:   { impact: "read-only",   standardVerb: "auto" },
-  // M121 — emoji reaction; trivially reversible + bounded, auto for all levels.
+  // emoji reaction; trivially reversible + bounded, auto for all levels.
   react:              { impact: "low",          standardVerb: "auto" },
-  // M078 / M079 — hybrid approval reads LLM `sensitivity`; catalog impact
+  // Hybrid approval reads LLM `sensitivity`; catalog impact
   // stays destructive as fallback tier routing.
   share_memory:       { impact: "destructive", standardVerb: "ask" },
-  // M088A — same hybrid approval pattern as share_memory; impact stays
+  // same hybrid approval pattern as share_memory; impact stays
   // destructive at the catalog tier and the LLM-supplied `sensitivity`
   // drives the actual ask / prove_it routing.
   share_artifact:     { impact: "destructive", standardVerb: "ask" },
@@ -78,17 +42,17 @@ const CANON: Record<string, CanonEntry> = {
   add_memory_to_scope: { impact: "low",        standardVerb: "auto" },
   close_scope:        { impact: "low",         standardVerb: "auto" },
   task:               { impact: "low",         standardVerb: "auto" },
-  // M144 — Phase 3 intent shortcuts (thin createTask wrappers). in_scope /
+  // Phase 3 intent shortcuts (thin createTask wrappers). in_scope /
   // in_background are low (auto); in_private_namespace carries the
-  // destructive privacy-downgrade gate (M148 removed the legacy
-  // do_in_private_namespace it used to mirror).
+  // destructive privacy-downgrade gate after removal of the legacy
+  // do_in_private_namespace tool it used to mirror.
   in_scope:           { impact: "low",         standardVerb: "auto" },
   in_background:      { impact: "low",         standardVerb: "auto" },
   schedule:           { impact: "low",         standardVerb: "auto" },
   in_private_namespace: { impact: "destructive", standardVerb: "ask" },
-  // M151 — ask_peer sends an agent to DM another human (high-impact, ask).
+  // ask_peer sends an agent to DM another human (high-impact, ask).
   ask_peer:           { impact: "destructive", standardVerb: "ask" },
-  // D363 (Stack-128) — generate_repo_docs mints a repo_docs task whose
+  // generate_repo_docs mints a repo_docs task whose
   // executor writes to a repo (branch / push / pr). High-impact + explicit
   // confirm-level approval gate → standard verb is ask.
   generate_repo_docs: { impact: "destructive", standardVerb: "ask" },
@@ -98,54 +62,54 @@ const CANON: Record<string, CanonEntry> = {
   read_webpage:       { impact: "read-only",   standardVerb: "auto" },
   run_website_task:   { impact: "high",        standardVerb: "auto" },
 
-  // --- Filesystem (M088B: unified `file` tool) ---
-  // D079 Phase 4 — unified `file` tool with command dispatch.
+  // --- Filesystem (unified `file` tool) ---
+  // unified `file` tool with command dispatch.
   // Tool-level impact is "destructive" (conservative default for
   // tier routing); per-command severity lives in
   // @nautilo/trust/file-tool-policies.ts and is the authoritative
   // source (approval dock + HIL routing read it, not this tag).
   // Phase 2's verb map runs at the tool level; "ask" is correct as
-  // the D061 fallback until the composite-verb approval-dock path
-  // (G4 commit 11) takes over for `file.<command>` calls.
+  // the catalog fallback until the composite-verb approval-dock path
+  // takes over for `file.<command>` calls.
   file:               { impact: "destructive", standardVerb: "ask" },
-  // D448 — contextual multi-file text mutation. The explicit prove_it
+  // contextual multi-file text mutation. The explicit prove_it
   // approval gate in register-all is authoritative for this destructive tool.
   apply_patch:        { impact: "destructive", standardVerb: "prove_it" },
-  // D306 — dedicated convert tool; cloud egress gated (Phase 0: prompt-once-
+  // dedicated convert tool; cloud egress gated (Phase 0: prompt-once-
   // per-session). Static tool-level requiresApproval → "ask" for now.
   convert:            { impact: "high",        standardVerb: "ask" },
-  // D362 — office suite (LibreOffice). `office` + `edit_doc` both declare
+  // office suite (LibreOffice). `office` + `edit_doc` both declare
   // impact:"low" + requiresApproval:false in register-all, capability-gated by
   // use_high_impact_tools (same posture as the `file` cap-gate); low → auto.
   office:             { impact: "low",         standardVerb: "auto" },
   edit_doc:           { impact: "low",         standardVerb: "auto" },
-  // D396 — headless OfficeCLI generation (replaces write_xlsx / write_pptx).
+  // headless OfficeCLI generation (replaces write_xlsx / write_pptx).
   officecli:          { impact: "low",         standardVerb: "auto" },
 
   // --- Shell — destructive; per-invocation severity comes from the scanner.
   // The "standardVerb" here is the unscanned-allowed path (benign shell:
   // `echo hi`, `ls`). Scanner hits are asserted separately below.
   run_shell:          { impact: "destructive", standardVerb: "ask" },
-  // D500 — generic HIL is auto because invocation-service owns the sole exact
+  // generic HIL is auto because invocation-service owns the sole exact
   // review after Electron resolves the remote user and host-trust evidence.
   structured_ssh_auth: { impact: "high", standardVerb: "auto" },
   structured_ssh_exec: { impact: "high", standardVerb: "auto" },
   structured_ssh_output: { impact: "read-only", standardVerb: "auto" },
   structured_ssh_copy_upload: { impact: "high", standardVerb: "auto" },
   structured_ssh_copy_download: { impact: "high", standardVerb: "auto" },
-  // D497 — Electron-owned Current Folder transition. The model supplies only
+  // Electron-owned Current Folder transition. The model supplies only
   // a bounded relative selector; local prepare/commit authority still requires
   // the explicit prove-it approval declared by the catalog registration.
   select_current_folder: { impact: "high", standardVerb: "prove_it" },
-  // D373 — interactive shared PTY. impact "high" (not destructive) + no
+  // interactive shared PTY. impact "high" (not destructive) + no
   // requiresApproval → capability-gated allow (auto) for use_terminal holders;
   // operator decision: no PIN.
   terminal:           { impact: "high",        standardVerb: "auto" },
 
-  // D516 Computer Use entries are intentionally absent from this static map.
+  // Computer Use entries are intentionally absent from this static map.
   // Their signed active catalogue descriptors derive impact below, so adding
   // a compatible contract never requires editing this compiled canon.
-  // D336 — embedded SaaS browser tools (observe + routine control; no approval).
+  // embedded SaaS browser tools (observe + routine control; no approval).
   browser_snapshot:   { impact: "low",         standardVerb: "auto" },
   browser_click:      { impact: "low",         standardVerb: "auto" },
   browser_type:       { impact: "low",         standardVerb: "auto" },
@@ -171,8 +135,8 @@ const CANON: Record<string, CanonEntry> = {
   hue_lights:         { impact: "low",         standardVerb: "auto" },
 
   // --- Config ---
-  // update_config / regenerate_soul: destructive per D061-1b. Today
-  // these fire prove_it via requiresApproval+approvalLevel (M036 flow).
+  // update_config / regenerate_soul: destructive. Today
+  // these fire prove_it via requiresApproval+approvalLevel.
   // Phase 2 decision: keep that flow AND the verb map (belt-and-
   // suspenders), or migrate to the verb map alone. For now both exist;
   // the impact flip is preparatory.
@@ -183,13 +147,13 @@ const CANON: Record<string, CanonEntry> = {
   use_credential:     { impact: "high",        standardVerb: "auto" },
   delete_connection:  { impact: "destructive", standardVerb: "ask" },
   manage_profile:     { impact: "low",         standardVerb: "auto" },
-  // Stack 163 — the Agent generates + sets her own profile avatar (preview →
+  // The Agent generates + sets her own profile avatar (preview →
   // apply gate). Same tier as manage_profile; low impact → auto verb.
   manage_avatar:      { impact: "low",         standardVerb: "auto" },
   get_current_time:   { impact: "low",         standardVerb: "auto" },
   manage_voices:      { impact: "low",         standardVerb: "auto" },
   onboarding_status:  { impact: "read-only",   standardVerb: "auto" },
-  // D379 (Stack 145) — opens the customization wizard after user consent;
+  // opens the customization wizard after user consent;
   // low-impact one-way client action, auto verb.
   launch_customization: { impact: "low",       standardVerb: "auto" },
   guide_user:         { impact: "read-only", standardVerb: "auto" },
@@ -199,11 +163,11 @@ const CANON: Record<string, CanonEntry> = {
   // impact but force an explicit approval gate instead of high-impact
   // standard-tier auto.
   transcribe_audio:   { impact: "high",        standardVerb: "ask" },
-  // D417 — local MP4 ingest and fixed relay extraction are explicitly
+  // local MP4 ingest and fixed relay extraction are explicitly
   // approved high-impact media operations; extraction never calls STT.
   ingest_local_media: { impact: "high",        standardVerb: "ask" },
   extract_audio_from_video: { impact: "high",  standardVerb: "ask" },
-  // D113 — image generation to artifact zone; low impact, no approval gate.
+  // image generation to artifact zone; low impact, no approval gate.
   generate_image:     { impact: "low",         standardVerb: "auto" },
   generate_video:     { impact: "destructive", standardVerb: "prove_it" },
   generate_music:     { impact: "destructive", standardVerb: "prove_it" },
@@ -211,68 +175,69 @@ const CANON: Record<string, CanonEntry> = {
 
   // --- Trust ---
   // verify_identity keeps `impact: "high"` — prove_it is enforced by the
-  // existing M036 flow (`requiresApproval` is NOT set here, but the tool
+  // existing approval flow (`requiresApproval` is NOT set here, but the tool
   // itself handles PIN challenges internally). Verb-map auto at standard
   // is the correct outcome; the tool does not want a second prompt layer.
   verify_identity:    { impact: "high",        standardVerb: "auto" },
 
   // --- Meta ---
   discover_tools:     { impact: "read-only",   standardVerb: "auto" },
-  // D429 Phase 2 — bounded, read-only resolved model catalog discovery.
+  evaluate_decisions: { impact: "low", standardVerb: "auto" },
+  // Bounded, read-only resolved model catalog discovery.
   discover_models:    { impact: "read-only",   standardVerb: "auto" },
   activate_tools:     { impact: "read-only",   standardVerb: "auto" },
   deactivate_tools:   { impact: "read-only",   standardVerb: "auto" },
-  // D416 — local explainer discovery and a user-consented direct-playback
+  // local explainer discovery and a user-consented direct-playback
   // resolver; both return trusted, structured local/server-computed output.
   find_explainer:     { impact: "read-only",   standardVerb: "auto" },
   play_explainer:     { impact: "read-only",   standardVerb: "auto" },
-  // D263 Stack 80 — speaker-scoped skill search (catalog-primary v1).
+  // speaker-scoped skill search (catalog-primary v1).
   discover_skills:    { impact: "read-only",   standardVerb: "auto" },
-  // D263 Stack 80 — drop an engaged skill from the next rebuild (graph state only).
+  // drop an engaged skill from the next rebuild (graph state only).
   eject:              { impact: "read-only",   standardVerb: "auto" },
 
-  // --- execute_artifact (D073 / D060 Sprint 2) ---
-  // D073 / D060 Sprint 2 — sandboxed script execution. Catalog impact is
+  // --- execute_artifact ---
+  // Sandboxed script execution. Catalog impact is
   // destructive because it runs code (even though contained to artifact
   // zones by @nautilo/sandbox). The tool also sets requiresApproval +
   // approvalLevel=prove_it in register-all.ts; this canon pins only the
-  // D061 impact→verb-map fallback, where destructive at standard maps to ask.
+  // Catalog impact→verb-map fallback, where destructive at standard maps to ask.
   execute_artifact:   { impact: "destructive", standardVerb: "ask" },
 
   // --- Research ---
   run_deep_research:  { impact: "high",        standardVerb: "auto" },
-  // D560 — Desktop-local scanners and the Task-owned evidence ledger are
+  // Desktop-local scanners and the Task-owned evidence ledger are
   // read-only with respect to the selected repository. The report artifact is
   // written by the Task runtime through its existing protected artifact path.
   security_scan:      { impact: "read-only",   standardVerb: "auto" },
-  // --- D128: agent reply policy (Stack 24 Phase 1) ---
-  // D421 Phase 6.4 — targetless skip remains ordinary silence, but the
+  // --- Agent reply policy ---
+  // targetless skip remains ordinary silence, but the
   // target-bearing form can cause a visible peer turn + focus transfer after
   // server revalidation. Keep the removed redirect tool's low impact while
   // retaining the standard-tier auto verb.
   skip:               { impact: "low",         standardVerb: "auto" },
-  // D263 — authoring tool for agent skills. Low-impact (writes the
+  // authoring tool for agent skills. Low-impact (writes the
   // caller's own skill rows; two-gated in the tool body); auto verb.
   skill_manage:       { impact: "low",         standardVerb: "auto" },
-  // D263 P3 — read-only mid-turn skill body fallback (R5).
+  // read-only mid-turn skill body fallback (R5).
   view_skill:         { impact: "read-only",   standardVerb: "auto" },
-  // D379 (Stack 145) — `command_*` family mirrors `skill_*` one-to-one.
+  // `command_*` family mirrors `skill_*` one-to-one.
   // `command_manage` is low-impact (writes the caller's own command rows;
   // two-gated in the tool body); auto verb.
   command_manage:     { impact: "low",         standardVerb: "auto" },
-  // D379 (Stack 145) — read-only mid-turn command body fallback.
+  // read-only mid-turn command body fallback.
   view_command:       { impact: "read-only",   standardVerb: "auto" },
-  // D379 (Stack 145) — speaker-scoped command catalog search.
+  // speaker-scoped command catalog search.
   discover_commands:  { impact: "read-only",   standardVerb: "auto" },
-  // D379 (Stack 145) — structural mirror of `eject` (skills); read-only no-op.
+  // structural mirror of `eject` (skills); read-only no-op.
   eject_command:      { impact: "read-only",   standardVerb: "auto" },
 
-  // --- Mini-app authoring (M189) ---
+  // --- Mini-app authoring ---
   // Mutates installed app source and can refresh app-declared agent tools.
   // Static destructive impact → ask at standard security level.
   mini_app:           { impact: "destructive", standardVerb: "ask" },
 
-  // D568 — private website-account reads remain capability-gated and the
+  // private website-account reads remain capability-gated and the
   // server re-checks exact Human/Genie ownership before execution.
   browse_web: { impact: "low", standardVerb: "auto" },
   read_connected_web_account: { impact: "low", standardVerb: "auto" },
@@ -283,7 +248,7 @@ const CANON: Record<string, CanonEntry> = {
   manage_connected_web_operation: { impact: "low", standardVerb: "auto" },
   control_connected_web_operation: { impact: "low", standardVerb: "auto" },
 
-  // --- Local (relay-tier) MCP setup (D384 §5.4) ---
+  // --- Local (relay-tier) MCP setup ---
   // Verified-user tool (no cap gate), impact "low" → catalog fallback verb
   // is auto. The `enable` verb is approval-gated ("ask") by a NARROW branch
   // in checkToolAccess + post-model's resolveApprovalForToolCall, not by
@@ -291,13 +256,13 @@ const CANON: Record<string, CanonEntry> = {
   manage_local_mcp:   { impact: "low",         standardVerb: "auto" },
 };
 
-describe("D061 Phase 1 — tool impact canon", () => {
+describe("tool impact canon", () => {
   let catalog: ToolCatalog;
 
   beforeAll(() => {
     setConfigOverrides({ nautilo_office_enabled: true });
     catalog = new ToolCatalog();
-    // M203 — officecli registration is gated on a usable binary. Force it on so
+    // officecli registration is gated on a usable binary. Force it on so
     // the canon count is deterministic regardless of whether the host has a
     // vendored binary provisioned (the binary is no longer committed to git).
     registerAllTools(catalog, { officeCliAvailable: () => true, publicBrowserUseAvailable: () => true });
