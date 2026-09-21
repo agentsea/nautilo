@@ -255,3 +255,27 @@ describe("shouldContinueAfterTools", () => {
     expect(shouldContinueAfterTools(makeState())).toBe("pre_model");
   });
 });
+
+
+describe("routine browser routing", () => {
+  test("only an active current-turn decision precedes expensive model preparation", () => {
+    const decision = {
+      turnId: "turn", modelId: "openrouter:typesafe/jev-1.13", phase: "observe" as const,
+      observation: null, pending: null, reason: null,
+      plan: { goal: "Search", constraints: [], allowedOrigins: ["https://example.com"] as [string],
+        actions: [{ kind: "click" as const, role: "button", name: "Search" }],
+        progress: [{ kind: "snapshot_contains" as const, text: "Results" }],
+        success: [{ kind: "snapshot_contains" as const, text: "Found" }] },
+    };
+    const state = makeState({ turnId: "turn", browserDecision: decision });
+    expect(shouldContinueAfterTools(state)).toBe("browser_decision");
+    expect(shouldContinueAfterTools({ ...state, turnId: "new-turn" })).toBe("pre_model");
+    expect(shouldContinueAfterTools({ ...state, approvalDenied: true })).toBe("pre_model");
+    expect(shouldContinueAfterTools({ ...state, modelRejectedToolCallIds: ["rejected"] })).toBe("pre_model");
+    expect(shouldContinueAfterTools({ ...state, noProgressPendingCorrection: {
+      toolName: "browser_click", operationDiscriminator: "", normalizedError: "failed",
+    } })).toBe("pre_model");
+    expect(shouldContinueAfterTools({ ...state, approvedToolCalls: [{ name: "browser_snapshot", args: {} }] })).toBe("tools");
+    expect(shouldContinueAfterTools({ ...state, browserDecision: { ...decision, phase: "handoff" } })).toBe("pre_model");
+  });
+});

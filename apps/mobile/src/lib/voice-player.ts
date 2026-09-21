@@ -1,19 +1,4 @@
-// D401 P1 — React Native TTS voice player.
-//
-// Mirrors the desktop VoicePlayer LOGIC
-// (apps/workbench/src/adapters/voice-player.ts): per-sentence chunk
-// buffering + a sequential playback queue. The desktop Web Audio API
-// (AudioContext / decodeAudioData) does NOT exist in React Native, so
-// playback runs on `expo-audio`: each finished sentence's concatenated MP3
-// bytes are written to a temp file in the cache dir and played via
-// `createAudioPlayer`, one sentence at a time.
-//
-// Server contract (`voice.audio`): base64 MP3 chunks stream per sentence
-// (final:false), terminated by an empty-data chunk (final:true). We decode
-// each chunk to BYTES and concatenate the bytes — never the base64 strings:
-// each chunk is independently `=`-padded, so string-concatenation yields
-// invalid base64 that fails to decode.
-
+// Complete-MP3 compatibility sink for servers and clients without PCM negotiation.
 import {
   createAudioPlayer,
   setAudioModeAsync,
@@ -46,6 +31,8 @@ export class VoicePlayer {
   private draining = false;
   private currentPlayer: AudioPlayer | null = null;
   private stopped = false;
+  private generation = 0;
+  private finishCurrent: (() => void) | null = null;
 
   constructor(onStatusChange?: StatusCallback) {
     this.onStatusChange = onStatusChange ?? null;
@@ -104,6 +91,7 @@ export class VoicePlayer {
 
   /** Stop playback, flush the queue + buffers. Does NOT send WS voice.stop. */
   stop(): void {
+    this.generation++;
     this.stopped = true;
     this.releaseCurrent();
     for (const uri of this.playbackQueue) deleteTemp(uri);
@@ -122,6 +110,7 @@ export class VoicePlayer {
   private async drainQueue(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
+    const generation = this.generation;
     this.stopped = false;
     // Force playback routing before each run — the mic recorder may have left
     // the session in record mode (allowsRecording:true), which silences media.
@@ -134,17 +123,17 @@ export class VoicePlayer {
     } catch {
       // best-effort
     }
+    if (generation !== this.generation || !this.enabled) return;
     this.setPlaying(true);
 
-    while (this.playbackQueue.length > 0 && !this.stopped) {
+    while (this.playbackQueue.length > 0 && !this.stopped && generation === this.generation) {
       const uri = this.playbackQueue.shift();
       if (uri === undefined) break;
       await this.playFile(uri);
       deleteTemp(uri);
     }
 
-    this.draining = false;
-    this.setPlaying(false);
+    if (generation === this.generation) { this.draining = false; this.setPlaying(false); }
   }
 
   private playFile(uri: string): Promise<void> {
@@ -162,6 +151,7 @@ export class VoicePlayer {
       const finish = (): void => {
         if (done) return;
         done = true;
+        if (this.finishCurrent === finish) this.finishCurrent = null;
         try {
           sub.remove();
         } catch {
@@ -175,6 +165,7 @@ export class VoicePlayer {
         }
         resolve();
       };
+      this.finishCurrent = finish;
       const sub = player.addListener("playbackStatusUpdate", (status: AudioStatus) => {
         // Play only once the source is actually loaded — calling play() on an
         // unloaded player can no-op (silent).
@@ -192,6 +183,8 @@ export class VoicePlayer {
   }
 
   private releaseCurrent(): void {
+    this.finishCurrent?.();
+    this.finishCurrent = null;
     if (this.currentPlayer) {
       try {
         this.currentPlayer.remove();

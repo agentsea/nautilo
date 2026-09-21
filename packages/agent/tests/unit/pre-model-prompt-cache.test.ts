@@ -9,6 +9,7 @@ import { setConfigOverrides } from "@nautilo/config";
 import { ToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { SECURITY_SCAN_INITIAL_LANES } from "@nautilo/types";
 import { preModelNode } from "../../src/nodes/pre-model";
+import { browserDecisionHandoffMessage, browserDecisionPlanSchema } from "../../src/graph/browser-decision";
 import { createFileTool } from "../../src/tools/file/file-tool";
 import { buildFileEditsBlock, buildTwoPathBlock, HTML_WORKSPACE_RICH_ARTIFACT_PROMPT } from "../../src/prompts/templates";
 import { SECURITY_RESEARCH_WORKFLOW } from "../../src/tools/security/research-protocol";
@@ -117,7 +118,68 @@ function expectCachedStablePrefix(message: SystemMessage): {
   };
 }
 
-describe("M293 OpenRouter Claude prompt caching", () => {
+describe(" OpenRouter Claude prompt caching", () => {
+  test.each(["openrouter:deepseek/deepseek-v4.1-flash", "anthropic:claude-sonnet-4-6"])(
+    "%s retains delegated provenance after verification without changing the leading system prompt", async (model) => {
+      const observation = { version: 1 as const, snapshot: "Draft prepared", refs: {}, pageUrl: "https://example.test/",
+        browserSessionId: "test-browser", observationId: "after-edit" };
+      const messages = [new HumanMessage("Prepare a draft without saving."),
+        new AIMessage({ content: "", tool_calls: [{ id: "last-observation", name: "browser_snapshot", args: {} }] }),
+        new ToolMessage({ name: "browser_snapshot", tool_call_id: "last-observation", content: JSON.stringify(observation) })];
+      const handoff = browserDecisionHandoffMessage(messages, {
+        turnId: "delegated-turn", modelId: "openrouter:typesafe/jev-1.13", phase: "handoff", reason: "completion_ready",
+        plan: browserDecisionPlanSchema.parse({ goal: "Prepare the draft" }), pending: null, observation,
+        lastAction: { toolCallId: "edit", description: "Fill the requested field", beforeObservationId: "before-edit", execution: "executed" },
+      });
+      const source = stateFor(model, { turnId: "delegated-turn", messages: [...messages, handoff], browserDecision: null });
+      const before = await preModelNode(source);
+      const verified = await preModelNode({ ...source, promptTimeReference: before.promptTimeReference ?? null,
+        messages: [...source.messages,
+          new AIMessage({ content: "", tool_calls: [{ id: "verify", name: "browser_read_page", args: {} }] }),
+          new ToolMessage({ name: "browser_read_page", tool_call_id: "verify", content: "Draft verified; no saved receipt." })] });
+      expect(verified.preparedMessages?.[0]?.content).toEqual(before.preparedMessages?.[0]?.content);
+      expect(JSON.stringify(verified.preparedMessages?.[0]?.content)).not.toContain("Runtime browser supervision");
+      const receipt = verified.preparedMessages?.find((message) => ToolMessage.isInstance(message) && message.tool_call_id === "last-observation");
+      expect(receipt?.content).toContain('"handoffReason":"completion_ready"');
+      expect(receipt?.content).toContain('"decisionModelId":"openrouter:typesafe/jev-1.13"');
+      expect(verified.preparedMessages?.at(-1)?.content).toBe("Draft verified; no saved receipt.");
+      expect(source.messages.at(-1)).toBe(handoff);
+    },
+  );
+
+  test("OpenAI handoffs preserve the preceding prompt and their instruction role", async () => {
+    const state = stateFor("openai:gpt-5.6-sol", {
+      turnId: "browser-turn",
+      messages: [
+        new HumanMessage("Adjust the equipment control and verify the saved value."),
+        new AIMessage({ content: "", tool_calls: [{ id: "observe", name: "browser_snapshot", args: {} }] }),
+        new ToolMessage({ name: "browser_snapshot", tool_call_id: "observe", content: "Current control value: 6" }),
+      ],
+    });
+    const before = await preModelNode(state);
+    const original = JSON.stringify(state.messages);
+    const handoff = new SystemMessage({ id: "handoff", content: "Routine browser control returned: inspect fresh evidence and revise the plan." });
+    const after = await preModelNode({ ...state, promptTimeReference: before.promptTimeReference ?? null,
+      messages: [...state.messages, handoff] });
+    expect(after.preparedMessages?.slice(0, -1).map(message => message.content))
+      .toEqual(before.preparedMessages?.map(message => message.content));
+    expect(after.preparedMessages?.at(-1)).toBeInstanceOf(SystemMessage);
+    expect(after.preparedMessages?.at(-1)?.content).toBe(handoff.content);
+    expect(JSON.stringify(state.messages)).toBe(original);
+    expect(after.preparedStableSystemPrefixLength).toBe(before.preparedStableSystemPrefixLength);
+  });
+
+  test.each(["anthropic:claude-sonnet-4-6", "openrouter:anthropic/claude-sonnet-4.6"])(
+    "%s retains later instructions in its required leading system prompt", async (model) => {
+      const handoffText = "Routine browser control returned: inspect fresh evidence.";
+      const patch = await preModelNode(stateFor(model, {
+        messages: [new HumanMessage("Continue the browser task."), new SystemMessage(handoffText)],
+      }));
+      expect(patch.preparedMessages?.filter(message => SystemMessage.isInstance(message))).toHaveLength(1);
+      expect(JSON.stringify(patch.preparedMessages?.[0]?.content)).toContain(handoffText);
+    },
+  );
+
   test("resumed state retains authored Soul and Skill bodies", async () => {
     const state = stateFor("openai:gpt-5.6-luna", {
       soulFile: "STALE_SOUL_SECRET",
@@ -232,7 +294,7 @@ describe("M293 OpenRouter Claude prompt caching", () => {
   });
 });
 
-describe("D568 connected website prompt inventory", () => {
+describe(" connected website prompt inventory", () => {
   test("injects the authorized account outside the stable prompt cache", async () => {
     setConnectedWebAccountReadToolRuntime({
       listAvailable: async () => [{

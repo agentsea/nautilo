@@ -47,6 +47,7 @@ import {
   DISPATCH_DEFAULT_TIMEOUT_MS,
   OPENHUE_SETUP_TIMEOUT_MS,
   DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION,
+  browserToolMayMutate,
   canRelayExecuteApplyPatch,
   canRelayExecuteBrowserResearchRead,
   canRelayExecuteBrowserResearchConsentRecovery,
@@ -143,28 +144,28 @@ interface RelayEntry {
   userId: string;
   capabilities: RelayCapabilities;
   /**
-   * Protocol version the relay registered with (M174). Used to gate the
+   * Protocol version the relay registered with. Used to gate the
    * `fs` execution class — only relays at v2+ can serve `file` fs
-   * primitives; a relay below the feature threshold is treated as
+   * primitives; a relay below threshold is treated as
    * "no fs-capable relay". Defaults
    * to 1 when a caller omits it (back-compat with older register paths).
    */
   protocolVersion: number;
   /**
-   * D418 protocol v7 — per Electron main-process-launch identity. Present
+   * protocol v7 — per Electron main-process-launch identity. Present
    * only for desktop relays; the headless relay never sends one. Required
    * to accept `relay:update-capabilities` for this entry.
    */
   desktopSessionId?: string | undefined;
   /**
-   * D418 protocol v7 — monotonic revision of the advertised capability
+   * protocol v7 — monotonic revision of the advertised capability
    * state. Set at register and bumped on each accepted
    * `updateCapabilities`. Updates with a revision <= this are rejected as
    * stale/duplicate.
    */
   capabilityRevision: number;
   /**
-   * D418 — the relay's advisory active-grant snapshot, retained under this
+   * the relay's advisory active-grant snapshot, retained under this
    * authenticated user/relay association. Present only when the relay
    * advertised a snapshot that passed the strict parser; a malformed snapshot
    * is dropped (see `register`) and leaves this `undefined`. It is discovery
@@ -173,13 +174,13 @@ interface RelayEntry {
    */
   desktopFilesystemGrantSnapshot?: RelayDesktopFilesystemGrantSnapshot | undefined;
   /**
-   * D516 — validated redacted Computer use grant projection. This is only
+   * validated redacted Computer use grant projection. This is only
    * current-live discovery evidence; Electron reloads and enforces the local
    * receipt before an effect. Absent means Off/recovery/malformed.
    */
   desktopAutomationSnapshot?: RelayDesktopAutomationSnapshot | undefined;
   /**
-   * D418 — the relay's advisory Workstation Profile binding snapshot, retained
+   * the relay's advisory Workstation Profile binding snapshot, retained
    * under this authenticated user/relay association. Present only when the
    * relay advertised a snapshot that passed the strict parser; a malformed
    * snapshot is dropped (see `register`) and leaves this `undefined`. It is
@@ -189,7 +190,7 @@ interface RelayEntry {
    */
   workstationProfileSnapshot?: RelayWorkstationProfileSnapshot | undefined;
   /**
-   * D418 Commit 2 — the server-derived `pairingGeneration` stamped from the
+   * the server-derived `pairingGeneration` stamped from the
    * validated relay-token row id at register. It is NEVER accepted from the
    * relay/client payload: the endpoint reads it off the validated token and
    * passes it here. Present only when the register path supplied one (a
@@ -200,7 +201,7 @@ interface RelayEntry {
    * are invalidated even when desktopSessionId is reused.
    */
   pairingGeneration?: string | undefined;
-  /** D453 v8 — minted per live socket; never client-authored. */
+  /** minted per live socket; never client-authored. */
   relaySessionId?: string | undefined;
   /** Opaque derivation of the validated pairing generation. */
   pairingGenerationRef?: string | undefined;
@@ -231,14 +232,14 @@ interface CodexCommandOutcome {
 }
 
 /**
- * D458 — server-private, copied view of a currently connected relay that is
- * eligible to be projected as a paired remote host.  This is intentionally a
+ * server-private, copied view of a currently connected relay that is
+ * eligible to be projected as a paired remote host. This is intentionally a
  * registry/server seam, not an API response: consumers must still join it to
  * durable, owner-scoped controller bindings before returning anything to a
  * client.
  *
  * Only relays carrying a non-empty server-derived pairing generation are
- * included.  A connection without that generation cannot safely be matched to
+ * included. A connection without that generation cannot safely be matched to
  * a remote-controller binding and is therefore omitted rather than guessed.
  */
 export interface RemotePresenceRelaySnapshot {
@@ -254,11 +255,11 @@ export interface RemotePresenceRelaySnapshot {
 }
 
 /**
- * D458 — the only relay capability data allowed to cross the remote-presence
- * seam.  This is deliberately not `RelayCapabilities`: remote-host discovery
+ * the only relay capability data allowed to cross the remote-presence
+ * seam. This is deliberately not `RelayCapabilities`: remote-host discovery
  * needs a device profile and a few readiness hints, never filesystem paths,
  * network policy, security posture, MCP names, or advisory grant/profile
- * snapshots.  Adding a field here is an explicit API/security decision.
+ * snapshots. Adding a field here is an explicit API/security decision.
  */
 export interface RemotePresenceCapabilitySummary {
   readonly profile: "desktop-agent" | "device-relay";
@@ -272,7 +273,7 @@ export interface RemotePresenceCapabilitySummary {
 }
 
 /**
- * D516 — server-private current-live tuple for semantic desktop admission.
+ * server-private current-live tuple for semantic desktop admission.
  * It is deliberately not part of remote-host presence or any client API.
  */
 export interface ComputerUseRelaySnapshot {
@@ -286,8 +287,8 @@ export interface ComputerUseRelaySnapshot {
 }
 
 /**
- * D458 — post-mutation notification for the remote-host projector.  Both
- * snapshots are fresh copies.  `current:null` is the disconnect signal; the
+ * post-mutation notification for the remote-host projector. Both
+ * snapshots are fresh copies. `current:null` is the disconnect signal; the
  * previous snapshot preserves the exact pairing generation needed to retract
  * presence without a best-effort reverse lookup.
  */
@@ -308,7 +309,7 @@ function copyRelayCapabilities(capabilities: RelayCapabilities): RelayCapabiliti
 }
 
 /**
- * Make a deliberately boring, allow-listed copy for remote presence.  In
+ * Make a deliberately boring, allow-listed copy for remote presence. In
  * particular, advisory grant/profile snapshots, filesystem paths, network
  * allowlists, and MCP server/tool names are not part of remote-host discovery.
  * Only the profile and explicitly-curated readiness booleans cross this seam.
@@ -358,7 +359,7 @@ const DESKTOP_AUTOMATION_SNAPSHOT_KEYS = [
 ] as const;
 
 /**
- * Strictly parse the redacted D516 discovery tuple. This is kept inside the
+ * Strictly parse the redacted discovery tuple. This is kept inside the
  * registry because registration and capability replacement are both hostile
  * transport boundaries; accepting a typed RelayCapabilities object is not a
  * substitute for validating its runtime bytes.
@@ -409,7 +410,7 @@ function parseRelayDesktopAutomationSnapshot(
 }
 
 /**
- * D418 — validate any advertised advisory snapshots at registration. Both the
+ * validate any advertised advisory snapshots at registration. Both the
  * active-grant snapshot and the Workstation Profile binding snapshot are
  * advisory discovery only, so a malformed one is IGNORED SAFELY (dropped from
  * stored capabilities) rather than failing the whole relay registration —
@@ -469,7 +470,7 @@ function sanitizeAdvisorySnapshots(
       working = { ...working, claude: parsed.value };
     }
   }
-  // D452 v18 execution is a separate current-socket capability. Invalid
+  // execution is a separate current-socket capability. Invalid
   // optional registration declarations are denial-only; an explicit update
   // below rejects them so it cannot silently retain an older execution host.
   if (capabilities.claudeExecution !== undefined) {
@@ -481,7 +482,7 @@ function sanitizeAdvisorySnapshots(
       working = { ...working, claudeExecution: parsed.value };
     }
   }
-  // D500 readiness is an allow-listed, secret-free discovery projection. A
+  // readiness is an allow-listed, secret-free discovery projection. A
   // malformed optional declaration is dropped at registration; explicit
   // capability replacement rejects it below.
   if (capabilities.structuredSsh !== undefined) {
@@ -495,7 +496,7 @@ function sanitizeAdvisorySnapshots(
   }
   if (capabilities.acp !== undefined) {
     const parsed = parseRelayAcpCapability(capabilities.acp);
-    // ACP v13 advertised the readiness-only host.  Keep that capability on
+    // ACP v13 advertised the readiness-only host. Keep that capability on
     // an otherwise valid v13 relay; v14 execution is gated separately when
     // its typed lifecycle messages are admitted.
     if (!parsed.ok || capabilities.profile !== "desktop-agent" || protocolVersion < ACP_RELAY_READINESS_PROTOCOL_VERSION) {
@@ -508,7 +509,7 @@ function sanitizeAdvisorySnapshots(
   let snapshot: RelayDesktopFilesystemGrantSnapshot | undefined;
   const advertisedGrant = capabilities.desktopFilesystemGrantSnapshot;
   if (advertisedGrant !== undefined && protocolVersion < DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION) {
-    // D448 protocol cutover: pre-v9 relays never advertised the renamed
+    // protocol cutover: pre-v9 relays never advertised the renamed
     // snapshot wire field. Drop it rather than retaining a value an old peer
     // could not have understood.
     const { desktopFilesystemGrantSnapshot: _droppedGrant, ...rest } = working;
@@ -567,7 +568,7 @@ function sanitizeAdvisorySnapshots(
 }
 
 /**
- * D418 protocol v7 — strict, fail-closed parser for a `relay:update-capabilities`
+ * protocol v7 — strict, fail-closed parser for a `relay:update-capabilities`
  * payload. Unlike `sanitizeAdvisorySnapshots` (used at register, where a
  * malformed advisory snapshot is dropped but the relay stays registered), an
  * update is an explicit full-replacement: a malformed payload REJECTS the
@@ -629,7 +630,7 @@ const REMOTE_PRESENCE_CAPABILITY_BOOLEAN_KEYS = [
 ] as const;
 
 // These paths are retained only inside the authenticated relay registry. In
-// particular, D458's two desktop roots must never be added to the much
+// particular, the current two desktop roots must never be added to the much
 // narrower RemotePresenceCapabilitySummary projection below.
 const CAPABILITY_STRING_KEYS = [
   "dataDir",
@@ -850,11 +851,11 @@ interface PendingDispatch {
   toolName: string;
   /** Only a raw command can have started a child process. */
   rawRunShellCommand: boolean;
-  /** D538-only subset of raw shell work admitted to the uncontained runner. */
+  /** subset of raw shell work admitted to the uncontained runner. */
   realWorkstationRawRunShell: boolean;
   /** A structured SSH frame may have reached Electron's fixed broker. */
   structuredSshDispatch: boolean;
-  /** A bound mutating Computer Use contract may have changed state before its receipt is lost. */
+  /** A mutating Computer Use or Browser frame may have changed UI state before its receipt is lost. */
   effectfulDesktopAutomation: boolean;
   /** Exact prepared operation; auth is deliberately progress-free. */
   structuredSshOperation?: RelaySshOperation | undefined;
@@ -1051,8 +1052,8 @@ function sshPreparePendingKey(relayId: string, requestId: string): string {
 }
 
 /**
- * D500's shared catalog token covers both auth and exec, so it is usable only
- * when the relay's exact aggregate permits both operations.  Keep this
+ * 's shared catalog token covers both auth and exec, so it is usable only
+ * when the relay's exact aggregate permits both operations. Keep this
  * projection check here, beside the registry routes that consume it: the
  * Electron-local prepare still selects the one destination-specific grant.
  */
@@ -1079,7 +1080,7 @@ function hasConfigurableStructuredSshCopy(capabilities: RelayCapabilities): bool
 }
 
 /**
- * The current catalog token cannot distinguish copy direction.  Advertising
+ * The current catalog token cannot distinguish copy direction. Advertising
  * it therefore requires OpenSSH scp plus both aggregate directions.
  */
 function hasStructuredSshCopyReadiness(capabilities: RelayCapabilities): boolean {
@@ -1226,41 +1227,43 @@ function isStructuredSshDispatch(request: {
 }
 
 function isEffectfulDesktopAutomationDispatch(request: {
+  readonly toolName: string;
   readonly executionClass?: string | undefined;
   readonly desktopAutomationBinding?: unknown;
 }): boolean {
-  return request.executionClass === "computer_use" &&
-    request.desktopAutomationBinding !== undefined;
+  return (request.executionClass === "computer_use" &&
+    request.desktopAutomationBinding !== undefined) ||
+    (request.executionClass === "browser" && browserToolMayMutate(request.toolName));
 }
 
 /**
- * D423 4.1.3 — server-private snapshot of a connected relay, surfaced for
+ * 4.1.3 — server-private snapshot of a connected relay, surfaced for
  * focused-local-file validation. Carries ONLY the fields the local-file
  * resolver needs to enforce sender ownership + protocol v4 +
  * `profile:"desktop-agent"` + `localFileExecution:true`. Relay IDs, byte
  * bridges, and WebSocket/API transport stay hidden from the model — this
  * snapshot never authorizes a byte read; filesystem authority (realpath /
- * symlink / allowedRoots) remains with M206 tool dispatch on the relay.
+ * symlink / allowedRoots) remains with tool dispatch on the relay.
  */
 export interface FocusedResourceRelaySnapshot {
   /** True when the relay's registered owner id matches the sending actor. */
   ownedByActor: boolean;
-  /** Protocol version the relay registered with (M174). */
+  /** Protocol version the relay registered with. */
   protocolVersion: number;
   profile: "device-relay" | "desktop-agent";
   localFileExecution: boolean;
-  /** D448 — relay can run the dedicated v8 apply-patch operation. */
+  /** relay can run the dedicated v8 apply-patch operation. */
   applyPatchExecution: boolean;
   /** Relay-advertised allowed roots (advisory for tool dispatch; never the
-   *  focus resolver's authority — `rootPath`/`allowedRoots` are revalidated
-   *  by the relay at execution time). */
+   * focus resolver's authority — `rootPath`/`allowedRoots` are revalidated
+   * by the relay at execution time). */
   allowedRoots: readonly string[];
-  /** M206 — relay bundles OfficeCLI and can run structured local Office ops. */
+  /** relay bundles OfficeCLI and can run structured local Office ops. */
   canRunOffice: boolean;
 }
 
 /**
- * D448 — exact eligibility gate for an already-pinned focused relay. This is
+ * exact eligibility gate for an already-pinned focused relay. This is
  * intentionally a gate, not a selector: callers must never replace an
  * unavailable or incompatible pinned relay with another connected device.
  */
@@ -1281,7 +1284,7 @@ export function canDispatchApplyPatchToFocusedRelay(
 /** Stable fail-closed error returned for every rejected v8 relay round trip. */
 export const APPLY_PATCH_RELAY_DISPATCH_ERROR = "relay apply-patch dispatch failed";
 
-/** A sanitized relay failure with the public D448 stable category intact. */
+/** A sanitized relay failure with the public stable category intact. */
 export class ApplyPatchRelayDispatchError extends Error {
   readonly applyPatchErrorCode: "stale_context" | "human_edit_conflict" | "reapply_required" | "denied_path" | "runtime_unavailable" | "parse_error" | "invalid_request";
   readonly applyPatchFailureReason: "stale_current_folder" | undefined;
@@ -1296,7 +1299,7 @@ export class ApplyPatchRelayDispatchError extends Error {
   }
 }
 
-/** Stable, redacted error for D504's exact Desktop-only research read. */
+/** Stable, redacted error for the current exact Desktop-only research read. */
 export class BrowserResearchReadRelayDispatchError extends Error {
   readonly browserResearchReadErrorCode:
     | "runtime_unavailable" | "transport_failed" | "invalid_result"
@@ -1308,7 +1311,7 @@ export class BrowserResearchReadRelayDispatchError extends Error {
   }
 }
 
-/** Stable, redacted error for D504 v13's inert retained-page inspection. */
+/** Stable, redacted error for v13's inert retained-page inspection. */
 export class BrowserResearchSnapshotInspectionRelayDispatchError extends Error {
   readonly browserResearchSnapshotInspectionErrorCode:
     | "runtime_unavailable" | "transport_failed" | "invalid_result"
@@ -1362,7 +1365,7 @@ function stableApplyPatchRelayErrorCode(errorCode: string | undefined): ApplyPat
 }
 
 /**
- * D423 4.1.3 — narrow registry port the focused-resource resolver consumes.
+ * 4.1.3 — narrow registry port the focused-resource resolver consumes.
  * Structurally satisfied by `InMemoryRelayRegistry`; declared as a port so
  * the server-side resolver (`packages/server/.../focused-resources.ts`) does
  * not depend on the full runtime registry surface.
@@ -1375,7 +1378,7 @@ interface FocusedResourceRelayRegistry {
 }
 
 /**
- * D418 — input passed to the `onUnregister` hook. Captured from the
+ * input passed to the `onUnregister` hook. Captured from the
  * registry entry BEFORE it is deleted so the callback can fail-closed
  * any server-side state bound to that relay (e.g. invalidate a Full
  * Workstation session). `desktopSessionId` is `null` for a headless
@@ -1388,7 +1391,7 @@ export interface InMemoryRelayRegistryUnregisterInput {
 }
 
 /**
- * D480 — a server-private snapshot of a live relay whose validated
+ * a server-private snapshot of a live relay whose validated
  * pairing-generation is being revoked. This is intentionally a narrow
  * lifecycle view: callers can invalidate authority and ask the websocket
  * endpoint to close this exact live relay, but do not receive capabilities,
@@ -1402,7 +1405,7 @@ export interface LiveRelayPairingGenerationSnapshot {
 }
 
 /**
- * D418 — input passed to the `onDesktopSessionReplaced` hook. Captured
+ * input passed to the `onDesktopSessionReplaced` hook. Captured
  * when a register call replaces an existing entry for the SAME
  * `(relayId, userId)` with a DIFFERENT non-empty `desktopSessionId`.
  * `previousDesktopSessionId` is the dead main-process-launch identity;
@@ -1416,7 +1419,7 @@ export interface InMemoryRelayRegistryDesktopSessionReplacedInput {
 }
 
 /**
- * D418 Commit 2 — input passed to the `onPairingGenerationChanged` hook.
+ * input passed to the `onPairingGenerationChanged` hook.
  * Captured when a register call replaces an existing entry for the SAME
  * `(relayId, userId)` with the SAME non-empty `desktopSessionId` but a
  * DIFFERENT non-empty `pairingGeneration`. This is the explicit re-pair
@@ -1435,7 +1438,7 @@ export interface InMemoryRelayRegistryPairingGenerationChangedInput {
 }
 
 /**
- * D418 reconnect/session split-brain fix — input passed to the
+ * reconnect/session split-brain fix — input passed to the
  * `onWorkstationProfileSnapshotCleared` hook. Captured when a register or
  * `updateCapabilities` transition causes a desktop relay's advisory
  * Workstation Profile binding snapshot to go from PRESENT to ABSENT
@@ -1460,7 +1463,7 @@ export interface InMemoryRelayRegistryWorkstationProfileSnapshotClearedInput {
 }
 
 /**
- * D418 reconnect/session split-brain fix — minimal structural view of an
+ * reconnect/session split-brain fix — minimal structural view of an
  * active Full Workstation session that the relay registry exposes to the
  * agent tools node (via the injected `getActiveWorkstationSession` lookup)
  * so the no-plan `run_shell` gate can fail closed for an active session
@@ -1477,8 +1480,8 @@ export interface RelayActiveWorkstationSessionView {
 }
 
 /**
- * D418 — registry construction options. All fields optional; the
- * pre-D418 `new InMemoryRelayRegistry()` call site stays valid.
+ * registry construction options. All fields optional; the
+ * earlier `new InMemoryRelayRegistry` call site stays valid.
  */
 export interface InMemoryRelayRegistryOptions {
   /** Fresh execution-time RBAC check for an exact semantic desktop dispatch. */
@@ -1489,15 +1492,15 @@ export interface InMemoryRelayRegistryOptions {
     readonly toolName: string;
   }) => boolean | Promise<boolean>) | undefined;
   /**
-   * D502 — bounded receipt grace after a raw shell's command deadline or
+   * bounded receipt grace after a raw shell's command deadline or
    * forwarded cancel. Production uses the 5s default; the override exists
    * solely to keep registry timing tests deterministic and cannot exceed 10s.
    */
   readonly runShellResultReceiptGraceMs?: number | undefined;
-  /** D516 — bounded wait for Electron's canonical Computer Use receipt after cancel/timeout. */
+  /** Bounded wait for Electron's canonical Computer Use or Browser mutation receipt after cancel/timeout. */
   readonly desktopAutomationResultReceiptGraceMs?: number | undefined;
   /**
-   * D458 — invoked after a relay's remotely-projectable presence changes:
+   * invoked after a relay's remotely-projectable presence changes:
    * after registration has replaced the entry, after an accepted capability
    * replacement, and after unregister has deleted it. It deliberately does
    * not run for heartbeats. The snapshots are detached copies, and duplicate
@@ -1526,7 +1529,7 @@ export interface InMemoryRelayRegistryOptions {
     | ((input: InMemoryRelayRegistryUnregisterInput) => void)
     | undefined;
   /**
-   * D418 — invoked synchronously during `register` when an existing entry
+   * invoked synchronously during `register` when an existing entry
    * for the same `(relayId, userId)` is about to be replaced by one
    * carrying a DIFFERENT non-empty `desktopSessionId`. This is the
    * app-restart signal: a desktop relay's main-process-launch identity
@@ -1549,7 +1552,7 @@ export interface InMemoryRelayRegistryOptions {
     | ((input: InMemoryRelayRegistryDesktopSessionReplacedInput) => void)
     | undefined;
   /**
-   * D418 Commit 2 — invoked synchronously during `register` when an existing
+   * invoked synchronously during `register` when an existing
    * entry for the same `(relayId, userId)` is about to be replaced by one
    * carrying the SAME non-empty `desktopSessionId` but a DIFFERENT non-empty
    * `pairingGeneration`. This is the explicit re-pair signal: the
@@ -1575,7 +1578,7 @@ export interface InMemoryRelayRegistryOptions {
     | ((input: InMemoryRelayRegistryPairingGenerationChangedInput) => void)
     | undefined;
   /**
-   * D418 reconnect/session split-brain fix — invoked synchronously during
+   * reconnect/session split-brain fix — invoked synchronously during
    * `register` or `updateCapabilities` when a desktop relay's advisory
    * Workstation Profile binding snapshot transitions from PRESENT to ABSENT
    * (cleared or omitted) for an entry that previously carried one. This is
@@ -1599,7 +1602,7 @@ export interface InMemoryRelayRegistryOptions {
     | ((input: InMemoryRelayRegistryWorkstationProfileSnapshotClearedInput) => void)
     | undefined;
   /**
-   * D418 reconnect/session split-brain fix — lookup the LIVE active Full
+   * reconnect/session split-brain fix — lookup the LIVE active Full
    * Workstation session for a user, exposed to the agent tools node so the
    * no-plan `run_shell` gate can fail closed for an active session even
    * when the selected relay's profile snapshot is absent (defense in depth
@@ -1611,11 +1614,11 @@ export interface InMemoryRelayRegistryOptions {
   readonly getActiveWorkstationSession?:
     | ((userId: string) => RelayActiveWorkstationSessionView | null)
     | undefined;
-  /** D452 testable bound for one exact ACP turn's retained/subscriber events. */
+  /** testable bound for one exact ACP turn's retained/subscriber events. */
   readonly acpEventQueueMaxEntries?: number | undefined;
-  /** D452 byte bound includes queued and handed-but-unacknowledged events. */
+  /** byte bound includes queued and handed-but-unacknowledged events. */
   readonly acpEventQueueMaxBytes?: number | undefined;
-  /** D452 global active-turn bound; active turns are never silently evicted. */
+  /** global active-turn bound; active turns are never silently evicted. */
   readonly acpMaxTurns?: number | undefined;
 }
 
@@ -1667,7 +1670,7 @@ export type RelayClaudeConnectionRouteResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: "CLAUDE_CONNECTION_UNAVAILABLE" | "CLAUDE_CONNECTION_CONTEXT_STALE" | "CLAUDE_CONNECTION_CORRELATION_REPLAY" };
 
-/** D452 v18 — thin current-socket Claude execution, never a durable broker. */
+/** thin current-socket Claude execution, never a durable broker. */
 export type RelayClaudeExecutionOpenResult =
   | Readonly<{
       ok: false;
@@ -2103,9 +2106,9 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     desktopSessionId?: string,
     capabilityRevision?: number,
     /**
-     * D418 Commit 2 — server-derived `pairingGeneration` stamped from the
+     * server-derived `pairingGeneration` stamped from the
      * validated relay-token row id by the relay endpoint. NEVER accepted
-     * from the relay/client payload. Optional only for pre-D418-compat
+     * from the relay/client payload. Optional only for earlier
      * call sites; the binding provider treats a missing/empty value as
      * ineligible so a Full Workstation session cannot bind to a relay that
      * never proved a pairing generation.
@@ -2119,7 +2122,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       desktopAutomationSnapshot,
     } =
       sanitizeAdvisorySnapshots(capabilities, protocolVersion);
-    // D418 — app-restart desktop-session invalidation. When the SAME
+    // app-restart desktop-session invalidation. When the SAME
     // `(relayId, userId)` re-registers with a DIFFERENT non-empty
     // `desktopSessionId`, the prior Full Workstation session is bound to a
     // dead desktop session. Emit the narrow replacement hook BEFORE the
@@ -2170,7 +2173,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         pairingGeneration !== "" &&
         previousPairingGeneration !== pairingGeneration
       ) {
-        // D418 Commit 2 — explicit re-pair: the same relay/user re-registered
+        // explicit re-pair: the same relay/user re-registered
         // with the SAME desktopSessionId but a DIFFERENT server-derived
         // pairingGeneration. Invalidate bound Full Workstation sessions +
         // plans even though desktopSessionId is reused.
@@ -2186,7 +2189,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
           // Swallow — a callback error must never block registration.
         }
       }
-      // D418 reconnect/session split-brain fix — fail-closed snapshot-loss
+      // reconnect/session split-brain fix — fail-closed snapshot-loss
       // seam. When the prior entry carried an advisory Workstation Profile
       // binding snapshot AND a non-empty desktopSessionId (so a Full
       // Workstation session could be live against it) and this register
@@ -2219,7 +2222,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       }
     }
     if (existing !== undefined) {
-      // Desktop/pairing lifecycle callbacks above invalidate the exact D538
+      // Desktop/pairing lifecycle callbacks above invalidate the exact
       // activation first. While the old authenticated socket is still
       // installed, cancel only its pending uncontained raw shells, then apply
       // the existing replacement result fence to all old-generation work.
@@ -2276,7 +2279,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       lastSeen: Date.now(),
       send,
     });
-    // D458 — notify only after the new entry is fully visible to consumers.
+    // notify only after the new entry is fully visible to consumers.
     // A re-register carries both snapshots; a first registration has null
     // previous. If either side lacks a server-derived pairing generation, it
     // remains null and the projector fails closed rather than guessing.
@@ -2289,7 +2292,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D418 protocol v7 — atomically replace a connected desktop relay's full
+   * protocol v7 — atomically replace a connected desktop relay's full
    * advertised capability state. Accepts updates ONLY for the registered
    * authenticated relay/user, requires an exact `desktopSessionId` match,
    * strictly parses the full capabilities (including the grant snapshot),
@@ -2355,7 +2358,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       entry.workstationProfileSnapshot = structuredClone(parsed.profileSnapshot);
     } else {
       // Narrower/absent profile binding: clear the advisory hint immediately.
-      // D418 reconnect/session split-brain fix — a present→absent transition
+      // reconnect/session split-brain fix — a present→absent transition
       // for a desktop relay fires the fail-closed cleared hook so production
       // invalidates any matching Full Workstation session + plans BEFORE the
       // entry reflects the cleared snapshot. (parsed.profileSnapshot ===
@@ -2388,7 +2391,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     this.clearClaudeConnectionState(entry.relayId, "CLAUDE_CONNECTION_CONTEXT_STALE");
     this.clearClaudeExecutionState(entry.relayId, "CLAUDE_EXECUTION_CONTEXT_STALE");
     entry.lastSeen = Date.now();
-    // D458 — publish after the atomic replacement has become observable.
+    // publish after the atomic replacement has become observable.
     this.notifyRemotePresenceChanged(
       entry.relayId,
       previousRemotePresence,
@@ -2398,9 +2401,9 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D384 Phase 5 — push a fresh MCP config set to a connected relay so it
+   * push a fresh MCP config set to a connected relay so it
    * (re)starts its hosted MCP fleet LIVE (no reconnect needed). The relay's
-   * `mcpHost.configure()` reconciles to this set: newly-enabled servers start
+   * `mcpHost.configure` reconciles to this set: newly-enabled servers start
    * + advertise their tools; removed/disabled ones stop. Returns false (no-op)
    * if the relay isn't currently connected — it will pick up the config on its
    * next register instead.
@@ -2413,7 +2416,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D503 v12: ask one connected, MCP-capable relay for a name-only local
+   * ask one connected, MCP-capable relay for a name-only local
    * prerequisite report. The promise resolves only when the same relay echoes
    * the exact request id, digest, and target name.
    */
@@ -2477,7 +2480,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D503 v12: reconcile an MCP fleet and await the exact state of one target.
+   * reconcile an MCP fleet and await the exact state of one target.
    * This is intentionally separate from `sendConfigureMcp`, which remains the
    * legacy uncorrelated hot-reconfigure API for old relay/server pairs.
    */
@@ -2587,7 +2590,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D500 v14: construct dynamic provenance exclusively from the currently
+   * construct dynamic provenance exclusively from the currently
    * authenticated relay socket, then ask Electron to resolve and prepare the
    * approved request against local OpenSSH state. No caller can supply a grant,
    * identity, session id, pairing reference, or capability revision.
@@ -2702,7 +2705,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   unregister(relayId: string): Promise<void> {
-    // D418 — capture the entry before deletion so the onUnregister hook
+    // capture the entry before deletion so the onUnregister hook
     // can fail-closed any server-side state bound to this relay (e.g.
     // invalidate a Full Workstation session). The hook is invoked on every
     // unregister path: explicit `relay:disconnect`, socket close, and the
@@ -2763,47 +2766,47 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       args: Record<string, unknown>;
       impact: "read-only" | "low" | "high" | "destructive";
       approvalObtained: boolean;
-      /** D565 v19 exact Relay provenance for a hosted MCP tool. */
+      /** exact Relay provenance for a hosted MCP tool. */
       hostedBy?: string | undefined;
       allowedRoots?: string[] | undefined;
       /**
-       * D448 protocol v9 — optional resolver input only. The registry stores
+       * protocol v9 — optional resolver input only. The registry stores
        * and forwards it without treating roots or grant ids as authority.
        */
       desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
-      /** D418 — opaque generic-shell binding metadata; local relay state remains authority. */
+      /** opaque generic-shell binding metadata; local relay state remains authority. */
       workstationShellBinding?: RelayWorkstationShellBinding | undefined;
-      /** D538 server-owned marker for a live-session-admitted uncontained raw shell. */
+      /** server-owned marker for a live-session-admitted uncontained raw shell. */
       uncontainedHostCommandsSession?: true | undefined;
-      /** D500 — validated, secret-free structured SSH admission metadata. */
+      /** validated, secret-free structured SSH admission metadata. */
       sshBinding?: RelaySshDispatchBindingV1 | undefined;
       timeout?: number | undefined;
       /**
-       * Per-turn sandbox profile (D060 Sprint 1 G5.4). Optional at
+       * Per-turn sandbox profile ( Sprint 1 G5.4). Optional at
        * the type level for the G5.4.a foundation commit; release
        * builds will require it once G5.4.c lands the relay-side
        * guard + policy-resolver construction.
        */
       sandboxProfile?: RelaySandboxProfile | undefined;
-      /** D516 computer_use / D291 desktop / M174 fs / M206 local-file / D500 structured SSH — server-set execution classes. */
+      /** computer_use / desktop / fs / local-file / structured SSH — server-set execution classes. */
       executionClass?: "computer_use" | "desktop" | "fs" | "browser" | "local-file" | "real_workstation" | "structured-ssh" | undefined;
       /** Narrow observer for the exact pending security scan. */
       onSecurityScanProgress?: ((progress: RelaySecurityScanProgressMessage) => void) | undefined;
-      /** D502 local server observer for paired Desktop raw-shell progress. */
+      /** local server observer for paired Desktop raw-shell progress. */
       onRunShellProgress?: ((progress: RelayRunShellProgressMessage) => void) | undefined;
-      /** D500 v15 observer for one exact structured SSH pending dispatch. */
+      /** observer for one exact structured SSH pending dispatch. */
       onStructuredSshProgress?: ((progress: RelayStructuredSshProgressMessage) => void) | undefined;
       /** Server-local enclosing Job cancellation; never copied to the wire frame. */
       signal?: AbortSignal | undefined;
-      /** D516 exact semantic computer binding; already parsed at server admission. */
+      /** exact semantic computer binding; already parsed at server admission. */
       desktopAutomationBinding?: NonNullable<
         Extract<RelayServerMessage, { type: "relay:dispatch" }>["desktopAutomationBinding"]
       > | undefined;
-      /** D516 signed-catalogue Host request; forwarded opaquely to Electron. */
+      /** signed-catalogue Host request; forwarded opaquely to Electron. */
       computerUseRequest?: NonNullable<
         Extract<RelayServerMessage, { type: "relay:dispatch" }>["computerUseRequest"]
       > | undefined;
-      /** M286 server-local exact Task continuation fence; never serialized. */
+      /** server-local exact Task continuation fence; never serialized. */
       requiredRelaySessionId?: string | undefined;
       requiredDesktopSessionId?: string | undefined;
       requiredPairingGeneration?: string | undefined;
@@ -2885,10 +2888,10 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     const rawRunShellCommand = isRawRunShellCommand(request);
     const structuredSshDispatch = isStructuredSshDispatch(request);
     const effectfulDesktopAutomation = isEffectfulDesktopAutomationDispatch(request);
-    // Admitted Computer Use belongs to the invoking turn and the executor's
-    // lifecycle, not a generic RPC stopwatch. Keep explicit caller deadlines
-    // and the fallback for callers that supply no cancellation owner.
-    const signalOwnedComputerUse = effectfulDesktopAutomation &&
+    // Admitted Computer Use and Browser UI mutations belong to the invoking
+    // turn and executor lifecycle, not a generic RPC stopwatch. Keep explicit
+    // caller deadlines and the fallback when no cancellation owner is supplied.
+    const signalOwnedDesktopAutomation = effectfulDesktopAutomation &&
       request.signal !== undefined && request.timeout === undefined;
     // The relay still receives exactly `request.timeout`; only this server
     // registry waits a little longer for Electron's final process receipt.
@@ -2896,7 +2899,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       (rawRunShellCommand ? this.runShellResultReceiptGraceMs : 0);
 
     return new Promise<RelayDispatchResult>((resolve, reject) => {
-      const timer = taskOwnedScanStart || signalOwnedComputerUse ? undefined : setTimeout(() => {
+      const timer = taskOwnedScanStart || signalOwnedDesktopAutomation ? undefined : setTimeout(() => {
         const pending = this.pending.get(correlationId);
         if (pending === undefined) return;
         if (pending.effectfulDesktopAutomation && pending.dispatched) {
@@ -3007,7 +3010,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * M174 — typed convenience for the `fs` execution class. Wraps
+   * typed convenience for the `fs` execution class. Wraps
    * `dispatch` with the fixed `toolName:"fs"` + `executionClass:"fs"`
    * envelope (approval already happened server-side; impact reflects
    * read vs mutate so the relay can log it), then unwraps
@@ -3053,7 +3056,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * M206 — typed convenience for the `local-file` execution class. Wraps
+   * typed convenience for the `local-file` execution class. Wraps
    * `dispatch` with the fixed `toolName:"local-file"` +
    * `executionClass:"local-file"` envelope, then unwraps `result.result`
    * to a `RelayLocalFileResult`. Transport errors map to `{ ok:false }`
@@ -3068,11 +3071,11 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       timeoutMs?: number;
       sandboxProfile?: RelaySandboxProfile;
       /**
-       * D448 (protocol v9) — optional grant reference carried as OUTER
+       * (protocol v9) — optional grant reference carried as OUTER
        * relay-dispatch metadata. It never widens `allowedRoots` and is never
        * treated as authority here: the registry only stores and forwards it so
        * the relay-local resolver can re-validate the live grant. Omitted for
-       * mutating/ambiguous commands, preserving the pre-D418 baseline.
+       * mutating/ambiguous commands, preserving the earlier baseline.
        */
       desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
       requiredRelaySessionId?: string;
@@ -3130,7 +3133,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D448 — dedicated v8 apply-patch transport. This deliberately does not
+   * dedicated v8 apply-patch transport. This deliberately does not
    * reuse `RelayLocalFileRequest`: it carries one strict high-level operation
    * and no `allowedRoots` mirror. The request is parsed before sending, while
    * relay output is parsed before returning. Desktop resolves the asserted
@@ -3191,7 +3194,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D504 internal port: dispatch only to the caller-pinned, authenticated
+   * internal port: dispatch only to the caller-pinned, authenticated
    * owner relay. This method intentionally has no discovery or fallback path.
    */
   async browserResearchReadDispatch(
@@ -3233,7 +3236,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D504 v13 internal port: inspect only an immutable snapshot on the exact
+   * internal port: inspect only an immutable snapshot on the exact
    * authenticated owner relay. It is intentionally a separate method from
    * v12 URL/continuation reads; neither method discovers another relay.
    */
@@ -3316,7 +3319,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     }
   }
 
-  /** D504 fixed-host search discovery on the exact authenticated Desktop relay. */
+  /** fixed-host search discovery on the exact authenticated Desktop relay. */
   async browserResearchSearchDispatch(
     relayId: string,
     actorId: string,
@@ -3399,7 +3402,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D500 v15: accept only in-order observations for an exact pending
+   * accept only in-order observations for an exact pending
    * structured-SSH dispatch. The callback is intentionally observational:
    * any failure is isolated from the authoritative final result.
    */
@@ -3440,9 +3443,11 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
    * Cancel an in-flight dispatch. Ordinary tools retain the historical
    * immediate rejection. A dispatched raw run_shell first forwards cancel,
    * then waits one bounded receipt grace for Electron's canonical cancelled
-   * result; repeated cancel calls do not extend that grace. A dispatched
-   * structured SSH frame remains on its existing timeout policy, but a cancel
-   * without a synchronously returned canonical result is effect-unknown.
+   * result; mutating Computer Use and Browser frames share their existing
+   * canonical-receipt grace, including UI effects such as hover or scroll.
+   * Repeated cancel calls do not extend either grace. A dispatched structured
+   * SSH frame remains on its existing timeout policy, but a cancel without a
+   * synchronously returned canonical result is effect-unknown.
    */
   cancelDispatch(correlationId: string): void {
     const p = this.pending.get(correlationId);
@@ -3544,7 +3549,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D480 — snapshot the exact currently live relays owned by `userId` whose
+   * snapshot the exact currently live relays owned by `userId` whose
    * server-derived pairing generation is one of the rows a completed DB
    * lifecycle transaction revoked. The registry remains the sole live-relay
    * registry; this method deliberately does not unregister or close anything.
@@ -3583,7 +3588,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D458 — bounded, owner-filtered bulk snapshot for remote-host projection.
+   * bounded, owner-filtered bulk snapshot for remote-host projection.
    * This intentionally returns every exact live match, including duplicate
    * pairing generations: choosing one here would turn a split-brain condition
    * into accidental authority. The server must join these rows to the
@@ -3600,7 +3605,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D516 — exact live, owner-filtered bindings used only to construct a
+   * exact live, owner-filtered bindings used only to construct a
    * semantic Computer use invocation binding. No API/presence caller receives
    * this tuple. Missing pairing/session identities are excluded instead of
    * guessed; a caller must still reject duplicate exact matches.
@@ -3673,7 +3678,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D453 dedicated outbound route. This bypasses `dispatch()` completely so a
+   * dedicated outbound route. This bypasses `dispatch` completely so a
    * Codex native operation cannot acquire Tool impact, approval, sandbox, or
    * workstation-grant semantics by accident.
    * @internal Transport only. Never register this raw envelope API as a Genie tool.
@@ -5173,7 +5178,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D418 — the relay's validated advisory active-grant snapshot, or null when
+   * the relay's validated advisory active-grant snapshot, or null when
    * none was advertised (or it was malformed and dropped at registration). This
    * is discovery data only; callers must never treat it as authority. The
    * relay-local resolver reloads live local grants and decides every access, so
@@ -5185,7 +5190,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D418 — the relay's validated advisory Workstation Profile binding snapshot,
+   * the relay's validated advisory Workstation Profile binding snapshot,
    * or null when none was advertised (or it was malformed and dropped at
    * registration). This is advisory binding data only; callers must never
    * treat it as compiled-profile authority. The desktop relay's live compiled
@@ -5197,35 +5202,35 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     return snapshot ? structuredClone(snapshot) : null;
   }
 
-  /** M174 — protocol version a relay registered with (null if unknown). */
+  /** protocol version a relay registered with (null if unknown). */
   getProtocolVersion(relayId: string): number | null {
     return this.relays.get(relayId)?.protocolVersion ?? null;
   }
 
-  /** D418 protocol v7 — the relay's desktop session id, or null if none. */
+  /** protocol v7 — the relay's desktop session id, or null if none. */
   getDesktopSessionId(relayId: string): string | null {
     return this.relays.get(relayId)?.desktopSessionId ?? null;
   }
 
-  /** M286 — server-minted identity of the currently connected socket. */
+  /** server-minted identity of the currently connected socket. */
   getRelaySessionId(relayId: string): string | null {
     const value = this.relays.get(relayId)?.relaySessionId;
     return value && value.length > 0 ? value : null;
   }
 
-  /** M286 — late report-back checks must not revive a heartbeat-stale relay. */
+  /** late report-back checks must not revive a heartbeat-stale relay. */
   isRelayHeartbeatFresh(relayId: string, now = Date.now()): boolean {
     const entry = this.relays.get(relayId);
     return entry !== undefined && now - entry.lastSeen <= HEARTBEAT_TIMEOUT_MS;
   }
 
-  /** D418 protocol v7 — the relay's current capability revision (null if unknown). */
+  /** protocol v7 — the relay's current capability revision (null if unknown). */
   getCapabilityRevision(relayId: string): number | null {
     return this.relays.get(relayId)?.capabilityRevision ?? null;
   }
 
   /**
-   * D418 Commit 2 — the relay's server-derived `pairingGeneration` (the
+   * the relay's server-derived `pairingGeneration` (the
    * validated relay-token row id stamped at register), or null when the
    * relay is not connected or never carried one. The binding provider
    * reads this to populate the authoritative Full Workstation binding and
@@ -5244,7 +5249,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D423 4.1.3 — snapshot a connected relay for focused-local-file
+   * 4.1.3 — snapshot a connected relay for focused-local-file
    * validation. Returns `null` when the relay is not currently connected
    * (the local-file resolver fails closed in that case — no read, no
    * upload, no fallback device switch). The snapshot carries the relay's
@@ -5270,7 +5275,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   }
 
   /**
-   * D418 reconnect/session split-brain fix — the LIVE active Full
+   * reconnect/session split-brain fix — the LIVE active Full
    * Workstation session for a user (looked up via the injected
    * `getActiveWorkstationSession` constructor option), or `null` when no
    * session is active or no lookup was wired. Exposed so the agent tools

@@ -29,7 +29,7 @@ import {
   type ComputerUseInvocationBinding,
 } from "../runtime/computer-use-admission";
 
-/** M084 — server ceiling for nested `task` depth chains */
+/** server ceiling for nested `task` depth chains */
 export const MAX_SUBAGENT_DEPTH = 5;
 
 /**
@@ -59,12 +59,12 @@ function parseTrustedExecutionEntrypoint(
   }
 }
 
-/** D419 — state updates replace the persisted activation snapshot. */
+/** state updates replace the persisted activation snapshot. */
 export function replaceActivatedToolNames(_: string[], update: string[]): string[] {
   return normalizeActivatedToolNames(update);
 }
 
-/** D447 — state updates replace the bounded cross-turn lease snapshot. */
+/** state updates replace the bounded cross-turn lease snapshot. */
 export function replaceActivatedToolLeases(
   _: ActivatedToolLease[],
   update: ActivatedToolLease[],
@@ -141,9 +141,9 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D263 — enabled skill bodies for `(agentId, speaker userId)`, loaded at
+   * enabled skill bodies for `(agentId, speaker userId)`, loaded at
    * executor ingress beside `soulFile`. Empty for guests. Injected in
-   * `pre-model` via `selectSkillsForTurn` (prompt text only — R9).
+   * `pre-model` via `selectSkillsForTurn` (prompt text only — ).
    */
   skills: Annotation<SkillBody[]>({
     reducer: (_, update) => update,
@@ -151,9 +151,9 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D263 v1 — pulled-and-not-ejected skill names for this thread.
+   * pulled-and-not-ejected skill names for this thread.
    * `view_skill` adds; `eject` removes; `pre-model` re-injects bodies.
-   * Thread-scoped graph state (S1/R11 durable focus deferred).
+   * Thread-scoped graph state (S1/ durable focus deferred).
    */
   engagedSkillNames: Annotation<string[]>({
     reducer: (_, update) => update,
@@ -183,13 +183,19 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D526 — content-free boundary into `preparedMessages[0]`. The provider
+   * content-free boundary into `preparedMessages[0]`. The provider
    * attempt uses it to place or remove cache metadata after room controls and
    * model fallback have resolved the model that will actually run.
    */
   preparedStableSystemPrefixLength: Annotation<number>({
     reducer: (_, update) => update,
     default: () => 0,
+  }),
+
+  /** Owner prompt time captured once per identified foreground turn. */
+  promptTimeReference: Annotation<{ turnId: string; nowMs: number } | null>({
+    reducer: (_, update) => update,
+    default: () => null,
   }),
 
   toolNames: Annotation<string[]>({
@@ -212,7 +218,7 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => [],
   }),
 
-  /** D516 — exact server-admitted binding for each queued semantic computer call. */
+  /** exact server-admitted binding for each queued semantic computer call. */
   computerUseInvocationBindings: Annotation<Readonly<Record<string, ComputerUseInvocationBinding>>>({
     reducer: (_, update) => parseComputerUseInvocationBindings(update),
     default: () => Object.freeze({}),
@@ -236,20 +242,20 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => [],
   }),
 
-  /** D476 — private, short-lived server snapshot that binds a project-mode
+  /** private, short-lived server snapshot that binds a project-mode
    * share to its exact content, readable evidence and resolved audience. */
   projectionSnapshots: Annotation<ProjectionSnapshot[]>({
     reducer: (_, update) => update,
     default: () => [],
   }),
 
-  /** D476 — checkpoint-owned opaque disambiguation mappings; never client state. */
+  /** checkpoint-owned opaque disambiguation mappings; never client state. */
   projectionRoomChoices: Annotation<ProjectionRoomChoice[]>({
     reducer: (_, update) => update,
     default: () => [],
   }),
 
-  /** D476 — projection calls answered by preflight must not reach approval/execution. */
+  /** projection calls answered by preflight must not reach approval/execution. */
   projectionRejectedToolCallIds: Annotation<string[]>({
     reducer: (_, update) => update,
     default: () => [],
@@ -285,7 +291,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M042A: identifies which agent is running this turn. Today always
+   * identifies which agent is running this turn. Today always
    * the seeded default (NAUTILO_DEFAULT_AGENT_ID); Iteration 3 will
    * resolve per-room.
    */
@@ -295,7 +301,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M042B: which room this turn runs in. Today always the owner's
+   * which room this turn runs in. Today always the owner's
    * default private room. Iteration 2+ resolves per-user / shared
    * rooms. Empty string for guest turns (no room).
    */
@@ -383,7 +389,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M042B: room participant roster snapshot for this turn. Populated
+   * room participant roster snapshot for this turn. Populated
    * once at job ingress (loadRoomRoster on the resolved roomId), read
    * by pre_model for the "Room participants" prompt block. Stale
    * within a turn is fine; roster changes trigger a new job. Empty
@@ -393,7 +399,7 @@ export const NautiloStateAnnotation = Annotation.Root({
    * hold `graphThreadId` (the opaque LangGraph saver key), not the
    * laneKey. They diverge for the seeded default room
    * (`graphThreadId = "app:default"`, laneKey = "room:<uuid>") and
-   * coincide for rooms created after M042B.
+   * coincide for rooms created after .
    */
   roomRoster: Annotation<RoomParticipant[]>({
     reducer: (_, update) => update,
@@ -406,7 +412,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D082 PR B — per-turn correlation id. Populated once at executor
+   * PR B — per-turn correlation id. Populated once at executor
    * ingress with the UUID generated by the chat route (see
    * `packages/server/src/routes/chat.ts`). Persists in the
    * checkpoint so resume paths (`/api/auth/approval-reply`,
@@ -423,8 +429,13 @@ export const NautiloStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
     default: () => "",
   }),
+  /** Routine browser plan and fresh evidence, owned by this turn. */
+  browserDecision: Annotation<import("../graph/browser-decision").BrowserDecisionState | null>({
+    reducer: (_, update) => update,
+    default: () => null,
+  }),
   /**
-   * M233 — explicit authenticated Human who initiated this foreground turn.
+   * explicit authenticated Human who initiated this foreground turn.
    * Checkpointed with turnId so post-interrupt assistant persistence retains
    * causal provenance without borrowing the session or Agent owner.
    */
@@ -434,11 +445,11 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D079 Phase 2 — two-path API.
+   * two-path API.
    *
    * Absolute path of the user's currently-opened folder (Surface B:
    * the task-scoped folder; e.g. a codebase, a Figma export).
-   * Empty string = no folder open (valid state post-D079 Phase 1).
+   * Empty string = no folder open (valid state post-the current implementation).
    * Populated from `SendMessageRequest.currentFolder` at executor
    * ingress; read by `pre-model` to inject the two-path prompt block.
    *
@@ -458,11 +469,11 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D079 Phase 2 — two-path API.
+   * two-path API.
    *
    * Absolute path of the Agent's persistent workspace (Surface A:
-   * `~/Documents/Nautilo/` after D079 Phase 3). Empty string during
-   * the Phase 2-only window (workspace IPC not yet wired) or on
+   * `~/Documents/Nautilo/` after the current implementation). Empty string during
+   * rollout-only window (workspace IPC not yet wired) or on
    * guest sessions. Populated from `SendMessageRequest.workspacePath`.
    */
   workspacePath: Annotation<string>({
@@ -471,7 +482,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M187 — compact active mini-app context for the current turn.
+   * compact active mini-app context for the current turn.
    * Null when no mini-app is open or ingress dropped the payload.
    */
   activeMiniApp: Annotation<ActiveMiniAppRequestContext | null>({
@@ -486,7 +497,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D356 — in-focus artifact references for the current turn ("focus on
+   * in-focus artifact references for the current turn ("focus on
    * these"). Metadata only (external `artifactId`/path/mime/size); resolved +
    * validated against the caller's readable namespaces server-side. Empty
    * when no artifact chips were queued. Injected as a `## Referenced
@@ -498,8 +509,8 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D423 Phase 4 — server-resolved focused-resource manifest for the current
-   * turn: workspace artifacts, local files, and D271 message attachments
+   * server-resolved focused-resource manifest for the current
+   * turn: workspace artifacts, local files, and message attachments
    * normalized into ONE authoritative `ResolvedFocusedResource[]`. pre-model
    * renders a single `## Focused resources` block from the PUBLIC fields
    * (displayName / mimeType / size / location / lifetime / capabilities /
@@ -517,7 +528,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M087 — IANA timezone of the requesting user for this turn. Resolved at
+   * IANA timezone of the requesting user for this turn. Resolved at
    * chat ingress from `SendMessageRequest.userTimezone` ?? `users.timezone`
    * ?? "UTC". Always a valid IANA name; never the empty string. Read by
    * `pre-model` to format the `## Current time` block AND by the
@@ -531,7 +542,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M087 — ISO-8601 UTC timestamp of the previous user message in the SAME
+   * ISO-8601 UTC timestamp of the previous user message in the SAME
    * room, or `null` if this is the first message in the room (or the lookup
    * failed). Resolved at chat ingress BEFORE the new user message is
    * persisted; `pre-model` renders the elapsed-time line from this value.
@@ -542,7 +553,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D041 - HTTP client metadata for `security-audit.log` rows emitted
+   * HTTP client metadata for `security-audit.log` rows emitted
    * from Connection vault tools. Populated at executor ingress from
    * the chat route; null for background jobs / resume-only paths that
    * omit it (audit sink falls back to empty ip).
@@ -556,7 +567,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M084 — when `undefined`, the full tier-filtered catalog is bound.
+   * when `undefined`, the full tier-filtered catalog is bound.
    * When set (including `[]`), only listed tool names are bound.
    */
   toolWhitelist: Annotation<string[] | undefined>({
@@ -565,7 +576,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D456 — server-refreshed connected-app eligibility for the exact
+   * server-refreshed connected-app eligibility for the exact
    * Human×Namespace on this model step. This is not a client claim or a
    * capability grant; execution rechecks the durable profile before dispatch.
    */
@@ -575,7 +586,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D447 — current-graph-turn deferred schema projection. This is separate
+   * current-graph-turn deferred schema projection. This is separate
    * from `activatedToolLeases`, because intent selections may be visible for
    * one graph turn without becoming cross-turn residency.
    */
@@ -585,7 +596,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D447 — bounded cross-turn deferred-schema residency. These records are
+   * bounded cross-turn deferred-schema residency. These records are
    * selection hints only; catalog eligibility and execution policy remain
    * authoritative at their existing call sites.
    */
@@ -594,14 +605,14 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => [],
   }),
 
-  /** D447 — foreground turn which last aged the lease snapshot. */
+  /** foreground turn which last aged the lease snapshot. */
   activationLeasesAgedForTurnId: Annotation<string>({
     reducer: (_, update) => update,
     default: () => "",
   }),
 
   /**
-   * D447 — distinguishes a legacy checkpoint (no lease metadata yet) from an
+   * distinguishes a legacy checkpoint (no lease metadata yet) from an
    * explicitly emptied lease array after LangGraph applies channel defaults.
    */
   activationLeasesInitialized: Annotation<boolean>({
@@ -610,7 +621,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D447 — graph turn which has already merged automatic intent-pack names.
+   * graph turn which has already merged automatic intent-pack names.
    * This is deliberately independent from lease aging: a tools → pre_model
    * loop may mutate the current projection (notably deactivate_tools), but it
    * must not re-apply the same turn's automatic intent selection.
@@ -623,7 +634,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   /**
    * Layer 1 — flat capability-token dict consumed by the tool-catalog
    * filter. Populated at runtime entry (`langgraph-executor.ts`) by
-   * `buildRuntimeCapabilityTokens(getRelayRegistry(), ownerId)`. Passed
+   * `buildRuntimeCapabilityTokens(getRelayRegistry, ownerId)`. Passed
    * to `catalog.getFiltered` / `catalog.getToolsForActor` at every
    * binding/validation site so relay-executor tools are visible to the
    * LLM only when a relay can actually dispatch them.
@@ -637,7 +648,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D458 — verified provenance for an ordinary request from a paired phone.
+   * verified provenance for an ordinary request from a paired phone.
    * It deliberately identifies no host; the first host-scoped Tool resolves
    * current eligible bindings. Missing means this work has no paired-mobile
    * host authority.
@@ -647,20 +658,20 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => null,
   }),
 
-  /** D500 — explicit server-stamped provenance; null fails future SSH admission closed. */
+  /** explicit server-stamped provenance; null fails future SSH admission closed. */
   trustedExecutionEntrypoint: Annotation<TrustedExecutionEntrypoint | null>({
     reducer: (_, update) => parseTrustedExecutionEntrypoint(update),
     default: () => null,
   }),
 
-  /** M286 — server-authored, revalidated live return decision for this wake. */
+  /** server-authored, revalidated live return decision for this wake. */
   taskReportBackContinuation: Annotation<import("../runtime/task-report-back-continuation").TaskReportBackContinuation | null>({
     reducer: (_, update) => update,
     default: () => null,
   }),
 
   /**
-   * D516 — exact authority inherited only from an already-admitted desktop
+   * exact authority inherited only from an already-admitted desktop
    * run. Missing, malformed, or widened checkpoint state is no authority.
    */
   desktopAutomationProvenance: Annotation<DesktopAutomationProvenance | null>({
@@ -668,20 +679,20 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => null,
   }),
 
-  /** D516 — immutable executable provider route, distinct from run lineage. */
+  /** immutable executable provider route, distinct from run lineage. */
   desktopAutomationRouteBinding: Annotation<DesktopAutomationRouteBinding | null>({
     reducer: (_, update) => parseDesktopAutomationRouteBinding(update),
     default: () => null,
   }),
 
-  /** M084 — nested delegate depth for the running graph (0 = main agent). */
+  /** nested delegate depth for the running graph (0 = main agent). */
   subagentDepth: Annotation<number>({
     reducer: (_, update) => update,
     default: () => 0,
   }),
 
   /**
-   * M084 — inclusive cap for `subagentDepth` on this branch
+   * inclusive cap for `subagentDepth` on this branch
    * (`Math.min` of server max and per-delegate `max_depth` inputs).
    */
   subagentMaxDepth: Annotation<number>({
@@ -689,21 +700,21 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => MAX_SUBAGENT_DEPTH,
   }),
 
-  /** M084 — hide tool.start/end from WS when running a scope subagent */
+  /** hide tool.start/end from WS when running a scope subagent */
   suppressToolLifecycleEvents: Annotation<boolean>({
     reducer: (_, update) => update,
     default: () => false,
   }),
 
-  /** M084 — skip session-notification drain + use scope memory prompts */
+  /** skip session-notification drain + use scope memory prompts */
   subagentRun: Annotation<boolean>({
     reducer: (_, update) => update,
     default: () => false,
   }),
 
   /**
-   * M150 — this run is a background/async Task run (set by
-   * `task-run-executor.ts`). Unlike an in-chat M084 scope run, there is no
+   * this run is a background/async Task run (set by
+   * `task-run-executor.ts`). Unlike an in-chat scope run, there is no
    * present human to relay a "connect your relay" tool message to. When a
    * relay-executor tool can't reach a relay mid-run (the relay vanished after
    * being live at run start), the dispatch seam throws `RelayUnavailableError`
@@ -718,7 +729,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * M151 — await-response (Task Phase 7a). When `awaitResponse` is true the
+   * await-response (Task ). When `awaitResponse` is true the
    * `await_reply` step parks the run on `await_human_reply` after the agent
    * emits a final (no-tool-call) message, instead of letting the run complete.
    * Cleared on resume so the post-reply turn reaches real `END`.
@@ -728,20 +739,20 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => false,
   }),
 
-  /** M151 — the room the run posted into; a human reply HERE satisfies the wait. */
+  /** the room the run posted into; a human reply HERE satisfies the wait. */
   awaitRoomId: Annotation<string>({
     reducer: (_p, n) => n ?? "",
     default: () => "",
   }),
 
-  /** M151 — the user ids whose reply resumes the parked run (peer + requester). */
+  /** the user ids whose reply resumes the parked run (peer + requester). */
   awaitFromUserIds: Annotation<string[]>({
     reducer: (_p, n) => n ?? [],
     default: () => [],
   }),
 
-  /** M151 — task identifiers threaded into the interrupt payload so the
-   * `task.awaiting_reply` WS event is self-describing (owner-scoped, D14). */
+  /** task identifiers threaded into the interrupt payload so the
+   * `task.awaiting_reply` WS event is self-describing (owner-scoped, ). */
   awaitTaskId: Annotation<string>({
     reducer: (_p, n) => n ?? "",
     default: () => "",
@@ -758,13 +769,13 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * Stack 208 P2 — checkpointed no-progress breaker state. A map from the
+   * checkpointed no-progress breaker state. A map from the
    * serialized `{toolName, operationDiscriminator, normalizedError}` key
    * (see `graph/no-progress.ts` `serializeNoProgressKey`) to a streak entry
    * `{count, correctiveTurnIssued}`. Persisted in the checkpoint so a resumed
    * run inherits the streak rather than silently restarting it.
    *
-   * The key carries NO raw tool args or unnormalized tool output (R9 / spec) —
+   * The key carries NO raw tool args or unnormalized tool output ( / spec) —
    * only a coarse allowlisted operation label and the required normalized,
    * length-capped error token. The error token is checkpoint-only and must
    * never be logged because normalization does not remove sensitive content.
@@ -779,7 +790,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * Stack 208 P2 — set by the tools node when a failure streak hits the
+   * set by the tools node when a failure streak hits the
    * repeated-failure limit, consumed + cleared by the next pre_model node so
    * exactly ONE corrective model turn is injected with a clear internal
    * instruction. `null` means "no corrective turn pending". Persisted in the
@@ -801,7 +812,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D316 — user explicitly selected this agent from an `ask_user`
+   * user explicitly selected this agent from an `ask_user`
    * disambiguation picker. When true, the `skip` tool is withheld and a
    * steering prompt is injected for this turn only.
    */
@@ -811,7 +822,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D421 Phase 4.2 — server-owned redirect authority (Requirement B). `true`
+   * server-owned redirect authority (Requirement B). `true`
    * ONLY for a single inferred wake (`decision.kind=wake`, exactly one
    * target, `source="inferred"`); never explicit mention/reply/UI or explicit
    * multi-wake. Threaded from the dispatch wake path into graph state so the
@@ -826,7 +837,7 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /**
-   * D429 Phase 4 — explicit fallback mode for this run, threaded from the
+   * explicit fallback mode for this run, threaded from the
    * Task dispatch seam's `exactModelSelection` flag (via `taskRunExecutor` →
    * `runScopeSubagentUntilPause` → cold-start graph state → `agentNode` →
    * `invokeChatModelWithFallback`). `"agent_chain"` (default) preserves the
@@ -851,7 +862,7 @@ export const NautiloStateAnnotation = Annotation.Root({
  * Public node/test inputs retain back-compat with checkpoints created before
  * trusted live-review state existed; the graph channel defaults it to null.
  *
- * D423 — `focusedResources` is also re-declared optional so existing test
+ * `focusedResources` is also re-declared optional so existing test
  * fixtures (which pre-date the generic substrate) keep compiling without
  * having to set it; the graph channel still defaults to `[]`.
  */
@@ -876,6 +887,7 @@ export type NautiloState = Omit<
   | "activationLeasesAgedForTurnId"
   | "activationLeasesInitialized"
   | "activationIntentAppliedForTurnId"
+  | "browserDecision"
   | "noProgressStreaks" | "noProgressPendingCorrection" | "noProgressPendingStop"
   | "projectionSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
   | "identityEnrollmentToolCallIds"
@@ -885,6 +897,7 @@ export type NautiloState = Omit<
   | "currentTaskRunId"
   | "researchContextPageBytes" | "researchContextRecovery" | "researchContextPresentation" | "researchWorkEnabled" | "taskReadPageBytes" | "taskReadPendingPages"
   | "preparedStableSystemPrefixLength"
+  | "promptTimeReference"
   | "connectedAppProviderIds"
 > & {
   /** Legacy checkpoints resolve preferences when next invoked. */
@@ -903,8 +916,10 @@ export type NautiloState = Omit<
   researchContextPresentation?: typeof NautiloStateAnnotation.State.researchContextPresentation;
   researchContextRecovery?: typeof NautiloStateAnnotation.State.researchContextRecovery;
   researchWorkEnabled?: boolean;
-  /** D526 — omitted by legacy checkpoints and ordinary node-test fixtures. */
+  /** omitted by legacy checkpoints and ordinary node-test fixtures. */
   preparedStableSystemPrefixLength?: number;
+  /** Missing on guests, unidentified turns, and legacy checkpoints. */
+  promptTimeReference?: { turnId: string; nowMs: number } | null;
   /** Missing legacy state is fail-closed (no connected-app provider eligible). */
   connectedAppProviderIds?: string[];
   /** Missing on legacy checkpoints and empty outside an enrollPin replay. */
@@ -912,63 +927,65 @@ export type NautiloState = Omit<
   liveMiniAppSession?: import("@nautilo/types").TrustedLiveMiniAppSessionContext | null;
   focusedResources?: ResolvedFocusedResource[];
   verifiedOrdinaryOrigin?: VerifiedOrdinaryOrigin | null;
-  /** D500 — omitted legacy checkpoints and invalid values remain fail-closed. */
+  /** omitted legacy checkpoints and invalid values remain fail-closed. */
   trustedExecutionEntrypoint?: TrustedExecutionEntrypoint | null;
-  /** M286 — absent on every non-report-back and legacy checkpoint. */
+  /** absent on every non-report-back and legacy checkpoint. */
   taskReportBackContinuation?: import("../runtime/task-report-back-continuation").TaskReportBackContinuation | null;
-  /** D516 — absent on legacy checkpoints and ordinary node-test fixtures. */
+  /** absent on legacy checkpoints and ordinary node-test fixtures. */
   desktopAutomationProvenance?: DesktopAutomationProvenance | null;
-  /** D516 — absent/malformed graph route state cannot use Computer use. */
+  /** absent/malformed graph route state cannot use Computer use. */
   desktopAutomationRouteBinding?: DesktopAutomationRouteBinding | null;
-  /** D516 — per-call admission metadata; an absent/malformed map is empty. */
+  /** per-call admission metadata; an absent/malformed map is empty. */
   computerUseInvocationBindings?: Readonly<Record<string, ComputerUseInvocationBinding>>;
   ordinaryContentAccessBindings?: Readonly<Record<string, OrdinaryContentAccessBinding>>;
   ordinaryContentAccessRejectedToolCallIds?: string[];
   /** Omitted legacy checkpoints and fixtures default to Auto-Approve off. */
   autoApprove?: boolean;
-  /** D458 — optional only for pre-feature checkpoints/test fixtures; graph channel defaults empty. */
+  /** optional only for pre-feature checkpoints/test fixtures; graph channel defaults empty. */
   requiredHostRelays?: Record<string, string>;
   /**
-   * D429 Phase 4 — optional on the public node/test input type so existing
+   * optional on the public node/test input type so existing
    * fixtures that build a full `NautiloState` object literal keep compiling
    * without having to set it. The graph channel still defaults it to
    * `"agent_chain"`, and `agentNode` re-defaults to `"agent_chain"` on read.
    */
   modelFallbackMode?: ModelFallbackMode;
   /**
-   * D421 Phase 4.2 — optional on the public node/test input type so existing
+   * optional on the public node/test input type so existing
    * fixtures keep compiling. The graph channel defaults it to `false`
    * (fail-closed); `agentNode` / `preModelNode` / `toolsNode` re-default to
    * `false` on read via `state.redirectAllowed === true`.
    */
   redirectAllowed?: boolean;
-  /** M233 — absent on legacy checkpoints and ordinary node-test fixtures. */
+  /** absent on legacy checkpoints and ordinary node-test fixtures. */
   causalHumanUserId?: string;
   /**
-   * D447 — optional on public node/test inputs to distinguish a legacy
+   * optional on public node/test inputs to distinguish a legacy
    * name-only checkpoint (`undefined`) from a deliberately emptied lease set.
    * The graph channel itself still defaults to `[]`.
    */
   activatedToolLeases?: ActivatedToolLease[];
-  /** D447 — graph channel defaults this missing legacy marker to the empty id. */
+  /** graph channel defaults this missing legacy marker to the empty id. */
   activationLeasesAgedForTurnId?: string;
   /**
-   * D447 — unset only for legacy name-only checkpoints; `true` means an empty
+   * unset only for legacy name-only checkpoints; `true` means an empty
    * lease snapshot is deliberate and must not be migrated again.
    */
   activationLeasesInitialized?: boolean;
-  /** D447 — graph channel defaults an absent intent marker to the empty id. */
+  /** graph channel defaults an absent intent marker to the empty id. */
   activationIntentAppliedForTurnId?: string;
-  /** Stack 208 P2 — optional on the public input type; the graph channel defaults both. */
+  /** Absent in legacy checkpoints; defaults to no delegated browser control. */
+  browserDecision?: import("../graph/browser-decision").BrowserDecisionState | null;
+  /** optional on the public input type; the graph channel defaults both. */
   noProgressStreaks?: ReadonlyMap<string, import("../graph/no-progress").NoProgressStreakEntry>;
-  /** Stack 208 P2 — optional on the public input type; the graph channel defaults to null. */
+  /** optional on the public input type; the graph channel defaults to null. */
   noProgressPendingCorrection?: {
     readonly toolName: string;
     readonly operationDiscriminator: string;
     readonly normalizedError: string;
   } | null;
   noProgressPendingStop?: import("../graph/no-progress").NoProgressKey | null;
-  /** D476 — optional for pre-feature checkpoint fixtures; graph channels default these safely. */
+  /** optional for pre-feature checkpoint fixtures; graph channels default these safely. */
   projectionSnapshots?: ProjectionSnapshot[];
   projectionRoomChoices?: ProjectionRoomChoice[];
   projectionRejectedToolCallIds?: string[];

@@ -50,7 +50,8 @@ describe("browser_research_read relay admission", () => {
         executionClass: "browser",
       })).resolves.toEqual({
         status: "error",
-        error: "the embedded Browser session bound to this Task continuation is no longer active",
+        error: "The bound embedded Browser session is no longer active. Reobserve before acting.",
+        errorCode: "browser_authority_lost",
       });
     } finally {
       rmSync(statePath, { force: true });
@@ -97,7 +98,7 @@ describe("browser_research_read relay admission", () => {
   test("rejects malformed input or an absent research port without using interactive browser dispatch", async () => {
     const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: "/tmp" }));
 
-    await expect(handler(request({ url: "https://user:pass@example.com", ...invocation }))).resolves.toEqual({
+    await expect(handler(request({ url: "https://user:test@example.com", ...invocation }))).resolves.toEqual({
       status: "error",
       error: "browser research read is unavailable",
     });

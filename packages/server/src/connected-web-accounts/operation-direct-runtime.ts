@@ -3,6 +3,7 @@ import type {
   ConnectedWebOperationDirectToolInput,
   ConnectedWebOperationDirectToolResult,
   ConnectedWebOperationDirectToolRuntime,
+  ConnectedWebOperationDirectControlOptions,
   ConnectedWebOperationSafeProjection,
   ConnectedWebOperationToolActorContext,
 } from "@nautilo/agent";
@@ -54,7 +55,7 @@ function command(input: ConnectedWebOperationDirectCommand): { readonly toolName
     case "snapshot": return { toolName: "browser_snapshot", args: {} };
     case "click": return { toolName: "browser_click", args: { ref: input.ref } };
     case "type": return { toolName: "browser_type", args: { ref: input.ref, text: input.text, ...(input.clear === undefined ? {} : { clear: input.clear }) } };
-    case "press": return { toolName: "browser_press", args: { key: input.key } };
+    case "press": return { toolName: "browser_press", args: { key: input.key, ...(input.ref === undefined ? {} : { ref: input.ref }) } };
     case "open": return { toolName: "browser_open", args: { url: input.url } };
     case "back": return { toolName: "browser_back", args: {} };
     case "forward": return { toolName: "browser_forward", args: {} };
@@ -64,6 +65,8 @@ function command(input: ConnectedWebOperationDirectCommand): { readonly toolName
     case "drag": return { toolName: "browser_drag", args: { from: input.from, to: input.to } };
     case "select": return { toolName: "browser_select", args: { ref: input.ref, values: input.values } };
     case "set_checked": return { toolName: "browser_set_checked", args: { ref: input.ref, checked: input.checked } };
+    case "scroll": return { toolName: "browser_scroll", args: { direction: input.direction,
+      ...(input.amount === undefined ? {} : { amount: input.amount }) } };
     case "scroll_into_view": return { toolName: "browser_scroll_into_view", args: { ref: input.ref } };
     case "wait_for": return { toolName: "browser_wait", args: { ref: input.ref } };
     case "wait": return { toolName: "browser_wait", args: { milliseconds: input.milliseconds } };
@@ -104,6 +107,8 @@ function directCommandActivity(input: ConnectedWebOperationDirectCommand) {
       return { version: 1 as const, phase: "working" as const, code: "direct_key_pressed", summary: "Moxie used the keyboard on the connected website." };
     case "scroll_into_view":
       return { version: 1 as const, phase: "working" as const, code: "direct_item_scrolled_into_view", summary: "Moxie brought an item into view on the connected website." };
+    case "scroll":
+      return { version: 1 as const, phase: "working" as const, code: "direct_page_scrolled", summary: "Moxie scrolled the connected website." };
   }
 }
 
@@ -267,7 +272,7 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
     return this.options.store.getOperationForOwner(input).catch(() => null);
   }
 
-  async control(actor: ConnectedWebOperationToolActorContext, input: ConnectedWebOperationDirectToolInput): Promise<ConnectedWebOperationDirectToolResult> {
+  async control(actor: ConnectedWebOperationToolActorContext, input: ConnectedWebOperationDirectToolInput, options: ConnectedWebOperationDirectControlOptions = {}): Promise<ConnectedWebOperationDirectToolResult> {
     if (!this.ready) return { ok: false, code: "unavailable", recovery: "none" };
     const operation = await this.load(actor, input);
     if (!operation) return { ok: false, code: "forbidden", recovery: "none" };
@@ -279,9 +284,27 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
     const previous = entry.tail;
     entry.tail = new Promise<void>((done) => { resolve = done; });
     await previous.catch(() => undefined);
+    let decisionActionCompleted = false;
     try {
       if (entry.closing) return { ok: false, code: "unavailable", recovery: "none" };
-      const result = await entry.lease.invoke(command(input.command));
+      if (options.signal?.aborted) return { ok: false, code: "conflict", recovery: "none", browserFailure: "browser_cancelled" };
+      let observation = options.decision?.kind === "observe"
+        ? await entry.lease.observeDecision(options.signal)
+        : undefined;
+      const result = options.decision?.kind === "act"
+        ? await entry.lease.invokeDecision(command(input.command), options.decision.observationId, options.signal)
+        : options.decision?.kind === "observe"
+          ? { text: observation!.snapshot, truncated: false }
+          : await entry.lease.invoke(command(input.command));
+      decisionActionCompleted = options.decision?.kind === "act" || ["open", "back", "forward", "reload"].includes(input.command.kind);
+      let observationFailure: { code: "browser_observation_invalid"; detail: string } | undefined;
+      if (["open", "back", "forward", "reload"].includes(input.command.kind)) {
+        try { observation = await entry.lease.observeDecision(options.signal); }
+        catch (error) {
+          if (options.signal?.aborted || !(error instanceof DirectBrowserRouterError) || error.code !== "observation_invalid") throw error;
+          observationFailure = { code: "browser_observation_invalid", detail: error.detail ?? error.message };
+        }
+      }
       const recorded = await this.options.store.recordDirectOperationActivity({
         operationId: operation.id,
         ownerUserId: actor.userId,
@@ -292,7 +315,8 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
       if (!recorded) throw new DirectBrowserRouterError("stale_control");
       const fresh = await this.load(actor, input);
       if (!fresh || fresh.driver !== "direct") throw new DirectBrowserRouterError("stale_control");
-      return { ok: true, command: result, operation: projection(fresh) };
+      return { ok: true, command: result, ...(observation === undefined ? {} : { observation }),
+        ...(observationFailure ? { observationFailure } : {}), operation: projection(fresh) };
     } catch (error) {
       // A stale snapshot reference is an ordinary control conflict. It must
       // not tear down a healthy exact-browser lease; the Genie can snapshot
@@ -300,11 +324,20 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
       if (error instanceof DirectBrowserRouterError && error.code === "fresh_snapshot_required") {
         return { ok: false, code: "conflict", recovery: "none" };
       }
+      if (error instanceof DirectBrowserRouterError && ["observation_stale", "cancelled", "observation_invalid"].includes(error.code)) {
+        const browserFailure = decisionActionCompleted ? "browser_outcome_unknown" as const : error.code === "observation_stale" ? "browser_observation_stale" as const
+          : error.code === "cancelled" ? "browser_cancelled" as const : "browser_observation_invalid" as const;
+        return { ok: false, code: "conflict", recovery: "none", browserFailure, detail: error.detail ?? error.message };
+      }
       if (!entry.closing) {
         entry.closing = true;
         await this.closeLease(operation, entry);
       }
-      return { ok: false, code: "unavailable", recovery: "none" };
+      const browserFailure = decisionActionCompleted || error instanceof DirectBrowserRouterError && error.code === "outcome_unknown"
+        ? "browser_outcome_unknown" as const : "browser_authority_lost" as const;
+      return { ok: false, code: "unavailable", recovery: "none", browserFailure,
+        detail: error instanceof DirectBrowserRouterError ? error.detail ?? error.message
+          : "direct browser control unavailable" };
     } finally {
       resolve();
     }

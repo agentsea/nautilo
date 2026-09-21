@@ -6,14 +6,31 @@ import {
   fireEvent,
   render,
   waitFor,
+  within,
 } from "@testing-library/react";
-import type { AssistantModelSummary } from "@nautilo/api-client/browser";
+import type { AssistantModelSummary, ServerModelConfig } from "@nautilo/api-client/browser";
+import userEvent from "@testing-library/user-event";
 
 let canManage = true;
 let openRouterAvailable = true;
 let modelLoadGate: Promise<void> | null = null;
 let retainedLoadGate: Promise<void> | null = null;
+const catalogModels: NonNullable<ServerModelConfig["catalogModels"]> = [
+  {
+    id: "openrouter:typesafe/jev-1.13", displayName: "Jev 1.13", provider: "openrouter",
+    workload: "decision", availability: "selectable", input: ["text"], output: ["text"],
+    features: { tools: false, structuredOutputs: null, reasoning: null, visualGrounding: null, webSearch: false, e2ee: false },
+    decision: { operations: ["choice"] },
+  },
+  {
+    id: "fireworks:synthetic/visual", displayName: "Visual Test Model", provider: "fireworks",
+    workload: "chat", availability: "selectable", input: ["text", "image"], output: ["text"],
+    features: { tools: true, structuredOutputs: true, reasoning: true, visualGrounding: true, webSearch: false, e2ee: null },
+    decision: null,
+  },
+];
 const initialConfig = {
+  catalogModels: catalogModels as ServerModelConfig["catalogModels"],
   defaultChatModel: "anthropic:claude-sonnet-4-6",
   conductorModel: "",
   stenographerModel: "",
@@ -57,6 +74,12 @@ const initialConfig = {
   imageModel: null as string | null,
   musicModel: null as string | null,
   videoModel: null as string | null,
+  speechModel: null as string | null,
+  effectiveSpeechModel: "elevenlabs:eleven_v3_conversational" as string | null,
+  speechModels: [
+    { id: "elevenlabs:eleven_v3_conversational", displayName: "ElevenLabs v3 Conversational", provider: "elevenlabs", available: true },
+    { id: "elevenlabs:eleven_v3", displayName: "ElevenLabs v3", provider: "elevenlabs", available: true },
+  ],
   effectiveImageModel: "venice:gpt-image-2" as string | null,
   effectiveMusicModel: "venice:sonilo-v1-1-music" as string | null,
   effectiveVideoModel: "venice:seedance-2-5-text-to-video-basic" as string | null,
@@ -130,6 +153,10 @@ mock.module("../../../lib/api", () => ({
       serverModels: {
         get: async () => ({
           ...savedConfig,
+          catalogModels: savedConfig.catalogModels?.map((model) => model.provider === "openrouter"
+            ? { ...model, availability: openRouterAvailable ? "selectable" : "missing_credentials",
+              ...(!openRouterAvailable ? { unavailableReason: "OpenRouter credential is not configured" } : {}) }
+            : model),
           embeddingModels: savedConfig.embeddingModels.map((model) =>
             model.id.startsWith("openrouter:")
               ? { ...model, available: openRouterAvailable }
@@ -155,6 +182,60 @@ beforeEach(() => {
   retainedLoadGate = null;
   Object.assign(savedConfig, initialConfig);
   retainedRows = [];
+});
+
+describe("ModelsSection catalog inventory", () => {
+  test("shows decision and coordinate capabilities without adding decision models to chat selectors", async () => {
+    canManage = false;
+    const view = render(<ModelsSection />);
+    const table = await view.findByRole("table", { name: "Catalog models, providers, capabilities and server availability" });
+    const jev = within(table).getByRole("row", { name: /Jev 1.13/ });
+    expect(within(jev).getByText("OpenRouter")).toBeTruthy();
+    expect(within(jev).getByText("decision", { exact: true })).toBeTruthy();
+    expect(within(jev).getByText("Choice decisions")).toBeTruthy();
+    expect(within(jev).getByText("Available on server")).toBeTruthy();
+    expect(within(jev).getByText("Visual grounding (coordinates):").parentElement?.textContent)
+      .toContain("Unverified");
+    expect(within(jev).getByText("Tools:").parentElement?.textContent).toContain("Not supported");
+    expect(view.container.querySelector('select option[value="openrouter:typesafe/jev-1.13"]')).toBeNull();
+
+    const user = userEvent.setup({ document: globalThis.document });
+    const search = view.getByRole("searchbox", { name: "Search model catalog" });
+    await user.type(search, "coordinates");
+    expect(within(table).queryByRole("row", { name: /Jev 1.13/ }) === null).toBe(true);
+    expect(within(table).getByRole("row", { name: /Visual Test Model/ })).toBeTruthy();
+    expect(view.getByText("1 of 2 models")).toBeTruthy();
+    await user.clear(search);
+    await user.type(search, "openrouter");
+    expect(within(table).getByRole("row", { name: /Jev 1.13/ })).toBeTruthy();
+    await user.clear(search);
+    await user.type(search, "absent-model");
+    expect(view.getByText("No models match your search.")).toBeTruthy();
+  });
+
+  test("refreshes catalog availability after credential activation and revocation while retaining unsaved settings", async () => {
+    openRouterAvailable = false;
+    const view = render(<ModelsSection />);
+    await view.findByText("OpenRouter credential is not configured");
+    const select = view.getByTestId("server-stenographer-model") as HTMLSelectElement;
+    await act(async () => fireEvent.change(select, { target: { value: "openai:gpt-5.4-mini" } }));
+    openRouterAvailable = true;
+    act(() => window.dispatchEvent(new Event("nautilo:provider-keys-saved")));
+    await waitFor(() => expect(view.queryByText("OpenRouter credential is not configured") === null).toBe(true));
+    expect(select.value).toBe("openai:gpt-5.4-mini");
+    openRouterAvailable = false;
+    act(() => window.dispatchEvent(new Event("nautilo:provider-keys-saved")));
+    await view.findByText("OpenRouter credential is not configured");
+    expect(select.value).toBe("openai:gpt-5.4-mini");
+    expect(setServerModelsMock).not.toHaveBeenCalled();
+  });
+
+  test("an older server explains the missing catalog view while preserving settings", async () => {
+    savedConfig.catalogModels = undefined;
+    const view = render(<ModelsSection />);
+    await view.findByText("This server does not provide the model catalog view yet.");
+    expect(view.getByTestId("server-stenographer-model")).toBeTruthy();
+  });
 });
 
 describe("ModelsSection Stenographer model", () => {
@@ -620,4 +701,19 @@ test("Memory model selection persists independently and inherits Conductor when 
   await act(async () => fireEvent.change(select, { target: { value: "" } }));
   await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
   await waitFor(() => expect(setServerModelsMock.mock.calls[1]?.[0].memoryReviewModel).toBeNull());
+});
+
+test("speech selection saves server-wide and can return to the catalog default", async () => {
+  const view = render(<ModelsSection />);
+  const select = await waitFor(() => view.getByLabelText("Speech model") as HTMLSelectElement);
+  expect(select.value).toBe("");
+  expect(view.getByTestId("effective-speech-model").textContent).toContain("ElevenLabs v3 Conversational");
+  await act(async () => fireEvent.change(select, { target: { value: "elevenlabs:eleven_v3" } }));
+  expect(view.getByText("Not saved yet. Select Save changes to apply this speech model.")).toBeTruthy();
+  expect(view.getByTestId("effective-speech-model").textContent).toContain("ElevenLabs v3 Conversational");
+  await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+  await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0].speechModel).toBe("elevenlabs:eleven_v3"));
+  await act(async () => fireEvent.change(select, { target: { value: "" } }));
+  await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+  await waitFor(() => expect(setServerModelsMock.mock.calls[1]?.[0].speechModel).toBeNull());
 });

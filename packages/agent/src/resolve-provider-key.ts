@@ -1,4 +1,4 @@
-type ProviderName = "openai" | "openrouter" | "anthropic" | "google" | "venice";
+type ProviderName = "openai" | "openrouter" | "anthropic" | "google" | "venice" | "typesafe";
 
 interface TenantContext {
   tenantId?: string;
@@ -11,10 +11,11 @@ const ENV_BY_PROVIDER: Record<ProviderName, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   google: "GOOGLE_API_KEY",
   venice: "VENICE_API_KEY",
+  typesafe: "TYPESAFE_API_KEY",
 };
 
 /**
- * D120 A1.P4 — single indirection seam for provider-key resolution.
+ * Single indirection seam for provider-key resolution.
  * Today: reads `process.env`. Later (nautilo.cloud / per-tenant
  * Secret Manager): switches on `_ctx.tenantId` to look up the key
  * from a backend service. Call sites pass `_ctx` already so the

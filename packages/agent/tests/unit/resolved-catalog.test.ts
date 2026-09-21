@@ -21,7 +21,7 @@ function writeVeniceSnapshot(
   fs.writeFileSync(cachePath, JSON.stringify(snapshot), "utf8");
 }
 
-describe("resolved-catalog (D429 Phase 1)", () => {
+describe("resolved-catalog (the current implementation)", () => {
   beforeEach(() => {
     resetVeniceCatalogCacheModuleForTests();
     resetModelCapabilitiesCacheForTests();
@@ -48,6 +48,7 @@ describe("resolved-catalog (D429 Phase 1)", () => {
     expect(row.features.tools).toBe(null);
     expect(row.features.structuredOutputs).toBe(null);
     expect(row.features.reasoning).toBe(null);
+    expect(row.features.visualGrounding).toBe(null);
     expect(row.features.webSearch).toBe(null);
     expect(row.features.e2ee).toBe(null);
     expect(row.privacyGrade).toBe(null);
@@ -295,7 +296,7 @@ describe("resolved-catalog (D429 Phase 1)", () => {
     expect(row.provenance).toBe("openrouter");
   });
 
-  test("list never performs a network fetch (Phase 0 / 1.2.3)", () => {
+  test("list never performs a network fetch ( / 1.2.3)", () => {
     const original = globalThis.fetch;
     let called = 0;
     // Replace fetch with a trap; any awaited fetch would throw and fail the run.

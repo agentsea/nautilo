@@ -1,372 +1,300 @@
+import { getClientActionBindingRegistry } from "./client-action-binding-registry";
+import { splitSpeechText } from "./speech-text";
 import { randomUUID } from "node:crypto";
-import type { ServerEvent, VoiceSentenceEvent } from "@nautilo/types";
-import { DEFAULT_VOICE_KEY } from "@nautilo/types";
+import { DEFAULT_VOICE_KEY, VOICE_PCM_PACKET_BYTES, type ProfileVoices, type ServerEvent, type VoiceSentenceEvent } from "@nautilo/types";
 import { eventBus } from "@nautilo/runtime";
-import { getProfile, getVoices } from "@nautilo/agent";
+import { getVoices, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "@nautilo/agent";
 import { log, warn } from "@nautilo/logger";
-import { isCloudManagedDeployment } from "@nautilo/config-guard";
 import { broadcast } from "./ws-publisher";
-import {
-  estimateElevenLabsV3TtsUsd,
-  safelyRecordProviderCost,
-} from "../costs/provider-cost-recorder";
+import { voiceDelivery, type VoiceAudience } from "./voice-delivery";
+import { SpeechCapacity } from "./speech-capacity";
+import { dialogueSpeechResponse, type DialogueSpeechRequest } from "./dialogue-speech";
+import { safelyRecordProviderCost, type ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
 
+const VOICE_SETTINGS = { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 };
+// Jessica is used only when the Genie has no usable voice assignment.
+const DEFAULT_VOICE_ID = "cgSgspJ2msm6clMCkdW9";
 const EMOJI_RE = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
-const VOICE_MARKUP_RE =
-  /<voice\s+lang=["'][^"']*["']\s*>|<\/voice\s*>/gi;
-
-/** D261 — sole hard default when no profile voices map entry resolves. */
-const HARDCODED_DEFAULT_VOICE_ID = "JSWO6cw2AyFE324d5kEr";
-const MODEL_ID = "eleven_v3";
-const VOICE_CACHE_TTL_MS = 45_000;
-const VOICE_SETTINGS = {
-  stability: 0.5,
-  similarity_boost: 0.75,
-  style: 0,
-  use_speaker_boost: true,
-  speed: 1.0,
+type AdmittedSentence = VoiceSentenceEvent & { userId: string; roomId: string; agentId: string; turnId: string };
+type Turn = {
+  key: string; userId: string; roomId: string; agentId: string; turnId: string;
+  abort: AbortController; audience: VoiceAudience; voices: Promise<ProfileVoices>; model: Promise<SpeechModel>;
+  queue: AdmittedSentence[]; terminal: boolean; busy: boolean; streamId: string; started: boolean; sequence: number;
+  suggestions: Set<string>; settling: boolean; admittedAt: number; audioBytes: number;
 };
 
-type VoiceResolutionSource = "profile" | "default";
-
-interface CachedVoiceResolution {
-  voiceId: string;
-  source: VoiceResolutionSource;
-  expiresAt: number;
+export interface TtsServiceDependencies {
+  admit(userId: string, roomId: string, turnId?: string): VoiceAudience | null;
+  voices(agentId: string): Promise<ProfileVoices>;
+  model(): SpeechModel;
+  fetch(input: string, init: RequestInit): Promise<Response>;
+  dialogue(request: DialogueSpeechRequest): Promise<Response>;
+  apiKey(): string | undefined;
+  record(receipt: ServerProviderCostReceipt): Promise<void>;
+  observe(metric: { streamId: string; stage: "admitted" | "first_audio" | "network_end" | "playback_end" | "aborted"; elapsedMs: number; audioBytes: number }): void;
 }
 
-interface QueuedSentence {
-  text: string;
-  index: number;
-  final: boolean;
-  roomId?: string;
-  userId?: string;
-  agentId?: string;
-  lang?: string;
-}
-
-function isValidElevenLabsVoiceId(id: string): boolean {
-  return /^[a-zA-Z0-9]+$/.test(id) && id.length >= 4 && id.length <= 64;
-}
-
-function voiceCacheKey(agentId: string | undefined, userId: string | undefined, lang: string): string {
-  const scope = agentId ?? userId ?? "";
-  return `${scope}:${lang}`;
-}
-
-function resolveVoiceIdFromMap(
-  voices: Record<string, { voiceId: string; voiceName: string }>,
-  lang: string | undefined,
-): string | null {
-  const ref =
-    lang !== undefined && lang !== DEFAULT_VOICE_KEY
-      ? (voices[lang] ?? voices[DEFAULT_VOICE_KEY])
-      : voices[DEFAULT_VOICE_KEY];
-  if (ref?.voiceId && isValidElevenLabsVoiceId(ref.voiceId)) {
-    return ref.voiceId;
-  }
-  return null;
-}
-
-function hasLanguageAssignment(
-  voices: Record<string, { voiceId: string; voiceName: string }>,
-  lang: string,
-): boolean {
-  const ref = voices[lang];
-  return !!ref?.voiceId && isValidElevenLabsVoiceId(ref.voiceId);
-}
-
-function stripVoiceMarkup(text: string): string {
-  return text.replace(VOICE_MARKUP_RE, "");
-}
-
-/**
- * Server-side TTS service (D021 Phase 2).
- *
- * Listens for voice.sentence events on the event bus, queues them,
- * calls ElevenLabs streaming API sequentially, and broadcasts
- * requester-private voice.audio events tagged with their origin Room.
- */
+/** One ordered lane per listener owner; provider and cancellation state is per turn. */
 export class TtsService {
-  private queue: QueuedSentence[] = [];
-  private processing = false;
-  private abortController: AbortController | null = null;
-  private stopped = false;
+  private readonly turns = new Map<string, Turn>();
+  private readonly runningUsers = new Set<string>();
+  private readonly activeTurns = new Map<string, string>();
   private busListener: ((event: ServerEvent) => void) | null = null;
-  private voiceCache = new Map<string, CachedVoiceResolution>();
-  /** D261 — at most one `voice.suggestion` per (agent|user, language) per service lifetime until profile refresh. */
-  private suggestionEmitted = new Set<string>();
+  private readonly deps: TtsServiceDependencies;
+  private readonly capacity = new SpeechCapacity();
+  private readonly receiptCapacity = new SpeechCapacity();
+  private readonly pendingReceipts = new Set<Promise<void>>();
+  private readonly pendingSynthesis = new Set<Promise<void>>();
+
+  constructor(deps: Partial<TtsServiceDependencies> = {}) {
+    this.deps = {
+      admit: (userId, roomId, turnId) => voiceDelivery.admit(userId, roomId, turnId ? getClientActionBindingRegistry()?.inspectTurnSocket(turnId) : undefined),
+      voices: agentId => getVoices(agentId),
+      model: getServerSpeechModel,
+      fetch: (...args) => fetch(...args),
+      dialogue: dialogueSpeechResponse,
+      apiKey: () => process.env["ELEVENLABS_API_KEY"]?.trim(),
+      record: safelyRecordProviderCost,
+      observe: metric => log(`[speech] ${JSON.stringify(metric)}`),
+      ...deps,
+    };
+  }
 
   start(): void {
-    if (this.busListener) {
-      log("[tts] Server-side TTS service already started — skipping duplicate bus subscription");
-      return;
-    }
-    this.busListener = (event: ServerEvent) => {
-      if (event.type === "voice.sentence") {
-        this.enqueue(event);
-      } else if (event.type === "profile.updated") {
-        this.invalidateVoiceCache(event.userId);
-      }
+    if (this.busListener) return;
+    this.busListener = event => {
+      if (event.type === "voice.sentence") this.enqueue(event);
+      else if (event.type === "voice.turn.end") this.finish(event.userId, event.turnId, event.outcome === "aborted", event.agentId);
     };
     eventBus.on(this.busListener);
-    log("[tts] Server-side TTS service started");
   }
 
-  stop(): void {
-    this.stopped = true;
-    this.queue.length = 0;
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
-    log("[tts] TTS pipeline stopped by client");
-  }
-
-  private invalidateVoiceCache(_userId?: string): void {
-    // Cache keys are agent-scoped (`agentId:lang`); profile.updated carries
-    // userId only — clear the full cache (45s TTL, rare writes).
-    this.voiceCache.clear();
-    this.suggestionEmitted.clear();
-  }
-
-  private suggestionKey(agentId?: string, userId?: string, lang?: string): string {
-    return `${agentId ?? userId ?? ""}:${lang ?? ""}`;
-  }
-
-  private maybeEmitVoiceSuggestion(
-    sentence: QueuedSentence,
-    voices: Record<string, { voiceId: string; voiceName: string }>,
-  ): void {
-    const lang = sentence.lang;
-    if (!lang || lang === DEFAULT_VOICE_KEY) return;
-    if (hasLanguageAssignment(voices, lang)) return;
-
-    const key = this.suggestionKey(sentence.agentId, sentence.userId, lang);
-    if (this.suggestionEmitted.has(key)) return;
-    this.suggestionEmitted.add(key);
-
-    const suggestion = {
-      type: "voice.suggestion" as const,
-      language: lang,
-      ...(sentence.userId ? { userId: sentence.userId } : {}),
-      ...(sentence.agentId ? { agentId: sentence.agentId } : {}),
-    };
-    if (sentence.userId) {
-      broadcast(suggestion, { kind: "user", userId: sentence.userId });
-    } else {
-      broadcast(suggestion);
+  /** No user argument is reserved for process shutdown, never a client command. */
+  stop(userId?: string, turnId?: string): void {
+    for (const turn of this.turns.values()) {
+      if (userId !== undefined && turn.userId !== userId) continue;
+      if (turnId !== undefined && turn.turnId !== turnId) continue;
+      this.abort(turn, "stopped");
     }
   }
 
-  private enqueue(sentence: VoiceSentenceEvent): void {
-    this.stopped = false;
-    this.queue.push({
-      text: sentence.text,
-      index: sentence.index,
-      final: sentence.final,
-      ...(sentence.roomId ? { roomId: sentence.roomId } : {}),
-      ...(sentence.userId ? { userId: sentence.userId } : {}),
-      ...(sentence.agentId ? { agentId: sentence.agentId } : {}),
-      ...(sentence.lang ? { lang: sentence.lang } : {}),
-    });
-    if (!this.processing) {
-      void this.processQueue();
-    }
+  async dispose(): Promise<void> {
+    this.stop();
+    if (this.busListener) eventBus.off(this.busListener);
+    this.busListener = null;
+    for (const turn of this.turns.values()) turn.audience.dispose();
+    this.turns.clear();
+    this.activeTurns.clear();
+    await Promise.allSettled([...this.pendingSynthesis]);
+    await this.flushCosts();
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
-
-    while (this.queue.length > 0 && !this.stopped) {
-      const sentence = this.queue.shift()!;
-      await this.synthesize(sentence);
-    }
-
-    this.processing = false;
+  async flushCosts(): Promise<void> {
+    while (this.pendingReceipts.size) await Promise.all([...this.pendingReceipts]);
   }
 
-  private hardDefault(): { voiceId: string; source: VoiceResolutionSource } {
-    return { voiceId: HARDCODED_DEFAULT_VOICE_ID, source: "default" };
-  }
-
-  private async resolveVoiceId(
-    agentId?: string,
-    userId?: string,
-    lang?: string,
-  ): Promise<{ voiceId: string; source: VoiceResolutionSource }> {
-    const langKey = lang ?? DEFAULT_VOICE_KEY;
-    const cacheKey = voiceCacheKey(agentId, userId, langKey);
-    const now = Date.now();
-    const cached = this.voiceCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-      return { voiceId: cached.voiceId, source: cached.source };
-    }
-
-    let fromProfile: string | null = null;
-
-    if (agentId) {
-      const voices = await getVoices(agentId).catch(() => ({}));
-      fromProfile = resolveVoiceIdFromMap(voices, lang);
-    } else if (userId) {
-      const profile = await getProfile(userId).catch(() => null);
-      if (profile) {
-        fromProfile = resolveVoiceIdFromMap(profile.voices, lang);
+  enqueue(event: VoiceSentenceEvent): void {
+    if (!event.userId || !event.roomId || !event.agentId || !event.turnId || !this.deps.apiKey()) return;
+    const sentence = event as AdmittedSentence;
+    const key = JSON.stringify([sentence.userId, sentence.agentId, sentence.turnId]);
+    let turn = this.turns.get(key);
+    if (!turn) {
+      // Admission is at the first producer segment only. Enabling voice or
+      // reconnecting during a response must not attach halfway through it.
+      if (sentence.index !== 0) return;
+      for (const previous of this.turns.values()) {
+        if (previous.userId === sentence.userId && previous.roomId === sentence.roomId && previous.agentId === sentence.agentId) this.abort(previous, "stopped");
       }
+      const audience = this.deps.admit(sentence.userId, sentence.roomId, sentence.turnId);
+      if (!audience) return;
+      turn = { key, userId: sentence.userId, roomId: sentence.roomId, agentId: sentence.agentId, turnId: sentence.turnId,
+        audience, abort: new AbortController(), voices: this.deps.voices(sentence.agentId), model: (() => { try { return Promise.resolve(this.deps.model()); } catch (error) { return Promise.reject(error instanceof Error ? error : new Error("Speech model unavailable")); } })(), queue: [], terminal: false, busy: false, streamId: randomUUID(), started: false, sequence: 0, suggestions: new Set(), settling: false, admittedAt: performance.now(), audioBytes: 0 };
+      void turn.voices.catch(() => {});
+      void turn.model.catch(() => {});
+      this.turns.set(key, turn);
+      this.observe(turn, "admitted");
+      const admitted = turn;
+      audience.signal.addEventListener("abort", () => this.abort(admitted, "disconnected"), { once: true, signal: turn.abort.signal });
+      if (audience.signal.aborted) this.abort(turn, "disconnected");
     }
-
-    const resolved = fromProfile
-      ? { voiceId: fromProfile, source: "profile" as const }
-      : this.hardDefault();
-
-    this.voiceCache.set(cacheKey, {
-      voiceId: resolved.voiceId,
-      source: resolved.source,
-      expiresAt: now + VOICE_CACHE_TTL_MS,
-    });
-
-    return resolved;
+    if (turn.abort.signal.aborted || turn.terminal || turn.roomId !== sentence.roomId || turn.agentId !== sentence.agentId) return;
+    turn.queue.push(sentence);
+    void this.drain(sentence.userId);
   }
 
-  private async loadVoicesMap(
-    agentId?: string,
-    userId?: string,
-  ): Promise<Record<string, { voiceId: string; voiceName: string }>> {
-    if (agentId) {
-      return getVoices(agentId).catch(() => ({}));
+  finish(userId: string, turnId: string, aborted: boolean, agentId?: string): void {
+    for (const turn of this.turns.values()) {
+      if (turn.userId !== userId || turn.turnId !== turnId || (agentId !== undefined && turn.agentId !== agentId)) continue;
+      turn.terminal = true;
+      if (aborted) this.abort(turn, "stopped");
+      this.releaseIfDone(turn);
     }
-    if (userId) {
-      const profile = await getProfile(userId).catch(() => null);
-      return profile?.voices ?? {};
-    }
-    return {};
+    void this.drain(userId);
   }
 
-  private async synthesize(sentence: QueuedSentence): Promise<void> {
-    const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
-    if (!apiKey) {
-      warn(isCloudManagedDeployment()
-        ? "[tts] managed voice service unavailable, skipping TTS"
-        : "[tts] ELEVENLABS_API_KEY not set, skipping TTS");
-      return;
-    }
+  private abort(turn: Turn, reason: "stopped" | "disconnected" | "unavailable"): void {
+    if (turn.abort.signal.aborted) return;
+    if (turn.started) turn.audience.control({ type: "voice.stream.abort", streamId: turn.streamId, reason });
+    turn.abort.abort();
+    this.observe(turn, "aborted");
+    turn.audience.dispose();
+    turn.queue = [];
+    if (this.activeTurns.get(turn.userId) === turn.key) this.activeTurns.delete(turn.userId);
+    this.releaseIfDone(turn);
+    void this.drain(turn.userId);
+  }
 
-    const strippedText = stripVoiceMarkup(sentence.text);
-    const cleaned = strippedText
-      .replace(/\[.*?\]/g, "")
-      .replace(EMOJI_RE, "")
-      .trim();
-    if (!cleaned) return;
+  private releaseIfDone(turn: Turn): void {
+    if (!turn.terminal || turn.busy || turn.queue.length > 0 || turn.settling) return;
+    turn.settling = true;
+    void (async () => {
+      if (turn.started && !turn.abort.signal.aborted) {
+        // Flush a short final buffer, then retain the user's playback lane until
+        // the sink consumes it. Provider completion is not playback completion.
+        turn.audience.control({ type: "voice.stream.end", streamId: turn.streamId, sequence: turn.sequence });
+        this.observe(turn, "network_end");
+        await turn.audience.drained();
+        if (!turn.abort.signal.aborted && turn.audience.format === "pcm_24000") this.observe(turn, "playback_end");
+      }
+    })().finally(() => {
+      turn.abort.abort();
+      turn.audience.dispose();
+      if (this.turns.get(turn.key) === turn) this.turns.delete(turn.key);
+      if (this.activeTurns.get(turn.userId) === turn.key) this.activeTurns.delete(turn.userId);
+      void this.drain(turn.userId);
+    }).catch(() => warn("[tts] speech playback unavailable"));
+  }
 
-    const ttsText = strippedText.replace(EMOJI_RE, "").trim();
-    const voices = await this.loadVoicesMap(sentence.agentId, sentence.userId);
-    this.maybeEmitVoiceSuggestion(sentence, voices);
+  private observe(turn: Turn, stage: Parameters<TtsServiceDependencies["observe"]>[0]["stage"]): void {
+    // Durations share the server's monotonic clock. Playback acknowledgements
+    // describe rendered samples, not measured acoustic onset at the speaker.
+    try { this.deps.observe({ streamId: turn.streamId, stage, elapsedMs: performance.now() - turn.admittedAt, audioBytes: turn.audioBytes }); }
+    catch { /* Observability must not interrupt speech. */ }
+  }
 
-    const { voiceId, source } = await this.resolveVoiceId(
-      sentence.agentId,
-      sentence.userId,
-      sentence.lang,
-    );
-    log(
-      `[tts] agentId=${sentence.agentId ?? "none"} userId=${sentence.userId ?? "none"} lang=${sentence.lang ?? DEFAULT_VOICE_KEY} voiceId=${voiceId} source=${source}`,
-    );
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`;
-
-    this.abortController = new AbortController();
-
+  private async drain(userId: string): Promise<void> {
+    if (this.runningUsers.has(userId)) return;
+    this.runningUsers.add(userId);
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "xi-api-key": apiKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: ttsText,
-          model_id: MODEL_ID,
-          voice_settings: VOICE_SETTINGS,
-        }),
-        signal: this.abortController.signal,
+      for (;;) {
+        const active = this.activeTurns.get(userId);
+        const turn = active ? this.turns.get(active) : [...this.turns.values()].find(candidate => candidate.userId === userId && candidate.queue.length > 0 && !candidate.abort.signal.aborted);
+        if (!turn || turn.settling || turn.queue.length === 0) break;
+        this.activeTurns.set(userId, turn.key);
+        const sentence = turn.queue.shift()!;
+        turn.busy = true;
+        const synthesis = this.synthesize(turn, sentence);
+        this.pendingSynthesis.add(synthesis);
+        try { await synthesis; }
+        catch {
+          if (!turn.abort.signal.aborted) { this.abort(turn, "unavailable"); warn("[tts] speech generation unavailable"); }
+        }
+        finally { this.pendingSynthesis.delete(synthesis); turn.busy = false; this.releaseIfDone(turn); }
+      }
+    } finally { this.runningUsers.delete(userId); }
+  }
+
+  private async synthesize(turn: Turn, sentence: AdmittedSentence): Promise<void> {
+    const text = sentence.text.replace(/<voice\s+lang=["'][^"']*["']\s*>|<\/voice\s*>/gi, "").replace(EMOJI_RE, "").trim();
+    if (!text.replace(/\[.*?\]/g, "").trim()) return;
+    const voices = await turn.voices.catch((): ProfileVoices => ({}));
+    if (turn.abort.signal.aborted) return;
+    const selected = voices[sentence.lang ?? DEFAULT_VOICE_KEY] ?? voices[DEFAULT_VOICE_KEY];
+    const voiceId = selected?.voiceId && /^[a-zA-Z0-9]+$/.test(selected.voiceId)
+      ? selected.voiceId : DEFAULT_VOICE_ID;
+    const model = await turn.model;
+    for (const part of splitSpeechText(text, model.speech.maxInputCharacters)) {
+      if (turn.abort.signal.aborted) return;
+      await this.synthesizePart(turn, sentence, part, voiceId, model);
+    }
+  }
+
+  private async synthesizePart(turn: Turn, sentence: AdmittedSentence, text: string, voiceId: string, model: SpeechModel): Promise<void> {
+    const voices = await turn.voices.catch((): ProfileVoices => ({}));
+    if (sentence.lang && !voices[sentence.lang] && !turn.suggestions.has(sentence.lang)) {
+      turn.suggestions.add(sentence.lang);
+      broadcast({ type: "voice.suggestion", language: sentence.lang, userId: turn.userId, agentId: turn.agentId }, { kind: "user", userId: turn.userId });
+    }
+    const streamId = turn.streamId;
+    const attemptId = randomUUID();
+    let submitted = false;
+    let accepted = false;
+    let sequence = 0;
+    let oddByte: number | null = null;
+    const apiKey = this.deps.apiKey();
+    if (!apiKey) throw new Error("Speech credentials unavailable");
+    // Reserve bounded accounting capacity before incurring cost. Ordinary writes
+    // run alongside playback/the next request; a stalled database backpressures
+    // admission rather than creating an unbounded fire-and-forget queue.
+    const releaseReceipt = await this.receiptCapacity.acquire(turn.abort.signal);
+    let release: (() => void) | undefined;
+    try {
+      release = await this.capacity.acquire(turn.abort.signal);
+      if (turn.abort.signal.aborted) return;
+      submitted = true;
+      const response = model.speech.transport === "elevenlabs-dialogue-http"
+        ? await this.deps.dialogue({ text, voiceId, model: model.providerModelId, format: turn.audience.format, apiKey, signal: turn.abort.signal, onSubmitted: () => { submitted = true; } })
+        : await this.deps.fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${turn.audience.format}`, {
+        method: "POST", headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ text, model_id: model.providerModelId, voice_settings: VOICE_SETTINGS }), signal: turn.abort.signal,
       });
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        warn(`[tts] ElevenLabs API error ${response.status}: ${body.slice(0, 200)}`);
-        return;
+      accepted = response.ok;
+      this.capacity.observeMaximum(response.headers.get("maximum-concurrent-requests"));
+      this.receiptCapacity.observeMaximum(response.headers.get("maximum-concurrent-requests"));
+      if (!response.ok || !response.body) throw new Error("Speech provider unavailable");
+      if (turn.abort.signal.aborted) { await response.body.cancel(); return; }
+      if (!turn.started) {
+        turn.audience.control({ type: "voice.stream.start", version: 1, streamId, turnId: turn.turnId, roomId: turn.roomId, agentId: turn.agentId,
+          sampleRate: 24000, encoding: "pcm_s16le", channels: 1, model: model.id });
+        turn.started = true;
       }
-
-      if (!response.body) {
-        warn("[tts] ElevenLabs response has no body");
-        return;
-      }
-
-      let chunkIndex = 0;
+      log(`[speech] model=${model.id} transport=${model.speech.transport === "elevenlabs-dialogue-http" ? "dialogue_http" : "tts_http"} stream=${streamId}`);
       const reader = response.body.getReader();
-
       try {
-        while (!this.stopped) {
-          const result = await reader.read();
-          if (result.done) break;
-
-          const base64 = bufferToBase64(result.value as Uint8Array);
-          broadcast({
-            type: "voice.audio",
-            data: base64,
-            chunkIndex: chunkIndex++,
-            sentenceIndex: sentence.index,
-            final: false,
-            ...(sentence.roomId ? { roomId: sentence.roomId } : {}),
-            ...(sentence.userId ? { userId: sentence.userId } : {}),
-          });
+        for (;;) {
+          const next = await reader.read();
+          if (next.done || turn.abort.signal.aborted) break;
+          const value: unknown = next.value;
+          if (!(value instanceof Uint8Array)) throw new Error("Invalid speech bytes");
+          const firstAudio = turn.audioBytes === 0 && value.byteLength > 0;
+          turn.audioBytes += value.byteLength;
+          if (firstAudio) this.observe(turn, "first_audio");
+          if (turn.audience.format === "mp3_44100_128") {
+            turn.audience.legacy({ type: "voice.audio", turnId: turn.turnId, data: Buffer.from(value).toString("base64"), chunkIndex: sequence++, sentenceIndex: sentence.index, final: false, userId: turn.userId, roomId: turn.roomId });
+          } else {
+            let bytes = value;
+            if (oddByte !== null) { const merged = new Uint8Array(bytes.length + 1); merged[0] = oddByte; merged.set(bytes, 1); bytes = merged; }
+            oddByte = bytes.length % 2 ? bytes[bytes.length - 1]! : null;
+            const evenLength = bytes.length - (oddByte === null ? 0 : 1);
+            for (let offset = 0; offset < evenLength; offset += VOICE_PCM_PACKET_BYTES) {
+              await turn.audience.audio({ streamId, sequence: turn.sequence++, pcm: bytes.slice(offset, Math.min(evenLength, offset + VOICE_PCM_PACKET_BYTES)) });
+            }
+          }
         }
       } finally {
+        await reader.cancel().catch(() => {});
         reader.releaseLock();
       }
-
-      if (!this.stopped) {
-        broadcast({
-          type: "voice.audio",
-          data: "",
-          chunkIndex,
-          sentenceIndex: sentence.index,
-          final: true,
-          ...(sentence.roomId ? { roomId: sentence.roomId } : {}),
-          ...(sentence.userId ? { userId: sentence.userId } : {}),
-        });
-        await safelyRecordProviderCost({
-          identity: `elevenlabs:tts:${randomUUID()}`,
-          userId: sentence.userId ?? null,
-          agentId: sentence.agentId ?? null,
-          provider: "elevenlabs",
-          operation: "text_to_speech",
-          estimatedCostUsd: estimateElevenLabsV3TtsUsd(ttsText),
-          evidenceState: "estimated",
-        });
-      }
-
-      log(`[tts] Sentence ${sentence.index} complete (${chunkIndex} chunks)`);
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        log("[tts] ElevenLabs request aborted");
-        return;
-      }
-      warn(`[tts] ElevenLabs TTS failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (turn.abort.signal.aborted) return;
+      if (oddByte !== null) throw new Error("Incomplete PCM sample");
+      turn.audience.legacy({ type: "voice.audio", turnId: turn.turnId, data: "", chunkIndex: sequence, sentenceIndex: sentence.index, final: true, userId: turn.userId, roomId: turn.roomId });
     } finally {
-      this.abortController = null;
+      release?.();
+      if (!submitted) releaseReceipt();
+      else {
+        const receipt = Promise.resolve().then(() => this.deps.record({
+          identity: `elevenlabs:tts:${attemptId}`, userId: turn.userId, roomId: turn.roomId, agentId: turn.agentId,
+          provider: "elevenlabs", operation: "text_to_speech",
+          estimatedCostUsd: accepted ? estimateSpeechCostUsd(text, model) : null,
+          evidenceState: accepted ? "estimated" : "unknown",
+        })).catch(() => warn("[tts] speech cost receipt unavailable")).finally(() => {
+          releaseReceipt(); this.pendingReceipts.delete(receipt);
+        });
+        this.pendingReceipts.add(receipt);
+      }
     }
   }
 }
 
-function bufferToBase64(uint8: Uint8Array): string {
-  return Buffer.from(uint8).toString("base64");
-}
-
-let ttsServiceInstance: TtsService | null = null;
-
-export function getTtsService(): TtsService {
-  if (!ttsServiceInstance) {
-    ttsServiceInstance = new TtsService();
-  }
-  return ttsServiceInstance;
-}
+let service: TtsService | null = null;
+export function getTtsService(): TtsService { return service ??= new TtsService(); }

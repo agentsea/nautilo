@@ -1,9 +1,10 @@
 /**
- * D334 Phase 2 — OpenAI-only Responses provider gate and provider isolation.
+ * OpenAI-only Responses provider gate and provider isolation.
  * Hermetic: no live OpenAI, no secrets.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import {
   createAnthropic,
   createFireworks,
@@ -13,6 +14,7 @@ import {
 import { createUniversalModel } from "../../src/providers/universal";
 import { resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { activateModelCatalogForTests } from "../helpers/activate-model-catalog";
+import { projectPreparedMessagesForModelCache } from "../../src/utils/model-context-cache";
 
 beforeAll(async () => {
   await activateModelCatalogForTests([{
@@ -35,7 +37,7 @@ function anthropicFields(llm: unknown): Record<string, unknown> {
   return llm as Record<string, unknown>;
 }
 
-describe("shouldUseOpenAIResponsesApi (D334 transport policy)", () => {
+describe("shouldUseOpenAIResponsesApi ( transport policy)", () => {
   const baseOpts = {
     modelId: "openai:gpt-5.5-2026-04-23",
     maxTokens: 8192,
@@ -141,7 +143,7 @@ describe("shouldUseOpenAIResponsesApi (D334 transport policy)", () => {
   });
 });
 
-describe("createUniversalModel — OpenAI Responses flag isolation (D334)", () => {
+describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
   it("uses max_completion_tokens for direct GPT-6 Chat Completions utility calls", async () => {
     const llm = await createUniversalModel("openai:gpt-6-astra", {
       apiKey: "test-key",
@@ -172,7 +174,7 @@ describe("createUniversalModel — OpenAI Responses flag isolation (D334)", () =
     expect(modelKwargs(llm)["reasoning_effort"]).toBeUndefined();
   });
 
-  it("adds explicit cache mode only to a direct GPT-5.6 Responses request", async () => {
+  it("combines implicit history caching with the explicit stable breakpoint only for direct GPT-5.6", async () => {
     const llm = await createUniversalModel("openai:gpt-5.6-luna", {
       apiKey: "test-key",
       maxTokens: 8192,
@@ -184,8 +186,24 @@ describe("createUniversalModel — OpenAI Responses flag isolation (D334)", () =
     expect(fields["useResponsesApi"]).toBe(true);
     expect(fields["reasoning"]).toBeUndefined();
     expect(modelKwargs(llm)).toEqual({
-      prompt_cache_options: { mode: "explicit" },
+      prompt_cache_options: { mode: "implicit" },
     });
+
+    const stable = "stable system and tool guidance";
+    const projected = projectPreparedMessagesForModelCache(
+      [new SystemMessage(`${stable}\nvolatile turn context`), new HumanMessage("hello")],
+      "openai:gpt-5.6-luna",
+      stable.length,
+      { openAIExplicitPromptCache: true },
+    );
+    expect(projected[0]?.content).toEqual([
+      {
+        type: "input_text",
+        text: stable,
+        prompt_cache_breakpoint: { mode: "explicit" },
+      },
+      { type: "input_text", text: "\nvolatile turn context" },
+    ]);
   });
 
   it("does not enable Responses for OpenRouter when the flag is set", async () => {

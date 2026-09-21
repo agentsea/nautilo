@@ -1,5 +1,5 @@
 /**
- * D261 Phase 4 — find_voice structured discovery, filters, honesty warnings.
+ * find_voice structured discovery, filters, honesty warnings.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { FindVoiceToolResult } from "@nautilo/types";
@@ -37,7 +37,7 @@ function parseFindResult(raw: string): FindVoiceToolResult {
   return JSON.parse(raw) as FindVoiceToolResult;
 }
 
-describe("D261 P4 — find_voice discovery", () => {
+describe("find_voice discovery", () => {
   const prevKey = process.env["ELEVENLABS_API_KEY"];
 
   beforeEach(() => {
@@ -72,7 +72,7 @@ describe("D261 P4 — find_voice discovery", () => {
     expect(lucia!.accent).toBe("peninsular");
     expect(lucia!.language).toBe("es");
     expect(lucia!.languageLabel).toBe("Spanish");
-    expect(lucia!.badge).toBe("provider_v3");
+    expect(lucia!.badge).toBe("provider_verified");
     expect(lucia!.matchReason).toContain("peninsular");
     expect(lucia!.voiceId).toBe("pen-1");
   });

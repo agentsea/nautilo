@@ -48,11 +48,11 @@ import type {
   CanonicalPrincipal,
   RbacProjection,
 } from "@nautilo/trust";
-// M125 Phase 3 — `getBootstrapOwnerId` is consumed exactly once below
+// `getBootstrapOwnerId` is consumed exactly once below
 // at `createApp` boot to seed operator-only routes (ownerRoutes,
 // invitesRoutes mint flow, jobManager background-job attribution,
 // healthRoutes operator hints, profile-route owner detection). It is
-// NOT read on the request hot path; the M125 lint rule's carve-out
+// NOT read on the request hot path; the lint rule's carve-out
 // allows this single createApp-level use. New per-request callers
 // must derive `ownerId` from `request.sessionUserId` or
 // `request.memoryEnvelope?.ownerId`, never from this getter.
@@ -78,6 +78,7 @@ import {
   type MobileWebNotServedReason,
 } from "./friendly-errors/mobile-web-not-served";
 import { healthRoutes, markReady } from "./routes/health";
+import { publicJoinRoutes } from "./routes/public-join";
 import { wsRoutes } from "./routes/ws";
 import { chatRoutes, defaultChatRoutesDeps, type ChatRoutesDeps } from "./routes/chat";
 import {
@@ -595,7 +596,7 @@ import {
   type StorageZones,
 } from "@nautilo/config";
 
-// D568 server-owned spend policy and provider poll cadence. Browser Use V4
+//  server-owned spend policy and provider poll cadence. Browser Use V4
 // runs are long-lived jobs: they end at a provider terminal state, the spend
 // cap, or an explicit Human Stop rather than an invented wall-clock cutoff.
 const CONNECTED_WEB_ACCOUNT_READ_MAX_COST_USD = 2;
@@ -613,19 +614,19 @@ declare module "fastify" {
     accessTokenIssuedAt: number | null;
     accessTokenExpiresAt: number | null;
     cryptoDeviceAdmission: CurrentDeviceAdmission | null;
-    /** M213 — canonical identity from bearer resolution when authenticated. */
+    /** canonical identity from bearer resolution when authenticated. */
     resolvedPrincipal: CanonicalPrincipal | null;
-    /** M213 — server-wide RBAC projection when depth is `rbac` or `policy`. */
+    /** server-wide RBAC projection when depth is `rbac` or `policy`. */
     rbacProjection: RbacProjection | null;
   }
   interface FastifyInstance {
     /**
-     * Full four-zone storage bundle (D049). Decorated at boot so any
+     * Full four-zone storage bundle. Decorated at boot so any
      * route can grab a provider without re-reading runtime paths.
      * Relay-facing wiring should narrow via `toRelayStorageZones`.
      */
     storageZones: StorageZones;
-    /** D448 process-local human editor presence; never document authority. */
+    /**  process-local human editor presence; never document authority. */
     humanEditLeaseRegistry: HumanEditLeaseRegistry;
   }
 }
@@ -653,7 +654,7 @@ export interface CreateAppOptions {
   /**
    * Owner actor ID (from trust seed). Required for auth / PIN subject.
    * If omitted, `createApp` falls back to the bootstrap-state-cache
-   * value (D120 A1.P1; pre-D120 a now-retired env var) populated by
+   * value populated by
    * `bin/nautilo-server` after `seedTrustPersonal`. Tests inject
    * this option explicitly.
    */
@@ -671,9 +672,9 @@ export interface CreateAppOptions {
   port?: number | undefined;
   /** Custom PinChallengeProvider (for testing with short lockouts). */
   pinProvider?: PinChallengeProvider | undefined;
-  /** M074 — override chat route deps (e.g. stub `createForegroundJob` in integration tests). */
+  /** override chat route deps (e.g. stub `createForegroundJob` in integration tests). */
   chatRoutesDeps?: Partial<ChatRoutesDeps> | undefined;
-  /** M243 dormant direct-source test composition; production always omits it. */
+  /**  dormant direct-source test composition; production always omits it. */
   protectedMemoryComposition?: ProtectedMemoryRouteComposition | undefined;
   /**
    * Canonical server migration composition for Stenographer Records. Current
@@ -682,21 +683,21 @@ export interface CreateAppOptions {
    */
   stenographerRecordPublisher?: OrdinaryStenographerIntentAdapterOptions["publishExtraction"] | undefined;
   stenographerRecordConverter?: OrdinaryStenographerIntentAdapterOptions["convertNextLegacy"] | undefined;
-  /** D229 — override voice catalog persistent cache deps in unit tests. */
+  /** override voice catalog persistent cache deps in unit tests. */
   voiceRoutesDeps?: VoiceRouteDeps | undefined;
   /**
-   * Integration harness (M072 Phase G): pin the default agent id passed
+   * Integration harness: pin the default agent id passed
    * into `policyResolver.resolveContext` during Logto bearer resolution.
    * Parallel test files mutate `getBootstrapDefaultAgentId()`; wiring this
    * keeps each `createApp` instance stable. Production omits it.
    */
   trustBearerDefaultAgentId?: string | (() => string) | undefined;
-  /** D448 test/later-coordinator injection; production creates one registry per app. */
+  /**  test/later-coordinator injection; production creates one registry per app. */
   humanEditLeaseRegistry?: HumanEditLeaseRegistry | undefined;
 }
 
 /**
- * M125 Phase 1.4 — context for requests with NO authenticated user
+ * context for requests with NO authenticated user
  * (no bearer, or bearer failed in a way that doesn't yield a real
  * identity). Empty ownerId + empty agentId means downstream routes
  * that derive a subject from `request.sessionUserId ?? request.memoryEnvelope?.ownerId`
@@ -737,7 +738,7 @@ export function buildAnonymousContext(): RuntimePolicyContext {
   };
 }
 
-// M125 Phase 3 — the legacy `buildGuestContext(ownerId, agentId)` helper
+// the legacy `buildGuestContext(ownerId, agentId)` helper
 // is gone. All production call sites used it with bootstrap-state-cache
 // globals, which silently dressed every unauthenticated / auth-failed
 // request in the operator's identity. `buildAnonymousContext()` is the
@@ -814,7 +815,7 @@ export async function backfillOwnedPhotoLibraryForAppBoot(
     const db = getServerDirectDb();
     const [identity] = await db.select({ serverInstanceId: nautiloInstanceIdentity.serverInstanceId })
       .from(nautiloInstanceIdentity).where(eq(nautiloInstanceIdentity.id, "self")).limit(1);
-    if (!identity) throw new Error("D487 boot backfill requires the singleton server identity");
+    if (!identity) throw new Error(" boot backfill requires the singleton server identity");
     await backfillLegacyCurrentPhotoReferences(
       { db },
       {
@@ -911,7 +912,7 @@ export async function createApp(options?: CreateAppOptions) {
   const silent = options?.silent ?? false;
   const enableClaudeCodeTasks = options?.enableClaudeCodeTasks === true;
   const policyResolver = options?.policyResolver ?? null;
-  // D120 A1.P1 (was M042D): prefer explicit option (test injection
+  //  A1.P1 (was M042D): prefer explicit option (test injection
   // path); fall back to the bootstrap-state-cache populated by
   // bin/nautilo-server right after seedTrustPersonal. Production always
   // has the cache populated; tests pass it explicitly so they can mint
@@ -935,7 +936,7 @@ export async function createApp(options?: CreateAppOptions) {
   });
   installStrictShadowPlaintextRouteGate(app);
 
-  // D513 Phase 3.2 — one app-owned, memory-only eligibility registry. The
+  // one app-owned, memory-only eligibility registry. The
   // lifecycle observer is replace-safe for repeated app fixtures and is
   // removed with this app; it is not a runtime import side effect.
   const foregroundMemoryEffectRecovery = createForegroundMemoryEffectRecovery({
@@ -1013,7 +1014,7 @@ export async function createApp(options?: CreateAppOptions) {
     await liveShadowMessageComposition.shutdown();
   });
 
-  // M213 Phase 0 — one process-local DB statement observer delegates to the
+  // one process-local DB statement observer delegates to the
   // active request telemetry context (AsyncLocalStorage); no per-request
   // observer registration races.
   const unbindRuntimeDbObserver = bindRuntimeStatementObserverToRequestTelemetry();
@@ -1021,7 +1022,7 @@ export async function createApp(options?: CreateAppOptions) {
     unbindRuntimeDbObserver();
   });
 
-  // D049: create the four-zone directory tree (idempotent, <50ms),
+  // create the four-zone directory tree (idempotent, <50ms),
   // then build the storage bundle once at boot and share it with every
   // route + the agent's artifact tools.
   //
@@ -1036,29 +1037,29 @@ export async function createApp(options?: CreateAppOptions) {
   const storageZones = createStorageZones(paths);
   app.decorate("storageZones", storageZones);
   setArtifactStorage(storageZones);
-  // D362 Milestone B — install the inPlace office-session broker so the
+  //  Milestone B — install the inPlace office-session broker so the
   // agent's `office` tool can edit a workspace doc through a live coolwsd
   // session (WOPI token mint + WS URL assembly). Symmetric with
   // setArtifactStorage above.
   setOfficeSessionBroker(createOfficeSessionBroker());
 
-  // D281 — prime the server model config cache so the first model resolution
+  // prime the server model config cache so the first model resolution
   // (default / conductor / fallback) sees admin-configured values without a
   // request first. Best-effort: consumers fall back safely if this fails.
   await refreshServerModelConfigCache(true).catch(() => undefined);
 
-  // M161 Phase 3 — choose and persist this server's non-legacy visual
+  // choose and persist this server's non-legacy visual
   // identity once at boot. The DB conditional write makes concurrent app
   // starts idempotent and preserves any explicit Admin/upload choice.
   //
-  // Stack 198 — reusable `createApp()` defaults this persistence side effect
+  // reusable `createApp()` defaults this persistence side effect
   // off. The real server binary opts in for ordinary boots and opts out only
   // for its DB-less test-mode-only harness. Rejections are intentionally not
   // swallowed: an enabled real boot must fail on an unexpected DB/write error.
   await materializeServerProfileForAppBoot(
     options?.materializeServerProfileAtBoot,
   );
-  // D487 — migrations create the ownership tables, then ordinary boots adopt
+  // migrations create the ownership tables, then ordinary boots adopt
   // only current DB pointers and exact manage_avatar success transcripts.
   // This runs before Fastify listens, so interactive photo mutations cannot
   // race the offline backfill admission.
@@ -1116,7 +1117,7 @@ export async function createApp(options?: CreateAppOptions) {
       `[vault] boot-time unlock skipped: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  // M072 — vault is locked at boot; unlocked on next successful PIN proof
+  // vault is locked at boot; unlocked on next successful PIN proof
   // (prove-and-resume / identity-verify-resume / recover); re-locked on shutdown.
   connectionVault.lock();
   clearRegisteredSecretsForRedaction();
@@ -1126,7 +1127,7 @@ export async function createApp(options?: CreateAppOptions) {
     const writable = envelope?.writableNamespaces ?? [];
     const scope = {
       agentId: envelope?.agentId ?? "",
-      // M082: attachment target (`writableNamespaces[0]`), not `mutableNamespaces`.
+      // attachment target (`writableNamespaces[0]`), not `mutableNamespaces`.
       defaultNamespaceId: writable[0] ?? null,
       readableNamespaceIds: envelope?.readableNamespaces ?? [],
     };
@@ -1157,14 +1158,14 @@ export async function createApp(options?: CreateAppOptions) {
     setConnectionVaultAuditSink(null);
     setConnectionProxyDispatcher(null);
   });
-  // D087 Phase 2A — the backup subsystem uses the `data` zone for
+  // A — the backup subsystem uses the `data` zone for
   // content-addressed pre-bytes blobs (agent-invisible, server-
   // internal). Setting the full `StorageZones` bundle keeps the
   // registry API symmetric with `setArtifactStorage` above and
   // leaves room for future multi-zone routing (e.g. encrypted
   // blobs under `vault` once M2 key-isolation lands).
   setBackupStorage(storageZones);
-  // D087 Phase 3 §3.10 — wire the backup subsystem's event sink
+  // wire the backup subsystem's event sink
   // to the WS broadcaster. After this, any recordRevision success
   // or GC eviction fires a `revisions.state_changed` event the
   // workbench's useRevisionState hook consumes to toggle undo/
@@ -1172,7 +1173,7 @@ export async function createApp(options?: CreateAppOptions) {
   // falls back to silent when unregistered); production code path
   // always runs setBackupStorage before this, so ordering is safe.
   setRevisionEventSink(broadcast);
-  // D087 Phase 2A §12.2.5 + §12.3 — hourly sweep for size-cap LRU
+  // hourly sweep for size-cap LRU
   // eviction and orphaned-blob cleanup. Caps + interval come from
   // the runtime config (env: NAUTILO_BACKUP_PER_FILE_CAP /
   // NAUTILO_BACKUP_TOTAL_SIZE_CAP_MB / NAUTILO_BACKUP_GC_INTERVAL_MS;
@@ -1190,7 +1191,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   app.addHook("onClose", () => stopBackupGcScheduler());
-  // D487 — terminalize expired pre-provider reservations and remove only the
+  // terminalize expired pre-provider reservations and remove only the
   // DB-proven deterministic artifacts. This is independent of future creates.
   const stopAgentPhotoLibraryReservationRecovery = startAgentPhotoLibraryReservationRecovery({
     db: getServerDirectDb(),
@@ -1259,7 +1260,7 @@ export async function createApp(options?: CreateAppOptions) {
   await app.register(websocket);
   await app.register(multipart);
 
-  // D091 Phase 3 — onboarding static assets.
+  // onboarding static assets.
   //
   // Greenfield migration of the legacy /setup/ Fastify static page.
   // The Fastify-served `/setup/index.html` wizard is gone — its
@@ -1296,7 +1297,7 @@ export async function createApp(options?: CreateAppOptions) {
   app.decorateRequest("resolvedPrincipal", null);
   app.decorateRequest("rbacProjection", null);
 
-  // M213 Phase 0 — start every non-bypass request in a newly allocated ALS
+  // start every non-bypass request in a newly allocated ALS
   // context. Calling Fastify's continuation inside `run` preserves the
   // context for later lifecycle hooks and prevents stale ambient stores from
   // being reused by a subsequent request.
@@ -1311,7 +1312,7 @@ export async function createApp(options?: CreateAppOptions) {
     runWithNewRequestTelemetry(done);
   });
 
-  // D082 PR A — access log for /api/auth/* POSTs. Logs status +
+  //  PR A — access log for /api/auth/* POSTs. Logs status +
   // latency regardless of whether the business handler succeeded or
   // threw. Distinguishes "did the client even reach us?" from
   // "reached us but we errored" in observability-gap debugging
@@ -1358,7 +1359,7 @@ export async function createApp(options?: CreateAppOptions) {
       request.policyContext?.actorRole === "owner"
         ? "owner"
         : request.policyContext?.actorRole ?? "unknown";
-    // D082 PR B — if the resume-handler stashed a turnId on the
+    //  PR B — if the resume-handler stashed a turnId on the
     // request (verify-and-resume, prove-and-resume, approval-reply),
     // bind it for this single log emission so the access line
     // grep-correlates with the rest of the turn. Routes without a
@@ -1376,19 +1377,19 @@ export async function createApp(options?: CreateAppOptions) {
     done();
   });
 
-  // M058 — single source of truth for "bearer → policyContext".
+  // single source of truth for "bearer → policyContext".
   // Used by the HTTP preHandler below AND the WS first-message auth
   // gate at routes/ws.ts. Captured here so `policyResolver` (createApp
   // closure, not a module-level singleton) stays in scope for both
   // consumers.
-  // D120 A1.P1b (was D112 Phase 18) — read on every request via
+  //  Read on every request via
   // callback so a claim redeem's bootstrap-state-cache refresh
   // (in-process, sync) takes effect on the very next bearer
-  // resolution without requiring a server restart. The pre-D112
+  // resolution without requiring a server restart. The pre-
   // "stable at boot" guarantee was a test-harness-only convenience
   // — for production the value still only shifts on the first claim,
   // never mid-session.
-  // M125 Phase 2.4 / 3 — the `defaultAgentId` dep on `buildResolveBearer`
+  //  The `defaultAgentId` dep on `buildResolveBearer`
   // is deprecated and no longer consulted inside the resolver (Phase 1.3
   // zero-agent branch sets preferredAgentId="" instead of falling back).
   // We stop touching `getBootstrapDefaultAgentId()` here entirely so this
@@ -1402,7 +1403,7 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("preHandler", async (request, _reply) => {
     const routePath = request.routeOptions?.url ?? request.url;
 
-    // D362 — WOPI endpoints (coolwsd) have no user cookie. They present
+    // WOPI endpoints (coolwsd) have no user cookie. They present
     // a per-artifact `access_token` query param validated inside the
     // `/wopi/*` route handlers. Short-circuit session-based trust
     // resolution for the `/wopi/` prefix only; `POST /api/office/wopi-token`
@@ -1410,7 +1411,7 @@ export async function createApp(options?: CreateAppOptions) {
     // user-authed via the normal bearer path below.
     if (request.url.startsWith("/wopi/")) return;
 
-    // D362 Phase 3 §3.1b — the coolwsd reverse-proxy prefix. Engine
+    // the coolwsd reverse-proxy prefix. Engine
     // assets + WS upgrades aren't user-session-authed (no browser cookie
     // is sent for `<iframe>`-initiated asset fetches); document access
     // stays gated by the WOPI `access_token` validated inside `/wopi/*`.
@@ -1450,7 +1451,7 @@ export async function createApp(options?: CreateAppOptions) {
     };
 
     /**
-     * Single fallback path. M052 §C: every failure (revoked user,
+     * Single fallback path: every failure (revoked user,
      * bad JWT, missing federated id, exception) lands here with a
      * structured `reason` so log-grepping can distinguish the cases.
      * Never throws back to Fastify — auth errors fall through to
@@ -1543,7 +1544,7 @@ export async function createApp(options?: CreateAppOptions) {
         });
       }
       if (result.reason === "user_disabled") {
-        // D219 — fail-closed on a soft-deleted account. Hard 401 (NOT a
+        // fail-closed on a soft-deleted account. Hard 401 (NOT a
         // guest fallthrough) so a disabled user reaches no authenticated
         // route. Audit the blocked session for the forensic trail.
         warn(`[auth] user_disabled_session_blocked on ${routePath}`);
@@ -1597,7 +1598,7 @@ export async function createApp(options?: CreateAppOptions) {
     scheduleLastSeenBump(result.sessionUserId);
   });
 
-  // D518 Wave 3 — a temporary-password identity is authenticated but
+  //  Wave 3 — a temporary-password identity is authenticated but
   // restricted. Only identity inspection and the exact password-change path
   // remain reachable until the server observes successful rotation and clears
   // the durable account-security gate. This is server enforcement: CLI/TUI/UI
@@ -1613,9 +1614,9 @@ export async function createApp(options?: CreateAppOptions) {
     }
   });
 
-  // M303 — authentication identifies the Human. On a non-plaintext server,
+  // authentication identifies the Human. On a non-plaintext server,
   // this second boundary proves that the same bearer controls one exact,
-  // active/current M304 crypto-device signing key before product code runs.
+  // active/current crypto-device signing key before product code runs.
   app.addHook("preHandler", async (request) => {
     if (!request.sessionUserId) return;
     const routePath = request.routeOptions?.url ?? request.url;
@@ -1669,7 +1670,7 @@ export async function createApp(options?: CreateAppOptions) {
     return Promise.resolve();
   });
 
-  // M213 Phase 0 — stage durations + opaque correlation id on the response.
+  // stage durations + opaque correlation id on the response.
   // Server-Timing carries stage names/durations only (no user-identifying data).
   app.addHook("onSend", async (request, reply, payload) => {
     if (shouldSkipRequestTelemetry(
@@ -1691,7 +1692,7 @@ export async function createApp(options?: CreateAppOptions) {
     return payload;
   });
 
-  // D515 — security/cache policy applies to the complete Mobile namespace,
+  // security/cache policy applies to the complete Mobile namespace,
   // including static assets, diagnostics, redirects, and hard 404s. Static
   // plugin misses can terminate inside their encapsulated scope before a
   // parent onSend hook, so establish the safe default at request entry and
@@ -1742,7 +1743,7 @@ export async function createApp(options?: CreateAppOptions) {
   // Routes
   // ---------------------------------------------------------------------------
 
-  // D420 (Wave 2 task 2.2.1) — install the production maintenance gate BEFORE
+  //  (Wave 2 task 2.2.1) — install the production maintenance gate BEFORE
   // any route or the Task observer can accept work. Every executable ingress
   // (chat dispatch, `POST /api/jobs`, task claim/scheduled dispatch, coalescer
   // enqueue) consults this gate and rejects NEW work with a typed retryable
@@ -1753,7 +1754,7 @@ export async function createApp(options?: CreateAppOptions) {
   const maintenanceController = new MaintenanceController({
     db: getServerDirectDb(),
   });
-  // D420 (Wave 3 task 3.2.1) — wrap the controller so every durable
+  //  (Wave 3 task 3.2.1) — wrap the controller so every durable
   // maintenance state change (operator enter/applying/complete/cancel/renew
   // AND expiry recovery observed on read) publishes a payload-free
   // `maintenance.status` broadcast to every authenticated socket. Same-state
@@ -2094,7 +2095,7 @@ export async function createApp(options?: CreateAppOptions) {
     uninstallForegroundRecordRecallPortFactory();
     await reflectionSleepController.stop();
   });
-  // D421 Phase 4.3 — one process-local, in-memory executor→dispatch
+  // one process-local, in-memory executor→dispatch
   // completion seam. Fastify teardown releases the hook and clears any
   // server-owned pending wake contexts so tests/restarts cannot retain state.
   installAgentRedirectCompletionHandler();
@@ -2126,14 +2127,14 @@ export async function createApp(options?: CreateAppOptions) {
     }
   };
 
-  // D538's local-Desktop session state remains separate from D418 Full
+  // Local Desktop session state remains separate from Full
   // Workstation. The controller is created before the relay registry so its
   // routes can close over the authoritative registry once it is assigned.
   // It is never persisted and is null on unprovisioned first boot.
   let uncontainedHostCommands: UncontainedHostCommandsController | null = null;
 
   if (ownerActorId) {
-    // D060 Sprint 1 G5.3.b+c+d — server posture API. Same guard as
+    //  server posture API. Same guard as
     // authRoutes: needs an owner actor to exist (a fresh install
     // before first-boot provisioning has no owner, so the endpoint
     // returns 401 for everyone rather than surfacing an empty
@@ -2146,7 +2147,7 @@ export async function createApp(options?: CreateAppOptions) {
     // audit log growing unbounded.
     //
     // The mutator writes the `posture_changed` row, atomically
-    // writes the posture sidecar (D060 G4 — survives restart),
+    // writes the posture sidecar (survives restart),
     // updates the in-memory config, and broadcasts
     // `policy.changed`. The auditor writes
     // `capability_check_failed` + `pin_check_failed` rows for the
@@ -2170,7 +2171,7 @@ export async function createApp(options?: CreateAppOptions) {
       ownerId,
       auditEvent,
       policyResolver,
-      // M125 Phase 2.4 — `defaultAgentId` dep is dropped; routes read
+      // `defaultAgentId` dep is dropped; routes read
       // `request.memoryEnvelope?.agentId` per-call.
       unlockVaultWithPin: async (pinUtf8: string) => {
         await connectionVault.unlock({ pinUtf8 });
@@ -2207,10 +2208,10 @@ export async function createApp(options?: CreateAppOptions) {
       auditLogPath: securityAuditLogPath,
       mutatePosture: createPostureMutator({ auditLogPath: securityAuditLogPath, sidecarPath }),
       auditEvent,
-      // D060 Sprint 1 G5.5 — real Capability-store lookup. The
+      //  real Capability-store lookup. The
       // owner-actor heuristic is gone; household/teammate/guest
       // actors get 403s based on their actual Role bundle. Post-
-      // M043 caps are keyed on user_id (not actor_id); routes use
+      //  caps are keyed on user_id (not actor_id); routes use
       // `request.sessionUserId` from the trust preHandler.
       getCapabilities: (userId) => getUserCapabilities(userId),
       getAllowUncontainedHostCommands: () =>
@@ -2300,11 +2301,11 @@ export async function createApp(options?: CreateAppOptions) {
     prepareMembershipRemoval: prepareUncontainedHostCommandsMembershipRemoval,
   });
   adminUsersRoutes(app);
-  // Stack 195 / W3.1.3 — read-only access-control endpoints (self + admin
+  // read-only access-control endpoints (self + admin
   // target/catalogue). Registered after the admin-users surface; relies on
   // the default `policy` bearer resolution depth (no depth-config edit).
   accessControlReadRoutes(app);
-  // Stack 195 / W3.2 — preview/apply mutation engine (custom Role/Group
+  // preview/apply mutation engine (custom Role/Group
   // CRUD + capability/Role assignment + membership, all through one shared
   // command engine with anti-escalation, protected-definition, protected-
   // cap, and stale-preview enforcement).
@@ -2356,7 +2357,7 @@ export async function createApp(options?: CreateAppOptions) {
       return stopped;
     },
   });
-  // D420 (Wave 2 task 2.2.2) — operator maintenance API (enter/status/renew/
+  //  (Wave 2 task 2.2.2) — operator maintenance API (enter/status/renew/
   // applying/cancel/complete). Shares the privileged setup trust boundary
   // with the release-readiness route (loopback OR constant-time bootstrap
   // bearer); NOT exposed to ordinary room-user sessions. The controller
@@ -2372,7 +2373,7 @@ export async function createApp(options?: CreateAppOptions) {
   profileAvatarRoutes(app, { ownerId });
   agentPhotoLibraryRoutes(app);
   profileRoutes(app, { ownerId });
-  // D425 Wave 1A — self-service portable Genie profile bundle HTTP surface
+  //  Wave 1A — self-service portable Genie profile bundle HTTP surface
   // (export / media / dry-run plan / staged avatar upload / commit gate).
   // Session-authenticated, scoped to the caller's own personal Agent.
   // Wave 3 also reconciles durable artifact finalization journals after a
@@ -2413,7 +2414,7 @@ export async function createApp(options?: CreateAppOptions) {
   // Office (Collabora/WOPI) routes are only mounted when the office feature
   // flag is on. With it off, /wopi/* and /office-engine/* do not exist.
   if (fromRuntimeConfig().nautilo_office_enabled) {
-    // D362 — quarantined WOPI read module (coolwsd → /wopi/files/:id).
+    // quarantined WOPI read module (coolwsd → /wopi/files/:id).
     // The `/wopi/*` routes bypass user-session auth in the preHandler
     // below and are gated by a per-artifact access_token minted by
     // `POST /api/office/wopi-token` (which IS user-authed).
@@ -2441,7 +2442,7 @@ export async function createApp(options?: CreateAppOptions) {
           );
       },
     });
-    // D362 Phase 3 §3.1b — same-origin coolwsd reverse proxy. Mounts the
+    // same-origin coolwsd reverse proxy. Mounts the
     // engine under `/office-engine/*` so the editor iframe becomes
     // same-origin with the Nautilo server. The prefix bypasses user-
     // session auth in the preHandler above (engine assets + WS); doc
@@ -2456,7 +2457,7 @@ export async function createApp(options?: CreateAppOptions) {
   });
   setMiniAppToolRuntime(createMiniAppToolRuntime(getAppsRoot));
 
-  // D384 §5.4 — inject the local (relay-tier) MCP tool runtime so the
+  // inject the local (relay-tier) MCP tool runtime so the
   // `manage_local_mcp` agent tool can register / enable / disable / remove /
   // list / status a user's own local MCPs. Hard-scoped to the caller's own relay
   // (server-tier mutations refused in the service). Mutations audit via the
@@ -2477,7 +2478,7 @@ export async function createApp(options?: CreateAppOptions) {
     }),
   );
 
-  // D384 Phase 0 — server-side MCP host. Only runs when a ToolCatalog is
+  // server-side MCP host. Only runs when a ToolCatalog is
   // installed (real boot via bin/nautilo-server); the test app-fixture
   // installs no catalog, so this is a no-op there. Never blocks boot:
   // a failed MCP server is logged and skipped inside startMcpHost.
@@ -2485,7 +2486,7 @@ export async function createApp(options?: CreateAppOptions) {
   if (mcpCatalog) {
     try {
       const mcpManager = await startMcpHost({ catalog: mcpCatalog });
-      // D384 Phase 3 §3.0 — install the live manager into the process
+      // install the live manager into the process
       // singleton so the `/api/mcp-servers` mutation route can trigger
       // a hot-reload `reconcile` after a config write. Cleared in the
       // onClose hook alongside `stopAll()` so a post-shutdown caller
@@ -2602,7 +2603,7 @@ export async function createApp(options?: CreateAppOptions) {
   /**
    * A capability close is not merely a renderer event: it must resolve the
    * exact Task-owned review before the process-local registry drops proposal
-   * lineage.  The synchronous resolution removes the visible owner; async
+   * lineage. The synchronous resolution removes the visible owner; async
    * durable finalization is deliberately idempotent for model-completion
    * races.
    */
@@ -2823,7 +2824,7 @@ export async function createApp(options?: CreateAppOptions) {
     vault: connectionVault,
     auditConnection: writeConnectionVaultAudit,
   });
-  // D568 first-house operator policy. These are Nautilo execution choices,
+  //  first-house operator policy. These are Nautilo execution choices,
   // deliberately separate from the provider's browser/session parameters.
   const connectedWebAccountStore = createConnectedWebAccountStore(getServerDirectDb());
   const connectedWebAccountBrowser = new BrowserUseCloudAdapter({ serverKeys: process.env });
@@ -2964,7 +2965,7 @@ export async function createApp(options?: CreateAppOptions) {
     app,
     createProductionHumanDeviceMembershipComposition(pinProvider),
   );
-  // D384 Phase 3 §3.0 (SEC7) + §3.1 — server-tier MCP config mutation
+  // server-tier MCP config mutation
   // API. `manage_server_security`-gated; no PIN. Audit writer is a
   // closure over the same `securityAuditLogPath` the posture route
   // uses; `getCapabilities` wires the real `getUserCapabilities` so
@@ -3006,11 +3007,11 @@ export async function createApp(options?: CreateAppOptions) {
   sttRoutes(app);
   sessionRoutes(app);
 
-  // D448: committed Workspace document events are delivered only by the
+  // committed Workspace document events are delivered only by the
   // durable outbox runtime. Start it before the bus bridge so post-recovery
   // events can use the same scoped SSE lane as normal saves.
   startWorkspaceDocumentMutationOutboxRuntime();
-  // D468: durable push candidates and explicit generic test intents are
+  // durable push candidates and explicit generic test intents are
   // independently claimed from storage. This is deliberately not an event-bus
   // subscriber: a restart must never lose a committed notification candidate.
   startPushDeliveryRuntime();
@@ -3018,12 +3019,12 @@ export async function createApp(options?: CreateAppOptions) {
   startEventBridge();
   markReady("eventBridge");
 
-  // D021: server-side TTS streaming. Subscribes to voice.sentence events on
+  // server-side TTS streaming. Subscribes to voice.sentence events on
   // the event bus and broadcasts voice.audio chunks via WS. No-op when
   // ELEVENLABS_API_KEY is unset.
   getTtsService().start();
 
-  // D418 — Full Workstation access wiring.
+  // Full Workstation access wiring.
   //
   //   `serverBindingId` is the stable server-side server identity
   //   sourced from the resolved Nautilo instance's federated hostname
@@ -3058,7 +3059,7 @@ export async function createApp(options?: CreateAppOptions) {
     audit: writeWorkstationAudit,
   });
 
-  // D418 task 3.1.2 — transient `WorkstationDispatchPlan` store. The
+  //  task 3.1.2 — transient `WorkstationDispatchPlan` store. The
   // post-model override resolver admits one plan per tool-call id (binding
   // the exact active-session-bound relay); the tools node consumes it to pin
   // the relay dispatch. Plans are admission metadata only — never authority,
@@ -3066,7 +3067,7 @@ export async function createApp(options?: CreateAppOptions) {
   // session lifecycle hooks wired below so a plan never outlives its relay
   // binding; the tools node re-validates independently at dispatch time.
   const workstationDispatchPlanRegistry = new InMemoryWorkstationDispatchPlanRegistry({
-    // D440 Phase 1 — same-authority re-admission reads the canonical active
+    // same-authority re-admission reads the canonical active
     // session and the live relay snapshots together. Missing or incoherent
     // snapshot state returns null: readmit must never omit grant/policy
     // revisions or reconstruct a binding from advisory relay state alone.
@@ -3084,7 +3085,7 @@ export async function createApp(options?: CreateAppOptions) {
   // Explicit disable, logout, server switch, relay identity replacement, and
   // the future re-pair lifecycle handler clear it instead.
   //
-  // D418 app-restart seam: when the same `(relayId, userId)` re-registers
+  //  app-restart seam: when the same `(relayId, userId)` re-registers
   // with a DIFFERENT non-empty `desktopSessionId` (a new Electron
   // main-process launch), the prior Full Workstation session is bound to a
   // dead desktop session — invalidate it now, before the entry is replaced.
@@ -3094,7 +3095,7 @@ export async function createApp(options?: CreateAppOptions) {
   // same-session reconnects never reach this hook, so this path cannot clear
   // a session that is still live on a reconnecting relay.
   //
-  // D418 task 3.1.2 — the same seams also invalidate `WorkstationDispatchPlan`
+  //  task 3.1.2 — the same seams also invalidate `WorkstationDispatchPlan`
   // entries bound to the affected relay: `onUnregister` covers explicit
   // disconnect / socket close / heartbeat-timeout loss, and
   // `onDesktopSessionReplaced` covers the app-restart identity change. A
@@ -3108,7 +3109,7 @@ export async function createApp(options?: CreateAppOptions) {
   const authorizeComputerUseAgentOwnership = createComputerUseAgentOwnershipAuthorizer(
     getServerDirectDb(),
   );
-  // D516 authority is live only while both independently-current facts hold:
+  //  authority is live only while both independently-current facts hold:
   // the authenticated Human still has desktop control and the exact Genie is
   // still that Human's canonical Agent actor. This is intentionally read on
   // every root admission, semantic call, and relay dispatch; there is no
@@ -3200,7 +3201,7 @@ export async function createApp(options?: CreateAppOptions) {
       }).catch((err) => {
         warn(`[uncontained-host-commands] pairing invalidation failed: ${String(err)}`);
       });
-      // D418 Commit 2 — explicit re-pair: the same relay/user re-registered
+      //  Commit 2 — explicit re-pair: the same relay/user re-registered
       // with the SAME desktopSessionId but a DIFFERENT server-derived
       // pairingGeneration (a new validated relay-token row id). Invalidate
       // the Full Workstation session + dispatch plans bound to that relay
@@ -3240,7 +3241,7 @@ export async function createApp(options?: CreateAppOptions) {
         desktopSessionId: input.desktopSessionId,
       });
     },
-    // D418 reconnect/session split-brain fix — fail-closed snapshot-loss
+    //  reconnect/session split-brain fix — fail-closed snapshot-loss
     // seam. When a desktop relay's advisory Workstation Profile binding
     // snapshot transitions present→absent (reconnect with frozen
     // pre-activation caps, profile deactivation, a transient controller
@@ -3269,7 +3270,7 @@ export async function createApp(options?: CreateAppOptions) {
         desktopSessionId: input.desktopSessionId,
       });
     },
-    // D418 reconnect/session split-brain fix — expose the LIVE active Full
+    //  reconnect/session split-brain fix — expose the LIVE active Full
     // Workstation session to the agent tools node so the no-plan `run_shell`
     // gate fails closed for an active session bound to the selected relay
     // even when the relay's profile snapshot is absent (defense in depth
@@ -3464,7 +3465,7 @@ export async function createApp(options?: CreateAppOptions) {
     pairingStore: remotePairingStore,
     registry: relayRegistry,
   }));
-  // D458 Wave 7 — REST and WS share the exact stream instance whose projector
+  //  Wave 7 — REST and WS share the exact stream instance whose projector
   // reads the authoritative durable bindings plus this live registry.
   remoteControlRoutes(app, {
     registry: relayRegistry,
@@ -3513,11 +3514,11 @@ export async function createApp(options?: CreateAppOptions) {
     getMaintenanceStatusEvent: getMaintenanceStatusEventForWs,
     remoteHostPresenceStream,
   });
-  // D418 task 3.1.2 — install the plan store on the agent tools node so it
+  //  task 3.1.2 — install the plan store on the agent tools node so it
   // can pin relay dispatches to the plan's bound relay.
   setWorkstationDispatchPlanRegistry(workstationDispatchPlanRegistry);
 
-  // D418 task 3.1.2 / 3.2.5 — wire the Full Workstation approval override
+  //  task 3.1.2 / 3.2.5 — wire the Full Workstation approval override
   // resolver into the LIVE post-model approval path. The resolver is
   // server-owned (it reads the live `workstationSessionRegistry` +
   // `relayRegistry` and admits plans into `workstationDispatchPlanRegistry`)
@@ -3541,7 +3542,7 @@ export async function createApp(options?: CreateAppOptions) {
       registry: workstationSessionRegistry,
       relayRegistry,
       planRegistry: workstationDispatchPlanRegistry,
-      // D418 Commit 4 — redacted `workstation_admission` audit sink. The
+      //  Commit 4 — redacted `workstation_admission` audit sink. The
       // resolver emits one row per consultation (auto or none) carrying
       // execution class + outcome/reason + tool/tool-call id + OPAQUE
       // session/plan binding identifiers; the writer appends it to the
@@ -3557,7 +3558,7 @@ export async function createApp(options?: CreateAppOptions) {
         }
       },
     });
-  // D516 — semantic computer calls are admitted independently of generic
+  // semantic computer calls are admitted independently of generic
   // approval. The shared adapter supplies only the current relay/session/
   // pairing tuple plus the local Desktop's advisory receipt. Electron still
   // reloads and enforces the receipt at dispatch time; no Auto-Approve input
@@ -3573,9 +3574,9 @@ export async function createApp(options?: CreateAppOptions) {
   defaultPostModelDeps.resolveComputerUseRootGrant =
     computerUsePostModelResolvers.resolveComputerUseRootGrant;
 
-  // D538 — the tools node calls this resolver immediately before dispatch.
+  // the tools node calls this resolver immediately before dispatch.
   // The controller re-reads every live authority fact and returns the sole
-  // real-workstation decision; post-model approval processing has no D538
+  // real-workstation decision; post-model approval processing has no
   // preview, authority, or persistence role.
   defaultPostModelDeps.resolveUncontainedHostCommandsDispatch = async (input) => {
     const controller = uncontainedHostCommands;
@@ -3601,7 +3602,7 @@ export async function createApp(options?: CreateAppOptions) {
     });
   };
 
-  // D453 — compose the one production Codex path entirely from canonical
+  // compose the one production Codex path entirely from canonical
   // persisted facts, the authenticated relay snapshot, and the existing
   // Task/TaskRun lifecycle. No browser-shaped identity or manifest can cross
   // this boundary. The live ToolCatalog is a server boot invariant: a missing
@@ -3816,7 +3817,7 @@ export async function createApp(options?: CreateAppOptions) {
     ],
   });
 
-  // M142 — Task primitive async engine. The observer claims due `tasks` rows
+  // Task primitive async engine. The observer claims due `tasks` rows
   // and dispatches each as its own job (its own thread, a task-only lane) so a
   // task run never holds a human room's lane. The generic selector reloads the
   // sealed server-authored harness descriptor; Native Tasks return undefined
@@ -4060,7 +4061,7 @@ export async function createApp(options?: CreateAppOptions) {
     admission: claudeConnections,
     createTask: createTaskForAgentTool,
   };
-  // M143 — publish a live JobManager so the report-back finalizer (running
+  // publish a live JobManager so the report-back finalizer (running
   // inside the task-run executor generator) can enqueue the wake turn, and a
   // bound runtime `createTask` so the `task` tool's `create` command can start
   // tasks without `@nautilo/agent` importing `@nautilo/runtime` (cycle).
@@ -4156,7 +4157,7 @@ export async function createApp(options?: CreateAppOptions) {
       );
     },
     inspectHarnessTask: async (input) => {
-      // Re-read the Task at the server composition boundary.  The agent-side
+      // Re-read the Task at the server composition boundary. The agent-side
       // owner check is useful ergonomics, but it is not the authorization
       // boundary for process-local harness activity.
       const task = await codexTaskExecutionReader.getTask(input.taskId);
@@ -4187,7 +4188,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
     computeNextFireAt: runtimeComputeNextFireAt,
     canResumeResearch: (task) => canResumeSecurityResearchContextFailure(getServerDirectDb(), task),
-    // M147 — lifecycle commands funnel through the runtime fns (shared abort
+    // lifecycle commands funnel through the runtime fns (shared abort
     // seam); `unpauseTask` kicks this observer to re-claim for checkpoint resume.
     pauseTask: (taskId) =>
       runtimePauseTask(
@@ -4201,7 +4202,7 @@ export async function createApp(options?: CreateAppOptions) {
       ),
     stopTask: stopTaskForAgentTool,
   });
-  // M146 — the task HTTP API funnels `create` through the SAME runtime
+  // the task HTTP API funnels `create` through the SAME runtime
   // `createTask` (kicking this observer for now-tasks). Registered here, after
   // the observer exists; Fastify permits route registration until `ready()`.
   tasksRoutes(app, {
@@ -4279,7 +4280,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   setLocalMcpInstallRelaySocketSafetyCloser(relaySocketLifecycle);
-  // D480 — HTTP lifecycle mutations receive exact revoked relay-token row
+  // HTTP lifecycle mutations receive exact revoked relay-token row
   // ids only after their DB transaction commits. Reconcile those authoritative
   // pairing generations synchronously against the sole live registry, clear
   // Full Workstation sessions/plans, then close through the websocket
@@ -4425,8 +4426,8 @@ export async function createApp(options?: CreateAppOptions) {
       ),
   });
   claudeConnectionsRoutes(app, { controller: claudeConnections });
-  // M056 — pairing + device-management HTTP surface. Goes through
-  // the M052 trust preHandler (NOT in PUBLIC_ROUTES) so callers must
+  // pairing + device-management HTTP surface. Goes through
+  // the trust preHandler (NOT in PUBLIC_ROUTES) so callers must
   // present a real authenticated context.
   relayHttpRoutes(app, {
     relayRegistry,
@@ -4445,7 +4446,7 @@ export async function createApp(options?: CreateAppOptions) {
         remoteHostPresenceStream.invalidatePairingGenerations(input),
     }),
   });
-  // D418 — Full Workstation activation/disable route. Mounted after the
+  // Full Workstation activation/disable route. Mounted after the
   //   relay surface so it shares the same authenticated relay registry
   //   + the workstation session registry constructed above. The route
   //   stays fail-closed: until a desktop advertises a compiled profile
@@ -4461,7 +4462,7 @@ export async function createApp(options?: CreateAppOptions) {
       relayRegistry,
       serverBindingId: workstationServerBindingId,
     }),
-    // D418 — profile-selector activation seam. Derives the authoritative
+    // profile-selector activation seam. Derives the authoritative
     // binding from the relay registry's grant snapshot + the desktop main's
     // profile selectors, so the FIRST activation of an approved stored
     // profile can be gated by the user's OWN fresh PIN at the server
@@ -4473,10 +4474,13 @@ export async function createApp(options?: CreateAppOptions) {
     }),
     registry: workstationSessionRegistry,
     auditEvent: writeWorkstationAudit,
-    // D557 — reuse the existing stable remote-pairing HMAC material, but
+    // reuse the existing stable remote-pairing HMAC material, but
     // resolve it only when a receipt is minted/verified. This keeps server
     // boot semantics unchanged when remote pairing is not configured.
     startupReceiptSecret: () => requirePairingPepper(),
+  });
+  publicJoinRoutes(app, {
+    inviteToken: process.env["NAUTILO_PUBLIC_JOIN_INVITE_TOKEN"],
   });
   invitesRoutes(app, {
     onHumanRoomJoined: humanMembershipEventProducer,
@@ -4485,6 +4489,7 @@ export async function createApp(options?: CreateAppOptions) {
     publicInviteBaseUrl: resolvePublicBaseUrl(options),
   });
   app.addHook("onClose", async () => {
+    await getTtsService().dispose();
     setLiveReviewWriteGuard(null);
     await memoryReviewRuntime.stop();
     await stenographerWorker.stop();
@@ -4500,7 +4505,7 @@ export async function createApp(options?: CreateAppOptions) {
     codexRequestBroker.dispose();
     relayRegistry.stop();
     clearTaskReturnBindings();
-    // D418 task 3.2.5 — release the Full Workstation override resolver so a
+    //  task 3.2.5 — release the Full Workstation override resolver so a
     // post-shutdown graph construction (e.g. a stray background job) does
     // not consult a torn-down session registry. Restoring the absent state
     // (the field is optional) makes post-model skip the override
@@ -4512,7 +4517,7 @@ export async function createApp(options?: CreateAppOptions) {
     delete defaultPostModelDeps.resolveComputerUseAdmission;
     delete defaultPostModelDeps.resolveComputerUseRootGrant;
     delete defaultPostModelDeps.resolveUncontainedHostCommandsDispatch;
-    // D418 task 3.1.2 — release the plan store + clear its entries so a
+    //  task 3.1.2 — release the plan store + clear its entries so a
     // post-shutdown graph construction does not pin dispatches to a
     // torn-down plan registry. Restoring the absent singleton makes the
     // tools node skip plan pinning (fail-closed, normal first-eligible path).
@@ -4556,13 +4561,13 @@ export async function createApp(options?: CreateAppOptions) {
   testModeRoutes(app, {
     enabled: testToken !== null,
     token: testToken ?? "",
-    // D060 Sprint 2 G2 — thread the relay registry so
+    //  thread the relay registry so
     // /api/test/tool-invoke can dispatch run_shell through a
     // connected in-VM relay with a real sandboxProfile envelope.
     relayRegistry,
   });
 
-  // D515 — Mobile Web is an optional, strictly namespaced Expo export. It is
+  // Mobile Web is an optional, strictly namespaced Expo export. It is
   // mounted before the Workbench root SPA so `/mobile/*` never falls into the
   // desktop shell. The route-local fallback is intentional: Fastify permits
   // only one global not-found handler and the Workbench owns that one.
@@ -4743,12 +4748,12 @@ export async function createApp(options?: CreateAppOptions) {
     const rawInstanceId = parseNautiloInstanceId(process.env);
     const instanceLabel = rawInstanceId.trim() === "" ? "(default)" : rawInstanceId.trim();
 
-    // D171 friendly fallback is intentionally scoped to GET `/` only.
+    //  friendly fallback is intentionally scoped to GET `/` only.
     //
     // Originally this fallback caught every unknown GET that wasn't /api,
     // /ws, or /relay, on the theory that anything else might be a Workbench
     // SPA deep link. That over-reached: retired server routes (e.g. the
-    // legacy `/setup` page deleted in D091) silently became 200 + branded
+    // legacy `/setup` page) silently became 200 + branded
     // HTML, masking real 404s and breaking `health-keys.test.ts`'s
     // "GET /setup returns 404" pin. The fallback's actual job is narrow:
     // when an operator hits the bare server URL in a browser and the

@@ -67,7 +67,7 @@ function harnessInput() {
   };
 }
 
-test("D568 resolves the exact checksum-pinned server artifact for the runtime platform", async () => {
+test("resolves the exact checksum-pinned server artifact for the runtime platform", async () => {
   const binary = await resolveServerVendoredAgentBrowserBinary({
     platform: "linux",
     arch: "x64",
@@ -78,7 +78,7 @@ test("D568 resolves the exact checksum-pinned server artifact for the runtime pl
   expect(binary).toBe("/srv/agent-browser/linux-x64/agent-browser");
 });
 
-test("D568 harness starts an exact argv with only private CDP, socket, and HOME environment", async () => {
+test("harness starts an exact argv with only private CDP, socket, and HOME environment", async () => {
   const calls: Array<{ command: readonly string[]; environment: Readonly<Record<string, string>> }> = [];
   const harness = createServerDirectBrowserHarness({
     platform: "linux",
@@ -106,7 +106,21 @@ test("D568 harness starts an exact argv with only private CDP, socket, and HOME 
   expect(calls[0]!.command).not.toContain("--config");
 });
 
-test("D568 preserves an exactly within-limit command output and truncates only real overflow", async () => {
+test("structured observation uses private JSON mode and accepts nameless semantic controls", async () => {
+  const calls: readonly string[][] = [] as string[][];
+  const harness = createServerDirectBrowserHarness({ platform: "linux", arch: "x64", vendorRoot: "/srv/agent-browser",
+    manifest, binaryExists: async () => true,
+    spawn: ({ command }) => { (calls as string[][]).push([...command]); return process(JSON.stringify({ success: true,
+      data: { snapshot: "- textbox [ref=e1]", refs: { e1: { role: "textbox", name: "" } } } })); } });
+  expect(harness.observe).toBeDefined();
+  const observed = await harness.observe!({ session: "operation-1-account-1-epoch-1",
+    environment: { AGENT_BROWSER_CDP: CDP_URL }, socketDirectory: "/run/nautilo/op-1",
+    homeDirectory: "/var/lib/nautilo/direct/op-1" });
+  expect(observed).toEqual({ snapshot: "- textbox [ref=e1]", refs: { e1: { role: "textbox", name: "" } } });
+  expect(calls[0]?.slice(-2)).toEqual(["--json", "snapshot"]);
+});
+
+test("preserves an exactly within-limit command output and truncates only real overflow", async () => {
   const makeHarness = (output: string) => createServerDirectBrowserHarness({
     platform: "linux",
     arch: "x64",
@@ -120,7 +134,7 @@ test("D568 preserves an exactly within-limit command output and truncates only r
   expect(await makeHarness("12345").invoke(harnessInput())).toEqual({ text: "1234", truncated: true });
 });
 
-test("D568 gives the maximum permitted semantic browser_wait its full duration plus transport allowance", () => {
+test("gives the maximum permitted semantic browser_wait its full duration plus transport allowance", () => {
   const session = "operation-1-account-1-epoch-1";
   const maxWait = agentBrowserCdpArgv("browser_wait", { milliseconds: 30_000 }, session);
   const ordinaryCommand = agentBrowserCdpArgv("browser_snapshot", {}, session);
@@ -129,7 +143,7 @@ test("D568 gives the maximum permitted semantic browser_wait its full duration p
   expect(directBrowserTransportDeadlineMs(["--session", session, "wait", "30001"], 30_000)).toBe(30_000);
 });
 
-test("D568 strips echoed capabilities and invisible page formatting while every failed path is generic", async () => {
+test("strips echoed capabilities and invisible page formatting while every failed path is generic", async () => {
   const harness = createServerDirectBrowserHarness({
     platform: "linux",
     arch: "x64",
@@ -157,7 +171,7 @@ test("D568 strips echoed capabilities and invisible page formatting while every 
   expect(String(error)).not.toContain(CDP_URL);
 });
 
-test("D568 fails closed before spawn when the real Unix socket path exceeds agent-browser's 103-byte payload budget", async () => {
+test("fails closed before spawn when the real Unix socket path exceeds agent-browser's 103-byte payload budget", async () => {
   let spawned = false;
   const harness = createServerDirectBrowserHarness({
     platform: "linux",
@@ -176,7 +190,7 @@ test("D568 fails closed before spawn when the real Unix socket path exceeds agen
   expect(spawned).toBe(false);
 });
 
-test("D568 bounds one command transport without creating an operation lifetime limit", async () => {
+test("bounds one command transport without creating an operation lifetime limit", async () => {
   let killed = false;
   const harness = createServerDirectBrowserHarness({
     platform: "linux",
@@ -192,7 +206,31 @@ test("D568 bounds one command transport without creating an operation lifetime l
   expect(killed).toBe(true);
 });
 
-test("D568 harness binds and reads one sticky target, then closes only its private daemon inventory", async () => {
+test("AbortSignal kills one live command and an already-aborted request never spawns", async () => {
+  let spawns = 0;
+  let kills = 0;
+  let markSpawned!: () => void;
+  const spawned = new Promise<void>((resolve) => { markSpawned = resolve; });
+  const harness = createServerDirectBrowserHarness({ platform: "linux", arch: "x64", vendorRoot: "/srv/agent-browser",
+    manifest, binaryExists: async () => true,
+    spawn: () => { spawns += 1; markSpawned(); return hangingProcess(() => { kills += 1; }); } });
+  const live = new AbortController();
+  const pending = harness.invoke({ ...harnessInput(), signal: live.signal });
+  await spawned;
+  live.abort();
+  const cancelled = await pending.then(() => null, (error: unknown) => error);
+  expect(cancelled).toBeInstanceOf(DirectBrowserHarnessError);
+  expect({ spawns, kills }).toEqual({ spawns: 1, kills: 1 });
+
+  const already = new AbortController();
+  already.abort();
+  const notStarted = await harness.invoke({ ...harnessInput(), signal: already.signal })
+    .then(() => null, (error: unknown) => error);
+  expect(notStarted).toBeInstanceOf(DirectBrowserHarnessError);
+  expect({ spawns, kills }).toEqual({ spawns: 1, kills: 1 });
+});
+
+test("harness binds and reads one sticky target, then closes only its private daemon inventory", async () => {
   const calls: Array<{ command: readonly string[]; environment: Readonly<Record<string, string>> }> = [];
   const harness = createServerDirectBrowserHarness({
     platform: "linux", arch: "x64", vendorRoot: "/srv/agent-browser", manifest,

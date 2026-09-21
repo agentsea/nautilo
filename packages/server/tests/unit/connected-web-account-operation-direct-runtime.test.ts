@@ -41,7 +41,43 @@ test("direct control rechecks operation authority before opening or issuing comm
   expect(commands).toBe(0);
 });
 
-test("D568 direct runtime authorizes exactly, reuses one lease serially, and never silently reacquires", async () => {
+test("decision control keeps observation authority private, forwards cancellation, and never replays an action", async () => {
+  let current = operation();
+  const calls: string[] = [];
+  let receivedSignal: AbortSignal | undefined;
+  const lease = {
+    observeDecision: async (signal?: AbortSignal) => {
+      receivedSignal = signal;
+      calls.push("observe");
+      return { version: 1 as const, snapshot: '- button "Continue" [ref=e1]',
+        refs: { e1: { role: "button", name: "Continue" } }, pageUrl: "https://example.test/",
+        browserSessionId: "opaque", observationId: "observation" };
+    },
+    invokeDecision: async (_command: unknown, observationId: string) => {
+      calls.push(`act:${observationId}`);
+      return { text: "clicked", truncated: false };
+    },
+    close: async () => ({ browser: "stopped", directories: "released", operation: "released" }),
+  } as unknown as DirectBrowserRouterLease;
+  const runtime = new ConnectedWebOperationDirectRuntime({ authorizeOperation: () => true,
+    facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
+    store: { getOperationForOwner: async () => current, recordDirectOperationActivity: async () => true },
+    router: { acquire: async () => { current = operation({ driver: "direct", controlEpoch: 8 }); return lease; } } as never });
+  await runtime.takeControl(actor(), { operationId: OP, expectedControlEpoch: 7 });
+  const controller = new AbortController();
+  const observed = await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command: { kind: "snapshot" } },
+    { signal: controller.signal, decision: { kind: "observe" } });
+  expect(observed).toMatchObject({ ok: true, observation: { observationId: "observation", refs: { e1: { name: "Continue" } } } });
+  expect(receivedSignal).toBe(controller.signal);
+  expect(await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command: { kind: "click", ref: "@e1" } },
+    { decision: { kind: "act", observationId: "observation" } })).toMatchObject({ ok: true, command: { text: "clicked" } });
+  controller.abort();
+  expect(await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command: { kind: "click", ref: "@e1" } },
+    { signal: controller.signal, decision: { kind: "act", observationId: "observation" } })).toMatchObject({ ok: false, browserFailure: "browser_cancelled" });
+  expect(calls).toEqual(["observe", "act:observation"]);
+});
+
+test("direct runtime authorizes exactly, reuses one lease serially, and never silently reacquires", async () => {
   let current = operation();
   const invoked: string[] = [];
   const acquisitions: unknown[] = [];
@@ -89,7 +125,7 @@ test("D568 direct runtime authorizes exactly, reuses one lease serially, and nev
   expect(await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command: { kind: "snapshot" } })).toMatchObject({ ok: false, code: "conflict" });
 });
 
-test("D568 direct runtime closes the exact lease once on command failure and refuses a stale epoch", async () => {
+test("direct runtime closes the exact lease once on command failure and refuses a stale epoch", async () => {
   let current = operation({ driver: "direct", controlEpoch: 8 });
   let closes = 0;
   const lease = { invoke: async () => { throw new Error("broken"); }, close: async () => { closes += 1; return { browser: "stopped", directories: "released", operation: "released" }; } } as unknown as DirectBrowserRouterLease;
@@ -105,7 +141,7 @@ test("D568 direct runtime closes the exact lease once on command failure and ref
   expect(closes).toBe(1);
 });
 
-test("D568 direct runtime never admits a confirmed action operation into approval-free browser control", async () => {
+test("direct runtime never admits a confirmed action operation into approval-free browser control", async () => {
   let acquires = 0;
   const runtime = new ConnectedWebOperationDirectRuntime({ authorizeOperation: () => true,
     facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
@@ -123,7 +159,7 @@ test("D568 direct runtime never admits a confirmed action operation into approva
   expect(acquires).toBe(0);
 });
 
-test("D568 direct runtime keeps every control verb unavailable when startup recovery cannot inventory durable leases", async () => {
+test("direct runtime keeps every control verb unavailable when startup recovery cannot inventory durable leases", async () => {
   const runtime = new ConnectedWebOperationDirectRuntime({ authorizeOperation: () => true,
     facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
     store: { getOperationForOwner: async () => operation(), recordDirectOperationActivity: async () => true },
@@ -156,11 +192,12 @@ test("direct preflight rechecks the executable without acquiring a browser", asy
   expect(await runtime.preflight()).toBe(false);
 });
 
-test("D568 direct activity is informative without recording command arguments", async () => {
+test("direct activity is informative without recording command arguments", async () => {
   let current = operation({ driver: "direct", controlEpoch: 8 });
   const activities: unknown[] = [];
+  const commands: unknown[] = [];
   const lease = {
-    invoke: async () => ({ text: "ok", truncated: false }),
+    invoke: async (input: unknown) => { commands.push(input); return { text: "ok", truncated: false }; },
     ownerLiveViewUrl: () => null,
     close: async () => ({ browser: "stopped" as const, directories: "released" as const, operation: "released" as const }),
   } as unknown as DirectBrowserRouterLease;
@@ -177,7 +214,7 @@ test("D568 direct activity is informative without recording command arguments", 
   for (const command of [
     { kind: "click", ref: "@private" }, { kind: "double_click", ref: "@private" }, { kind: "hover", ref: "@private" },
     { kind: "drag", from: "@private", to: "@private" }, { kind: "select", ref: "@private", values: ["private"] },
-    { kind: "set_checked", ref: "@private", checked: true }, { kind: "press", key: "PrivateKey" },
+    { kind: "set_checked", ref: "@private", checked: true }, { kind: "press", key: "PrivateKey", ref: "@private" },
     { kind: "scroll_into_view", ref: "@private" },
   ] as const) {
     await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command });
@@ -194,9 +231,10 @@ test("D568 direct activity is informative without recording command arguments", 
   ]);
   expect(JSON.stringify(activities)).not.toContain("private");
   expect(JSON.stringify(activities)).not.toContain("PrivateKey");
+  expect(commands).toContainEqual({ toolName: "browser_press", args: { key: "PrivateKey", ref: "@private" } });
 });
 
-test("D568 owner Stop retains an unresolved lease for exact cleanup retry without allowing more commands", async () => {
+test("owner Stop retains an unresolved lease for exact cleanup retry without allowing more commands", async () => {
   let current = operation();
   let closes = 0;
   const lease = {
@@ -301,4 +339,22 @@ test("owner Stop waits for in-flight admission and closes its real lease instead
   await acquiring;
   expect(await stopping).toMatchObject({ driver: "checking", controlEpoch: 9 });
   expect(closes).toBe(1);
+});
+
+test("ordinary connected navigation automatically returns fresh observation without a decision model", async () => {
+  let current = operation();
+  const calls: string[] = [];
+  const observation = { version: 1, snapshot: "- searchbox Keywords [ref=e9]", refs: { e9: { role: "searchbox", name: "Keywords" } },
+    pageUrl: "https://example.test/", browserSessionId: "owned", observationId: "fresh" };
+  const runtime = new ConnectedWebOperationDirectRuntime({ authorizeOperation: () => true,
+    facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
+    store: { getOperationForOwner: async () => current, recordDirectOperationActivity: async () => true },
+    router: { acquire: async () => { current = operation({ driver: "direct", controlEpoch: 8 }); return {
+      invoke: async () => { calls.push("navigate"); return { text: "opened", truncated: false }; },
+      observeDecision: async () => { calls.push("observe"); return observation; },
+    }; } } as never });
+  await runtime.takeControl(actor(), { operationId: OP, expectedControlEpoch: 7 });
+  expect(await runtime.control(actor(), { operationId: OP, expectedControlEpoch: 8, command: { kind: "open", url: "https://example.test/" } }))
+    .toMatchObject({ ok: true, command: { text: "opened" }, observation });
+  expect(calls).toEqual(["navigate", "observe"]);
 });

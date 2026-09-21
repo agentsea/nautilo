@@ -1,5 +1,7 @@
+import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
+import { browserDecisionHandoffMessage, browserDecisionPlanError, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
-import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { task } from "@langchain/langgraph";
 import {
@@ -221,16 +223,16 @@ async function executeToolsNode(
         throw new Error("Computer Use reads returned incompatible invocation state");
       }
       return settleToolsNode(state, plan.calls, completions.map((value) => value.message),
-        snapshot, toolCalls.slice(plan.calls.length));
+        snapshot, toolCalls.slice(plan.calls.length), protectedComposition.fullEncryptionOnly === true);
     }
     const completion = await invokeToolCall(state, plan.calls[0]!, config, protectedComposition);
-    return settleToolsNode(state, plan.calls, [completion.message], completion.snapshot, toolCalls.slice(1));
+    return settleToolsNode(state, plan.calls, [completion.message], completion.snapshot, toolCalls.slice(1), protectedComposition.fullEncryptionOnly === true);
   }
   // Unknown, mutation and Human-interrupting tools retain one call per graph
   // checkpoint. A durable read task is never used for an at-most-once effect.
   const [nextCall] = await protectAssistantCalls(state, [first], protectedComposition);
   const completion = await invokeToolCall(state, nextCall!, config, protectedComposition);
-  return settleToolsNode(state, [nextCall!], [completion.message], completion.snapshot, toolCalls.slice(1));
+  return settleToolsNode(state, [nextCall!], [completion.message], completion.snapshot, toolCalls.slice(1), protectedComposition.fullEncryptionOnly === true);
 }
 
 async function protectAssistantCalls(
@@ -400,6 +402,7 @@ function settleToolsNode(
   results: readonly ToolMessage[],
   snapshot: NautiloToolInvocationSnapshot,
   remainingToolCalls: ApprovedToolCall[],
+  fullEncryptionOnly: boolean,
 ): Partial<NautiloState> {
   const executionPolicy = resolveGraphExecutionPolicy();
   // Calls are checkpointed individually, but no-progress rounds belong to
@@ -465,9 +468,23 @@ function settleToolsNode(
       remainingToolCallIds.has(toolCallId),
     ),
   );
+  const decisionModel = resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly });
+  const browserDecision = settleBrowserDecision(state, executedCalls, results, remainingToolCalls, decisionModel?.id ?? "");
+  const requestedBrowserDelegation = executedCalls.some((call) => interpretBrowserDecisionCall(call).requestedDelegation);
+  const messagesWithResults = mergeMessagesPreservingInvariants(state.messages, [...results]);
+  const browserHandoff = requestedBrowserDelegation
+    && (!browserDecision || browserDecision.reason === "ordinary_genie_control")
+    ? [new SystemMessage({ id: `browser-handoff:${randomUUID()}`, content: browserDecisionPlanError(null,
+        "browser_delegation_not_started",
+        "This delegation attempt did not start. Inspect its tool results. It requires an enabled decision model, an active turn and one standalone snapshot call with a valid decisionPlan through the same browser tool. For a connected operation, retain its operationId and current expectedControlEpoch. Correct the reported issue before retrying; this failed attempt does not describe the outcome of a later corrected delegation.",
+        null) })]
+    : browserDecision?.phase === "handoff" && browserDecision.reason
+    && browserDecision.reason !== "ordinary_genie_control"
+    ? [browserDecisionHandoffMessage(messagesWithResults, browserDecision)] : [];
   return {
-    messages: mergeMessagesPreservingInvariants(state.messages, [...results]),
+    messages: mergeMessagesPreservingInvariants(messagesWithResults, browserHandoff),
     approvedToolCalls: remainingToolCalls,
+    browserDecision,
     requiredHostRelays: remainingHostRelays,
     computerUseInvocationBindings: remainingComputerUseBindings,
     ordinaryContentAccessBindings: Object.fromEntries(

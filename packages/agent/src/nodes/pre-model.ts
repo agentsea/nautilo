@@ -50,6 +50,7 @@ import { SECURITY_RESEARCH_WORKFLOW } from "../tools/security/research-protocol"
 import { buildResearchWorkContextMessage } from "../tools/security/research-work-context";
 import { prepareResearchRoleHistory } from "../tools/security/research-role-history";
 import { modelSupportsInput as mcSupportsInput } from "@nautilo/model-capabilities";
+import { browserDecisionHandoffContent, browserHandoffToolResultIndex, currentBrowserDecision } from "../graph/browser-decision";
 import {
   drainSessionNotifications,
   buildSessionNotificationsBlock,
@@ -91,6 +92,7 @@ import {
   usesOpenAICompatibleChatTransport,
 } from "../providers/model-route";
 import { modelUsesAnthropicPromptCache } from "../utils/model-context-cache";
+import { projectSystemMessagesForProvider } from "../utils/provider-system-messages";
 import { COMPUTER_RESULT_DURABLE_SIDECAR_KEY } from "../tools/computer/model-result-projector";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import {
@@ -142,6 +144,10 @@ export function resolveToolsForExposure(
   const recallContext = resolverOptions.context as RecallRecordsToolContext | undefined;
   const recallAwareOptions = {
     ...resolverOptions,
+    context: {
+      ...resolverOptions.context,
+      fullEncryptionOnly: resolverOptions.fullEncryptionOnly === true,
+    },
     toolPolicy: toolPolicyWithRecallRecordsAvailability(
       resolverOptions.toolPolicy,
       recallContext,
@@ -256,6 +262,83 @@ function normalizeMessagesForProvider(messages: BaseMessage[]): BaseMessage[] {
   });
 }
 
+/** Project durable handoffs at their original receipts, even after ordinary verification. */
+export function projectBrowserHandoffForProvider(
+  messages: BaseMessage[],
+  state: NautiloState,
+): { messages: BaseMessage[]; projected: boolean } {
+  const decision = currentBrowserDecision(state);
+  let currentRecorded = false;
+  const replacements = new Map<number, ToolMessage>();
+  const projectedEvents = new Set<number>();
+  for (const [eventIndex, event] of messages.entries()) {
+    if (!SystemMessage.isInstance(event) || typeof event.content !== "string") continue;
+    const binding = event.additional_kwargs["nautilo_browser_handoff"] as
+      { turnId?: unknown; toolCallId?: unknown; toolName?: unknown } | undefined;
+    if (!binding) continue;
+    if (decision && binding.turnId === decision.turnId && decision.reason
+      && event.content === browserDecisionHandoffContent(decision.reason, decision.target, decision)) currentRecorded = true;
+    if (typeof binding.toolCallId !== "string" || typeof binding.toolName !== "string") continue;
+    const matches = messages.flatMap((message, index) => ToolMessage.isInstance(message)
+      && message.tool_call_id === binding.toolCallId ? [index] : []);
+    if (matches.length !== 1 || matches[0]! >= eventIndex) continue;
+    const index = matches[0]!;
+    const source = replacements.get(index) ?? messages[index];
+    if (!ToolMessage.isInstance(source) || source.name !== binding.toolName || typeof source.content !== "string") continue;
+    replacements.set(index, new ToolMessage({
+      ...source,
+      content: `${source.content}\n\n[Runtime browser supervision]\n${event.content}`,
+    }));
+    projectedEvents.add(eventIndex);
+  }
+  const projected = replacements.size > 0;
+  const retained = projected ? messages.flatMap((message, index) => projectedEvents.has(index)
+    ? [] : [replacements.get(index) ?? message]) : messages;
+  if (currentRecorded) return { messages: retained, projected };
+  // Older checkpoints may have the active handoff only in execution state.
+  const legacy = projectCurrentBrowserHandoffForProvider(retained, state);
+  return { messages: legacy.messages, projected: projected || legacy.projected };
+}
+
+/** Compatibility projection for handoffs recorded before durable receipt binding. */
+function projectCurrentBrowserHandoffForProvider(
+  messages: BaseMessage[],
+  state: NautiloState,
+): { messages: BaseMessage[]; projected: boolean } {
+  const decision = currentBrowserDecision(state);
+  if (decision?.phase !== "handoff" || !decision.reason || decision.reason === "ordinary_genie_control") {
+    return { messages, projected: false };
+  }
+  const supervision = browserDecisionHandoffContent(decision.reason, decision.target, decision);
+  const fallback = (): { messages: BaseMessage[]; projected: boolean } => {
+    const alreadyPresent = messages.some((message) => SystemMessage.isInstance(message)
+      && typeof message.content === "string" && message.content === supervision);
+    return alreadyPresent
+      ? { messages, projected: false }
+      : { messages: [...messages, new SystemMessage({
+        id: `browser-handoff-provider:${decision.turnId}`,
+        content: supervision,
+      })], projected: false };
+  };
+  const index = browserHandoffToolResultIndex(messages, decision);
+  if (index === null) return fallback();
+  const source = messages[index];
+  if (!ToolMessage.isInstance(source) || typeof source.content !== "string") return fallback();
+  const projected = new ToolMessage({
+    content: `${source.content}\n\n[Runtime browser supervision]\n${supervision}`,
+    tool_call_id: source.tool_call_id,
+    ...(source.name !== undefined ? { name: source.name } : {}),
+    additional_kwargs: { ...source.additional_kwargs, nautilo_browser_supervision: decision.reason },
+    response_metadata: source.response_metadata,
+    ...(source.artifact === undefined ? {} : { artifact: source.artifact as unknown }),
+    ...(source.status === undefined ? {} : { status: source.status }),
+  });
+  if (source.id) projected.id = source.id;
+  const next = [...messages];
+  next[index] = projected;
+  return { messages: next, projected: true };
+}
+
 /**
  * The full scanned Computer Use result is durable host diagnostics, not prompt
  * content. Strip that exact sidecar from provider-bound clones while leaving
@@ -300,7 +383,7 @@ function collectSkillNamesAlreadyInContext(
 }
 
 /**
- * D263 Stack 80 — eject eviction. A skill body pulled by `view_skill` lives on
+ * — eject eviction. A skill body pulled by `view_skill` lives on
  * as that tool's result message. When the agent later `eject`s the skill, its
  * name leaves `engagedSkillNames`; on the next rebuild we collapse the lingering
  * body to a one-line tombstone so it actually leaves context (the agent's "get
@@ -369,42 +452,6 @@ function cloneMessageWithContent(msg: BaseMessage, content: unknown): BaseMessag
   }
   if (msg.id) cloned.id = msg.id;
   return cloned;
-}
-
-/**
- * Provider contract guard: Anthropic's Messages API only permits system content
- * as the first message / top-level system prompt. Most of Nautilo's history
- * should already satisfy that, but task/subagent transcript paths can surface a
- * persisted SystemMessage later in history. Fold those into the leading system
- * prompt so the content is preserved while the request shape stays valid.
- */
-function collapseNonLeadingSystemMessages(messages: BaseMessage[]): {
-  messages: BaseMessage[];
-  collapsed: number;
-} {
-  if (messages.length === 0) return { messages, collapsed: 0 };
-  const leading = messages[0];
-  if (!(leading instanceof SystemMessage)) return { messages, collapsed: 0 };
-
-  const extraSystemText: string[] = [];
-  const next: BaseMessage[] = [leading];
-
-  for (let i = 1; i < messages.length; i++) {
-    const msg = messages[i]!;
-    if (msg instanceof SystemMessage) {
-      const text = flattenContentToString(msg.content).trim();
-      if (text) extraSystemText.push(text);
-      continue;
-    }
-    next.push(msg);
-  }
-
-  if (extraSystemText.length === 0) return { messages, collapsed: 0 };
-  next[0] = cloneMessageWithContent(
-    leading,
-    `${flattenContentToString(leading.content)}\n\n[Additional system context recovered from history]\n${extraSystemText.join("\n\n")}`,
-  );
-  return { messages: next, collapsed: extraSystemText.length };
 }
 
 export function sanitizeImagesForModel(messages: BaseMessage[], modelId: string): { messages: BaseMessage[]; stripped: number } {
@@ -551,7 +598,7 @@ export async function preModelNode(
         buildRuntimeCapabilityTokens(relayRegistry, state.userId, state.agentId),
       );
   const relayCapabilities = capabilitiesAtModelStep;
-  // D456 — refresh from the connected-app runtime at every model step. The
+  // refresh from the connected-app runtime at every model step. The
   // checkpointed snapshot feeds every later resolver in this graph step; a
   // concurrent disconnect is still rejected by the execution-time profile
   // check inside ConnectedAppService.
@@ -560,7 +607,7 @@ export async function preModelNode(
     memoryAccessEnvelope: state.memoryAccessEnvelope,
   });
 
-  // D263 Stack 80 — evict ejected skill bodies before assembling this turn.
+  // Evict ejected skill bodies before assembling this turn.
   // Persisted back via the `messages` return so the eviction is durable.
   const turnMessages = isGuest
     ? state.messages
@@ -584,7 +631,7 @@ export async function preModelNode(
   const intentPackToolNames = isGuest
     ? []
     : expandToolFamilies(intentPack.families);
-  // D423 — a resolved focus entry with a `file` target is already an
+  // a resolved focus entry with a `file` target is already an
   // authorized, model-facing pointer. Make only `file` eligible for this
   // turn so the model can follow the focused-resource manifest without
   // widening to the rest of the filesystem family. The normal catalog
@@ -598,7 +645,7 @@ export async function preModelNode(
   if (focusedResourceToolNames.length > 0) {
     log("[nautilo/pre_model] focused-resource candidates=file");
   }
-  // D419 — skill metadata may name an authorized deferred dependency, but
+  // skill metadata may name an authorized deferred dependency, but
   // must not cause its schema to be constructed or bound for this model step.
   // Resolve the same policy/runtime/whitelist/model-capability ceiling from
   // catalog metadata only; `resolveProgressiveTools` below remains the sole
@@ -614,6 +661,8 @@ export async function preModelNode(
           {
             readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
             context: {
+              turnId: state.turnId,
+              fullEncryptionOnly,
               connectedAppProviderIds,
               deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
             },
@@ -759,7 +808,7 @@ export async function preModelNode(
       })
     : null;
   const rawTools = progressiveResolution?.tools ?? [];
-  // D421 Phase 6.4 — `skip` is the sole yield tool (targetless silence OR
+  // `skip` is the sole yield tool (targetless silence OR
   // one-hop redirect via `target_handle`). The explicit-picker withhold
   // stays; targetless skip is always valid and redirect eligibility is
   // enforced server-side.
@@ -783,7 +832,7 @@ export async function preModelNode(
     tools,
   });
 
-  // D407 — the STABLE system prefix (base prompt + tool guidance) is captured
+  // the STABLE system prefix (base prompt + tool guidance) is captured
   // separately so we can cache it (see systemMessage construction below).
   // Everything appended after this point is per-turn-volatile to varying
   // degrees (time, memory, notifications) and stays OUT of the cached span.
@@ -825,18 +874,32 @@ export async function preModelNode(
     systemPrompt += buildPendingTerminalHandoffBlock();
   }
 
-  // M087 — owner-only `## Current time` block: local time + day + IANA tz +
+  // owner-only `## Current time` block: local time + day + IANA tz +
   // UTC offset, the UTC ISO timestamp, and the bucketed "last user message in
   // this room" line. Guests deliberately skip it (no room/owner context).
+  const promptTurnId = typeof state.turnId === "string" ? state.turnId.trim() : "";
+  const priorPromptTimeReference = state.promptTimeReference;
+  const canReusePromptTime = promptTurnId.length > 0
+    && priorPromptTimeReference?.turnId === promptTurnId
+    && Number.isFinite(priorPromptTimeReference.nowMs);
+  const promptNowMs = canReusePromptTime
+    ? priorPromptTimeReference.nowMs
+    : Date.now();
+  const promptTimeReference = !isGuest && promptTurnId.length > 0
+    ? { turnId: promptTurnId, nowMs: promptNowMs }
+    : null;
   if (!isGuest) {
     systemPrompt += buildTimeContextBlock({
-      nowMs: Date.now(),
+      nowMs: promptNowMs,
       userTimezone: state.userTimezone || "UTC",
       previousUserMessageAt: state.previousUserMessageAt,
     });
+    if (promptTimeReference) {
+      systemPrompt += "\nTime reference: captured at the start of this turn; it does not advance during tool calls.";
+    }
   }
 
-  // M042B: inject the room participant roster before the soul file so
+  // inject the room participant roster before the soul file so
   // the agent knows who it's talking to (and, in future iterations,
   // which other participants are present). Guest turns skip — they
   // have no room context and the roster is empty by construction.
@@ -844,11 +907,11 @@ export async function preModelNode(
     const lines = state.roomRoster
       .map((p) => {
         const adminTag = p.roomRole === "admin" ? ", admin" : "";
-        // M134 — show each participant's @handle and mark the CURRENT agent
+        // show each participant's @handle and mark the CURRENT agent
         // as "you". Multi-agent rooms can hold two bots that share a display
         // name (e.g. both "Genie"); without the handle + self-marker a woken
         // bot can't tell which @mention is itself and wrongly `skip`s when
-        // addressed by its own handle. See ISSUE-M134.
+        // addressed by its own handle. See .
         const handleTag = p.handle ? ` @${p.handle}` : "";
         const isSelf =
           p.kind === "agent" && !!state.agentId && p.agentId === state.agentId;
@@ -878,8 +941,8 @@ export async function preModelNode(
     systemPrompt += SOUL_FILE_HEADER + soulFile;
   }
 
-  // D263 v1 — catalog-only + engaged-set re-injection (guest-withheld).
-  // Prompt text only — never mutates memoryAccessEnvelope / toolPolicy (R9).
+  // catalog-only + engaged-set re-injection (guest-withheld).
+  // Prompt text only — never mutates memoryAccessEnvelope / toolPolicy .
   const enabledSkills = state.skills ?? [];
   if (!isGuest && enabledSkills.length > 0) {
     const toolNames = tools.map((t) => t.name);
@@ -905,7 +968,7 @@ export async function preModelNode(
     }
   }
 
-  // D079 Phase 2 — two-path file-surface block. Omitted entirely if
+  // two-path file-surface block. Omitted entirely if
   // both paths are empty (guest turns, legacy pre-Phase-2 callers).
   // When only `currentFolder` or only `workspacePath` is set, only
   // that sub-block appears. Guest sessions have both empty by
@@ -925,7 +988,7 @@ export async function preModelNode(
       { backgroundTask: state.trustedExecutionEntrypoint === "background.task" },
     );
     if (liveMiniAppSessionBlock) systemPrompt += liveMiniAppSessionBlock;
-    // D359 — quote-reply pointer. The reply FK rides on the latest human
+    // quote-reply pointer. The reply FK rides on the latest human
     // HumanMessage's `additional_kwargs.nautilo_reply_to_message_id` (set
     // by `buildForegroundUserHumanMessage`). We inject a LIGHTWEIGHT
     // POINTER (id + optional ≤80-char snippet/author) — NEVER the
@@ -971,7 +1034,7 @@ export async function preModelNode(
   }
 
   if (!isGuest) {
-    // D423 Phase 4 — ONE authoritative focused-resource manifest. Keep this
+    // ONE authoritative focused-resource manifest. Keep this
     // volatile, turn-specific UI context at the tail of the normal system
     // prompt so it remains salient after the larger generic file-authoring
     // instructions and persistent memory blocks. When the server resolved a
@@ -986,7 +1049,7 @@ export async function preModelNode(
     }
   }
 
-  // D090 §1.4b — drain session_notifications for this (threadId,
+  // drain session_notifications for this (threadId,
   // agentId) pair and, if non-empty, append a one-shot "Since your
   // last turn" block to the system prompt. The drain is a
   // best-effort DB call: a failure logs a warning (helper-internal)
@@ -1049,9 +1112,9 @@ export async function preModelNode(
     }
   }
 
-  // Stack 208 P2 — no-progress breaker: inject exactly ONE corrective
+  // no-progress breaker: inject exactly ONE corrective
   // instruction into this model turn when the tools node flagged a failure
-  // streak that hit the repeated-failure limit (R4). The flag is set by the
+  // streak that hit the repeated-failure limit . The flag is set by the
   // tools node and consumed + cleared here so the corrective turn happens
   // exactly once, between the limit-failure and the next identical failure
   // (which would map to a typed `no_progress` stop). The instruction is
@@ -1069,7 +1132,7 @@ export async function preModelNode(
     log("[nautilo/pre_model] no_progress corrective turn injected");
   }
 
-  // D407 — Anthropic prompt caching. Split the single system string into a
+  // Anthropic prompt caching. Split the single system string into a
   // cached STABLE block (byte-identical across turns) + an uncached VOLATILE
   // block, with an ephemeral `cache_control` breakpoint on the stable block.
   // The breakpoint caches the tool schemas too (tools precede system on the
@@ -1167,7 +1230,8 @@ export async function preModelNode(
     ? restoreResearchContextControlCycle({ ...state, messages: llmMessages }, processedHistory.messages) : processedHistory.messages;
   const researchOrigins = researchContinuity ? prepareResearchContextOrigins(state, controlSafeHistory) : null;
   const providerSafeHistory = stripHostOnlyComputerResultSidecars(researchOrigins?.messages ?? processedHistory.messages);
-  const normalizedHistory = normalizeMessagesForProvider(providerSafeHistory);
+  const browserSupervisedHistory = projectBrowserHandoffForProvider(providerSafeHistory, state).messages;
+  const normalizedHistory = normalizeMessagesForProvider(browserSupervisedHistory);
   const providerProjectedHistory = projectOpenAIMultimodalToolResults(
     normalizedHistory,
     requestedModelId,
@@ -1176,8 +1240,12 @@ export async function preModelNode(
     ? [systemMessage, ...providerProjectedHistory, compactionHint]
     : [systemMessage, ...providerProjectedHistory];
   const modalitySafe = sanitizeImagesForModel(preparedBeforeModality, requestedModelId);
-  const systemSafeMessages = collapseNonLeadingSystemMessages(modalitySafe.messages);
-  // D143 Layer 3 — final safety net. Catches any duplicate
+  // Direct OpenAI accepts system/developer messages in sequence. Moving a new
+  // runtime handoff into the leading prompt invalidates the conversation cache.
+  // Keep instruction authority and chronology; retain the compatibility fold
+  // for routes whose handling of later system messages is not qualified here.
+  const systemSafeMessages = projectSystemMessagesForProvider(modalitySafe.messages, requestedModelId);
+  // Layer 3 — final safety net. Catches any duplicate
   // ToolMessage produced by mid-pipeline transforms
   // (normalize-for-provider, sanitize-images, or future
   // additions) that Layer 1 / Layer 2 can't see. Layer 3 in
@@ -1191,7 +1259,7 @@ export async function preModelNode(
   // but knowing WHICH downstream transform produced a duplicate is
   // essential observability for diagnosing future regressions in
   // this exact bug class. Without this log line, L3 silently
-  // repairs the same bug class D143 was filed against — with no
+  // repairs the same bug class was filed against — with no
   // audit trail showing the safety net fired.
   const finalSafetyNetResult = validateMessageHistory(systemSafeMessages.messages);
   const preparedMessages = finalSafetyNetResult.messages;
@@ -1203,12 +1271,12 @@ export async function preModelNode(
   }
   if (finalSafetyNetResult.repairs.length > 0) {
     log(
-      `[nautilo/pre_model] D143-L3 final-safety-net repairs (${finalSafetyNetResult.repairs.length}): ${finalSafetyNetResult.repairs.join("; ")}`,
+      `[nautilo/pre_model] final safety-net repairs (${finalSafetyNetResult.repairs.length}): ${finalSafetyNetResult.repairs.join("; ")}`,
     );
   }
   assertMessageInvariants(preparedMessages, "pre_model.before_llm");
 
-  // Stack 208 P2 — the corrective instruction was already appended to the
+  // the corrective instruction was already appended to the
   // system prompt above (before `systemMessage` was built). No further
   // message-level injection is needed.
   const modelTokenBudget = Math.floor((await resolveModelExecutionLimits(requestedModelId)).contextTokens * config.nautilo_token_budget_fraction);
@@ -1278,9 +1346,10 @@ export async function preModelNode(
     researchContextRecovery: finalResearchContext?.recovery ?? null,
     researchContextPageBytes: finalResearchContext?.pageBytes ?? null,
     preparedStableSystemPrefixLength: finalStableSystemPrefix.length,
+    promptTimeReference,
     toolNames: finalTools.map((t) => t.name),
     connectedAppProviderIds: [...connectedAppProviderIds],
-    // Stack 208 P2 — consume the pending correction flag so the corrective
+    // consume the pending correction flag so the corrective
     // instruction is injected exactly once. Cleared on this turn; a later
     // identical failure (count = limit + 1) is what maps to `no_progress`.
     noProgressPendingCorrection: null,

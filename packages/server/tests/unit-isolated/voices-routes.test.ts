@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import { voicePreviewPath } from "@nautilo/voice";
+import { voicePreviewPathForCustomText } from "@nautilo/voice";
 import type { ViewerRole } from "@nautilo/types";
 import type { VoiceCatalogPersistentCache } from "../../src/routes/voices";
 import {
@@ -1176,7 +1176,9 @@ describe("voice catalog routes", () => {
   test("POST /api/voices/:voiceId/preview serves authenticated users, contains no provider secret, and remains throttled", async () => {
     const previousKey = process.env["ELEVENLABS_API_KEY"];
     const voiceId = "PreviewThrottleVoice";
-    const previewPath = voicePreviewPath(voiceId);
+    const text = "A synthetic preview sentence. ".repeat(100).trim();
+    const identity = JSON.stringify(["speech-preview-v1", "elevenlabs:eleven_v3_conversational", "eleven_v3_conversational", "elevenlabs-dialogue-http", "mp3_44100_128", { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 }, text]);
+    const previewPath = voicePreviewPathForCustomText(voiceId, identity);
     const providerRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
     try {
       process.env["ELEVENLABS_API_KEY"] = "test-provider-secret";
@@ -1186,7 +1188,7 @@ describe("voice catalog routes", () => {
             typeof input === "string" ? input
             : input instanceof URL ? input.toString()
             : input.url;
-          if (url.includes("PreviewSecretVoice")) {
+          if (typeof init?.body === "string" && init.body.includes("PreviewSecretVoice")) {
             return new Response("upstream diagnostic test-provider-secret", { status: 500 });
           }
           const requestBody = typeof init?.body === "string" ? init.body : "{}";
@@ -1205,6 +1207,7 @@ describe("voice catalog routes", () => {
         method: "POST",
         url: "/api/voices/PreviewSecretVoice/preview",
         remoteAddress: "203.0.113.10",
+        payload: { text },
       });
       expect(providerFailure.statusCode).toBe(502);
       expect(providerFailure.body).not.toContain("test-provider-secret");
@@ -1214,14 +1217,22 @@ describe("voice catalog routes", () => {
         method: "POST",
         url: `/api/voices/${voiceId}/preview`,
         remoteAddress: "203.0.113.10",
+        payload: { text },
       });
       expect(first.statusCode).toBe(200);
       expect(first.headers["content-type"]).toContain("audio/mpeg");
       expect(first.body).not.toContain("test-provider-secret");
       expect(providerRequests[0]?.url).toBe(
-        `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
+        "https://api.elevenlabs.io/v1/text-to-dialogue/stream?output_format=mp3_44100_128",
       );
-      expect(providerRequests[0]?.body).toMatchObject({ model_id: "eleven_v3" });
+      expect(providerRequests.length).toBeGreaterThan(1);
+      const spoken = providerRequests.flatMap(request => {
+        expect(request.body["model_id"]).toBe("eleven_v3_conversational");
+        const inputs = request.body["inputs"] as { text: string; voice_id: string }[];
+        for (const input of inputs) expect(input.voice_id).toBe(voiceId);
+        return inputs.map(input => input.text);
+      }).join("");
+      expect(spoken).toBe(text);
 
       // The rejected provider attempt above also consumes one of the global
       // preview slots, so 18 cached requests take this window to its limit.
@@ -1230,6 +1241,7 @@ describe("voice catalog routes", () => {
           method: "POST",
           url: `/api/voices/${voiceId}/preview`,
           remoteAddress: "203.0.113.10",
+        payload: { text },
         });
         expect(allowed.statusCode).toBe(200);
       }
@@ -1238,6 +1250,7 @@ describe("voice catalog routes", () => {
         method: "POST",
         url: `/api/voices/${voiceId}/preview`,
         remoteAddress: "203.0.113.10",
+        payload: { text },
       });
       expect(throttled.statusCode).toBe(429);
     } finally {

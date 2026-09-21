@@ -37,6 +37,7 @@ import {
 import { persistMessages } from "./persist-messages";
 import { loadForegroundAuthoredContext } from "./foreground-authored-context";
 import { SentenceDetector, type SentenceDetectorConfig } from "../utils/sentence-detector";
+import { bindVoiceTurnLifecycle } from "../utils/voice-turn-lifecycle";
 import { parseMultimodalImagesFromJobInput } from "./multimodal-job-input";
 import {
   processStreamEvent,
@@ -122,7 +123,7 @@ export function shouldPersistForkHumanMessage(input: {
 }
 
 /**
- * M085 fork-on-busy path: checkpoint on `forkThreadId`, transcript on parent thread id.
+ * fork-on-busy path: checkpoint on `forkThreadId`, transcript on parent thread id.
  */
 export async function* forkLanggraphExecutor(
   input: Record<string, unknown>,
@@ -151,7 +152,7 @@ export async function* forkLanggraphExecutor(
   const effectiveLaneKey = laneKey ?? "app:default";
   const memoryAccessEnvelope = (input["memoryAccessEnvelope"] as MemoryAccessEnvelope | undefined) ?? null;
   const actorRole = typeof input["actorRole"] === "string" ? input["actorRole"] : "owner";
-  // M125 Phase 2.6: agentId is required — fail loudly rather than
+  // agentId is required — fail loudly rather than
   // borrow the bootstrap default (see langgraph-executor.ts).
   const agentIdFromInput =
     typeof input["agentId"] === "string" && input["agentId"]
@@ -168,7 +169,7 @@ export async function* forkLanggraphExecutor(
     (typeof input["roomId"] === "string" && input["roomId"])
       ? input["roomId"]
       : memoryAccessEnvelope?.roomId ?? "";
-  // D426 — preserve the canonical child Room id through forked turns too;
+  // preserve the canonical child Room id through forked turns too;
   // their transcript rows share the same authoritative root summary contract
   // as the main foreground executor.
   const subthreadRoomId =
@@ -178,13 +179,13 @@ export async function* forkLanggraphExecutor(
   const roomRoster: RoomParticipant[] = Array.isArray(input["roomRoster"])
     ? (input["roomRoster"] as RoomParticipant[])
     : [];
-  // M170 — transcript owner of the parent thread (mirrors the non-forked turn
-  // on this thread; falls back to the memory-scoped ownerId like M168 does).
+  // transcript owner of the parent thread (mirrors the non-forked turn
+  // on this thread; falls back to the memory-scoped ownerId like does).
   const transcriptOwnerId =
     typeof input["transcriptOwnerId"] === "string" && input["transcriptOwnerId"]
       ? input["transcriptOwnerId"]
       : ownerId;
-  // M170 — subthread scope, threaded through exactly as the M168 main path
+  // subthread scope, threaded through exactly as main path
   // does (passthrough keys on the job input). Absent ⇒ plain room scope.
   const subthreadParentRoomId =
     typeof input["subthreadParentRoomId"] === "string" ? input["subthreadParentRoomId"] : "";
@@ -240,7 +241,7 @@ export async function* forkLanggraphExecutor(
     artifactRefs,
     focusedResources,
   } = freshForegroundTurnScopedGraphContext(input);
-  // M085 parity: retain only a strictly validated ordinary-origin proof from
+  // parity: retain only a strictly validated ordinary-origin proof from
   // this fork's own accepted job input. The parent checkpoint is never a
   // source of host authority.
   const verifiedOrdinaryOrigin = parseVerifiedOrdinaryOrigin(
@@ -269,7 +270,7 @@ export async function* forkLanggraphExecutor(
   }
 
   const policyResolver = getPolicyResolver();
-  // Stack 208 P0 — one shared graph execution policy seam (recursion ceiling
+  // one shared graph execution policy seam (recursion ceiling
   // resolved here, threaded into `streamConfig` below). Metrics counts
   // supersteps / model invocations / tool calls from the existing
   // `streamEvents` hook; logged at stream end / on error (telemetry-only).
@@ -293,7 +294,7 @@ export async function* forkLanggraphExecutor(
       liveShadowContext?.enforcementPolicy?.mode === "encrypted_only",
   };
   const isGuest = actorRole === "guest";
-  // M132/M156 — Profile is 1:1 with Agent. Forked/background turns can carry
+  // Profile is 1:1 with Agent. Forked/background turns can carry
   // an authorization owner that differs from the speaking agent; identity
   // fields like soul/name/model must resolve by `agentId`.
   const authoredContext = await loadForegroundAuthoredContext({
@@ -360,15 +361,15 @@ export async function* forkLanggraphExecutor(
   );
   const modelId = resolveModelRole("chat", { configuredId: foregroundModelPlan.initialModelId });
 
-  // M170 — a fork rebuilds its history from the DB transcript (single source of
-  // truth) at start, like the non-forked turn on this thread (M168). The
+  // a fork rebuilds its history from the DB transcript (single source of
+  // truth) at start, like the non-forked turn on this thread . The
   // checkpoint COPY of parent history is gone. The fork still does NOT redo an
   // in-flight predecessor because we re-inject a transient [FORK BACKGROUND]
   // marker (R2b) — only the predecessor's not-yet-committed *reply content* is
   // stale (decision 10.2.4).
   //
-  // Reuse M168's seam directly: resolveForegroundHistoryMessages owns the
-  // createDirectDb(1) pool lifecycle (try/finally close()), subthread scoping,
+  // Reuse the current seam directly: resolveForegroundHistoryMessages owns the
+  // createDirectDb(1) pool lifecycle (try/finally close), subthread scoping,
   // and excludeMessageId — so we neither leak a pool per fork nor re-implement
   // that plumbing. Ordinary legacy forks persist their own user row after this
   // rebuild. Coordinate-first protected forks already persisted it, however,
@@ -471,6 +472,7 @@ export async function* forkLanggraphExecutor(
 
   const graphInput = {
     noProgressStreaks: new Map(),
+    browserDecision: null,
     noProgressPendingCorrection: null,
     noProgressPendingStop: null,
     messages: forkMessages,
@@ -514,7 +516,10 @@ export async function* forkLanggraphExecutor(
     ...(turnId ? { turnId } : {}),
   });
   const voiceSubjectId = memoryAccessEnvelope?.ownerId ?? ownerId;
-  const sentenceDetectorConfig: SentenceDetectorConfig = {};
+  const sentenceDetectorConfig: SentenceDetectorConfig = {
+    onIdleEvents: events => { if (!signal.aborted) for (const event of events) eventBus.emit(event); },
+  };
+  sentenceDetectorConfig.turnId = turnId || jobId;
   if (voiceSubjectId) {
     sentenceDetectorConfig.userId = voiceSubjectId;
   }
@@ -659,7 +664,9 @@ export async function* forkLanggraphExecutor(
     version: "v2",
   };
 
-  log(`[nautilo/executor] M085 fork stream checkpoint=${checkpointThreadId} transcript=${transcriptThreadId}`);
+  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId, agentId, turnId: turnId || jobId });
+
+  log(`[nautilo/executor] fork stream checkpoint=${checkpointThreadId} transcript=${transcriptThreadId}`);
 
   const agentProgressHeartbeat =
     turnId && !suppressToolLifecycleEvents
@@ -801,16 +808,16 @@ export async function* forkLanggraphExecutor(
       `[nautilo/executor] Fork stream complete checkpoint=${checkpointThreadId} transcript=${transcriptThreadId} ${metrics.formatLogToken()}`,
     );
 
-    // M170 — the splice is gone. On clean completion the fork's reply rows are
+    // the splice is gone. On clean completion the fork's reply rows are
     // already in the parent transcript (persisted as the stream produced them),
     // so the fork's contribution reaches the parent's next turn via the DB
-    // rebuild (M168), NOT via a checkpoint splice. We only advance the lane's
+    // rebuild , NOT via a checkpoint splice. We only advance the lane's
     // commit ordering so a later main turn cannot write ahead of this fork
-    // (R4's hasUnreconciledLowerTurns gate). On a pending interrupt (paused
-    // fork) we do NOT advance — the resume path (auth.ts, R6) will, once the
+    // ('s hasUnreconciledLowerTurns gate). On a pending interrupt (paused
+    // fork) we do NOT advance — the resume path (auth.ts, ) will, once the
     // post-resume rows are persisted.
     //
-    // M136 §8.4 — the fork-coordinator lane key is the bot checkpoint thread
+    // the fork-coordinator lane key is the bot checkpoint thread
     // (the serialization axis), i.e. the parent thread id.
     if (hasPendingInterrupt) {
       await finishMemoryReviewTurn({ threadId: transcriptThreadId, agentId, turnId, state: memoryReviewState });
@@ -820,14 +827,14 @@ export async function* forkLanggraphExecutor(
       forkCoordinator.markForkCompleted(forkRun.parentThreadId, forkRun.sequence);
       await finishMemoryReviewTurn({ threadId: transcriptThreadId, agentId, turnId, state: "completed" });
       memoryReviewRecorded = true;
-      // Stack 208 P1 — the fork's `:fork:` checkpoint thread is terminal and
+      // the fork's `:fork:` checkpoint thread is terminal and
       // ephemeral: its reply rows are already durably in the parent transcript
       // (persisted as the stream produced them) and the lane's commit ordering
       // has just advanced (above), so the checkpoint is no longer load-bearing.
       // Delete it best-effort AFTER the transcript + ordering commit landed and
       // ONLY when no interrupt is pending (a paused fork resumes from this
       // checkpoint). Never on abort / awaiting / approval / PIN / identity /
-      // D422-unknown — those branches return or throw before reaching here.
+      // those branches return or throw before reaching here.
       // `deleteEphemeralCheckpointThread` guards the ephemeral-thread predicate
       // and swallows failures, so this can never turn the successful fork into
       // a failure.
@@ -854,8 +861,8 @@ export async function* forkLanggraphExecutor(
     if (signal.aborted) return;
     checkpointPrimaryError = true;
 
-    // Stack 208 P0 — surface the typed internal graph-budget outcome distinctly
-    // in telemetry (R9). The user-safe sentence is produced by
+    // surface the typed internal graph-budget outcome distinctly
+    // in telemetry . The user-safe sentence is produced by
     // `toFriendlyError` at the runtime job-loop catch site.
     const budgetOutcome = toGraphBudgetOutcome(error, executionPolicy.recursionLimit);
     if (budgetOutcome) {
@@ -874,16 +881,12 @@ export async function* forkLanggraphExecutor(
       yield event;
     }
 
-    if (sentenceDetector) {
-      sentenceDetector.complete();
-      for (const event of sentenceDetector.drain()) {
-        yield event;
-      }
-    }
+    sentenceDetector?.reset();
 
     throw error;
   } finally {
     agentProgressHeartbeat?.dispose();
+    finishVoiceTurn(checkpointPrimaryError);
     if (turnId) clearAgentTurnContext(turnId);
     if (turnId && agentId) {
       clearAgentTurnContextByKey(turnContextKey(turnId, agentId));

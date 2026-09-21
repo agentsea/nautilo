@@ -24,7 +24,7 @@ function slice(source: string, startNeedle: string, endNeedle: string): string {
   return source.slice(start, end);
 }
 
-describe("D341 stop diagnostics", () => {
+describe("Turn stop diagnostics", () => {
   test("VoiceControls exposes turn stop status separately from voice playback stop", () => {
     expect(contextSource).toMatch(/export type TurnStopFailureReason = "no-target" \| "request-failed" \| "not-live"/);
     expect(contextSource).toMatch(/export type TurnStopStatus =/);
@@ -37,7 +37,7 @@ describe("D341 stop diagnostics", () => {
     const stopKnownJobIds = slice(
       runtimeSource,
       "const stopKnownJobIds = useCallback(",
-      "// D212 P2",
+      "const updateMessageReactions = useCallback(",
     );
     const stopActiveJobs = slice(
       runtimeSource,

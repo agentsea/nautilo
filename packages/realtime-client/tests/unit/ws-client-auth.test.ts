@@ -1,12 +1,12 @@
 /**
- * M058 — `createWsRealtimeClient` first-message auth handshake +
+ * `createWsRealtimeClient` first-message auth handshake +
  * outbound queue + reconnect-after-rejection unit tests.
  *
  * Pure unit-level: replaces `globalThis.WebSocket` with a
  * controllable fake so the test never opens a real socket.
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { UI_ACTION_EVENT_TTL_MS } from "@nautilo/types";
+import { UI_ACTION_EVENT_TTL_MS, encodeVoicePcmFrame } from "@nautilo/types";
 import {
   createWsRealtimeClient,
   type AuthRejectedReason,
@@ -33,6 +33,7 @@ interface MockWebSocketLike {
   close: () => void;
   triggerOpen: () => void;
   triggerMessage: (payload: unknown) => void;
+  triggerBinary: (payload: Uint8Array) => void;
   triggerClose: () => void;
   triggerError: () => void;
 }
@@ -85,6 +86,10 @@ class MockWebSocket implements MockWebSocketLike {
   triggerMessage(payload: unknown): void {
     const event = { data: JSON.stringify(payload) } as MessageEvent;
     this.dispatch("message", event);
+  }
+
+  triggerBinary(payload: Uint8Array): void {
+    this.dispatch("message", { data: payload } as unknown as MessageEvent);
   }
 
   triggerClose(): void {
@@ -142,7 +147,50 @@ const fastTimings = {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("createWsRealtimeClient — first-message auth (M058)", () => {
+describe("createWsRealtimeClient — first-message auth ()", () => {
+  test("negotiates PCM only with a sink and fences audio across reconnects", async () => {
+    const received: unknown[] = [];
+    const client = createWsRealtimeClient("ws://test", {
+      getToken: () => "tok", onEvent: () => {}, onVoiceEvent: event => received.push(event), ...fastTimings,
+    });
+    const preference = { type: "voice.listen", version: 1, roomId: "room", enabled: true };
+    client.send(preference);
+    client.send({ type: "voice.stop", turnId: "stale" });
+    client.send({ type: "voice.consumed", streamId: "stale", samples: 1 });
+    const first = created[0]!; first.triggerOpen(); await flushMicrotasks();
+    expect((JSON.parse(first.sent[0]!) as { voiceProtocol?: number }).voiceProtocol).toBe(1);
+    first.triggerMessage({ type: "auth.accepted", voiceProtocol: 1 });
+    expect(first.sent.slice(1).map(x => JSON.parse(x) as unknown)).toEqual([preference]);
+    const streamId = "11111111-1111-4111-8111-111111111111";
+    first.triggerMessage({ type: "voice.stream.start", version: 1, streamId, turnId: "turn", roomId: "room", agentId: "agent", sampleRate: 24000, channels: 1, encoding: "pcm_s16le", model: "eleven_v3" });
+    const packet = encodeVoicePcmFrame({ streamId, sequence: 0, pcm: new Uint8Array([0, 1]) });
+    first.triggerBinary(packet);
+    expect(received).toHaveLength(2);
+    first.triggerClose(); await wait(30);
+    const second = created[1]!; second.triggerOpen(); await flushMicrotasks();
+    second.triggerMessage({ type: "auth.accepted", voiceProtocol: 1 });
+    expect(second.sent.slice(1).map(x => JSON.parse(x) as unknown)).toEqual([preference]);
+    first.triggerBinary(packet);
+    expect(received).toHaveLength(2);
+    second.triggerBinary(packet); // No start on the fresh connection.
+    expect(second.readyState).toBe(RS_CLOSED);
+    expect(received).toHaveLength(2);
+    client.close();
+  });
+
+  test("old servers receive no listener controls and cannot send unnegotiated PCM", async () => {
+    const client = createWsRealtimeClient("ws://test", {
+      getToken: () => "tok", onEvent: () => {}, onVoiceEvent: () => {}, ...fastTimings,
+    });
+    const ws = created[0]!; ws.triggerOpen(); await flushMicrotasks();
+    ws.triggerMessage({ type: "auth.accepted" });
+    client.send({ type: "voice.listen", version: 1, roomId: "room", enabled: true });
+    expect(ws.sent).toHaveLength(1);
+    ws.triggerBinary(new Uint8Array([0, 1]));
+    expect(ws.readyState).toBe(RS_CLOSED);
+    client.close();
+  });
+
   test("declares a product-owned initiating surface only in the auth frame", async () => {
     const client = createWsRealtimeClient("ws://test", {
       onEvent: () => {},
@@ -507,6 +555,22 @@ describe("createWsRealtimeClient — first-message auth (M058)", () => {
     ws.triggerMessage({ type: "auth.accepted" });
     client.close();
   });
+
+  for (const negotiated of [false, true]) {
+    test(`Stop preserves older servers and scopes negotiated speech (${negotiated})`, async () => {
+      const client = createWsRealtimeClient("ws://test", { onEvent() {}, onVoiceEvent() {}, getToken: () => "tok", ...fastTimings });
+      const ws = created[0]!;
+      client.send({ type: "voice.stop" });
+      ws.triggerOpen(); await flushMicrotasks();
+      ws.triggerMessage({ type: "auth.accepted", ...(negotiated ? { voiceProtocol: 1 } : {}) });
+      expect(ws.sent).toHaveLength(1);
+      client.send({ type: "voice.stop" });
+      expect(ws.sent).toHaveLength(negotiated ? 1 : 2);
+      client.send({ type: "voice.stop", turnId: "turn-a" });
+      expect(JSON.parse(ws.sent.at(-1)!) as unknown).toEqual({ type: "voice.stop", turnId: "turn-a" });
+      client.close();
+    });
+  }
 
   test("send() drops to outbound queue while connecting (before socket-open)", async () => {
     const client = createWsRealtimeClient("ws://test", {

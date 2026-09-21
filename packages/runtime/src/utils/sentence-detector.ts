@@ -3,7 +3,7 @@ import type { VoiceSentenceEvent } from "@nautilo/types";
 const SENTENCE_END_RE = /^(.*?[.!?])\s+(.*)$/s;
 const MIN_SENTENCE_LENGTH = 6;
 /**
- * D283 — minimum length of the *first* spoken chunk of a turn. The TTS
+ * minimum length of the *first* spoken chunk of a turn. The TTS
  * pipeline is sequential and cold at turn start: a too-short opener
  * ("Good idea.") finishes playing before the next chunk is synthesized,
  * leaving an audible gap. We hold the opener and merge following text into
@@ -16,16 +16,19 @@ const VOICE_OPEN_TAG_RE = /<voice\s+lang=["']([a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)["'
 const VOICE_CLOSE_TAG_RE = /<\/voice\s*>/i;
 
 export interface SentenceDetectorConfig {
+  turnId?: string;
+  /** Publish idle-flushed safe text even when the model sends no later token. */
+  onIdleEvents?: (events: VoiceSentenceEvent[]) => void;
   /** Flush partial sentence if no new tokens arrive within this many ms. */
   partialTimeoutMs?: number;
-  /** M075 — tag `voice.sentence` for per-user TTS + WS routing. */
+  /** tag `voice.sentence` for per-user TTS + WS routing. */
   userId?: string;
-  /** D261 — speaking agent; carried on each `voice.sentence` event. */
+  /** speaking agent; carried on each `voice.sentence` event. */
   agentId?: string;
-  /** D570 — immutable origin Room for client-local foreground playback. */
+  /** immutable origin Room for client-local foreground playback. */
   roomId?: string;
   /**
-   * D283 — coalesce a short opening chunk forward until it reaches this many
+   * coalesce a short opening chunk forward until it reaches this many
    * characters, so the first TTS request outlasts the next chunk's synthesis
    * latency. Defaults to {@link DEFAULT_LEAD_MIN_CHARS}. Set to 0 to disable.
    */
@@ -49,23 +52,27 @@ export class SentenceDetector {
   private pendingEvents: VoiceSentenceEvent[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly partialTimeoutMs: number;
+  private readonly onIdleEvents: SentenceDetectorConfig["onIdleEvents"];
   private readonly voiceUserId: string | undefined;
   private readonly voiceAgentId: string | undefined;
   private readonly voiceRoomId: string | undefined;
+  private readonly voiceTurnId: string | undefined;
   /** Unflushed text after the last parse pass (same lang as {@link trailingLang}). */
   private trailingText = "";
   private trailingLang: string | undefined;
   private readonly voiceParseState: VoiceParseState = {};
-  /** D283 — completed opening sentences held for coalescing (index 0 only). */
+  /** completed opening sentences held for coalescing (index 0 only). */
   private leadBuffer = "";
   private leadLang: string | undefined;
   private readonly leadMinChars: number;
 
   constructor(config?: SentenceDetectorConfig) {
+    this.onIdleEvents = config?.onIdleEvents;
     this.partialTimeoutMs = config?.partialTimeoutMs ?? 3000;
     this.voiceUserId = config?.userId;
     this.voiceAgentId = config?.agentId;
     this.voiceRoomId = config?.roomId;
+    this.voiceTurnId = config?.turnId;
     this.leadMinChars = config?.leadMinChars ?? DEFAULT_LEAD_MIN_CHARS;
   }
 
@@ -78,6 +85,7 @@ export class SentenceDetector {
       ...(this.voiceUserId ? { userId: this.voiceUserId } : {}),
       ...(this.voiceAgentId ? { agentId: this.voiceAgentId } : {}),
       ...(this.voiceRoomId ? { roomId: this.voiceRoomId } : {}),
+      ...(this.voiceTurnId ? { turnId: this.voiceTurnId } : {}),
     };
   }
 
@@ -187,12 +195,12 @@ export class SentenceDetector {
   }
 
   /**
-   * Single emit chokepoint. Enforces D283 lead-coalescing: while the turn's
+   * Single emit chokepoint. Enforces lead-coalescing: while the turn's
    * first chunk (index 0) is shorter than {@link leadMinChars}, hold it and
    * merge following text in, so the opening TTS request is long enough to
    * mask the next chunk's synthesis latency. A language change or a forced
    * flush (`flushLead`, final) emits whatever is held — we never drop speech
-   * and never merge across languages (D261).
+   * and never merge across languages.
    */
   private pushSentence(
     text: string,
@@ -244,15 +252,19 @@ export class SentenceDetector {
     if (this.partialTimeoutMs > 0) {
       this.timer = setTimeout(() => {
         this.timer = null;
-        const text = this.trailingText.trim() || this.buffer.trim();
-        if (text && text.length >= MIN_SENTENCE_LENGTH) {
-          // Stream stalled — force-flush even a held short opener; we can't
-          // wait indefinitely for the coalescing target to be reached.
+        // Only parsed text is eligible: buffer may hold an incomplete voice
+        // tag, which must survive the pause until the rest arrives.
+        const text = this.trailingText.trim();
+        if (text) {
           this.pushSentence(text, this.trailingLang, false, { flushLead: true });
           this.trailingText = "";
           this.trailingLang = undefined;
-          this.buffer = "";
+        } else if (this.leadBuffer) {
+          this.emitPayload(this.leadBuffer, this.leadLang, false);
+          this.leadBuffer = "";
+          this.leadLang = undefined;
         }
+        if (this.onIdleEvents && this.pendingEvents.length) this.onIdleEvents(this.drain());
       }, this.partialTimeoutMs);
     }
   }

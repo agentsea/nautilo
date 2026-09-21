@@ -12,7 +12,7 @@ import { wrapAnthropicModelForToolSchemas } from "./anthropic-schema";
 import { resolveFireworksKimiK3ServingProfile } from "./serving-profile";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
-import { OpenAIGpt6Completions } from "./openai-compat";
+import { OpenAIGpt6Completions, OpenAIUsageResponses } from "./openai-compat";
 import {
   VeniceChatOpenAICompletions,
   wrapVeniceModelForToolSchemas,
@@ -27,7 +27,7 @@ const MIN_REASONING_HEADROOM_TOKENS = 2048;
 
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14" as const;
 
-/** Default reasoning effort when the operator hasn't set one (D331). */
+/** Default reasoning effort when the operator hasn't set one. */
 const DEFAULT_REASONING_EFFORT = "medium" as const;
 
 const OPAQUE_ROOM_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -115,7 +115,7 @@ function providerFromModelId(modelId: string): string | undefined {
 }
 
 /**
- * D334 — OpenAI-only transport policy: direct `openai:*` reasoning models use
+ * OpenAI-only transport policy: direct `openai:*` reasoning models use
  * the Responses API only when explicitly opted in. Timeout budgets for
  * model-attempt liveness policy is independent of this selection — both Chat
  * Completions and Responses paths share the same reasoning-capability gate for
@@ -174,7 +174,7 @@ function openAICompatibleReasoningModelKwargs(
       // Live-probed 2026-06-18: direct OpenAI Chat Completions rejects
       // `reasoning_effort` when function tools are bound for GPT-5.5:
       // "Please use /v1/responses instead." Keep GPT reasoning-capable for
-      // watchdog budgets, but D334 owns the Responses API migration.
+      // watchdog budgets; the explicit transport policy selects Responses.
       return {};
     default:
       return {};
@@ -270,11 +270,12 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
     }
     base["useResponsesApi"] = true;
     if (options.openAIExplicitPromptCache === true) {
-      // The installed OpenAI SDK types predate explicit breakpoint fields,
-      // while LangChain's Responses adapter deliberately spreads modelKwargs
-      // into the final request. Keep this closed to the D526 mode.
+      // Keep the explicit stable-prefix breakpoint while implicit mode advances
+      // a second cache boundary through eligible conversation and tool history.
+      // LangChain's Responses adapter deliberately spreads modelKwargs into the
+      // final request. Only the cache mode is added here.
       base["modelKwargs"] = {
-        prompt_cache_options: { mode: "explicit" },
+        prompt_cache_options: { mode: "implicit" },
       };
     }
   } else {
@@ -292,6 +293,7 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   const isVenice = options.modelId.toLowerCase().startsWith("venice:");
   const isDirectOpenAI = options.modelId.toLowerCase().startsWith("openai:");
   const llm = new ChatOpenAI({ ...base,
+    ...(useResponsesApi && isDirectOpenAI ? { responses: new OpenAIUsageResponses(base) } : {}),
     ...(!useResponsesApi && options.modelId.toLowerCase().startsWith("openrouter:")
       ? { completions: new OpenRouterReasoningCompletions(base) }
       : !useResponsesApi && isVenice

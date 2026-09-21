@@ -104,9 +104,11 @@ describe("manage_connected_web_operation terminal read projection", () => {
   });
 });
 
-test("D568 direct command schema accepts only semantic snapshot refs and no page HTML", () => {
+test("direct command schema accepts only semantic snapshot refs and no page HTML", () => {
   const base = { operationId: OPERATION_ID, expectedControlEpoch: 2 };
   expect(controlConnectedWebOperationToolSchema.safeParse({ ...base, command: { kind: "click", ref: "e12" } }).success).toBe(true);
+  expect(controlConnectedWebOperationToolSchema.safeParse({ ...base, command: { kind: "press", key: "Enter", ref: "e12" } }).success).toBe(true);
+  expect(controlConnectedWebOperationToolSchema.safeParse({ ...base, command: { kind: "press", key: "Enter", ref: "#search" } }).success).toBe(false);
   expect(controlConnectedWebOperationToolSchema.safeParse({ ...base, command: { kind: "click", ref: "#submit" } }).success).toBe(false);
   expect(controlConnectedWebOperationToolSchema.safeParse({ ...base, command: { kind: "get", what: "html" } }).success).toBe(false);
   expect(controlConnectedWebOperationToolSchema.safeParse({ ...base, command: { kind: "get", what: "attr", ref: "@e2" } }).success).toBe(false);

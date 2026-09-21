@@ -20,7 +20,7 @@ export type KeyStatus =
   | "invalid_key"
   | "unreachable";
 
-export type KeyCategory = "llm" | "llm+embeddings" | "voice" | "search" | "conversion" | "browser";
+export type KeyCategory = "llm" | "llm+embeddings" | "voice" | "search" | "conversion" | "browser" | "decision";
 
 export interface DoctorHintRule {
   condition: (value: string) => boolean;
@@ -125,7 +125,7 @@ export interface CheckResult {
 }
 
 /**
- * M051 (Logto cluster): single MODE_REGISTRY entry as it surfaces to UI / CLI
+ * Logto cluster: single MODE_REGISTRY entry as it surfaces to UI / CLI
  * consumers. `value` is already redacted when appropriate — never the raw
  * env. Callers should not need to know the underlying `redact` flag, but
  * `redacted: true` is exposed for UI affordances like a "show secret" gate.

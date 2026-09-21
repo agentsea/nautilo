@@ -25,7 +25,35 @@ function live(registry: ClientActionBindingRegistry, actorId = "actor-a", surfac
   return { s, id };
 }
 
-describe("D513 client action binding registry", () => {
+describe("client action binding registry", () => {
+  test("speech routing survives one-shot guidance but expires with the original binding", () => {
+    let now = 1000;
+    const registry = new ClientActionBindingRegistry(() => now);
+    const { s, id } = live(registry);
+    const handle = registry.reserve({ clientActionSessionId: id, actorId: "actor-a" })!;
+    registry.bind(handle, "turn-a");
+    expect(registry.inspectTurnSocket("turn-a")).toBe(s);
+    expect(registry.consumeOnce("turn-a")?.socket).toBe(s);
+    expect(registry.consumeOnce("turn-a")).toBeNull();
+    expect(registry.inspectTurnSocket("turn-a")).toBe(s);
+    now += CLIENT_ACTION_BINDING_TTL_MS;
+    expect(registry.inspectTurnSocket("turn-a")).toBeNull();
+  });
+
+  test("consumed speech routes do not survive disconnect or session replacement", () => {
+    const registry = new ClientActionBindingRegistry();
+    const { s, id } = live(registry);
+    const handle = registry.reserve({ clientActionSessionId: id, actorId: "actor-a" })!;
+    registry.bind(handle, "turn-a"); registry.consumeOnce("turn-a");
+    s.close();
+    expect(registry.inspectTurnSocket("turn-a")).toBeNull();
+    live(registry);
+    expect(registry.inspectTurnSocket("turn-a")).toBeNull();
+    const next = registry.reserve({ clientActionSessionId: id, actorId: "actor-a" })!;
+    registry.bind(next, "turn-b"); registry.consumeOnce("turn-b");
+    live(registry);
+    expect(registry.inspectTurnSocket("turn-b")).toBeNull();
+  });
   test("binds immutably once and consumes exactly once", () => {
     const registry = new ClientActionBindingRegistry();
     const { id } = live(registry);

@@ -35,6 +35,7 @@ import {
   modelUsesOpenAIExplicitPromptCache,
   projectPreparedMessagesForModelCache,
 } from "./model-context-cache";
+import { projectSystemMessagesForProvider } from "./provider-system-messages";
 import {
   ModelAttemptSupervisor,
   resolveModelAttemptPolicy,
@@ -43,17 +44,17 @@ import {
 } from "./model-attempt-policy";
 
 /**
- * D429 Phase 4 — explicit fallback-mode representation threaded from Task
+ * explicit fallback-mode representation threaded from Task
  * dispatch through the subagent graph into chat-model invocation.
  *
  * - `"agent_chain"` (default): the existing per-user/per-agent fallback
- *   chain walks normally. Foreground chat and non-exact Task callers stay
- *   here, preserving backwards-compatible behavior.
+ * chain walks normally. Foreground chat and non-exact Task callers stay
+ * here, preserving backwards-compatible behavior.
  * - `"none"`: strict / no-chain mode. An exact Task `model_id` pin MUST NOT
- *   silently execute another model. Every cross-model hop is suppressed
- *   (provider error, context preflight, vision incompatibility, capability
- *   error). Bounded same-model short retries are preserved (they live in
- *   `invokeOnceWithShortRetries`, below the chain-walk seam).
+ * silently execute another model. Every cross-model hop is suppressed
+ * (provider error, context preflight, vision incompatibility, capability
+ * error). Bounded same-model short retries are preserved (they live in
+ * `invokeOnceWithShortRetries`, below the chain-walk seam).
  *
  * No `agent_chain` opt-in escape hatch ships in v1: a strict run cannot widen
  * back into chain behavior, including across checkpoint resume (the field is
@@ -70,12 +71,12 @@ export interface ResolvedForegroundModelControls {
 }
 export type ResolveForegroundModelControls = (canonicalModelId: string) => ResolvedForegroundModelControls | undefined;
 
-/** D429 Phase 4 — convert the Phase-3 `exactModelSelection` job flag into the explicit fallback mode. */
+/** Convert the `exactModelSelection` job flag into the explicit fallback mode. */
 export function modelFallbackModeFromExactSelection(exactModelSelection: boolean): ModelFallbackMode {
   return exactModelSelection ? "none" : "agent_chain";
 }
 
-/** D429 Phase 4 — true when the resolved mode suppresses every cross-model hop. */
+/** true when the resolved mode suppresses every cross-model hop. */
 export function isStrictNoChain(mode: ModelFallbackMode | undefined): boolean {
   return mode === "none";
 }
@@ -93,7 +94,7 @@ export function _setFirstTokenTimeoutMsForTests(ms: number | undefined): void {
 function hasAssistantVisibleOutputForCurrentTurn(agentId: string | null): boolean {
   const turnId = getCurrentTurnId();
   if (!turnId?.trim()) return false;
-  // D421 Phase 4.2 — resolve the per-agent slot so two bots sharing one
+  // resolve the per-agent slot so two bots sharing one
   // human `turnId` cannot read each other's `assistantVisibleOutput`.
   const key = agentId ? turnContextKey(turnId, agentId) : turnId;
   const ctx = getAgentTurnContextByKey(key);
@@ -176,7 +177,7 @@ function shouldRetryWithoutReasoning(classified: ClassifiedError): boolean {
   );
 }
 
-/** @internal D331 — test seam for reasoning-config retry planning. */
+/** @internal Test seam for reasoning-config retry planning. */
 export function planChatModelInvokeRetry(
   classified: ClassifiedError,
   disableReasoningOutput: boolean,
@@ -406,10 +407,10 @@ async function invokeForegroundAttemptWithUsageContext(
 }
 
 /**
- * D141 P3 — emit a `model.fallback` WS event for every hop, regardless
+ * emit a `model.fallback` WS event for every hop, regardless
  * of which of the three hop sites fires it (vision-skip, context-
  * exceeded pre-flight, classified-error post-attempt). Privacy posture
- * matches LD-8: zero echoed content; only catalog IDs + category enum.
+ * echoes no content; it includes only catalog IDs and the category enum.
  *
  * No-op when `laneKey` is null (system tasks / tests with no room
  * context). The fallback walk itself is unaffected — just no WS
@@ -433,16 +434,16 @@ function emitFallbackHop(
 }
 
 /**
- * D141 P2 / LD-1 — walk the user's policy-defined chain.
+ * Walk the user's policy-defined fallback chain.
  *
- * Replaces the pre-D141 `nextFallbackCandidate` which traversed the
+ * Replaces the earlier `nextFallbackCandidate` which traversed the
  * global catalog priority order. The chain is what the user (or
  * per-agent override) authored. If the current model IS in the chain,
  * we walk forward to the next entry. If it ISN'T, we still walk —
  * starting from the head (index 0) — so a recoverable failure on an
  * out-of-chain selected model still falls back to the user's chain.
  *
- * D370 implicit-head: the selected model is always attempt #1. On a
+ * implicit-head: the selected model is always attempt #1. On a
  * recoverable failure, walk the FULL user chain from the top even
  * when the selected model isn't a member of the chain. Dedupe guards
  * against re-attempting the originally-selected model during the walk
@@ -456,9 +457,9 @@ function emitFallbackHop(
  * pre-flight, and the post-error catch.
  *
  * Returns `undefined` when:
- *   - The user has fallback disabled OR an empty chain
- *   - We've walked off the end of the chain
- *   - All remaining chain entries are unhealthy or vision-incompatible
+ * - The user has fallback disabled OR an empty chain
+ * - We've walked off the end of the chain
+ * - All remaining chain entries are unhealthy or vision-incompatible
  */
 function nextInUserChain(
   currentId: string,
@@ -468,7 +469,7 @@ function nextInUserChain(
   initialModelId: string,
   strictNoChain: boolean,
 ): string | undefined {
-  // D429 Phase 4 — strict / no-chain mode suppresses EVERY cross-model hop
+  // strict / no-chain mode suppresses EVERY cross-model hop
   // (vision-skip preflight, context-exceeded preflight, provider failure,
   // capability error). Returning undefined here makes each of the three call
   // sites throw the original error instead of hopping, while same-model short
@@ -478,7 +479,7 @@ function nextInUserChain(
   if (policy.chain.length === 0) return undefined;
 
   const idx = policy.chain.indexOf(currentId);
-  // D370 implicit-head: out-of-chain selected model → begin the walk
+  // implicit-head: out-of-chain selected model → begin the walk
   // at the head of the chain (index 0) instead of returning undefined.
   // In-chain selected model → walk forward from idx + 1 (unchanged).
   const startIdx = idx === -1 ? 0 : idx + 1;
@@ -486,7 +487,7 @@ function nextInUserChain(
   for (let i = startIdx; i < policy.chain.length; i++) {
     const candidate = policy.chain[i];
     if (!candidate) continue;
-    // D370 implicit-head dedupe: never re-attempt the originally
+    // implicit-head dedupe: never re-attempt the originally
     // selected model during the walk. The selected model was attempt
     // #1; it just failed (or was skipped) and must not be revisited.
     if (candidate === initialModelId) {
@@ -520,13 +521,13 @@ function nextInUserChain(
 }
 
 /**
- * D141 P2 wire-in. Caller threads `userId` + optional `agentId` so the
+ * wire-in. Caller threads `userId` + optional `agentId` so the
  * resolver can read the right fallback policy at invocation time. The
- * chat path (agent.ts) always has both; system-task callers (LD-2)
+ * chat path (`agent.ts`) always has both; system-task callers
  * should not call this function; internal roles resolve their own shared
  * candidate policy and fail truthfully when none is runnable.
  *
- * Pre-D141 callers that omit user/agent will fail the typecheck — this
+ * Earlier callers that omit user or agent identity fail the typecheck; this
  * is intentional. The single legitimate caller is `agent.ts`, which
  * already has `state.userId` and `state.agentId` in scope.
  */
@@ -537,7 +538,7 @@ export async function invokeChatModelWithFallback(
   userId: string,
   agentId: string | null,
   /**
-   * D141 P3 — used by the runtime layer to scope `model.fallback`
+   * used by the runtime layer to scope `model.fallback`
    * events to the right room. Callers without a room context (system
    * tasks, tests) pass `null` and no WS events are emitted; the
    * fallback behavior is unchanged.
@@ -547,15 +548,15 @@ export async function invokeChatModelWithFallback(
   invokeOptions?: {
     /** Global force: when false, reasoning output is off for every hop (e.g. conductor). */
     reasoningOutput?: boolean;
-    /** Per-model operator override map (D331). Resolved per fallback hop; absent key ⇒ ON. */
+    /** Per-model operator override map . Resolved per fallback hop; absent key ⇒ ON. */
     reasoningOverrides?: Record<string, boolean>;
     /**
-     * D334 — opt direct `openai:*` reasoning models into the Responses API.
+     * opt direct `openai:*` reasoning models into the Responses API.
      * Off by default; conductor, health checks, and utility models do not pass this.
      */
     useOpenAIResponsesApi?: boolean;
     /**
-     * D429 Phase 4 — explicit fallback mode. `"none"` (strict / no-chain)
+     * explicit fallback mode. `"none"` (strict / no-chain)
      * suppresses every cross-model hop; `"agent_chain"` (default) preserves
      * the existing per-user/per-agent fallback chain. Foreground chat and
      * non-exact Task callers omit this (or pass `"agent_chain"`) so default
@@ -570,11 +571,11 @@ export async function invokeChatModelWithFallback(
     firstProgressTimeoutMs?: number;
     /** Concurrent tool-free advice uses a local supervisor, never the auditor's ambient turn sink. */
     isolatedProgress?: boolean;
-    /** D462 server resolver, called afresh for every candidate attempt. */
+    /** server resolver, called afresh for every candidate attempt. */
     resolveForegroundControls?: ResolveForegroundModelControls;
-    /** D526 content-free boundary used to project cache metadata per attempt. */
+    /** content-free boundary used to project cache metadata per attempt. */
     preparedStableSystemPrefixLength?: number;
-    /** D526 opaque Room UUID used only for provider routing affinity. */
+    /** opaque Room UUID used only for provider routing affinity. */
     providerCacheRoomId?: string | null;
     /** Restricted research only: recover a rejected context on this same model. */
     recoverContext?: RecoverPreparedContext;
@@ -594,7 +595,7 @@ export async function invokeChatModelWithFallback(
   const attemptedModels: string[] = [];
   const needsVision = messagesContainImageInputs(messages);
   const requiresTools = tools.length > 0;
-  // D331 — resolve reasoning output PER hop: a per-model override map (foreground)
+  // resolve reasoning output PER hop: a per-model override map (foreground)
   // wins per `currentModelId`; otherwise the global boolean (default ON). This
   // ensures a fallback from an opted-out model A to model B honors B's setting.
   const resolveReasoningForModel = (modelId: string): boolean => {
@@ -667,7 +668,7 @@ export async function invokeChatModelWithFallback(
       log(`[nautilo/agent] Current model ${currentModelId} is text-only but thread has images; consulting user chain for vision-capable hop`);
       const skipTo = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain);
       if (!skipTo) throw new Error(`No vision-capable models in fallback chain after ${currentModelId}`);
-      // D141 P3 — vision-incompatibility classifies as a capability
+      // vision-incompatibility classifies as a capability
       // mismatch (FriendlyErrorCategory: bad_request), same posture
       // as `messageImpliesCapabilityMismatch` returning bad_request.
       emitFallbackHop(currentModelId, skipTo, "bad_request", laneKey);
@@ -677,9 +678,13 @@ export async function invokeChatModelWithFallback(
 
     attemptedModels.push(currentModelId);
 
+    // Preserve chronological developer authority for direct OpenAI while
+    // enforcing the single-leading-system contract again for every fallback.
+    const providerMessages = projectSystemMessagesForProvider(messages, currentModelId).messages;
+
     let maxTokens: number;
     try {
-      maxTokens = await resolveCompletionBudget(currentModelId, messages, tools);
+      maxTokens = await resolveCompletionBudget(currentModelId, providerMessages, tools);
     } catch (error) {
       if (isPreparedContextExceededError(error)) {
         if (await recoverContext("preflight")) continue;
@@ -689,7 +694,7 @@ export async function invokeChatModelWithFallback(
         log(`[nautilo/agent] Model ${currentModelId} cannot fit prepared messages; consulting user chain for fallback`);
         const next = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain);
         if (!next) throw error;
-        // D141 P3 — preflight token budget rejection is the
+        // preflight token budget rejection is the
         // context_exceeded user-visible category (same mapping as
         // `mapCategory("TOKEN_LIMIT")`).
         emitFallbackHop(currentModelId, next, "context_exceeded", laneKey);
@@ -740,11 +745,11 @@ export async function invokeChatModelWithFallback(
         ...(fireworksSessionAffinityId ? { fireworksSessionAffinityId } : {}),
       });
       const modelWithTools = model.bindTools!(tools);
-      // D526 — project the stable cache breakpoint for the provider that is
+      // project the stable cache breakpoint for the provider that is
       // actually running. Room controls and fallback can change the selected
       // provider after pre-model prepared this byte-identical prompt.
       const attemptMessages = projectPreparedMessagesForModelCache(
-        messages,
+        providerMessages,
         currentModelId,
         stableSystemPrefixLength,
         { openAIExplicitPromptCache },
@@ -828,15 +833,15 @@ export async function invokeChatModelWithFallback(
       const nextModelId = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain);
       if (!nextModelId) {
         // No more chain entries (or policy disabled). Friendly-error
-        // translator at runtime/job.ts:LD-7 picks up the throw and
-        // converts to the bracketed `[MDL00x]` chat message (LD-9).
+        // translator in runtime/job.ts picks up the throw and converts it to
+        // the bracketed `[MDL00x]` chat message.
         throw error;
       }
-      // D141 P3 — surface the hop to the user via the room-scoped
+      // surface the hop to the user via the room-scoped
       // `model.fallback` WS event so the workbench can render the
       // inline "X failed — trying Y" notice on the in-flight bubble.
       // `mapCategory` collapses the 8-bucket internal enum into the
-      // 7-bucket user-visible enum (same one used by LD-9 codes).
+      // Seven-bucket user-visible enum shared with the bracketed error codes.
       emitFallbackHop(currentModelId, nextModelId, mapCategory(classified.category), laneKey);
       log(`[nautilo/agent] Falling back from ${currentModelId} to ${nextModelId} (user chain)`);
       currentModelId = nextModelId;

@@ -5,7 +5,7 @@ import {
   toWire,
   type ServerModelsRouteDeps,
 } from "../../src/routes/server-models";
-import { resolveRetainedModels } from "@nautilo/agent";
+import { configureRuntimeModelCatalog, resetRuntimeModelCatalog, listResolvedCatalogModels, resolveRetainedModels } from "@nautilo/agent";
 import {
   __resetServerModelConfigCache,
   primeServerModelConfigCache,
@@ -88,7 +88,7 @@ const modelConfig: ResolvedServerModelConfig = {
   embeddingModel: null,
   imageModel: null,
   musicModel: null,
-  videoModel: null,
+  videoModel: null, speechModel: null,
   fallbackChain: ["openai:gpt-5.4-mini"],
   reasoningOutput: { [KNOWN_MODEL]: true },
   reasoningPolicy: { defaultEffort: null, overrides: {} },
@@ -105,7 +105,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       embeddingModel: null,
       imageModel: null,
       musicModel: null,
-      videoModel: null,
+      videoModel: null, speechModel: null,
       fallbackChain: [KNOWN_MODEL],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: {} },
@@ -120,7 +120,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         embeddingModel: null,
         imageModel: null,
         musicModel: null,
-        videoModel: null,
+        videoModel: null, speechModel: null,
         fallbackChain: [KNOWN_MODEL],
         reasoningOutput: { [KNOWN_MODEL]: false },
         reasoningPolicy: { defaultEffort: null, overrides: {} },
@@ -205,7 +205,7 @@ describe("server-models toWire", () => {
       embeddingModel: null,
       imageModel: null,
       musicModel: null,
-      videoModel: null,
+      videoModel: null, speechModel: null,
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
@@ -219,7 +219,7 @@ describe("server-models toWire", () => {
       embeddingModel: null,
       imageModel: null,
       musicModel: null,
-      videoModel: null,
+      videoModel: null, speechModel: null,
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
@@ -261,6 +261,67 @@ describe("server-models toWire", () => {
 });
 
 describe("server-models route authorization, partial writes, and audit", () => {
+  test("catalog visibility uses read permission and returns no metadata to unauthenticated viewers", async () => {
+    const call = routeHarness({ getCapabilities: async () => [] });
+    expect(await call("GET", requestBase)).toEqual({ status: 401, body: { error: "Authentication required" } });
+    expect(await call("GET", { ...requestBase, sessionUserId: "viewer" }))
+      .toEqual({ status: 403, body: { error: "admin only" } });
+  });
+
+  test("catalog inventory includes decision models and live missing-credential reasons without admitting them for chat", async () => {
+    const previous = process.env["OPENROUTER_API_KEY"];
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    try {
+      delete process.env["OPENROUTER_API_KEY"];
+      const call = routeHarness({
+        getCapabilities: async () => ["read_server_settings"],
+        getDb: () => ({}) as never,
+        getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+        getConfig: async () => modelConfig,
+        refreshConfigCache: async () => null,
+        getEffectiveEmbeddingModel: () => null,
+        getActiveEmbeddingSelection: () => null,
+        listMediaModels,
+        getEffectiveMediaModel: () => null,
+      });
+      const read = async () => {
+        const result = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+        expect(result.status).toBe(200);
+        return (result.body as { catalogModels: Array<Record<string, unknown>> }).catalogModels;
+      };
+      const rows = await read();
+      expect(rows.map((row) => row["id"]))
+        .toEqual(listResolvedCatalogModels({ includeUnavailable: true }).map((row) => row.id));
+      const decision = rows.find((row) => row["id"] === "openrouter:typesafe/jev-1.13");
+      expect(decision).toMatchObject({
+        provider: "openrouter", workload: "decision", availability: "missing_credentials",
+        unavailableReason: "OpenRouter credential is not configured",
+        decision: { operations: ["choice", "noul", "score"] },
+        features: { visualGrounding: null },
+      });
+      expect(Object.keys(decision!).sort()).toEqual([
+        "id", "displayName", "provider", "workload", "availability", "unavailableReason",
+        "input", "output", "features", "decision",
+      ].sort());
+      const grounded = listResolvedCatalogModels({ includeUnavailable: true }).find((row) => row.features.visualGrounding === true);
+      expect(grounded).toBeDefined();
+      expect(rows.find((row) => row["id"] === grounded!.id)).toMatchObject({ features: { visualGrounding: true } });
+
+      process.env["OPENROUTER_API_KEY"] = "synthetic-catalog-test";
+      expect((await read()).find((row) => row["id"] === decision!["id"]))
+        .toMatchObject({ availability: "selectable" });
+      expect(resolveRetainedModels([String(decision!["id"])], { purpose: "chat-tools" })[0]?.availability)
+        .not.toBe("selectable");
+      delete process.env["OPENROUTER_API_KEY"];
+      expect((await read()).find((row) => row["id"] === decision!["id"]))
+        .toMatchObject({ availability: "missing_credentials" });
+    } finally {
+      if (previous === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = previous;
+      resetRuntimeModelCatalog();
+    }
+  });
+
   test("requires manage_server_operations even when the caller is not an Agent owner", async () => {
     const call = routeHarness({
       getCapabilities: async () => ["read_server_settings"],
@@ -292,7 +353,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           embeddingModel: null,
           imageModel: null,
           musicModel: null,
-          videoModel: null,
+          videoModel: null, speechModel: null,
           fallbackChain: patch.fallbackChain ?? modelConfig.fallbackChain,
           reasoningOutput: patch.reasoningOutput ?? modelConfig.reasoningOutput,
           reasoningPolicy: patch.reasoningPolicy ?? modelConfig.reasoningPolicy,
@@ -353,7 +414,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         embeddingModel: null,
         imageModel: null,
         musicModel: null,
-        videoModel: null,
+        videoModel: null, speechModel: null,
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
@@ -451,7 +512,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         embeddingModel: null,
         imageModel: null,
         musicModel: null,
-        videoModel: null,
+        videoModel: null, speechModel: null,
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
@@ -636,5 +697,36 @@ test("media GET returns supported options and effective selections", async () =>
     effectiveImageModel: "venice:gpt-image-2",
     effectiveMusicModel: "venice:sonilo-v1-1-music",
     effectiveVideoModel: "venice:seedance-2-5-text-to-video-basic",
+  } });
+});
+
+test("speech selection validates catalog membership and credentials", () => {
+  const previous = process.env["ELEVENLABS_API_KEY"];
+  configureRuntimeModelCatalog({ catalogPointerUrl: null });
+  try {
+    process.env["ELEVENLABS_API_KEY"] = "synthetic-test-key";
+    expect(parseUpdateBodyForTests({ speechModel: "elevenlabs:eleven_v3" })).toEqual({ ok: true, patch: { speechModel: "elevenlabs:eleven_v3" } });
+    expect(parseUpdateBodyForTests({ speechModel: null })).toEqual({ ok: true, patch: { speechModel: null } });
+    expect(parseUpdateBodyForTests({ speechModel: "anthropic:claude-sonnet-4-6" }).ok).toBe(false);
+    expect(parseUpdateBodyForTests({ speechModel: "elevenlabs:unknown" }).ok).toBe(false);
+    delete process.env["ELEVENLABS_API_KEY"];
+    expect(parseUpdateBodyForTests({ speechModel: "elevenlabs:eleven_v3" }).ok).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env["ELEVENLABS_API_KEY"]; else process.env["ELEVENLABS_API_KEY"] = previous;
+    resetRuntimeModelCatalog();
+  }
+});
+
+test("speech GET reports the active runtime model when saved configuration refresh fails", async () => {
+  const call = routeHarness({
+    getCapabilities: async () => ["read_server_settings"],
+    getDb: () => ({}) as never,
+    getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+    getConfig: async () => ({ ...modelConfig, speechModel: "elevenlabs:eleven_v3" }),
+    refreshConfigCache: async () => null,
+    getEffectiveSpeechModel: () => "elevenlabs:eleven_v3_conversational",
+  });
+  expect(await call("GET", { ...requestBase, sessionUserId: "viewer" })).toMatchObject({ status: 200, body: {
+    speechModel: "elevenlabs:eleven_v3", effectiveSpeechModel: "elevenlabs:eleven_v3_conversational",
   } });
 });

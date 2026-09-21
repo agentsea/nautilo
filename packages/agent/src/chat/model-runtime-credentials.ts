@@ -92,6 +92,8 @@ export function modelHasRunnableCredentials(
   const prefix = colon >= 0 ? id.slice(0, colon).toLowerCase() : inferLegacyProvider(id);
 
   switch (prefix) {
+    case "typesafe":
+      return !!trimEnv(env, "TYPESAFE_API_KEY");
     case "anthropic":
     case "openai":
     case "openrouter":

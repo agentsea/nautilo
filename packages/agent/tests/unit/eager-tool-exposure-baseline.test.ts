@@ -22,6 +22,7 @@ beforeAll(() => {
     officeCliAvailable: () => true,
     mediaGenerationAvailable: () => true,
     publicBrowserUseAvailable: () => true,
+    decisionModelsAvailable: () => true,
   });
 });
 
@@ -38,7 +39,7 @@ type Fixture = {
 };
 
 function eagerBaselineFor({ actorRole, toolPolicy, relayCapabilities, context }: Fixture): ToolExposureTelemetry {
-  const toolContext = { actorRole, ...context };
+  const toolContext = { actorRole, turnId: "synthetic-baseline", fullEncryptionOnly: false, ...context };
   const eligible = catalog.getFiltered(toolPolicy, relayCapabilities, { context: toolContext });
   const tools = catalog.getToolsForActor(toolContext, toolPolicy, relayCapabilities);
   return measureProgressiveToolExposure({
@@ -87,7 +88,7 @@ function fullRelayCapabilities(): Record<string, boolean> {
   return capabilities;
 }
 
-describe("D419 progressive tool exposure telemetry", () => {
+describe("progressive tool exposure telemetry", () => {
   test("measures aggregate-only eager baseline contexts", () => {
     const guest = eagerBaselineFor({
       actorRole: "guest",
@@ -127,8 +128,7 @@ describe("D419 progressive tool exposure telemetry", () => {
       expandToolFamilies(["filesystem"]),
     );
 
-    // This is the CI core-growth gate. The reviewed target was 14–18, but D504
-    // promoted all 21 embedded-browser tools into the reviewed baseline.
+    // The core-growth gate includes all 21 embedded-browser tools.
     // The static baseline is 48, including run_website_task, public browse_web and the connected-website reader
     // and its immediately available supervision and direct-control tools.
     // Computer Use core tools are supplied only by

@@ -1,3 +1,6 @@
+import { getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "@nautilo/agent";
+import { dialogueSpeechResponse } from "../realtime/dialogue-speech";
+import { splitSpeechText } from "../realtime/speech-text";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -12,17 +15,15 @@ import {
   ELEVENLABS_CURATED_VOICE_IDS,
   curatedVoiceDisplayNameForId,
   fetchElevenLabsCatalog,
-  voicePreviewPath,
   voicePreviewPathForCustomText,
   type VoiceCatalogEntry,
 } from "@nautilo/voice";
 import { isCloudManagedDeployment } from "@nautilo/config-guard";
 import {
-  estimateElevenLabsV3TtsUsd,
   safelyRecordProviderCost,
 } from "../costs/provider-cost-recorder";
 
-/** Featured customization floor — six voices spanning EN / ES / FR / DE / JA (D215). */
+/** Featured customization floor — six voices spanning EN / ES / FR / DE / JA. */
 const FEATURED_CUSTOMIZATION_VOICE_IDS: Record<string, string> = {
   amy: "OZxMHsGaBmV5pjMIDIn0",
   jessica: ELEVENLABS_CURATED_VOICE_IDS["jessica"]!,
@@ -88,18 +89,17 @@ const LANGUAGE_COUNT_CONCURRENCY = 8;
 const COMPATIBLE_CATALOG_SCAN_PAGE_SIZE = MAX_CATALOG_PAGE_SIZE;
 const COMPATIBLE_CATALOG_MAX_UPSTREAM_PAGES_PER_REQUEST = 25;
 const VOICE_CATALOG_CACHE_PROVIDER = "elevenlabs";
-// D261: metadata compatibility semantics changed. `verified_languages` is now
-// a badge signal, not an exclusion filter, so old d229-v1 cache rows contain
+// metadata compatibility semantics changed. `verified_languages` is now
+// a badge signal, not an exclusion filter, so older cache rows contain
 // under-populated result sets (e.g. Spanish female = only 3 v3-verified voices).
-const VOICE_CATALOG_CACHE_SCHEMA_VERSION = "d465-v4-featured-amy";
+const VOICE_CATALOG_CACHE_SCHEMA_VERSION = "voice-reference-languages-v5";
 const PREVIEW_RATE_WINDOW_MS = 60_000;
 const PREVIEW_RATE_MAX = 20;
-const EXPRESSIVE_MODEL_IDS = new Set(["eleven_v3", "eleven_v4", "eleven_v4_hq"]);
 
 /**
- * Versioned audition line for preview cache invalidation (ISSUE-008 Phase 2).
+ * Versioned audition line for preview cache invalidation.
  *
- * Audition script bumped 2026-04-25 (D091): the previous line led
+ * Audition script bumped 2026-04-25: the previous line led
  * with a baked-in assistant name which presumes a specific identity — but the user
  * picks their Genie's name during onboarding. The new line is name-neutral so the preview works for
  * every voice across every user without baking in someone else's
@@ -160,8 +160,8 @@ const compatibleCatalogInflight = new Map<string, Promise<CompatibleCatalogCache
 const languageGroupInflight = new Map<string, Promise<CatalogLanguageGroup[]>>();
 const compatibleCatalogRefreshInflight = new Map<string, Promise<void>>();
 const languageGroupRefreshInflight = new Map<string, Promise<void>>();
-const elevenV3LanguageCache = new Map<string, ElevenLabsModelLanguageCache>();
-const elevenV3LanguageInflight = new Map<string, Promise<Set<string>>>();
+const providerLanguageCache = new Map<string, ElevenLabsModelLanguageCache>();
+const providerLanguageInflight = new Map<string, Promise<Set<string>>>();
 const previewTimestamps: number[] = [];
 
 /**
@@ -324,7 +324,7 @@ const UNKNOWN_LANGUAGE_LABEL = "Unknown language";
 
 /** Whether a shared voice itself advertises expressive emotion support. */
 export function isEmotionCompatibleVoice(voice: ElevenLabsSharedVoiceRaw): boolean {
-  // D261 field report: ElevenLabs shared-catalog metadata is not a reliable
+  //  field report: ElevenLabs shared-catalog metadata is not a reliable
   // hard gate for `eleven_v3` compatibility. Beatriz (gJlzF5JxsCvM5hQAoRyD)
   // does not list `eleven_v3` in `verified_languages`, but direct synthesis
   // with model_id=eleven_v3 succeeds and `[laughs]` is interpreted. Treat
@@ -351,22 +351,22 @@ function normalizeVerifiedLanguages(
   }));
 }
 
-function firstV3VerifiedLanguage(
+function firstVerifiedLanguage(
   raw: ElevenLabsSharedVoiceRaw["verified_languages"],
 ): CatalogVerifiedLanguage | null {
-  return normalizeVerifiedLanguages(raw).find((entry) => EXPRESSIVE_MODEL_IDS.has(entry.modelId)) ?? null;
+  return normalizeVerifiedLanguages(raw)[0] ?? null;
 }
 
 /** Map a raw ElevenLabs shared voice into the stable catalog shape. */
 function normalizeSharedVoice(voice: ElevenLabsSharedVoiceRaw): CatalogVoice {
-  const verifiedV3 = firstV3VerifiedLanguage(voice.verified_languages);
-  const language = (voice.language ?? verifiedV3?.language ?? "").trim() || "unknown";
-  const locale = voice.locale ?? verifiedV3?.locale ?? null;
+  const verifiedReference = firstVerifiedLanguage(voice.verified_languages);
+  const language = (voice.language ?? verifiedReference?.language ?? "").trim() || "unknown";
+  const locale = voice.locale ?? verifiedReference?.locale ?? null;
   const canonicalCuratedName = curatedVoiceDisplayNameForId(voice.voice_id);
   return {
     voiceId: voice.voice_id,
     name: canonicalCuratedName ?? voice.name,
-    accent: voice.accent ?? verifiedV3?.accent ?? "",
+    accent: voice.accent ?? verifiedReference?.accent ?? "",
     gender: voice.gender ?? "",
     age: voice.age ?? "",
     descriptive: voice.descriptive ?? "",
@@ -374,7 +374,7 @@ function normalizeSharedVoice(voice: ElevenLabsSharedVoiceRaw): CatalogVoice {
     language,
     locale,
     languageLabel: catalogLanguageLabel(language),
-    previewUrl: voice.preview_url ?? verifiedV3?.previewUrl ?? null,
+    previewUrl: voice.preview_url ?? verifiedReference?.previewUrl ?? null,
     verifiedLanguages: normalizeVerifiedLanguages(voice.verified_languages),
     source: CURATED_VOICE_ID_SET.has(voice.voice_id) ? "curated" : "provider",
   };
@@ -536,14 +536,14 @@ async function fetchSharedVoicesPage(
   };
 }
 
-async function fetchElevenV3Languages(apiKey: string): Promise<Set<string>> {
+async function fetchProviderLanguages(apiKey: string): Promise<Set<string>> {
   const fingerprint = providerAccountFingerprint(apiKey);
   const now = Date.now();
-  const cached = elevenV3LanguageCache.get(fingerprint);
+  const cached = providerLanguageCache.get(fingerprint);
   if (cached && cached.expiresAt > now) {
     return cached.languages;
   }
-  const inflight = elevenV3LanguageInflight.get(fingerprint);
+  const inflight = providerLanguageInflight.get(fingerprint);
   if (inflight) return inflight;
 
   const promise = (async () => {
@@ -551,29 +551,29 @@ async function fetchElevenV3Languages(apiKey: string): Promise<Set<string>> {
       headers: { "xi-api-key": apiKey },
     });
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`ElevenLabs models ${res.status}: ${body.slice(0, 200)}`);
+      await res.body?.cancel();
+      throw new Error(`ElevenLabs models ${res.status}`);
     }
     const models = (await res.json()) as ElevenLabsModelRaw[];
-    const elevenV3 = models.find(
-      (model) => model.model_id === "eleven_v3" && model.can_do_text_to_speech !== false,
-    );
+    // These are discovery categories, not a selected-model capability claim.
+    // Provider reference samples can use other models; generated auditions use
+    // the exact server model and expose unsupported combinations truthfully.
     const languages = new Set(
-      (elevenV3?.languages ?? [])
+      models.filter(model => model.can_do_text_to_speech !== false).flatMap(model => model.languages ?? [])
         .map((language) => normalizeLanguageCode(language.language_id))
         .filter((language): language is string => language !== null),
     );
     if (languages.size === 0) {
-      throw new Error("ElevenLabs models response did not include eleven_v3 languages");
+      throw new Error("ElevenLabs models response did not include reference languages");
     }
-    elevenV3LanguageCache.set(fingerprint, { languages, expiresAt: Date.now() + ELEVENLABS_MODELS_TTL_MS });
+    providerLanguageCache.set(fingerprint, { languages, expiresAt: Date.now() + ELEVENLABS_MODELS_TTL_MS });
     return languages;
   })();
-  elevenV3LanguageInflight.set(fingerprint, promise);
+  providerLanguageInflight.set(fingerprint, promise);
   try {
     return await promise;
   } finally {
-    if (elevenV3LanguageInflight.get(fingerprint) === promise) elevenV3LanguageInflight.delete(fingerprint);
+    if (providerLanguageInflight.get(fingerprint) === promise) providerLanguageInflight.delete(fingerprint);
   }
 }
 
@@ -620,8 +620,8 @@ async function fetchLanguageGroupsWithCounts(
   if (inflight) return inflight;
 
   const promise = (async () => {
-    const elevenV3Languages = await fetchElevenV3Languages(apiKey);
-    const languages = [...elevenV3Languages].sort((a, b) => {
+    const providerLanguages = await fetchProviderLanguages(apiKey);
+    const languages = [...providerLanguages].sort((a, b) => {
       const rankDiff =
         languageGroupSortRank({ language: a, locale: null, label: "", count: 0 }) -
         languageGroupSortRank({ language: b, locale: null, label: "", count: 0 });
@@ -696,8 +696,8 @@ function refreshLanguageGroupsCache(
   if (languageGroupRefreshInflight.has(memoryKey)) return;
   const startedGeneration = catalogCacheGeneration;
   const promise = (async () => {
-    const elevenV3Languages = await fetchElevenV3Languages(apiKey);
-    const languages = [...elevenV3Languages].sort((a, b) => {
+    const providerLanguages = await fetchProviderLanguages(apiKey);
+    const languages = [...providerLanguages].sort((a, b) => {
       const rankDiff =
         languageGroupSortRank({ language: a, locale: null, label: "", count: 0 }) -
         languageGroupSortRank({ language: b, locale: null, label: "", count: 0 });
@@ -775,7 +775,7 @@ export async function clearSharedCatalogCacheForTests(): Promise<void> {
       ...compatibleCatalogRefreshInflight.values(),
       ...languageGroupInflight.values(),
       ...languageGroupRefreshInflight.values(),
-      ...elevenV3LanguageInflight.values(),
+      ...providerLanguageInflight.values(),
     ];
     if (active.length === 0) break;
     await Promise.allSettled(active);
@@ -787,8 +787,8 @@ export async function clearSharedCatalogCacheForTests(): Promise<void> {
   languageGroupInflight.clear();
   compatibleCatalogRefreshInflight.clear();
   languageGroupRefreshInflight.clear();
-  elevenV3LanguageCache.clear();
-  elevenV3LanguageInflight.clear();
+  providerLanguageCache.clear();
+  providerLanguageInflight.clear();
 }
 
 async function scanCompatibleCatalogEntry(
@@ -972,11 +972,10 @@ function refreshCompatibleCatalogCache(
   compatibleCatalogRefreshInflight.set(memoryKey, promise);
 }
 
-// D049: voice preview cache lives under data/voice-previews/ (internal
+// voice preview cache lives under data/voice-previews/ (internal
 // zone, never exposed to the relay). Filename conventions live in
 // @nautilo/voice/preview-path so voices.ts and find-voice.ts share one
 // source of truth.
-const previewFilePath = voicePreviewPath;
 const previewFilePathForCustom = voicePreviewPathForCustomText;
 
 function curatedPayload(): VoiceCustomizationHydrationResponse["curated"] {
@@ -997,25 +996,20 @@ function curatedPayload(): VoiceCustomizationHydrationResponse["curated"] {
   });
 }
 
-async function synthesizePreviewMp3(apiKey: string, voiceId: string, text: string): Promise<Buffer> {
-  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "xi-api-key": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text,
-      model_id: "eleven_v3",
-      voice_settings: VOICE_SETTINGS,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`ElevenLabs TTS ${res.status}: ${body.slice(0, 200)}`);
+async function synthesizePreviewMp3(apiKey: string, voiceId: string, text: string, model: SpeechModel): Promise<Buffer> {
+  const buffers: Buffer[] = [];
+  for (const part of splitSpeechText(text, model.speech.maxInputCharacters)) {
+    const res = model.speech.transport === "elevenlabs-dialogue-http"
+      ? await dialogueSpeechResponse({ text: part, voiceId, model: model.providerModelId, format: "mp3_44100_128", apiKey,
+        signal: new AbortController().signal, onSubmitted() {} })
+      : await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`, {
+        method: "POST", headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: part, model_id: model.providerModelId, voice_settings: VOICE_SETTINGS }),
+      });
+    if (!res.ok) { await res.body?.cancel(); throw new Error("Speech preview provider unavailable"); }
+    buffers.push(Buffer.from(await res.arrayBuffer()));
   }
-  return Buffer.from(await res.arrayBuffer());
+  return Buffer.concat(buffers);
 }
 
 export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): void {
@@ -1024,7 +1018,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
     const curated = curatedPayload();
 
-    // D510: remote customization needs the guided curated floor and an
+    // remote customization needs the guided curated floor and an
     // optional-voice capability, but must never enumerate provider-account
     // voices or call ElevenLabs merely to hydrate that screen.
     if (!requestAllowsOwnerOrLoopback(request)) {
@@ -1192,11 +1186,11 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
       : undefined;
     const customText = typeof raw === "string" ? raw.trim() : "";
     const textToSpeak =
-      customText.length > 0 ? customText.slice(0, 2500) : AUDITION_SCRIPT_V2;
-    const path =
-      customText.length > 0 ?
-        previewFilePathForCustom(voiceId, textToSpeak)
-      : previewFilePath(voiceId);
+      customText.length > 0 ? customText : AUDITION_SCRIPT_V2;
+    let model: SpeechModel;
+    try { model = getServerSpeechModel(); }
+    catch { return reply.code(503).send({ error: "The server speech model is unavailable." }); }
+    const path = previewFilePathForCustom(voiceId, JSON.stringify(["speech-preview-v1", model.id, model.providerModelId, model.speech.transport, "mp3_44100_128", VOICE_SETTINGS, textToSpeak]));
 
     if (existsSync(path)) {
       reply.header("Content-Type", "audio/mpeg");
@@ -1210,13 +1204,13 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
       // which ensureDirectoryTree() creates on boot — the mkdir is
       // cheap insurance in case the zone was deleted at runtime.
       await mkdir(dirname(path), { recursive: true });
-      const buf = await synthesizePreviewMp3(apiKey, voiceId, textToSpeak);
+      const buf = await synthesizePreviewMp3(apiKey, voiceId, textToSpeak, model);
       await safelyRecordProviderCost({
         identity: `elevenlabs:voice-preview:${randomUUID()}`,
         userId: request.sessionUserId,
         provider: "elevenlabs",
         operation: "voice_preview",
-        estimatedCostUsd: estimateElevenLabsV3TtsUsd(textToSpeak),
+        estimatedCostUsd: estimateSpeechCostUsd(textToSpeak, model),
         evidenceState: "estimated",
       });
       await writeFile(path, buf);
