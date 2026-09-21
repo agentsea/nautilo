@@ -37,6 +37,33 @@ export const BROWSER_TOOLS = [
 
 export type BrowserToolName = (typeof BROWSER_TOOLS)[number];
 
+export interface ParsedAgentBrowserSnapshot {
+  readonly snapshot: string;
+  readonly refs: Record<string, { readonly role: string; readonly name: string }>;
+  readonly pageUrl: string;
+}
+
+/** Parse the structured snapshot envelope used by the embedded Browser relay. */
+export function parseAgentBrowserSnapshot(stdout: string): ParsedAgentBrowserSnapshot {
+  const envelope: unknown = JSON.parse(stdout);
+  const object = (value: unknown): Record<string, unknown> | null => value !== null
+    && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const response = object(envelope);
+  const data = response?.["success"] === true ? object(response["data"]) : null;
+  const rawRefs = object(data?.["refs"]);
+  if (typeof data?.["snapshot"] !== "string" || typeof data["origin"] !== "string" || !rawRefs) {
+    throw new Error("Invalid agent-browser snapshot envelope");
+  }
+  const refs: ParsedAgentBrowserSnapshot["refs"] = {};
+  for (const [key, raw] of Object.entries(rawRefs).sort(([a], [b]) => a.localeCompare(b))) {
+    const ref = object(raw);
+    if (!/^e\d+$/.test(key) || typeof ref?.["role"] !== "string" || !ref["role"].trim()
+      || typeof ref["name"] !== "string") throw new Error("Invalid agent-browser reference");
+    refs[key] = { role: ref["role"], name: ref["name"] };
+  }
+  return { snapshot: data["snapshot"], refs, pageUrl: new URL(data["origin"]).href };
+}
+
 export function isBrowserTool(name: string): name is BrowserToolName {
   return (BROWSER_TOOLS as readonly string[]).includes(name);
 }

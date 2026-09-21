@@ -555,7 +555,9 @@ export {
   browserCdpArgvPrefix,
   browserArgvPrefix,
   browserImageCoordsToCss,
+  parseAgentBrowserSnapshot,
   BROWSER_EMPTY_DOM_TEXT_HINT,
+  type ParsedAgentBrowserSnapshot,
   type BrowserToolName,
 } from "./browser";
 export {

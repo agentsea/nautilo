@@ -11,9 +11,44 @@ import {
   browserCdpArgvPrefix,
   browserArgvPrefix,
   browserToolMayMutate,
+  parseAgentBrowserSnapshot,
   isBrowserTool,
   BROWSER_TOOLS,
 } from "./browser";
+
+describe("parseAgentBrowserSnapshot", () => {
+  it("parses and sorts the same structured envelope used by browser_snapshot", () => {
+    const parsed = parseAgentBrowserSnapshot(JSON.stringify({
+      success: true,
+      data: {
+        origin: "https://example.com/path",
+        snapshot: "- button \"Continue\" [ref=e2]",
+        refs: {
+          e2: { role: "button", name: "Continue" },
+          e1: { role: "heading", name: "Example" },
+        },
+      },
+    }));
+
+    expect(parsed).toEqual({
+      pageUrl: "https://example.com/path",
+      snapshot: "- button \"Continue\" [ref=e2]",
+      refs: {
+        e1: { role: "heading", name: "Example" },
+        e2: { role: "button", name: "Continue" },
+      },
+    });
+  });
+
+  it("rejects incomplete or malformed envelopes", () => {
+    expect(() => parseAgentBrowserSnapshot("{}"))
+      .toThrow("Invalid agent-browser snapshot envelope");
+    expect(() => parseAgentBrowserSnapshot(JSON.stringify({
+      success: true,
+      data: { origin: "https://example.com", snapshot: "", refs: { nope: {} } },
+    }))).toThrow("Invalid agent-browser reference");
+  });
+});
 
 describe(" agentBrowserArgv — argv mapping", () => {
   const cfgPath = "/tmp/agent-browser-provider.json";

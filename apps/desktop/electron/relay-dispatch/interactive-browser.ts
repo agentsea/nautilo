@@ -8,6 +8,7 @@ import {
   agentBrowserScrollArgvs,
   agentBrowserViewportEvalArgv,
   browserImageCoordsToCss,
+  parseAgentBrowserSnapshot,
   BROWSER_EMPTY_DOM_TEXT_HINT,
   isBrowserTool,
   type RelayDispatchRequest,
@@ -120,24 +121,12 @@ class BrowserDispatchFailure extends Error {
 }
 
 function parseBrowserSnapshot(stdout: string, session: string): BrowserObservation {
-  const envelope: unknown = JSON.parse(stdout);
-  const object = (value: unknown): Record<string, unknown> | null => value !== null
-    && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  const response = object(envelope);
-  const data = response?.["success"] === true ? object(response["data"]) : null;
-  const rawRefs = object(data?.["refs"]);
-  if (typeof data?.["snapshot"] !== "string" || typeof data["origin"] !== "string" || !rawRefs) {
-    throw new Error("Invalid agent-browser snapshot envelope");
-  }
-  const pageUrl = new URL(data["origin"]).href;
-  const refs: BrowserObservation["refs"] = {};
-  for (const [key, raw] of Object.entries(rawRefs).sort(([a], [b]) => a.localeCompare(b))) {
-    const ref = object(raw);
-    if (!/^e\d+$/.test(key) || typeof ref?.["role"] !== "string" || !ref["role"].trim()
-      || typeof ref["name"] !== "string") throw new Error("Invalid agent-browser reference");
-    refs[key] = { role: ref["role"], name: ref["name"] };
-  }
-  return { version: 1, snapshot: data["snapshot"], refs, pageUrl, browserSessionId: session, observationId: randomUUID() };
+  return {
+    version: 1,
+    ...parseAgentBrowserSnapshot(stdout),
+    browserSessionId: session,
+    observationId: randomUUID(),
+  };
 }
 
 function browserFailure(code: string, error: string): DesktopDispatchDecision {
