@@ -396,6 +396,42 @@ test("uncertain insertion cannot replay through fresh handles or replacement, bu
   expect(nativeDecisionCandidates(restarted).some((candidate) => /type_text|set_value/.test(candidate.description))).toBe(false);
 });
 
+test("fresh settlement compacts reindexed history while preserving receipts, targets and screening coverage", () => {
+  const segment = decision({ observation: observation(600) });
+  const insertion = nativeDecisionCandidates(segment).find(candidate => candidate.description.includes('"type_text"'))!;
+  const call = { ...insertion.call!, id: "uncertain-input" };
+  const waiting = state({ ...segment, phase: "waiting", pending: call }, [new AIMessage({ content: "", tool_calls: [call] })]);
+  const settled = settleNativeDecision(waiting, [call], [result(call, { status: "host_rejected", reason: "host_failure" }, "unknown_completion")], [], modelId)!;
+  const retainedEvidence = structuredClone(settled.history[0]!.evidence);
+  const retainedUnresolved = structuredClone(settled.unresolved);
+  const after = observation(600, 2);
+  after.controlCollection!.controls.forEach((row, index) => { row.id = `c${index + 1000}`; });
+  after.controlCollection!.controls[1]!.state.value = "42";
+  const read = { id: "fresh-read", name: "computer_observe", args: segment.observeArgs };
+  const fresh = settleNativeDecision(state({ ...settled, phase: "waiting", pending: read }), [read], [result(read, after)], [], modelId)!;
+  expect(fresh.observation).toEqual(after);
+  expect(fresh.unresolved).toEqual(retainedUnresolved);
+  expect(fresh.history[0]!.evidence).toMatchObject(retainedEvidence as Record<string, unknown>);
+  expect(fresh.history[0]!.evidence).toMatchObject({ observed: {
+    comparison: "semantic_multiset", identity: "not_inferred", sameSemanticOccurrences: 599,
+    beforeCompleteness: "partial", completeness: "partial",
+    addedOrChanged: [{ id: "c1001", state: { value: "42" } }],
+    removedOrChanged: [{ id: "c1", state: { value: "0" } }],
+  } });
+  const candidates = nativeDecisionCandidates(fresh);
+  expect(candidates.some(candidate => /type_text|set_value/.test(candidate.description))).toBe(false);
+  expect(new Set(candidates.flatMap(candidate => candidate.controlId ? [candidate.controlId] : [])).size).toBe(600);
+  const chosen = candidates.find(candidate => candidate.controlId === "c1001")!;
+  expect(chosen.call!.args["operation"]).toMatchObject({ target: after.controlCollection!.controls[1]!.target });
+  const input: ChoiceInput = { modelId, signal: new AbortController().signal, instructions: "goal",
+    state: { observation: nativeDecisionEvidence(after), recentActions: fresh.history, unresolved: fresh.unresolved },
+    choices: [chosen, { id: "none_in_group", description: "none" }] };
+  const projected = projectNativeDecisionScreen(input, fresh, candidates);
+  expect(projected.state).toMatchObject({ recentActions: fresh.history, unresolved: retainedUnresolved });
+  const final = { ...input, choices: [chosen] };
+  expect(projectNativeDecisionScreen(final, fresh, candidates)).toBe(final);
+});
+
 test("revoked model, encrypted egress, cancellation and visual handback never propose input", async () => {
   for (const kind of ["encrypted", "cancelled", "missing_key", "visual"] as const) {
     process.env["OPENROUTER_API_KEY"] = "synthetic-native-choice";

@@ -11,6 +11,7 @@ import { BROWSER_DECISION_CONTROL_IDS } from "./browser-choice";
 import { nativeDecisionHostArguments, parseNativeDecisionPlan, type NativeDecisionPlan } from "./native-decision-plan";
 import { resolveGraphExecutionPolicy } from "./execution-policy";
 import type { ChoiceInput } from "../providers/choice";
+import { nativeObservationDelta } from "./native-observation-delta";
 
 type Observation = z.infer<typeof windowStateObservationSchema>;
 type Control = NonNullable<Observation["controlCollection"]>["controls"][number];
@@ -253,12 +254,10 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
     if (last && retained && !Object.hasOwn(retained, "observed") && next.observation) {
       const before = nativeDecisionEvidence(next.observation);
       const after = nativeDecisionEvidence(parsed.data);
-      const previousRows = new Set(before.collection?.controls.map((row) => JSON.stringify(row)));
-      const currentRows = new Set(after.collection?.controls.map((row) => JSON.stringify(row)));
       next.history = [...next.history.slice(0, -1), { ...last, evidence: { ...retained,
         observed: { window: after.window,
-          addedOrChanged: after.collection?.controls.filter((row) => !previousRows.has(JSON.stringify(row))) ?? [],
-          removedOrChanged: before.collection?.controls.filter((row) => !currentRows.has(JSON.stringify(row))) ?? [],
+          ...nativeObservationDelta(before.collection?.controls ?? [], after.collection?.controls ?? []),
+          beforeCompleteness: before.collection?.completeness ?? "unavailable",
           completeness: after.collection?.completeness ?? "unavailable" },
       } }];
     }

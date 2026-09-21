@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Native Computer Use keeps decision history compact when snapshot-local control
+  IDs change, retaining actual semantic differences and duplicate counts without
+  dropping current controls or weakening uncertain-action replay protection.
+
 - Native Computer Use compares target and action identity independently of JSON
   object key order, avoiding false target-change handoffs while preserving exact
   values, ordered key sequences, and uncertain-action replay protection.
