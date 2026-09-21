@@ -22,7 +22,11 @@ export class ElevenLabsTranscriptionProvider implements TranscriptionProvider {
     }
 
     const form = new FormData();
-    form.append("file", new Blob([input.bytes], { type: input.mime }), input.filename);
+    form.append(
+      "file",
+      new Blob([input.bytes as Uint8Array<ArrayBuffer>], { type: input.mime }),
+      input.filename,
+    );
     form.append("model_id", ELEVENLABS_STT_MODEL);
 
     const response = await this.fetchImpl(ELEVENLABS_STT_URL, {

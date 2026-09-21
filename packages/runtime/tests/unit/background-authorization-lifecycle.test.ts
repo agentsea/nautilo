@@ -363,6 +363,9 @@ describe("Wave 10 background authorization lifecycle", () => {
     expect(BACKGROUND_AUTHORIZATION_TERMINAL_REASONS).toContain(
       "integrity_failure",
     );
+    expect(BACKGROUND_AUTHORIZATION_TERMINAL_REASONS).toContain(
+      "provider_outcome_unknown",
+    );
     expect(retry.lastRetryReason).toBe("provider_transient_failure");
     expect(terminal).toMatchObject({
       state: "terminal_failure",
@@ -375,6 +378,17 @@ describe("Wave 10 background authorization lifecycle", () => {
     )).toThrow(
       new BackgroundAuthorizationTransitionError("terminal_state"),
     );
+
+    const uncertain = failBackgroundAuthorizationRequest(
+      running,
+      "provider_outcome_unknown",
+      NOW + 5,
+    );
+    expect(uncertain).toMatchObject({
+      state: "terminal_failure",
+      terminalReason: "provider_outcome_unknown",
+      nextAttemptAt: null,
+    });
   });
 
   test("bounds retry history at eight attempts", () => {

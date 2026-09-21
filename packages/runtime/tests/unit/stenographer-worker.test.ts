@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { markManagedGatewayOutcomeUnknown } from "@nautilo/agent";
 import { readFile } from "node:fs/promises";
 import type {
   StenographerDataOperationPort,
@@ -439,6 +440,34 @@ describe("ordinary Stenographer intent adapter", () => {
     expect(await failedPreparation.publish({ revalidationToken: 1 }))
       .toMatchObject({ status: "failed" });
     expect(failures).toEqual(["provider"]);
+  });
+
+  test("persists a managed Gateway uncertain outcome as non-replayable", async () => {
+    const failures: string[] = [];
+    const failed = createOrdinaryStenographerIntentAdapter({
+      claimExtraction: async () => claim(),
+      createInvoker: () => async () => {
+        throw markManagedGatewayOutcomeUnknown(
+          Object.assign(new Error("Gateway failed"), { status: 502 }),
+        );
+      },
+      publishExtraction: async () => ({ published: true, eventsWritten: 0 }),
+      failExtraction: async (input) => {
+        failures.push(input.errorCode);
+      },
+      logger: silentLogger(),
+    });
+    const prepared = await failed.prepareExtraction({
+      roomId: "room-1",
+      lane: "live",
+      modelId: "openrouter:test-model",
+      now: NOW,
+      signal: new AbortController().signal,
+    });
+
+    expect(await prepared.publish({ revalidationToken: 1 }))
+      .toMatchObject({ status: "failed" });
+    expect(failures).toEqual(["provider_outcome_unknown"]);
   });
 
   test("publication errors retain typed persistence failure diagnostics", async () => {

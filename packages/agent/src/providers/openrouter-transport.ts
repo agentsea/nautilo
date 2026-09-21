@@ -13,6 +13,52 @@ export {
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
+export const MANAGED_GATEWAY_OUTCOME_UNKNOWN_ERROR_CODE =
+  "managed_gateway_outcome_unknown" as const;
+
+/**
+ * Marks a managed Gateway request whose upstream acceptance/billing outcome
+ * cannot be proved. Callers may surface the failure, but must not
+ * automatically replay the model operation.
+ */
+export class ManagedGatewayOutcomeUnknownError extends Error {
+  readonly code = MANAGED_GATEWAY_OUTCOME_UNKNOWN_ERROR_CODE;
+  readonly status?: number;
+
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : "Managed Gateway request outcome is unknown.",
+    );
+    this.name = "ManagedGatewayOutcomeUnknownError";
+    const status = cause && typeof cause === "object"
+      ? (cause as { status?: unknown }).status
+      : undefined;
+    if (typeof status === "number") this.status = status;
+  }
+}
+
+export function markManagedGatewayOutcomeUnknown(
+  cause: unknown,
+): ManagedGatewayOutcomeUnknownError {
+  return cause instanceof ManagedGatewayOutcomeUnknownError
+    ? cause
+    : new ManagedGatewayOutcomeUnknownError(cause);
+}
+
+export function isManagedGatewayOutcomeUnknownError(
+  error: unknown,
+): error is ManagedGatewayOutcomeUnknownError {
+  return error instanceof ManagedGatewayOutcomeUnknownError
+    || (
+      error !== null
+      && typeof error === "object"
+      && (error as { code?: unknown }).code
+        === MANAGED_GATEWAY_OUTCOME_UNKNOWN_ERROR_CODE
+    );
+}
+
 export type OpenRouterTransport = Readonly<{
   kind: "managed-gateway" | "openrouter";
   apiKey: string;

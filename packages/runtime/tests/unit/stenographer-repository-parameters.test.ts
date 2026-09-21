@@ -20,7 +20,10 @@ import {
   type CompactionClaim,
   type ExtractionClaim,
 } from "../../src/stenographer";
-import { tryClaimRoom } from "../../src/stenographer/repository";
+import {
+  tryClaimCompactionRoom,
+  tryClaimRoom,
+} from "../../src/stenographer/repository";
 import {
   publishLegacyExtractionBeforeRecordCutoverForTests,
 } from "../support/legacy-stenographer-writer";
@@ -323,6 +326,69 @@ describe("stenographer postgres-js parameters", () => {
       expect(compiled.params.some((value) => value instanceof Date)).toBe(false);
     },
   );
+
+  test("does not reclaim extraction after an uncertain provider outcome", async () => {
+    const roomId = "44444444-4444-4444-8444-444444444444";
+    let executes = 0;
+    const tx = {
+      execute: async () => (++executes === 1 ? [] : [{
+        room_id: roomId,
+        owner_id: "55555555-5555-4555-8555-555555555555",
+        kind: "private",
+        last_processed_message_id: 10,
+        suspended_at: null,
+        lease_token: null,
+        lease_expires_at: null,
+        extraction_retry_after: null,
+        historical_backfill_status: "not_needed",
+        historical_backfill_cursor_message_id: null,
+        historical_backfill_target_message_id: null,
+        stenographer_prior_conversation_limit: 10,
+        prior_context_floor_message_id: 0,
+        rebuild_generation: 0,
+        rebuild_requested_at: null,
+        rebuild_target_message_id: null,
+        has_agent: true,
+        upper_bound_message_id: 11,
+        replay_batch_status: "failed",
+        replay_batch_error_code: "provider_outcome_unknown",
+        replay_through_message_id: 11,
+      }]),
+    };
+    const db = {
+      transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+        run(tx),
+    };
+
+    expect(await tryClaimRoom(db as never, roomId, NOW)).toBeNull();
+    expect(executes).toBe(2);
+  });
+
+  test("does not reclaim compaction after an uncertain provider outcome", async () => {
+    const roomId = "44444444-4444-4444-8444-444444444444";
+    let executes = 0;
+    const tx = {
+      execute: async () => (++executes === 1 ? [] : [{
+        owner_id: "55555555-5555-4555-8555-555555555555",
+        kind: "private",
+        suspended_at: null,
+        has_agent: true,
+        compaction_due_at: NOW,
+        compaction_lease_token: null,
+        compaction_lease_expires_at: null,
+        compaction_retry_after: null,
+        compaction_failure_count: 0,
+        last_compaction_error_code: "provider_outcome_unknown",
+      }]),
+    };
+    const db = {
+      transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+        run(tx),
+    };
+
+    expect(await tryClaimCompactionRoom(db as never, roomId, NOW)).toBeNull();
+    expect(executes).toBe(2);
+  });
 
   test("bodyless protected source defers without claiming or advancing", async () => {
     const roomId = "44444444-4444-4444-8444-444444444444";

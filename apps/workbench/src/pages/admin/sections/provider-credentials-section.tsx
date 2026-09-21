@@ -90,6 +90,9 @@ function NautiloGatewayUrlEditor({ keyApi }: { keyApi: ProviderCredentialsApi })
       const updated = await keyApi.updateNautiloGateway(baseUrl);
       setState({ kind: "ready", baseUrl: updated.baseUrl });
       setDraft(null);
+      // Keep already-open model and setup surfaces in sync with the provider
+      // configuration that the server will use for subsequent requests.
+      window.dispatchEvent(new Event("nautilo:provider-keys-saved"));
     } catch (error) {
       setSaveError(
         error instanceof ApiError && error.status === 403

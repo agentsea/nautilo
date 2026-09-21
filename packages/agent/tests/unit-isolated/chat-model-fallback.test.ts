@@ -18,6 +18,7 @@ import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-po
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
+import { isManagedGatewayOutcomeUnknownError } from "../../src/providers/openrouter-transport";
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
@@ -232,7 +233,11 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
       null,
     ).catch((error: unknown) => error);
 
-    expect(thrown).toBe(failure);
+    expect(isManagedGatewayOutcomeUnknownError(thrown)).toBeTrue();
+    expect((thrown as Error).message).toBe(failure.message);
+    if ("status" in failure) {
+      expect((thrown as { status?: number }).status).toBe(failure.status);
+    }
     expect(invokes).toBe(1);
     expect(modelIdsFromCalls()).toEqual([T1]);
     expect(capturedEvents.filter((event) => event.type === "model.fallback")).toHaveLength(0);

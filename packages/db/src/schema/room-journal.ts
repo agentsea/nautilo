@@ -22,7 +22,7 @@ import { reflectionRecords } from "./reflection-records";
 import { rooms } from "./rooms";
 
 const JOURNAL_ERROR_CODES = sql.raw(
-  "'provider', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown'",
+  "'provider', 'provider_outcome_unknown', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown'",
 );
 
 export const ROOM_JOURNAL_CRYPTO_PUBLICATION_LIMITS = Object.freeze({

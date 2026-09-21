@@ -1,4 +1,5 @@
 import { hasRunnableOpenRouterTransport } from "../providers/openrouter-transport";
+import type { ResolvedCatalogModel } from "@nautilo/trust";
 
 /**
  * Best-effort check that a model id is likely invokable in the current process
@@ -33,6 +34,7 @@ type SupportedChatProviderPrefix = (typeof SUPPORTED_CHAT_PROVIDER_PREFIXES)[num
 function providerHasRunnableCredentials(
   provider: SupportedChatProviderPrefix,
   env: NodeJS.ProcessEnv,
+  workload: ResolvedCatalogModel["workload"] = "chat",
 ): boolean {
   switch (provider) {
     case "anthropic":
@@ -40,6 +42,12 @@ function providerHasRunnableCredentials(
     case "openai":
       return !!trimEnv(env, "OPENAI_API_KEY");
     case "openrouter":
+      // The managed Gateway currently exposes OpenRouter-compatible text and
+      // embedding routes only. Generation remains a direct-provider workload,
+      // so managed configuration must neither admit it nor shadow a direct key.
+      if (workload === "generation") {
+        return !!trimEnv(env, "OPENROUTER_API_KEY");
+      }
       return hasRunnableOpenRouterTransport(env);
     case "gateway":
       return !!(
@@ -84,6 +92,7 @@ export function hasRunnableChatProviderCredentials(
 export function modelHasRunnableCredentials(
   modelId: string,
   env: NodeJS.ProcessEnv = process.env,
+  workload: ResolvedCatalogModel["workload"] = "chat",
 ): boolean {
   const id = String(modelId || "").trim();
   if (!id) return false;
@@ -103,7 +112,7 @@ export function modelHasRunnableCredentials(
     case "fireworks":
     case "together":
     case "venice":
-      return providerHasRunnableCredentials(prefix, env);
+      return providerHasRunnableCredentials(prefix, env, workload);
     default:
       // Unknown explicit prefixes are not routable until the provider registry knows them.
       return false;

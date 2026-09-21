@@ -17,7 +17,10 @@ import { getModelById } from "../config/assistant-models";
 import { ModelUnavailableError, resolveRetainedModels } from "../config/eligible-models";
 import { createUniversalModel } from "../providers/universal";
 import { modelRouteProvider } from "../providers/model-route";
-import { managedGatewayKeyIsPresent } from "../providers/openrouter-transport";
+import {
+  managedGatewayKeyIsPresent,
+  markManagedGatewayOutcomeUnknown,
+} from "../providers/openrouter-transport";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
@@ -706,6 +709,7 @@ export async function invokeChatModelWithFallback(
 
     const managedGatewayAttempt = modelRouteProvider(currentModelId) === "openrouter"
       && managedGatewayKeyIsPresent();
+    let managedGatewayInvocationStarted = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
     try {
       log(`[nautilo/agent] Attempting model: ${currentModelId}`);
@@ -763,6 +767,7 @@ export async function invokeChatModelWithFallback(
           model_id: currentModelId,
         },
       };
+      managedGatewayInvocationStarted = managedGatewayAttempt;
       const response = await invokeForegroundAttemptWithUsageContext(
         modelWithTools,
         attemptMessages,
@@ -786,11 +791,18 @@ export async function invokeChatModelWithFallback(
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
-      if (invocationConfig?.signal?.aborted) throw error;
+      if (invocationConfig?.signal?.aborted) {
+        if (managedGatewayInvocationStarted) {
+          throw markManagedGatewayOutcomeUnknown(error);
+        }
+        throw error;
+      }
       // A managed Gateway request may have been accepted and billed before a
       // timeout/502 became visible. Never replay it against the same model or
       // continue into an unrelated paid provider chain.
-      if (managedGatewayAttempt) throw error;
+      if (managedGatewayInvocationStarted) {
+        throw markManagedGatewayOutcomeUnknown(error);
+      }
       const classified = classifyError(error);
       if (classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext) {
         // Never retry after visible partial output, or echo a provider error

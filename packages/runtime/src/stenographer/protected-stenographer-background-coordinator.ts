@@ -175,7 +175,8 @@ export type ProtectedStenographerBackgroundRunResult =
       | "retry_limit_exhausted"
       | "stale_work"
       | "transition_rejected"
-      | "integrity_failure";
+      | "integrity_failure"
+      | "provider_outcome_unknown";
   }>;
 
 export interface ProtectedStenographerBackgroundCoordinatorOptions {
@@ -577,6 +578,9 @@ export class ProtectedStenographerBackgroundCoordinator {
     if (execution.reason === "provider_failure") {
       return this.retry(current, "provider_transient_failure");
     }
+    if (execution.reason === "provider_outcome_unknown") {
+      return this.terminal(current, "provider_outcome_unknown");
+    }
     if (execution.reason === "stale_work") {
       return this.terminal(current, "stale_work");
     }
@@ -679,7 +683,8 @@ export class ProtectedStenographerBackgroundCoordinator {
       | "retry_limit_exhausted"
       | "stale_work"
       | "transition_rejected"
-      | "integrity_failure",
+      | "integrity_failure"
+      | "provider_outcome_unknown",
   ): Promise<ProtectedStenographerBackgroundRunResult> {
     const now = this.options.now();
     const snapshot = reason === "stale_work"
@@ -690,7 +695,9 @@ export class ProtectedStenographerBackgroundCoordinator {
       )
       : failBackgroundAuthorizationRequest(
         current.snapshot,
-        reason === "retry_limit_exhausted" || reason === "integrity_failure"
+        reason === "retry_limit_exhausted"
+          || reason === "integrity_failure"
+          || reason === "provider_outcome_unknown"
           ? reason
           : "policy_rejected",
         now,

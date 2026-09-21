@@ -1,6 +1,9 @@
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import {
+  isManagedGatewayOutcomeUnknownError,
   invokeChatModelWithFallback,
+  managedGatewayKeyIsPresent,
+  markManagedGatewayOutcomeUnknown,
   type UsageCallType,
 } from "@nautilo/agent";
 
@@ -27,6 +30,31 @@ export interface RoomSideModelInvocationPolicy {
 export { runBackgroundModelWithDeadline as runRoomSideModelWithDeadline } from "../background-processing/model-invocation";
 import { runBackgroundModelInvocation } from "../background-processing/model-invocation";
 
+export function classifyRoomSideInvocationFailure(
+  error: unknown,
+  input: Readonly<{
+    invocationStarted: boolean;
+    modelId: string;
+    env?: NodeJS.ProcessEnv;
+  }>,
+): unknown {
+  const roomSideInterrupted = error instanceof Error
+    && (
+      error.message === "room_side_model_aborted"
+      || error.message === "room_side_model_deadline_exceeded"
+    );
+  if (
+    input.invocationStarted
+    && roomSideInterrupted
+    && input.modelId.startsWith("openrouter:")
+    && managedGatewayKeyIsPresent(input.env)
+    && !isManagedGatewayOutcomeUnknownError(error)
+  ) {
+    return markManagedGatewayOutcomeUnknown(error);
+  }
+  return error;
+}
+
 export function createRoomSideModelInvoker(opts: {
   modelId: string;
   userId: string;
@@ -41,7 +69,9 @@ export function createRoomSideModelInvoker(opts: {
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {
     if (signal?.aborted) throw new Error("room_side_model_aborted");
-    const { response } = await runBackgroundModelInvocation({
+    let invocationStarted = false;
+    try {
+      const { response } = await runBackgroundModelInvocation({
         usage: {
           callType: opts.callType,
           userId: opts.userId,
@@ -50,8 +80,9 @@ export function createRoomSideModelInvoker(opts: {
         },
         ...(signal === undefined ? {} : { signal }),
         ...(opts.invocationPolicy === undefined ? {} : { maximumElapsedMs: opts.invocationPolicy.maximumElapsedMs }),
-        invoke: (invocationSignal) =>
-          invokeChatModelWithFallback(
+        invoke: (invocationSignal) => {
+          invocationStarted = true;
+          return invokeChatModelWithFallback(
             [new HumanMessage(prompt)],
             [],
             opts.modelId,
@@ -67,15 +98,25 @@ export function createRoomSideModelInvoker(opts: {
                 providerTimeoutMs: opts.invocationPolicy.maximumElapsedMs,
               }),
             },
-          ),
+          );
+        },
       });
-    return extractText(response);
+      return extractText(response);
+    } catch (error) {
+      throw classifyRoomSideInvocationFailure(error, {
+        invocationStarted,
+        modelId: opts.modelId,
+      });
+    }
   };
 }
 
 export function mapModelFailure(
   error: unknown,
-): "provider" | "timeout" | "unknown" {
+): "provider" | "provider_outcome_unknown" | "timeout" | "unknown" {
+  if (isManagedGatewayOutcomeUnknownError(error)) {
+    return "provider_outcome_unknown";
+  }
   const text = error instanceof Error
     ? error.message.toLowerCase()
     : String(error).toLowerCase();

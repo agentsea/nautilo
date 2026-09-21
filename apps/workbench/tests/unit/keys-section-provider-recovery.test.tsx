@@ -12,6 +12,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import type { Window } from "happy-dom";
 import {
   BROWSER_USE_API_KEY_ENV_VAR,
+  MANAGED_GATEWAY_API_KEY_ENV_VAR,
   type KeyReport,
 } from "@nautilo/config-guard";
 import { ApiError, type SetupKeysResult } from "@nautilo/api-client/browser";
@@ -51,7 +52,7 @@ const gatewayKeyReport: KeyReport = {
   ...keyReport,
   id: "nautilo-gateway",
   name: "Nautilo Gateway",
-  envVar: "NAUTILO_API_KEY",
+  envVar: MANAGED_GATEWAY_API_KEY_ENV_VAR,
   purpose: "Nautilo Gateway access",
   required: false,
 };
@@ -210,6 +211,8 @@ describe("KeysSection provider recovery", () => {
     });
 
     const view = await renderGatewayEditor();
+    const onSaved = mock(() => {});
+    happyWindow.addEventListener("nautilo:provider-keys-saved", onSaved);
     expect(view.getByText(persisted)).toBeTruthy();
     await act(async () => {
       view.getByRole("button", { name: "Edit" }).click();
@@ -226,6 +229,9 @@ describe("KeysSection provider recovery", () => {
     });
     await flushUntil(() => view.container.textContent?.includes("https://gateway.example.test/v1") ?? false);
     expect(apiStub.updateNautiloGateway).toHaveBeenCalledWith("https://gateway.example.test/v1");
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect((onSaved.mock.calls[0]?.[0] as CustomEvent<unknown>).detail).toBeUndefined();
+    happyWindow.removeEventListener("nautilo:provider-keys-saved", onSaved);
 
     view.unmount();
     const reloaded = await renderGatewayEditor();
@@ -280,7 +286,7 @@ describe("KeysSection provider recovery", () => {
     );
     expect(input.value).toBe("https://gateway.example.test/v1");
     expect(view.getByRole("button", { name: "Save" })).toBeTruthy();
-    expect(view.getByText("NAUTILO_API_KEY")).toBeTruthy();
+    expect(view.getByText(MANAGED_GATEWAY_API_KEY_ENV_VAR)).toBeTruthy();
   });
 
   test("shows a forbidden Gateway URL load independently of the key editor", async () => {
@@ -298,7 +304,7 @@ describe("KeysSection provider recovery", () => {
     await flushUntil(
       () => view.container.textContent?.includes("do not have permission to view") ?? false,
     );
-    expect(view.getByText("NAUTILO_API_KEY")).toBeTruthy();
+    expect(view.getByText(MANAGED_GATEWAY_API_KEY_ENV_VAR)).toBeTruthy();
     expect(
       view.queryByLabelText("Nautilo Gateway API URL (coming soon)"),
     ).toBeNull();
@@ -325,6 +331,31 @@ describe("KeysSection provider recovery", () => {
     await flushUntil(() => view.container.textContent?.includes("https://gateway.example.test/v1") ?? false);
   });
 
+  test("saves the Gateway key under its canonical configuration name", async () => {
+    apiStub.setupKeys.mockImplementationOnce(async () => ({
+      success: true,
+      details: [{ key: MANAGED_GATEWAY_API_KEY_ENV_VAR, action: "applied" }],
+    }));
+    const view = await renderGatewayEditor();
+    await act(async () => {
+      view.getByRole("button", { name: "Add key" }).click();
+    });
+    const input = view.getByLabelText(
+      `New value for ${MANAGED_GATEWAY_API_KEY_ENV_VAR}`,
+    ) as HTMLInputElement;
+    const value = `ngw_${"a".repeat(43)}`;
+    await changeInput(input, value);
+    await act(async () => {
+      view.getByRole("button", { name: "Save" }).click();
+    });
+    await flushUntil(() => apiStub.setupKeys.mock.calls.length === 1);
+
+    expect(apiStub.setupKeys).toHaveBeenCalledWith(
+      { [MANAGED_GATEWAY_API_KEY_ENV_VAR]: value },
+      true,
+    );
+  });
+
   test("omits Get a key for a provider without a signup destination", async () => {
     apiStub.getKeySummary.mockImplementation(async () => ({
       keys: [keyReport, { ...keyReport, id: "gateway", name: "OpenAI-Compatible Gateway", envVar: "NAUTILO_GATEWAY_API_KEY", signupUrl: "" }],
@@ -343,12 +374,26 @@ describe("KeysSection provider recovery", () => {
       ...keyReport,
       id,
       name: id === "gateway" ? "OpenAI-Compatible Gateway" : id,
-      envVar: `${id}_API_KEY`,
+      envVar: id === "nautilo-gateway" ? MANAGED_GATEWAY_API_KEY_ENV_VAR : `${id}_API_KEY`,
     }));
     apiStub.getKeySummary.mockImplementation(async () => ({ keys, hasLlm: false }));
     const container = await renderEditor();
     expect([...container.querySelectorAll("code")].map((el) => el.textContent)).toEqual(
-      ["venice", "openrouter", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq", "cloudconvert", "tavily", "browser-use", "gateway", "nautilo-gateway"].map((id) => `${id}_API_KEY`),
+      [
+        "venice_API_KEY",
+        "openrouter_API_KEY",
+        "elevenlabs_API_KEY",
+        "openai_API_KEY",
+        "anthropic_API_KEY",
+        "google_API_KEY",
+        "fireworks_API_KEY",
+        "groq_API_KEY",
+        "cloudconvert_API_KEY",
+        "tavily_API_KEY",
+        "browser-use_API_KEY",
+        "gateway_API_KEY",
+        MANAGED_GATEWAY_API_KEY_ENV_VAR,
+      ],
     );
     expect([...container.querySelectorAll("label")].slice(-3).map((el) => el.textContent)).toEqual([
       "OpenAI-Compatible Gateway",

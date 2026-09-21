@@ -2,6 +2,7 @@ import { log } from "@nautilo/logger";
 
 import {
   embedTextWithProvenance,
+  isManagedGatewayOutcomeUnknownError,
   markModelInvokeFailure,
   modelInvokeCooldownRemainingMs,
   type AuthoredMemorySemanticChange,
@@ -15,6 +16,7 @@ import {
 import {
   CANDIDATE_POLICY_V1,
   DurableSleepModelLaneUnavailableError,
+  DurableSleepProviderOutcomeUnknownError,
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
   runDependencyLossRewrite,
   type DurableSleepRunBudget,
@@ -247,6 +249,23 @@ function recordEmbedding(): RecordEmbeddingPort {
       }
     },
   });
+}
+
+export function classifyReflectionModelInvocationFailure(
+  error: unknown,
+  modelId: string,
+): unknown {
+  if (isManagedGatewayOutcomeUnknownError(error)) {
+    return new DurableSleepProviderOutcomeUnknownError();
+  }
+  const failure = mapModelFailure(error);
+  if (failure === "unknown") return error;
+  if (modelInvokeCooldownRemainingMs(modelId) === 0) {
+    markModelInvokeFailure(modelId, `room_reflection_${failure}`);
+  }
+  return new DurableSleepModelLaneUnavailableError(
+    Math.max(1, modelInvokeCooldownRemainingMs(modelId)),
+  );
 }
 
 function bindingRef(
@@ -482,15 +501,8 @@ export async function createProductionReflectionMemoryRuntime(
         },
       })(prompt, signal);
     } catch (error) {
-      if (signal?.aborted) throw error;
-      const failure = mapModelFailure(error);
-      if (failure === "unknown") throw error;
-      if (modelInvokeCooldownRemainingMs(modelId) === 0) {
-        markModelInvokeFailure(modelId, `room_reflection_${failure}`);
-      }
-      throw new DurableSleepModelLaneUnavailableError(
-        Math.max(1, modelInvokeCooldownRemainingMs(modelId)),
-      );
+      if (signal?.aborted && !isManagedGatewayOutcomeUnknownError(error)) throw error;
+      throw classifyReflectionModelInvocationFailure(error, modelId);
     }
   };
   const invokeForRecords = async (

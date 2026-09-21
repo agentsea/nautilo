@@ -3,6 +3,7 @@ import type {
   ProcessorTransformCapability,
   ProcessorTransformOutput,
 } from "@nautilo/lattice-crypto";
+import { isManagedGatewayOutcomeUnknownError } from "@nautilo/agent";
 import {
   planJournalCompaction,
   runStenographerCompaction,
@@ -86,6 +87,7 @@ export type ProtectedStenographerCompactionResult =
       | "input_too_large"
       | "invalid_output"
       | "provider_failure"
+      | "provider_outcome_unknown"
       | "receipt_conflict"
       | "stale_work";
   }>;
@@ -227,11 +229,13 @@ export async function runProtectedStenographerCompaction(
           signal: input.signal,
         });
         assertActive(input.signal);
-      } catch {
+      } catch (error) {
         assertActive(input.signal);
         result = await rejectWithoutPublication(
           input.capability,
-          "provider_failure",
+          isManagedGatewayOutcomeUnknownError(error)
+            ? "provider_outcome_unknown"
+            : "provider_failure",
         );
         return;
       }

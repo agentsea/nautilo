@@ -22,4 +22,25 @@ describe("computeHasLlmFromKeys", () => {
     expect(computeHasLlmFromKeys([key("gateway", "present")])).toBe(true);
     expect(computeHasLlmFromKeys([key("venice", "verified")])).toBe(true);
   });
+
+  test("managed Gateway requires its canonical key and a valid API root", () => {
+    const gateway = [key("nautilo-gateway", "present")];
+    const validKey = `ngw_${"a".repeat(43)}`;
+
+    expect(computeHasLlmFromKeys(gateway, {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: validKey,
+    })).toBe(false);
+    expect(computeHasLlmFromKeys(gateway, {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: validKey,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "http://gateway.example/v1",
+    })).toBe(false);
+    expect(computeHasLlmFromKeys(gateway, {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: "ngw_not-canonical",
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.example/v1",
+    })).toBe(false);
+    expect(computeHasLlmFromKeys(gateway, {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: validKey,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.example/v1",
+    })).toBe(true);
+  });
 });

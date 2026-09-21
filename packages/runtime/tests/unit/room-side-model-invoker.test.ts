@@ -1,8 +1,37 @@
 import { describe, expect, test } from "bun:test";
+import { isManagedGatewayOutcomeUnknownError } from "@nautilo/agent";
 
-import { runRoomSideModelWithDeadline } from "../../src/stenographer/model-invoker";
+import {
+  classifyRoomSideInvocationFailure,
+  runRoomSideModelWithDeadline,
+} from "../../src/stenographer/model-invoker";
 
 describe("room-side model hard deadline", () => {
+  test("marks a managed Gateway deadline after invocation as non-replayable", () => {
+    const failure = new Error("room_side_model_deadline_exceeded");
+    const classified = classifyRoomSideInvocationFailure(failure, {
+      invocationStarted: true,
+      modelId: "openrouter:test/model",
+      env: {
+        NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      },
+    });
+
+    expect(isManagedGatewayOutcomeUnknownError(classified)).toBeTrue();
+    expect((classified as Error).message).toBe(failure.message);
+  });
+
+  test("does not mark a pre-request Gateway configuration failure", () => {
+    const failure = new Error("NAUTILO_MANAGED_GATEWAY_BASE_URL is malformed");
+    expect(classifyRoomSideInvocationFailure(failure, {
+      invocationStarted: true,
+      modelId: "openrouter:test/model",
+      env: {
+        NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      },
+    })).toBe(failure);
+  });
+
   test("rejects and aborts a provider that does not settle before its deadline", async () => {
     let observedAbort = false;
     const startedAt = performance.now();

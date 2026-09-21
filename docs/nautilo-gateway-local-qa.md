@@ -15,12 +15,12 @@ The Gateway operator supplies two values:
 - `NAUTILO_MANAGED_GATEWAY_API_KEY` is the one-time `ngw_...` credential shown
   by the local Gateway portal.
 
-Set `NAUTILO_MANAGED_GATEWAY_BASE_URL` in the server's canonical
-`instance.env`, then restart the local server so the process loads that API
-root. In **Admin → API Keys**, paste the credential into **Nautilo Gateway key
-(coming soon)**. Nautilo saves the credential through its existing protected
-configuration transaction, validates it against the configured `/v1/key`
-endpoint, and subsequently displays only a masked value.
+In **Admin → API Keys**, enter the API root in **Nautilo Gateway API URL
+(coming soon)** and paste the credential into **Nautilo Gateway key (coming
+soon)**. Nautilo saves both values through its protected server configuration,
+validates the credential against the configured `/v1/key` endpoint, and
+subsequently displays only a masked credential. Neither value needs to be
+passed in local process configuration or activated with a server restart.
 
 Do not place either value in a CLI adoption template or hosting-provider
 configuration. The API root is operator-supplied; Nautilo has no default
@@ -47,7 +47,7 @@ credentials.
 
 ## Check and remove the setup
 
-Use **Check keys** in the administrator API Keys section to confirm credential
+Use **Validate all** in the administrator API Keys section to confirm credential
 admission. This proves that the key and configured endpoint are accepted; it
 does not prove available inference capacity.
 
