@@ -1,0 +1,1 @@
+CREATE INDEX "idx_shared_agent_execution_inputs_message" ON "conversation_shared_agent_shadow_execution_inputs" USING btree ("message_id","execution_id");

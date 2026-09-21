@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { ChatSearchPage, RoomSummaryDto } from "@nautilo/types";
 import { useChatsSearch } from "../../../adapters/runtime-contexts";
 import {
@@ -14,7 +15,10 @@ import { VirtualExplorerTree } from "./components/VirtualExplorerTree";
 import { ExplorerSortControl } from "./components/ExplorerSortControl";
 import { useNewConversation } from "../new-conversation/new-conversation-context";
 import { useCan } from "../../../hooks/use-can";
-import { EXPLORER_ROOM_ARCHIVED_EVENT } from "./sections/shared/ExplorerRow";
+import {
+  EXPLORER_ROOM_ARCHIVED_EVENT,
+  EXPLORER_ROOM_LEFT_EVENT,
+} from "./sections/shared/ExplorerRow";
 
 function ErrorState({ error }: { error: string }) {
   return (
@@ -155,9 +159,35 @@ function ExplorerArchiveToastBridge({
   return null;
 }
 
+function ExplorerLeaveToastBridge({
+  onLeft,
+}: {
+  onLeft: (detail: { roomId: string }) => void;
+}) {
+  const toast = useToast();
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ roomId?: string; label?: string }>).detail;
+      if (!detail?.roomId) return;
+      toast.show({
+        variant: "success",
+        title: "Left room",
+        message: detail.label ?? "Room left",
+      });
+      onLeft({ roomId: detail.roomId });
+    };
+    window.addEventListener(EXPLORER_ROOM_LEFT_EVENT, handler);
+    return () => window.removeEventListener(EXPLORER_ROOM_LEFT_EVENT, handler);
+  }, [onLeft, toast]);
+
+  return null;
+}
+
 export function RelationshipExplorer({ onCollapse }: { onCollapse?: () => void } = {}) {
   const can = useCan();
   const toast = useToast();
+  const navigate = useNavigate();
   const canCreateRooms = can("create_rooms") || can("manage_rooms");
   const canSearchAllRooms = can("read_memories");
   const [clientMounted, setClientMounted] = useState(false);
@@ -281,6 +311,18 @@ export function RelationshipExplorer({ onCollapse }: { onCollapse?: () => void }
     [activeRoomId, sections, refreshArchived, refreshRooms, setActiveRoom],
   );
 
+  const handleLeaveSideEffects = useCallback(
+    ({ roomId }: { roomId: string }) => {
+      if (roomId === activeRoomId) {
+        const next = firstNavigableRoomId(sections, roomId);
+        if (next) setActiveRoom(next);
+        else void navigate("/", { replace: true });
+      }
+      void Promise.allSettled([refreshRooms(), refreshDiscoverCount()]);
+    },
+    [activeRoomId, navigate, refreshDiscoverCount, refreshRooms, sections, setActiveRoom],
+  );
+
   const handleSelectArchivedRoom = useCallback(
     async (room: RoomSummaryDto) => {
       try {
@@ -309,7 +351,10 @@ export function RelationshipExplorer({ onCollapse }: { onCollapse?: () => void }
   return (
     <aside className="flex h-full min-h-0 min-w-0 overflow-clip flex-col border-r border-border bg-background-panel">
       {clientMounted ? (
-        <ExplorerArchiveToastBridge onArchived={(d) => void handleArchiveSideEffects(d)} />
+        <>
+          <ExplorerArchiveToastBridge onArchived={(d) => void handleArchiveSideEffects(d)} />
+          <ExplorerLeaveToastBridge onLeft={(d) => void handleLeaveSideEffects(d)} />
+        </>
       ) : null}
       {/* Header: "Explorer" title with the ‹ collapse at the FAR RIGHT,
           mirroring the artifacts column's chevron (right edge of its tab

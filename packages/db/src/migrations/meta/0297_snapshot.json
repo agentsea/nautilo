@@ -1,6 +1,6 @@
 {
-  "id": "960b9eaf-08c2-4c95-96f5-11a5101774d7",
-  "prevId": "87365136-987b-49c3-b7f9-acde17c2cf7a",
+  "id": "b6b1d72f-a71d-412a-bf47-9c3afe75944e",
+  "prevId": "960b9eaf-08c2-4c95-96f5-11a5101774d7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -12543,7 +12543,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -13632,7 +13632,7 @@
         },
         "room_journal_batches_error_code": {
           "name": "room_journal_batches_error_code",
-          "value": "\"room_journal_batches\".\"error_code\" IS NULL OR \"room_journal_batches\".\"error_code\" IN ('provider', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown')"
+          "value": "\"room_journal_batches\".\"error_code\" IS NULL OR \"room_journal_batches\".\"error_code\" IN ('provider', 'provider_outcome_unknown', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown')"
         },
         "room_journal_batches_last_error_attempt_nonnegative": {
           "name": "room_journal_batches_last_error_attempt_nonnegative",
@@ -14596,11 +14596,11 @@
         },
         "room_journal_state_extraction_error_code": {
           "name": "room_journal_state_extraction_error_code",
-          "value": "\"room_journal_state\".\"last_extraction_error_code\" IS NULL OR \"room_journal_state\".\"last_extraction_error_code\" IN ('provider', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown')"
+          "value": "\"room_journal_state\".\"last_extraction_error_code\" IS NULL OR \"room_journal_state\".\"last_extraction_error_code\" IN ('provider', 'provider_outcome_unknown', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown')"
         },
         "room_journal_state_compaction_error_code": {
           "name": "room_journal_state_compaction_error_code",
-          "value": "\"room_journal_state\".\"last_compaction_error_code\" IS NULL OR \"room_journal_state\".\"last_compaction_error_code\" IN ('provider', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown')"
+          "value": "\"room_journal_state\".\"last_compaction_error_code\" IS NULL OR \"room_journal_state\".\"last_compaction_error_code\" IN ('provider', 'provider_outcome_unknown', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown')"
         },
         "room_journal_state_compaction_error_attempt_nonnegative": {
           "name": "room_journal_state_compaction_error_attempt_nonnegative",
@@ -19467,6 +19467,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "speech_model": {
+          "name": "speech_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "fallback_chain": {
           "name": "fallback_chain",
           "type": "jsonb",
@@ -19491,12 +19497,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "speech_model": {
-          "name": "speech_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},

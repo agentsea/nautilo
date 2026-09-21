@@ -586,6 +586,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     deadlineAt: number;
     source: "turn" | "shared_execution" | "shared_resume";
   }>>();
+  const activeAgentOperations = new Set<string>();
   const dispatches = new Map<string, Readonly<{
     promise: Promise<unknown>;
     expiresAt: number;
@@ -3620,6 +3621,8 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
           destroyForegroundPlan(foregroundPlan);
           return agentFallback(input.operationId, "runtime_absent");
         }
+        activeAgentOperations.add(input.operationId);
+        const activeAgentWork: { settlement: Promise<void> | null } = { settlement: null };
         let authority: Awaited<ReturnType<
           typeof createPostgresDomainKeyV2LiveShadowCurrentAuthority
         >> = null;
@@ -4325,12 +4328,13 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                 retained.source === "turn"
                                 || terminalization !== null
                               ) return;
-                              terminalization = getSharedAgentPlanner()
-                                .recordExecutionUnavailable({
+                              terminalization = (reason === "process_lost"
+                                ? getSharedAgentPlanner().recordProcessLoss([input.operationId], Date.now())
+                                : getSharedAgentPlanner().recordExecutionUnavailable({
                                   executionId: input.operationId,
                                   reason: `agent_${stage}_${reason}`,
                                   now: Date.now(),
-                                })
+                                }))
                                 .then((outcome) => {
                                   if (outcome === "conflict") {
                                     log(
@@ -4345,6 +4349,8 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                 });
                             },
                           });
+                          const settled = Promise.withResolvers<void>();
+                          activeAgentWork.settlement = settled.promise;
                           try {
                             const value = await input.work(
                                 session,
@@ -4355,8 +4361,12 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                               value,
                             });
                           } finally {
-                            await (terminalization ?? Promise.resolve());
-                            session.destroy();
+                            try {
+                              await (terminalization ?? Promise.resolve());
+                              session.destroy();
+                            } finally {
+                              settled.resolve();
+                            }
                           }
                   } finally {
                     derived.publicKey.fill(0);
@@ -4385,12 +4395,15 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
           }
           return agentFallback(input.operationId, "session_unavailable");
         } finally {
+          // Authorization cancellation may return before its owned work settles.
+          await activeAgentWork.settlement;
           agentRuntime.key.fill(0);
           historicalHumanKey?.fill(0);
           authority?.destroy();
           token.authorizationDigest.fill(0);
           token.scope.domainAuthoritySetDigest.fill(0);
           destroyForegroundPlan(foregroundPlan);
+          activeAgentOperations.delete(input.operationId);
         }
       }
       return agentFallback(input.operationId, "plan_invalid");
@@ -4425,9 +4438,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       });
     },
     shutdown: async () => {
-      pendingAttention?.close();
-      foregroundAuthorizations.close();
-      const operationIds = new Set(agentPlans.keys());
+      const operationIds = new Set([...agentPlans.keys(), ...activeAgentOperations]);
       for (const executionId of sharedAgentAuthorizationWaiters.keys()) {
         operationIds.add(executionId);
       }
@@ -4441,39 +4452,44 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         runtimeInvocationAcceptedAuthorizations.keys()) {
         operationIds.add(invocationId);
       }
-      for (const waiter of sharedAgentAuthorizationWaiters.values()) {
-        clearTimeout(waiter.timer);
-        waiter.resolve(null);
-      }
-      sharedAgentAuthorizationWaiters.clear();
-      for (const [executionId, accepted] of
-        sharedAgentAcceptedAuthorizations) {
-        destroySharedAgentAcceptedAuthorization(executionId, accepted);
-      }
-      sharedAgentAcceptedAuthorizations.clear();
-      for (const waiter of runtimeInvocationAuthorizationWaiters.values()) {
-        clearTimeout(waiter.timer);
-        waiter.resolve(null);
-      }
-      runtimeInvocationAuthorizationWaiters.clear();
-      for (const accepted of runtimeInvocationAcceptedAuthorizations.values()) {
-        destroyRuntimeInvocationAcceptedAuthorization(accepted);
-      }
-      runtimeInvocationAcceptedAuthorizations.clear();
-      for (const retained of agentPlans.values()) retained.bytes.fill(0);
-      agentPlans.clear();
       for (const operationId of recipients.shutdown()) {
         operationIds.add(operationId);
       }
-      dispatches.clear();
-      if (planner !== null && operationIds.size > 0) {
-        await planner.recordProcessLoss([...operationIds], Date.now());
-      }
-      if (sharedAgentPlanner !== null && operationIds.size > 0) {
-        await sharedAgentPlanner.recordProcessLoss(
-          [...operationIds],
-          Date.now(),
-        );
+      // Persist process loss before abort callbacks can report a different failure.
+      try {
+        const outcomes = await Promise.allSettled([
+          planner !== null && operationIds.size > 0
+            ? planner.recordProcessLoss([...operationIds], Date.now()) : null,
+          sharedAgentPlanner !== null && operationIds.size > 0
+            ? sharedAgentPlanner.recordProcessLoss([...operationIds], Date.now()) : null,
+        ]);
+        const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+        if (rejected?.status === "rejected") throw rejected.reason;
+      } finally {
+        pendingAttention?.close();
+        foregroundAuthorizations.close();
+        for (const waiter of sharedAgentAuthorizationWaiters.values()) {
+          clearTimeout(waiter.timer);
+          waiter.resolve(null);
+        }
+        sharedAgentAuthorizationWaiters.clear();
+        for (const [executionId, accepted] of
+          sharedAgentAcceptedAuthorizations) {
+          destroySharedAgentAcceptedAuthorization(executionId, accepted);
+        }
+        sharedAgentAcceptedAuthorizations.clear();
+        for (const waiter of runtimeInvocationAuthorizationWaiters.values()) {
+          clearTimeout(waiter.timer);
+          waiter.resolve(null);
+        }
+        runtimeInvocationAuthorizationWaiters.clear();
+        for (const accepted of runtimeInvocationAcceptedAuthorizations.values()) {
+          destroyRuntimeInvocationAcceptedAuthorization(accepted);
+        }
+        runtimeInvocationAcceptedAuthorizations.clear();
+        for (const retained of agentPlans.values()) retained.bytes.fill(0);
+        agentPlans.clear();
+        dispatches.clear();
       }
     },
   });
@@ -4489,8 +4505,7 @@ export async function selectLiveShadowTurnPlan(
 ): Promise<SharedAgentLiveShadowPlanResult | HumanPeerLiveShadowPlanResult> {
   const shared = await planners.shared(input);
   if (
-    input.requestVersion === 2
-    || shared.status !== "ineligible"
+    shared.status !== "ineligible"
     || shared.reason !== "room_topology_unsupported"
   ) return shared;
   return planners.humanPeer(input);

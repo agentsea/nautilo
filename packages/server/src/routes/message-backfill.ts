@@ -11,6 +11,7 @@ import {
   messageBackfillPublishResponseSchema, messageBackfillAckResponseSchema, messageBackfillProgressSchema,
 } from "@nautilo/api-client";
 import { createProductionMessageBackfillComposition, type MessageBackfillSubject } from "./message-backfill-composition";
+import { selectRoomHistoryResponseMetadata } from "./room-history-response-metadata";
 import { liveShadowLargeRequestRouteOptions } from "./live-shadow-request-boundary";
 
 // The exact JSON wrapper and four independently bounded base64url wire fields.
@@ -47,7 +48,12 @@ export function messageBackfillRoutes(app: FastifyInstance,
     reply.header("Cache-Control", "private, no-store");
     const parsed = messageBackfillClaimRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({error: "Invalid Message repair claim"});
-    return messageBackfillSourceResponseSchema.parse(await composition.source(subject(request), parsed.data.claimId));
+    const response = messageBackfillSourceResponseSchema.parse(
+      await composition.source(subject(request), parsed.data.claimId),
+    );
+    return response.status === "protected"
+      ? { ...response, history: selectRoomHistoryResponseMetadata(response.history, request.query) }
+      : response;
   });
   app.post("/api/message-backfill/publish", {
     ...liveShadowLargeRequestRouteOptions, bodyLimit: publicationBodyBytes,

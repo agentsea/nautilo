@@ -16,6 +16,7 @@ import type { DeviceAdmissionChallengeDto } from
   "@nautilo/api-client/browser";
 
 import { useAuth } from "../hooks/use-auth";
+import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
 import { apiClient } from "../lib/api";
 import {
   activateFreshBrowserCryptoInstallationId,
@@ -36,6 +37,7 @@ export function EncryptionReadinessProvider({
   children,
 }: Readonly<{ children: ReactNode }>) {
   const auth = useAuth();
+  const authenticatedHuman = isAuthenticatedHumanViewer(auth.viewer);
   // This is local custody, not admission. A failed same-account whoami refresh
   // must not discard the device or manufacture an unsupported-client result.
   // The admission gate separately proves current server authority. Missing or
@@ -43,10 +45,12 @@ export function EncryptionReadinessProvider({
   const client = useMemo<
     WorkbenchEncryptionRecoveryReadinessPort | undefined
   >(() => {
+    const userId = auth.viewer.sessionUserId;
+    const humanActorId = auth.viewer.sessionActorId;
     if (
-      !auth.viewer.isVerified
-      || auth.viewer.sessionUserId === null
-      || auth.viewer.sessionActorId === null
+      !authenticatedHuman
+      || userId === null
+      || humanActorId === null
     ) return undefined;
     if (isDesktop) {
       const main = desktopAPI?.encryptionRecovery;
@@ -57,8 +61,8 @@ export function EncryptionReadinessProvider({
     if (typeof window === "undefined") return undefined;
     const cryptoAccount = {
       serverScope: window.location.origin,
-      userId: auth.viewer.sessionUserId,
-      humanActorId: auth.viewer.sessionActorId,
+      userId,
+      humanActorId,
     };
     const installationId = readOrCreateBrowserCryptoInstallationId(
       cryptoAccount,
@@ -67,8 +71,8 @@ export function EncryptionReadinessProvider({
     const local = createBrowserInitialDeviceReadinessClient({
       api: apiClient,
       serverScope: window.location.origin,
-      userId: auth.viewer.sessionUserId,
-      humanActorId: auth.viewer.sessionActorId,
+      userId,
+      humanActorId,
       installationId,
       createRecoveryInstallationId: () => crypto.randomUUID(),
       activateRecoveryInstallationId: (nextInstallationId) => {
@@ -99,7 +103,7 @@ export function EncryptionReadinessProvider({
       },
     });
   }, [
-    auth.viewer.isVerified,
+    authenticatedHuman,
     auth.viewer.sessionActorId,
     auth.viewer.sessionUserId,
   ]);

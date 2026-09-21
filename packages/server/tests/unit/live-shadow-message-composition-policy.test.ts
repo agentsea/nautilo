@@ -102,14 +102,14 @@ describe("live Shadow planner selection", () => {
     expect(peerCalls).toBe(0);
   });
 
-  test("uses the Human-only peer planner for the version-1 topology miss", async () => {
+  test.each([1, 2] as const)("uses Human-only authority for a version-%i topology miss", async (requestVersion) => {
     const peerPlan = Object.freeze({
       status: "planned" as const,
       planBytes: new Uint8Array([7]),
     });
     const calls: string[] = [];
 
-    expect(await selectLiveShadowTurnPlan({ ...input, requestVersion: 1 }, {
+    expect(await selectLiveShadowTurnPlan({ ...input, requestVersion }, {
       shared: async () => {
         calls.push("shared");
         return Object.freeze({
@@ -123,26 +123,6 @@ describe("live Shadow planner selection", () => {
       },
     })).toBe(peerPlan);
     expect(calls).toEqual(["shared", "human_peer"]);
-  });
-
-  test("does not route a version-2 topology miss to the version-1 peer planner", async () => {
-    const ineligible = Object.freeze({
-      status: "ineligible" as const,
-      reason: "room_topology_unsupported" as const,
-    });
-    let peerCalls = 0;
-
-    expect(await selectLiveShadowTurnPlan({ ...input, requestVersion: 2 }, {
-      shared: async () => ineligible,
-      humanPeer: async () => {
-        peerCalls++;
-        return Object.freeze({
-          status: "planned" as const,
-          planBytes: new Uint8Array([8]),
-        });
-      },
-    })).toBe(ineligible);
-    expect(peerCalls).toBe(0);
   });
 
   test.each([

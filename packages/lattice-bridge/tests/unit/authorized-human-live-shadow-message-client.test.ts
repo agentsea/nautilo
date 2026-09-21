@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 
 describe("modern Human request negotiation", () => {
-  test.each(["unsupported", "ineligible", "missing_marker", "wrong_version", "malformed"] as const)(
+  test.each(["unsupported", "ineligible", "missing_marker", "wrong_version", "malformed", "legacy_agent", "legacy_agent_unmarked"] as const)(
     "V2 rejects %s without an ordinary mutation",
     async (failure) => {
       let sends = 0;
@@ -20,10 +20,10 @@ describe("modern Human request negotiation", () => {
           }
           return Promise.resolve({
             responseVersion: 1, status: "planned",
-            ...(failure === "missing_marker" ? {}
+            ...(failure === "missing_marker" || failure === "legacy_agent_unmarked" ? {}
               : { authorizationScheme: "human_ai_readable_v2" as const }),
             planBytesBase64url: failure === "malformed" ? "AQID"
-              : base64url(humanAiReadablePlanBytes()),
+              : base64url(failure.startsWith("legacy_agent") ? sharedAgentPlanBytes() : humanAiReadablePlanBytes()),
           });
         },
         sendRoomMessage: () => {

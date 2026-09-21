@@ -2581,3 +2581,78 @@ test.each(["foreground_runtime", "human_device"] as const)(
     setup.canonical.assertExhausted();
   },
 );
+
+test.each(["fallback", "failed", "completed"])("terminal shared execution fences an unfinished mapping: %s", async (state) => {
+  const lifecycle = lifecycleRow({
+    object_id_scheme: "live_shadow_v1",
+    shared_agent_shadow_execution_id: "terminal-execution",
+    shadow_transcript_ordinal: 2,
+    shadow_reserved_created_at: NOW,
+    completion: "complete",
+    parity_status: "server_verified",
+  });
+  const setup = await storeWithResults([], "nautilo_agent", [
+    { operation: "select", result: [{ message_id: 11, session_id: SESSION_ID, edit_revision: 0, crypto_object_id: null }] },
+    { operation: "select", result: [lifecycle] },
+    { operation: "select", result: [{ state }] },
+  ]);
+  expect(await setup.store.compareAndSwapCryptoMapping({
+    sessionId: SESSION_ID, messageId: 11, revision: 0,
+    expectedNamespaceId: NAMESPACE_ID,
+    cryptoObjectId: String(lifecycle["crypto_object_id"]), leaseToken: null,
+  })).toBe("stale");
+  setup.canonical.assertExhausted();
+  expect(setup.canonical.events).toEqual(["select", "select", "select"]);
+});
+
+test("already mapped shared output remains replayable after its execution completes", async () => {
+  const lifecycle = lifecycleRow({
+    object_id_scheme: "live_shadow_v1",
+    shared_agent_shadow_execution_id: "completed-execution",
+    shadow_transcript_ordinal: 2,
+    shadow_reserved_created_at: NOW,
+    completion: "complete", disposition: "mapped", parity_status: "server_verified",
+    next_attempt_at: null,
+  });
+  const cryptoObjectId = String(lifecycle["crypto_object_id"]);
+  const setup = await storeWithResults([], "nautilo_agent", [
+    { operation: "select", result: [{ message_id: 11, session_id: SESSION_ID, edit_revision: 0, crypto_object_id: cryptoObjectId }] },
+    { operation: "select", result: [lifecycle] },
+    { operation: "select", result: [{ namespace_id: NAMESPACE_ID }] },
+    { operation: "update", result: [lifecycle] },
+  ]);
+  expect(await setup.store.compareAndSwapCryptoMapping({
+    sessionId: SESSION_ID, messageId: 11, revision: 0,
+    expectedNamespaceId: NAMESPACE_ID, cryptoObjectId, leaseToken: null,
+  })).toBe("duplicate");
+  setup.canonical.assertExhausted();
+});
+
+test.each(["fallback", "failed"])("terminal shared execution fences reserved publication: %s", async (state) => {
+  const operationId = "cancelled-execution";
+  const cryptoObjectId = deriveLiveShadowMessageCryptoObjectIdV1({
+    operationId, sessionId: SESSION_ID, messageId: 11, revision: 0,
+    transcriptOrdinal: 2, authorRole: "assistant",
+  });
+  const lifecycle = lifecycleRow({
+    crypto_object_id: cryptoObjectId, object_id_scheme: "live_shadow_v1",
+    shared_agent_shadow_execution_id: operationId,
+    shadow_transcript_ordinal: 2, shadow_reserved_created_at: NOW,
+  });
+  const setup = await storeWithResults([], "nautilo_agent", [
+    { operation: "execute", result: [] },
+    { operation: "select", result: [lifecycle] },
+    { operation: "select", result: [] },
+    { operation: "select", result: [{ state }] },
+  ]);
+  expect(await setup.store.publishReservedLiveShadowAgent({
+    ...canonicalAppendFacts,
+    operationId, sessionId: SESSION_ID, reservedMessageId: 11,
+    reservedCreatedAt: Date.parse(NOW), transcriptOrdinal: 2,
+    idempotencyKey: "reserved-cancelled", content: "late output",
+    keyClass: "ai", authorRole: "assistant", cryptoObjectId,
+    reservationDigest: digest(),
+  })).toEqual({ status: "conflict" });
+  setup.canonical.assertExhausted();
+  expect(setup.canonical.events).toEqual(["execute", "select", "select", "select"]);
+});

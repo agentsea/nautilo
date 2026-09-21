@@ -1173,10 +1173,6 @@ export function createAuthorizedHumanLiveShadowMessageClient(
           : sendPlanUnavailable(plan.reason);
       }
       const full = plan.representationMode === "full_encryption";
-      if ((plan.authorizationScheme === "human_ai_readable_v2")
-        !== (planRequest.requestVersion === 2)) {
-        throw new TypeError("Human AI-readable plan negotiation mismatch");
-      }
       let planBytes: Uint8Array | undefined;
       let operationId: string | undefined;
       let planVersion:
@@ -1221,8 +1217,15 @@ export function createAuthorizedHumanLiveShadowMessageClient(
             }
           }
         }
-        if (planRequest.requestVersion === 2 && planVersion !== "human_ai_readable") {
-          throw new TypeError("Human AI-readable V2 requires its negotiated plan");
+        // V2 selects either current AI-readable authority or the distinct
+        // Human-only protocol. A topology miss must not admit legacy Agent plans.
+        if ((plan.authorizationScheme === "human_ai_readable_v2")
+          !== (planRequest.requestVersion === 2 && planVersion === "human_ai_readable")) {
+          throw new TypeError("Human AI-readable plan negotiation mismatch");
+        }
+        if (planRequest.requestVersion === 2
+          && planVersion !== "human_ai_readable" && planVersion !== "human_peer") {
+          throw new TypeError("V2 requires current AI-readable or Human-only authority");
         }
         normalizedContent = input.normalizeContent(body.content!);
       } catch {

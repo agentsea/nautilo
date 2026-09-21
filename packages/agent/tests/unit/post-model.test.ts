@@ -1,6 +1,7 @@
 import { afterEach, describe, test, expect } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
+import { Command, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
 import { z } from "zod";
 import {
   buildAskPayload,
@@ -8,7 +9,7 @@ import {
   interruptToolEntry,
 } from "../../src/nodes/post-model";
 import type { NautiloState } from "../../src/agent/state";
-import { MAX_SUBAGENT_DEPTH } from "../../src/agent/state";
+import { MAX_SUBAGENT_DEPTH, NautiloStateAnnotation } from "../../src/agent/state";
 import type { PolicyResolver, ToolAccessDecision } from "@nautilo/trust";
 import type { PostModelDeps } from "../../src/nodes/post-model";
 import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
@@ -547,6 +548,168 @@ describe("postModelNode (with resolver)", () => {
     let threw = false;
     try { await node(state); } catch { threw = true; }
     expect(threw).toBe(true);
+  });
+
+  test("capabilityless read-only approval reaches confirm-style ask without executing", async () => {
+    const catalog = new ToolCatalog();
+    catalog.register({
+      name: "play_explainer",
+      factory: () => new DynamicStructuredTool({
+        name: "play_explainer",
+        description: "Resolve an explainer after explicit confirmation.",
+        schema: z.object({ explainerId: z.string() }),
+        func: async () => "resolved explainer",
+      }),
+      category: "help",
+      trustTier: "guest",
+      impact: "read-only",
+      exposure: "core",
+      requiresApproval: true,
+      approvalLevel: "confirm",
+      resultScanPolicy: "never",
+    });
+    initToolCatalog(catalog);
+
+    for (const decision of [
+      { approved: false, verb: "deny" as const, expectedExecutions: 0 },
+      { approved: true, verb: "once" as const, expectedExecutions: 1 },
+    ]) {
+      let executions = 0;
+      const resolver = makeMockResolver({
+        play_explainer: {
+          type: "require_approval",
+          route: { type: "prove_it", approvers: ["owner-id"] },
+        },
+      });
+      const graph = new StateGraph(NautiloStateAnnotation)
+        .addNode("post_model", createPostModelNode(resolver, NO_MATCH))
+        .addNode("tools_like", (graphState) => {
+          executions += graphState.approvedToolCalls.length;
+          return {};
+        })
+        .addEdge(START, "post_model")
+        .addEdge("post_model", "tools_like")
+        .addEdge("tools_like", END)
+        .compile({ checkpointer: new MemorySaver() });
+      const state = makeState([
+        new AIMessage({
+          content: "",
+          tool_calls: [{
+            id: "play-explainer-call",
+            name: "play_explainer",
+            args: { explainerId: "intro" },
+          }],
+        }),
+      ]);
+      state.threadId = 54;
+      const config = {
+        configurable: { thread_id: `capabilityless-approval-${decision.verb}` },
+      };
+
+      const parked = await graph.invoke(state, config) as Awaited<
+        ReturnType<typeof graph.invoke>
+      > & { __interrupt__?: Array<{ value?: unknown }> };
+      expect(parked).toMatchObject({
+        __interrupt__: [{ value: { type: "approval_ask" } }],
+      });
+      expect(executions).toBe(0);
+
+      await graph.invoke(new Command({ resume: {
+        approved: decision.approved,
+        verb: decision.verb,
+      } }), config);
+      expect(executions).toBe(decision.expectedExecutions);
+    }
+
+    const standingState = makeState([
+      new AIMessage({
+        content: "",
+        tool_calls: [{
+          id: "play-explainer-standing",
+          name: "play_explainer",
+          args: { explainerId: "intro" },
+        }],
+      }),
+    ]);
+    standingState.threadId = 55;
+    const standingResult = await createPostModelNode(makeMockResolver({
+      play_explainer: {
+        type: "require_approval",
+        route: { type: "prove_it", approvers: ["owner-id"] },
+      },
+    }), ALWAYS_MATCH)(standingState);
+    expect(standingResult.approvedToolCalls).toHaveLength(1);
+  });
+
+  test("capabilityless prove_it cannot be satisfied by standing or workstation approval", async () => {
+    const catalog = new ToolCatalog();
+    catalog.register({
+      name: "capabilityless_delete",
+      factory: () => new DynamicStructuredTool({
+        name: "capabilityless_delete",
+        description: "Delete a synthetic connected-app record.",
+        schema: z.object({ recordId: z.string() }),
+        func: async () => "deleted",
+      }),
+      category: "meta",
+      trustTier: "standard",
+      impact: "destructive",
+      exposure: "core",
+      requiresApproval: true,
+      approvalLevel: "prove_it",
+      resultScanPolicy: "never",
+    });
+    initToolCatalog(catalog);
+
+    let standingCalls = 0;
+    let workstationCalls = 0;
+    const resolver = makeMockResolver({
+      capabilityless_delete: {
+        type: "require_approval",
+        route: { type: "prove_it", approvers: ["owner-id"] },
+      },
+    });
+    const graph = new StateGraph(NautiloStateAnnotation)
+      .addNode("post_model", createPostModelNode(resolver, {
+        matchCommandApproval: async () => {
+          standingCalls += 1;
+          return { id: "standing-rule", scope: "server" as const };
+        },
+        resolveWorkstationApprovalOverride: () => {
+          workstationCalls += 1;
+          return { override: "auto", executionClass: "profile_bound_sandbox" };
+        },
+        isPinEnrolled: async () => true,
+      }))
+      .addEdge(START, "post_model")
+      .addEdge("post_model", END)
+      .compile({ checkpointer: new MemorySaver() });
+    const state = makeState([
+      new AIMessage({
+        content: "",
+        tool_calls: [{
+          id: "capabilityless-delete-call",
+          name: "capabilityless_delete",
+          args: { recordId: "record-1" },
+        }],
+      }),
+    ]);
+    state.threadId = 56;
+
+    const parked = await graph.invoke(state, {
+      configurable: { thread_id: "capabilityless-prove-it-floor" },
+    }) as Awaited<ReturnType<typeof graph.invoke>> & {
+      __interrupt__?: Array<{ value?: unknown }>;
+    };
+
+    expect(parked).toMatchObject({
+      __interrupt__: [{ value: {
+        type: "prove_it_challenge",
+        tools: [{ id: "capabilityless-delete-call", name: "capabilityless_delete" }],
+      } }],
+    });
+    expect(standingCalls).toBe(0);
+    expect(workstationCalls).toBe(0);
   });
 
   test("require_approval with external binary → approval_ask interrupt (throws outside graph)", async () => {

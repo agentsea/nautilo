@@ -1,4 +1,5 @@
 import type { LatticeStorage } from "@nautilo/lattice-crypto";
+import type { RoomHistoryTerminalExecutionSummary } from "@nautilo/types";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import {
   actors, and, asc, desc, eq, gt, gte, inArray, lt, lte, or, sql,
@@ -6,12 +7,14 @@ import {
   sessionMessageCryptoRevisions, conversationShadowTurnOperations,
   conversationHumanPeerShadowOperations, conversationSharedAgentShadowOperations,
   conversationSharedAgentShadowExecutions, conversationSharedAgentShadowInvocations,
+  conversationSharedAgentShadowExecutionInputs,
   conversationShadowTurnAgentSigners,
 } from "@nautilo/db";
 import { alias } from "drizzle-orm/pg-core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   decodeHumanAiReadableLiveShadowMessagePlan,
+  decodeHumanAiReadableLiveShadowMessageRequest,
 } from "@nautilo/lattice-crypto";
 import {
   decodeLiveShadowMessagePlanV4,
@@ -151,6 +154,7 @@ export type RoomHistorySignerEvidenceTransportV1 =
     readonly planBytesBase64url: string;
     readonly requestBytesBase64url: string;
     readonly requestDigestBase64url: string;
+    readonly committerDeviceSigningPublicKeyBase64url?: string | undefined;
   }>
   | Readonly<{
     /** Server-retained accepted execution authority, not a Human signature. */
@@ -276,6 +280,7 @@ export type RoomHistoryShadowProjection =
     readonly eligibleCount: number;
     readonly records: readonly RoomHistoryShadowProjectionRecord[];
     readonly signerEvidence: readonly RoomHistorySignerEvidenceTransportV1[];
+    readonly terminalExecutions: readonly RoomHistoryTerminalExecutionSummary[];
   }>
   | Readonly<{
     readonly status: "disabled" | "ineligible";
@@ -306,6 +311,140 @@ export interface PostgresRoomHistoryShadowProjectionOptions {
   readonly resolveExistingRetainedGeneration?: (input: Readonly<{
     namespaceId: string; keyClass: "ai" | "human"; generation: number; accessRevision: number;
   }>) => Promise<ExistingMessageRetainedGeneration | null>;
+  readonly resolveTerminalExecutions?: (input: Readonly<{
+    roomId: string;
+    selectedCoordinates: readonly RoomHistorySelectedCoordinate[];
+  }>) => Promise<readonly RoomHistoryTerminalExecutionSummary[]>;
+}
+
+export async function selectRoomHistoryTerminalExecutions(
+  product: ConversationProductPostgresHandle,
+  input: Readonly<{
+    roomId: string;
+    selectedCoordinates: readonly RoomHistorySelectedCoordinate[];
+  }>,
+): Promise<readonly RoomHistoryTerminalExecutionSummary[]> {
+  const requested = input.selectedCoordinates.flatMap((coordinate, selectionOrdinal) =>
+    coordinate.role === "user" ? [{
+      selectionOrdinal,
+      sessionId: coordinate.sessionId,
+      messageId: coordinate.messageId,
+      editRevision: coordinate.editRevision,
+    }] : []
+  );
+  if (requested.length === 0) return Object.freeze([]);
+  const coordinateMatches = requested.map((coordinate) => and(
+    eq(sessionMessages.sessionId, coordinate.sessionId),
+    eq(sessionMessages.id, coordinate.messageId),
+    eq(sessionMessages.editRevision, coordinate.editRevision),
+  )!);
+  const rows = await executeTypedConversationProductQuery(
+    product,
+    conversationProductTypedDb.select({
+      message_id: sessionMessages.id,
+      execution_id: conversationSharedAgentShadowExecutions.executionId,
+      execution_sequence: conversationSharedAgentShadowExecutions.sequence,
+      state: conversationSharedAgentShadowExecutions.state,
+      terminal_reason: conversationSharedAgentShadowExecutions.terminalReason,
+    })
+      .from(conversationSharedAgentShadowExecutionInputs)
+      .innerJoin(
+        conversationSharedAgentShadowExecutions,
+        eq(
+          conversationSharedAgentShadowExecutions.executionId,
+          conversationSharedAgentShadowExecutionInputs.executionId,
+        ),
+      )
+      .innerJoin(
+        sessionMessages,
+        and(
+          eq(
+            sessionMessages.id,
+            conversationSharedAgentShadowExecutionInputs.messageId,
+          ),
+          or(...coordinateMatches),
+        ),
+      )
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+      .where(and(
+        eq(sessions.roomId, input.roomId),
+        eq(conversationSharedAgentShadowExecutions.roomId, input.roomId),
+        eq(sessionMessages.role, "user"),
+        or(
+          and(
+            eq(conversationSharedAgentShadowExecutions.state, "fallback"),
+            eq(
+              conversationSharedAgentShadowExecutions.terminalReason,
+              "agent_agent_input_cancelled",
+            ),
+          ),
+          and(
+            eq(conversationSharedAgentShadowExecutions.state, "failed"),
+            eq(
+              conversationSharedAgentShadowExecutions.terminalReason,
+              "process_lost",
+            ),
+          ),
+        ),
+      ))
+      .orderBy(asc(conversationSharedAgentShadowExecutions.sequence)),
+  );
+  const requestedOrder = new Map(requested.map((coordinate) => [
+    coordinate.messageId,
+    coordinate.selectionOrdinal,
+  ]));
+  const summaries: Array<RoomHistoryTerminalExecutionSummary & {
+    readonly executionSequence: number;
+  }> = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const messageId = counter(
+      "Room history terminal execution Message ID",
+      row["id"],
+      1,
+    );
+    const executionId = text(
+      "Room history terminal execution ID",
+      row["execution_id"],
+    );
+    const executionSequence = counter(
+      "Room history terminal execution sequence",
+      row["sequence"],
+      1,
+    );
+    exactId("Room history terminal execution ID", executionId, PORTABLE_ID);
+    const state = text("Room history terminal execution state", row["state"]);
+    const reason = text(
+      "Room history terminal execution reason",
+      row["terminal_reason"],
+    );
+    const classification = state === "fallback"
+      && reason === "agent_agent_input_cancelled"
+      ? "cancelled" as const
+      : state === "failed" && reason === "process_lost"
+      ? "process_lost" as const
+      : null;
+    if (classification === null) {
+      throw new TypeError("Room history terminal execution is invalid");
+    }
+    const identity = `${messageId}\0${executionId}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    summaries.push(Object.freeze({
+      messageId,
+      executionId,
+      classification,
+      executionSequence,
+    }));
+  }
+  summaries.sort((left, right) =>
+    (requestedOrder.get(left.messageId) ?? Number.MAX_SAFE_INTEGER)
+      - (requestedOrder.get(right.messageId) ?? Number.MAX_SAFE_INTEGER)
+      || left.executionSequence - right.executionSequence
+  );
+  return Object.freeze(summaries.map(({ executionSequence: _sequence, ...summary }) =>
+    Object.freeze(summary)
+  ));
 }
 
 function counter(label: string, value: unknown, minimum = 0): number {
@@ -1595,6 +1734,7 @@ export function createPostgresRoomHistoryShadowProjection(
           const record = records.get(`${coordinate.sessionId}:${coordinate.messageId}:${coordinate.editRevision}`);
           return record === undefined ? [] : [record];
         })), signerEvidence: Object.freeze(ready.flatMap((group) => group.signerEvidence)),
+        terminalExecutions: Object.freeze(ready.flatMap((group) => group.terminalExecutions)),
       });
     }
     const keyClass = schemes.has("human") ? "human" as const : "ai" as const;
@@ -1871,8 +2011,7 @@ export function createPostgresRoomHistoryShadowProjection(
       .filter(({ row }) => !isExistingRepresentation(row)
         && !isHumanEditedRepresentation(row)
         && (row["role"] === "assistant" || row["role"] === "tool"
-          || (operationFamily(row) === "shared_human"
-            && (protectedOnly || row["content"] == null))))
+          || operationFamily(row) === "shared_human"))
       .map(({ row }) => {
         const operationId = operationIdFor(row);
         return [operationId, row] as const;
@@ -1900,6 +2039,60 @@ export function createPostgresRoomHistoryShadowProjection(
             selectedCount: input.selectedCoordinates.length, eligibleCount: eligible.length,
           });
         }
+        let humanRequest;
+        try {
+          humanRequest = decodeHumanAiReadableLiveShadowMessageRequest(requestBytes);
+        } catch {
+          return Object.freeze({ status: "unavailable" as const,
+            reason: "projection_corrupt" as const,
+            selectedCount: selected.length, eligibleCount: eligible.length });
+        }
+        const coordinatesMatch = humanRequest.operationId === operationId
+          && humanPlan.operationId === operationId
+          && bytesEqual(sha256(planBytes), humanRequest.planDigest)
+          && humanPlan.formatVersion === humanRequest.formatVersion
+          && humanRequest.namespaceId === namespaceId
+          && humanRequest.roomId === input.roomId
+          && humanRequest.subjectHumanId === row["source_human_id"]
+          && humanRequest.sessionId === row["session_id"]
+          && humanRequest.messageId === Number(row["message_id"])
+          && humanRequest.revision === Number(row["edit_revision"])
+          && humanPlan.subjectHumanId === humanRequest.subjectHumanId
+          && humanPlan.committerDeviceId === humanRequest.committerDeviceId
+          && humanPlan.committerDeviceSigningKeyGeneration === humanRequest.committerDeviceSigningKeyGeneration
+          && humanPlan.hostAuthorizationRevision === humanRequest.hostAuthorizationRevision
+          && humanPlan.roomId === humanRequest.roomId
+          && humanPlan.sessionId === humanRequest.sessionId
+          && humanPlan.humanMessageId === humanRequest.messageId
+          && humanPlan.namespaceId === humanRequest.namespaceId
+          && humanPlan.namespaceAccessRevision === humanRequest.namespaceAccessRevision
+          && humanPlan.namespaceKeyGeneration === humanRequest.namespaceKeyGeneration
+          && humanPlan.transcriptOrdinal === humanRequest.transcriptOrdinal;
+        let signer: Awaited<ReturnType<ResolveRoomHistoryHumanEditedRepresentationAuthority>> | undefined;
+        try {
+          if (!coordinatesMatch) return Object.freeze({ status: "unavailable" as const,
+            reason: "projection_corrupt" as const,
+            selectedCount: selected.length, eligibleCount: eligible.length });
+          signer = await options.resolveHumanEditedRepresentationAuthority?.({
+            subjectHumanId: input.subjectHumanId,
+            readerDeviceId,
+            namespaceId,
+            keyClass: "ai",
+            generation: humanRequest.namespaceKeyGeneration,
+            accessRevision: humanRequest.namespaceAccessRevision,
+            authorHumanId: humanRequest.subjectHumanId,
+            committerDeviceId: humanRequest.committerDeviceId,
+            committerHostAuthorizationRevision: humanRequest.hostAuthorizationRevision,
+          });
+          if (signer?.status === "ready"
+            && signer.headDigestBase64url !== base64url(humanRequest.namespaceHeadDigest)) {
+            signer = undefined;
+          }
+        } finally {
+          for (const value of Object.values(humanRequest)) {
+            if (value instanceof Uint8Array) value.fill(0);
+          }
+        }
         const kind = humanPlan.formatVersion === 2
           ? "human_ai_readable_live_shadow_request_v2" as const
           : "human_ai_readable_live_shadow_request_v1" as const;
@@ -1910,6 +2103,10 @@ export function createPostgresRoomHistoryShadowProjection(
         signerEvidence.push(Object.freeze({
           kind,
           operationId,
+          ...(signer?.status === "ready" ? {
+            committerDeviceSigningPublicKeyBase64url:
+              signer.committerDeviceSigningPublicKeyBase64url,
+          } : {}),
           planBytesBase64url: Buffer.from(planBytes).toString("base64url"),
           requestBytesBase64url: Buffer.from(requestBytes).toString("base64url"),
           requestDigestBase64url: Buffer.from(requestDigest).toString("base64url"),
@@ -2096,6 +2293,17 @@ export function createPostgresRoomHistoryShadowProjection(
         }
       }
     }
+    let terminalExecutions: readonly RoomHistoryTerminalExecutionSummary[];
+    try {
+      terminalExecutions = await (
+        options.resolveTerminalExecutions
+          ?? ((request) => selectRoomHistoryTerminalExecutions(options.product, request))
+      )({ roomId: input.roomId, selectedCoordinates: selected });
+    } catch {
+      // Terminal summaries are additive lifecycle presentation. A failed
+      // summary read must not quarantine or hide otherwise valid mapped output.
+      terminalExecutions = Object.freeze([]);
+    }
     return Object.freeze({
       status: "ready" as const,
       authority,
@@ -2103,6 +2311,7 @@ export function createPostgresRoomHistoryShadowProjection(
       eligibleCount: records.length,
       records: Object.freeze(records),
       signerEvidence: Object.freeze(signerEvidence),
+      terminalExecutions: Object.freeze([...terminalExecutions]),
     });
   };
 }

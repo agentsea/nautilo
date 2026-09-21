@@ -14,6 +14,7 @@ import { eventBus } from "./event-bus";
 import {
   isForegroundContextPreparationWaitingError,
 } from "./conversation/foreground-context-preparation";
+import { getCurrentLiveShadowTurnContext } from "./conversation/live-shadow-turn-context";
 import type { FullEncryptionDurableJobInputReferenceV1 } from
   "./foreground-turn-lifecycle";
 
@@ -95,6 +96,7 @@ export class Job {
   private abortController: AbortController | null = null;
   /** Persisted/emitted on cancellation, including planned server shutdown. */
   private cancellationMessage = "Cancelled by user";
+  private cancellationCause: "cancelled" | "process_lost" = "cancelled";
   private config: JobConfig;
 
   constructor(config: JobConfig) {
@@ -186,6 +188,12 @@ export class Job {
     if (!this._id) throw new Error("Must call persist() before execute()");
 
     this.abortController = new AbortController();
+    const protectedSession = getCurrentLiveShadowTurnContext()?.session;
+    const failProtectedCancellation = () => protectedSession?.fail(
+      "agent_input",
+      authorizationSignal?.aborted === true ? "protected_unavailable" : this.cancellationCause,
+    );
+    this.abortController.signal.addEventListener("abort", failProtectedCancellation, { once: true });
     const cancelForAuthorization = () => {
       this.cancellationMessage =
         "Encryption authorization expired or changed. Please try again.";
@@ -221,6 +229,7 @@ export class Job {
         await this.runExecutor();
       }
     } finally {
+      this.abortController.signal.removeEventListener("abort", failProtectedCancellation);
       authorizationSignal?.removeEventListener(
         "abort",
         cancelForAuthorization,
@@ -382,8 +391,12 @@ export class Job {
     });
   }
 
-  async cancel(message = "Cancelled by user"): Promise<void> {
+  async cancel(
+    message = "Cancelled by user",
+    cause: "cancelled" | "process_lost" = "cancelled",
+  ): Promise<void> {
     if (this.isTerminal()) return;
+    this.cancellationCause = cause;
     const visibleMessage = this.hasFullSinkDisposition()
       ? FULL_JOB_CANCELLED_MESSAGE
       : message;
