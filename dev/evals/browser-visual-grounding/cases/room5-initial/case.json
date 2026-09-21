@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "room5-initial",
+  "description": "AgentSea Gym room 5 initial state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room5",
+  "capturedAt": "2026-09-21T07:36:14.768Z",
+  "captureDurationMs": 242,
+  "evidencePairWindowMs": 68,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e10": {
+      "role": "combobox",
+      "name": "Favorite animal"
+    },
+    "e11": {
+      "role": "LabelText",
+      "name": ""
+    },
+    "e12": {
+      "role": "LabelText",
+      "name": ""
+    },
+    "e13": {
+      "role": "LabelText",
+      "name": ""
+    },
+    "e14": {
+      "role": "generic",
+      "name": ""
+    },
+    "e15": {
+      "role": "radio",
+      "name": "Red"
+    },
+    "e16": {
+      "role": "radio",
+      "name": "Yellow"
+    },
+    "e17": {
+      "role": "radio",
+      "name": "Blue"
+    },
+    "e18": {
+      "role": "textbox",
+      "name": "Birth date"
+    },
+    "e19": {
+      "role": "button",
+      "name": "Choose date"
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room #5: Quite a complex form"
+    },
+    "e3": {
+      "role": "button",
+      "name": "SUBMIT"
+    },
+    "e4": {
+      "role": "link",
+      "name": "Back to Home"
+    },
+    "e5": {
+      "role": "generic",
+      "name": ""
+    },
+    "e6": {
+      "role": "generic",
+      "name": ""
+    },
+    "e7": {
+      "role": "heading",
+      "name": "Favorite color"
+    },
+    "e8": {
+      "role": "generic",
+      "name": ""
+    },
+    "e9": {
+      "role": "textbox",
+      "name": "Name"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 1333,
+    "sha256": "e8fa0b04599f278a2349601e198cc17a64a951a4ee87cd3693c90aa80390fa54"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 68351,
+    "sha256": "382c51e4d19e95cbdeec3626954b113903f7705e3b30b0fa45ac31e73a682730"
+  }
+}

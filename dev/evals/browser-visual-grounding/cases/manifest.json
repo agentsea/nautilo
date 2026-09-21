@@ -1,4 +1,8 @@
 {
   "schemaVersion": 1,
-  "cases": []
+  "cases": [
+    {
+      "id": "room5-initial"
+    }
+  ]
 }
