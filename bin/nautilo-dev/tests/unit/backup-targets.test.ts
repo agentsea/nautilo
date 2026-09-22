@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import { DATA_TABLES } from "../../src/lib/docker-db";
+import { DATA_TABLES, SERIAL_PK_TABLES } from "../../src/lib/docker-db";
 import { RESTORE_DATA_TABLES } from "../../src/lib/preflight";
 import { RESTORE_MIGRATIONS } from "../../src/lib/restore-migrations";
 
@@ -85,6 +85,23 @@ describe("backup restore target allowlists", () => {
     expect(indexOf("public.task_run_result_crypto_revisions")).toBeLessThan(
       indexOf("public.task_runs"),
     );
+  });
+
+  test("advances Task crypto ledger sequences after COPY restore", () => {
+    const byTable = new Map(
+      SERIAL_PK_TABLES.map((entry) => [entry.table, entry]),
+    );
+
+    expect(byTable.get("task_definition_crypto_revisions")).toEqual({
+      table: "task_definition_crypto_revisions",
+      seq: "task_definition_crypto_revisions_sequence_seq",
+      pkCol: "sequence",
+    });
+    expect(byTable.get("task_run_result_crypto_revisions")).toEqual({
+      table: "task_run_result_crypto_revisions",
+      seq: "task_run_result_crypto_revisions_sequence_seq",
+      pkCol: "sequence",
+    });
   });
 
   test("restores D468 push lifecycle rows after their foreign-key parents", () => {

@@ -4,6 +4,7 @@ import {
   inArray,
   isNull,
   lte,
+  ne,
   or,
   sql,
   taskDefinitionCryptoRevisions,
@@ -20,6 +21,7 @@ import {
   assertTaskContentCoordinateV1,
   assertTaskContentRevisionLifecycleV1,
   deriveTaskContentCryptoObjectIdV1,
+  fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
   taskContentObjectTypeV1,
@@ -38,7 +40,11 @@ import {
   type ConversationProductPostgresHandle,
   type ConversationProductPostgresTransaction,
 } from "../message/postgres-conversation-product-store.ts";
-import type { ProtectedTaskMetadataProjectionV1 } from "@nautilo/types";
+import {
+  assertProtectedTaskOperationalMetadataProjectionV1,
+  type ProtectedTaskMetadataProjectionV1,
+  type ProtectedTaskOperationalMetadataProjectionV1,
+} from "@nautilo/types";
 
 const LEASE_SECONDS = 60;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -162,6 +168,10 @@ function assertFailureCode(value: TaskContentFailureCode): void {
   if (!FAILURE_CODES.has(value)) throw new TypeError("Task content failure code is invalid");
 }
 
+function inAllowedDefinitionStatus(row: ConversationProductDatabaseRow): boolean {
+  return ["pending", "paused"].includes(text(row, "task_status"));
+}
+
 function coordinateFromRow(kind: LedgerKind, row: ConversationProductDatabaseRow): TaskContentCoordinateV1 {
   const common = {
     taskId: text(row, "task_id"),
@@ -196,7 +206,9 @@ function lifecycleFromRow(kind: LedgerKind, row: ConversationProductDatabaseRow)
     authorityFingerprint: bytes(row, "authority_fingerprint"),
     requiredNamespaceFingerprint: bytes(row, "required_namespace_fingerprint"),
     operationalMetadata: kind === "definition"
-      ? Object.freeze({ ...jsonObject(row, "operational_metadata") })
+      ? Object.freeze({
+        ...jsonObject(row, "operational_metadata"),
+      }) as ProtectedTaskOperationalMetadataProjectionV1
       : null,
     completion,
     disposition: disposition as TaskContentRevisionLifecycleV1["disposition"],
@@ -284,8 +296,18 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0],
   ): ReturnType<TaskContentProductStorePort["reserveRevision"]> {
     this.#assertReservation(input);
-    const authority = await this.#resolveAndMatchAuthority(input.requesterHumanId, input.namespaceId, input.authorityFingerprint);
-    if (authority === null) return { status: "stale" };
+    const authority = await this.#resolveCurrentAuthority({
+      requesterHumanId: input.requesterHumanId,
+      namespaceId: input.namespaceId,
+    });
+    if (
+      authority === null
+      || !this.#authorityIdentityMatches(
+        authority,
+        input.requesterHumanId,
+        input.namespaceId,
+      )
+    ) return { status: "stale" };
     return this.#handle.transaction(async (transaction) => {
       const operations = await this.#operationRows(transaction, input.operationId, true);
       if (operations.length > 0) {
@@ -299,6 +321,10 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
           state: await this.#stateFromLifecycle(transaction, lifecycle, authority, false),
         };
       }
+      if (!sameBytes(
+        fingerprintTaskContentAuthorityV1(authority),
+        input.authorityFingerprint,
+      )) return { status: "stale" };
       if (await this.#coordinateRow(transaction, input.coordinate, true) !== null) {
         return { status: "conflict" };
       }
@@ -363,17 +389,28 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         || lifecycle.representation !== input.expectedRepresentation
         || lifecycle.completion !== "complete"
         || !["active", "mapped"].includes(lifecycle.disposition)) return "stale";
-      const current = await this.#resolveAndMatchAuthority(
-        lifecycle.requesterHumanId, lifecycle.namespaceId, input.expectedAuthorityFingerprint,
-      );
+      const current = await this.#currentAuthority(lifecycle);
       if (current === null
+        || !this.#authorityIdentityMatches(
+          current,
+          lifecycle.requesterHumanId,
+          lifecycle.namespaceId,
+        )
         || !sameBytes(input.expectedAuthorityFingerprint, lifecycle.authorityFingerprint)) {
         if (lifecycle.disposition === "active") await this.#persistAuthorityStale(transaction, lifecycle);
         return "wrong_authority";
       }
+      const exactCurrentAuthority = sameBytes(
+        fingerprintTaskContentAuthorityV1(current),
+        lifecycle.authorityFingerprint,
+      );
       const result = input.coordinate.kind === "definition"
-        ? await this.#mapDefinition(transaction, lifecycle)
-        : await this.#mapResult(transaction, lifecycle);
+        ? await this.#mapDefinition(transaction, lifecycle, exactCurrentAuthority)
+        : await this.#mapResult(transaction, lifecycle, exactCurrentAuthority);
+      if (result === "wrong_authority") {
+        if (lifecycle.disposition === "active") await this.#persistAuthorityStale(transaction, lifecycle);
+        return result;
+      }
       if (result !== "applied" && result !== "duplicate") {
         if (lifecycle.disposition === "active") await this.#persistStaleMapping(transaction, lifecycle);
         return result;
@@ -493,14 +530,13 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     assertDigest("Task request digest", input.requestDigest);
     assertDigest("Task authority fingerprint", input.authorityFingerprint);
     assertDigest("Task Namespace fingerprint", input.requiredNamespaceFingerprint);
-    if (
-      (input.coordinate.kind === "definition"
-        && (input.operationalMetadata === null
-          || typeof input.operationalMetadata !== "object"
-          || Array.isArray(input.operationalMetadata)))
-      || (input.coordinate.kind === "run_result"
-        && input.operationalMetadata !== null)
-    ) throw new TypeError("Task content operational metadata is invalid");
+    if (input.coordinate.kind === "definition") {
+      assertProtectedTaskOperationalMetadataProjectionV1(
+        input.operationalMetadata,
+      );
+    } else if (input.operationalMetadata !== null) {
+      throw new TypeError("Task content operational metadata is invalid");
+    }
     if (!PORTABLE_ID.test(input.operationId)
       || new TextEncoder().encode(input.operationId).length > 128) {
       throw new TypeError("Task content operation ID is invalid");
@@ -519,13 +555,19 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (leaseToken !== null) assertUuid("Task content lease token", leaseToken);
   }
 
-  async #resolveAndMatchAuthority(requesterHumanId: string, namespaceId: string, fingerprint: Uint8Array): Promise<TaskContentAuthorityV1 | null> {
-    const authority = await this.#resolveCurrentAuthority({ requesterHumanId, namespaceId });
-    return authority !== null
-      && authority.requesterHumanId === requesterHumanId
-      && authority.namespaceId === namespaceId
-      && sameBytes(fingerprintTaskContentAuthorityV1(authority), fingerprint)
-      ? authority : null;
+  #authorityIdentityMatches(
+    authority: TaskContentAuthorityV1,
+    requesterHumanId: string,
+    namespaceId: string,
+  ): boolean {
+    return sameBytes(
+      fingerprintTaskContentAuthorityIdentityV1(authority),
+      fingerprintTaskContentAuthorityIdentityV1({
+        requesterHumanId,
+        namespaceId,
+        keyClass: "ai",
+      }),
+    );
   }
 
   #currentAuthority(lifecycle: TaskContentRevisionLifecycleV1): Promise<TaskContentAuthorityV1 | null> {
@@ -602,7 +644,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       ? conversationProductTypedDb.insert(taskDefinitionCryptoRevisions).values({
         ...values,
         contentRevision: input.coordinate.contentRevision,
-        operationalMetadata: input.operationalMetadata ?? {},
+        operationalMetadata: sql`convert_from(${new TextEncoder().encode(JSON.stringify(input.operationalMetadata ?? {}))}::bytea, 'UTF8')::jsonb`,
       }).returning(this.#definitionSelection())
       : conversationProductTypedDb.insert(taskRunResultCryptoRevisions).values({ ...values, taskRunId: input.coordinate.taskRunId, resultRevision: input.coordinate.contentRevision }).returning(this.#resultSelection());
     return oneOrNone(await executeTypedConversationProductQuery(transaction, query), "Task content reservation insert");
@@ -611,7 +653,9 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
   async #predecessorIsCurrent(transaction: ConversationProductPostgresTransaction, input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0]): Promise<boolean> {
     if (input.coordinate.kind === "definition") {
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
-        owner_id: tasks.ownerId, content_namespace_id: tasks.contentNamespaceId,
+        owner_id: tasks.ownerId,
+        task_status: sql<string>`${tasks.status}`.as("task_status"),
+        content_namespace_id: tasks.contentNamespaceId,
         content_revision: tasks.contentRevision, content_representation: tasks.contentRepresentation,
         crypto_object_id: tasks.cryptoObjectId,
         crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint,
@@ -620,11 +664,13 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       const row = oneOrNone(rows, "Task predecessor lookup");
       if (input.coordinate.contentRevision === 1) {
         return row === null || (text(row, "owner_id") === input.requesterHumanId
+          && inAllowedDefinitionStatus(row)
           && integer(row, "content_revision") === 0
           && nullableText(row, "content_namespace_id") === null
           && text(row, "content_representation") === "ordinary");
       }
       return row !== null && text(row, "owner_id") === input.requesterHumanId
+        && inAllowedDefinitionStatus(row)
         && nullableText(row, "content_namespace_id") === input.namespaceId
         && integer(row, "content_revision") === input.coordinate.contentRevision - 1
         && ["protected", "dual"].includes(text(row, "content_representation"))
@@ -639,12 +685,17 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       result_crypto_object_id: taskRuns.resultCryptoObjectId,
       result_crypto_required_namespace_fingerprint: taskRuns.resultCryptoRequiredNamespaceFingerprint,
       result_crypto_mapping_state: taskRuns.resultCryptoMappingState,
-      owner_id: tasks.ownerId, parent_namespace_id: tasks.contentNamespaceId,
+      run_status: sql<string>`${taskRuns.status}`.as("run_status"),
+      owner_id: tasks.ownerId,
+      task_status: sql<string>`${tasks.status}`.as("task_status"),
+      parent_namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("parent_namespace_id"),
     }).from(taskRuns).innerJoin(tasks, eq(tasks.id, taskRuns.taskId)).where(eq(taskRuns.id, input.coordinate.taskRunId)).for("update", { of: taskRuns }).limit(2));
     const row = oneOrNone(rows, "Task result predecessor lookup");
     if (row === null || text(row, "task_id") !== input.coordinate.taskId
       || text(row, "owner_id") !== input.requesterHumanId
-      || nullableText(row, "parent_namespace_id") !== input.namespaceId) return false;
+      || nullableText(row, "parent_namespace_id") !== input.namespaceId
+      || text(row, "task_status") === "cancelled"
+      || text(row, "run_status") === "cancelled") return false;
     const previous = integer(row, "result_revision");
     return previous === input.coordinate.contentRevision - 1
       && (previous === 0
@@ -659,8 +710,8 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
 
   async #productRow(transaction: ConversationProductPostgresTransaction, coordinate: TaskContentCoordinateV1, lock: boolean): Promise<ConversationProductDatabaseRow | null> {
     const query = coordinate.kind === "definition"
-      ? conversationProductTypedDb.select({ task_id: tasks.id, owner_id: tasks.ownerId, prompt: tasks.prompt, expected_output: tasks.expectedOutput, last_error: tasks.lastError, metadata_json: sql<string>`${tasks.metadata}::text`.as("metadata_json"), content_revision: tasks.contentRevision, content_namespace_id: tasks.contentNamespaceId, content_representation: tasks.contentRepresentation, crypto_object_id: tasks.cryptoObjectId, crypto_access_revision: tasks.cryptoAccessRevision, crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint, crypto_mapping_state: tasks.cryptoMappingState }).from(tasks).where(eq(tasks.id, coordinate.taskId)).limit(2)
-      : conversationProductTypedDb.select({ task_id: taskRuns.taskId, task_run_id: taskRuns.id, result_revision: taskRuns.resultRevision, result_content_namespace_id: taskRuns.resultContentNamespaceId, result_representation: taskRuns.resultRepresentation, crypto_object_id: taskRuns.resultCryptoObjectId, crypto_access_revision: taskRuns.resultCryptoAccessRevision, crypto_required_namespace_fingerprint: taskRuns.resultCryptoRequiredNamespaceFingerprint, crypto_mapping_state: taskRuns.resultCryptoMappingState }).from(taskRuns).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId))).limit(2);
+      ? conversationProductTypedDb.select({ task_id: sql<string>`${tasks.id}`.as("task_id"), owner_id: tasks.ownerId, task_status: sql<string>`${tasks.status}`.as("task_status"), prompt: tasks.prompt, expected_output: tasks.expectedOutput, last_error: tasks.lastError, metadata_json: sql<string>`${tasks.metadata}::text`.as("metadata_json"), content_revision: tasks.contentRevision, content_namespace_id: tasks.contentNamespaceId, content_representation: tasks.contentRepresentation, crypto_object_id: tasks.cryptoObjectId, crypto_access_revision: tasks.cryptoAccessRevision, crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint, crypto_mapping_state: tasks.cryptoMappingState }).from(tasks).where(eq(tasks.id, coordinate.taskId)).limit(2)
+      : conversationProductTypedDb.select({ task_id: taskRuns.taskId, task_run_id: sql<string>`${taskRuns.id}`.as("task_run_id"), run_status: sql<string>`${taskRuns.status}`.as("run_status"), result_revision: taskRuns.resultRevision, result_content_namespace_id: taskRuns.resultContentNamespaceId, result_representation: taskRuns.resultRepresentation, crypto_object_id: sql<string | null>`${taskRuns.resultCryptoObjectId}`.as("crypto_object_id"), crypto_access_revision: sql<number>`${taskRuns.resultCryptoAccessRevision}`.as("crypto_access_revision"), crypto_required_namespace_fingerprint: sql<Uint8Array | null>`${taskRuns.resultCryptoRequiredNamespaceFingerprint}`.as("crypto_required_namespace_fingerprint"), crypto_mapping_state: sql<string>`${taskRuns.resultCryptoMappingState}`.as("crypto_mapping_state") }).from(taskRuns).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId))).limit(2);
     return oneOrNone(await executeTypedConversationProductQuery(transaction, lock ? query.for("update") : query), "Task content product lookup");
   }
 
@@ -681,7 +732,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     return oneOrNone(await executeTypedConversationProductQuery(transaction, query), "Task content locked lifecycle");
   }
 
-  async #mapDefinition(transaction: ConversationProductPostgresTransaction, lifecycle: TaskContentRevisionLifecycleV1): Promise<"applied" | "duplicate" | "missing" | "stale"> {
+  async #mapDefinition(transaction: ConversationProductPostgresTransaction, lifecycle: TaskContentRevisionLifecycleV1, exactCurrentAuthority: boolean): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
     const coordinate = lifecycle.coordinate;
     if (coordinate.kind !== "definition") throw new Error("Definition mapping kind mismatch");
     const row = await this.#productRow(transaction, coordinate, true);
@@ -698,6 +749,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         && sameJson(jsonObject(row, "metadata_json"), lifecycle.operationalMetadata)
       ))
       && sameBytes(nullableBytes(row, "crypto_required_namespace_fingerprint") ?? new Uint8Array(), lifecycle.requiredNamespaceFingerprint)) return "duplicate";
+    if (!exactCurrentAuthority) return "wrong_authority";
     const expected = coordinate.contentRevision - 1;
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(tasks).set({
       contentRepresentation: lifecycle.representation, contentNamespaceId: lifecycle.namespaceId,
@@ -707,19 +759,19 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         prompt: "",
         expectedOutput: null,
         lastError: null,
-        metadata: lifecycle.operationalMetadata ?? {},
+        metadata: sql`convert_from(${new TextEncoder().encode(JSON.stringify(lifecycle.operationalMetadata ?? {}))}::bytea, 'UTF8')::jsonb`,
       } : {}),
       updatedAt: sql`CURRENT_TIMESTAMP`,
-    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, lifecycle.requesterHumanId), eq(tasks.contentRevision, expected), expected === 0
+    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, lifecycle.requesterHumanId), inArray(tasks.status, ["pending", "paused"]), eq(tasks.contentRevision, expected), expected === 0
       ? and(isNull(tasks.contentNamespaceId), eq(tasks.contentRepresentation, "ordinary"))
       : and(eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
     return oneOrNone(updated, "Task definition mapping CAS") === null ? "stale" : "applied";
   }
 
-  async #mapResult(transaction: ConversationProductPostgresTransaction, lifecycle: TaskContentRevisionLifecycleV1): Promise<"applied" | "duplicate" | "missing" | "stale"> {
+  async #mapResult(transaction: ConversationProductPostgresTransaction, lifecycle: TaskContentRevisionLifecycleV1, exactCurrentAuthority: boolean): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
     const coordinate = lifecycle.coordinate;
     if (coordinate.kind !== "run_result") throw new Error("Result mapping kind mismatch");
-    const parent = oneOrNone(await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({ owner_id: tasks.ownerId, namespace_id: tasks.contentNamespaceId }).from(tasks).where(eq(tasks.id, coordinate.taskId)).for("update").limit(2)), "Task result parent lookup");
+    const parent = oneOrNone(await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({ owner_id: tasks.ownerId, namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("namespace_id"), task_status: sql<string>`${tasks.status}`.as("task_status") }).from(tasks).where(eq(tasks.id, coordinate.taskId)).for("update").limit(2)), "Task result parent lookup");
     if (parent === null || text(parent, "owner_id") !== lifecycle.requesterHumanId || nullableText(parent, "namespace_id") !== lifecycle.namespaceId) return "stale";
     const row = await this.#productRow(transaction, coordinate, true);
     if (row === null) return "missing";
@@ -729,13 +781,16 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       && text(row, "result_representation") === lifecycle.representation
       && text(row, "crypto_mapping_state") === "verified"
       && sameBytes(nullableBytes(row, "crypto_required_namespace_fingerprint") ?? new Uint8Array(), lifecycle.requiredNamespaceFingerprint)) return "duplicate";
+    if (!exactCurrentAuthority) return "wrong_authority";
+    if (text(parent, "task_status") === "cancelled"
+      || text(row, "run_status") === "cancelled") return "stale";
     const expected = coordinate.contentRevision - 1;
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(taskRuns).set({
       resultRepresentation: lifecycle.representation, resultContentNamespaceId: lifecycle.namespaceId,
       resultRevision: coordinate.contentRevision, resultCryptoObjectId: lifecycle.cryptoObjectId,
       resultCryptoAccessRevision: 0, resultCryptoRequiredNamespaceFingerprint: lifecycle.requiredNamespaceFingerprint,
       resultCryptoMappingState: "verified", ...(lifecycle.representation === "protected" ? { resultText: null, lastError: null } : {}),
-    }).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId), eq(taskRuns.resultRevision, expected), expected === 0
+    }).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId), ne(taskRuns.status, "cancelled"), eq(taskRuns.resultRevision, expected), expected === 0
       ? and(isNull(taskRuns.resultContentNamespaceId), eq(taskRuns.resultRepresentation, "ordinary"))
       : and(eq(taskRuns.resultContentNamespaceId, lifecycle.namespaceId), inArray(taskRuns.resultRepresentation, ["protected", "dual"]), eq(taskRuns.resultCryptoMappingState, "verified")))).returning({ task_run_id: taskRuns.id }));
     return oneOrNone(updated, "Task result mapping CAS") === null ? "stale" : "applied";

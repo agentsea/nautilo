@@ -16,6 +16,7 @@ import {
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
 import {
   deriveTaskContentCryptoObjectIdV1,
+  fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   taskContentObjectTypeV1,
@@ -129,6 +130,7 @@ type DurablePublication = Readonly<{
   objectId: string;
   payloadBytes: Uint8Array;
   payloadHash: Uint8Array;
+  genesisManifestHash: Uint8Array;
   accessRevision: number;
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
@@ -215,6 +217,18 @@ async function readDurablePublication(input: Readonly<{
   if (object === null && head === null) return null;
   if (object === null || head === null) conflict("Task crypto state is partial");
   const accessRevision = rowCounter(head, "access_revision");
+  const genesis = oneOrNull(await executeTypedCryptoQuery(
+    input.executor,
+    cryptoTypedDb.select({
+      object_id: objectCryptoAccessManifests.objectId,
+      manifest_hash: objectCryptoAccessManifests.manifestHash,
+      payload_hash: objectCryptoAccessManifests.payloadHash,
+    }).from(objectCryptoAccessManifests).where(and(
+      eq(objectCryptoAccessManifests.objectId, input.objectId),
+      eq(objectCryptoAccessManifests.accessRevision, 0),
+    )).limit(2),
+  ), "Task genesis access manifest");
+  if (genesis === null) conflict("Task crypto state has no genesis manifest");
   const envelopes = await executeTypedCryptoQuery(
     input.executor,
     cryptoTypedDb.select({
@@ -244,10 +258,12 @@ async function readDurablePublication(input: Readonly<{
     rowString(object, "object_id") !== input.objectId
     || rowString(head, "object_id") !== input.objectId
     || rowString(envelopeRow, "object_id") !== input.objectId
+    || rowString(genesis, "object_id") !== input.objectId
     || rowCounter(envelopeRow, "access_revision") !== accessRevision
     || rowCounter(envelopeRow, "ordinal") !== 0
     || !equalBytes(rowBytes(object, "payload_hash"), payloadHash)
     || !equalBytes(rowBytes(head, "payload_hash"), payloadHash)
+    || !equalBytes(rowBytes(genesis, "payload_hash"), payloadHash)
     || !equalBytes(input.crypto.hash(manifestBytes), manifestHash)
     || !equalBytes(rowBytes(envelopeRow, "envelope_hash"), envelopeHash)
     || envelope.context.objectId !== input.objectId
@@ -271,6 +287,7 @@ async function readDurablePublication(input: Readonly<{
       objectId: input.objectId,
       payloadBytes,
       payloadHash,
+      genesisManifestHash: rowBytes(genesis, "manifest_hash"),
       accessRevision,
       manifestBytes,
       manifestHash,
@@ -298,6 +315,24 @@ function exactMatchesDurable(
     && equalBytes(durable.manifestHash, exact.manifestHash)
     && equalBytes(durable.envelopeBytes, exact.envelopeBytes)
     && equalBytes(durable.envelopeHash, exact.envelopeHash);
+}
+
+function exactMatchesRewrappedDurable(
+  exact: ExactPublication,
+  durable: DurablePublication,
+  currentAuthority: TaskContentAuthorityV1,
+): boolean {
+  return durable.objectId === exact.objectId
+    && durable.namespaceId === currentAuthority.namespaceId
+    && durable.bindingRevisionAtWrap
+      === currentAuthority.expectedAccessRevision
+    && equalBytes(durable.payloadBytes, exact.payloadBytes)
+    && equalBytes(durable.payloadHash, exact.payloadHash)
+    && equalBytes(durable.genesisManifestHash, exact.manifestHash)
+    && equalBytes(
+      fingerprintTaskContentAuthorityIdentityV1(currentAuthority),
+      fingerprintTaskContentAuthorityIdentityV1(exact.authority),
+    );
 }
 
 async function insertExact(
@@ -350,6 +385,8 @@ function assertReference(reference: TaskContentCryptoRevisionReferenceV1): void 
     || reference.expectedAccessRevision < 0
     || !(reference.expectedAuthorityFingerprint instanceof Uint8Array)
     || reference.expectedAuthorityFingerprint.length !== 32
+    || !(reference.expectedAuthorityIdentityFingerprint instanceof Uint8Array)
+    || reference.expectedAuthorityIdentityFingerprint.length !== 32
   ) throw new TypeError("Task crypto revision reference is invalid");
 }
 
@@ -362,8 +399,8 @@ async function verifyReference(
   if (
     authority === null
     || !equalBytes(
-      fingerprintTaskContentAuthorityV1(authority),
-      reference.expectedAuthorityFingerprint,
+      fingerprintTaskContentAuthorityIdentityV1(authority),
+      reference.expectedAuthorityIdentityFingerprint,
     )
   ) return null;
   const durable = await withVerifiedCryptoPostgresTransaction(
@@ -429,7 +466,18 @@ export function createPostgresTaskContentCryptoCompletion(
               input.resolveHistoricalHumanDeviceSigningPublicKey,
           });
           if (durable !== null) {
-            if (!exactMatchesDurable(exact, durable)) {
+            const currentAuthority = await input.resolveCurrentAuthority(
+              exact.coordinate,
+            );
+            if (
+              !exactMatchesDurable(exact, durable)
+              && (currentAuthority === null
+                || !exactMatchesRewrappedDurable(
+                  exact,
+                  durable,
+                  currentAuthority,
+                ))
+            ) {
               conflict("Task crypto completion conflicts with durable bytes");
             }
             return "duplicate";

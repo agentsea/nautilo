@@ -25,6 +25,18 @@ export type ProtectedTaskMetadataProjectionV1 = Readonly<{
   [key: string]: ProtectedTaskMetadataJsonValueV1;
 }>;
 
+declare const protectedTaskOperationalMetadataProjectionBrandV1: unique symbol;
+
+/**
+ * Plaintext-safe Task metadata produced only by the canonical classifier.
+ * The nominal brand prevents protected and unclassified metadata projections
+ * from being passed to protected persistence by structural typing alone.
+ */
+export type ProtectedTaskOperationalMetadataProjectionV1 =
+  ProtectedTaskMetadataProjectionV1 & Readonly<{
+    [protectedTaskOperationalMetadataProjectionBrandV1]: true;
+  }>;
+
 export type ProtectedTaskMetadataUnsupportedReasonV1 =
   | "unknown_field"
   | "malformed_field"
@@ -34,7 +46,7 @@ export type ProtectedTaskMetadataClassificationV1 =
   | Readonly<{
       status: "supported";
       version: typeof PROTECTED_TASK_METADATA_VERSION;
-      operational: ProtectedTaskMetadataProjectionV1;
+      operational: ProtectedTaskOperationalMetadataProjectionV1;
       protectedContent: ProtectedTaskMetadataProjectionV1;
     }>
   | Readonly<{
@@ -70,6 +82,7 @@ const TOP_LEVEL_KEYS = new Set([
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const encoder = new TextEncoder();
+const operationalMetadataProjectionsV1 = new WeakSet<object>();
 
 type MutableJsonRecord = Record<string, ProtectedTaskMetadataJsonValueV1>;
 type Unsupported = Extract<ProtectedTaskMetadataClassificationV1, { status: "unsupported" }>;
@@ -193,6 +206,31 @@ function deepFreeze<T extends ProtectedTaskMetadataJsonValueV1>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function brandOperationalMetadataProjectionV1(
+  value: MutableJsonRecord,
+): ProtectedTaskOperationalMetadataProjectionV1 {
+  const frozen = deepFreeze(value);
+  operationalMetadataProjectionsV1.add(frozen);
+  return frozen as unknown as ProtectedTaskOperationalMetadataProjectionV1;
+}
+
+/** True only for the exact operational projection emitted by this module. */
+export function isProtectedTaskOperationalMetadataProjectionV1(
+  value: unknown,
+): value is ProtectedTaskOperationalMetadataProjectionV1 {
+  return record(value) !== null
+    && operationalMetadataProjectionsV1.has(value as object);
+}
+
+/** Fail closed before unclassified metadata reaches plaintext persistence. */
+export function assertProtectedTaskOperationalMetadataProjectionV1(
+  value: unknown,
+): asserts value is ProtectedTaskOperationalMetadataProjectionV1 {
+  if (!isProtectedTaskOperationalMetadataProjectionV1(value)) {
+    throw new TypeError("Task operational metadata must be canonical classifier output");
+  }
 }
 
 function isUnsupported(value: unknown): value is Unsupported {
@@ -649,7 +687,7 @@ export function classifyProtectedTaskMetadataV1(
   const result = {
     status: "supported" as const,
     version: PROTECTED_TASK_METADATA_VERSION,
-    operational: deepFreeze(operational),
+    operational: brandOperationalMetadataProjectionV1(operational),
     protectedContent: deepFreeze(protectedContent),
   };
   return Object.freeze(result);

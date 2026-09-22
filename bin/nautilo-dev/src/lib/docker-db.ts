@@ -540,6 +540,16 @@ export const SERIAL_PK_TABLES: ReadonlyArray<{
     pkCol: "sequence",
   },
   {
+    table: "task_definition_crypto_revisions",
+    seq: "task_definition_crypto_revisions_sequence_seq",
+    pkCol: "sequence",
+  },
+  {
+    table: "task_run_result_crypto_revisions",
+    seq: "task_run_result_crypto_revisions_sequence_seq",
+    pkCol: "sequence",
+  },
+  {
     table: "agent_scope_close_operations",
     seq: "agent_scope_close_operations_sequence_seq",
     pkCol: "sequence",

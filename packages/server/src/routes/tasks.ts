@@ -29,6 +29,7 @@ import {
   and,
   eq,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   getTaskRuns,
   getLatestRunModelByTask,
   listTasksForOwner,
@@ -513,7 +514,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       }
 
       const db = getServerDirectDb();
-      const task = await getTaskById(db, request.params.id);
+      const task = await getTaskByIdWithMutationVersion(db, request.params.id);
       if (!task || task.ownerId !== ownerId) {
         return reply.status(404).send({ error: "Task not found" });
       }
@@ -646,7 +647,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           id: task.id,
           ownerId,
           expectedStatus: task.status,
-          expectedUpdatedAt: task.updatedAt,
+          expectedMutationVersion: task.mutationVersion,
           expectedContentRevision: task.contentRevision,
         },
         patch,

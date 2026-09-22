@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 import {
@@ -33,6 +34,10 @@ function lifecycle(
     taskId: TASK_A,
     contentRevision: 1,
   });
+  const metadata = classifyProtectedTaskMetadataV1({});
+  if (metadata.status !== "supported") {
+    throw new Error("Expected empty Task metadata fixture");
+  }
   return Object.freeze({
     sequence: 1,
     coordinate,
@@ -48,7 +53,7 @@ function lifecycle(
     requiredNamespaceFingerprint: fingerprintTaskContentNamespaceV1(
       authority.namespaceId,
     ),
-    operationalMetadata: {},
+    operationalMetadata: metadata.operational,
     completion: "pending",
     disposition: "active",
     attemptCount: 0,

@@ -576,6 +576,7 @@ export {
 export {
   createTask,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   listTasksForOwner,
   listStoppableTasksForOwnerRoom,
   updateTask,

@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import {
+  PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1,
+  classifyProtectedTaskMetadataV1,
+  type ProtectedTaskOperationalMetadataProjectionV1,
+} from "@nautilo/types";
 
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 import {
@@ -26,6 +31,11 @@ const coordinate = Object.freeze({
   kind: "run_result" as const,
   taskId: TASK_ID,
   taskRunId: RUN_ID,
+  contentRevision: 1,
+});
+const definitionCoordinate = Object.freeze({
+  kind: "definition" as const,
+  taskId: TASK_ID,
   contentRevision: 1,
 });
 const authority = Object.freeze({
@@ -92,6 +102,7 @@ class FakeProduct implements TaskContentProductStorePort {
   throwAfterMark = false;
   throwAfterMap = false;
   tooMany = false;
+  claimedStates: readonly TaskContentRevisionStateV1[] | null = null;
 
   constructor(events: string[]) {
     this.events = events;
@@ -218,6 +229,7 @@ class FakeProduct implements TaskContentProductStorePort {
 
   async claimReconciliationCandidates(input: { leaseToken: string }) {
     this.events.push("product:claim");
+    if (this.claimedStates !== null) return this.claimedStates;
     this.state = Object.freeze({
       ...this.state,
       lifecycle: lifecycle({
@@ -286,6 +298,76 @@ async function reserve(testHarness: ReturnType<typeof harness>) {
   });
 }
 
+function definitionPrepared(): PreparedTaskContentCryptoRevisionV1 {
+  return Object.freeze({
+    coordinate: definitionCoordinate,
+    objectId: deriveTaskContentCryptoObjectIdV1(definitionCoordinate),
+    objectType: "nautilo-task-definition-v1",
+    payloadVersion: TASK_CONTENT_PAYLOAD_VERSION_V1,
+    namespaceId: authority.namespaceId,
+    authorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+  });
+}
+
+function emptyOperationalMetadata(): ProtectedTaskOperationalMetadataProjectionV1 {
+  const classified = classifyProtectedTaskMetadataV1({});
+  if (classified.status !== "supported") {
+    throw new Error("Expected empty Task metadata fixture");
+  }
+  return classified.operational;
+}
+
+function setDefinitionState(
+  testHarness: ReturnType<typeof harness>,
+  operationalMetadata: TaskContentRevisionLifecycleV1["operationalMetadata"],
+): void {
+  testHarness.product.state = Object.freeze({
+    product: Object.freeze({
+      coordinate: definitionCoordinate,
+      namespaceId: authority.namespaceId,
+      representation: "dual",
+      cryptoObjectId: null,
+      cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: null,
+      cryptoMappingState: "stale",
+    }),
+    lifecycle: lifecycle({
+      coordinate: definitionCoordinate,
+      operationId: "task-definition-operation.1",
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(definitionCoordinate),
+      objectType: "nautilo-task-definition-v1",
+      operationalMetadata,
+    }),
+    authority,
+  });
+}
+
+function quarantinedReconciliationState(
+  candidateCoordinate: typeof coordinate | typeof definitionCoordinate,
+  sequence: number,
+): TaskContentRevisionStateV1 {
+  return Object.freeze({
+    product: null,
+    lifecycle: lifecycle({
+      sequence,
+      coordinate: candidateCoordinate,
+      operationId: `reconcile-${candidateCoordinate.kind}-${sequence}`,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(candidateCoordinate),
+      objectType: candidateCoordinate.kind === "definition"
+        ? "nautilo-task-definition-v1"
+        : "nautilo-task-run-result-v1",
+      operationalMetadata: candidateCoordinate.kind === "definition"
+        ? emptyOperationalMetadata()
+        : null,
+      disposition: "quarantined",
+      failureCode: "crypto_mismatch",
+      leaseToken: LEASE,
+      leaseExpiresAt: new Date(60_000),
+    }),
+    authority,
+  });
+}
+
 describe("dormant Task content shadow repository", () => {
   test("completes and verifies exact crypto before mapping a result", async () => {
     const testHarness = harness();
@@ -319,7 +401,67 @@ describe("dormant Task content shadow repository", () => {
       prepared: prepared(),
       operationalMetadata: null,
     })).toEqual({ status: "conflict" });
+    const advancedAuthority = Object.freeze({
+      ...authority,
+      expectedAccessRevision: authority.expectedAccessRevision + 1,
+    });
+    expect(testHarness.repository.reserveRevision({
+      operationId: "task-result-operation.1",
+      requestDigest: new Uint8Array(32).fill(1),
+      representation: "dual",
+      authority: advancedAuthority,
+      prepared: prepared({
+        authorityFingerprint:
+          fingerprintTaskContentAuthorityV1(advancedAuthority),
+      }),
+      operationalMetadata: null,
+    })).rejects.toThrow("not an exact replay");
     expect(testHarness.events).not.toContain("crypto:complete");
+  });
+
+  test("accepts only classifier-produced operational metadata before reserve", async () => {
+    const rejectedMetadata = [
+      { target: "/private/repository", instructions: "protected only" },
+      { unknown: "plaintext escape" },
+      { mode: 42 },
+      { execution: { relayId: "x".repeat(
+        PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1 + 1,
+      ) } },
+    ];
+    for (const operationalMetadata of rejectedMetadata) {
+      const testHarness = harness();
+      expect(() => testHarness.repository.reserveRevision({
+        operationId: "task-definition-operation.1",
+        requestDigest: new Uint8Array(32).fill(1),
+        representation: "dual",
+        authority,
+        prepared: definitionPrepared(),
+        operationalMetadata: operationalMetadata as unknown as
+          ProtectedTaskOperationalMetadataProjectionV1,
+      })).toThrow("canonical classifier output");
+      expect(testHarness.events).not.toContain("product:reserve");
+    }
+
+    const classified = classifyProtectedTaskMetadataV1({
+      target: "/private/repository",
+      mode: "update",
+      publish: "branch",
+      instructions: "protected only",
+    });
+    if (classified.status !== "supported") {
+      throw new Error("expected supported Task metadata fixture");
+    }
+    const accepted = harness();
+    setDefinitionState(accepted, classified.operational);
+    expect(await accepted.repository.reserveRevision({
+      operationId: "task-definition-operation.1",
+      requestDigest: new Uint8Array(32).fill(1),
+      representation: "dual",
+      authority,
+      prepared: definitionPrepared(),
+      operationalMetadata: classified.operational,
+    })).toMatchObject({ status: "reserved", coordinate: definitionCoordinate });
+    expect(accepted.events).toContain("product:reserve");
   });
 
   test("replays across crypto, receipt, and mapping response loss", async () => {
@@ -410,7 +552,34 @@ describe("dormant Task content shadow repository", () => {
     })).rejects.toThrow("product state is inconsistent");
   });
 
-  test("marks current authority drift stale without calling it crypto corruption", async () => {
+  test("replays a mapped revision after access and policy revisions advance", async () => {
+    const testHarness = harness();
+    await reserve(testHarness);
+    await testHarness.repository.completeRevision({
+      coordinate,
+      prepared: prepared(),
+    });
+    const mapped = testHarness.product.state.product!;
+    testHarness.product.state = Object.freeze({
+      ...testHarness.product.state,
+      product: Object.freeze({ ...mapped, cryptoAccessRevision: 4 }),
+      authority: Object.freeze({
+        ...authority,
+        expectedAccessRevision: 4,
+        expectedPolicyRevision: 5,
+      }),
+    });
+
+    expect(await testHarness.repository.completeRevision({
+      coordinate,
+      prepared: prepared(),
+    })).toMatchObject({ status: "replayed", coordinate });
+    expect(testHarness.crypto.lastReference).toMatchObject({
+      expectedAccessRevision: 4,
+    });
+  });
+
+  test("marks current identity drift stale without calling it crypto corruption", async () => {
     const testHarness = harness();
     await reserve(testHarness);
     testHarness.crypto.stored = prepared();
@@ -418,7 +587,7 @@ describe("dormant Task content shadow repository", () => {
       ...testHarness.product.state,
       authority: Object.freeze({
         ...authority,
-        expectedPolicyRevision: authority.expectedPolicyRevision + 1,
+        requesterHumanId: "40000000-0000-4000-8000-000000000002",
       }),
     });
 
@@ -433,6 +602,25 @@ describe("dormant Task content shadow repository", () => {
       failureCode: "authority_stale",
     });
     expect(testHarness.events).toContain("product:authority-stale");
+    expect(testHarness.events).not.toContain("product:quarantine");
+  });
+
+  test("accepts producer ordering across equal-due independent ledgers", async () => {
+    const testHarness = harness();
+    testHarness.product.claimedStates = [
+      quarantinedReconciliationState(definitionCoordinate, 10),
+      quarantinedReconciliationState(coordinate, 1),
+    ];
+
+    const report = await testHarness.repository.reconcilePending({
+      leaseToken: LEASE,
+      limit: 2,
+    });
+
+    expect(report.outcomes).toEqual([
+      expect.objectContaining({ sequence: 10, outcome: "quarantined" }),
+      expect.objectContaining({ sequence: 1, outcome: "quarantined" }),
+    ]);
     expect(testHarness.events).not.toContain("product:quarantine");
   });
 

@@ -1,5 +1,7 @@
 import { LATTICE_LIMITS } from "@nautilo/lattice-crypto";
-import type { ProtectedTaskMetadataProjectionV1 } from "@nautilo/types";
+import type {
+  ProtectedTaskOperationalMetadataProjectionV1,
+} from "@nautilo/types";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { TaskContentAuthorityV1 } from "./task-content-authority-v1.ts";
@@ -23,6 +25,8 @@ const TASK_RUN_RESULT_OBJECT_ID_DOMAIN =
   "nautilo/task-run-result-crypto-object/v1";
 const TASK_CONTENT_AUTHORITY_FINGERPRINT_DOMAIN =
   "nautilo/task-content-authority/v1";
+const TASK_CONTENT_AUTHORITY_IDENTITY_FINGERPRINT_DOMAIN =
+  "nautilo/task-content-authority-identity/v1";
 const TASK_CONTENT_NAMESPACE_FINGERPRINT_DOMAIN =
   "nautilo/task-content-namespace/v1";
 const UUID =
@@ -186,6 +190,30 @@ export function fingerprintTaskContentAuthorityV1(
   ].join("\n")));
 }
 
+/**
+ * Stable Task audience identity. Access and policy revisions intentionally do
+ * not participate: a valid Namespace rewrap must not invalidate an already
+ * published Task object or its exact replay receipt.
+ */
+export function fingerprintTaskContentAuthorityIdentityV1(
+  authority: Pick<
+    TaskContentAuthorityV1,
+    "requesterHumanId" | "namespaceId" | "keyClass"
+  >,
+): Uint8Array {
+  assertPortableId("Task requester Human ID", authority.requesterHumanId);
+  assertPortableId("Task content Namespace ID", authority.namespaceId);
+  if (authority.keyClass !== "ai") {
+    throw new TypeError("Task content authority identity is invalid");
+  }
+  return sha256(encoder.encode([
+    TASK_CONTENT_AUTHORITY_IDENTITY_FINGERPRINT_DOMAIN,
+    authority.requesterHumanId,
+    authority.namespaceId,
+    authority.keyClass,
+  ].join("\n")));
+}
+
 export function fingerprintTaskContentNamespaceV1(
   namespaceId: string,
 ): Uint8Array {
@@ -223,7 +251,7 @@ export interface TaskContentRevisionLifecycleV1 {
   readonly representation: "protected" | "dual";
   readonly authorityFingerprint: Uint8Array;
   readonly requiredNamespaceFingerprint: Uint8Array;
-  readonly operationalMetadata: ProtectedTaskMetadataProjectionV1 | null;
+  readonly operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
   readonly completion: "pending" | "complete";
   readonly disposition: TaskContentRevisionDisposition;
   readonly attemptCount: number;
@@ -268,6 +296,7 @@ export type TaskContentCryptoRevisionReferenceV1 = Readonly<{
   objectType: TaskContentObjectTypeV1;
   expectedAccessRevision: number;
   expectedAuthorityFingerprint: Uint8Array;
+  expectedAuthorityIdentityFingerprint: Uint8Array;
 }>;
 
 export type TaskContentProductMappingCasResult =
@@ -291,7 +320,7 @@ export interface TaskContentProductStorePort {
     cryptoObjectId: string;
     objectType: TaskContentObjectTypeV1;
     payloadVersion: typeof TASK_CONTENT_PAYLOAD_VERSION_V1;
-    operationalMetadata: ProtectedTaskMetadataProjectionV1 | null;
+    operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
   }>): Promise<
     | Readonly<{
         status: "reserved" | "replayed";
@@ -369,7 +398,7 @@ export interface TaskContentRepository {
     representation: "protected" | "dual";
     authority: TaskContentAuthorityV1;
     prepared: PreparedTaskContentCryptoRevisionV1;
-    operationalMetadata: ProtectedTaskMetadataProjectionV1 | null;
+    operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
   }>): Promise<
     | Readonly<{
         status: "reserved" | "replayed";

@@ -5,6 +5,7 @@ import {
   agentId,
   authorizationRevision,
   coordinateGrantAuthoritySetUse,
+  createCommonHumanObjectAccessManifest,
   cryptoDeviceId,
   cryptoDomainId,
   domainEpoch,
@@ -54,6 +55,7 @@ import {
 } from "../../src/task/task-content-prepared-revision.ts";
 import {
   deriveTaskContentCryptoObjectIdV1,
+  fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   type TaskContentCryptoRevisionReferenceV1,
 } from "../../src/task/task-content-repository.ts";
@@ -175,6 +177,11 @@ class TaskCryptoConnection implements CryptoPostgresConnection {
             .sort(([left], [right]) => left - right)
             .map(([, row]) => cloneRow(row)) as Row[];
         }
+        if (normalized.includes("from object_crypto_access_manifests")) {
+          const revision = parameters[1] as number;
+          const manifest = working.manifests.get(revision);
+          return (manifest === undefined ? [] : [cloneRow(manifest)]) as Row[];
+        }
         if (normalized.includes("from object_crypto_namespace_envelopes")) {
           const revision = parameters[1] as number;
           return working.envelopes.filter(
@@ -260,6 +267,7 @@ function encryptedFixture(seed: number) {
       bindingRevisionAtWrap: accessRevision(authority.expectedAccessRevision),
     }, encrypted.dek),
   );
+  const objectDek = encrypted.dek.slice();
   encrypted.dek.fill(0);
   return {
     crypto,
@@ -267,6 +275,7 @@ function encryptedFixture(seed: number) {
     payloadBytes,
     envelopeBytes,
     object: encryptedObjectWriteRecord(payloadBytes),
+    objectDek,
   };
 }
 
@@ -275,9 +284,11 @@ async function fixture(kind: "human" | "agent") {
   let signerRow: DatabaseRow | null = null;
   let humanPublicKey: Uint8Array | null = null;
   let managerPublicKey: Uint8Array | null = null;
+  let humanSigner: ReturnType<LatticeCrypto["generateSigningKeyPair"]> | null = null;
   let prepared;
   if (kind === "human") {
     const signer = encrypted.crypto.generateSigningKeyPair();
+    humanSigner = signer;
     humanPublicKey = signer.publicKey.slice();
     const access = prepareHumanObjectAccessManifestGenesisSet(encrypted.crypto, {
       objectId: encrypted.objectIdentity,
@@ -453,6 +464,8 @@ async function fixture(kind: "human" | "agent") {
     objectType: prepared.objectType,
     expectedAccessRevision: 0,
     expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+    expectedAuthorityIdentityFingerprint:
+      fingerprintTaskContentAuthorityIdentityV1(authority),
   };
   return {
     adapter,
@@ -464,6 +477,77 @@ async function fixture(kind: "human" | "agent") {
     },
     setSignerHistoryAvailable(value: boolean) {
       signerHistoryAvailable = value;
+    },
+    rewrapHuman(nextAccessRevision: number) {
+      if (humanSigner === null || connection.state.object === null) {
+        throw new Error("Human Task fixture is unavailable");
+      }
+      const previous = connection.state.manifests.get(0);
+      if (previous === undefined) throw new Error("Task genesis is missing");
+      const previousManifestHash = previous["manifest_hash"];
+      const payloadHash = previous["payload_hash"];
+      if (!(previousManifestHash instanceof Uint8Array)
+        || !(payloadHash instanceof Uint8Array)) {
+        throw new Error("Task genesis hashes are invalid");
+      }
+      const envelopeBytes = encodeNamespaceObjectEnvelopeV2(
+        wrapObjectDekForNamespace(
+          encrypted.crypto,
+          new Uint8Array(32).fill(0x52),
+          {
+            objectId: objectId(encrypted.objectIdentity),
+            namespaceId: namespaceId(NAMESPACE_ID),
+            keyClass: "ai",
+            keyGeneration: namespaceGeneration(5),
+            bindingRevisionAtWrap: accessRevision(nextAccessRevision),
+          },
+          encrypted.objectDek,
+        ),
+      );
+      const manifest = createCommonHumanObjectAccessManifest(
+        encrypted.crypto,
+        {
+          objectId: objectId(encrypted.objectIdentity),
+          payloadHash,
+          accessRevision: accessRevision(1),
+          previousManifestHash,
+          envelopeHashes: [encrypted.crypto.hash(envelopeBytes)],
+          signer: {
+            kind: "human_device",
+            subjectHumanId: humanId(HUMAN_ID),
+            committerDeviceId: cryptoDeviceId("human-device.1"),
+          },
+          signerAuthorizationHash: null,
+          hostAuthorizationRevision: authorizationRevision(8),
+        },
+        humanSigner.privateKey,
+      );
+      connection.state.manifests.set(1, {
+        object_id: encrypted.objectIdentity,
+        access_revision: 1,
+        manifest_hash: manifest.hash.slice(),
+        previous_manifest_hash: previousManifestHash,
+        payload_hash: payloadHash,
+        manifest_bytes: manifest.bytes.slice(),
+      });
+      connection.state.envelopes.push({
+        object_id: encrypted.objectIdentity,
+        access_revision: 1,
+        namespace_id: NAMESPACE_ID,
+        ordinal: 0,
+        envelope_hash: encrypted.crypto.hash(envelopeBytes),
+        envelope_bytes: envelopeBytes,
+      });
+      connection.state.head = {
+        object_id: encrypted.objectIdentity,
+        access_revision: 1,
+        manifest_hash: manifest.hash.slice(),
+      };
+      currentAuthority = {
+        ...authority,
+        expectedAccessRevision: nextAccessRevision,
+        expectedPolicyRevision: authority.expectedPolicyRevision + 1,
+      };
     },
   };
 }
@@ -493,6 +577,21 @@ describe("Postgres Task content crypto completion", () => {
     expect(state.adapter.complete(state.prepared)).rejects.toBeInstanceOf(
       TaskContentCryptoCompletionConflictError,
     );
+  });
+
+  test("accepts exact replay and verification after a valid Namespace rewrap", async () => {
+    const state = await fixture("human");
+    expect(await state.adapter.complete(state.prepared)).toBe("created");
+    state.rewrapHuman(3);
+    expect(await state.adapter.complete(state.prepared)).toBe("duplicate");
+    expect(await state.adapter.verify({
+      ...state.reference,
+      expectedAccessRevision: 1,
+    })).toMatchObject({
+      coordinate,
+      objectId: state.prepared.objectId,
+      namespaceId: NAMESPACE_ID,
+    });
   });
 
   test("rejects cross-coordinate, cross-kind, and wrong access references", async () => {

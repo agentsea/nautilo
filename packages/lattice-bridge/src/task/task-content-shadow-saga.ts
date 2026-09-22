@@ -1,8 +1,11 @@
+import { assertProtectedTaskOperationalMetadataProjectionV1 } from "@nautilo/types";
+
 import {
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   TASK_CONTENT_RECONCILE_MAX_BATCH,
   assertTaskContentRevisionLifecycleV1,
   deriveTaskContentCryptoObjectIdV1,
+  fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
   sameTaskContentCoordinateV1,
@@ -108,8 +111,12 @@ function authorityMatches(state: TaskContentRevisionStateV1): boolean {
     return state.authority.requesterHumanId === state.lifecycle.requesterHumanId
       && state.authority.namespaceId === state.lifecycle.namespaceId
       && sameBytes(
-        fingerprintTaskContentAuthorityV1(state.authority),
-        state.lifecycle.authorityFingerprint,
+        fingerprintTaskContentAuthorityIdentityV1(state.authority),
+        fingerprintTaskContentAuthorityIdentityV1({
+          requesterHumanId: state.lifecycle.requesterHumanId,
+          namespaceId: state.lifecycle.namespaceId,
+          keyClass: "ai",
+        }),
       );
   } catch {
     return false;
@@ -125,6 +132,8 @@ function cryptoReference(
     objectType: state.lifecycle.objectType,
     expectedAccessRevision: state.product?.cryptoAccessRevision ?? 0,
     expectedAuthorityFingerprint: state.lifecycle.authorityFingerprint.slice(),
+    expectedAuthorityIdentityFingerprint:
+      fingerprintTaskContentAuthorityIdentityV1(state.authority),
   });
 }
 
@@ -353,14 +362,13 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         || request.requestDigest.length !== 32) {
         throw new TypeError("Task content request digest must contain 32 bytes");
       }
-      if (
-        (request.prepared.coordinate.kind === "definition"
-          && (request.operationalMetadata === null
-            || typeof request.operationalMetadata !== "object"
-            || Array.isArray(request.operationalMetadata)))
-        || (request.prepared.coordinate.kind === "run_result"
-          && request.operationalMetadata !== null)
-      ) throw new TypeError("Task content operational metadata is invalid");
+      if (request.prepared.coordinate.kind === "definition") {
+        assertProtectedTaskOperationalMetadataProjectionV1(
+          request.operationalMetadata,
+        );
+      } else if (request.operationalMetadata !== null) {
+        throw new TypeError("Task content operational metadata is invalid");
+      }
       const reserved = await input.product.reserveRevision({
         operationId: request.operationId,
         coordinate: request.prepared.coordinate,
@@ -395,6 +403,10 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         || !sameBytes(
           reserved.state.lifecycle.requestDigest,
           request.requestDigest,
+        )
+        || !sameBytes(
+          reserved.state.lifecycle.authorityFingerprint,
+          authorityFingerprint,
         )
         || !authorityMatches(reserved.state)
       ) throw new Error("Reserved Task content revision is not an exact replay");
@@ -478,6 +490,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       }
       const outcomes = [];
       let previousDue = Number.NEGATIVE_INFINITY;
+      let previousKind = "";
       let previousSequence = 0;
       for (const state of candidates) {
         try {
@@ -490,9 +503,12 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
           if (
             due < previousDue
             || (due === previousDue
-              && state.lifecycle.sequence <= previousSequence)
+              && (state.lifecycle.coordinate.kind.localeCompare(previousKind) < 0
+                || (state.lifecycle.coordinate.kind === previousKind
+                  && state.lifecycle.sequence <= previousSequence)))
           ) throw new Error("Claimed Task content lifecycles are not stably ordered");
           previousDue = due;
+          previousKind = state.lifecycle.coordinate.kind;
           previousSequence = state.lifecycle.sequence;
         } catch {
           await quarantine(
