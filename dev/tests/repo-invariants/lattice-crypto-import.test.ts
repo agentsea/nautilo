@@ -2810,9 +2810,9 @@ describe("M226 lattice-crypto current package governance", () => {
     )).toHaveLength(1);
 
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(124);
+    expect(new Set(mutationTargets).size).toBe(125);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(124);
+    expect(eligibleTargets).toHaveLength(125);
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-core.ts");
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-v2.ts");
     expect([...new Set(mutationTargets)].sort()).toEqual(eligibleTargets);
