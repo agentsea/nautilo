@@ -20,7 +20,7 @@ export function createBrowserScreenshotTool(context?: BrowserScreenshotContext) 
       "<canvas> (Google Docs body, some spreadsheets, image-heavy editors). Take a screenshot, read the " +
       "visible pixels, locate the target by coordinates, then browser_mouse to place the caret or hit controls. " +
       (canDelegate
-        ? "When pixels identify the routine targets better than browser_snapshot, pass decisionPlan to let the local visual extractor ground those pixels and delegate click/scroll choices to the decision model.\n\n"
+        ? "When pixels identify the routine targets better than browser_snapshot, pass decisionPlan to let the local visual extractor ground those pixels and delegate click, append-typing, keyboard and scroll choices to the decision model. Visual typing requires an explicit type action with clear=false; visually inferred clear/replace is intentionally unavailable.\n\n"
         : "\n\n") +
       "WORKFLOW: browser_screenshot → inspect the image → browser_mouse {x, y} → browser_press / browser_type " +
       "as needed. Re-screenshot after layout changes.\n\n" +
@@ -29,7 +29,7 @@ export function createBrowserScreenshotTool(context?: BrowserScreenshotContext) 
       "model, and an app open in the embedded panel.",
     schema: z.object({
       ...(canDelegate ? { decisionPlan: browserDecisionPlanSchema.optional().describe(
-        "Delegate one complete canvas or pixel-grounded click/scroll outcome. Send as a singleton call. The screenshot is extracted locally; only structured text and coordinates go to the decision model.",
+        "Delegate one complete canvas or pixel-grounded browser outcome. Send as a singleton call. The screenshot is extracted locally; only structured text, exact Genie-supplied values and coordinates go to the decision model.",
       ) } : {}),
       appId: z
         .string()

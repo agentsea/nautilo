@@ -137,6 +137,12 @@ export function agentBrowserViewportEvalArgv(cfgPath: string, session: string): 
   return [...prefix, "eval", "({w:innerWidth,h:innerHeight,dpr:devicePixelRatio})"];
 }
 
+/** Insert exact text into the page's existing keyboard focus without keyboard-layout interpretation. */
+export function agentBrowserKeyboardInsertTextArgv(cfgPath: string, session: string, text: string): string[] {
+  if (!text.length) throw new Error("browser_type requires a non-empty string `text` argument");
+  return [...browserArgvPrefix(cfgPath, session), "keyboard", "inserttext", text];
+}
+
 /** Convert image-pixel coords from a vision screenshot to CSS viewport pixels. */
 export function browserImageCoordsToCss(
   x: number,

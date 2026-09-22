@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   agentBrowserArgv,
+  agentBrowserKeyboardInsertTextArgv,
   agentBrowserSnapshotJsonArgv,
   browserArgvPrefix,
   browserToolMayMutate,
@@ -196,6 +197,8 @@ export function createInteractiveBrowserDispatchHandler(
       ? undefined : ports.getVisualObservation(requestedSession);
     const boundVisualObservation = possibleVisualObservation?.observationId === requiredObservationId
       ? possibleVisualObservation : null;
+    const coordinateVisualType = request.toolName === "browser_type"
+      && request.args["ref"] === undefined;
     if (requiredObservationId !== null
       && boundObservation === null
       && boundVisualObservation === null) {
@@ -204,8 +207,16 @@ export function createInteractiveBrowserDispatchHandler(
     if (boundObservation && !browserToolMayMutate(request.toolName) && request.toolName !== "browser_read") {
       return browserFailure("browser_authority_lost", "This action is outside the admitted routine browser contract.");
     }
-    if (boundVisualObservation && !["browser_mouse", "browser_scroll", "browser_press"].includes(request.toolName)) {
+    if (boundVisualObservation
+      && !["browser_mouse", "browser_scroll", "browser_press"].includes(request.toolName)
+      && !coordinateVisualType) {
       return browserFailure("browser_authority_lost", "This action is outside the admitted visual browser contract.");
+    }
+    if (coordinateVisualType && boundVisualObservation === null) {
+      return browserFailure(
+        "browser_observation_stale",
+        "Coordinate browser typing requires a fresh visual observation. Take a fresh screenshot before choosing an action.",
+      );
     }
     // Every mutation attempt consumes the observation, including ordinary Genie actions.
     if (browserToolMayMutate(request.toolName) || request.toolName === "browser_snapshot") latestObservation = null;
@@ -632,6 +643,48 @@ export function createInteractiveBrowserDispatchHandler(
           handled: true,
           result,
         };
+      } catch (error) {
+        return {
+          handled: true,
+          result: browserExecError(request, error, ports.binaryInstallHint),
+        };
+      }
+    }
+
+    if (coordinateVisualType) {
+      const x = request.args["x"];
+      const y = request.args["y"];
+      const text = request.args["text"];
+      const clear = request.args["clear"];
+      if (typeof x !== "number" || !Number.isFinite(x)
+        || typeof y !== "number" || !Number.isFinite(y)
+        || x < 0 || x >= boundVisualObservation!.imageWidth
+        || y < 0 || y >= boundVisualObservation!.imageHeight
+        || request.args["space"] !== "image"
+        || typeof text !== "string" || text.length === 0
+        || clear !== false) {
+        return browserFailure(
+          "browser_authority_lost",
+          "Coordinate browser typing requires in-bounds image-space x/y coordinates, non-empty text, and clear=false.",
+        );
+      }
+      const cssX = Math.round(x / boundVisualObservation!.xScale);
+      const cssY = Math.round(y / boundVisualObservation!.yScale);
+      try {
+        await assertFreshVisualObservation();
+        const clickCommands = agentBrowserMouseClickArgvs(configPath, session, cssX, cssY);
+        consumeVisualObservation();
+        for (const argv of clickCommands) {
+          await exec(binary, argv, {
+            timeout: BROWSER_EXEC_TIMEOUT_MS,
+            maxBuffer: 8 * 1024 * 1024,
+          });
+        }
+        const { stdout } = await exec(binary, agentBrowserKeyboardInsertTextArgv(configPath, session, text), {
+          timeout: BROWSER_EXEC_TIMEOUT_MS,
+          maxBuffer: 8 * 1024 * 1024,
+        });
+        return { handled: true, result: { status: "ok", result: stdout.trim() } };
       } catch (error) {
         return {
           handled: true,

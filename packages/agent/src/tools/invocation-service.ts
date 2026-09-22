@@ -4310,7 +4310,8 @@ async function executeViaRelayRaw(
       }
       const decision = currentBrowserDecision(state);
       const pending = decision?.pending;
-      if (pending && pending.call.id === (opts.toolCallId ?? tc.id)) {
+      const isPendingDecisionCall = pending?.call.id === (opts.toolCallId ?? tc.id);
+      if (pending && isPendingDecisionCall) {
         if (decision?.phase !== "waiting" || pending.call.name !== tc.name
           || JSON.stringify(pending.call.args) !== JSON.stringify(tc.args)
           || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly }, decision.modelId)
@@ -4320,6 +4321,18 @@ async function executeViaRelayRaw(
         }
         relayDispatchArgs["_requiredSession"] = pending.browserSessionId;
         if (pending.observationId !== null) relayDispatchArgs["_requiredObservationId"] = pending.observationId;
+      }
+      const isCoordinateVisualType = tc.name === "browser_type"
+        && tc.args["ref"] === undefined
+        && typeof tc.args["x"] === "number"
+        && typeof tc.args["y"] === "number"
+        && tc.args["space"] === "image";
+      if (isCoordinateVisualType
+        && (!isPendingDecisionCall || decision?.target !== undefined || decision?.observation?.visual === undefined)) {
+        return {
+          ok: false,
+          errorMessage: "Screenshot-coordinate typing is available only to the active embedded visual decision bound to its fresh observation. No browser request was sent.",
+        };
       }
       expectsBrowserVisualObservation = tc.name === "browser_screenshot"
         && (browserPlan?.kind === "plan" || (pending?.call.id === (opts.toolCallId ?? tc.id)

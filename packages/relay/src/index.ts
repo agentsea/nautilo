@@ -551,6 +551,7 @@ export {
   agentBrowserCdpArgv,
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
+  agentBrowserKeyboardInsertTextArgv,
   agentBrowserViewportEvalArgv,
   browserCdpArgvPrefix,
   browserArgvPrefix,

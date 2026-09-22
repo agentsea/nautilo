@@ -31,6 +31,38 @@ interface BrowserDecisionDeps {
   choose?: (input: ChoiceInput) => Promise<ChoiceResult>;
 }
 
+/**
+ * Visual typing is append-only. Its pixel coordinates legitimately change
+ * after the text appears, so compare the stable planned intent rather than the
+ * full candidate call. A successful append must never be offered a second
+ * time in the same delegated episode; the fresh screenshot is for verification
+ * or for choosing a different remaining action.
+ */
+function visualAppendActionKey(description: string): string | null {
+  try {
+    const parsed = JSON.parse(description) as Record<string, unknown>;
+    const value = parsed["nextAction"];
+    const action = value !== null && typeof value === "object"
+      ? value as Record<string, unknown>
+      : parsed;
+    if (action["kind"] !== "visual_type" || action["clear"] !== false
+      || typeof action["value"] !== "string") return null;
+    const intendedTarget = action["intendedTarget"];
+    if (intendedTarget === null || typeof intendedTarget !== "object") return null;
+    const target = intendedTarget as Record<string, unknown>;
+    if (typeof target["role"] !== "string" || typeof target["name"] !== "string") return null;
+    return JSON.stringify({
+      kind: "visual_type",
+      role: target["role"],
+      name: target["name"],
+      value: action["value"],
+      clear: false,
+    });
+  } catch {
+    return null;
+  }
+}
+
 function handoff(state: NautiloState, decision: BrowserDecisionState, reason: string): Partial<NautiloState> {
   const handedOff = { ...decision, phase: "handoff" as const, pending: null, reason };
   return {
@@ -66,6 +98,9 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
     }
     const observation = decision.observation;
     if (!observation) return handoff(state, decision, "fresh_observation_required");
+    if (observation.visual && decision.target) {
+      return handoff(state, decision, "visual_observation_not_supported_by_connected_browser");
+    }
     let call: { name: string; args: Record<string, unknown> } = {
       name: observation.visual ? "browser_screenshot" : "browser_snapshot",
       args: {},
@@ -100,7 +135,16 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
         return [{ action: receipt["action"], ...(status === "success" || status === "error" ? { status } : {}),
           ...(status === "error" || call?.name === "browser_read" || (call?.name === "control_connected_web_operation" && (call.args["command"] as { kind?: string } | undefined)?.kind === "read") ? { evidence: result.content } : {}) }];
       });
-      const continuations = built.candidates.filter((candidate) => candidate.sequence && candidate.call);
+      const successfulVisualAppends = new Set(recentActions.flatMap((action) => {
+        if (action.status !== "success") return [];
+        const key = visualAppendActionKey(action.action);
+        return key === null ? [] : [key];
+      }));
+      const candidates = built.candidates.filter((candidate) => {
+        const key = visualAppendActionKey(candidate.description);
+        return key === null || !successfulVisualAppends.has(key);
+      });
+      const continuations = candidates.filter((candidate) => candidate.sequence && candidate.call);
       const continuation = decision.sequence?.step != null && continuations.length === 1 ? continuations[0] : undefined;
       const additionalInstructions = browserDecisionAdditionalInstructions(observation);
       const started = performance.now();
@@ -117,14 +161,14 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           signal: runSignal,
           plan: decision.plan,
           observation,
-          candidates: built.candidates,
+          candidates,
           recentActions,
           lastAction: decision.lastAction,
           sequence: decision.sequence,
           ...(additionalInstructions === undefined ? {} : { additionalInstructions }),
         }), maxChoices, deps.choose ?? invokeChoice));
         if (config.signal.aborted) return handoff(state, decision, "run_cancelled");
-        const selected = continuation ?? built.candidates.find(({ id }) => id === result?.selectedId);
+        const selected = continuation ?? candidates.find(({ id }) => id === result?.selectedId);
         if (!selected) return recover(state, decision, "invalid_choice");
         if (!selected.call) return handoff(state, decision, selected.id === "defer_to_genie" ? "jev_requested_genie" : selected.id);
         call = selected.call;

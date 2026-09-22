@@ -4,6 +4,7 @@ import {
   agentBrowserSnapshotJsonArgv,
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
+  agentBrowserKeyboardInsertTextArgv,
   agentBrowserViewportEvalArgv,
   browserImageCoordsToCss,
   BROWSER_EMPTY_DOM_TEXT_HINT,
@@ -138,6 +139,18 @@ describe(" agentBrowserArgv — argv mapping", () => {
         session,
       ),
     ).toEqual([...prefix, "type", "@e5", "hello"]);
+  });
+
+  it("builds selector-free keyboard typing only through the explicit helper", () => {
+    expect(agentBrowserKeyboardInsertTextArgv(cfgPath, session, "exact visual text")).toEqual([
+      ...prefix,
+      "keyboard",
+      "inserttext",
+      "exact visual text",
+    ]);
+    expect(() => agentBrowserKeyboardInsertTextArgv(cfgPath, session, "")).toThrow(
+      /browser_type requires a non-empty string `text`/,
+    );
   });
 
   it("browser_press maps key to press verb", () => {

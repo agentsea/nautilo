@@ -61,16 +61,18 @@ describe("browser_click tool", () => {
 });
 
 describe("browser_type tool", () => {
-  test("builds with ref, text, and optional clear schema", () => {
+  test("builds with ref typing and decision-bound coordinate typing variants", () => {
     const tool = createBrowserTypeTool();
     expect(tool.name).toBe("browser_type");
-    expect(tool.schema.shape.ref).toBeDefined();
-    expect(tool.schema.shape.text).toBeDefined();
-    expect(tool.schema.shape.clear).toBeDefined();
     expect(tool.schema.safeParse({ ref: "@e5", text: "hello" }).success).toBe(true);
     expect(tool.schema.safeParse({ ref: "@e5", text: "hello", clear: true }).success).toBe(
       true,
     );
+    expect(tool.schema.safeParse({ x: 100, y: 200, space: "image", text: "hello", clear: false }).success).toBe(true);
+    expect(tool.schema.safeParse({ x: 100, y: 200, space: "image", text: "hello", clear: true }).success).toBe(false);
+    expect(tool.schema.safeParse({ text: "hello" }).success).toBe(false);
+    expect(tool.schema.safeParse({ ref: "@e5", x: 100, y: 200, space: "image", text: "hello" }).success).toBe(false);
+    expect(tool.schema.safeParse({ x: 100, y: 200, space: "css", text: "hello" }).success).toBe(false);
   });
 
   test("func rejects as relay stub", () => {

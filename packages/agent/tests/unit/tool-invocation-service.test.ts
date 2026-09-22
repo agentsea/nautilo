@@ -1705,14 +1705,54 @@ describe("Nautilo tool invocation service", () => {
       ).invoke(input);
       expect((await invoke()).status).toBe("success");
       expect(dispatched).toEqual([{ ref: "@e1", _requiredSession: "browser-1", _requiredObservationId: "observation-1" }]);
+      const originalDecision = invocationState.browserDecision ?? null;
+      const visualType = call("browser_type", {
+        x: 120, y: 240, space: "image", text: "exact visual text", clear: false,
+      });
+      invocationState.requiredHostRelays = { [visualType.callId]: "relay-1" };
+      invocationState.browserDecision = {
+        turnId: "turn", modelId: "openrouter:typesafe/jev-1.13", phase: "waiting", reason: null,
+        plan: { goal: "Append exact text", constraints: [], allowedOrigins: ["https://example.com"],
+          actions: [{ kind: "type", role: "textbox", name: "Document", text: "exact visual text", clear: false }],
+          progress: [], success: [] },
+        observation: {
+          version: 1, snapshot: "visual document", refs: {}, pageUrl: "https://example.com/",
+          browserSessionId: "browser-1", observationId: "visual-observation-1",
+          visual: { viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+            targets: [{ visualRef: "v1", role: "visible text", name: "Document", interaction: "unknown",
+              x: 120, y: 240, context: "document page" }] },
+        },
+        pending: { call: { id: visualType.callId, name: visualType.toolName, args: visualType.args },
+          browserSessionId: "browser-1", observationId: "visual-observation-1" },
+        recovery: { interventionLimit: 2, consecutiveEvents: 0, interventionAt: 2,
+          progressSeen: [], assessNextObservation: false },
+      };
+      expect((await invoke(visualType)).status).toBe("success");
+      expect(dispatched.at(-1)).toEqual({
+        x: 120, y: 240, space: "image", text: "exact visual text", clear: false,
+        _requiredSession: "browser-1", _requiredObservationId: "visual-observation-1",
+      });
+      invocationState.browserDecision = { ...invocationState.browserDecision,
+        target: { kind: "connected_web", operationId: "operation-1", controlEpoch: 1 } };
+      expect((await invoke(visualType)).status).toBe("error");
+      expect(dispatched).toHaveLength(2);
+      invocationState.browserDecision = originalDecision;
+      invocationState.requiredHostRelays = { [invocation.callId]: "relay-1" };
       expect((await invoke({ ...invocation, args: { ref: "@e2" } })).status).toBe("error");
-      expect(dispatched).toHaveLength(1);
+      expect(dispatched).toHaveLength(2);
       delete process.env["OPENROUTER_API_KEY"];
       expect((await invoke()).status).toBe("error");
-      expect(dispatched).toHaveLength(1);
+      expect(dispatched).toHaveLength(2);
       invocationState.browserDecision = null;
+      const unboundVisualType = call("browser_type", {
+        x: 120, y: 240, space: "image", text: "must not dispatch", clear: false,
+      });
+      invocationState.requiredHostRelays = { [unboundVisualType.callId]: "relay-1" };
+      expect((await invoke(unboundVisualType)).status).toBe("error");
+      expect(dispatched).toHaveLength(2);
+      invocationState.requiredHostRelays = { [invocation.callId]: "relay-1" };
       expect((await invoke({ ...invocation, args: { ref: "@e1", _requiredSession: "forged", _requiredObservationId: "forged" } })).status).toBe("success");
-      expect(dispatched[1]).toEqual({ ref: "@e1" });
+      expect(dispatched[2]).toEqual({ ref: "@e1" });
       invocationState.requiredHostRelays = { "call-browser_snapshot": "relay-1" };
       const malformed = await invoke(call("browser_snapshot", {
         decisionPlan: {
@@ -1743,7 +1783,7 @@ describe("Nautilo tool invocation service", () => {
       expect(JSON.stringify(diagnostic)).not.toContain("private-planner-value");
       expect(JSON.stringify(diagnostic)).not.toContain("test1");
       expect(JSON.stringify(diagnostic)).not.toContain("canary");
-      expect(dispatched).toHaveLength(2);
+      expect(dispatched).toHaveLength(3);
       const validDecisionPlan = {
         goal: "Search",
         actions: [{ kind: "click", role: "button", name: "Search" }],
@@ -1758,16 +1798,16 @@ describe("Nautilo tool invocation service", () => {
       expect(disabled.status).toBe("error");
       expect(disabled.content).toContain("Routine browser decisions are unavailable");
       expect(disabled.content).toContain("no browser request was sent");
-      expect(dispatched).toHaveLength(2);
+      expect(dispatched).toHaveLength(3);
       process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
       expect((await invoke(call("browser_snapshot", {
         decisionPlan: validDecisionPlan,
         _requiredSession: "forged",
         _requiredObservationId: "forged",
       }))).status).toBe("success");
-      expect(dispatched[2]).toEqual({});
-      expect(signals).toEqual([controller.signal, controller.signal, controller.signal]);
-      expect(classes).toEqual(["browser", "browser", "browser"]);
+      expect(dispatched[3]).toEqual({});
+      expect(signals).toEqual([controller.signal, controller.signal, controller.signal, controller.signal]);
+      expect(classes).toEqual(["browser", "browser", "browser", "browser"]);
       const singletonSnapshot = call("browser_snapshot", { decisionPlan: validDecisionPlan });
       invocationState.messages = [new AIMessage({ content: "", tool_calls: [
         { id: singletonSnapshot.callId, name: singletonSnapshot.toolName, args: singletonSnapshot.args, type: "tool_call" },
@@ -1786,7 +1826,7 @@ describe("Nautilo tool invocation service", () => {
       expect(singletonDiagnostic.browserRequestSent).toBe(false);
       expect(singletonDiagnostic.issues).toEqual([]);
       expect(singletonDiagnostic.expectedContract).toEqual(z.toJSONSchema(browserDecisionPlanSchema, { io: "input" }));
-      expect(dispatched).toHaveLength(3);
+      expect(dispatched).toHaveLength(4);
       invocationState.requiredHostRelays = { [invocation.callId]: "relay-1" };
       failure = "stale";
       expect((await invoke()).additionalKwargs).toMatchObject({ nautilo_browser_failure: "browser_observation_stale" });

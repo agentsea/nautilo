@@ -732,6 +732,78 @@ describe("browser decision policy", () => {
     expect(built.candidates.some(({ call }) => call?.name === "browser_press" && call.args["key"] === "ArrowLeft")).toBe(true);
     expect(built.candidates.some(({ call }) => call?.name === "browser_mouse")).toBe(false);
   });
+
+  test("offers exact explicit append text as an atomic visual focus-and-type action", () => {
+    const exactText = "5 Reasons Foxes Are Cool\n1. Foxes are clever.";
+    const visualPlan = browserDecisionPlanSchema.parse({
+      goal: "Append the supplied section to the document",
+      values: { "new section": exactText },
+      allowedOrigins: ["https://shop.example"],
+      actions: [
+        { kind: "click_observed" },
+        { kind: "type", role: "textbox", name: "Document content", text: exactText, clear: false },
+      ],
+    });
+    const visualObservation = observation({
+      refs: {},
+      snapshot: '- visual viewport [image_width=800, image_height=600]\n  - visible text "Document body" [visual_ref=v1]',
+      visual: {
+        viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+        targets: [{ visualRef: "v1", role: "visible text", name: "Document body", interaction: "unknown",
+          x: 150, y: 225, context: "document page" }],
+      },
+    });
+    const built = browserDecisionCandidates(visualPlan, visualObservation, 255);
+    expect(built.reason).toBeNull();
+    if (built.reason !== null) throw new Error("expected visual typing candidates");
+    const typing = built.candidates.find(({ call }) => call?.name === "browser_type");
+    expect(typing?.call).toEqual({
+      name: "browser_type",
+      args: { x: 150, y: 225, space: "image", text: exactText, clear: false },
+    });
+    expect(typing?.description).toContain('"kind":"visual_type"');
+    expect(typing?.description).toContain('"intendedTarget":{"role":"textbox","name":"Document content"}');
+  });
+
+  test("rejects visual clear and unbound named values before calling the decision model", () => {
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [],
+    } });
+    const clear = browserDecisionPlanSchema.parse({
+      goal: "Replace content",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "type", role: "textbox", name: "Document", text: "replacement", clear: true }],
+    });
+    expect(browserDecisionCandidates(clear, visualObservation, 255)).toEqual({
+      candidates: [], reason: "visual_clear_input_not_supported_by_prototype",
+    });
+    const namedOnly = browserDecisionPlanSchema.parse({
+      goal: "Enter content",
+      values: { content: "exact text" },
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "click_observed" }],
+    });
+    expect(browserDecisionCandidates(namedOnly, visualObservation, 255)).toEqual({
+      candidates: [], reason: "visual_value_requires_explicit_append_type_action",
+    });
+  });
+
+  test("keeps native select and checkbox input out of screenshot-grounded decisions", () => {
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [],
+    } });
+    const structuredInput = browserDecisionPlanSchema.parse({
+      goal: "Choose one option",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "select", role: "combobox", name: "Delivery", values: ["Express"] }],
+    });
+    expect(browserDecisionCandidates(structuredInput, visualObservation, 255)).toEqual({
+      candidates: [],
+      reason: "visual_structured_input_not_supported_by_prototype",
+    });
+  });
 });
 
 describe("browser decision settlement", () => {
@@ -1459,6 +1531,139 @@ describe("browser decision node", () => {
     const reobserve = await node(state({ browserDecision: afterMouse }), { signal: new AbortController().signal });
     expect(proposedToolCall(reobserve)).toMatchObject({ name: "browser_screenshot", args: {} });
     expect(reobserve.browserDecision?.pending?.observationId).toBeNull();
+  });
+
+  test("selects exact visual append typing and binds it to the screenshot observation", async () => {
+    const exactText = "Foxes — curious 🦊\nSecond line";
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v1", role: "visible text", name: "Document body", interaction: "unknown",
+        x: 150, y: 225, context: "document page" }],
+    } });
+    const visualDecision = decision({
+      plan: browserDecisionPlanSchema.parse({
+        goal: "Append the supplied text",
+        allowedOrigins: ["https://shop.example"],
+        actions: [{ kind: "type", role: "textbox", name: "Document content", text: exactText, clear: false }],
+      }),
+      observation: visualObservation,
+    });
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      const typing = input.choices.find((choice) => choice.description.includes('"kind":"visual_type"'));
+      expect(typing).toBeDefined();
+      return { selectedId: typing!.id, requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 5, outputTokens: 1, actualCostUsd: 0 } };
+    } });
+    const selected = await node(state({ browserDecision: visualDecision }), { signal: new AbortController().signal });
+    expect(proposedToolCall(selected)).toMatchObject({
+      name: "browser_type",
+      args: { x: 150, y: 225, space: "image", text: exactText, clear: false },
+    });
+    expect(selected.browserDecision?.pending?.observationId).toBe("observation-1");
+  });
+
+  test("never offers a successful visual append intent twice in one delegated episode", async () => {
+    const exactText = "Robbie";
+    const visualPlan = browserDecisionPlanSchema.parse({
+      goal: "Enter the supplied name",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "type", role: "textbox", name: "Name", text: exactText, clear: false }],
+    });
+    const visualObservation = observation({ refs: {}, snapshot: '- visual viewport\n  - visible_text "Robbie"', visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v2", role: "visible text", name: "Robbie", interaction: "unknown",
+        x: 160, y: 230, context: "Name field" }],
+    } });
+    const built = browserDecisionCandidates(visualPlan, visualObservation, 255);
+    if (built.reason !== null) throw new Error("expected visual typing candidates");
+    const prior = built.candidates.find((candidate) => candidate.description.includes('"kind":"visual_type"'));
+    if (!prior?.call) throw new Error("expected visual append candidate");
+    const planCall = call("visual-plan", "browser_screenshot", { decisionPlan: visualPlan });
+    const priorCall = call("prior-visual-type", prior.call.name, prior.call.args);
+    const priorReceipt = new AIMessage({
+      content: "",
+      tool_calls: [priorCall],
+      additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice",
+        action: prior.description,
+      } },
+    });
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      expect(input.choices.some((choice) => choice.description.includes('"kind":"visual_type"'))).toBe(false);
+      expect(input.choices.some((choice) => choice.id === "completion_ready")).toBe(true);
+      return { selectedId: "completion_ready", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 5, outputTokens: 1, actualCostUsd: 0 } };
+    } });
+    const update = await node(state({
+      browserDecision: decision({ plan: visualPlan, observation: visualObservation }),
+      messages: [
+        new AIMessage({ content: "", tool_calls: [planCall] }),
+        priorReceipt,
+        successfulResult(priorCall, "done"),
+      ],
+    }), { signal: new AbortController().signal });
+    expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: "completion_ready" });
+  });
+
+  test("keeps a failed visual append intent available for a corrected retry", async () => {
+    const visualPlan = browserDecisionPlanSchema.parse({
+      goal: "Enter the supplied name",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "type", role: "textbox", name: "Name", text: "Robbie", clear: false }],
+    });
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v2", role: "visible text", name: "Name", interaction: "unknown",
+        x: 160, y: 230, context: "Name field" }],
+    } });
+    const built = browserDecisionCandidates(visualPlan, visualObservation, 255);
+    if (built.reason !== null) throw new Error("expected visual typing candidates");
+    const prior = built.candidates.find((candidate) => candidate.description.includes('"kind":"visual_type"'));
+    if (!prior?.call) throw new Error("expected visual append candidate");
+    const planCall = call("visual-plan-failed", "browser_screenshot", { decisionPlan: visualPlan });
+    const priorCall = call("failed-visual-type", prior.call.name, prior.call.args);
+    const priorReceipt = new AIMessage({ content: "", tool_calls: [priorCall], additional_kwargs: {
+      nautilo_browser_decision: { operation: "choice", action: prior.description },
+    } });
+    const failedResult = new ToolMessage({
+      name: priorCall.name,
+      tool_call_id: priorCall.id,
+      content: "stale",
+      additional_kwargs: { nautilo_tool_status: "error", nautilo_browser_failure: "browser_observation_stale" },
+    });
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      const retry = input.choices.find((choice) => choice.description.includes('"kind":"visual_type"'));
+      expect(retry).toBeDefined();
+      return { selectedId: retry!.id, requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 5, outputTokens: 1, actualCostUsd: 0 } };
+    } });
+    const update = await node(state({
+      browserDecision: decision({ plan: visualPlan, observation: visualObservation }),
+      messages: [new AIMessage({ content: "", tool_calls: [planCall] }), priorReceipt, failedResult],
+    }), { signal: new AbortController().signal });
+    expect(proposedToolCall(update)).toMatchObject({ name: "browser_type", args: { text: "Robbie", clear: false } });
+  });
+
+  test("never routes a visual observation through connected Browser Use", async () => {
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v1", role: "visible text", name: "Document body", interaction: "unknown",
+        x: 150, y: 225, context: "document page" }],
+    } });
+    let choices = 0;
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async () => {
+      choices++;
+      throw new Error("must not call Jev");
+    } });
+    const update = await node(state({ browserDecision: decision({
+      target: { kind: "connected_web", operationId: "operation-1", controlEpoch: 1 },
+      observation: visualObservation,
+    }) }), { signal: new AbortController().signal });
+    expect(update.browserDecision).toMatchObject({
+      phase: "handoff",
+      reason: "visual_observation_not_supported_by_connected_browser",
+    });
+    expect(choices).toBe(0);
   });
 
   test("executes an ordered visual keyboard sequence across fresh screenshots", async () => {

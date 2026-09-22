@@ -39,7 +39,7 @@ const browserDecisionActionSchema = z.discriminatedUnion("kind", [
 /** The Genie supplies intent and exact text; page text never supplies executable arguments. */
 export const browserDecisionPlanSchema = z.object({
   goal: text,
-  values: z.record(text, z.string()).optional().describe("Named exact text to enter, e.g. {'background hex': 'ffd8a8'}. Use purpose labels, not predicted field names. The runtime offers each value against fresh targets and copies the selected text unchanged with clear=true. Omit when no typing is needed."),
+  values: z.record(text, z.string()).optional().describe("Named exact text to enter, e.g. {'background hex': 'ffd8a8'}. Use purpose labels, not predicted field names. For DOM snapshots, the runtime offers each value against fresh targets and copies the selected text unchanged with clear=true. Screenshot-grounded append typing also requires an explicit matching type action with clear=false. Omit when no typing is needed."),
   constraints: z.array(text).default([]).describe("Additional task constraints; omitted means none"),
   allowedOrigins: z.array(z.url().refine((value) => {
     try {
@@ -67,6 +67,7 @@ export const browserDecisionPlanningGuidance =
   "Use delegation for routine search, filtering, navigation and evidence gathering, including those steps within a research task. Do not manually type and click through them simply because the final comparison needs your reasoning. " +
   "Delegate the complete routine outcome with goal, values (exact text keyed by purpose), and constraints. " +
   "Every required input belongs in values or an explicit type step; text mentioned only in prose cannot be executed. " +
+  "In screenshot delegation, use an explicit type action with clear=false when exact supplied text must be appended through a visually grounded target. The runtime offers it as one atomic focus-and-type action; never infer executable text from screenshot OCR or request visual clear/replace. " +
   "Omit actions for fresh observed clicks, native dropdown selection, and supplied-value typing. The runtime builds candidate IDs and resolves targets; do not predict future field labels or enumerate clicks. " +
   "Add reusable actions only for additional operations the segment needs: read_observed for gathering element text, keyboard keys, scrolling, or other supported browser controls. Keep click_observed when clicks are needed. " +
   "Use sequences only for work that must happen once in order, such as multiple fill-and-submit entries. Each group has a meaningful name and steps; a press after type binds to that field. Never add submission implicitly. " +
@@ -269,9 +270,11 @@ function browserDecisionControlCandidates(
 
 const VISUAL_DECISION_INSTRUCTIONS =
   "This observation was extracted from screenshot pixels. visual_ref targets execute through browser_mouse at the supplied image-pixel center. " +
+  "visual_type candidates atomically click the supplied image-pixel target and type the exact Genie-supplied value into the resulting page focus. " +
+  "A successful append-only visual_type intent is offered at most once in a delegated episode; use the fresh screenshot to verify it or choose a different remaining action, never to append the same value again. " +
   "scroll_up and scroll_down are ordinary browser_scroll operations and must be followed by a fresh screenshot before choosing newly visible content. " +
   "Do not choose needs_visual_evidence merely because targets use visual_ref: their coordinates are the visual grounding. " +
-  "Choose needs_visual_evidence only when the required target is still absent or ambiguous. Visual typing is not supported by this prototype; use needs_input when the goal requires entering text into a visually grounded field.";
+  "Choose needs_visual_evidence only when the required target is still absent or ambiguous. Choose needs_input only when required text is absent from the executable visual_type choices.";
 
 export function browserDecisionAdditionalInstructions(observation: BrowserDecisionObservation): string | undefined {
   return observation.visual ? VISUAL_DECISION_INSTRUCTIONS : undefined;
@@ -289,6 +292,35 @@ function visualTargetCandidates(visual: BrowserVisualObservation): BrowserDecisi
       imageX: target.x,
       imageY: target.y,
       context: target.context,
+    }),
+  }));
+}
+
+function visualTypeCandidates(
+  visual: BrowserVisualObservation,
+  input: { readonly text: string; readonly clear: boolean; readonly valueName?: string; readonly intendedTarget?: { readonly role: string; readonly name: string } },
+): BrowserDecisionCandidate[] {
+  return visual.targets.map((target) => ({
+    id: `visual_type_${target.visualRef}`,
+    call: { name: "browser_type", args: {
+      x: target.x,
+      y: target.y,
+      space: "image",
+      text: input.text,
+      clear: input.clear,
+    } },
+    description: JSON.stringify({
+      kind: "visual_type",
+      role: target.role,
+      name: target.name,
+      visualRef: target.visualRef,
+      imageX: target.x,
+      imageY: target.y,
+      context: target.context,
+      ...(input.valueName === undefined ? {} : { valueName: input.valueName }),
+      ...(input.intendedTarget === undefined ? {} : { intendedTarget: input.intendedTarget }),
+      value: input.text,
+      clear: input.clear,
     }),
   }));
 }
@@ -433,10 +465,20 @@ export function browserDecisionCandidates(plan: BrowserDecisionPlan, observation
     return { candidates: [], reason: "page_left_planned_origins" };
   }
   if (observation.visual) {
-    if (plan.values && Object.keys(plan.values).length > 0
-      || plan.actions.some((action) => action.kind === "type" || action.kind === "select" || action.kind === "set_checked")
-      || plan.sequences?.some((group) => group.steps.some((action) => action.kind === "type" || action.kind === "select" || action.kind === "set_checked"))) {
-      return { candidates: [], reason: "visual_input_not_supported_by_prototype" };
+    const visualTypeActions = [
+      ...plan.actions.filter((action) => action.kind === "type"),
+      ...(plan.sequences ?? []).flatMap((group) => group.steps.filter((action) => action.kind === "type")),
+    ];
+    if (visualTypeActions.some((action) => action.clear)) {
+      return { candidates: [], reason: "visual_clear_input_not_supported_by_prototype" };
+    }
+    const explicitVisualValues = new Set(visualTypeActions.map((action) => action.text));
+    if (Object.values(plan.values ?? {}).some((value) => !explicitVisualValues.has(value))) {
+      return { candidates: [], reason: "visual_value_requires_explicit_append_type_action" };
+    }
+    if (plan.actions.some((action) => action.kind === "select" || action.kind === "set_checked")
+      || plan.sequences?.some((group) => group.steps.some((action) => action.kind === "select" || action.kind === "set_checked"))) {
+      return { candidates: [], reason: "visual_structured_input_not_supported_by_prototype" };
     }
 
     const candidates: BrowserDecisionCandidate[] = [];
@@ -445,6 +487,18 @@ export function browserDecisionCandidates(plan: BrowserDecisionPlan, observation
         for (const candidate of visualTargetCandidates(observation.visual!)) {
           if (!candidates.some((current) => JSON.stringify(current.call) === JSON.stringify(candidate.call))) {
             candidates.push(candidate);
+          }
+        }
+        return null;
+      }
+      if (action.kind === "type") {
+        for (const candidate of visualTypeCandidates(observation.visual!, {
+          text: action.text,
+          clear: action.clear,
+          intendedTarget: { role: action.role, name: action.name },
+        })) {
+          if (!candidates.some((current) => JSON.stringify(current.call) === JSON.stringify(candidate.call))) {
+            candidates.push({ ...candidate, id: `action_${candidates.length}` });
           }
         }
         return null;
