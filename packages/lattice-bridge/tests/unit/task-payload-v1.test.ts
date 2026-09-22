@@ -5,7 +5,9 @@ import {
   TASK_PAYLOAD_MAX_METADATA_JSON_DEPTH_V1,
   TASK_PAYLOAD_MAX_METADATA_TEXT_BYTES_V1,
   TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+  TASK_PAYLOAD_MAX_WIRE_BYTES_V1,
   TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1,
+  TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1,
   decodeTaskPayloadV1,
   decodeTaskRunResultPayloadV1,
   encodeTaskPayloadV1,
@@ -115,6 +117,30 @@ describe("Task payload v1", () => {
     })).toThrow("bounds");
   });
 
+  test("enforces the achievable definition text maximum at N-1, N, and N+1", () => {
+    for (const size of [
+      TASK_PAYLOAD_MAX_TEXT_BYTES_V1 - 1,
+      TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+    ]) {
+      const encoded = encodeTaskPayloadV1({
+        formatVersion: 1,
+        prompt: "x".repeat(size),
+        expectedOutput: null,
+        protectedMetadata: {},
+      });
+      expect(encoded.length).toBe(
+        TASK_PAYLOAD_MAX_WIRE_BYTES_V1
+        - (TASK_PAYLOAD_MAX_TEXT_BYTES_V1 - size),
+      );
+    }
+    expect(() => encodeTaskPayloadV1({
+      formatVersion: 1,
+      prompt: "x".repeat(TASK_PAYLOAD_MAX_TEXT_BYTES_V1 + 1),
+      expectedOutput: null,
+      protectedMetadata: {},
+    })).toThrow("bounds");
+  });
+
   test("enforces metadata type, text, depth, and cycle bounds", () => {
     expect(() => encodeTaskPayloadV1({
       formatVersion: 1,
@@ -186,6 +212,28 @@ describe("Task run result payload v1", () => {
     expect(() => decodeTaskRunResultPayloadV1(encoder.encode(
       '{"formatVersion":1,"resultText":"a","lastError":null,"plaintext":"leak"}',
     ))).toThrow("field set");
+    expect(() => encodeTaskRunResultPayloadV1({
+      formatVersion: 1,
+      resultText: "x".repeat(TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1 + 1),
+      lastError: null,
+    })).toThrow("bounds");
+  });
+
+  test("enforces the achievable result text maximum at N-1, N, and N+1", () => {
+    for (const size of [
+      TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1 - 1,
+      TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1,
+    ]) {
+      const encoded = encodeTaskRunResultPayloadV1({
+        formatVersion: 1,
+        resultText: "x".repeat(size),
+        lastError: null,
+      });
+      expect(encoded.length).toBe(
+        TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1
+        - (TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1 - size),
+      );
+    }
     expect(() => encodeTaskRunResultPayloadV1({
       formatVersion: 1,
       resultText: "x".repeat(TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1 + 1),

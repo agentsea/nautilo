@@ -208,6 +208,11 @@ describe("Task creation admission", () => {
         createHumanApiTaskCreationProvenance({ ownerId: HUMAN }),
       ],
       [
+        "invalid negative depth",
+        candidate({ depth: -1 }),
+        createHumanApiTaskCreationProvenance({ ownerId: HUMAN }),
+      ],
+      [
         "HTTP parent",
         candidate(),
         createHumanApiTaskCreationProvenance({

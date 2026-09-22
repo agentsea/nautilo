@@ -370,7 +370,9 @@ function classifyDeepResearch(
   };
 }
 
-function classifyLastInterruption(value: unknown): MutableJsonRecord | Unsupported {
+function classifyLastInterruption(
+  value: unknown,
+): { operational: MutableJsonRecord; protectedContent?: MutableJsonRecord } | Unsupported {
   const candidate = record(value);
   if (!candidate) return unsupported("malformed_field", "$.lastInterruption");
   const common = ["code", "cause", "stoppedBy", "outcome", "observedAt", "taskRunId", "graphThreadId", "checkpointId"];
@@ -395,7 +397,7 @@ function classifyLastInterruption(value: unknown): MutableJsonRecord | Unsupport
       || candidate["resumable"] !== true || candidate["desktopExitCause"] !== "unknown") {
       return unsupported("malformed_field", "$.lastInterruption");
     }
-    return cloneRecord(candidate)!;
+    return { operational: cloneRecord(candidate)! };
   }
   if (candidate["code"] === "NAUTILO_PROVIDER_TIMEOUT") {
     if (!exactKeys(candidate, [...common, "resumable", ...timeout])
@@ -410,7 +412,7 @@ function classifyLastInterruption(value: unknown): MutableJsonRecord | Unsupport
       || candidate["safeToFallback"] !== true) {
       return unsupported("malformed_field", "$.lastInterruption");
     }
-    return cloneRecord(candidate)!;
+    return { operational: cloneRecord(candidate)! };
   }
   if (candidate["code"] === "no_progress") {
     if (!exactKeys(candidate, [...common, ...noProgress])
@@ -426,7 +428,16 @@ function classifyLastInterruption(value: unknown): MutableJsonRecord | Unsupport
         "raw_set", "add_part", "open", "save", "close", "refresh", "help"].includes(candidate["operation"])) {
       return unsupported("malformed_field", "$.lastInterruption");
     }
-    return cloneRecord(candidate)!;
+    const operational = cloneRecord(candidate)!;
+    delete operational["toolName"];
+    delete operational["operation"];
+    return {
+      operational,
+      protectedContent: {
+        toolName: candidate["toolName"],
+        operation: candidate["operation"],
+      },
+    };
   }
   return unsupported("unsupported_shape", "$.lastInterruption");
 }
@@ -550,7 +561,10 @@ export function classifyProtectedTaskMetadataV1(
   if (metadata["lastInterruption"] !== undefined) {
     const classified = classifyLastInterruption(metadata["lastInterruption"]);
     if (isUnsupported(classified)) return classified;
-    operational["lastInterruption"] = classified;
+    operational["lastInterruption"] = classified.operational;
+    if (classified.protectedContent) {
+      protectedContent["lastInterruption"] = classified.protectedContent;
+    }
   }
   if (metadata["deepResearch"] !== undefined) {
     const classified = classifyDeepResearch(metadata["deepResearch"]);

@@ -1,6 +1,5 @@
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto";
-
 export const PROTECTED_TASK_CONTENT_DTO_VERSION_V1 = 1 as const;
+export const PROTECTED_TASK_PORTABLE_ID_MAX_UTF8_BYTES_V1 = 128;
 
 /**
  * Opaque protected-content coordinates. Decrypted Task text is deliberately
@@ -51,6 +50,7 @@ const UNAVAILABLE_REASONS = new Set<string>([
   "unsupported_client",
   "integrity_failure",
 ]);
+const encoder = new TextEncoder();
 
 function ownRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -76,9 +76,9 @@ function exactFields(
 }
 
 function portableId(value: unknown): value is string {
-  if (typeof value !== "string" || !PORTABLE_ID.test(value)) return false;
-  const bytes = new TextEncoder().encode(value).length;
-  return bytes >= 1 && bytes <= LATTICE_LIMITS.idBytes;
+  return typeof value === "string"
+    && PORTABLE_ID.test(value)
+    && encoder.encode(value).length <= PROTECTED_TASK_PORTABLE_ID_MAX_UTF8_BYTES_V1;
 }
 
 function revision(value: unknown, minimum: number): value is number {
@@ -123,5 +123,35 @@ export function parseProtectedTaskContentResponseV1(
     dtoVersion: PROTECTED_TASK_CONTENT_DTO_VERSION_V1,
     status: "unavailable",
     reason: value["reason"] as ProtectedTaskContentUnavailableReasonV1,
+  });
+}
+
+export function parseProtectedTaskDefinitionDtoV1(
+  value: unknown,
+): ProtectedTaskDefinitionDtoV1 {
+  if (
+    !ownRecord(value)
+    || !exactFields(value, ["taskId", "content"])
+    || !portableId(value["taskId"])
+  ) throw new TypeError("Protected Task definition DTO is invalid");
+  return Object.freeze({
+    taskId: value["taskId"],
+    content: parseProtectedTaskContentResponseV1(value["content"]),
+  });
+}
+
+export function parseProtectedTaskRunResultDtoV1(
+  value: unknown,
+): ProtectedTaskRunResultDtoV1 {
+  if (
+    !ownRecord(value)
+    || !exactFields(value, ["taskId", "taskRunId", "content"])
+    || !portableId(value["taskId"])
+    || !portableId(value["taskRunId"])
+  ) throw new TypeError("Protected Task run result DTO is invalid");
+  return Object.freeze({
+    taskId: value["taskId"],
+    taskRunId: value["taskRunId"],
+    content: parseProtectedTaskContentResponseV1(value["content"]),
   });
 }

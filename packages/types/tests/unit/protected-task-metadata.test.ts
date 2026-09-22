@@ -390,6 +390,44 @@ describe("protected Task metadata v1", () => {
     }).status).toBe("unsupported");
   });
 
+  test("keeps free-form interruption tool identity out of operational metadata", () => {
+    const result = supported({
+      lastInterruption: {
+        code: "no_progress",
+        cause: "repeated_tool_failure",
+        stoppedBy: "no_progress_guard",
+        outcome: "errored",
+        observedAt: "2026-09-21T10:01:00.000Z",
+        taskRunId: "run-1",
+        graphThreadId: "thread-1",
+        checkpointId: null,
+        toolName: "private_repository_lookup",
+        operation: "read",
+        resumeRequiresValidation: true,
+      },
+    });
+
+    expect(result.operational).toEqual({
+      lastInterruption: {
+        code: "no_progress",
+        cause: "repeated_tool_failure",
+        stoppedBy: "no_progress_guard",
+        outcome: "errored",
+        observedAt: "2026-09-21T10:01:00.000Z",
+        taskRunId: "run-1",
+        graphThreadId: "thread-1",
+        checkpointId: null,
+        resumeRequiresValidation: true,
+      },
+    });
+    expect(result.protectedContent).toEqual({
+      lastInterruption: {
+        toolName: "private_repository_lookup",
+        operation: "read",
+      },
+    });
+  });
+
   test("preserves producer text without truncation when no canonical limit exists", () => {
     const target = `/work/${"repository/".repeat(3_000)}`;
     const instructions = "Document the public behavior. ".repeat(4_000);

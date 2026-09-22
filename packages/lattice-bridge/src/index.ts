@@ -171,16 +171,6 @@ export {
   type TaskRunResultPayloadV1,
 } from "./task/task-payload-v1.ts";
 export {
-  PROTECTED_TASK_CONTENT_DTO_VERSION_V1,
-  parseProtectedTaskContentResponseV1,
-  type ProtectedTaskContentDtoV1,
-  type ProtectedTaskContentResponseV1,
-  type ProtectedTaskContentUnavailableDtoV1,
-  type ProtectedTaskContentUnavailableReasonV1,
-  type ProtectedTaskDefinitionDtoV1,
-  type ProtectedTaskRunResultDtoV1,
-} from "./task/protected-task-dto-v1.ts";
-export {
   commitMemoryMutationV1,
   type MemoryMutationCommitmentInput,
 } from "./memory/memory-mutation-commitment.ts";

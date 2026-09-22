@@ -197,7 +197,10 @@ function isNestedTaskCreation(
   candidate: TaskCreateInput,
   provenance: TaskCreationProvenance,
 ): boolean {
-  if (candidate.parentTaskId != null || (candidate.depth ?? 0) > 0) return true;
+  if (
+    candidate.parentTaskId != null
+    || candidate.depth !== undefined && candidate.depth !== 0
+  ) return true;
   if (provenance.kind === "human_api") {
     return provenance.requestedParentTaskId !== null;
   }

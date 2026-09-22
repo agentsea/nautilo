@@ -16,9 +16,23 @@ export const TASK_RUN_RESULT_PAYLOAD_FORMAT_VERSION_V1 = 1 as const;
 export const TASK_PAYLOAD_MAX_WIRE_BYTES_V1 = LATTICE_LIMITS.plaintextBytes;
 export const TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1 =
   LATTICE_LIMITS.plaintextBytes;
-export const TASK_PAYLOAD_MAX_TEXT_BYTES_V1 = LATTICE_LIMITS.plaintextBytes;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+
+const TASK_PAYLOAD_EMPTY_PROMPT_ENVELOPE_BYTES_V1 = encoder.encode(
+  '{"formatVersion":1,"prompt":"","expectedOutput":null,"protectedMetadata":{}}',
+).length;
+const TASK_RUN_RESULT_EMPTY_TEXT_ENVELOPE_BYTES_V1 = encoder.encode(
+  '{"formatVersion":1,"resultText":"","lastError":null}',
+).length;
+
+/** Largest single text field that fits its minimal canonical wire envelope. */
+export const TASK_PAYLOAD_MAX_TEXT_BYTES_V1 =
+  TASK_PAYLOAD_MAX_WIRE_BYTES_V1 - TASK_PAYLOAD_EMPTY_PROMPT_ENVELOPE_BYTES_V1;
+/** Largest single result field that fits its minimal canonical wire envelope. */
 export const TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1 =
-  LATTICE_LIMITS.plaintextBytes;
+  TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1
+  - TASK_RUN_RESULT_EMPTY_TEXT_ENVELOPE_BYTES_V1;
 export const TASK_PAYLOAD_MAX_METADATA_ENTRIES_V1 =
   MESSAGE_PAYLOAD_MAX_METADATA_ENTRIES_V2;
 export const TASK_PAYLOAD_MAX_METADATA_JSON_NODES_V1 =
@@ -49,9 +63,6 @@ export type TaskRunResultPayloadV1 = Readonly<{
   resultText: string | null;
   lastError: string | null;
 }>;
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
 
 interface JsonBudget {
   nodes: number;
