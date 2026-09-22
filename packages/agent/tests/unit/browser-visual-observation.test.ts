@@ -59,4 +59,44 @@ describe("browser visual observation", () => {
         x: 100, y: 50, context: "" }],
     }).success).toBe(false);
   });
+
+  test("renders coordinate-free relative structure for repeated visual regions", () => {
+    const boxes = [
+      { x: 100, y: 100, width: 80, height: 60 },
+      { x: 200, y: 100, width: 80, height: 60 },
+      { x: 300, y: 100, width: 80, height: 60 },
+      { x: 100, y: 180, width: 80, height: 60 },
+      { x: 200, y: 180, width: 80, height: 60 },
+      { x: 300, y: 180, width: 80, height: 60 },
+    ];
+    const observation = browserVisualObservationFromRelay({
+      ...relayObservation,
+      extraction: {
+        ...relayObservation.extraction,
+        text: [{ text: "7", box: { x: 325, y: 195, width: 20, height: 24 }, confidence: 0.98 }],
+        rectangles: boxes,
+        contours: [],
+        contourCount: 0,
+        layouts: boxes.map((box, index) => ({
+          groupId: "grid-1",
+          kind: "grid" as const,
+          box,
+          ordinal: index + 1,
+          itemCount: 6,
+          row: Math.floor(index / 3) + 1,
+          column: index % 3 + 1,
+          rows: 2,
+          columns: 3,
+        })),
+      },
+    });
+    expect(observation.snapshot).toContain('visual_group "grid-1" [kind=grid, rows=2, columns=3, items=6]');
+    expect(observation.snapshot).toContain("group=grid-1, row=2, column=3");
+    expect(observation.visual.targets.find(({ name }) => name === "7")).toMatchObject({
+      role: "grid item",
+      layout: { groupId: "grid-1", row: 2, column: 3, rows: 2, columns: 3 },
+    });
+    expect(observation.snapshot).not.toContain("x: 300");
+    expect(observation.snapshot).not.toContain("y: 180");
+  });
 });

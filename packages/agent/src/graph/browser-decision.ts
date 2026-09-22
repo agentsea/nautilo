@@ -333,6 +333,7 @@ function visualTargetBinding(target: BrowserVisualTarget): BrowserVisualTargetBi
     context: target.context,
     ...(target.sources === undefined ? {} : { sources: target.sources }),
     ...(target.confidence === undefined ? {} : { confidence: target.confidence }),
+    ...(target.layout === undefined ? {} : { layout: target.layout }),
     point: { x: target.x, y: target.y },
     ...(target.box === undefined ? {} : { box: target.box }),
   };
@@ -363,6 +364,7 @@ function semanticVisualTarget(target: BrowserVisualTarget, visual: BrowserVisual
   readonly interaction: BrowserVisualTarget["interaction"];
   readonly location: string;
   readonly context: string;
+  readonly layout?: BrowserVisualTarget["layout"];
 } {
   const location = categoricalVisualLocation(target, visual);
   return {
@@ -372,6 +374,7 @@ function semanticVisualTarget(target: BrowserVisualTarget, visual: BrowserVisual
     interaction: target.interaction,
     location,
     context: semanticVisualContext(target.context, location),
+    ...(target.layout === undefined ? {} : { layout: target.layout }),
   };
 }
 
@@ -380,7 +383,10 @@ function browserVisualSemanticSnapshot(visual: BrowserVisualObservation): string
     "- visual viewport",
     ...visual.targets.map((target) => {
       const semantic = semanticVisualTarget(target, visual);
-      return `  - ${semantic.role} ${JSON.stringify(semantic.name)} [visual_ref=${semantic.visualRef}, interaction=${semantic.interaction}, location=${JSON.stringify(semantic.location)}] context=${JSON.stringify(semantic.context)}`;
+      const structure = semantic.layout === undefined
+        ? ""
+        : `, group=${semantic.layout.groupId}, row=${semantic.layout.row}, column=${semantic.layout.column}`;
+      return `  - ${semantic.role} ${JSON.stringify(semantic.name)} [visual_ref=${semantic.visualRef}, interaction=${semantic.interaction}, location=${JSON.stringify(semantic.location)}${structure}] context=${JSON.stringify(semantic.context)}`;
     }),
   ].join("\n");
 }

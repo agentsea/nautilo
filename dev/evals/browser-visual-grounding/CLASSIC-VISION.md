@@ -23,6 +23,19 @@ observations top-to-bottom and left-to-right, and append the ordinary
 `scroll_up` and `scroll_down` operations. Do not infer that a region is a
 button, field, or other semantic role when pixels do not establish that fact.
 
+Do not flatten repeated regions into anonymous independent targets. A local,
+task-independent layout pass should detect similarly sized non-overlapping
+regions, connect aligned neighbours, and emit grids, horizontal rows and
+vertical columns. Items receive coordinate-free structural identities such as
+`grid-1`, row 2, column 3. Screenshot coordinates remain in the private target
+binding used for execution and fresh re-grounding. The grouping pass must not
+inspect the URL, page title, task, application name or expected grid size.
+
+The production prototype implements this geometry-only pass before Jev. It
+also applies accurate crop OCR adaptively to unresolved leaf-sized regions,
+rather than assuming a fixed browser-control pixel size. It does not call a
+generative or vision-language model.
+
 Raw contours are diagnostic evidence, not Jev candidates. Glyphs, shadows and
 nested borders make an unfiltered contour inventory both enormous and
 misleading. This harness records raw counts and supplies Jev only filtered,
@@ -125,6 +138,19 @@ OPENROUTER_API_KEY=... \
 
 Mode-600 reports are written under the ignored `.results/` directory, and
 `.results/classic-latest.json` points to the latest run.
+
+Regenerate and run the synthetic structural fixtures:
+
+```sh
+bun dev/evals/browser-visual-grounding/generate-synthetic-layouts.ts
+bun run --cwd apps/desktop compile:browser-visual-grounding
+bun test dev/evals/browser-visual-grounding/synthetic-layouts.test.ts
+```
+
+The fixtures deliberately cover a 3×5 grid, a separately scaled 2×3 grid,
+and independent horizontal and vertical repeated controls. They exercise the
+actual Apple Vision helper, deterministic layout inference, and the final
+coordinate-free observation rendered for Jev.
 
 ## Initial eight-case extraction result
 

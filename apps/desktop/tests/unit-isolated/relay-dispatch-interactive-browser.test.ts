@@ -100,6 +100,7 @@ function visualExtraction(
     rectangles: [],
     contours: [],
     contourCount: 0,
+    layouts: [],
   };
 }
 

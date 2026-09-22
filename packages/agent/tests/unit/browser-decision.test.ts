@@ -695,7 +695,9 @@ describe("browser decision policy", () => {
       visual: {
         viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
         targets: [{ visualRef: "v1", role: "visible text", name: "Apple", interaction: "unknown",
-          x: 150, y: 225, context: "in the first row" }],
+          x: 150, y: 225, context: "in the first row",
+          layout: { groupId: "grid-1", kind: "grid", ordinal: 4, itemCount: 6,
+            row: 2, column: 1, rows: 2, columns: 3 } }],
       },
     });
     const built = browserDecisionCandidates(visualPlan, visualObservation, 255);
@@ -706,10 +708,12 @@ describe("browser decision policy", () => {
     const visualChoice = built.candidates.find(({ id }) => id === "visual_v1");
     expect(visualChoice?.description).toContain('"visualRef":"v1"');
     expect(visualChoice?.description).toContain('"location":"middle-left area"');
+    expect(visualChoice?.description).toContain('"layout":{"groupId":"grid-1","kind":"grid"');
     expect(visualChoice?.description).not.toContain("imageX");
     expect(visualChoice?.description).not.toContain("imageY");
     expect(visualChoice?.visualTarget).toMatchObject({
       version: 1, visualRef: "v1", point: { x: 150, y: 225 },
+      layout: { groupId: "grid-1", row: 2, column: 1 },
     });
     expect(built.candidates.find(({ id }) => id === "scroll_up")?.call)
       .toEqual({ name: "browser_scroll", args: { direction: "up" } });

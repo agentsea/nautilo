@@ -17,6 +17,30 @@ const rawTextObservationSchema = z.object({
   confidence: z.number().min(0).max(1),
 }).strict();
 
+const visualLayoutKindSchema = z.enum(["grid", "row", "column"]);
+const visualLayoutSemanticSchema = z.object({
+  groupId: z.string().regex(/^(?:grid|row|column)-\d+$/),
+  kind: visualLayoutKindSchema,
+  ordinal: positiveInteger,
+  itemCount: positiveInteger,
+  row: positiveInteger,
+  column: positiveInteger,
+  rows: positiveInteger,
+  columns: positiveInteger,
+}).strict().superRefine((layout, ctx) => {
+  if (!layout.groupId.startsWith(`${layout.kind}-`)) {
+    ctx.addIssue({ code: "custom", path: ["groupId"], message: "Layout group id does not match kind" });
+  }
+  if (layout.ordinal > layout.itemCount) {
+    ctx.addIssue({ code: "custom", path: ["ordinal"], message: "Layout ordinal exceeds item count" });
+  }
+  if (layout.row > layout.rows || layout.column > layout.columns) {
+    ctx.addIssue({ code: "custom", path: ["row"], message: "Layout position exceeds dimensions" });
+  }
+});
+
+const visualLayoutMembershipSchema = visualLayoutSemanticSchema.safeExtend({ box: visualBoxSchema });
+
 /** Trusted Desktop result for one locally-extracted embedded-browser screenshot. */
 const relayBrowserVisualObservationSchema = z.object({
   version: z.literal(1),
@@ -39,6 +63,7 @@ const relayBrowserVisualObservationSchema = z.object({
     rectangles: z.array(visualBoxSchema),
     contours: z.array(visualBoxSchema),
     contourCount: nonnegativeInteger,
+    layouts: z.array(visualLayoutMembershipSchema).optional(),
   }).strict(),
 }).strict();
 
@@ -55,6 +80,7 @@ const browserVisualTargetSchema = z.object({
   box: visualBoxSchema.optional(),
   sources: z.array(nonBlank).optional(),
   confidence: z.number().min(0).max(1).optional(),
+  layout: visualLayoutSemanticSchema.optional(),
 }).strict();
 
 export const browserVisualObservationSchema = z.object({
@@ -100,6 +126,7 @@ export const browserVisualTargetBindingSchema = z.object({
   context: z.string(),
   sources: z.array(nonBlank).optional(),
   confidence: z.number().min(0).max(1).optional(),
+  layout: visualLayoutSemanticSchema.optional(),
   point: z.object({ x: nonnegativeInteger, y: nonnegativeInteger }).strict(),
   box: visualBoxSchema.optional(),
 }).strict();
@@ -148,6 +175,27 @@ function distance(left: BrowserVisualBox, right: BrowserVisualBox): number {
   const a = boxCenter(left);
   const b = boxCenter(right);
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function boxKey(box: BrowserVisualBox): string {
+  return `${box.x}:${box.y}:${box.width}:${box.height}`;
+}
+
+type VisualLayoutMembership = z.infer<typeof visualLayoutMembershipSchema>;
+type VisualLayoutSemantic = z.infer<typeof visualLayoutSemanticSchema>;
+
+function layoutWithoutBox(layout: VisualLayoutMembership | undefined): VisualLayoutSemantic | undefined {
+  if (layout === undefined) return undefined;
+  const { box: _box, ...semantic } = layout;
+  return semantic;
+}
+
+function layoutContext(layout: VisualLayoutSemantic | undefined): string | null {
+  if (layout === undefined) return null;
+  if (layout.kind === "grid") {
+    return `${layout.groupId}; grid item ${layout.ordinal} of ${layout.itemCount}; row ${layout.row} of ${layout.rows}; column ${layout.column} of ${layout.columns}`;
+  }
+  return `${layout.groupId}; ${layout.kind} item ${layout.ordinal} of ${layout.itemCount}`;
 }
 
 function dedupeRegions(regions: readonly RegionObservation[]): RegionObservation[] {
@@ -206,6 +254,7 @@ export function browserVisualObservationFromRelay(raw: unknown): {
     ...parsed.extraction.rectangles.map((box) => ({ box, confidence: 1, source: "rectangle" as const })),
     ...parsed.extraction.contours.map((box) => ({ box, confidence: 0.5, source: "contour" as const })),
   ]);
+  const layoutByBox = new Map((parsed.extraction.layouts ?? []).map((layout) => [boxKey(layout.box), layout]));
   const regionTargets = regions.map((region) => {
     const enclosed = text.filter((item) => containsPoint(region.box, boxCenter(item.box), 4));
     const nearby = text.filter((item) => !enclosed.includes(item))
@@ -215,18 +264,21 @@ export function browserVisualObservationFromRelay(raw: unknown): {
       || "unlabelled visual region";
     const center = boxCenter(region.box);
     const location = categoricalPosition(center, image);
+    const layout = layoutWithoutBox(layoutByBox.get(boxKey(region.box)));
+    const structuralContext = layoutContext(layout);
     return {
-      role: "visual region",
+      role: layout === undefined ? "visual region" : `${layout.kind} item`,
       name,
       interaction: "unknown" as const,
       x: center.x,
       y: center.y,
-      context: nearby.length
+      context: [structuralContext, nearby.length
         ? `${location}; near ${nearby.map((item) => item.text).join(" | ")}`
-        : `${location}; ${region.source} region`,
+        : `${location}; ${region.source} region`].filter(Boolean).join("; "),
       box: region.box,
       sources: name === "unlabelled visual region" ? [region.source] : [region.source, "ocr"],
       confidence: region.confidence,
+      ...(layout === undefined ? {} : { layout }),
     };
   });
   const textTargets = text.map((item) => {
@@ -235,16 +287,20 @@ export function browserVisualObservationFromRelay(raw: unknown): {
       .sort((left, right) => boxArea(left.box) - boxArea(right.box))[0];
     const box = enclosing?.box ?? item.box;
     const targetCenter = boxCenter(box);
+    const layout = layoutWithoutBox(layoutByBox.get(boxKey(box)));
+    const structuralContext = layoutContext(layout);
     return {
-      role: enclosing ? "labelled visual region" : "visible text",
+      role: layout === undefined ? (enclosing ? "labelled visual region" : "visible text") : `${layout.kind} item`,
       name: item.text,
       interaction: "unknown" as const,
       x: targetCenter.x,
       y: targetCenter.y,
-      context: `${enclosing ? `text inside ${enclosing.source} region` : "OCR text box"}; ${targetContext(item, text, image)}`,
+      context: [structuralContext, `${enclosing ? `text inside ${enclosing.source} region` : "OCR text box"}; ${targetContext(item, text, image)}`]
+        .filter(Boolean).join("; "),
       box,
       sources: enclosing ? ["ocr", enclosing.source] : ["ocr"],
       confidence: item.confidence,
+      ...(layout === undefined ? {} : { layout }),
     };
   });
   const rawTargets = [...regionTargets, ...textTargets]
@@ -264,11 +320,14 @@ export function browserVisualObservationFromRelay(raw: unknown): {
   });
   const visibleText = text.map((item) => item.text).filter((value, index, all) => all.indexOf(value) === index);
   const summary = `macOS Vision ${parsed.extraction.recognitionMode} extracted ${text.length} text boxes and ${regions.length} visual regions without a generative model`;
+  const groups = [...new Map(targets.filter((target) => target.layout !== undefined)
+    .map((target) => [target.layout!.groupId, target.layout!])).values()];
   const snapshot = [
     "- visual viewport",
     `  - summary ${quoted(summary)}`,
     ...visibleText.map((value) => `  - visible_text ${quoted(value)}`),
-    ...targets.map((target) => `  - ${target.role} ${quoted(target.name)} [visual_ref=${target.visualRef}, interaction=${target.interaction}] sources=${quoted(target.sources.join(","))} context=${quoted(target.context)}`),
+    ...groups.map((group) => `  - visual_group ${quoted(group.groupId)} [kind=${group.kind}, rows=${group.rows}, columns=${group.columns}, items=${group.itemCount}]`),
+    ...targets.map((target) => `  - ${target.role} ${quoted(target.name)} [visual_ref=${target.visualRef}, interaction=${target.interaction}${target.layout === undefined ? "" : `, group=${target.layout.groupId}, row=${target.layout.row}, column=${target.layout.column}`}] sources=${quoted(target.sources.join(","))} context=${quoted(target.context)}`),
   ].join("\n");
   return {
     pageUrl: parsed.pageUrl,

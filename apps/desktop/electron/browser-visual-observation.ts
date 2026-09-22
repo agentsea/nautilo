@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import {
+  inferBrowserVisualLayouts,
+  type BrowserVisualLayoutMembership,
+} from "./browser-visual-layout.ts";
+
 const BROWSER_VISUAL_GROUNDING_HELPER = "nautilo-browser-visual-grounding";
 // Process-safety boundaries, not product truncation: the measured eight-case
 // corpus stayed below 8 KiB and 270 ms. Overflow/timeout rejects the whole
@@ -33,6 +38,7 @@ export interface BrowserVisualExtraction {
   readonly rectangles: readonly BrowserVisualBox[];
   readonly contours: readonly BrowserVisualBox[];
   readonly contourCount: number;
+  readonly layouts: readonly BrowserVisualLayoutMembership[];
 }
 
 export interface BrowserVisualObservationEnvelope {
@@ -72,6 +78,7 @@ export interface BrowserVisualTargetBinding {
   readonly context: string;
   readonly sources?: readonly string[];
   readonly confidence?: number;
+  readonly layout?: Omit<BrowserVisualLayoutMembership, "box">;
   readonly point: { readonly x: number; readonly y: number };
   readonly box?: BrowserVisualBox;
 }
@@ -83,6 +90,7 @@ export interface BrowserVisualGroundedTarget {
   readonly context: string;
   readonly sources: readonly string[];
   readonly confidence: number;
+  readonly layout?: Omit<BrowserVisualLayoutMembership, "box">;
   readonly point: { readonly x: number; readonly y: number };
   readonly box: BrowserVisualBox;
 }
@@ -176,6 +184,7 @@ export function parseBrowserVisualTargetBinding(
     "version", "visualRef", "role", "name", "interaction", "context", "point",
     ...(Object.hasOwn(target, "sources") ? ["sources"] : []),
     ...(Object.hasOwn(target, "confidence") ? ["confidence"] : []),
+    ...(Object.hasOwn(target, "layout") ? ["layout"] : []),
     ...(Object.hasOwn(target, "box") ? ["box"] : []),
   ], "target");
   if (target["version"] !== 1) throw new Error("browser visual target returned invalid version");
@@ -217,6 +226,33 @@ export function parseBrowserVisualTargetBinding(
     confidence = finiteNumber(target["confidence"], "target.confidence");
     if (confidence > 1) throw new Error("browser visual target returned invalid confidence");
   }
+  let layout: Omit<BrowserVisualLayoutMembership, "box"> | undefined;
+  if (Object.hasOwn(target, "layout")) {
+    const rawLayout = record(target["layout"], "target.layout");
+    exactKeys(rawLayout, [
+      "groupId", "kind", "ordinal", "itemCount", "row", "column", "rows", "columns",
+    ], "target.layout");
+    const kind = rawLayout["kind"];
+    const groupId = rawLayout["groupId"];
+    if ((kind !== "grid" && kind !== "row" && kind !== "column")
+      || typeof groupId !== "string" || !/^(?:grid|row|column)-\d+$/.test(groupId)
+      || !groupId.startsWith(`${kind}-`)) {
+      throw new Error("browser visual target returned invalid target.layout identity");
+    }
+    layout = Object.freeze({
+      groupId,
+      kind,
+      ordinal: integer(rawLayout["ordinal"], "target.layout.ordinal", 1),
+      itemCount: integer(rawLayout["itemCount"], "target.layout.itemCount", 1),
+      row: integer(rawLayout["row"], "target.layout.row", 1),
+      column: integer(rawLayout["column"], "target.layout.column", 1),
+      rows: integer(rawLayout["rows"], "target.layout.rows", 1),
+      columns: integer(rawLayout["columns"], "target.layout.columns", 1),
+    });
+    if (layout.ordinal > layout.itemCount || layout.row > layout.rows || layout.column > layout.columns) {
+      throw new Error("browser visual target returned inconsistent target.layout");
+    }
+  }
   const box = Object.hasOwn(target, "box")
     ? parseStrictBox(target["box"], image.width, image.height, "target.box")
     : undefined;
@@ -229,6 +265,7 @@ export function parseBrowserVisualTargetBinding(
     context,
     ...(sources === undefined ? {} : { sources }),
     ...(confidence === undefined ? {} : { confidence }),
+    ...(layout === undefined ? {} : { layout }),
     point: Object.freeze(point),
     ...(box === undefined ? {} : { box: Object.freeze(box) }),
   });
@@ -265,6 +302,26 @@ function distance(left: BrowserVisualBox, right: BrowserVisualBox): number {
   const a = boxCenter(left);
   const b = boxCenter(right);
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function boxKey(box: BrowserVisualBox): string {
+  return `${box.x}:${box.y}:${box.width}:${box.height}`;
+}
+
+function layoutWithoutBox(
+  layout: BrowserVisualLayoutMembership | undefined,
+): Omit<BrowserVisualLayoutMembership, "box"> | undefined {
+  if (layout === undefined) return undefined;
+  const { box: _box, ...semantic } = layout;
+  return semantic;
+}
+
+function layoutContext(layout: Omit<BrowserVisualLayoutMembership, "box"> | undefined): string | null {
+  if (layout === undefined) return null;
+  if (layout.kind === "grid") {
+    return `${layout.groupId}; grid item ${layout.ordinal} of ${layout.itemCount}; row ${layout.row} of ${layout.rows}; column ${layout.column} of ${layout.columns}`;
+  }
+  return `${layout.groupId}; ${layout.kind} item ${layout.ordinal} of ${layout.itemCount}`;
 }
 
 type RegionObservation = {
@@ -324,6 +381,7 @@ function browserVisualTargetsFromExtraction(
     ...extraction.rectangles.map((box) => ({ box, confidence: 1, source: "rectangle" as const })),
     ...extraction.contours.map((box) => ({ box, confidence: 0.5, source: "contour" as const })),
   ]);
+  const layoutByBox = new Map(extraction.layouts.map((layout) => [boxKey(layout.box), layout]));
   const regionTargets: BrowserVisualGroundedTarget[] = regions.map((region) => {
     const enclosed = text.filter((item) => containsPoint(region.box, boxCenter(item.box), 4));
     const nearby = text.filter((item) => !enclosed.includes(item))
@@ -332,15 +390,18 @@ function browserVisualTargetsFromExtraction(
     const name = enclosed.sort(readingOrder).map((item) => item.text).join(" ").trim()
       || "unlabelled visual region";
     const location = categoricalPosition(boxCenter(region.box), image);
+    const layout = layoutWithoutBox(layoutByBox.get(boxKey(region.box)));
+    const structuralContext = layoutContext(layout);
     return Object.freeze({
-      role: "visual region",
+      role: layout === undefined ? "visual region" : `${layout.kind} item`,
       name,
       interaction: "unknown",
-      context: nearby.length
+      context: [structuralContext, nearby.length
         ? `${location}; near ${nearby.map((item) => item.text).join(" | ")}`
-        : `${location}; ${region.source} region`,
+        : `${location}; ${region.source} region`].filter(Boolean).join("; "),
       sources: Object.freeze(name === "unlabelled visual region" ? [region.source] : [region.source, "ocr"]),
       confidence: region.confidence,
+      ...(layout === undefined ? {} : { layout: Object.freeze(layout) }),
       point: Object.freeze(boxCenter(region.box)),
       box: Object.freeze({ ...region.box }),
     });
@@ -350,13 +411,17 @@ function browserVisualTargetsFromExtraction(
     const enclosing = regions.filter((region) => containsPoint(region.box, center, 3))
       .sort((left, right) => boxArea(left.box) - boxArea(right.box))[0];
     const box = enclosing?.box ?? item.box;
+    const layout = layoutWithoutBox(layoutByBox.get(boxKey(box)));
+    const structuralContext = layoutContext(layout);
     return Object.freeze({
-      role: enclosing ? "labelled visual region" : "visible text",
+      role: layout === undefined ? (enclosing ? "labelled visual region" : "visible text") : `${layout.kind} item`,
       name: item.text,
       interaction: "unknown",
-      context: `${enclosing ? `text inside ${enclosing.source} region` : "OCR text box"}; ${targetContext(item, text, image)}`,
+      context: [structuralContext, `${enclosing ? `text inside ${enclosing.source} region` : "OCR text box"}; ${targetContext(item, text, image)}`]
+        .filter(Boolean).join("; "),
       sources: Object.freeze(enclosing ? ["ocr", enclosing.source] : ["ocr"]),
       confidence: item.confidence,
+      ...(layout === undefined ? {} : { layout: Object.freeze(layout) }),
       point: Object.freeze(boxCenter(box)),
       box: Object.freeze({ ...box }),
     });
@@ -403,6 +468,26 @@ export function resolveBrowserVisualTarget(
       && normalizedSemantic(candidate.name) === normalizedSemantic(original.name));
   if (matches.length === 0) return { status: "missing" };
   if (matches.length === 1) return { status: "matched", target: matches[0]! };
+
+  if (original.layout !== undefined) {
+    const layoutMatches = matches.filter((candidate) => candidate.layout !== undefined
+      && candidate.layout.kind === original.layout!.kind
+      && candidate.layout.groupId === original.layout!.groupId
+      && candidate.layout.row === original.layout!.row
+      && candidate.layout.column === original.layout!.column);
+    if (layoutMatches.length === 1) return { status: "matched", target: layoutMatches[0]! };
+    if (layoutMatches.length > 1) matches = layoutMatches;
+    else {
+      const structuralMatches = matches.filter((candidate) => candidate.layout !== undefined
+        && candidate.layout.kind === original.layout!.kind
+        && candidate.layout.rows === original.layout!.rows
+        && candidate.layout.columns === original.layout!.columns
+        && candidate.layout.row === original.layout!.row
+        && candidate.layout.column === original.layout!.column);
+      if (structuralMatches.length === 1) return { status: "matched", target: structuralMatches[0]! };
+      if (structuralMatches.length > 1) matches = structuralMatches;
+    }
+  }
 
   const context = normalizedSemantic(original.context);
   const contextMatches = matches.filter((candidate) => normalizedSemantic(candidate.context) === context);
@@ -461,6 +546,7 @@ export function parseBrowserVisualGroundingOutput(
     if (confidence > 1) throw new Error(`browser visual helper returned invalid text[${index}].confidence`);
     return { text: textValue, confidence, box: parseBox(observation["box"], width, height, `text[${index}].box`) };
   });
+  const rectangles = rawRectangles.map((value, index) => parseBox(value, width, height, `rectangles[${index}]`));
   return Object.freeze({
     recognitionMode: "hybrid",
     durationMs: finiteNumber(result["durationMs"], "durationMs"),
@@ -468,9 +554,10 @@ export function parseBrowserVisualGroundingOutput(
     cropDurationMs: finiteNumber(result["cropDurationMs"], "cropDurationMs"),
     cropRequestCount: integer(result["cropRequestCount"], "cropRequestCount"),
     text,
-    rectangles: rawRectangles.map((value, index) => parseBox(value, width, height, `rectangles[${index}]`)),
+    rectangles,
     contours: rawContours.map((value, index) => parseBox(value, width, height, `contours[${index}]`)),
     contourCount: integer(result["contourCount"], "contourCount"),
+    layouts: inferBrowserVisualLayouts({ rectangles, image: { width, height } }),
   });
 }
 

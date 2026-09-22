@@ -123,18 +123,31 @@ if let contourObservation {
 
 let cropStarted = Date()
 var cropRequestCount = 0
-let cropCandidates = rectangles.filter { rectangle in
+let maximumCropWidth = max(220, min(640, width / 3))
+let maximumCropHeight = max(180, min(480, height / 3))
+var claimedTextLikeContours: [Box] = []
+var cropCandidates: [Box] = []
+for rectangle in rectangles.sorted(by: { $0.width * $0.height < $1.width * $1.height }) {
     let aspectRatio = Double(rectangle.width) / Double(rectangle.height)
-    let controlSized = rectangle.width >= 40 && rectangle.width <= 220
-        && rectangle.height >= 40 && rectangle.height <= 180
+    let controlSized = rectangle.width >= 40 && rectangle.width <= maximumCropWidth
+        && rectangle.height >= 40 && rectangle.height <= maximumCropHeight
         && aspectRatio >= 0.4 && aspectRatio <= 3
     let alreadyLabelled = text.contains { containsCenter(rectangle, $0.box) }
-    let hasTextLikeContour = contours.contains { contour in
+    let textLikeContours = contours.filter { contour in
         contour.width <= Int(Double(rectangle.width) * 0.6)
             && contour.height <= Int(Double(rectangle.height) * 0.6)
             && containsCenter(rectangle, contour)
     }
-    return controlSized && !alreadyLabelled && hasTextLikeContour
+    let hasUnclaimedTextLikeContour = textLikeContours.contains { contour in
+        !claimedTextLikeContours.contains { claimed in
+            abs((claimed.x + claimed.width / 2) - (contour.x + contour.width / 2)) <= 8
+                && abs((claimed.y + claimed.height / 2) - (contour.y + contour.height / 2)) <= 8
+        }
+    }
+    if controlSized && !alreadyLabelled && hasUnclaimedTextLikeContour {
+        cropCandidates.append(rectangle)
+        claimedTextLikeContours.append(contentsOf: textLikeContours)
+    }
 }
 
 for candidate in cropCandidates {

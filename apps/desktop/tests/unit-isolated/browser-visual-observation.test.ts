@@ -3,6 +3,7 @@ import {
   BROWSER_VISUAL_GROUNDING_OUTPUT_MAX_BYTES,
   parseBrowserVisualTargetBinding,
   parseBrowserVisualGroundingOutput,
+  resolveBrowserVisualTarget,
   resolveBrowserVisualGroundingHelper,
 } from "../../electron/browser-visual-observation.ts";
 
@@ -93,5 +94,53 @@ describe("browser visual observation helper boundary", () => {
       { ...target, point: { x: 1000, y: 100 } },
       { width: 1000, height: 600 },
     )).toThrow(/out-of-image point/);
+  });
+
+  test("re-grounds an anonymous repeated item by relative layout identity", () => {
+    const rectangles = Array.from({ length: 6 }, (_, index) => ({
+      x: 300 + (index % 3) * 120,
+      y: 180 + Math.floor(index / 3) * 90,
+      width: 90,
+      height: 60,
+    }));
+    const layouts = rectangles.map((box, index) => ({
+      groupId: "grid-1",
+      kind: "grid" as const,
+      box,
+      ordinal: index + 1,
+      itemCount: 6,
+      row: Math.floor(index / 3) + 1,
+      column: index % 3 + 1,
+      rows: 2,
+      columns: 3,
+    }));
+    const resolved = resolveBrowserVisualTarget({
+      version: 1,
+      visualRef: "v6",
+      role: "grid item",
+      name: "unlabelled visual region",
+      interaction: "unknown",
+      context: "old frame",
+      sources: ["rectangle"],
+      layout: { groupId: "grid-1", kind: "grid", ordinal: 6, itemCount: 6,
+        row: 2, column: 3, rows: 2, columns: 3 },
+      point: { x: 1, y: 1 },
+      box: { x: 1, y: 1, width: 90, height: 60 },
+    }, {
+      recognitionMode: "hybrid",
+      durationMs: 1,
+      globalDurationMs: 1,
+      cropDurationMs: 0,
+      cropRequestCount: 0,
+      text: [],
+      rectangles,
+      contours: [],
+      contourCount: 0,
+      layouts,
+    }, { width: 1_000, height: 700 });
+    expect(resolved).toMatchObject({
+      status: "matched",
+      target: { layout: { row: 2, column: 3 }, box: rectangles[5] },
+    });
   });
 });
