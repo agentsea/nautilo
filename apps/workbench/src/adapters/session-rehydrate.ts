@@ -14,6 +14,7 @@ import {
 import type {
   AdvancedVideoWorkcardContinuation,
   MessageArtifactOpenRef,
+  MessageAttachmentRef,
   RoomHistoryTerminalExecutionSummary,
 } from "@nautilo/types";
 import {
@@ -31,6 +32,7 @@ import { isShareRejection } from "./live-shadow-message-projection";
  * or realtime, never a client-side inference from authored prose.
  */
 export const MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY = "artifactOpenRefs";
+export const MESSAGE_ATTACHMENTS_METADATA_KEY = "messageAttachments";
 const MESSAGE_TERMINAL_EXECUTIONS_METADATA_KEY = "terminalExecutions";
 /**
  * The server relation is unique, but history/event/cache races must never
@@ -306,6 +308,7 @@ export interface StoredSessionMessageDto {
    * question that carries documents into the exact peer DM.
    */
   artifacts?: MessageArtifactOpenRef[];
+  attachments?: MessageAttachmentRef[];
   workcardContinuation?: AdvancedVideoWorkcardContinuation;
   /** Protected-history-only terminal outcomes mapped to this Human input. */
   terminalExecutions?: readonly RoomHistoryTerminalExecutionSummary[];
@@ -326,6 +329,8 @@ export function projectAuthenticatedRoomHistoryPayload(
     historyUnavailableReason: _historyUnavailableReason,
     authenticatedToolStatus: _authenticatedToolStatus,
     authenticatedToolCallId: _authenticatedToolCallId,
+    // Ordinary blob references are not authenticated by the protected text payload.
+    attachments: _attachments,
     ...availableRow
   } = row;
   if (payload.role === "assistant") return Object.freeze({
@@ -546,6 +551,7 @@ export function reconcileRoomHistoryShadowPayloads(
     if (withheld.has(key)) {
       return Object.freeze({
         ...message,
+        attachments: [],
         content: "Encrypted history is unavailable on this device.",
         historyUnavailable: true,
         toolCalls: message.role === "assistant" ? "[]" : message.toolCalls,
@@ -567,6 +573,7 @@ export function withholdRoomHistoryShadowPayloads(
 ): readonly StoredSessionMessageDto[] {
   return messages.map((message) => Object.freeze({
     ...message,
+    attachments: [],
     content: "Encrypted history is unavailable on this device.",
     historyUnavailable: true,
     ...(message.role === "assistant" ? { toolCalls: "[]" } : {}),
@@ -652,6 +659,9 @@ export function restoreSessionMessages(
         custom.sourceUserId = m.sourceUserId;
       }
       if (m.reactions && m.reactions.length > 0) custom.reactions = m.reactions;
+      if (m.historyUnavailable !== true && m.attachments !== undefined) {
+        custom[MESSAGE_ATTACHMENTS_METADATA_KEY] = m.attachments;
+      }
       const artifacts = dedupeMessageArtifactOpenRefs(m.artifacts);
       if (artifacts !== undefined) {
         custom[MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY] = artifacts;

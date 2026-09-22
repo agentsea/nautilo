@@ -5,18 +5,21 @@ import {
   getDefaultModel,
 } from "@nautilo/agent";
 import { and, db, eq, isNull, rooms, sessionMessages, sessions, sessionMessageRecipientState } from "@nautilo/db";
+import { log } from "@nautilo/logger";
 import { eventBus } from "@nautilo/runtime";
 import type { RoomDetailPayload } from "@nautilo/trust";
 import {
   logicalMessageKey,
   type ChatAttachmentStatus,
   type ChatMultimodalImagePart,
+  type MessageAttachmentRef,
   type MessageArtifactOpenRef,
 } from "@nautilo/types";
 import {
   hydrateMessageArtifactOpenRefs,
   persistMessageArtifactOpenRefs,
 } from "./artifact-refs";
+import { linkAndLoadRetainedAttachmentRefs } from "./retained-attachment-refs";
 
 /**
  * D426 — structural view of the root anchor summary that
@@ -220,6 +223,19 @@ export async function peerBroadcastHumanMessage(args: {
     if (hydrated.length > 0) artifacts = hydrated;
   }
 
+  let attachments: MessageAttachmentRef[] = [];
+  try {
+    attachments = await linkAndLoadRetainedAttachmentRefs({
+      messageId,
+      statuses: args.attachmentStatuses,
+      canonicalRoomNamespaceId,
+    });
+  } catch (error) {
+    log(
+      `[attachments] retained attachment delivery projection failed for saved message ${messageId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   eventBus.emit({
     type: "message.new",
     laneKey: `room:${room.id}`,
@@ -232,6 +248,7 @@ export async function peerBroadcastHumanMessage(args: {
     sourceUserId: senderUserId,
     senderUserId: senderUserId,
     ...(replyToMessageId != null ? { replyToMessageId } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
     ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
   });
 

@@ -387,7 +387,11 @@ export function recoverDesktopRoomPendingAttention(
       : result;
   });
 }
-import { reconcileCanonicalHumanMessage, settleHumanMessageVerification } from "./message-new-reconciliation";
+import {
+  OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY,
+  reconcileCanonicalHumanMessage,
+  settleHumanMessageVerification,
+} from "./message-new-reconciliation";
 import { projectVerifiedFullHumanEvent, readPendingFullHumanMessage, reconcileVerifiedFullHumanMessage, takePendingFullHumanEvents } from "./full-human-message-reconciliation";
 import {
   liveArrivalsSince,
@@ -1389,8 +1393,26 @@ export function updateMessageTextInList(
   messages: readonly ThreadMessageLike[],
   id: string,
   text: string,
+  attachmentIds?: readonly string[],
 ): readonly ThreadMessageLike[] {
-  const idx = messages.findIndex((m) => m.id === id);
+  let idx = messages.findIndex((m) => m.id === id);
+  // A live echo can replace the local id before the HTTP attachment outcomes
+  // arrive. Only update an unfinished summary for this exact upload set; an
+  // image preview that already consumed its optimistic metadata stays clean.
+  if (idx < 0 && attachmentIds && attachmentIds.length > 0) {
+    const expectedIds = new Set(attachmentIds);
+    idx = messages.findIndex((message) => {
+      const custom = messageMetadata(message).custom ?? {};
+      const queuedIds = custom[OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY];
+      return message.role === "user" &&
+        typeof custom.optimisticAuthoredText === "string" &&
+        custom.humanMessageVerification === undefined &&
+        custom.historyUnavailable === undefined &&
+        !(typeof custom.editRevision === "number" && custom.editRevision > 0) &&
+        Array.isArray(queuedIds) && queuedIds.length === expectedIds.size &&
+        queuedIds.every((queuedId) => typeof queuedId === "string" && expectedIds.has(queuedId));
+    });
+  }
   if (idx < 0) return messages;
   const prev = messages[idx];
   return [
@@ -3330,8 +3352,8 @@ export function NautiloRuntimeProvider({
   );
 
   const updateMessageText = useCallback(
-    (id: string, text: string) => {
-      const next = updateMessageTextInList(messagesRef.current, id, text);
+    (id: string, text: string, attachmentIds?: readonly string[]) => {
+      const next = updateMessageTextInList(messagesRef.current, id, text, attachmentIds);
       if (next === messagesRef.current) return;
       messagesRef.current = [...next];
       flush();
@@ -3828,7 +3850,11 @@ export function NautiloRuntimeProvider({
               }
               if (pending !== undefined && threadRoomRegistrationRef.current?.roomId
                 === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)) {
-                const projected = { ...pending, content: result.payload.content };
+                const projected = {
+                  ...pending,
+                  content: result.payload.content,
+                  attachments: [],
+                };
                 protectedProjectedEventsRef.current.add(projected);
                 projectedLiveShadowEventRef.current(projected);
                 return;
@@ -3944,7 +3970,11 @@ export function NautiloRuntimeProvider({
               }
               if (pending !== undefined && threadRoomRegistrationRef.current?.roomId
                 === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)) {
-                const projected = { ...pending, content: result.payload.content };
+                const projected = {
+                  ...pending,
+                  content: result.payload.content,
+                  attachments: [],
+                };
                 protectedProjectedEventsRef.current.add(projected);
                 projectedLiveShadowEventRef.current(projected);
                 return;
@@ -4442,7 +4472,7 @@ export function NautiloRuntimeProvider({
           }
           if (
             (event.role === "user" || event.role === "human") &&
-            event.content &&
+            (event.content || (event.attachments?.length ?? 0) > 0) &&
             typeof event.sourceUserId === "string" &&
             event.sourceUserId.length > 0
           ) {
@@ -4464,6 +4494,9 @@ export function NautiloRuntimeProvider({
                   : {}),
                 ...(event.artifacts !== undefined
                   ? { artifacts: event.artifacts }
+                  : {}),
+                ...(event.attachments !== undefined
+                  ? { attachments: event.attachments }
                   : {}),
               },
               viewerKeyRef.current,
@@ -6899,6 +6932,13 @@ export function NautiloRuntimeProvider({
               metadata: {
                 custom: {
                   optimisticAuthoredText: text,
+                  ...(attachments.length > 0
+                    ? {
+                        [OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY]: attachments.map(
+                          (attachment) => attachment.attachmentId,
+                        ),
+                      }
+                    : {}),
                   ...(options?.replyToMessageId !== undefined
                     ? { replyToMessageId: options.replyToMessageId }
                     : {}),
@@ -7051,6 +7091,7 @@ export function NautiloRuntimeProvider({
               queuedAttachments,
               attachmentStatuses: pending.attachments ?? [],
             }),
+            attachments.map((attachment) => attachment.attachmentId),
           );
         }
         if (pending.userMessageId != null) {

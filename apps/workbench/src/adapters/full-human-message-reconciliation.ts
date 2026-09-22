@@ -28,6 +28,7 @@ export function projectVerifiedFullHumanEvent(
     logicalMessageKey,
     role: "user",
     content,
+    attachments: [],
     sourceUserId: projection.sourceUserId,
     createdAt: projection.createdAt,
     editRevision: projection.editRevision,
@@ -114,6 +115,7 @@ export function reconcileVerifiedFullHumanMessage(
     createdAt: projection.createdAt,
     sourceUserId: projection.sourceUserId,
     content,
+    attachments: [],
     logicalMessageKey,
     editRevision: projection.editRevision,
     ...(projection.replyToMessageId == null ? {} : {

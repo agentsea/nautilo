@@ -38,8 +38,6 @@ import {
   getCachedServerModelConfigRow,
   getRoomNamespaceId,
   kickServerModelConfigRefresh,
-  getSessionMessageFingerprintById,
-  stampTurnIdOnAttachments,
 } from "@nautilo/db";
 import { log } from "@nautilo/logger";
 import type { RoomDetailPayload } from "@nautilo/trust";
@@ -104,7 +102,6 @@ import {
 import {
   normalizeChatAttachments,
   parseChatAttachmentRefs,
-  retainedAttachmentIdsFromStatuses,
   validateClientPathSafe,
 } from "./attachments";
 import { parseChatArtifactRefs, collectWorkspaceArtifactExternalIds } from "./artifact-refs";
@@ -123,6 +120,7 @@ import {
   type PendingAgentRedirectContext,
 } from "./agent-redirect-handler";
 import { finalizeProtectedHumanPeerMessage, peerBroadcastHumanMessage, roomIsArchived, roomRowExists } from "./peer-broadcast";
+import { linkAndLoadRetainedAttachmentRefs } from "./retained-attachment-refs";
 import { resolveSkillSlashCommandContent } from "./skill-slash-command";
 import { resolveCommandSlashCommandContent } from "./command-slash-command";
 import {
@@ -395,15 +393,7 @@ async function stampRetainedAttachmentTurnId(
   messageId: number | null,
   statuses: readonly ChatAttachmentStatus[],
 ): Promise<void> {
-  if (messageId == null) return;
-  const retainedIds = retainedAttachmentIdsFromStatuses(statuses);
-  if (retainedIds.length === 0) return;
-  const fingerprint = await getSessionMessageFingerprintById(messageId);
-  if (!fingerprint) {
-    log(`[d391] could not resolve human fingerprint for messageId=${messageId}; ${retainedIds.length} attachment(s) will not be linked to history`);
-    return;
-  }
-  await stampTurnIdOnAttachments({ attachmentIds: retainedIds, turnId: fingerprint });
+  await linkAndLoadRetainedAttachmentRefs({ messageId, statuses });
 }
 
 type PersistedHumanForRouting = {
@@ -982,7 +972,7 @@ export async function dispatchRoomMessageSend(
     artifactRefs,
     focusedResources,
   });
-  const canonicalRoomNamespaceId = workspaceArtifactExternalIds.length > 0
+  const canonicalRoomNamespaceId = workspaceArtifactExternalIds.length > 0 || attachmentRefs.length > 0
     ? await getRoomNamespaceId(detail.id).catch(() => null)
     : null;
 
@@ -2599,7 +2589,9 @@ async function dispatchHumanOnlyRoomMessage(
         sharedAgent.senderDeviceSigningPublicKey.fill(0);
       }
     }
-    await stampRetainedAttachmentTurnId(persisted.messageId, normalizedAttachments.statuses);
+    if (protectedHuman?.representationMode === "full_encryption") {
+      await stampRetainedAttachmentTurnId(persisted.messageId, normalizedAttachments.statuses);
+    }
     return {
       ...persisted,
       humanPeerOperationId: humanPeer?.operationId,
@@ -3105,7 +3097,9 @@ async function dispatchGroupRoomMessage(
       }
       // D391 — link this turn's retained attachments to the human message
       // fingerprint so they render from room history (once, not per-bot).
-      await stampRetainedAttachmentTurnId(persisted.messageId, normalizedAttachments.statuses);
+      if (sharedAgent?.representationMode === "full_encryption") {
+        await stampRetainedAttachmentTurnId(persisted.messageId, normalizedAttachments.statuses);
+      }
       return {
         messageId: persisted.messageId,
         humanTurnId: persisted.humanTurnId,

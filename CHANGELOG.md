@@ -61,6 +61,13 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Screenshot messages now render inline in ordinary Room, thread, and Genie chats as
+  they arrive and after reload, with authenticated downloads and full-size
+  viewing. Accepted image previews replace temporary upload filename labels.
+  Mixed uploads preserve rejection feedback when live delivery arrives first,
+  and attachment lookup failures no longer suppress saved peer messages.
+- Authenticated Guests can attach files to messages in their selected Room,
+  while unresolved and blocked conversations continue to reject uploads.
 - Desktop users can open Servers and connect another server even when their
   current server does not allow Genie invocation, including Guest accounts.
 
