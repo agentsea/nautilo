@@ -1,3 +1,4 @@
+import { normalizeRoomMentionIntent, encodeRoomMentionIntent, readRoomMentionIntent } from "./room-mention-intent.ts";
 // Shared canonical field order and signature construction. Named V1/V2 wrappers
 // pin their accepted version; modern bridge consumers dispatch by framed domain.
 // Acknowledgements and execution-input commitments remain exclusively V1.
@@ -108,6 +109,7 @@ export function humanAiReadableLiveShadowExecutionInputSetDigestV1(
 }
 
 export interface HumanAiReadableLiveShadowMessagePlan {
+  readonly mentionEveryone?: true;
   readonly formatVersion: 1 | 2;
   readonly purpose: typeof HUMAN_AI_READABLE_LIVE_SHADOW_PLAN_PURPOSE_V1;
   readonly operationId: string;
@@ -341,7 +343,8 @@ function normalizePlan(
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("Human AI-readable live Shadow plan must be an object");
   }
-  exactFields("Human AI-readable live Shadow plan", value, PLAN_FIELDS);
+  exactFields("Human AI-readable live Shadow plan", value, "mentionEveryone" in value
+    ? [...PLAN_FIELDS, "mentionEveryone"] : PLAN_FIELDS);
   if (
     (value.formatVersion !== 1 && value.formatVersion !== 2)
     || value.purpose !== HUMAN_AI_READABLE_LIVE_SHADOW_PLAN_PURPOSE_V1
@@ -407,6 +410,7 @@ function normalizePlan(
     ),
     issuedAt,
     deadlineAt,
+    ...normalizeRoomMentionIntent(value),
   });
 }
 
@@ -442,6 +446,7 @@ function planBytes(value: HumanAiReadableLiveShadowMessagePlan): Uint8Array {
     frameText(value.attemptCoordinate),
     encodeU64(value.issuedAt),
     encodeU64(value.deadlineAt),
+    encodeRoomMentionIntent(value),
   );
 }
 
@@ -503,6 +508,7 @@ export function decodeHumanAiReadableLiveShadowMessagePlan(
       attemptCoordinate: reader.readText(V2_LIMITS.idBytes),
       issuedAt: unixTimestamp(reader.readU64()),
       deadlineAt: unixTimestamp(reader.readU64()),
+      ...readRoomMentionIntent(reader),
     };
   });
   let normalized: HumanAiReadableLiveShadowMessagePlan | undefined;

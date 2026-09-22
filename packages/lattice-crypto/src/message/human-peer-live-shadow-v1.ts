@@ -1,3 +1,4 @@
+import { normalizeRoomMentionIntent, encodeRoomMentionIntent, readRoomMentionIntent } from "./room-mention-intent.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { LatticeCrypto } from "../crypto/index.ts";
@@ -56,6 +57,7 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export interface HumanPeerLiveShadowMessagePlanV1 {
+  readonly mentionEveryone?: true;
   readonly formatVersion: 1;
   readonly purpose: typeof HUMAN_PEER_LIVE_SHADOW_PLAN_PURPOSE_V1;
   readonly operationId: string;
@@ -284,7 +286,8 @@ function normalizePlan(
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("Human-peer live Shadow plan must be an object");
   }
-  exactFields("Human-peer live Shadow plan", value, PLAN_FIELDS);
+  exactFields("Human-peer live Shadow plan", value, "mentionEveryone" in value
+    ? [...PLAN_FIELDS, "mentionEveryone"] : PLAN_FIELDS);
   if (
     value.formatVersion !== 1
     || value.purpose !== HUMAN_PEER_LIVE_SHADOW_PLAN_PURPOSE_V1
@@ -350,6 +353,7 @@ function normalizePlan(
     ),
     issuedAt,
     deadlineAt,
+    ...normalizeRoomMentionIntent(value),
   });
 }
 
@@ -383,6 +387,7 @@ function planBytes(value: HumanPeerLiveShadowMessagePlanV1): Uint8Array {
     frameText(value.attemptCoordinate),
     encodeU64(value.issuedAt),
     encodeU64(value.deadlineAt),
+    encodeRoomMentionIntent(value),
   );
 }
 
@@ -442,6 +447,7 @@ export function decodeHumanPeerLiveShadowMessagePlanV1(
       attemptCoordinate: reader.readText(V2_LIMITS.idBytes),
       issuedAt: unixTimestamp(reader.readU64()),
       deadlineAt: unixTimestamp(reader.readU64()),
+      ...readRoomMentionIntent(reader),
     };
   });
   let normalized: HumanPeerLiveShadowMessagePlanV1 | undefined;

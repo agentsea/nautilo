@@ -66,6 +66,7 @@ export type HumanPeerLiveShadowPlanResult =
       representationMode?: "full_encryption" }>;
 
 export interface HumanPeerLiveShadowPlanInput {
+  readonly mentionEveryone?: boolean;
   readonly authority: Readonly<{
     userId: string;
     humanActorId: string;
@@ -341,6 +342,7 @@ export class PostgresHumanPeerLiveShadowPlanner {
           purpose: "message.human_peer_live_shadow_plan",
           operationId,
           clientIdempotencyKey: input.idempotencyKey,
+          ...(input.mentionEveryone === true ? { mentionEveryone: true as const } : {}),
           policyRevision: product.policyRevision,
           sessionId: product.sessionId,
           roomId: input.roomId,

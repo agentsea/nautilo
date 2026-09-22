@@ -109,6 +109,8 @@ export async function executeAgentMediatedRoomMessage(args: {
   focusedResources?: ChatFocusedResourceRef[];
   /** M233 — validated picker-authored Human recipients for the Human row only. */
   mentionedHumanUserIds?: readonly string[];
+  /** Structured Room-wide Human mention intent. */
+  mentionEveryone?: boolean;
   /** Server-verified provenance for an ordinary request sent by a paired phone. */
   ordinaryOrigin?: VerifiedOrdinaryOrigin;
   replyToMessageId?: number;
@@ -474,6 +476,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       actorRole: request.policyContext?.actorRole ?? "guest",
       turnId,
       mentionedHumanUserIds: [...(args.mentionedHumanUserIds ?? [])],
+      ...(args.mentionEveryone === true ? { mentionEveryone: true } : {}),
       currentFolder,
       currentFolderRelayId,
       workspacePath,

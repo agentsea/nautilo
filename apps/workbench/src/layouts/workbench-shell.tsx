@@ -282,6 +282,9 @@ export function WorkbenchShell() {
   const authenticatedHuman = isAuthenticatedHumanViewer(auth.viewer);
   const canInvokeAgents = can("invoke_agents");
   const canWriteArtifacts = can("write_artifacts");
+  // Server selection belongs to the Desktop client, independent of this
+  // server's permissions to invoke agents or write artifacts.
+  const canSelectDesktopServer = isDesktop && canSwitchDesktopServerInProcess();
   const { agent } = useProfile();
   const assistantName = agent?.name ?? SHELL_AGENT_NAME;
   const roomNav = useRoomNavigation();
@@ -695,14 +698,14 @@ export function WorkbenchShell() {
           stored === "rooms" ||
           stored === "apps" ||
           stored === "web" ||
-          (stored === "servers" && isDesktop && canSwitchDesktopServerInProcess())
+          (stored === "servers" && canSelectDesktopServer)
           ? stored
           : "artifacts",
       );
     } catch {
       setBrowserMode("artifacts");
     }
-  }, [browserModeViewerKey]);
+  }, [browserModeViewerKey, canSelectDesktopServer]);
 
   useEffect(() => {
     const key = browserModeStorageKey(browserModeViewerKey);
@@ -717,8 +720,7 @@ export function WorkbenchShell() {
   // M259 — a mode persisted while the viewer had broader authority must not
   // leave a newly restricted session with an empty browser column.
   useEffect(() => {
-    const modeRequiresInvocation =
-      browserMode === "web" || browserMode === "servers";
+    const modeRequiresInvocation = browserMode === "web";
     const modeRequiresInvocationAndWrite = browserMode === "apps";
     if (
       (modeRequiresInvocation && !canInvokeAgents) ||
@@ -1726,7 +1728,7 @@ export function WorkbenchShell() {
             // icon's chevron so the highlight never jumps to Home.
             extraSection={
               <>
-                {canInvokeAgents && isDesktop && canSwitchDesktopServerInProcess() ? (
+                {canSelectDesktopServer ? (
                   <ServersRail
                     state={serversIconState(leftColState)}
                     onToggle={() => applyToggleIntent(serversToggleIntent(leftColState))}
@@ -1802,7 +1804,7 @@ export function WorkbenchShell() {
             onCollapse={() => panelSizes.setCollapsed("browser", true)}
           />
         )}
-        {showBrowserColumn && browserMode === "servers" && canInvokeAgents && (
+        {showBrowserColumn && browserMode === "servers" && canSelectDesktopServer && (
           <ServersPanel
             activeSession={desktopSessionActive}
             onCollapse={() => panelSizes.setCollapsed("browser", true)}

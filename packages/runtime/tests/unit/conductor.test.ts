@@ -190,6 +190,114 @@ describe("routeRoomMessage (M134)", () => {
     });
   });
 
+  test("structured everyone intent suppresses inferred Genie routing", async () => {
+    const decision = await routeRoomMessage(
+      defaultDeps({
+        loadActiveFoci: async () => [activeFocus(NOVA, "mention")],
+      }),
+      baseCtx({
+        message: { content: "hello everyone", mentionEveryone: true },
+        members: [
+          user(USER_ACTOR_ID),
+          user("actor-peer"),
+          agent(NOVA, "nova", "active"),
+        ],
+      }),
+    );
+    expectSilent(decision, "human-addressed");
+  });
+
+  test("explicit Genie target still wakes alongside everyone intent", async () => {
+    const decision = await routeRoomMessage(
+      defaultDeps(),
+      baseCtx({
+        message: {
+          content: "@nova please help everyone",
+          mentionEveryone: true,
+        },
+        members: [
+          user(USER_ACTOR_ID),
+          user("actor-peer"),
+          agent(NOVA, "nova", "active"),
+          agent(ALEPO, "alepo", "active"),
+        ],
+      }),
+    );
+    expectWake(decision, {
+      botActorIds: [NOVA],
+      source: "mention",
+      reason: "mention",
+    });
+  });
+
+  test("reserved everyone token does not wake a Genie with that handle", async () => {
+    const EVERYONE_AGENT = "actor-everyone-agent";
+    const decision = await routeRoomMessage(
+      defaultDeps({
+        loadActiveFoci: async () => [activeFocus(EVERYONE_AGENT, "mention")],
+      }),
+      baseCtx({
+        message: { content: "@everyone please review", mentionEveryone: true },
+        members: [
+          user(USER_ACTOR_ID),
+          user("actor-peer"),
+          agent(EVERYONE_AGENT, "everyone", "active"),
+        ],
+      }),
+    );
+    expectSilent(decision, "human-addressed");
+  });
+
+  test("everyone-named Genie still wakes by explicit UI selection", async () => {
+    const EVERYONE_AGENT = "actor-everyone-agent";
+    const decision = await routeRoomMessage(
+      defaultDeps(),
+      baseCtx({
+        message: {
+          content: "@everyone please review",
+          mentionEveryone: true,
+          uiSelectedBotActorId: EVERYONE_AGENT,
+        },
+        members: [
+          user(USER_ACTOR_ID),
+          user("actor-peer"),
+          agent(EVERYONE_AGENT, "everyone", "active"),
+        ],
+      }),
+    );
+    expectWake(decision, {
+      botActorIds: [EVERYONE_AGENT],
+      source: "ui",
+      reason: "ui",
+    });
+  });
+
+  test("everyone-named Genie still wakes by explicit reply", async () => {
+    const EVERYONE_AGENT = "actor-everyone-agent";
+    const decision = await routeRoomMessage(
+      defaultDeps({
+        resolveReplyTargetActorId: async () => EVERYONE_AGENT,
+      }),
+      baseCtx({
+        message: {
+          content: "@everyone please review",
+          mentionEveryone: true,
+          replyToMessageId: 42,
+        },
+        members: [
+          user(USER_ACTOR_ID),
+          user("actor-peer"),
+          agent(EVERYONE_AGENT, "everyone", "active"),
+        ],
+      }),
+    );
+    expectWake(decision, {
+      botActorIds: [EVERYONE_AGENT],
+      source: "reply",
+      reason: "reply",
+    });
+  });
+
   test("5. single active focus infers wake when no explicit target", async () => {
     const decision = await routeRoomMessage(
       defaultDeps({

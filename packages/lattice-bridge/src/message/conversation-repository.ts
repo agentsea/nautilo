@@ -452,6 +452,7 @@ export interface ConversationAppendInput {
   readonly replyToMessageId: number | null;
   readonly notificationContext: Readonly<{
     readonly mentionedHumanUserIds: readonly string[];
+    readonly mentionEveryone?: boolean;
     readonly causalHumanUserId: string | null;
     readonly causalHumanTurnId: string | null;
   }>;

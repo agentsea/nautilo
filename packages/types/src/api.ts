@@ -443,6 +443,8 @@ export interface SendMessageRequest {
   clientActionSessionId?: string | undefined;
   /** M233 — picker-authored stable Human recipients; never inferred from message text. */
   mentionedHumanUserIds?: string[] | undefined;
+  /** Address all current Human members of the Room. */
+  mentionEveryone?: boolean | undefined;
   laneKey?: string | undefined;
   /**
    * M065 — optional explicit room for owner chat. Omitted preserves

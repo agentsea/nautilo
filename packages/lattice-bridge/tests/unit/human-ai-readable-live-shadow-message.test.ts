@@ -1,6 +1,6 @@
 import { prepareVaultHumanMessageEdit } from "../../src/client/message/vault-human-message-edit.ts";
 import { createAuthorizedHumanLiveShadowMessageClient } from "../../src/client/message/authorized-human-live-shadow-message-client.ts";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import {
   LatticeCrypto,
@@ -615,7 +615,7 @@ describe("M298 topology-neutral Human AI-readable write", () => {
     }
     expect(ordinaryCalls).toBe(0);
   });
-  test.each([1, 2] as const)("Browser prepares and server admits V%s bytes without an Agent identity", async (formatVersion) => {
+  test.each([[1, false], [1, true], [2, false], [2, true]] as const)("Browser prepares and server admits V%s bytes (everyone: %s)", async (formatVersion, mentionEveryone) => {
     const crypto = new LatticeCrypto(seededRng(298_100));
     const profile = await createProfile(crypto);
     const generationKey = new Uint8Array(32).fill(0x98);
@@ -626,6 +626,7 @@ describe("M298 topology-neutral Human AI-readable write", () => {
     const planBytes = encodeHumanAiReadableLiveShadowMessagePlan({
       formatVersion,
       purpose: "message.human_ai_readable_live_shadow_plan",
+      ...(mentionEveryone ? { mentionEveryone: true as const } : {}),
       operationId: "human_ai_readable_operation_m298",
       clientIdempotencyKey: "human_ai_readable_client_m298",
       policyRevision: 4,
@@ -725,6 +726,7 @@ describe("M298 topology-neutral Human AI-readable write", () => {
     fullHarness.product.addSession({
       sessionId: SESSION, roomId: ROOM, namespaceId: NAMESPACE,
     });
+    const append = spyOn(fullHarness.product, "appendAllocated");
     const full = await admitAndPersistHumanAiReadableLiveShadowMessage({
       crypto,
       product: fullHarness.product,
@@ -745,6 +747,9 @@ describe("M298 topology-neutral Human AI-readable write", () => {
       envelopeBytes: prepared.value.namespaceEnvelopeBytes,
       now: NOW + 1,
     });
+    expect(append.mock.calls[0]?.[0].notificationContext.mentionEveryone).toBe(mentionEveryone || undefined);
+    expect("mentionEveryone" in full ? full.mentionEveryone : undefined).toBe(mentionEveryone || undefined);
+    append.mockRestore();
     expect(full).toMatchObject({
       status: "human_verified",
       representationMode: "full_encryption",

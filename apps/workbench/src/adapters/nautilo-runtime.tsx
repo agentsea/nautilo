@@ -6726,6 +6726,7 @@ export function NautiloRuntimeProvider({
       options?: {
         replyToMessageId?: number;
         mentionedHumanUserIds?: string[];
+        mentionEveryone?: boolean;
         onOptimisticUserMessage?: () => void;
         /**
          *  R2 — optional per-turn model override. Forwarded into
@@ -6985,6 +6986,7 @@ export function NautiloRuntimeProvider({
           options.mentionedHumanUserIds.length > 0
             ? { mentionedHumanUserIds: options.mentionedHumanUserIds }
             : {}),
+          ...(options?.mentionEveryone ? { mentionEveryone: true } : {}),
           ...(options?.model ? { model: options.model } : {}),
           ...(options?.cardContinuation ? { cardContinuation: options.cardContinuation } : {}),
         };
@@ -7311,6 +7313,7 @@ export function NautiloRuntimeProvider({
       options?: {
         replyToMessageId?: number;
         mentionedHumanUserIds?: string[];
+        mentionEveryone?: boolean;
         onOptimisticUserMessage?: () => void;
         model?: string;
         contextualFocusedResources?: readonly ChatFocusedResourceRef[];

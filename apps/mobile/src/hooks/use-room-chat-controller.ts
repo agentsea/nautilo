@@ -238,6 +238,7 @@ export function useRoomChatController({
   const { subscribe, send, recoveryRevision, withClientActionSession } = useRealtime();
   const { viewer, viewerState, status, refreshViewer } = useAuth();
   const canInvokeAgents = viewerCan(viewer, "invoke_agents");
+  const canMentionEveryone = viewerCan(viewer, "manage_rooms");
   const { pendingApprovalForRoom, pendingHostChoiceForRoom } = useAttention();
   const { enabled: autoApproveEnabled } = useAutoApprove();
   const {
@@ -1395,6 +1396,7 @@ export function useRoomChatController({
           ...(projectedMentions.mentionedHumanUserIds.length > 0
             ? { mentionedHumanUserIds: projectedMentions.mentionedHumanUserIds }
             : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
         };
         const boundMessageBody = withClientActionSession(messageBody);
         const messagePath = `/api/rooms/${encodeURIComponent(roomId)}/messages`;
@@ -2057,6 +2059,7 @@ export function useRoomChatController({
     capabilityError,
     contentFilterNotice,
     canInvokeAgents,
+    canMentionEveryone,
     roomApproval,
     roomHostChoice,
     // model selection

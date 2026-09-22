@@ -2023,6 +2023,7 @@ function Composer({
   const auth = useAuth();
   const can = useCan();
   const canInvokeAgents = can("invoke_agents");
+  const canMentionEveryone = can("manage_rooms");
   const composerText = useComposer((s) => s.text);
   const composerRuntime = useComposerRuntime();
   const browserAttachmentInputRef = useRef<HTMLInputElement>(null);
@@ -2112,6 +2113,7 @@ function Composer({
   const mentionAdapter = useMentionAdapterForRoom(
     mentionableRoomMembers,
     auth.viewer.sessionActorId ?? undefined,
+    canMentionEveryone,
     lastSpokeAtMs,
   );
   const commandAdapter = useCommandAdapter();
@@ -2545,6 +2547,7 @@ function Composer({
                   projectedMentions.mentionedHumanUserIds,
               }
             : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
           ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
         }),
       });

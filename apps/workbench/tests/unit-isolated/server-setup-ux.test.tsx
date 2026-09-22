@@ -157,7 +157,10 @@ describe("first-owner setup UX", () => {
       </MemoryRouter>,
     );
 
-    const finish = await view.findByRole("button", { name: "I'm all set — take me to chat" });
+    // The button exists before the guide's status request resolves. Wait for
+    // the loaded guide so this test finishes an established setup session.
+    expect((await view.findByTestId("server-guide-application-url")).textContent).toBe(readyStatus.serverUrl);
+    const finish = view.getByRole("button", { name: "I'm all set — take me to chat" });
     expect(view.queryByTestId("genie-soft-prompt")).toBeNull();
     fireEvent.click(finish);
     await waitFor(() => expect(view.getByText("Chat home")).toBeTruthy());

@@ -196,6 +196,8 @@ export interface CoalescedInput {
   causalHumanUserId?: string;
   /** M233 — union of picker-authored Human recipients across burst segments. */
   mentionedHumanUserIds?: string[];
+  /** Structured Room-wide Human mention intent; true wins across a burst. */
+  mentionEveryone?: boolean;
   agentId: string;
   roomId: string;
   graphThreadId: string;
@@ -433,6 +435,7 @@ export function mergeInputs(inputs: readonly CoalescedInput[]): CoalescedInput {
   const mentionedHumanUserIds = Array.from(
     new Set(inputs.flatMap((i) => i.mentionedHumanUserIds ?? [])),
   );
+  const mentionEveryone = inputs.some((input) => input.mentionEveryone === true);
   const last = inputs[inputs.length - 1]!;
   return {
     ...firstBase,
@@ -441,6 +444,7 @@ export function mergeInputs(inputs: readonly CoalescedInput[]): CoalescedInput {
     multimodalImages,
     ...(retainedAttachmentIds.length > 0 ? { retainedAttachmentIds } : {}),
     ...(mentionedHumanUserIds.length > 0 ? { mentionedHumanUserIds } : {}),
+    ...(mentionEveryone ? { mentionEveryone: true } : {}),
     artifactRefs,
     focusedResources,
     autoApprove: last.autoApprove === true,
@@ -458,6 +462,7 @@ const JOB_INPUT_SCHEMA_KEYS = new Set([
   "requestorId",
   "causalHumanUserId",
   "mentionedHumanUserIds",
+  "mentionEveryone",
   "agentId",
   "roomId",
   "graphThreadId",
@@ -517,6 +522,7 @@ export function jobInputToCoalescedInput(
         typeof value === "string"
       )
     : [];
+  const mentionEveryone = input["mentionEveryone"] === true;
   const agentId = typeof input["agentId"] === "string" ? input["agentId"] : "";
   const roomId = typeof input["roomId"] === "string" ? input["roomId"] : "";
   const graphThreadId =
@@ -579,6 +585,7 @@ export function jobInputToCoalescedInput(
     requestorId: requestorIdResolved,
     ...(causalHumanUserId ? { causalHumanUserId } : {}),
     ...(mentionedHumanUserIds.length > 0 ? { mentionedHumanUserIds } : {}),
+    ...(mentionEveryone ? { mentionEveryone: true } : {}),
     agentId,
     roomId,
     graphThreadId,
@@ -622,6 +629,7 @@ export function coalescedInputToJobInput(c: CoalescedInput): Record<string, unkn
     ...(c.mentionedHumanUserIds && c.mentionedHumanUserIds.length > 0
       ? { mentionedHumanUserIds: c.mentionedHumanUserIds }
       : {}),
+    ...(c.mentionEveryone === true ? { mentionEveryone: true } : {}),
     agentId: c.agentId,
     roomId: c.roomId,
     roomRoster: c.roomRoster,

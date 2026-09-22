@@ -112,6 +112,8 @@ export interface RoomMemberView {
 
 export interface ConductorMessage {
   content: string;
+  /** Structured Human-wide intent. It suppresses inferred Genie routing. */
+  mentionEveryone?: boolean;
   /** Persisted source row id for this inbound human message; excluded from history evidence. */
   sourceMessageId?: number | null;
   /** D302 P7 — same-sender burst metadata for FM prompt and trace. */

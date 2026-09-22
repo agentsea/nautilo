@@ -11,10 +11,12 @@ const fingerprint = "turn:retained-png";
 let failHydration = false;
 let includeRootSummary = false;
 let persistenceCount = 0;
+let appendOptions: Parameters<typeof actualAgent.appendTranscriptMessages>[4];
 
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
-  appendTranscriptMessages: mock(async () => {
+  appendTranscriptMessages: mock(async (...args: Parameters<typeof actualAgent.appendTranscriptMessages>) => {
+    appendOptions = args[4];
     persistenceCount += 1;
     return {
       failedIndices: [],
@@ -117,7 +119,7 @@ const { peerBroadcastHumanMessage } = await import(
 );
 
 describe("ordinary Human peer attachment delivery", () => {
-  test("links the exact retained PNG before emitting its history-identical descriptor", async () => {
+  test.each([false, true])("preserves retained image delivery with room-wide mention intent %s", async (mentionEveryone) => {
     calls.length = 0;
     emitted.length = 0;
     failHydration = false;
@@ -135,6 +137,7 @@ describe("ordinary Human peer attachment delivery", () => {
         ],
       } as never,
       senderUserId: "user:sender",
+      mentionEveryone,
       content: "screenshot",
       attachmentTextBlocks: [],
       multimodalImages: [],
@@ -174,6 +177,7 @@ describe("ordinary Human peer attachment delivery", () => {
       }],
     });
     expect(persistenceCount).toBe(1);
+    expect(appendOptions?.notificationContext?.mentionEveryone).toBe(mentionEveryone || undefined);
   });
 
   test("still publishes the durable message and root summary when attachment hydration fails", async () => {

@@ -65,7 +65,7 @@ type ComposerProps = {
 
 export type ComposerMentionCandidate = {
   actorId: string;
-  kind: "user" | "agent";
+  kind: "user" | "agent" | "audience";
   displayName: string;
   handle: string;
 };
@@ -287,15 +287,27 @@ export function Composer({
                 style={styles.mentionRow}
                 onPress={() => chooseMention(candidate)}
                 accessibilityRole="button"
-                accessibilityLabel={`Mention ${candidate.displayName} at ${candidate.handle}`}>
+                accessibilityLabel={candidate.kind === "audience"
+                  ? "Mention everyone — Notify everyone in this room"
+                  : `Mention ${candidate.displayName} at ${candidate.handle}`}>
                 <View style={styles.mentionAvatar}>
-                  <Text style={styles.mentionInitial}>{candidate.displayName.trim().charAt(0).toUpperCase()}</Text>
+                  {candidate.kind === "audience" ? (
+                    <Feather name="users" size={15} color={t.color.text.muted} />
+                  ) : (
+                    <Text style={styles.mentionInitial}>{candidate.displayName.trim().charAt(0).toUpperCase()}</Text>
+                  )}
                 </View>
                 <View style={styles.mentionCopy}>
-                  <Text style={styles.mentionName} numberOfLines={1}>{candidate.displayName}</Text>
-                  <Text style={styles.mentionHandle} numberOfLines={1}>@{candidate.handle}</Text>
+                  <Text style={styles.mentionName} numberOfLines={1}>
+                    {candidate.kind === "audience" ? "@everyone" : candidate.displayName}
+                  </Text>
+                  <Text style={styles.mentionHandle} numberOfLines={1}>
+                    {candidate.kind === "audience" ? "Notify everyone in this room" : `@${candidate.handle}`}
+                  </Text>
                 </View>
-                <Text style={styles.mentionKind}>{candidate.kind === "user" ? "Person" : "Genie"}</Text>
+                {candidate.kind === "audience" ? null : (
+                  <Text style={styles.mentionKind}>{candidate.kind === "user" ? "Person" : "Genie"}</Text>
+                )}
               </Pressable>
             ))
           )}
