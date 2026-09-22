@@ -19,6 +19,8 @@ export const MAX_STRUCTURED_HUMAN_MENTIONS = 32;
 
 export interface AppendNotificationContext {
   mentionedHumanUserIds: string[];
+  /** Sender-authored structured Room-wide Human mention intent. */
+  mentionEveryone?: boolean;
   causalHumanUserId: string | null;
   causalHumanTurnId: string | null;
 }
@@ -247,7 +249,10 @@ export async function persistNotificationClassification(
     }
   }
 
-  for (const recipientId of mentionedHumanUserIds) {
+  const directedHumanUserIds = input.context.mentionEveryone === true
+    ? uniqueIds([...mentionedHumanUserIds, ...currentHumanMembers])
+    : mentionedHumanUserIds;
+  for (const recipientId of directedHumanUserIds) {
     addDirected(recipientId, "mention");
     if (recipientId !== currentHumanAuthorId) {
       participationFacts.push({ userId: recipientId, reason: "mention" });

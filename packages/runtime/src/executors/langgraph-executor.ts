@@ -502,6 +502,7 @@ export async function* langgraphExecutor(
       ? input["causalHumanUserId"]
       : null;
   const mentionedHumanUserIds = parseStringArray(input["mentionedHumanUserIds"]);
+  const mentionEveryone = input["mentionEveryone"] === true;
 
   // per-agent execution context isolation. Group multi-wake
   // jobs share the human `turnId`; keying skip / redirect / visible-output /
@@ -1073,6 +1074,7 @@ export async function* langgraphExecutor(
       ...persistOptsBase,
       notificationContext: {
         mentionedHumanUserIds,
+        ...(mentionEveryone ? { mentionEveryone: true } : {}),
         causalHumanUserId: null,
         causalHumanTurnId: null,
       },

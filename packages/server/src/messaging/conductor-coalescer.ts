@@ -66,6 +66,8 @@ export interface ConductorRoutingItem {
   replyToMessageId?: number | null;
   uiSelectedBotActorId?: string | null;
   searchHistoryFlag: boolean;
+  /** Structured Room-wide Human intent is an explicit routing boundary. */
+  mentionEveryone?: boolean;
   /**
    * D371 R2 — per-turn model override (nullable). Coalesce rule = LATEST WINS
    * (mirrors `currentFolder`, NOT the `.some()` OR-reduce used for `voiceMode`).
@@ -110,6 +112,7 @@ export function shouldBypassConductorCoalescing(item: ConductorRoutingItem): boo
   // A signature covers one exact request body. Never merge it with another
   // signed or unsigned body under the same provenance.
   if (item.ordinaryOrigin) return true;
+  if (item.mentionEveryone === true) return true;
   if (item.content.trimStart().startsWith("/")) return true;
   if (typeof item.replyToMessageId === "number" && Number.isInteger(item.replyToMessageId)) {
     return true;
@@ -140,6 +143,7 @@ export function mergeConductorRoutingItems(
   const content = items.map((i) => i.content).join("\n\n");
   const voiceMode = items.some((i) => i.voiceMode);
   const searchHistoryFlag = items.some((i) => i.searchHistoryFlag);
+  const mentionEveryone = items.some((i) => i.mentionEveryone === true);
   const attachmentRefs = items.flatMap((i) => i.attachmentRefs);
   // D356 — union artifact refs across the burst, dedupe by external artifactId.
   const seenArtifactIds = new Set<string>();
@@ -175,6 +179,7 @@ export function mergeConductorRoutingItems(
     voiceMode,
     autoApprove: last.autoApprove === true,
     searchHistoryFlag,
+    ...(mentionEveryone ? { mentionEveryone: true } : {}),
     currentFolder: last.currentFolder,
     currentFolderRelayId: last.currentFolderRelayId,
     workspacePath: last.workspacePath,

@@ -40,6 +40,7 @@ export function resolveExplicitTargets(
   message: {
     content: string;
     uiSelectedBotActorId?: string | null;
+    mentionEveryone?: boolean;
   },
   candidates: RoomMemberView[],
   replyTargetActorId: string | null,
@@ -61,6 +62,10 @@ export function resolveExplicitTargets(
   // 1. Mentions (per agent handle). Multi-mention => multiple targets.
   for (const c of candidates) {
     if (!c.handle) continue;
+    if (
+      message.mentionEveryone === true
+      && c.handle.trim().toLowerCase() === "everyone"
+    ) continue;
     const { hasMention } = parseAgentMentions(message.content, c.handle);
     if (hasMention) consider(c.actorId, "mention");
   }

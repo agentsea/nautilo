@@ -8,6 +8,15 @@ export class StructuredHumanMentionError extends Error {
   }
 }
 
+/** Strictly admit the optional structured Room-wide Human mention signal. */
+export function parseMentionEveryone(raw: unknown): boolean {
+  if (raw === undefined) return false;
+  if (typeof raw !== "boolean") {
+    throw new StructuredHumanMentionError("mentionEveryone must be a boolean");
+  }
+  return raw;
+}
+
 /**
  * Validate sender-authored structured mention metadata against the canonical
  * live Room roster. Plaintext is deliberately absent from this API: Wave 1

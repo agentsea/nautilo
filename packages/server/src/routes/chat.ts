@@ -254,6 +254,8 @@ export function chatRoutes(
           content: typeof message === "string" ? message : "",
           clientActionSessionId: request.body.clientActionSessionId,
           mentionedHumanUserIds: request.body.mentionedHumanUserIds,
+          ...(request.body.mentionEveryone === undefined
+            ? {} : { mentionEveryone: request.body.mentionEveryone }),
           ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
           attachments: request.body.attachments,
           artifactRefs: request.body.artifactRefs,

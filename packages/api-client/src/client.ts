@@ -5504,6 +5504,7 @@ export class NautiloApiClient {
       clientActionSessionId?: string;
       /** picker-authored stable Human recipients. */
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
       replyToMessageId?: number;
       attachments?: ChatUploadedAttachmentRef[];
       voiceMode?: boolean;

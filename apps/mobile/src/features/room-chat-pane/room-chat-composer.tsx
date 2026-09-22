@@ -169,7 +169,11 @@ export function RoomChatComposer({
         onMicStart={capabilities.voiceInput ? c.handleMicStart : undefined}
         onMicRelease={capabilities.voiceInput ? c.handleMicRelease : undefined}
         onMicCancel={capabilities.voiceInput ? c.handleMicCancel : undefined}
-        mentionCandidates={mobileMentionCandidates(c.roomMembers, c.viewerActorId)}
+        mentionCandidates={mobileMentionCandidates(
+          c.roomMembers,
+          c.viewerActorId,
+          c.canMentionEveryone,
+        )}
         attachmentsSlot={
           capabilities.attachments &&
           (c.attachments.length > 0 || c.attachPermissionNote) ? (

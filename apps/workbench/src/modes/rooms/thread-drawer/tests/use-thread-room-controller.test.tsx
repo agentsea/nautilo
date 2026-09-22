@@ -330,6 +330,26 @@ describe("useThreadRoomController", () => {
     expect(api.sendRoomMessage).not.toHaveBeenCalledWith("parent-a", expect.anything());
   });
 
+  test("forwards room audience intent on a child Room send", async () => {
+    const api = createApi();
+    const { result } = renderHook(() => useThreadRoomController({
+      roomId: "child-a", ...threadCoordinates, visible: true, connected: true, api,
+    }));
+    await waitFor(() => expect(result.current.state.phase).toBe("ready"));
+
+    await act(async () => {
+      await result.current.sendText("Hello @everyone", { mentionEveryone: true });
+    });
+
+    expect(api.sendRoomMessage).toHaveBeenCalledWith("child-a", {
+      content: "Hello @everyone",
+      currentFolder: null,
+      currentFolderRelayId: null,
+      workspacePath: null,
+      mentionEveryone: true,
+    });
+  });
+
   test("uses a fresh file-context snapshot for every child send while the drawer stays open", async () => {
     const api = createApi();
     const { result } = renderHook(() => useThreadRoomController({

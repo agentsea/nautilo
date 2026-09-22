@@ -86,6 +86,7 @@ export interface ProtectedAgentMessageWritePreparer {
       readonly subthreadRoomId: string | null;
       readonly notificationContext: Readonly<{
         readonly mentionedHumanUserIds: readonly string[];
+        readonly mentionEveryone?: boolean;
         readonly causalHumanUserId: string | null;
         readonly causalHumanTurnId: string | null;
       }>;
