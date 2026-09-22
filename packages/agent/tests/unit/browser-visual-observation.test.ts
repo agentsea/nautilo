@@ -37,6 +37,13 @@ describe("browser visual observation", () => {
     });
     expect(first.snapshot).toContain('visible_text "Apple"');
     expect(first.snapshot).toContain("visual_ref=v1");
+    expect(first.snapshot).toContain("middle-left area");
+    expect(first.snapshot).not.toContain("image_width");
+    expect(first.snapshot).not.toContain("image_height");
+    expect(first.snapshot).not.toContain("image_x");
+    expect(first.snapshot).not.toContain("image_y");
+    expect(first.snapshot).not.toContain("image_box");
+    expect(first.snapshot).not.toMatch(/\d+% from (?:left|top)/);
     expect(first.visual.targets.some((target) => target.name === "Apple")).toBe(true);
   });
 

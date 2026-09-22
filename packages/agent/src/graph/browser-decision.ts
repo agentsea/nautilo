@@ -9,6 +9,8 @@ import { resolveGraphExecutionPolicy } from "./execution-policy";
 import {
   browserVisualObservationSchema,
   type BrowserVisualObservation,
+  type BrowserVisualTarget,
+  type BrowserVisualTargetBinding,
 } from "./browser-visual-observation";
 
 const text = z.string().refine((value) => value.trim().length > 0).describe("Non-blank text");
@@ -216,6 +218,8 @@ export interface BrowserDecisionState {
     readonly call: ToolCall & { id: string };
     readonly browserSessionId: string;
     readonly observationId: string | null;
+    /** Trusted runtime-only geometry; never projected into a Choice request. */
+    readonly visualTarget?: BrowserVisualTargetBinding;
   } | null;
   readonly reason: string | null;
   /** Absent on legacy plans. Null step means the next group has not been selected. */
@@ -253,6 +257,8 @@ export type BrowserDecisionCandidate = {
   readonly description: string;
   readonly call: Pick<ToolCall, "name" | "args"> | null;
   readonly sequence?: { readonly index: number; readonly step: number };
+  /** Trusted runtime-only geometry; never included in description or ChoiceInput. */
+  readonly visualTarget?: BrowserVisualTargetBinding;
 };
 
 /** Shared handoff controls; callers may override the reobserve operation. */
@@ -269,11 +275,11 @@ function browserDecisionControlCandidates(
 }
 
 const VISUAL_DECISION_INSTRUCTIONS =
-  "This observation was extracted from screenshot pixels. visual_ref targets execute through browser_mouse at the supplied image-pixel center. " +
-  "visual_type candidates atomically click the supplied image-pixel target and type the exact Genie-supplied value into the resulting page focus. " +
+  "This observation was extracted from screenshot pixels. visual_ref values are opaque semantic target IDs whose geometry is retained and refreshed privately by the runtime. " +
+  "visual_type candidates atomically focus the selected semantic target and type the exact Genie-supplied value into the resulting page focus. " +
   "A successful append-only visual_type intent is offered at most once in a delegated episode; use the fresh screenshot to verify it or choose a different remaining action, never to append the same value again. " +
   "scroll_up and scroll_down are ordinary browser_scroll operations and must be followed by a fresh screenshot before choosing newly visible content. " +
-  "Do not choose needs_visual_evidence merely because targets use visual_ref: their coordinates are the visual grounding. " +
+  "Do not choose needs_visual_evidence merely because targets use visual_ref: the runtime owns their visual grounding. " +
   "Choose needs_visual_evidence only when the required target is still absent or ambiguous. Choose needs_input only when required text is absent from the executable visual_type choices.";
 
 export function browserDecisionAdditionalInstructions(observation: BrowserDecisionObservation): string | undefined {
@@ -284,14 +290,10 @@ function visualTargetCandidates(visual: BrowserVisualObservation): BrowserDecisi
   return visual.targets.map((target) => ({
     id: `visual_${target.visualRef}`,
     call: { name: "browser_mouse", args: { x: target.x, y: target.y, space: "image" } },
+    visualTarget: visualTargetBinding(target),
     description: JSON.stringify({
       kind: target.interaction === "focus" ? "visual_focus" : "visual_click",
-      role: target.role,
-      name: target.name,
-      visualRef: target.visualRef,
-      imageX: target.x,
-      imageY: target.y,
-      context: target.context,
+      ...semanticVisualTarget(target, visual),
     }),
   }));
 }
@@ -309,20 +311,103 @@ function visualTypeCandidates(
       text: input.text,
       clear: input.clear,
     } },
+    visualTarget: visualTargetBinding(target),
     description: JSON.stringify({
       kind: "visual_type",
-      role: target.role,
-      name: target.name,
-      visualRef: target.visualRef,
-      imageX: target.x,
-      imageY: target.y,
-      context: target.context,
+      ...semanticVisualTarget(target, visual),
       ...(input.valueName === undefined ? {} : { valueName: input.valueName }),
       ...(input.intendedTarget === undefined ? {} : { intendedTarget: input.intendedTarget }),
       value: input.text,
       clear: input.clear,
     }),
   }));
+}
+
+function visualTargetBinding(target: BrowserVisualTarget): BrowserVisualTargetBinding {
+  return {
+    version: 1,
+    visualRef: target.visualRef,
+    role: target.role,
+    name: target.name,
+    interaction: target.interaction,
+    context: target.context,
+    ...(target.sources === undefined ? {} : { sources: target.sources }),
+    ...(target.confidence === undefined ? {} : { confidence: target.confidence }),
+    point: { x: target.x, y: target.y },
+    ...(target.box === undefined ? {} : { box: target.box }),
+  };
+}
+
+function categoricalVisualLocation(target: BrowserVisualTarget, visual: BrowserVisualObservation): string {
+  const horizontal = target.x < visual.viewport.imageWidth / 3 ? "left"
+    : target.x > visual.viewport.imageWidth * 2 / 3 ? "right" : "center";
+  const vertical = target.y < visual.viewport.imageHeight / 3 ? "upper"
+    : target.y > visual.viewport.imageHeight * 2 / 3 ? "lower" : "middle";
+  return horizontal === "center" && vertical === "middle"
+    ? "center area"
+    : `${vertical}-${horizontal} area`;
+}
+
+function semanticVisualContext(context: string, location: string): string {
+  const cleaned = context
+    .replace(/\bat\s+\d+(?:\.\d+)?%\s+from\s+left,\s*\d+(?:\.\d+)?%\s+from\s+top;?\s*/giu, "")
+    .trim();
+  if (!cleaned || cleaned === location || cleaned.startsWith(`${location};`)) return cleaned || location;
+  return `${location}; ${cleaned}`;
+}
+
+function semanticVisualTarget(target: BrowserVisualTarget, visual: BrowserVisualObservation): {
+  readonly role: string;
+  readonly name: string;
+  readonly visualRef: string;
+  readonly interaction: BrowserVisualTarget["interaction"];
+  readonly location: string;
+  readonly context: string;
+} {
+  const location = categoricalVisualLocation(target, visual);
+  return {
+    role: target.role,
+    name: target.name,
+    visualRef: target.visualRef,
+    interaction: target.interaction,
+    location,
+    context: semanticVisualContext(target.context, location),
+  };
+}
+
+function browserVisualSemanticSnapshot(visual: BrowserVisualObservation): string {
+  return [
+    "- visual viewport",
+    ...visual.targets.map((target) => {
+      const semantic = semanticVisualTarget(target, visual);
+      return `  - ${semantic.role} ${JSON.stringify(semantic.name)} [visual_ref=${semantic.visualRef}, interaction=${semantic.interaction}, location=${JSON.stringify(semantic.location)}] context=${JSON.stringify(semantic.context)}`;
+    }),
+  ].join("\n");
+}
+
+const privateVisualGeometryKeys = new Set([
+  "imageX", "imageY", "imageWidth", "imageHeight", "cssWidth", "cssHeight", "dpr",
+  "x", "y", "width", "height", "point", "box",
+]);
+
+function sanitizeLegacyVisualString(value: string): string {
+  try {
+    return JSON.stringify(sanitizeVisualReceiptValue(JSON.parse(value)));
+  } catch {
+    return value
+      .replace(/\s*,?\s*(?:image_x|image_y|image_width|image_height)=[^,\]\s]+/giu, "")
+      .replace(/\s*,?\s*image_box=[^\]\s]+/giu, "")
+      .replace(/\bat\s+\d+(?:\.\d+)?%\s+from\s+left,\s*\d+(?:\.\d+)?%\s+from\s+top;?\s*/giu, "");
+  }
+}
+
+function sanitizeVisualReceiptValue(value: unknown): unknown {
+  if (typeof value === "string") return sanitizeLegacyVisualString(value);
+  if (Array.isArray(value)) return value.map(sanitizeVisualReceiptValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !privateVisualGeometryKeys.has(key))
+    .map(([key, child]) => [key, sanitizeVisualReceiptValue(child)]));
 }
 
 function visualScrollCandidates(): BrowserDecisionCandidate[] {
@@ -371,6 +456,12 @@ function bindBrowserDecisionPlanToObservation(
 /** Build the exact semantic Choice request shared by the live node and evals. */
 export function browserDecisionChoiceInput(options: BrowserDecisionChoiceInputOptions): ChoiceInput {
   const { plan, observation } = options;
+  const semanticRecentActions = observation.visual
+    ? sanitizeVisualReceiptValue(options.recentActions) as readonly unknown[] | undefined
+    : options.recentActions;
+  const semanticLastAction = observation.visual && options.lastAction
+    ? sanitizeVisualReceiptValue(options.lastAction) as BrowserDecisionState["lastAction"]
+    : options.lastAction;
   return {
     modelId: options.modelId,
     ...(options.tenantContext === undefined ? {} : { tenantContext: options.tenantContext }),
@@ -381,12 +472,12 @@ export function browserDecisionChoiceInput(options: BrowserDecisionChoiceInputOp
     // Present historical actions before current evidence so the decision model
     // does not substitute action counts for observed control values.
     state: {
-      ...(options.recentActions?.length ? { recentActions: options.recentActions } : {}),
-      ...(options.lastAction ? { lastAction: {
-        description: options.lastAction.description,
-        execution: options.lastAction.execution,
-        ...(options.lastAction.effect ? { effect: options.lastAction.effect } : {}),
-        ...(options.lastAction.error !== undefined ? { error: options.lastAction.error } : {}),
+      ...(semanticRecentActions?.length ? { recentActions: semanticRecentActions } : {}),
+      ...(semanticLastAction ? { lastAction: {
+        description: semanticLastAction.description,
+        execution: semanticLastAction.execution,
+        ...(semanticLastAction.effect ? { effect: semanticLastAction.effect } : {}),
+        ...(semanticLastAction.error !== undefined ? { error: semanticLastAction.error } : {}),
       } } : {}),
       ...(plan.sequences?.length ? { orderedGroups: {
         nextIndex: options.sequence?.index ?? 0,
@@ -395,7 +486,9 @@ export function browserDecisionChoiceInput(options: BrowserDecisionChoiceInputOp
       } } : {}),
       goal: plan.goal,
       constraints: plan.constraints,
-      snapshot: observation.snapshot,
+      snapshot: observation.visual
+        ? browserVisualSemanticSnapshot(observation.visual)
+        : observation.snapshot,
       ...(plan.success.length ? { completionEvidence: plan.success.map((condition) => ({
         ...condition,
         matches: browserConditionMatches(condition, observation),
@@ -1072,7 +1165,9 @@ export function browserDecisionHandoffContent(reason: string, target?: Connected
     decisionModelId: decision.modelId,
     handoffReason: reason,
     ...(decision.sequence ? { sequence: decision.sequence } : {}),
-    ...(decision.lastAction ? { lastAction: decision.lastAction } : {}),
+    ...(decision.lastAction ? { lastAction: decision.observation?.visual
+      ? sanitizeVisualReceiptValue(decision.lastAction)
+      : decision.lastAction } : {}),
   })}`;
 }
 

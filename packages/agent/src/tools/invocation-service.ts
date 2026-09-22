@@ -2,7 +2,7 @@ import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
 import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
 import { browserDecisionObservationSchema, browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
-import { browserVisualObservationFromRelay } from "../graph/browser-visual-observation";
+import { browserVisualObservationFromRelay, browserVisualTargetBindingSchema } from "../graph/browser-visual-observation";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
 import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
@@ -4303,6 +4303,7 @@ async function executeViaRelayRaw(
         for (const key of Object.keys(browserDecisionPlanSchema.shape)) delete relayDispatchArgs[key];
       }
       delete relayDispatchArgs["_visualObservation"];
+      delete relayDispatchArgs["_visualTarget"];
       delete relayDispatchArgs["_requiredSession"];
       delete relayDispatchArgs["_requiredObservationId"];
       if (hasTaskContinuation && taskContinuation.browserSessionId) {
@@ -4321,6 +4322,25 @@ async function executeViaRelayRaw(
         }
         relayDispatchArgs["_requiredSession"] = pending.browserSessionId;
         if (pending.observationId !== null) relayDispatchArgs["_requiredObservationId"] = pending.observationId;
+        const isVisualTargetAction = tc.name === "browser_mouse"
+          || (tc.name === "browser_type" && tc.args["ref"] === undefined
+            && typeof tc.args["x"] === "number" && typeof tc.args["y"] === "number"
+            && tc.args["space"] === "image");
+        const requiresVisualTarget = isVisualTargetAction && decision?.target === undefined
+          && decision?.observation?.visual !== undefined;
+        if (requiresVisualTarget && pending.visualTarget === undefined) {
+          return { ok: false, errorMessage: "Browser visual target binding is unavailable; return to the Genie for fresh observation." };
+        }
+        if (pending.visualTarget !== undefined) {
+          const visualTarget = browserVisualTargetBindingSchema.safeParse(pending.visualTarget);
+          if (!isVisualTargetAction || !visualTarget.success || decision?.target !== undefined
+            || decision?.observation?.visual === undefined) {
+            return { ok: false, errorMessage: "Browser visual target binding changed; return to the Genie for fresh observation." };
+          }
+          // Geometry remains relay-private. It is attached only after the
+          // selected pending call and its observation/session binding pass.
+          relayDispatchArgs["_visualTarget"] = visualTarget.data;
+        }
       }
       const isCoordinateVisualType = tc.name === "browser_type"
         && tc.args["ref"] === undefined

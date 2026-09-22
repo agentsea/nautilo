@@ -253,6 +253,91 @@ function requestedOpenStaysAtOrigin(command: DirectBrowserControlCommand, origin
   try { return new URL(url).origin === origin; } catch { return false; }
 }
 
+type DecisionRef = { readonly role: string; readonly name: string };
+
+interface BoundDecisionObservation {
+  readonly id: string;
+  readonly refs: Readonly<Record<string, DecisionRef>>;
+  readonly pageUrl: string;
+}
+
+const DECISION_REF_ARGUMENTS: Readonly<Partial<Record<DirectBrowserControlCommand["toolName"], readonly string[]>>> = {
+  browser_click: ["ref"],
+  browser_type: ["ref"],
+  browser_press: ["ref"],
+  browser_hover: ["ref"],
+  browser_double_click: ["ref"],
+  browser_drag: ["from", "to"],
+  browser_select: ["ref"],
+  browser_set_checked: ["ref"],
+  browser_scroll_into_view: ["ref"],
+  browser_wait: ["ref"],
+  browser_read: ["ref"],
+  browser_get: ["ref"],
+};
+
+function normalizedDecisionRef(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.startsWith("@") ? value.slice(1) : value;
+  return /^e\d+$/u.test(normalized) ? normalized : null;
+}
+
+function normalizedSemanticText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function sameSemanticTarget(left: DecisionRef, right: DecisionRef): boolean {
+  return normalizedSemanticText(left.role) === normalizedSemanticText(right.role)
+    && normalizedSemanticText(left.name) === normalizedSemanticText(right.name);
+}
+
+function sameSemanticRefMap(
+  left: Readonly<Record<string, DecisionRef>>,
+  right: Readonly<Record<string, DecisionRef>>,
+): boolean {
+  const leftEntries = Object.entries(left);
+  const rightKeys = Object.keys(right);
+  return leftEntries.length === rightKeys.length
+    && leftEntries.every(([refId, target]) => right[refId] !== undefined && sameSemanticTarget(target, right[refId]));
+}
+
+/**
+ * Rebinds every target-bearing argument to the one fresh element with the same
+ * semantic identity. Geometry, ref numbering and unrelated page state are not
+ * authority: an absent or ambiguous target fails closed before the command is
+ * sent to the browser.
+ */
+function rebindDecisionCommand(
+  command: DirectBrowserControlCommand,
+  boundRefs: Readonly<Record<string, DecisionRef>>,
+  freshRefs: Readonly<Record<string, DecisionRef>>,
+): DirectBrowserControlCommand | null {
+  const argumentNames = DECISION_REF_ARGUMENTS[command.toolName] ?? [];
+  const refsUnchanged = sameSemanticRefMap(boundRefs, freshRefs);
+  let reboundArgs: Record<string, unknown> | null = null;
+  for (const argumentName of argumentNames) {
+    const supplied = command.args[argumentName];
+    // browser_press, browser_wait and browser_get may intentionally be
+    // page-level commands with no target reference.
+    if (supplied === undefined) continue;
+    const boundRefId = normalizedDecisionRef(supplied);
+    const boundTarget = boundRefId === null ? undefined : boundRefs[boundRefId];
+    if (!boundTarget) return null;
+    // An unchanged complete ref map preserves the original element identity,
+    // even when role + name alone would match multiple sibling elements.
+    if (refsUnchanged) {
+      reboundArgs ??= { ...command.args };
+      reboundArgs[argumentName] = `@${boundRefId}`;
+      continue;
+    }
+    const matches = Object.entries(freshRefs).filter(([, target]) => sameSemanticTarget(boundTarget, target));
+    if (matches.length !== 1) return null;
+    reboundArgs ??= { ...command.args };
+    reboundArgs[argumentName] = `@${matches[0]![0]}`;
+  }
+  return reboundArgs === null ? command : { ...command, args: reboundArgs };
+}
+
 function truncateUtf8(value: string, maximumBytes: number): { readonly text: string; readonly truncated: boolean } {
   if (Buffer.byteLength(value, "utf8") <= maximumBytes) return { text: value, truncated: false };
   let retainedBytes = 0;
@@ -302,7 +387,7 @@ export class DirectBrowserRouterLease {
   private cleanup: Promise<DirectBrowserRouterCleanupResult> | null = null;
   private hasFreshSnapshot = false;
   private readonly decisionSessionId = randomUUID();
-  private decisionObservation: { readonly id: string; readonly fingerprint: string } | null = null;
+  private decisionObservation: BoundDecisionObservation | null = null;
 
   constructor(
     private readonly admission: DirectBrowserRouterAdmission,
@@ -410,9 +495,7 @@ export class DirectBrowserRouterLease {
         browserSessionId: this.decisionSessionId,
         observationId: randomUUID(),
       };
-      const fingerprint = createHash("sha256").update(JSON.stringify({ snapshot: observation.snapshot,
-        refs: observation.refs, pageUrl: observation.pageUrl })).digest("hex");
-      this.decisionObservation = { id: observation.observationId, fingerprint };
+      this.decisionObservation = { id: observation.observationId, refs: observation.refs, pageUrl: observation.pageUrl };
       this.hasFreshSnapshot = true;
       return observation;
     } catch (error) {
@@ -434,6 +517,10 @@ export class DirectBrowserRouterLease {
     if (!this.decisionObservation || this.decisionObservation.id !== observationId) {
       throw new DirectBrowserRouterError("observation_stale");
     }
+    const boundObservation = this.decisionObservation;
+    // Consume the observation before refreshing. A refresh or transport
+    // failure never grants replay authority over a later browser state.
+    this.decisionObservation = null;
     this.hasFreshSnapshot = false;
     try {
       await this.currentBinding();
@@ -450,20 +537,19 @@ export class DirectBrowserRouterLease {
         ? error.detail : undefined;
       throw new DirectBrowserRouterError("observation_invalid", undefined, detail);
     });
-    const fingerprint = createHash("sha256").update(JSON.stringify({ snapshot: refreshed.observation.snapshot,
-      refs: refreshed.observation.refs, pageUrl: refreshed.pageUrl })).digest("hex");
-    if (fingerprint !== this.decisionObservation.fingerprint) {
-      this.decisionObservation = null;
-      this.hasFreshSnapshot = false;
+    if (refreshed.pageUrl !== boundObservation.pageUrl) {
       throw new DirectBrowserRouterError("observation_stale");
     }
-    this.decisionObservation = null;
+    const reboundCommand = rebindDecisionCommand(command, boundObservation.refs, refreshed.observation.refs);
+    if (!reboundCommand) {
+      throw new DirectBrowserRouterError("observation_stale");
+    }
     this.hasFreshSnapshot = false;
     if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
     try {
       await this.currentBinding();
-      if (!requestedOpenStaysAtOrigin(command, this.bindingOrigin)) throw new DirectBrowserRouterError("origin_not_allowed");
-      return await this.control.invoke(command, signal);
+      if (!requestedOpenStaysAtOrigin(reboundCommand, this.bindingOrigin)) throw new DirectBrowserRouterError("origin_not_allowed");
+      return await this.control.invoke(reboundCommand, signal);
     } catch (error) {
       await this.close();
       if (error instanceof DirectBrowserRouterError) throw error;

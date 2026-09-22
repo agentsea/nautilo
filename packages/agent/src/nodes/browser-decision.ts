@@ -24,6 +24,7 @@ import {
   recordBrowserDecisionEvent,
   type BrowserDecisionState,
 } from "../graph/browser-decision";
+import type { BrowserVisualTargetBinding } from "../graph/browser-visual-observation";
 
 interface BrowserDecisionDeps {
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
@@ -107,6 +108,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
     };
     let receipt: Record<string, unknown> = { operation: "reobserve" };
     let nextDecision = decision;
+    let selectedVisualTarget: BrowserVisualTargetBinding | undefined;
     if (decision.phase === "decide") {
       const maxChoices = model.decision.maxChoices;
       const built = browserDecisionCandidates(decision.plan, observation, maxChoices, decision.sequence);
@@ -172,6 +174,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
         if (!selected) return recover(state, decision, "invalid_choice");
         if (!selected.call) return handoff(state, decision, selected.id === "defer_to_genie" ? "jev_requested_genie" : selected.id);
         call = selected.call;
+        selectedVisualTarget = selected.visualTarget;
         if (selected.id === "reobserve") {
           nextDecision = {
             ...decision,
@@ -201,6 +204,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
       browserDecision: { ...nextDecision, phase: "waiting", reason: null, pending: {
         call: proposal, browserSessionId: observation.browserSessionId,
         observationId: isBrowserDecisionObservationCall(call) ? null : observation.observationId,
+        ...(selectedVisualTarget === undefined ? {} : { visualTarget: selectedVisualTarget }),
       } },
       // This is a proposal only. Normal preflights and post-model admission decide whether it may execute.
       messages: mergeMessagesPreservingInvariants(state.messages, [new AIMessage({

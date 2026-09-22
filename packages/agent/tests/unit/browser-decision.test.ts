@@ -703,6 +703,14 @@ describe("browser decision policy", () => {
     if (built.reason !== null) throw new Error("expected visual candidates");
     expect(built.candidates.find(({ id }) => id === "visual_v1")?.call)
       .toEqual({ name: "browser_mouse", args: { x: 150, y: 225, space: "image" } });
+    const visualChoice = built.candidates.find(({ id }) => id === "visual_v1");
+    expect(visualChoice?.description).toContain('"visualRef":"v1"');
+    expect(visualChoice?.description).toContain('"location":"middle-left area"');
+    expect(visualChoice?.description).not.toContain("imageX");
+    expect(visualChoice?.description).not.toContain("imageY");
+    expect(visualChoice?.visualTarget).toMatchObject({
+      version: 1, visualRef: "v1", point: { x: 150, y: 225 },
+    });
     expect(built.candidates.find(({ id }) => id === "scroll_up")?.call)
       .toEqual({ name: "browser_scroll", args: { direction: "up" } });
     expect(built.candidates.find(({ id }) => id === "scroll_down")?.call)
@@ -1506,28 +1514,88 @@ describe("browser decision node", () => {
 
   test("selects a visual target and re-observes with a screenshot after the action", async () => {
     const visualObservation = observation({ refs: {}, visual: {
-      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      viewport: { imageWidth: 9973, imageHeight: 8861, cssWidth: 4986.5, cssHeight: 4430.5, dpr: 2 },
       targets: [{ visualRef: "v1", role: "visible text", name: "Apple", interaction: "unknown",
-        x: 150, y: 225, context: "first row" }],
+        x: 7919, y: 6357, context: "at 79% from left, 72% from top; first row",
+        box: { x: 7881, y: 6329, width: 76, height: 56 } }],
     } });
+    const legacyVisualDescription = JSON.stringify({
+      kind: "visual_click", role: "visible text", name: "Apple", visualRef: "v1",
+      imageX: 7919, imageY: 6357, point: { x: 7919, y: 6357 },
+      box: { x: 7881, y: 6329, width: 76, height: 56 },
+      context: "at 79% from left, 72% from top; first row",
+    });
     const visualDecision = decision({
       plan: browserDecisionPlanSchema.parse({ goal: "Choose Apple", allowedOrigins: ["https://shop.example"] }),
       observation: visualObservation,
+      lastAction: {
+        toolCallId: "legacy-visual-action",
+        description: legacyVisualDescription,
+        beforeObservationId: "visual-before",
+        execution: "executed",
+        effect: {
+          added: ["- visual viewport [image_width=9973, image_height=8861]"],
+          removed: ["visual target [image_x=7919, image_y=6357, image_box=7881,6329,76,56]"],
+          fromUrl: "https://shop.example/", toUrl: "https://shop.example/",
+        },
+      },
     });
+    const planCall = call("visual-plan-opaque", "browser_screenshot", { decisionPlan: visualDecision.plan });
+    const priorCall = call("legacy-visual-action", "browser_mouse", { x: 7919, y: 6357, space: "image" });
+    const priorReceipt = new AIMessage({ content: "", tool_calls: [priorCall], additional_kwargs: {
+      nautilo_browser_decision: { operation: "choice", action: legacyVisualDescription },
+    } });
+    let serializedChoiceInput = "";
     const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
-      expect(input.instructions).toContain("visual_ref targets execute through browser_mouse");
+      serializedChoiceInput = JSON.stringify(input);
       return { selectedId: "visual_v1", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
         usage: { inputTokens: 5, outputTokens: 1, actualCostUsd: 0 } };
     } });
-    const selected = await node(state({ browserDecision: visualDecision }), { signal: new AbortController().signal });
+    const selected = await node(state({
+      browserDecision: visualDecision,
+      messages: [new AIMessage({ content: "", tool_calls: [planCall] }), priorReceipt, successfulResult(priorCall, "clicked")],
+    }), { signal: new AbortController().signal });
+    expect(serializedChoiceInput).toContain("visual_ref values are opaque semantic target IDs");
+    const forbiddenVisualGeometry = [
+      '"imageX":', '"imageY":', '"imageWidth":', '"imageHeight":', '"cssWidth":', '"cssHeight":',
+      '"point":', '"box":', "image_x", "image_y", "image_box", "image_width", "image_height",
+      "7919", "6357", "7881", "6329", "9973", "8861", "79%", "72%",
+    ];
+    expect(forbiddenVisualGeometry.filter((value) => serializedChoiceInput.includes(value))).toEqual([]);
+    expect(serializedChoiceInput).toContain("visual_ref=v1");
+    expect(serializedChoiceInput).toContain("visual_v1");
+    expect(serializedChoiceInput).toContain("lower-right area");
+    expect(serializedChoiceInput).toContain('"recentActions"');
+    expect(serializedChoiceInput).toContain('"lastAction"');
     const mouse = proposedToolCall(selected);
-    expect(mouse).toMatchObject({ name: "browser_mouse", args: { x: 150, y: 225, space: "image" } });
+    expect(mouse).toMatchObject({ name: "browser_mouse", args: { x: 7919, y: 6357, space: "image" } });
     expect(selected.browserDecision?.pending?.observationId).toBe("observation-1");
+    expect(selected.browserDecision?.pending?.visualTarget).toEqual({
+      version: 1,
+      visualRef: "v1",
+      role: "visible text",
+      name: "Apple",
+      interaction: "unknown",
+      context: "at 79% from left, 72% from top; first row",
+      point: { x: 7919, y: 6357 },
+      box: { x: 7881, y: 6329, width: 76, height: 56 },
+    });
+    const receipt = AIMessage.isInstance(selected.messages?.at(-1))
+      ? selected.messages.at(-1)?.additional_kwargs["nautilo_browser_decision"]
+      : null;
+    const serializedReceipt = JSON.stringify(receipt);
+    for (const forbidden of ['"imageX":', '"imageY":', '"point":', '"box":', "7919", "6357", "79%", "72%"])
+      expect(serializedReceipt).not.toContain(forbidden);
     const afterMouse = settleBrowserDecision(
       state({ browserDecision: selected.browserDecision as BrowserDecisionState }),
       [mouse], [successfulResult(mouse, "clicked")], [], JEV_ID,
     );
     expect(afterMouse).toMatchObject({ phase: "observe", lastAction: { execution: "executed" } });
+    const handoff = browserDecisionHandoffContent("test_handoff", undefined, {
+      ...visualDecision, phase: "handoff", reason: "test_handoff",
+    });
+    for (const forbidden of ['"imageX":', '"imageY":', '"point":', '"box":', "image_x", "image_y", "image_box", "image_width", "image_height", "7919", "6357", "9973", "8861", "79%", "72%"])
+      expect(handoff).not.toContain(forbidden);
     const reobserve = await node(state({ browserDecision: afterMouse }), { signal: new AbortController().signal });
     expect(proposedToolCall(reobserve)).toMatchObject({ name: "browser_screenshot", args: {} });
     expect(reobserve.browserDecision?.pending?.observationId).toBeNull();

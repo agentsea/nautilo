@@ -1723,7 +1723,11 @@ describe("Nautilo tool invocation service", () => {
               x: 120, y: 240, context: "document page" }] },
         },
         pending: { call: { id: visualType.callId, name: visualType.toolName, args: visualType.args },
-          browserSessionId: "browser-1", observationId: "visual-observation-1" },
+          browserSessionId: "browser-1", observationId: "visual-observation-1",
+          visualTarget: {
+            version: 1, visualRef: "v1", role: "visible text", name: "Document", interaction: "unknown",
+            context: "document page", point: { x: 120, y: 240 },
+          } },
         recovery: { interventionLimit: 2, consecutiveEvents: 0, interventionAt: 2,
           progressSeen: [], assessNextObservation: false },
       };
@@ -1731,7 +1735,23 @@ describe("Nautilo tool invocation service", () => {
       expect(dispatched.at(-1)).toEqual({
         x: 120, y: 240, space: "image", text: "exact visual text", clear: false,
         _requiredSession: "browser-1", _requiredObservationId: "visual-observation-1",
+        _visualTarget: {
+          version: 1, visualRef: "v1", role: "visible text", name: "Document", interaction: "unknown",
+          context: "document page", point: { x: 120, y: 240 },
+        },
       });
+      const boundVisualDecision = invocationState.browserDecision;
+      if (!boundVisualDecision?.pending) throw new Error("expected a bound visual decision fixture");
+      invocationState.browserDecision = { ...boundVisualDecision, pending: {
+        call: boundVisualDecision.pending.call,
+        browserSessionId: boundVisualDecision.pending.browserSessionId,
+        observationId: boundVisualDecision.pending.observationId,
+      } };
+      const missingTarget = await invoke(visualType);
+      expect(missingTarget.status).toBe("error");
+      expect(missingTarget.content).toContain("visual target binding is unavailable");
+      expect(dispatched).toHaveLength(2);
+      invocationState.browserDecision = boundVisualDecision;
       invocationState.browserDecision = { ...invocationState.browserDecision,
         target: { kind: "connected_web", operationId: "operation-1", controlEpoch: 1 } };
       expect((await invoke(visualType)).status).toBe("error");

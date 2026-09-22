@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   agentBrowserArgv,
   agentBrowserKeyboardInsertTextArgv,
@@ -27,6 +27,11 @@ import type {
   BrowserVisualObservationBinding,
   BrowserVisualObservationEnvelope,
   BrowserVisualExtraction,
+  BrowserVisualTargetBinding,
+} from "../browser-visual-observation.ts";
+import {
+  parseBrowserVisualTargetBinding,
+  resolveBrowserVisualTarget,
 } from "../browser-visual-observation.ts";
 import {
   FIXED_DESKTOP_DISPATCH_NOT_HANDLED,
@@ -218,6 +223,39 @@ export function createInteractiveBrowserDispatchHandler(
         "Coordinate browser typing requires a fresh visual observation. Take a fresh screenshot before choosing an action.",
       );
     }
+    const rawVisualTarget = request.args["_visualTarget"];
+    let visualTarget: BrowserVisualTargetBinding | null = null;
+    const visualTargetAction = boundVisualObservation !== null
+      && (request.toolName === "browser_mouse" || coordinateVisualType);
+    if (visualTargetAction) {
+      if (rawVisualTarget === undefined) {
+        ports.deleteVisualObservation(boundVisualObservation.browserSessionId);
+        return browserFailure(
+          "browser_authority_lost",
+          "The selected visual action is missing its opaque semantic target binding.",
+        );
+      }
+      try {
+        visualTarget = parseBrowserVisualTargetBinding(rawVisualTarget, {
+          width: boundVisualObservation.imageWidth,
+          height: boundVisualObservation.imageHeight,
+        });
+      } catch {
+        ports.deleteVisualObservation(boundVisualObservation.browserSessionId);
+        return browserFailure(
+          "browser_authority_lost",
+          "The selected visual action has an invalid opaque semantic target binding.",
+        );
+      }
+    } else if (rawVisualTarget !== undefined) {
+      if (boundVisualObservation !== null) {
+        ports.deleteVisualObservation(boundVisualObservation.browserSessionId);
+      }
+      return browserFailure(
+        "browser_authority_lost",
+        "An opaque visual target may be used only by its bound visual mouse or typing action.",
+      );
+    }
     // Every mutation attempt consumes the observation, including ordinary Genie actions.
     if (browserToolMayMutate(request.toolName) || request.toolName === "browser_snapshot") latestObservation = null;
 
@@ -405,8 +443,49 @@ export function createInteractiveBrowserDispatchHandler(
       }
     };
 
-    const assertFreshVisualObservation = async (): Promise<void> => {
-      if (boundVisualObservation === null) return;
+    const assertFreshVisualEnvironment = async (): Promise<{
+      readonly cssWidth: number;
+      readonly cssHeight: number;
+      readonly dpr: number;
+      readonly pageUrl: string;
+    } | null> => {
+      if (boundVisualObservation === null) return null;
+      try {
+        const viewport = await readViewport();
+        if (session !== boundVisualObservation.browserSessionId
+          || viewport.pageUrl !== boundVisualObservation.pageUrl
+          || viewport.cssWidth !== boundVisualObservation.cssWidth
+          || viewport.cssHeight !== boundVisualObservation.cssHeight
+          || viewport.dpr !== boundVisualObservation.dpr) {
+          ports.deleteVisualObservation(session);
+          throw new BrowserDispatchFailure(
+            "browser_observation_stale",
+            "The browser page or viewport changed since the visual decision. Take a fresh screenshot; the proposed action was not executed.",
+          );
+        }
+        return { ...viewport, pageUrl: viewport.pageUrl };
+      } catch (error) {
+        if (error instanceof BrowserDispatchFailure) throw error;
+        ports.deleteVisualObservation(session);
+        throw new BrowserDispatchFailure(
+          "browser_observation_invalid",
+          "The browser could not verify the visual environment immediately before the action.",
+        );
+      }
+    };
+
+    const regroundFreshVisualTarget = async (target: BrowserVisualTargetBinding): Promise<{
+      readonly imageX: number;
+      readonly imageY: number;
+      readonly cssX: number;
+      readonly cssY: number;
+    }> => {
+      if (boundVisualObservation === null) {
+        throw new BrowserDispatchFailure(
+          "browser_observation_stale",
+          "The visual observation was consumed or superseded.",
+        );
+      }
       const freshCapturePath = ports.capturePath();
       try {
         await ports.exec(
@@ -417,28 +496,49 @@ export function createInteractiveBrowserDispatchHandler(
         assertLive();
         const png = ports.readCapturePng(freshCapturePath);
         const dimensions = ports.captureDimensions(png);
-        const viewport = await readViewport();
-        const digest = createHash("sha256").update(png).digest("hex");
-        if (session !== boundVisualObservation.browserSessionId
-          || viewport.pageUrl !== boundVisualObservation.pageUrl
-          || dimensions.width !== boundVisualObservation.imageWidth
-          || dimensions.height !== boundVisualObservation.imageHeight
-          || viewport.cssWidth !== boundVisualObservation.cssWidth
-          || viewport.cssHeight !== boundVisualObservation.cssHeight
-          || viewport.dpr !== boundVisualObservation.dpr
-          || digest !== boundVisualObservation.screenshotSha256) {
+        const viewport = await assertFreshVisualEnvironment();
+        if (viewport === null) {
+          throw new BrowserDispatchFailure(
+            "browser_observation_stale",
+            "The visual observation was consumed or superseded.",
+          );
+        }
+        if (dimensions.width !== boundVisualObservation.imageWidth
+          || dimensions.height !== boundVisualObservation.imageHeight) {
           ports.deleteVisualObservation(session);
           throw new BrowserDispatchFailure(
             "browser_observation_stale",
-            "The browser pixels or viewport changed since the visual decision. Take a fresh screenshot; the proposed action was not executed.",
+            "The browser capture geometry changed since the visual decision. Take a fresh screenshot; the proposed action was not executed.",
           );
         }
+        const extraction = await ports.extractVisualObservation(
+          freshCapturePath,
+          dimensions,
+          signal,
+        );
+        assertLive();
+        const resolved = resolveBrowserVisualTarget(target, extraction, dimensions);
+        if (resolved.status !== "matched") {
+          ports.deleteVisualObservation(session);
+          throw new BrowserDispatchFailure(
+            "browser_observation_stale",
+            `The selected visual target is ${resolved.status} in the fresh browser image. Take a fresh screenshot; the proposed action was not executed.`,
+          );
+        }
+        const xScale = dimensions.width / viewport.cssWidth;
+        const yScale = dimensions.height / viewport.cssHeight;
+        return {
+          imageX: resolved.target.point.x,
+          imageY: resolved.target.point.y,
+          cssX: Math.round(resolved.target.point.x / xScale),
+          cssY: Math.round(resolved.target.point.y / yScale),
+        };
       } catch (error) {
         if (error instanceof BrowserDispatchFailure) throw error;
         ports.deleteVisualObservation(session);
         throw new BrowserDispatchFailure(
           "browser_observation_invalid",
-          "The browser could not verify the visual observation immediately before the action.",
+          "The browser could not re-ground the selected visual target immediately before the action.",
         );
       } finally {
         ports.removeCapture(freshCapturePath);
@@ -628,7 +728,6 @@ export function createInteractiveBrowserDispatchHandler(
             dpr: css.dpr,
             xScale: scale.x,
             yScale: scale.y,
-            screenshotSha256: createHash("sha256").update(png).digest("hex"),
           };
         }
         const result = ports.visionFromPng(
@@ -668,11 +767,15 @@ export function createInteractiveBrowserDispatchHandler(
           "Coordinate browser typing requires in-bounds image-space x/y coordinates, non-empty text, and clear=false.",
         );
       }
-      const cssX = Math.round(x / boundVisualObservation!.xScale);
-      const cssY = Math.round(y / boundVisualObservation!.yScale);
+      if (visualTarget === null || x !== visualTarget.point.x || y !== visualTarget.point.y) {
+        return browserFailure(
+          "browser_authority_lost",
+          "Coordinate browser typing no longer matches its opaque semantic target binding.",
+        );
+      }
       try {
-        await assertFreshVisualObservation();
-        const clickCommands = agentBrowserMouseClickArgvs(configPath, session, cssX, cssY);
+        const resolved = await regroundFreshVisualTarget(visualTarget);
+        const clickCommands = agentBrowserMouseClickArgvs(configPath, session, resolved.cssX, resolved.cssY);
         consumeVisualObservation();
         for (const argv of clickCommands) {
           await exec(binary, argv, {
@@ -745,8 +848,20 @@ export function createInteractiveBrowserDispatchHandler(
         cssX = Math.round(x / scale.x);
         cssY = Math.round(y / scale.y);
       }
+      if (boundVisualObservation !== null
+        && (visualTarget === null || space !== "image"
+          || x !== visualTarget.point.x || y !== visualTarget.point.y)) {
+        return browserFailure(
+          "browser_authority_lost",
+          "The visual mouse action no longer matches its opaque semantic target binding.",
+        );
+      }
       try {
-        await assertFreshVisualObservation();
+        const resolved = visualTarget === null ? null : await regroundFreshVisualTarget(visualTarget);
+        if (resolved !== null) {
+          cssX = resolved.cssX;
+          cssY = resolved.cssY;
+        }
         const commands = agentBrowserMouseClickArgvs(
           configPath,
           session,
@@ -760,8 +875,9 @@ export function createInteractiveBrowserDispatchHandler(
             maxBuffer: 8 * 1024 * 1024,
           });
         }
-        const result =
-          space === "css"
+        const result = resolved !== null
+          ? `Clicked resolved visual target ${visualTarget!.visualRef}`
+          : space === "css"
             ? `Clicked at css(${cssX},${cssY}) space=css`
             : `Clicked at css(${cssX},${cssY}) from image(${x},${y}) space=image scale=${scaleUsed!.x.toFixed(3)}${scaleNote}`;
         return { handled: true, result: { status: "ok", result } };
@@ -845,7 +961,7 @@ export function createInteractiveBrowserDispatchHandler(
         };
       }
       try {
-        await assertFreshVisualObservation();
+        await assertFreshVisualEnvironment();
         consumeVisualObservation();
         for (const argv of commands) {
           await exec(binary, argv, {
@@ -934,7 +1050,7 @@ export function createInteractiveBrowserDispatchHandler(
     }
     try {
       if (request.toolName === "browser_press") {
-        await assertFreshVisualObservation();
+        await assertFreshVisualEnvironment();
         consumeVisualObservation();
       }
       const { stdout } = await exec(binary, argv, {

@@ -5,8 +5,9 @@
 Generate the screenshot-derived browser observation locally and leave the
 choice of action to Jev. The extractor should not receive the task. It should
 produce a deliberately neutral inventory of visible text and plausible visual
-regions, plus a registry from every `visual_ref` to its image-pixel box and safe
-click point.
+regions. Keep the registry from every `visual_ref` to its image-pixel box and
+safe click point runtime-private: Jev receives only the opaque ref, label, role,
+categorical location and semantic context.
 
 Use three independent signals:
 
@@ -248,10 +249,17 @@ adapter with four explicit stages:
 1. Decode once and run colour/edge region detection and OCR concurrently.
 2. Attach OCR to regions and build deterministic containment, row, column,
    nearest-label and section relationships.
-3. Emit the ordinary browser snapshot plus a short-lived registry from each
-   `visual_ref` to image coordinates.
+3. Emit a coordinate-free semantic browser snapshot plus a short-lived,
+   runtime-private registry from each `visual_ref` to its point and box.
 4. Let the existing Jev loop choose among those references plus `scroll_up`
    and `scroll_down`.
+
+Before executing a selected visual ref, capture and extract a fresh frame,
+re-identify the target from its label, role, local context and approximate prior
+geometry, and click its newly grounded point. Treat geometry as a tie-breaker,
+not identity. Unrelated animation must not stale an otherwise unambiguous
+target; disappearance or multiple plausible matches must fail closed and return
+the fresh semantic state to the decision loop.
 
 For latency, evaluate a cascade rather than committing immediately to the
 small tier on every frame: run tiny first, then apply small recognition only to

@@ -84,6 +84,27 @@ export const browserVisualObservationSchema = z.object({
 });
 
 export type BrowserVisualObservation = z.infer<typeof browserVisualObservationSchema>;
+export type BrowserVisualTarget = BrowserVisualObservation["targets"][number];
+
+/**
+ * Private binding sent only to the trusted Desktop relay after the selected
+ * tool call has passed its normal pending-decision validation. The decision
+ * model sees the opaque visualRef and semantic fields, never this geometry.
+ */
+export const browserVisualTargetBindingSchema = z.object({
+  version: z.literal(1),
+  visualRef: z.string().regex(/^v\d+$/),
+  role: nonBlank,
+  name: nonBlank,
+  interaction: z.enum(["click", "focus", "unknown"]),
+  context: z.string(),
+  sources: z.array(nonBlank).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  point: z.object({ x: nonnegativeInteger, y: nonnegativeInteger }).strict(),
+  box: visualBoxSchema.optional(),
+}).strict();
+
+export type BrowserVisualTargetBinding = z.infer<typeof browserVisualTargetBindingSchema>;
 
 type TextObservation = z.infer<typeof rawTextObservationSchema>;
 type RegionObservation = {
@@ -141,6 +162,19 @@ function dedupeRegions(regions: readonly RegionObservation[]): RegionObservation
   return accepted.sort(readingOrder);
 }
 
+function categoricalPosition(
+  point: { readonly x: number; readonly y: number },
+  image: { readonly width: number; readonly height: number },
+): string {
+  const horizontal = point.x < image.width / 3 ? "left"
+    : point.x > image.width * 2 / 3 ? "right" : "center";
+  const vertical = point.y < image.height / 3 ? "upper"
+    : point.y > image.height * 2 / 3 ? "lower" : "middle";
+  return horizontal === "center" && vertical === "middle"
+    ? "center area"
+    : `${vertical}-${horizontal} area`;
+}
+
 function targetContext(
   observation: TextObservation,
   text: readonly TextObservation[],
@@ -149,7 +183,7 @@ function targetContext(
   const center = boxCenter(observation.box);
   const nearest = text.filter((candidate) => candidate !== observation)
     .sort((left, right) => distance(observation.box, left.box) - distance(observation.box, right.box))[0];
-  const position = `at ${Math.round((center.x / image.width) * 100)}% from left, ${Math.round((center.y / image.height) * 100)}% from top`;
+  const position = categoricalPosition(center, image);
   return nearest ? `${position}; near ${JSON.stringify(nearest.text)}` : position;
 }
 
@@ -180,13 +214,16 @@ export function browserVisualObservationFromRelay(raw: unknown): {
     const name = enclosed.sort(readingOrder).map((item) => item.text).join(" ").trim()
       || "unlabelled visual region";
     const center = boxCenter(region.box);
+    const location = categoricalPosition(center, image);
     return {
       role: "visual region",
       name,
       interaction: "unknown" as const,
       x: center.x,
       y: center.y,
-      context: nearby.length ? `near ${nearby.map((item) => item.text).join(" | ")}` : `${region.source} region`,
+      context: nearby.length
+        ? `${location}; near ${nearby.map((item) => item.text).join(" | ")}`
+        : `${location}; ${region.source} region`,
       box: region.box,
       sources: name === "unlabelled visual region" ? [region.source] : [region.source, "ocr"],
       confidence: region.confidence,
@@ -228,10 +265,10 @@ export function browserVisualObservationFromRelay(raw: unknown): {
   const visibleText = text.map((item) => item.text).filter((value, index, all) => all.indexOf(value) === index);
   const summary = `macOS Vision ${parsed.extraction.recognitionMode} extracted ${text.length} text boxes and ${regions.length} visual regions without a generative model`;
   const snapshot = [
-    `- visual viewport [image_width=${image.width}, image_height=${image.height}]`,
+    "- visual viewport",
     `  - summary ${quoted(summary)}`,
     ...visibleText.map((value) => `  - visible_text ${quoted(value)}`),
-    ...targets.map((target) => `  - ${target.role} ${quoted(target.name)} [visual_ref=${target.visualRef}, interaction=${target.interaction}, image_x=${target.x}, image_y=${target.y}, image_box=${target.box.x},${target.box.y},${target.box.width},${target.box.height}] sources=${quoted(target.sources.join(","))} context=${quoted(target.context)}`),
+    ...targets.map((target) => `  - ${target.role} ${quoted(target.name)} [visual_ref=${target.visualRef}, interaction=${target.interaction}] sources=${quoted(target.sources.join(","))} context=${quoted(target.context)}`),
   ].join("\n");
   return {
     pageUrl: parsed.pageUrl,

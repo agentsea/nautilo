@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   BROWSER_VISUAL_GROUNDING_OUTPUT_MAX_BYTES,
+  parseBrowserVisualTargetBinding,
   parseBrowserVisualGroundingOutput,
   resolveBrowserVisualGroundingHelper,
 } from "../../electron/browser-visual-observation.ts";
@@ -67,5 +68,30 @@ describe("browser visual observation helper boundary", () => {
       "/owned/capture.png",
       { width: 1000, height: 600 },
     )).toThrow(/1 MiB/);
+  });
+
+  test("strictly validates the relay-only semantic target binding", () => {
+    const target = {
+      version: 1,
+      visualRef: "v3",
+      role: "visible text",
+      name: "Continue",
+      interaction: "unknown",
+      context: "center area",
+      sources: ["ocr"],
+      confidence: 0.9,
+      point: { x: 250, y: 100 },
+      box: { x: 200, y: 80, width: 100, height: 40 },
+    };
+    expect(parseBrowserVisualTargetBinding(target, { width: 1000, height: 600 }))
+      .toMatchObject(target);
+    expect(() => parseBrowserVisualTargetBinding(
+      { ...target, leakedCoordinate: 42 },
+      { width: 1000, height: 600 },
+    )).toThrow(/keys/);
+    expect(() => parseBrowserVisualTargetBinding(
+      { ...target, point: { x: 1000, y: 100 } },
+      { width: 1000, height: 600 },
+    )).toThrow(/out-of-image point/);
   });
 });
