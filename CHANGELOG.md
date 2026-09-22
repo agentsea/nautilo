@@ -56,6 +56,8 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Guest screenshot messages now render inline for Room members as they arrive
+  and after reload, with authenticated downloads and full-size viewing.
 - Authenticated Guests can attach files to messages in their selected Room,
   while unresolved and blocked conversations continue to reject uploads.
 

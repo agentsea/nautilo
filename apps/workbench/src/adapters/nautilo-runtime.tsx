@@ -3828,7 +3828,11 @@ export function NautiloRuntimeProvider({
               }
               if (pending !== undefined && threadRoomRegistrationRef.current?.roomId
                 === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)) {
-                const projected = { ...pending, content: result.payload.content };
+                const projected = {
+                  ...pending,
+                  content: result.payload.content,
+                  attachments: [],
+                };
                 protectedProjectedEventsRef.current.add(projected);
                 projectedLiveShadowEventRef.current(projected);
                 return;
@@ -3944,7 +3948,11 @@ export function NautiloRuntimeProvider({
               }
               if (pending !== undefined && threadRoomRegistrationRef.current?.roomId
                 === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)) {
-                const projected = { ...pending, content: result.payload.content };
+                const projected = {
+                  ...pending,
+                  content: result.payload.content,
+                  attachments: [],
+                };
                 protectedProjectedEventsRef.current.add(projected);
                 projectedLiveShadowEventRef.current(projected);
                 return;
@@ -4442,7 +4450,7 @@ export function NautiloRuntimeProvider({
           }
           if (
             (event.role === "user" || event.role === "human") &&
-            event.content &&
+            (event.content || (event.attachments?.length ?? 0) > 0) &&
             typeof event.sourceUserId === "string" &&
             event.sourceUserId.length > 0
           ) {
@@ -4464,6 +4472,9 @@ export function NautiloRuntimeProvider({
                   : {}),
                 ...(event.artifacts !== undefined
                   ? { artifacts: event.artifacts }
+                  : {}),
+                ...(event.attachments !== undefined
+                  ? { attachments: event.attachments }
                   : {}),
               },
               viewerKeyRef.current,

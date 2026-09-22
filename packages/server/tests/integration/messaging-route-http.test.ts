@@ -248,6 +248,10 @@ describe("POST /api/rooms/:roomId/messages (D174 Phase 11.1)", () => {
     let messageId: number | null = null;
     let attachmentId: string | null = null;
     try {
+      const pngBytes = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      );
       const jobsBefore = createJobCalls.count;
       const eventsBefore = messageNewEvents.length;
       const guestBearer = await fx.mintSessionBearerForUser(
@@ -257,8 +261,8 @@ describe("POST /api/rooms/:roomId/messages (D174 Phase 11.1)", () => {
       const form = new FormData();
       form.set(
         "file",
-        new Blob(["guest attachment body"], { type: "text/plain" }),
-        "guest-note.txt",
+        new Blob([pngBytes], { type: "image/png" }),
+        "guest-screen.png",
       );
       const upload = await fx.app.inject({
         method: "POST",
@@ -297,8 +301,6 @@ describe("POST /api/rooms/:roomId/messages (D174 Phase 11.1)", () => {
         .from(sessionMessages)
         .where(eq(sessionMessages.id, body.messageId));
       expect(persisted?.id).toBe(body.messageId);
-      expect(persisted?.content).toContain('filename="guest-note.txt"');
-      expect(persisted?.content).toContain("guest attachment body");
       expect(persisted?.content).toEndWith("ordinary guest history");
       const event = messageNewEvents.slice(eventsBefore).find(
         (candidate) =>
@@ -308,6 +310,27 @@ describe("POST /api/rooms/:roomId/messages (D174 Phase 11.1)", () => {
       expect((event as { senderUserId?: string } | undefined)?.senderUserId).toBe(
         guest.userId,
       );
+      const expectedAttachment = {
+        attachmentId,
+        filename: "guest-screen.png",
+        mimeType: "image/png",
+        sizeBytes: pngBytes.byteLength,
+      };
+      expect(event).toMatchObject({ attachments: [expectedAttachment] });
+
+      // Observe the live projection first, then prove history names the exact
+      // same retained row for another authorized Room member.
+      const ownerBearer = await fx.mintOwnerBearer();
+      const history = await authedInject(fx.app, {
+        method: "GET",
+        url: `/api/rooms/${roomId}/messages?beforeId=${body.messageId + 1}&beforeCreatedAt=${encodeURIComponent("2999-01-01T00:00:00.000Z")}&limit=50`,
+        bearer: ownerBearer,
+      });
+      expect(history.statusCode).toBe(200);
+      const historyMessage = (JSON.parse(history.body) as {
+        messages: Array<{ id: string; attachments?: unknown[] }>;
+      }).messages.find((candidate) => Number(candidate.id) === body.messageId);
+      expect(historyMessage?.attachments).toEqual([expectedAttachment]);
 
       if (!fx.defaultAgentId) throw new Error("default agent missing");
       const [agent] = await fx.db

@@ -17,6 +17,7 @@ import {
   hydrateMessageArtifactOpenRefs,
   persistMessageArtifactOpenRefs,
 } from "./artifact-refs";
+import { linkAndLoadRetainedAttachmentRefs } from "./retained-attachment-refs";
 
 /**
  * D426 — structural view of the root anchor summary that
@@ -217,6 +218,12 @@ export async function peerBroadcastHumanMessage(args: {
     if (hydrated.length > 0) artifacts = hydrated;
   }
 
+  const attachments = await linkAndLoadRetainedAttachmentRefs({
+    messageId,
+    statuses: args.attachmentStatuses,
+    canonicalRoomNamespaceId,
+  });
+
   eventBus.emit({
     type: "message.new",
     laneKey: `room:${room.id}`,
@@ -229,6 +236,7 @@ export async function peerBroadcastHumanMessage(args: {
     sourceUserId: senderUserId,
     senderUserId: senderUserId,
     ...(replyToMessageId != null ? { replyToMessageId } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
     ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
   });
 

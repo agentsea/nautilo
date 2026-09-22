@@ -53,11 +53,14 @@ import { useSpeechRecognition } from "../hooks/use-speech-recognition";
 import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
+import { MessageAttachmentImages } from "./message-attachment-images";
+import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
   SHELL_AGENT_NAME,
   type MessageActionDescriptor,
   type ChatFocusedResourceRef,
+  type MessageAttachmentRef,
 } from "@nautilo/types";
 import { useWsState } from "../hooks/use-ws-state";
 import { MENU_SPEAK_EVENT } from "../hooks/use-desktop-menu";
@@ -2340,8 +2343,6 @@ function Composer({
     return () => window.removeEventListener(MENU_SPEAK_EVENT, onMenuSpeak);
   }, [handleMicToggle]);
 
-  const showMic = speech.isSupported && !hasText;
-
   const insertEmoji = useCallback(
     (emoji: string) => {
       composerRuntime.setText(composerTextRef.current + emoji);
@@ -2385,6 +2386,9 @@ function Composer({
     getFocusedResourcesSnapshot,
     getFocusedResourcesSnapshot,
   );
+  const showMic = speech.isSupported && !hasText
+    && attachments.length === 0 && focusedResources.length === 0;
+
   const focusedResourcesRef = useRef(focusedResources);
   focusedResourcesRef.current = focusedResources;
   const unboundComposerSendInFlightRef = useRef(false);
@@ -3547,6 +3551,21 @@ function Message({
   const artifactOpenRefs = useMessage((state) => {
     return artifactOpenRefsFromMessageMetadata(state.metadata);
   });
+  const messageAttachmentRefs = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    const value = custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY];
+    return Array.isArray(value) ? value as readonly MessageAttachmentRef[] : undefined;
+  });
+  const humanMessageVerification = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    return typeof custom?.humanMessageVerification === "string"
+      ? custom.humanMessageVerification
+      : undefined;
+  });
+  const historyUnavailable = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    return custom?.historyUnavailable === true;
+  });
   const terminalExecutions = useMessage((state) => {
     return terminalExecutionsFromMessageMetadata(state.metadata);
   });
@@ -4026,6 +4045,14 @@ function Message({
                   <QuotedReplyStrip parentId={replyToMessageId} assistantName={assistantName} />
                 </div>
               ) : null}
+              <MessageAttachmentImages
+                attachments={
+                  humanMessageVerification === undefined && !historyUnavailable
+                    ? messageAttachmentRefs
+                    : undefined
+                }
+                roomId={roomId}
+              />
               {editing ? (
                 <div className="mt-1">
                   <textarea

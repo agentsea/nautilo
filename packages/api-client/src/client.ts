@@ -574,6 +574,7 @@ import type {
   MarkRoomReadRequest,
   MarkRoomReadResponse,
   MessageReadStateDto,
+  MessageAttachmentRef,
   MessageArtifactOpenRef,
   NotificationLevel,
   NotificationPreferencesDto,
@@ -9408,6 +9409,7 @@ export class NautiloApiClient {
       sourceUserId?: string;
       authorAgentId?: string;
       authorHarnessId?: string;
+      attachments?: MessageAttachmentRef[];
     }>;
     pageInfo?: {
       hasMoreBefore: boolean;
@@ -9432,6 +9434,7 @@ export class NautiloApiClient {
         createdAt: string;
         editedAt?: string | null;
         editRevision?: number;
+        attachments?: MessageAttachmentRef[];
       }>;
       pageInfo?: {
         hasMoreBefore: boolean;
@@ -9465,6 +9468,7 @@ export class NautiloApiClient {
       sourceUserId?: string;
       authorAgentId?: string;
       authorHarnessId?: string;
+      attachments?: MessageAttachmentRef[];
       artifacts?: MessageArtifactOpenRef[];
     }>;
     pageInfo: {
@@ -9507,6 +9511,7 @@ export class NautiloApiClient {
         sourceUserId?: string;
         authorAgentId?: string;
         authorHarnessId?: string;
+        attachments?: MessageAttachmentRef[];
         artifacts?: MessageArtifactOpenRef[];
       }>;
       pageInfo: {

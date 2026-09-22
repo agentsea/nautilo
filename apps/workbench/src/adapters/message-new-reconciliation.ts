@@ -1,9 +1,14 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import type { AdvancedVideoWorkcardContinuation, MessageArtifactOpenRef } from "@nautilo/types";
+import type {
+  AdvancedVideoWorkcardContinuation,
+  MessageArtifactOpenRef,
+  MessageAttachmentRef,
+} from "@nautilo/types";
 import {
   advancedVideoWorkcardSummary,
   dedupeMessageArtifactOpenRefs,
   MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY,
+  MESSAGE_ATTACHMENTS_METADATA_KEY,
 } from "./session-rehydrate";
 
 export interface CanonicalHumanMessage {
@@ -16,6 +21,8 @@ export interface CanonicalHumanMessage {
   replyToMessageId?: number;
   /** D424 — server-authored open-card pointers; never inferred from text. */
   artifacts?: MessageArtifactOpenRef[];
+  /** Server-authored retained message attachments for an ordinary projection. */
+  attachments?: MessageAttachmentRef[];
   /** Local receive state only; never put placeholder prose in message content. */
   verificationPending?: boolean;
 }
@@ -78,15 +85,52 @@ function artifactOpenRefsEqual(
   });
 }
 
+function dedupeMessageAttachmentRefs(
+  attachments: readonly MessageAttachmentRef[] | undefined,
+): MessageAttachmentRef[] | undefined {
+  if (attachments === undefined) return undefined;
+  const seen = new Set<string>();
+  return attachments.filter((attachment) => {
+    if (seen.has(attachment.attachmentId)) return false;
+    seen.add(attachment.attachmentId);
+    return true;
+  });
+}
+
+function messageAttachmentRefsEqual(
+  current: unknown,
+  next: readonly MessageAttachmentRef[] | undefined,
+): boolean {
+  if (next === undefined) return true;
+  if (!Array.isArray(current) || current.length !== next.length) return false;
+  return current.every((value, index) => {
+    const candidate = value as Partial<MessageAttachmentRef> | null;
+    const expected = next[index];
+    return candidate !== null &&
+      typeof candidate === "object" &&
+      candidate.attachmentId === expected?.attachmentId &&
+      candidate.filename === expected?.filename &&
+      candidate.mimeType === expected?.mimeType &&
+      candidate.sizeBytes === expected?.sizeBytes;
+  });
+}
+
 function canonicalMetadata(
   current: { custom?: Record<string, unknown> } | undefined,
   message: CanonicalHumanMessage,
 ): { custom: Record<string, unknown> } {
   const artifacts = dedupeMessageArtifactOpenRefs(message.artifacts);
+  const attachments = dedupeMessageAttachmentRefs(message.attachments);
+  const previousCustom = { ...(current?.custom ?? {}) };
+  if (message.verificationPending) {
+    delete previousCustom[MESSAGE_ATTACHMENTS_METADATA_KEY];
+  } else if (attachments !== undefined) {
+    previousCustom[MESSAGE_ATTACHMENTS_METADATA_KEY] = attachments;
+  }
   return {
     ...current,
     custom: {
-      ...(current?.custom ?? {}),
+      ...previousCustom,
       sourceUserId: message.sourceUserId,
       ...(message.createdAt ? { sentAt: message.createdAt } : {}),
       ...(message.verificationPending ? { humanMessageVerification: "pending" } : {}),
@@ -149,12 +193,18 @@ export function reconcileCanonicalHumanMessage(
       custom?: Record<string, unknown>;
     };
     const custom = metadata.custom ?? {};
-    if (message.verificationPending && custom.humanMessageVerification !== undefined) {
+    if (
+      message.verificationPending &&
+      custom.humanMessageVerification !== undefined &&
+      custom[MESSAGE_ATTACHMENTS_METADATA_KEY] === undefined
+    ) {
       return messages;
     }
     const artifacts = dedupeMessageArtifactOpenRefs(message.artifacts);
+    const attachments = dedupeMessageAttachmentRefs(message.attachments);
     if (
       (!message.verificationPending || custom.humanMessageVerification === "pending") &&
+      (!message.verificationPending || custom[MESSAGE_ATTACHMENTS_METADATA_KEY] === undefined) &&
       custom.sourceUserId === message.sourceUserId &&
       (!message.createdAt || custom.sentAt === message.createdAt) &&
       (!message.logicalMessageKey ||
@@ -166,6 +216,10 @@ export function reconcileCanonicalHumanMessage(
       artifactOpenRefsEqual(
         custom[MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY],
         artifacts,
+      ) &&
+      messageAttachmentRefsEqual(
+        custom[MESSAGE_ATTACHMENTS_METADATA_KEY],
+        attachments,
       )
     ) {
       return messages;
@@ -260,12 +314,16 @@ export function settleHumanMessageVerification(
   if (result.status === "failed" && custom.humanMessageVerification !== "pending") {
     return messages;
   }
+  const {
+    [MESSAGE_ATTACHMENTS_METADATA_KEY]: _ordinaryAttachments,
+    ...protectedCustom
+  } = custom;
   return messages.map((message, i) => i === index ? {
     ...message,
     content: [{ type: "text", text: result.status === "verified" ? result.content : "" }],
     metadata: {
       ...message.metadata,
-      custom: { ...custom, humanMessageVerification: result.status },
+      custom: { ...protectedCustom, humanMessageVerification: result.status },
     },
   } as ThreadMessageLike : message);
 }

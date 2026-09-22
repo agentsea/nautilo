@@ -12,6 +12,13 @@ const artifact = {
   sizeBytes: 120,
 };
 
+const imageAttachment = {
+  attachmentId: "attachment-image",
+  filename: "screenshot.png",
+  mimeType: "image/png",
+  sizeBytes: 42,
+};
+
 function textMessage(id: string, text: string): ThreadMessageLike {
   return { id, role: "user", content: [{ type: "text", text }] };
 }
@@ -45,10 +52,14 @@ describe("protected Human receive display", () => {
   });
 
   test("a strict pending projection also withholds an already-present ordinary row", () => {
-    const ordinary = reconcileCanonicalHumanMessage([], canonical, "another-user");
+    const ordinary = reconcileCanonicalHumanMessage([], {
+      ...canonical,
+      attachments: [imageAttachment],
+    }, "another-user");
     const waiting = reconcileCanonicalHumanMessage(ordinary, { ...canonical, verificationPending: true }, "another-user");
     expect(waiting[0]?.content).toEqual([{ type: "text", text: "" }]);
     expect(waiting[0]?.metadata?.custom?.humanMessageVerification).toBe("pending");
+    expect(waiting[0]?.metadata?.custom?.messageAttachments).toBeUndefined();
   });
 
   test("failure stops progress without exposing plaintext; a later verified result can recover", () => {
@@ -58,6 +69,7 @@ describe("protected Human receive display", () => {
     const recovered = settleHumanMessageVerification(failed, "42", { status: "verified", content: "opened" });
     expect(recovered[0]?.content).toEqual([{ type: "text", text: "opened" }]);
     expect(recovered[0]?.metadata?.custom?.humanMessageVerification).toBe("verified");
+    expect(recovered[0]?.metadata?.custom?.messageAttachments).toBeUndefined();
   });
 
   test("late results do not insert a message into a cleared Room", () => {
@@ -77,6 +89,42 @@ describe("reconcileCanonicalHumanMessage", () => {
     const result = reconcileCanonicalHumanMessage([textMessage("user-local", "hello")], canonical, "taylor");
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ id: "42" });
+  });
+
+  test("reconciles one sender bubble with deduped canonical image descriptors", () => {
+    const optimistic: ThreadMessageLike = {
+      ...textMessage("user-local", "📎 Attached: screenshot.png\n\nhello"),
+      metadata: { custom: { optimisticAuthoredText: "hello" } },
+    };
+    const result = reconcileCanonicalHumanMessage(
+      [optimistic],
+      { ...canonical, attachments: [imageAttachment, imageAttachment] },
+      "taylor",
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "42",
+      metadata: { custom: { messageAttachments: [imageAttachment] } },
+    });
+  });
+
+  test("patches a peer row when image descriptors arrive late without duplicating it", () => {
+    const initial = reconcileCanonicalHumanMessage([], canonical, "alex");
+    const patched = reconcileCanonicalHumanMessage(
+      initial,
+      { ...canonical, attachments: [imageAttachment] },
+      "alex",
+    );
+
+    expect(patched).toHaveLength(1);
+    expect(patched).not.toBe(initial);
+    expect(patched[0]?.metadata?.custom?.messageAttachments).toEqual([imageAttachment]);
+    expect(reconcileCanonicalHumanMessage(
+      patched,
+      { ...canonical, attachments: [imageAttachment] },
+      "alex",
+    )).toBe(patched);
   });
 
   test("preserves a reply pointer when replacing the matching optimistic bubble", () => {
