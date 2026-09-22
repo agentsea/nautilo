@@ -56,6 +56,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Desktop users can open Servers and connect another server even when their
+  current server does not allow Genie invocation, including Guest accounts.
+
 - Server Admin places the Nautilo Gateway URL and key together at the end of
   API Keys, following the separate OpenAI-compatible gateway.
 
