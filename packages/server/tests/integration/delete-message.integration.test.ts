@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { eq, rooms, sessions, sessionMessages } from "@nautilo/db";
+import { eq, messageDeletionReceipts, rooms, sessions, sessionMessages } from "@nautilo/db";
+import { deleteMessageWithConvergence } from "../../src/messaging/message-deletion";
 import { setupOwnerAppFixture, seatPeerUser, type AppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
 
@@ -72,21 +73,87 @@ describe("M172 delete-message REST", () => {
       .from(sessionMessages)
       .where(eq(sessionMessages.id, messageId));
     expect(remaining.length).toBe(0);
+    const receipts = await fx.db.select().from(messageDeletionReceipts)
+      .where(eq(messageDeletionReceipts.messageId, messageId));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      roomId: ROOM(),
+      messageId,
+      actorUserId: fx.ownerId,
+      source: "room_message",
+      authority: "author",
+      outcome: "deleted",
+    });
+    const receipt = receipts[0];
+    if (!receipt) throw new Error("deletion receipt missing");
+    expect(Object.keys(receipt).sort()).toEqual([
+      "actorId", "actorUserId", "authority", "committedAt", "messageId",
+      "operationId", "outcome", "reportId", "roomId", "source",
+    ]);
+    const lookup = await authedInject(fx.app, {
+      method: "GET",
+      url: `/api/security/message-deletions?messageId=${messageId}`,
+      bearer: ownerBearer,
+    });
+    expect(lookup.statusCode).toBe(200);
+    const lookupBody: unknown = JSON.parse(lookup.body);
+    expect(lookupBody).toMatchObject({
+      receipts: [{ messageId, actorUserId: fx.ownerId, authority: "author" }],
+    });
 
     // A second delete of the now-gone row is a 404.
     const again = await deleteMessage(ROOM(), messageId, ownerBearer);
     expect(again.statusCode).toBe(404);
+    const receiptsAfterRetry = await fx.db.select().from(messageDeletionReceipts)
+      .where(eq(messageDeletionReceipts.messageId, messageId));
+    expect(receiptsAfterRetry).toHaveLength(1);
   });
 
   test("manage_rooms owner deletes the agent's assistant message → 200", async () => {
     const messageId = await seedRoomMessage("assistant");
     const res = await deleteMessage(ROOM(), messageId, ownerBearer);
     expect(res.statusCode).toBe(200);
+    const receipts = await fx.db.select().from(messageDeletionReceipts)
+      .where(eq(messageDeletionReceipts.messageId, messageId));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.authority).toBe("room_owner");
   });
 
   test("unknown message id → 404", async () => {
     const res = await deleteMessage(ROOM(), 2_147_483_600, ownerBearer);
     expect(res.statusCode).toBe(404);
+    const receipts = await fx.db.select().from(messageDeletionReceipts)
+      .where(eq(messageDeletionReceipts.messageId, 2_147_483_600));
+    expect(receipts).toHaveLength(0);
+  });
+
+  test("receipt failure rolls the message deletion back", async () => {
+    const messageId = await seedRoomMessage("user");
+    try {
+      let failure: unknown;
+      try {
+        await deleteMessageWithConvergence({
+          roomId: randomUUID(),
+          messageId,
+          actorUserId: fx.ownerId,
+          actorId: fx.ownerActorId,
+          source: "room_message",
+          authority: "author",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe("Message Room changed during deletion");
+      const message = await fx.db.select({ id: sessionMessages.id })
+        .from(sessionMessages).where(eq(sessionMessages.id, messageId));
+      const receipts = await fx.db.select().from(messageDeletionReceipts)
+        .where(eq(messageDeletionReceipts.messageId, messageId));
+      expect(message).toHaveLength(1);
+      expect(receipts).toHaveLength(0);
+    } finally {
+      await fx.db.delete(sessionMessages).where(eq(sessionMessages.id, messageId));
+    }
   });
 
   test("non-member → 404 (never reveal existence)", async () => {
@@ -100,6 +167,9 @@ describe("M172 delete-message REST", () => {
       .from(sessionMessages)
       .where(eq(sessionMessages.id, messageId));
     expect(still.length).toBe(1);
+    const receipts = await fx.db.select().from(messageDeletionReceipts)
+      .where(eq(messageDeletionReceipts.messageId, messageId));
+    expect(receipts).toHaveLength(0);
     await fx.db.delete(sessionMessages).where(eq(sessionMessages.id, messageId));
   });
 
@@ -135,6 +205,9 @@ describe("M172 delete-message REST", () => {
         .from(sessionMessages)
         .where(eq(sessionMessages.id, anchorId));
       expect(still.length).toBe(1);
+      const receipts = await fx.db.select().from(messageDeletionReceipts)
+        .where(eq(messageDeletionReceipts.messageId, anchorId));
+      expect(receipts).toHaveLength(0);
     } finally {
       await fx.db.delete(rooms).where(eq(rooms.id, sub.id));
       await fx.db.delete(sessionMessages).where(eq(sessionMessages.id, anchorId));

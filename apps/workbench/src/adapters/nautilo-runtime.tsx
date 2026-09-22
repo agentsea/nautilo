@@ -6967,6 +6967,9 @@ export function NautiloRuntimeProvider({
                         ),
                       }
                     : {}),
+                  ...(auth.viewer.sessionUserId !== null
+                    ? { sourceUserId: auth.viewer.sessionUserId }
+                    : {}),
                   ...(options?.replyToMessageId !== undefined
                     ? { replyToMessageId: options.replyToMessageId }
                     : {}),
@@ -7146,6 +7149,7 @@ export function NautiloRuntimeProvider({
     [
       addMessage,
       auth.viewer.isVerified,
+      auth.viewer.sessionUserId,
       clearAgentStreamingVisibleOutput,
       markMessageSendFailed,
       roomMessageOperations,

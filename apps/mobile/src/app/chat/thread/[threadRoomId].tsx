@@ -36,8 +36,8 @@ export default function MobileThreadScreen() {
         return "You";
       }
       return detail.anchor.sourceUserId
-        ? (buildAuthorLabels(controller.roomMembers).get(detail.anchor.sourceUserId) ?? "Someone")
-        : "Someone";
+        ? (buildAuthorLabels(controller.roomMembers).get(detail.anchor.sourceUserId) ?? "Unknown sender")
+        : "Unknown sender";
     }
     if (detail.anchor.role === "assistant" || detail.anchor.role === "ai") {
       return resolveAgentAuthorLabel({

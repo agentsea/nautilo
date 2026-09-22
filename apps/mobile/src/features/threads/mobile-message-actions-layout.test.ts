@@ -27,6 +27,8 @@ describe("mobile message actions", () => {
     expect(rail).toContain("if (actions.length === 0 || !visible) return null");
     expect(rail).toContain("action.destructive && pressed");
     expect(bubble).toContain("getMessageActionDescriptors");
+    expect(bubble).toContain("automaticActionDescriptors");
+    expect(bubble).toContain("action.destructive !== true");
     expect(bubble).toContain("<MessageActionRail");
     expect(bubble).not.toContain("☺ React");
     expect(bubble).not.toContain("Reply in thread</Text>");
@@ -73,6 +75,7 @@ describe("mobile message actions", () => {
     expect(pane).toContain("StyleSheet.absoluteFill");
     expect(pane).toContain("styles.floatingRail");
     expect(pane).toContain("persisted && item.id === latestPersistedMessageId");
+    expect(pane).toContain("onActionRailReveal={persisted ?");
   });
 
   test("keeps mobile compact and selection-native while closing stale older rails", () => {
@@ -81,7 +84,8 @@ describe("mobile message actions", () => {
     expect(pane).toContain("revealedAtTouchStartRef");
     expect(pane).toContain("onViewableItemsChanged={handleViewableItemsChanged}");
     expect(pane).toContain("if (emojiTarget != null && !hasMessage(emojiTarget.messageId)) setEmojiTarget(null)");
-    expect(pane).toContain("if (deleteTarget != null && !hasMessage(deleteTarget)) setDeleteTarget(null)");
+    expect(pane).toContain("deleteTarget?.scopeIdentity !== deleteScopeIdentity");
+    expect(pane).toContain("c.canDeleteMessage(item) ? item.id : null");
     const highlightedRow = pane.match(/highlightedRow:\s*\{[\s\S]*?\n {4}\},/)?.[0] ?? "";
     expect(highlightedRow).not.toContain("borderWidth");
   });

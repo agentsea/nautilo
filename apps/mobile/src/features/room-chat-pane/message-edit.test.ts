@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatItem } from "../../lib/messages";
-import { canEditMobileMessage, saveMobileMessageEdit } from "./message-edit";
+import {
+  canEditMobileMessage,
+  hasMobileMessageDeleteAuthority,
+  saveMobileMessageEdit,
+} from "./message-edit";
 
 type Message = Extract<ChatItem, { kind: "message" }>;
 const own: Message = {
@@ -11,7 +15,7 @@ const own: Message = {
 describe("mobile message edit admission", () => {
   test("allows only persisted own Human text with known edit identity", () => {
     expect(canEditMobileMessage(own, "viewer")).toBe(true);
-    expect(canEditMobileMessage({ ...own, sourceUserId: undefined }, "viewer")).toBe(true);
+    expect(canEditMobileMessage({ ...own, sourceUserId: undefined }, "viewer")).toBe(false);
     for (const patch of [
       { role: "assistant" as const }, { sourceUserId: "other" }, { clientId: "pending" },
       { id: "streaming:1" }, { status: "failed" as const }, { status: "pending" as const },
@@ -23,6 +27,14 @@ describe("mobile message edit admission", () => {
 
   test("checks authoritative text, not a display-only projection", () => {
     expect(canEditMobileMessage({ ...own, editContent: " " }, "viewer")).toBe(false);
+  });
+
+  test("does not expose delete for a Human whose author id is missing", () => {
+    expect(hasMobileMessageDeleteAuthority(own, "viewer", false)).toBe(true);
+    expect(hasMobileMessageDeleteAuthority({ ...own, sourceUserId: "peer" }, "viewer", true))
+      .toBe(true);
+    expect(hasMobileMessageDeleteAuthority({ ...own, sourceUserId: undefined }, "viewer", true))
+      .toBe(false);
   });
 
   test("saves exactly once after plaintext admission", async () => {

@@ -80,7 +80,8 @@ export function RoomChatPane({
     initialMessageActionRevealState,
   );
   const [emojiTarget, setEmojiTarget] = useState<{ messageId: string } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const deleteScopeIdentity = JSON.stringify([c.serverId, c.viewerUserId, c.roomId]);
+  const [deleteTarget, setDeleteTarget] = useState<{ messageId: string; scopeIdentity: string } | null>(null);
   const editScopeIdentity = JSON.stringify([c.serverId, c.viewerUserId, c.roomId]);
   const [editTarget, setEditTarget] = useState<{ messageId: string; scopeIdentity: string } | null>(null);
   const [toolResultDisclosure, setToolResultDisclosure] = useState<ToolResultDisclosure | null>(null);
@@ -155,6 +156,18 @@ export function RoomChatPane({
     return item?.kind === "message" && c.canEditMessage(item) ? item : null;
   }, [c.items, c.canEditMessage, editScopeIdentity, editTarget]);
 
+  const deleteMessageId = useMemo(() => {
+    if (deleteTarget?.scopeIdentity !== deleteScopeIdentity) return null;
+    const item = c.items.find(
+      (candidate) => candidate.kind === "message" && candidate.id === deleteTarget.messageId,
+    );
+    return item?.kind === "message" && c.canDeleteMessage(item) ? item.id : null;
+  }, [c.items, c.canDeleteMessage, deleteScopeIdentity, deleteTarget]);
+
+  useEffect(() => {
+    if (deleteTarget && deleteMessageId === null) setDeleteTarget(null);
+  }, [deleteMessageId, deleteTarget]);
+
   useEffect(() => {
     if (editTarget && editMessage === null) setEditTarget(null);
   }, [editMessage, editTarget]);
@@ -183,8 +196,7 @@ export function RoomChatPane({
       dispatchReveal({ type: "dismiss" });
     }
     if (emojiTarget != null && !hasMessage(emojiTarget.messageId)) setEmojiTarget(null);
-    if (deleteTarget != null && !hasMessage(deleteTarget)) setDeleteTarget(null);
-  }, [c.items, deleteTarget, emojiTarget, reveal.revealedMessageId]);
+  }, [c.items, emojiTarget, reveal.revealedMessageId]);
   const reportLiveEdge = useCallback((atLiveEdge: boolean) => {
     c.reportViewportReadState({
       scopeKey: c.viewportScopeKey,
@@ -347,7 +359,7 @@ export function RoomChatPane({
             onDeletePress={persisted && c.canDeleteMessage(item) ? (messageId) => {
               markTranscriptInteraction();
               dispatchReveal({ type: "dismiss" });
-              setDeleteTarget(messageId);
+              setDeleteTarget({ messageId, scopeIdentity: deleteScopeIdentity });
             } : undefined}
             onReportPress={
               persisted && !senderChrome.outgoing && c.roomId
@@ -368,8 +380,9 @@ export function RoomChatPane({
             actionSurface={actionSurface}
             actionRailVisible={
               persisted && item.id === latestPersistedMessageId
+                && reveal.revealedMessageId !== item.id
             }
-            onActionRailReveal={persisted && item.id !== latestPersistedMessageId ? (request) => {
+            onActionRailReveal={persisted ? (request) => {
               markTranscriptInteraction();
               // The state captured at touch-start distinguishes a second tap
               // on the open row (close) from a tap on a different row (move).
@@ -472,6 +485,7 @@ export function RoomChatPane({
       onThreadPress,
       attachmentScopeIdentity,
       editScopeIdentity,
+      deleteScopeIdentity,
     ],
   );
 
@@ -639,9 +653,17 @@ export function RoomChatPane({
         }}
       />
       <MessageDeleteConfirmation
-        messageId={deleteTarget}
+        messageId={deleteMessageId}
         onClose={() => setDeleteTarget(null)}
-        onConfirm={c.handleDeleteMessage}
+        onConfirm={(messageId) => {
+          if (
+            deleteTarget?.scopeIdentity !== deleteScopeIdentity ||
+            deleteTarget.messageId !== messageId
+          ) {
+            return Promise.resolve("This message can no longer be deleted.");
+          }
+          return c.handleDeleteMessage(messageId);
+        }}
       />
       {editMessage ? (
         <MessageEditSheet
