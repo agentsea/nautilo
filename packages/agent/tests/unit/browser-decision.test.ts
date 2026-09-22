@@ -710,6 +710,28 @@ describe("browser decision policy", () => {
     expect(built.candidates.find(({ id }) => id === "reobserve")?.call)
       .toEqual({ name: "browser_screenshot", args: {} });
   });
+
+  test("keeps planned keyboard actions in visual mode without inventing clicks", () => {
+    const keyboardPlan = browserDecisionPlanSchema.parse({
+      goal: "Play one 2048 move",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "press", key: "ArrowLeft" }],
+    });
+    const visualObservation = observation({
+      refs: {},
+      snapshot: '- visual viewport [image_width=800, image_height=600]\n  - visual region "unlabelled visual region" [visual_ref=v1]',
+      visual: {
+        viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+        targets: [{ visualRef: "v1", role: "visual region", name: "unlabelled visual region", interaction: "unknown",
+          x: 400, y: 300, context: "rectangle region" }],
+      },
+    });
+    const built = browserDecisionCandidates(keyboardPlan, visualObservation, 255);
+    expect(built.reason).toBeNull();
+    if (built.reason !== null) throw new Error("expected visual keyboard candidates");
+    expect(built.candidates.some(({ call }) => call?.name === "browser_press" && call.args["key"] === "ArrowLeft")).toBe(true);
+    expect(built.candidates.some(({ call }) => call?.name === "browser_mouse")).toBe(false);
+  });
 });
 
 describe("browser decision settlement", () => {
@@ -1437,6 +1459,56 @@ describe("browser decision node", () => {
     const reobserve = await node(state({ browserDecision: afterMouse }), { signal: new AbortController().signal });
     expect(proposedToolCall(reobserve)).toMatchObject({ name: "browser_screenshot", args: {} });
     expect(reobserve.browserDecision?.pending?.observationId).toBeNull();
+  });
+
+  test("executes an ordered visual keyboard sequence across fresh screenshots", async () => {
+    const keys = ["ArrowLeft", "ArrowUp", "ArrowRight"];
+    const visualPlan = browserDecisionPlanSchema.parse({
+      goal: "Play the exact 2048 moves",
+      allowedOrigins: ["https://shop.example"],
+      actions: keys.map((key) => ({ kind: "press" as const, key })),
+      sequences: [{ name: "Play the exact moves", steps: keys.map((key) => ({ kind: "press" as const, key })) }],
+    });
+    const fresh = (index: number) => observation({
+      observationId: `visual-${index}`,
+      refs: {},
+      snapshot: '- visual viewport [image_width=800, image_height=600]\n  - visual region "unlabelled visual region" [visual_ref=v1]',
+      visual: {
+        viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+        targets: [{ visualRef: "v1", role: "visual region", name: "unlabelled visual region", interaction: "unknown",
+          x: 400, y: 300, context: "2048 board" }],
+      },
+    });
+    let choices = 0;
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      choices++;
+      const ordered = input.choices.filter((choice) => choice.id.startsWith("sequence_"));
+      expect(ordered).toHaveLength(1);
+      expect(input.choices.some((choice) => choice.description.includes("visual_click"))).toBe(false);
+      return { selectedId: ordered[0]!.id, requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 10, outputTokens: 1, actualCostUsd: 0 } };
+    } });
+    let current = state({ browserDecision: decision({ plan: visualPlan, observation: fresh(0) }) });
+    for (const [index, key] of keys.entries()) {
+      const update = await node(current, { signal: new AbortController().signal });
+      const proposed = proposedToolCall(update);
+      expect(proposed).toMatchObject({ name: "browser_press", args: { key } });
+      expect(choices).toBe(1);
+      current = { ...current, ...update, messages: mergeMessagesPreservingInvariants(current.messages, update.messages ?? []) };
+      const acted = settleBrowserDecision(current, [proposed], [successfulResult(proposed, "pressed")], [], JEV_ID)!;
+      current = { ...current, browserDecision: acted };
+
+      const observe = await node(current, { signal: new AbortController().signal });
+      const observeCall = proposedToolCall(observe);
+      expect(observeCall).toMatchObject({ name: "browser_screenshot", args: {} });
+      current = { ...current, ...observe, messages: mergeMessagesPreservingInvariants(current.messages, observe.messages ?? []) };
+      const observed = successfulResult(observeCall, JSON.stringify({ observation: fresh(index + 1) }));
+      const settled = settleBrowserDecision(current, [observeCall], [observed], [], JEV_ID)!;
+      expect(settled.phase).toBe("decide");
+      current = { ...current, browserDecision: settled };
+    }
+    expect(current.browserDecision?.sequence).toEqual({ index: 1, step: null });
+    expect(choices).toBe(1);
   });
 
   for (const connected of [false, true]) {
