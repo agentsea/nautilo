@@ -8,21 +8,36 @@ const emitted: unknown[] = [];
 const attachmentId = "44444444-4444-4444-8444-444444444444";
 const namespaceId = "22222222-2222-4222-8222-222222222222";
 const fingerprint = "turn:retained-png";
+let failHydration = false;
+let includeRootSummary = false;
+let persistenceCount = 0;
 
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
-  appendTranscriptMessages: mock(async () => ({
-    failedIndices: [],
-    insertedCount: 1,
-    insertedRows: [{
-      id: "42",
-      role: "user",
-      content: "screenshot",
-      fingerprint,
-      createdAt: "2026-09-22T08:00:00.000Z",
-      replyToMessageId: null,
-    }],
-  })),
+  appendTranscriptMessages: mock(async () => {
+    persistenceCount += 1;
+    return {
+      failedIndices: [],
+      insertedCount: 1,
+      insertedRows: [{
+        id: "42",
+        role: "user",
+        content: "screenshot",
+        fingerprint,
+        createdAt: "2026-09-22T08:00:00.000Z",
+        replyToMessageId: null,
+      }],
+      ...(includeRootSummary ? {
+        rootSummary: {
+          parentRoomId: "room:parent",
+          anchorMessageId: 7,
+          replyCount: 3,
+          lastReplyAt: new Date("2026-09-22T08:00:00.000Z"),
+          revision: 4,
+        },
+      } : {}),
+    };
+  }),
   buildForegroundUserHumanMessage: mock(() => ({})),
   getDefaultModel: mock(() => ({ id: "model:test" })),
 }));
@@ -46,6 +61,7 @@ mock.module("@nautilo/db", () => ({
   }),
   getAttachmentsForTurns: mock(async (turnIds: readonly string[]) => {
     calls.push(`history:${turnIds.join(",")}`);
+    if (failHydration) throw new Error("injected hydration failure");
     const common = {
       uploaderActorId: "actor:sender",
       status: "retained",
@@ -104,6 +120,9 @@ describe("ordinary Human peer attachment delivery", () => {
   test("links the exact retained PNG before emitting its history-identical descriptor", async () => {
     calls.length = 0;
     emitted.length = 0;
+    failHydration = false;
+    includeRootSummary = false;
+    persistenceCount = 0;
 
     await peerBroadcastHumanMessage({
       room: {
@@ -153,6 +172,68 @@ describe("ordinary Human peer attachment delivery", () => {
         mimeType: "image/png",
         sizeBytes: 73,
       }],
+    });
+    expect(persistenceCount).toBe(1);
+  });
+
+  test("still publishes the durable message and root summary when attachment hydration fails", async () => {
+    calls.length = 0;
+    emitted.length = 0;
+    failHydration = true;
+    includeRootSummary = true;
+    persistenceCount = 0;
+
+    const result = await peerBroadcastHumanMessage({
+      room: {
+        id: "room:peer",
+        graphThreadId: "thread:peer",
+        kind: "subthread",
+        members: [
+          { kind: "user", userId: "user:sender" },
+          { kind: "user", userId: "user:peer" },
+        ],
+      } as never,
+      senderUserId: "user:sender",
+      content: "screenshot",
+      attachmentTextBlocks: [],
+      multimodalImages: [],
+      attachmentStatuses: [{
+        id: attachmentId,
+        filename: "screen.png",
+        decision: "accept",
+        kind: "image",
+      }],
+      canonicalRoomNamespaceId: namespaceId,
+    });
+
+    expect(persistenceCount).toBe(1);
+    expect(calls).toEqual([
+      "fingerprint",
+      `stamp:${attachmentId}:${fingerprint}`,
+      `history:${fingerprint}`,
+      "emit",
+      "emit",
+    ]);
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0]).toMatchObject({
+      type: "message.new",
+      laneKey: "room:room:peer",
+      messageId: "42",
+    });
+    expect(emitted[0]).not.toHaveProperty("attachments");
+    expect(emitted[1]).toEqual({
+      type: "thread.summary.changed",
+      laneKey: "room:room:parent",
+      anchorMessageId: 7,
+      replyCount: 3,
+      lastReplyAt: "2026-09-22T08:00:00.000Z",
+      summaryRevision: 4,
+    });
+    expect(result).toMatchObject({
+      messageId: 42,
+      attachments: [{ id: attachmentId, decision: "accept" }],
+      coalesced: true,
+      rootSummary: { parentRoomId: "room:parent", revision: 4 },
     });
   });
 });

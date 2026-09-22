@@ -1393,8 +1393,26 @@ export function updateMessageTextInList(
   messages: readonly ThreadMessageLike[],
   id: string,
   text: string,
+  attachmentIds?: readonly string[],
 ): readonly ThreadMessageLike[] {
-  const idx = messages.findIndex((m) => m.id === id);
+  let idx = messages.findIndex((m) => m.id === id);
+  // A live echo can replace the local id before the HTTP attachment outcomes
+  // arrive. Only update an unfinished summary for this exact upload set; an
+  // image preview that already consumed its optimistic metadata stays clean.
+  if (idx < 0 && attachmentIds && attachmentIds.length > 0) {
+    const expectedIds = new Set(attachmentIds);
+    idx = messages.findIndex((message) => {
+      const custom = messageMetadata(message).custom ?? {};
+      const queuedIds = custom[OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY];
+      return message.role === "user" &&
+        typeof custom.optimisticAuthoredText === "string" &&
+        custom.humanMessageVerification === undefined &&
+        custom.historyUnavailable === undefined &&
+        !(typeof custom.editRevision === "number" && custom.editRevision > 0) &&
+        Array.isArray(queuedIds) && queuedIds.length === expectedIds.size &&
+        queuedIds.every((queuedId) => typeof queuedId === "string" && expectedIds.has(queuedId));
+    });
+  }
   if (idx < 0) return messages;
   const prev = messages[idx];
   return [
@@ -3334,8 +3352,8 @@ export function NautiloRuntimeProvider({
   );
 
   const updateMessageText = useCallback(
-    (id: string, text: string) => {
-      const next = updateMessageTextInList(messagesRef.current, id, text);
+    (id: string, text: string, attachmentIds?: readonly string[]) => {
+      const next = updateMessageTextInList(messagesRef.current, id, text, attachmentIds);
       if (next === messagesRef.current) return;
       messagesRef.current = [...next];
       flush();
@@ -7071,6 +7089,7 @@ export function NautiloRuntimeProvider({
               queuedAttachments,
               attachmentStatuses: pending.attachments ?? [],
             }),
+            attachments.map((attachment) => attachment.attachmentId),
           );
         }
         if (pending.userMessageId != null) {

@@ -5,6 +5,10 @@ import {
   threadRoomReducer,
 } from "../thread-room-controller";
 import { shouldRouteEventToThreadRoom } from "../../../../adapters/runtime-contexts";
+import {
+  MESSAGE_ATTACHMENTS_METADATA_KEY,
+  restoreSessionMessages,
+} from "../../../../adapters/session-rehydrate";
 
 const detail: ThreadDetailResponse = {
   parentRoomId: "parent-a",
@@ -133,6 +137,96 @@ describe("threadRoomReducer", () => {
         editRevision: 0,
       },
     });
+  });
+
+  test("projects live attachment refs with the same metadata shape as hydration", () => {
+    const attachments = [{
+      attachmentId: "attachment-1",
+      filename: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 42,
+    }];
+    const live = threadRoomReducer(ready(), {
+      type: "event.received",
+      event: {
+        type: "message.new",
+        laneKey: "room:child-a",
+        messageId: "attachment-message",
+        role: "user",
+        content: "See the diagram",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        attachments,
+      },
+    });
+    const [hydrated] = restoreSessionMessages([{
+      id: "attachment-message",
+      role: "user",
+      content: "See the diagram",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      attachments,
+    }]);
+
+    expect(live.messages[0]?.attachments).toEqual(attachments);
+    expect(live.runtimeMessages[0]?.metadata).toEqual(hydrated?.metadata);
+  });
+
+  test("ignores attachment refs from an unrelated room", () => {
+    const state = ready();
+    const unrelated = threadRoomReducer(state, {
+      type: "event.received",
+      event: {
+        type: "message.new",
+        laneKey: "room:child-b",
+        messageId: "other-attachment",
+        role: "user",
+        content: "Other room",
+        attachments: [{
+          attachmentId: "attachment-other",
+          filename: "other.png",
+          mimeType: "image/png",
+          sizeBytes: 24,
+        }],
+      },
+    });
+
+    expect(unrelated).toBe(state);
+  });
+
+  test("keeps attachment refs when a duplicate event omits them", () => {
+    const attachments = [{
+      attachmentId: "attachment-1",
+      filename: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 42,
+    }];
+    const first = threadRoomReducer(ready(), {
+      type: "event.received",
+      event: {
+        type: "message.new",
+        laneKey: "room:child-a",
+        messageId: "attachment-message",
+        role: "user",
+        content: "See the diagram",
+        attachments,
+      },
+    });
+    const duplicate = threadRoomReducer(first, {
+      type: "event.received",
+      event: {
+        type: "message.new",
+        laneKey: "room:child-a",
+        messageId: "attachment-message",
+        role: "user",
+        content: "See the diagram",
+      },
+    });
+    const custom = (duplicate.runtimeMessages[0]?.metadata as {
+      custom?: Record<string, unknown>;
+    } | undefined)?.custom;
+
+    expect(duplicate.messages).toHaveLength(1);
+    expect(duplicate.messages[0]?.attachments).toEqual(attachments);
+    expect(custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY]).toEqual(attachments);
   });
 
   test("applies newer logical message edits and ignores stale revisions", () => {
