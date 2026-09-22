@@ -38,6 +38,8 @@ export * from "./room-journal";
 export * from "./model-control-selection";
 export * from "./tasks";
 export * from "./task-runs";
+export * from "./task-definition-crypto-revisions";
+export * from "./task-run-result-crypto-revisions";
 export * from "./focus";
 export * from "./subthread-user-focus";
 export * from "./file-revisions";

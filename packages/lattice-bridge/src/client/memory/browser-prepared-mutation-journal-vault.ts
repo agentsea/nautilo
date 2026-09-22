@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import {
+  decodePreparedMutationJournalIndex,
   type PreparedMutationJournalIndex,
   type PreparedMutationJournalVaultPort,
 } from "./prepared-mutation-journal.ts";
@@ -51,11 +52,16 @@ async function seal(
   index: PreparedMutationJournalIndex,
   plaintext: Uint8Array,
 ): Promise<BrowserJournalRecord> {
+  decodePreparedMutationJournalIndex(index);
+  if (plaintext.length !== index.canonicalBytes) {
+    throw new TypeError("browser prepared mutation journal body length disagrees");
+  }
   const nonce = crypto.getRandomValues(new Uint8Array(AES_NONCE_BYTES));
   const persistedIndex = Object.freeze({
     ...index,
     sealedBytes: plaintext.length + AES_TAG_BYTES,
   });
+  decodePreparedMutationJournalIndex(persistedIndex);
   const additionalData = aad(persistedIndex);
   try {
     const ciphertext = new Uint8Array(await crypto.subtle.encrypt({
@@ -175,90 +181,17 @@ function assertKey(value: BrowserJournalKey): void {
 }
 
 function assertRecord(value: BrowserJournalRecord): void {
-  const isMemory = ["create", "update", "access", "repair"].includes(value.index.kind);
-  const isArtifact = [
-    "artifact_create",
-    "artifact_content",
-    "artifact_control",
-    "artifact_access",
-  ].includes(value.index.kind);
-  const isLiveShadowMessage = value.index.kind === "live_shadow_message";
-  const isAdditionalDevice = value.index.kind === "additional_device_transition";
-  const isAdditionalDeviceTargetPlan =
-    value.index.kind === "additional_device_target_plan";
-  const maximumCanonicalBytes = isAdditionalDevice || isAdditionalDeviceTargetPlan
-    ? PREPARED_MUTATION_JOURNAL_LIMITS.maxAdditionalDeviceCampaignBytes
-    : PREPARED_MUTATION_JOURNAL_LIMITS.maxCanonicalRecordBytes;
+  decodePreparedMutationJournalIndex(value.index);
   if (
     value.formatVersion !== 1
     || value.operationId !== value.index.operationId
-    || value.index.formatVersion !== 1
-    || typeof value.index.authenticatedRequestDigestBase64url !== "string"
-    || (!isMemory && !isArtifact && !isLiveShadowMessage && !isAdditionalDevice
-      && !isAdditionalDeviceTargetPlan)
-    || (isMemory && (!("memoryId" in value.index) || value.index.memoryId.length === 0))
-    || (isArtifact
-      && (!("artifactId" in value.index) || value.index.artifactId.length === 0))
-    || (isLiveShadowMessage
-      && (!("roomId" in value.index) || value.index.roomId.length === 0))
-    || (isAdditionalDevice && (
-      !("targetDeviceId" in value.index)
-      || value.index.targetDeviceId.length === 0
-      || value.index.targetDeviceId.length > 128
-      || value.index.targetClientKind !== "browser"
-        && value.index.targetClientKind !== "electron"
-      || value.index.verificationCode.length === 0
-      || value.index.verificationCode.length > 64
-      || value.index.candidateProfileDigestBase64url.length !== 43
-      || !Number.isSafeInteger(value.index.candidateProfileGeneration)
-      || value.index.candidateProfileGeneration < 1
-    ))
-    || (isAdditionalDeviceTargetPlan && (
-      !("targetDeviceId" in value.index)
-      || value.index.targetDeviceId.length === 0
-      || value.index.targetDeviceId.length > 128
-      || value.index.verificationCode.length === 0
-      || value.index.verificationCode.length > 64
-      || value.index.deliveryHighWatermark !== null
-        && (!Number.isSafeInteger(value.index.deliveryHighWatermark)
-          || value.index.deliveryHighWatermark < 0)
-      || !validDeliveryManifest(value.index.deliveryManifest)
-      || (value.index.deliveryManifest.length === 0)
-        !== (value.index.deliveryHighWatermark === null)
-    ))
-    || !Number.isSafeInteger(value.index.canonicalBytes)
-    || value.index.canonicalBytes < 1
-    || value.index.canonicalBytes > maximumCanonicalBytes
     || !(value.nonce instanceof Uint8Array)
     || value.nonce.length !== AES_NONCE_BYTES
     || !(value.ciphertext instanceof Uint8Array)
     || value.ciphertext.length !== value.index.sealedBytes
+    || value.index.sealedBytes !== value.index.canonicalBytes + AES_TAG_BYTES
     || value.ciphertext.length <= AES_TAG_BYTES
   ) throw new Error("browser prepared mutation journal record is corrupt");
-}
-
-function validDeliveryManifest(value: unknown): boolean {
-  if (!Array.isArray(value) || value.length > 4_096) return false;
-  let previousSequence = 0;
-  for (const candidate of value as unknown[]) {
-    if (typeof candidate !== "object" || candidate === null) return false;
-    const message = candidate as Record<string, unknown>;
-    const messageId = message["messageId"];
-    const recipientSequence = message["recipientSequence"];
-    const payloadHashBase64url = message["payloadHashBase64url"];
-    if (
-      typeof messageId !== "string"
-      || messageId.length === 0
-      || messageId.length > 128
-      || typeof recipientSequence !== "number"
-      || !Number.isSafeInteger(recipientSequence)
-      || recipientSequence <= previousSequence
-      || typeof payloadHashBase64url !== "string"
-      || payloadHashBase64url.length !== 43
-    ) return false;
-    previousSequence = recipientSequence;
-  }
-  return true;
 }
 
 function sameIndex(

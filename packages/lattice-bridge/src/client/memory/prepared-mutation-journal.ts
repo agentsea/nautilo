@@ -20,6 +20,12 @@ import {
   type LiveShadowMessagePreparedRequestV1,
   type FullEncryptionMessagePreparedRequestV2,
 } from "@nautilo/api-client/browser";
+import {
+  protectedTaskPreparedCreateRequestV1Schema,
+  protectedTaskPreparedUpdateRequestV1Schema,
+  type ProtectedTaskPreparedCreateRequestV1,
+  type ProtectedTaskPreparedUpdateRequestV1,
+} from "@nautilo/api-client/browser";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { PREPARED_MUTATION_JOURNAL_LIMITS } from "./prepared-mutation-journal-limits.ts";
 
@@ -65,6 +71,18 @@ export type PreparedHumanLiveShadowMessageMutation = Readonly<{
   request: LiveShadowMessagePreparedRequestV1 | FullEncryptionMessagePreparedRequestV2;
 }>;
 
+export type PreparedHumanTaskMutation =
+  | Readonly<{
+      kind: "task_create";
+      taskId: string;
+      request: ProtectedTaskPreparedCreateRequestV1;
+    }>
+  | Readonly<{
+      kind: "task_update";
+      taskId: string;
+      request: ProtectedTaskPreparedUpdateRequestV1;
+    }>;
+
 export type PreparedAdditionalDeviceTransitionCampaign = Readonly<{
   kind: "additional_device_transition";
   operationId: string;
@@ -91,7 +109,8 @@ export type PreparedAdditionalDeviceTargetPlan = Readonly<{
 export type PreparedHumanMutation =
   | PreparedHumanMemoryMutation
   | PreparedHumanArtifactMutation
-  | PreparedHumanLiveShadowMessageMutation;
+  | PreparedHumanLiveShadowMessageMutation
+  | PreparedHumanTaskMutation;
 
 export type PreparedMutationTerminalReason =
   | "stale"
@@ -137,6 +156,10 @@ export type PreparedMutationJournalIndex = PreparedMutationJournalIndexBase & (
     roomId: string;
   }>
   | Readonly<{
+    kind: PreparedHumanTaskMutation["kind"];
+    taskId: string;
+  }>
+  | Readonly<{
     kind: PreparedAdditionalDeviceTransitionCampaign["kind"];
     targetDeviceId: string;
     targetClientKind: "browser" | "electron";
@@ -157,7 +180,7 @@ export type PreparedMutationJournalIndex = PreparedMutationJournalIndexBase & (
   }>
 );
 
-type PreparedHumanMutationJournalIndex = Extract<
+export type PreparedHumanMutationJournalIndex = Extract<
   PreparedMutationJournalIndex,
   { kind: PreparedHumanMutation["kind"] }
 >;
@@ -219,6 +242,238 @@ export type PreparedMutationCustodyFacts = Readonly<{
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
+const BASE64URL_DIGEST = /^[A-Za-z0-9_-]{43}$/u;
+const HUMAN_MUTATION_KINDS = new Set<string>([
+  "repair",
+  "create",
+  "update",
+  "access",
+  "artifact_create",
+  "artifact_content",
+  "artifact_control",
+  "artifact_access",
+  "live_shadow_message",
+  "task_create",
+  "task_update",
+]);
+const MEMORY_MUTATION_KINDS = new Set<string>([
+  "repair", "create", "update", "access",
+]);
+const ARTIFACT_MUTATION_KINDS = new Set<string>([
+  "artifact_create", "artifact_content", "artifact_control", "artifact_access",
+]);
+const JOURNAL_STATES = new Set<string>([
+  "pending",
+  "retryable",
+  "terminal_stale",
+  "terminal_denied",
+  "terminal_integrity",
+  "terminal_expired",
+  "terminal_collision",
+  "corrupt",
+  "missing_authority",
+]);
+const INDEX_COMMON_FIELDS = [
+  "formatVersion",
+  "operationId",
+  "kind",
+  "authenticatedRequestDigestBase64url",
+  "canonicalBytes",
+  "sealedBytes",
+  "createdAt",
+  "updatedAt",
+  "attempts",
+  "attemptWindowStartedAt",
+  "attemptsInWindow",
+  "nextAttemptAt",
+  "lastAttemptAt",
+  "state",
+] as const;
+
+function ownRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function exactOwnDataFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): boolean {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== fields.length) return false;
+  const expected = new Set(fields);
+  return keys.every((key) => {
+    if (typeof key !== "string" || !expected.has(key)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && descriptor.enumerable && "value" in descriptor;
+  });
+}
+
+function safeNonnegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function nullableSafeNonnegativeInteger(value: unknown): boolean {
+  return value === null || safeNonnegativeInteger(value);
+}
+
+const DEFAULT_PORTABLE_ID_MAXIMUM_LENGTH = 128;
+const LIVE_SHADOW_OPERATION_ID_MAXIMUM_LENGTH = 256;
+
+function portableId(
+  value: unknown,
+  maximumLength = DEFAULT_PORTABLE_ID_MAXIMUM_LENGTH,
+): value is string {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= maximumLength
+    && PORTABLE_ID.test(value);
+}
+
+function operationIdMaximumLength(kind: string): number {
+  return kind === "live_shadow_message"
+    ? LIVE_SHADOW_OPERATION_ID_MAXIMUM_LENGTH
+    : DEFAULT_PORTABLE_ID_MAXIMUM_LENGTH;
+}
+
+function validDeliveryManifest(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 4_096) return false;
+  let previousSequence = 0;
+  for (const candidate of value) {
+    if (!ownRecord(candidate) || !exactOwnDataFields(candidate, [
+      "messageId", "recipientSequence", "payloadHashBase64url",
+    ])) return false;
+    if (
+      !portableId(candidate["messageId"])
+      || !safeNonnegativeInteger(candidate["recipientSequence"])
+      || candidate["recipientSequence"] <= previousSequence
+      || typeof candidate["payloadHashBase64url"] !== "string"
+      || !BASE64URL_DIGEST.test(candidate["payloadHashBase64url"])
+    ) return false;
+    previousSequence = candidate["recipientSequence"];
+  }
+  return true;
+}
+
+/**
+ * Validates the complete persisted index union without reconstructing it.
+ * Returning the original object preserves the property order authenticated as
+ * AES-GCM additional data by existing Browser and file records.
+ */
+export function decodePreparedMutationJournalIndex(
+  value: unknown,
+): PreparedMutationJournalIndex {
+  if (!ownRecord(value) || typeof value["kind"] !== "string") {
+    throw new TypeError("prepared mutation journal index is corrupt");
+  }
+  const kind = value["kind"];
+  let branchFields: readonly string[];
+  let maximumCanonicalBytes: number;
+  if (MEMORY_MUTATION_KINDS.has(kind)) {
+    branchFields = ["memoryId"];
+    maximumCanonicalBytes = PREPARED_MUTATION_JOURNAL_LIMITS.maxCanonicalRecordBytes;
+  } else if (ARTIFACT_MUTATION_KINDS.has(kind)) {
+    branchFields = ["artifactId"];
+    maximumCanonicalBytes = PREPARED_MUTATION_JOURNAL_LIMITS.maxCanonicalRecordBytes;
+  } else if (kind === "live_shadow_message") {
+    branchFields = ["roomId"];
+    maximumCanonicalBytes = PREPARED_MUTATION_JOURNAL_LIMITS.maxCanonicalRecordBytes;
+  } else if (kind === "task_create" || kind === "task_update") {
+    branchFields = ["taskId"];
+    maximumCanonicalBytes = PREPARED_MUTATION_JOURNAL_LIMITS.maxCanonicalRecordBytes;
+  } else if (kind === "additional_device_transition") {
+    branchFields = [
+      "targetDeviceId",
+      "targetClientKind",
+      "verificationCode",
+      "candidateProfileDigestBase64url",
+      "candidateProfileGeneration",
+    ];
+    maximumCanonicalBytes =
+      PREPARED_MUTATION_JOURNAL_LIMITS.maxAdditionalDeviceCampaignBytes;
+  } else if (kind === "additional_device_target_plan") {
+    branchFields = [
+      "targetDeviceId",
+      "verificationCode",
+      "deliveryHighWatermark",
+      "deliveryManifest",
+    ];
+    maximumCanonicalBytes =
+      PREPARED_MUTATION_JOURNAL_LIMITS.maxAdditionalDeviceCampaignBytes;
+  } else {
+    throw new TypeError("prepared mutation journal index is corrupt");
+  }
+  if (!exactOwnDataFields(value, [...INDEX_COMMON_FIELDS, ...branchFields])) {
+    throw new TypeError("prepared mutation journal index is corrupt");
+  }
+  const canonicalBytes = value["canonicalBytes"];
+  const sealedBytes = value["sealedBytes"];
+  if (
+    value["formatVersion"] !== 1
+    || !portableId(value["operationId"], operationIdMaximumLength(kind))
+    || typeof value["authenticatedRequestDigestBase64url"] !== "string"
+    || !BASE64URL_DIGEST.test(value["authenticatedRequestDigestBase64url"])
+    || !safeNonnegativeInteger(canonicalBytes)
+    || canonicalBytes < 1
+    || canonicalBytes > maximumCanonicalBytes
+    || !safeNonnegativeInteger(sealedBytes)
+    || sealedBytes !== canonicalBytes && sealedBytes !== canonicalBytes + 16
+    || !safeNonnegativeInteger(value["createdAt"])
+    || !safeNonnegativeInteger(value["updatedAt"])
+    || !safeNonnegativeInteger(value["attempts"])
+    || !nullableSafeNonnegativeInteger(value["attemptWindowStartedAt"])
+    || !safeNonnegativeInteger(value["attemptsInWindow"])
+    || !safeNonnegativeInteger(value["nextAttemptAt"])
+    || !nullableSafeNonnegativeInteger(value["lastAttemptAt"])
+    || typeof value["state"] !== "string"
+    || !JOURNAL_STATES.has(value["state"])
+  ) throw new TypeError("prepared mutation journal index is corrupt");
+
+  const resourceField = MEMORY_MUTATION_KINDS.has(kind)
+    ? "memoryId"
+    : ARTIFACT_MUTATION_KINDS.has(kind)
+    ? "artifactId"
+    : kind === "live_shadow_message"
+    ? "roomId"
+    : kind === "task_create" || kind === "task_update"
+    ? "taskId"
+    : undefined;
+  if (resourceField !== undefined && !portableId(value[resourceField])) {
+    throw new TypeError("prepared mutation journal index is corrupt");
+  }
+  if (kind === "additional_device_transition" && (
+    !portableId(value["targetDeviceId"])
+    || value["targetClientKind"] !== "browser" && value["targetClientKind"] !== "electron"
+    || typeof value["verificationCode"] !== "string"
+    || value["verificationCode"].length < 1
+    || value["verificationCode"].length > 64
+    || typeof value["candidateProfileDigestBase64url"] !== "string"
+    || !BASE64URL_DIGEST.test(value["candidateProfileDigestBase64url"])
+    || !safeNonnegativeInteger(value["candidateProfileGeneration"])
+    || value["candidateProfileGeneration"] < 1
+  )) throw new TypeError("prepared mutation journal index is corrupt");
+  if (kind === "additional_device_target_plan" && (
+    !portableId(value["targetDeviceId"])
+    || typeof value["verificationCode"] !== "string"
+    || value["verificationCode"].length < 1
+    || value["verificationCode"].length > 64
+    || !nullableSafeNonnegativeInteger(value["deliveryHighWatermark"])
+    || !validDeliveryManifest(value["deliveryManifest"])
+    || ((value["deliveryManifest"] as readonly unknown[]).length === 0)
+      !== (value["deliveryHighWatermark"] === null)
+  )) throw new TypeError("prepared mutation journal index is corrupt");
+  return value as unknown as PreparedMutationJournalIndex;
+}
+
+function isPreparedHumanMutationJournalIndex(
+  value: PreparedMutationJournalIndex,
+): value is PreparedHumanMutationJournalIndex {
+  return HUMAN_MUTATION_KINDS.has(value.kind);
+}
 
 function toBase64url(bytes: Uint8Array): string {
   let binary = "";
@@ -316,6 +571,28 @@ function canonicalMutation(value: PreparedHumanMutation): Readonly<{
         resourceId: value.roomId,
       });
     }
+    case "task_create": {
+      const request = protectedTaskPreparedCreateRequestV1Schema.parse(value.request);
+      if (request.taskId !== value.taskId || request.operation !== "create") {
+        throw new TypeError("Prepared Task create coordinates disagree");
+      }
+      return Object.freeze({
+        mutation: Object.freeze({ kind: value.kind, taskId: value.taskId, request }),
+        bytes: encoder.encode(JSON.stringify(request)),
+        resourceId: value.taskId,
+      });
+    }
+    case "task_update": {
+      const request = protectedTaskPreparedUpdateRequestV1Schema.parse(value.request);
+      if (request.taskId !== value.taskId || request.operation !== "update") {
+        throw new TypeError("Prepared Task update coordinates disagree");
+      }
+      return Object.freeze({
+        mutation: Object.freeze({ kind: value.kind, taskId: value.taskId, request }),
+        bytes: encoder.encode(JSON.stringify(request)),
+        resourceId: value.taskId,
+      });
+    }
     default:
       throw new TypeError("Prepared mutation kind is unsupported");
   }
@@ -335,7 +612,9 @@ function decodeMutation(
       ? { memoryId: index.memoryId }
       : "artifactId" in index
       ? { artifactId: index.artifactId }
-      : { roomId: index.roomId }),
+      : "roomId" in index
+      ? { roomId: index.roomId }
+      : { taskId: index.taskId }),
     request: value,
   } as PreparedHumanMutation);
   try {
@@ -356,6 +635,8 @@ function digest(
 ): string {
   const domain = kind === "live_shadow_message"
     ? "nautilo-live-shadow-message-prepared-journal-v1"
+    : kind === "task_create" || kind === "task_update"
+    ? "nautilo-protected-task-prepared-mutation-journal-v1"
     : kind.startsWith("artifact_")
     ? "nautilo-protected-artifact-prepared-mutation-journal-v1"
     : "nautilo-protected-memory-prepared-mutation-journal-v1";
@@ -416,10 +697,8 @@ function copyIndex<Value extends PreparedMutationJournalIndex>(value: Value): Va
 
 async function indexes(port: PreparedMutationJournalVaultPort) {
   return (await port.listIndexes())
-    .filter((value): value is PreparedHumanMutationJournalIndex =>
-      value.kind !== "additional_device_transition"
-      && value.kind !== "additional_device_target_plan"
-    )
+    .map(decodePreparedMutationJournalIndex)
+    .filter(isPreparedHumanMutationJournalIndex)
     .map(copyIndex)
     .sort(compareIndex);
 }
@@ -510,10 +789,16 @@ export function createPreparedMutationJournal(input: Readonly<{
               kind: canonical.mutation.kind,
               artifactId: canonical.mutation.artifactId,
             })
-          : Object.freeze({
+          : "roomId" in canonical.mutation
+          ? Object.freeze({
               ...common,
               kind: canonical.mutation.kind,
               roomId: canonical.mutation.roomId,
+            })
+          : Object.freeze({
+              ...common,
+              kind: canonical.mutation.kind,
+              taskId: canonical.mutation.taskId,
             });
         const result = await input.vault.putSealed({ index, canonicalBody: canonical.bytes });
         if (result === "collision") throw new PreparedMutationJournalCollisionError(
@@ -577,8 +862,10 @@ export function createPreparedMutationJournal(input: Readonly<{
                 owned,
                 entry.kind,
                 "memoryId" in entry
-                  ? entry.memoryId
-                  : "artifactId" in entry ? entry.artifactId : entry.roomId,
+                ? entry.memoryId
+                  : "artifactId" in entry
+                  ? entry.artifactId
+                  : "roomId" in entry ? entry.roomId : entry.taskId,
               )
                 !== entry.authenticatedRequestDigestBase64url) {
                 throw new TypeError("Prepared mutation authenticated digest disagrees");

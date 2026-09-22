@@ -231,6 +231,9 @@ export type {
 export {
   PostgresMemoryProductStore,
 } from "./memory/postgres-memory-product-store.ts";
+export * from "./task/postgres-task-content-product-store.ts";
+export * from "./task/postgres-task-content-crypto-completion.ts";
+export * from "./task/task-content-repository-composition.ts";
 export {
   PostgresAgentMemoryProductPort,
 } from "./memory/postgres-agent-memory-product-port.ts";

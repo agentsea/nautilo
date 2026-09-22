@@ -579,6 +579,7 @@ export {
   listTasksForOwner,
   listStoppableTasksForOwnerRoom,
   updateTask,
+  updateTaskIfCurrent,
   insertTaskRun,
   getTaskRuns,
   getLatestRunModelByTask,

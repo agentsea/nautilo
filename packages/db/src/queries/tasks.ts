@@ -280,6 +280,38 @@ export async function updateTask(
   return row;
 }
 
+/**
+ * Owner-scoped optimistic update for an externally prepared Task PATCH.
+ * Every authority coordinate observed before validation participates in the
+ * write predicate, so an intervening lifecycle or protected-content update
+ * wins instead of being overwritten. Internal lifecycle callers continue to
+ * use `updateTask` where their own transaction supplies the authority fence.
+ */
+export async function updateTaskIfCurrent(
+  db: DirectDatabase,
+  input: Readonly<{
+    id: string;
+    ownerId: string;
+    expectedStatus: "pending" | "paused";
+    expectedUpdatedAt: Date;
+    expectedContentRevision: number;
+  }>,
+  patch: Partial<NewTask>,
+): Promise<Task | undefined> {
+  const [row] = await db
+    .update(tasks)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(and(
+      eq(tasks.id, input.id),
+      eq(tasks.ownerId, input.ownerId),
+      eq(tasks.status, input.expectedStatus),
+      eq(tasks.updatedAt, input.expectedUpdatedAt),
+      eq(tasks.contentRevision, input.expectedContentRevision),
+    ))
+    .returning();
+  return row;
+}
+
 export async function insertTaskRun(
   db: DirectDatabase,
   input: NewTaskRun,

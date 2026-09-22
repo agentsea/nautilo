@@ -76,6 +76,17 @@ describe("backup restore target allowlists", () => {
     expect([...RESTORE_DATA_TABLES].sort()).toEqual(schemaTables);
   });
 
+  test("restores Task crypto revisions before their mapped product rows", () => {
+    const indexOf = (table: string): number => DATA_TABLES.indexOf(table);
+
+    expect(indexOf("public.task_definition_crypto_revisions")).toBeLessThan(
+      indexOf("public.tasks"),
+    );
+    expect(indexOf("public.task_run_result_crypto_revisions")).toBeLessThan(
+      indexOf("public.task_runs"),
+    );
+  });
+
   test("restores D468 push lifecycle rows after their foreign-key parents", () => {
     const indexOf = (table: string): number => DATA_TABLES.indexOf(table);
 
