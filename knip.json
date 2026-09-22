@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "stryker": ["stryker.d486.config.mjs"],
+  "stryker": ["stryker.*.config.mjs"],
   "workspaces": {
     "packages/office-board": {
       "entry": [
@@ -98,7 +98,7 @@
     },
     "packages/agent": {
       "entry": [
-        "tests/integration/fixtures/d516-postgres-read-worker.ts",
+        "tests/integration/fixtures/*-postgres-read-worker.ts",
         "src/**/*.test.ts",
         "tests/unit/**/*.test.ts",
         "tests/unit-isolated/**/*.test.ts",
@@ -299,6 +299,7 @@
       "entry": [
         "electron/main.ts",
         "electron/preload.ts",
+        "electron/preload-companion.ts",
         "electron/preload-first-run.ts",
         "electron/preload-onboarding.ts",
         "electron/passwords/guest-preload.ts",

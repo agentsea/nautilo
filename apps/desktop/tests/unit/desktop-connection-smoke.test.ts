@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
-  D514_DELAYED_HEALTH_HOLD_MS,
-  d514DiagnosticDurationIsClose,
-  d514DiagnosticIsSanitized,
-  d514InitialPageTargetTimeoutMs,
-  reacquireD514Page,
-} from "../../scripts/d514-desktop-connection-smoke";
+  COLD_BOOT_DELAYED_HEALTH_HOLD_MS,
+  coldBootDiagnosticDurationIsClose,
+  coldBootDiagnosticIsSanitized,
+  coldBootInitialPageTargetTimeoutMs,
+  reacquireDesktopSmokePage,
+} from "../../scripts/desktop-connection-smoke";
 
-describe("D514 controlled Electron smoke helpers", () => {
+describe("controlled Electron cold-boot smoke helpers", () => {
   test("reacquires the exact page after a stale websocket closes", async () => {
     const expectedUrl = "file:///worktree/bootstrap.html";
     const stale = { type: "page", url: expectedUrl, webSocketDebuggerUrl: "ws://stale" };
@@ -15,7 +15,7 @@ describe("D514 controlled Electron smoke helpers", () => {
     const wrong = { type: "page", url: `${expectedUrl}?old`, webSocketDebuggerUrl: "ws://wrong" };
     let poll = 0;
     let now = 0;
-    const found = await reacquireD514Page({
+    const found = await reacquireDesktopSmokePage({
       expectedUrl,
       expectedText: "Starting Nautilo",
       timeoutMs: 100,
@@ -33,22 +33,22 @@ describe("D514 controlled Electron smoke helpers", () => {
   });
 
   test("delayed-health hold and diagnostic duration prove the intended window", () => {
-    expect(D514_DELAYED_HEALTH_HOLD_MS).toBeGreaterThanOrEqual(5_000);
-    expect(D514_DELAYED_HEALTH_HOLD_MS).toBeLessThanOrEqual(6_000);
-    const line = `[desktop][d514] category=verified durationMs=${D514_DELAYED_HEALTH_HOLD_MS + 200}`;
-    expect(d514DiagnosticDurationIsClose(line, D514_DELAYED_HEALTH_HOLD_MS, 1_000)).toBe(true);
-    expect(d514DiagnosticDurationIsClose(line, D514_DELAYED_HEALTH_HOLD_MS, 100)).toBe(false);
+    expect(COLD_BOOT_DELAYED_HEALTH_HOLD_MS).toBeGreaterThanOrEqual(5_000);
+    expect(COLD_BOOT_DELAYED_HEALTH_HOLD_MS).toBeLessThanOrEqual(6_000);
+    const line = `[desktop][cold-boot] category=verified durationMs=${COLD_BOOT_DELAYED_HEALTH_HOLD_MS + 200}`;
+    expect(coldBootDiagnosticDurationIsClose(line, COLD_BOOT_DELAYED_HEALTH_HOLD_MS, 1_000)).toBe(true);
+    expect(coldBootDiagnosticDurationIsClose(line, COLD_BOOT_DELAYED_HEALTH_HOLD_MS, 100)).toBe(false);
   });
 
   test("allows packaged cold start more time without weakening source polling", () => {
-    expect(d514InitialPageTargetTimeoutMs("unpackaged")).toBe(12_000);
-    expect(d514InitialPageTargetTimeoutMs("packaged")).toBe(30_000);
+    expect(coldBootInitialPageTargetTimeoutMs("unpackaged")).toBe(12_000);
+    expect(coldBootInitialPageTargetTimeoutMs("packaged")).toBe(30_000);
   });
 
   test("accepts the stable content-safe diagnostic projection", () => {
     expect(
-      d514DiagnosticIsSanitized(
-        "[desktop][d514] cold-boot generation=3 phase=health category=verified durationMs=1500 acceptedGeneration=true stateChanged=true",
+      coldBootDiagnosticIsSanitized(
+        "[desktop][cold-boot] cold-boot generation=3 phase=health category=verified durationMs=1500 acceptedGeneration=true stateChanged=true",
         ["http://127.0.0.1:43210", "identity-secret", "fixture-marker"],
       ),
     ).toBe(true);
@@ -58,7 +58,7 @@ describe("D514 controlled Electron smoke helpers", () => {
     const values = ["http://127.0.0.1:43210", "identity-secret", "fixture-marker"];
     for (const leaked of values) {
       expect(
-        d514DiagnosticIsSanitized(`[desktop][d514] ${leaked}`, values),
+        coldBootDiagnosticIsSanitized(`[desktop][cold-boot] ${leaked}`, values),
       ).toBe(false);
     }
   });

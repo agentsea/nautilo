@@ -42,6 +42,7 @@ export class VoicePlayer {
   private workletReady: Promise<void> | null = null;
   private streamId: string | null = null;
   private turnId: string | null = null;
+  private silencedTurnId: string | null = null;
   private voiceEvents: VoicePlaybackEvent[] = [];
   private voiceBytes = 0;
   private resolvePlaying: (() => void) | null = null;
@@ -65,7 +66,7 @@ export class VoicePlayer {
   currentTurnId(): string | null { return this.turnId; }
 
   handleStreamEvent(event: VoicePlaybackEvent): void {
-    if (!this.enabled) return;
+    if (!this.enabled || (event.type === "voice.stream.start" && event.turnId === this.silencedTurnId)) return;
     if (event.type === "voice.stream.start") {
       this.stop();
       this.streamId = event.streamId;
@@ -176,7 +177,7 @@ export class VoicePlayer {
   }
 
   handleAudioEvent(event: VoiceAudioEvent): void {
-    if (!this.enabled) return;
+    if (!this.enabled || (event.turnId && event.turnId === this.silencedTurnId)) return;
     if (event.turnId && event.turnId !== this.turnId && event.chunkIndex === 0) {
       this.stop();
       this.turnId = event.turnId;
@@ -216,6 +217,12 @@ export class VoicePlayer {
       }
     }
     if (event.final) this.acceptingSentence = false;
+  }
+
+  /** Silence this turn locally even if more of its audio is already in transit. */
+  stopTalking(): void {
+    if (this.turnId) this.silencedTurnId = this.turnId;
+    this.stop();
   }
 
   stop(): void {

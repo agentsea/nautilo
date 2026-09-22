@@ -1,5 +1,5 @@
 /**
- * ISSUE-D443 — real assistant-ui middle-delete lifecycle regression.
+ * real assistant-ui middle-delete lifecycle regression.
  *
  * This intentionally mirrors the production seam:
  * AssistantRuntimeProvider + useExternalStoreRuntime + synchronized AUI
@@ -14,8 +14,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   createElement,
-  useCallback,
-  useMemo,
   useState,
   type ReactNode,
   type RefObject,
@@ -23,17 +21,14 @@ import {
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
-  useAuiState,
   useMessage,
-  ThreadPrimitive,
   type AssistantRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import {
-  TranscriptWindow,
   type TranscriptWindowHandle,
 } from "../../src/components/transcript-window";
-import { deriveTranscriptSync } from "../../src/components/conversation-transcript-sync";
+import { ConversationTranscriptRows } from "../../src/components/conversation-transcript-rows";
 
 type Msg = { id: string; role: "user" | "assistant"; text: string };
 
@@ -83,36 +78,8 @@ function TranscriptLeaf({
   handleRef: RefObject<TranscriptWindowHandle | null>;
   resetKey: string;
 }): ReactNode {
-  const messages = useAuiState((s) => s.thread.messages);
-  const isRunning = useAuiState((s) => s.thread.isRunning);
-  const { count, keys } = useMemo(
-    () => deriveTranscriptSync(messages),
-    [messages],
-  );
-  const getItemKey = useCallback(
-    (index: number): string => keys[index] ?? String(index),
-    [keys],
-  );
-  const renderItem = useCallback(
-    (_index: number, id: string): ReactNode => (
-      <ThreadPrimitive.Unstable_MessageById
-        messageId={id}
-        components={MESSAGE_COMPONENTS}
-      />
-    ),
-    [],
-  );
-  return (
-    <TranscriptWindow
-      count={count}
-      getItemKey={getItemKey}
-      renderItem={renderItem}
-      viewportRef={viewportRef}
-      isRunning={isRunning}
-      resetKey={resetKey}
-      handleRef={handleRef}
-    />
-  );
+  return <ConversationTranscriptRows components={MESSAGE_COMPONENTS} roomId={resetKey}
+    viewportRef={viewportRef} handleRef={handleRef} />;
 }
 
 interface HarnessHandle {
@@ -180,7 +147,7 @@ async function mountHarness(opts: {
         <TranscriptLeaf
           viewportRef={viewportRef}
           handleRef={handleRef}
-          resetKey={opts.resetKey ?? "room-d443"}
+          resetKey={opts.resetKey ?? "room-transcript-test"}
         />
       </AssistantRuntimeProvider>
     );
@@ -298,7 +265,7 @@ async function captureLifecycleErrors(
   return captured;
 }
 
-describe("ISSUE-D443 — real runtime middle-delete lifecycle", () => {
+describe("real runtime middle-delete lifecycle", () => {
   test("mounts 34 real id-stable rows and commits a scrolled-back id anchor", async () => {
     const initial = makeMessages(34);
     const { container, handleRef, errors, cleanup } = await mountHarness({

@@ -1,5 +1,5 @@
 /**
- * D340 — static checks for Current Folder -> relay root refresh wiring.
+ * Static checks for Current Folder -> relay root refresh wiring.
  *
  * `electron/main.ts` cannot be imported directly under bun:test without an
  * Electron runtime, so this pins the lifecycle wiring at source level.
@@ -11,19 +11,25 @@ import { normalizeStaticSource } from "./static-source";
 
 const desktopRoot = join(import.meta.dir, "../..");
 
+function functionSlice(source: string, startSignature: string, endSignature: string): string {
+  const start = source.indexOf(startSignature);
+  expect(start).toBeGreaterThan(-1);
+  const end = source.indexOf(endSignature, start + startSignature.length);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe("Current Folder relay root refresh wiring", () => {
   const main = normalizeStaticSource(
     readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8"),
   );
 
   test("interactive commits persist before changing local authority, then refresh relay unless explicitly deferred", () => {
-    const fnStart = main.indexOf(
+    const fnSlice = functionSlice(
+      main,
       "function commitCurrentFolderPath(p: string, options: {refreshRelay?: boolean} = {}): void",
+      "function showWorkingFolderCommitError()",
     );
-    expect(fnStart).toBeGreaterThan(-1);
-    const fnEnd = main.indexOf("/** D154", fnStart);
-    expect(fnEnd).toBeGreaterThan(fnStart);
-    const fnSlice = main.slice(fnStart, fnEnd);
 
     const usabilityIdx = fnSlice.indexOf("assertUsableWorkingFolderPath(p)");
     const persistIdx = fnSlice.indexOf("persistCurrentFolderPath(p)");
@@ -43,11 +49,11 @@ describe("Current Folder relay root refresh wiring", () => {
   });
 
   test("boot establishes a persisted Working Folder before workspace, renderer, or mutation-runtime consumers", () => {
-    const bootStart = main.indexOf("async function boot(): Promise<void>");
-    expect(bootStart).toBeGreaterThan(-1);
-    const bootEnd = main.indexOf("// D103 P3.7", bootStart);
-    expect(bootEnd).toBeGreaterThan(bootStart);
-    const boot = main.slice(bootStart, bootEnd);
+    const boot = functionSlice(
+      main,
+      "async function boot(): Promise<void>",
+      "function resumeQuitAfterPersistence()",
+    );
 
     const resolveIdx = boot.indexOf("resolveWorkingFolderBootstrap(");
     const assignIdx = boot.indexOf("currentFolderPath = workingFolder.path");
@@ -63,9 +69,11 @@ describe("Current Folder relay root refresh wiring", () => {
   });
 
   test("bootstrap never refreshes relay merely for its initial folder selection", () => {
-    const bootStart = main.indexOf("async function boot(): Promise<void>");
-    const bootEnd = main.indexOf("// D103 P3.7", bootStart);
-    const boot = main.slice(bootStart, bootEnd);
+    const boot = functionSlice(
+      main,
+      "async function boot(): Promise<void>",
+      "function resumeQuitAfterPersistence()",
+    );
     const bootstrapStart = boot.indexOf("resolveWorkingFolderBootstrap(");
     const workspaceIdx = boot.indexOf("genieWorkspaceRoot = ensureDefaultGenieWorkspace()");
 
@@ -77,11 +85,11 @@ describe("Current Folder relay root refresh wiring", () => {
   });
 
   test("refresh helper serializes stop and boot through existing relay lifecycle", () => {
-    const fnStart = main.indexOf("async function refreshRelayForCurrentFolder");
-    expect(fnStart).toBeGreaterThan(-1);
-    const fnEnd = main.indexOf("/** * M055", fnStart);
-    expect(fnEnd).toBeGreaterThan(fnStart);
-    const fnSlice = main.slice(fnStart, fnEnd);
+    const fnSlice = functionSlice(
+      main,
+      "async function refreshRelayForCurrentFolder",
+      "function refreshAuthMenuState",
+    );
 
     expect(fnSlice).toContain("if (relayRootRefreshPromise) {");
     expect(fnSlice).toContain("relayRootRefreshQueued = true");
@@ -94,11 +102,11 @@ describe("Current Folder relay root refresh wiring", () => {
   });
 
   test("relay keeps Genie Workspace as its baseline and never turns it into Current Folder", () => {
-    const fnStart = main.indexOf("async function startRelayForSession");
-    expect(fnStart).toBeGreaterThan(-1);
-    const fnEnd = main.indexOf("/** * D340", fnStart);
-    expect(fnEnd).toBeGreaterThan(fnStart);
-    const fnSlice = main.slice(fnStart, fnEnd);
+    const fnSlice = functionSlice(
+      main,
+      "async function startRelayForSession",
+      "async function refreshRelayForCurrentFolder",
+    );
 
     expect(fnSlice).toContain("workspacePath: genieWorkspaceRoot");
     expect(fnSlice).toContain(

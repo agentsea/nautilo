@@ -49,6 +49,12 @@ const afterSignModule = require("../../scripts/after-sign.cjs") as {
     expectedTeam?: string,
   ) => void;
   assertExactScreenRecordingPermissionEntitlements: (entitlements: unknown) => void;
+  assertExactWindowPresenceEntitlements: (entitlements: unknown) => void;
+  assertWindowPresenceMatchesNautiloIdentity: (
+    helper: { identifier: string | null; teamIdentifier: string | null; authorities: string[] },
+    app: { identifier: string | null; teamIdentifier: string | null; authorities: string[] },
+    expectedTeam?: string,
+  ) => void;
 };
 const signMacosModule = require("../../scripts/sign-adhoc.cjs") as {
   wrapOptionsForFile: (
@@ -529,4 +535,54 @@ test("post-sign audits exact Cua entitlements plus matching Developer ID or ad-h
     .toThrow("must be true");
   expect(afterSign).toContain("match enclosing Nautilo.app");
   expect(afterSign).toContain("appIdentity.teamIdentifier");
+});
+
+test("window presence helper uses an exact path, stable identity and no entitlements", () => {
+  const appPath = "/tmp/Example.app";
+  const relative = "Contents/Resources/tools-window-presence/nautilo-window-presence";
+  const wrapped = signMacosModule.wrapOptionsForFile(appPath, () => ({ hardenedRuntime: true }), cuaEntitlementsPlist);
+  const options = wrapped(join(appPath, relative));
+  expect(options?.additionalArguments).toEqual(["--identifier", "com.nautilo.desktop.window-presence"]);
+  expect(options?.hardenedRuntime).toBe(true);
+  expect(readFileSync(options?.entitlements as string, "utf8")).toContain("<dict/>");
+  expect(wrapped(join(appPath, `${relative}-other`))).toEqual({ hardenedRuntime: true });
+  expect(electronBuilder).toContain("from: vendor/window-presence");
+  expect(packageJson.scripts["build:electron"]).toContain("build-window-presence.ts");
+});
+
+test("post-sign requires the packaged window presence helper with the enclosing app identity and no entitlements", () => {
+  const authority = "Developer ID Application: Nautilo Test (ABCDE12345)";
+  const signedApp = { identifier: "com.nautilo.desktop", teamIdentifier: "ABCDE12345", authorities: [authority] };
+  const signedHelper = { identifier: "com.nautilo.desktop.window-presence", teamIdentifier: "ABCDE12345", authorities: [authority] };
+  expect(() => afterSignModule.assertWindowPresenceMatchesNautiloIdentity(signedHelper, signedApp, "ABCDE12345"))
+    .not.toThrow();
+  expect(() => afterSignModule.assertWindowPresenceMatchesNautiloIdentity(
+    { identifier: "com.nautilo.desktop.window-presence", teamIdentifier: null, authorities: [] },
+    { identifier: "com.nautilo.desktop", teamIdentifier: null, authorities: [] },
+  )).not.toThrow();
+  expect(() => afterSignModule.assertWindowPresenceMatchesNautiloIdentity(
+    { ...signedHelper, identifier: "com.attacker.window-presence" },
+    signedApp,
+  )).toThrow("com.nautilo.desktop.window-presence");
+  expect(() => afterSignModule.assertWindowPresenceMatchesNautiloIdentity(
+    { ...signedHelper, teamIdentifier: "ZZZZZ99999" },
+    signedApp,
+  )).toThrow("match enclosing Nautilo.app");
+  expect(() => afterSignModule.assertWindowPresenceMatchesNautiloIdentity(
+    { ...signedHelper, authorities: ["Developer ID Application: Other (ABCDE12345)"] },
+    signedApp,
+  )).toThrow("authority chain must match");
+  expect(() => afterSignModule.assertWindowPresenceMatchesNautiloIdentity(
+    { identifier: "com.nautilo.desktop.window-presence", teamIdentifier: null, authorities: [authority] },
+    { identifier: "com.nautilo.desktop", teamIdentifier: null, authorities: [] },
+  )).toThrow("must not advertise certificate authorities");
+  expect(() => afterSignModule.assertExactWindowPresenceEntitlements({})).not.toThrow();
+  expect(() => afterSignModule.assertExactWindowPresenceEntitlements({
+    "com.apple.security.device.screen-capture": true,
+  })).toThrow("exactly no keys");
+  expect(() => afterSignModule.assertExactWindowPresenceEntitlements(null)).toThrow("must be a dictionary");
+  expect(afterSign).toContain("missing packaged Window presence helper");
+  expect(afterSign).toContain('["--verify", "--strict", "--verbose=4", helperPath]');
+  expect(afterSign).toContain("assertExactWindowPresenceEntitlements");
+  expect(afterSign).toContain("assertPackagedWindowPresenceSignature(bundlePath)");
 });

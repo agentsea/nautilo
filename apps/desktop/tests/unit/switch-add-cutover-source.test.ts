@@ -20,7 +20,7 @@ function handler(channel: string, nextChannel: string): string {
   return main.slice(start, end);
 }
 
-describe("D514 switch/add production cutover source contract", () => {
+describe("switch/add production cutover source contract", () => {
   test("the connection attempt owns setup transport cancellation", () => {
     expect(main).toContain("probeServerClaimStateForUrl(origin, signal)");
     expect(main).not.toContain("probeServerClaimStateForUrl(origin);");
@@ -95,10 +95,11 @@ describe("D514 switch/add production cutover source contract", () => {
     expect(logtoDiagnostic).toContain("await ports.fetch(healthUrl");
     const authStart = main.indexOf('"auth:open-account-page"');
     const resetStart = main.indexOf('ipcMain.handle("auth:openResetUrl"', authStart);
-    const reprobeHandler = main.slice(
-      main.indexOf('ipcMain.handle("auth:reprobe-server"'),
-      main.indexOf("// D154 — cold-boot bootstrap", resetStart),
-    );
+    const reprobeHandlerStart = main.indexOf('ipcMain.handle("auth:reprobe-server"');
+    const reprobeHandlerEnd = main.indexOf("function activeLocalColdBootShell", resetStart);
+    expect(reprobeHandlerStart).toBeGreaterThan(-1);
+    expect(reprobeHandlerEnd).toBeGreaterThan(reprobeHandlerStart);
+    const reprobeHandler = main.slice(reprobeHandlerStart, reprobeHandlerEnd);
     expect(reprobeHandler).toContain("reprobeLogtoConfigDiagnostic(session.serverUrl)");
     expect(main.slice(authStart, resetStart)).not.toContain("reprobeLogtoConfigDiagnostic");
   });
