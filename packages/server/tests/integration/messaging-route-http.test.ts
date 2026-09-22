@@ -28,7 +28,8 @@ import {
   users,
 } from "@nautilo/db";
 import { composeFederatedId, getServerHostname } from "@nautilo/config";
-import { eventBus } from "@nautilo/runtime";
+import { eventBus, persistMessages } from "@nautilo/runtime";
+import { HumanMessage } from "@langchain/core/messages";
 import type { ServerEvent } from "@nautilo/types";
 import {
   seatPeerUser,
@@ -226,6 +227,90 @@ describe("POST /api/rooms/:roomId/messages (D174 Phase 11.1)", () => {
     expect(typeof body.jobId).toBe("string");
     expect(createJobCalls.count).toBeGreaterThan(j0);
     await fx.db.delete(jobs).where(eq(jobs.roomId, roomId));
+  });
+
+  test("Genie attachment live publication matches persisted history", async () => {
+    const roomId = fx.defaultRoomId;
+    const agentId = fx.defaultAgentId;
+    if (!roomId || !agentId) throw new Error("default Agent Room missing");
+    const token = await fx.mintOwnerBearer();
+    const pngBytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    let attachmentId: string | undefined;
+    let messageId: number | undefined;
+    try {
+      const form = new FormData();
+      form.set("file", new Blob([pngBytes], { type: "image/png" }), "genie-screen.png");
+      const upload = await fx.app.inject({
+        method: "POST",
+        url: `/api/message-attachments?roomId=${roomId}`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: form,
+      });
+      expect(upload.statusCode).toBe(200);
+      attachmentId = (JSON.parse(upload.body) as { attachmentId: string }).attachmentId;
+      const caption = `Genie screenshot ${randomUUID()}`;
+      const send = await authedInject(fx.app, {
+        method: "POST",
+        url: `/api/rooms/${roomId}/messages`,
+        bearer: token,
+        payload: { content: caption, attachments: [{ attachmentId }] },
+      });
+      expect(send.statusCode).toBe(202);
+      expect(lastJobInput.value?.["retainedAttachmentIds"]).toEqual([attachmentId]);
+      const [room] = await fx.db.select({ threadId: rooms.graphThreadId })
+        .from(rooms).where(eq(rooms.id, roomId));
+      if (!room?.threadId) throw new Error("Room transcript missing");
+      const events: ServerEvent[] = [];
+      // Exercise the admitted job's real transcript persistence boundary without
+      // invoking a model. The upload and Room admission use the real HTTP routes.
+      await persistMessages(room.threadId, fx.ownerId, [new HumanMessage(caption)], new Set(), {
+        roomId,
+        agentId,
+        laneKey: `room:${roomId}`,
+        retainedAttachmentIds: [attachmentId],
+        eventBus: { emit: (event) => { events.push(event); } },
+      });
+      const live = events.find((event) => event.type === "message.new" && "role" in event && event.role === "user");
+      if (!live || live.type !== "message.new" || !("messageId" in live)) throw new Error("live Human row missing");
+      messageId = Number(live.messageId);
+      const expected = {
+        attachmentId,
+        filename: "genie-screen.png",
+        mimeType: "image/png",
+        sizeBytes: pngBytes.byteLength,
+      };
+      expect(live).toMatchObject({ content: caption, attachments: [expected] });
+      const history = await authedInject(fx.app, {
+        method: "GET",
+        url: `/api/rooms/${roomId}/messages?beforeId=${messageId + 1}&beforeCreatedAt=${encodeURIComponent("2999-01-01T00:00:00.000Z")}&limit=50`,
+        bearer: token,
+      });
+      expect(history.statusCode).toBe(200);
+      const row = (JSON.parse(history.body) as {
+        messages: Array<{ id: string; content: string; attachments?: unknown[] }>;
+      }).messages.find((candidate) => Number(candidate.id) === messageId);
+      expect(row).toMatchObject({ content: caption, attachments: [expected] });
+      const bytes = await authedInject(fx.app, {
+        method: "GET",
+        url: `/api/message-attachments/${attachmentId}?roomId=${roomId}`,
+        bearer: token,
+      });
+      expect(bytes.statusCode).toBe(200);
+      expect(bytes.rawPayload).toEqual(pngBytes);
+    } finally {
+      if (messageId !== undefined) {
+        await fx.db.delete(sessionMessageRecipientState)
+          .where(eq(sessionMessageRecipientState.messageId, messageId));
+        await fx.db.delete(sessionMessages).where(eq(sessionMessages.id, messageId));
+      }
+      if (attachmentId !== undefined) {
+        await fx.db.delete(messageAttachments).where(eq(messageAttachments.id, attachmentId));
+      }
+      await fx.db.delete(jobs).where(eq(jobs.roomId, roomId));
+    }
   });
 
   test("Guest ordinary text and attachments in a mixed Human/Agent room persist without starting Agent work", async () => {

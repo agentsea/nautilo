@@ -56,8 +56,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
-- Guest screenshot messages now render inline for Room members as they arrive
-  and after reload, with authenticated downloads and full-size viewing.
+- Screenshot messages now render inline in ordinary Room and Genie chats as
+  they arrive and after reload, with authenticated downloads and full-size
+  viewing. Accepted image previews replace temporary upload filename labels.
 - Authenticated Guests can attach files to messages in their selected Room,
   while unresolved and blocked conversations continue to reject uploads.
 

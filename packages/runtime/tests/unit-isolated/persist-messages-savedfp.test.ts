@@ -91,10 +91,23 @@ mock.module("@nautilo/agent", () => ({
 // D391 — capture stampTurnIdOnAttachments calls (real @nautilo/db spread so
 // every other db export still resolves; only the stamp is intercepted).
 const stampCalls: Array<{ attachmentIds: readonly string[]; turnId: string }> = [];
+const projectionSteps: string[] = [];
+let stampBehavior = async (input: { attachmentIds: readonly string[]; turnId: string }) => {
+  stampCalls.push(input);
+  projectionSteps.push("stamp");
+};
+let retainedRows: Awaited<ReturnType<typeof realNautiloDb.getAttachmentsForTurns>> = [];
+const attachmentQueryCalls: string[][] = [];
 mock.module("@nautilo/db", () => ({
   ...realNautiloDb,
   stampTurnIdOnAttachments: async (input: { attachmentIds: readonly string[]; turnId: string }) => {
-    stampCalls.push(input);
+    await stampBehavior(input);
+  },
+  getRoomNamespaceId: async () => "namespace:room-1",
+  getAttachmentsForTurns: async (turnIds: readonly string[]) => {
+    attachmentQueryCalls.push([...turnIds]);
+    projectionSteps.push("query");
+    return retainedRows;
   },
 }));
 
@@ -127,6 +140,13 @@ describe("persistMessages — D391 turn_id stamp", () => {
   beforeEach(() => {
     appendCalls.length = 0;
     stampCalls.length = 0;
+    projectionSteps.length = 0;
+    attachmentQueryCalls.length = 0;
+    retainedRows = [];
+    stampBehavior = async (input) => {
+      stampCalls.push(input);
+      projectionSteps.push("stamp");
+    };
     appendBehavior = async () => ({
       failedIndices: [],
       insertedCount: 1,
@@ -185,6 +205,122 @@ describe("persistMessages — D391 turn_id stamp", () => {
     expect(stampCalls[0]!.attachmentIds).toEqual(["att-1", "att-2"]);
     // turn_id == the human row's fingerprint (mock fp shape: human:content:turn)
     expect(stampCalls[0]!.turnId).toBe("mockfp:human:hello:turn-xyz");
+  });
+
+  test("publishes exact retained Room descriptors after linkage and history hydration", async () => {
+    const humanFp = "mockfp:human:hello:turn-xyz";
+    const common = {
+      uploaderActorId: "actor:sender",
+      status: "retained" as const,
+      storageUri: "file:///tmp/attachment",
+      claimedMime: null,
+      createdAt: new Date("2026-09-22T08:00:00.000Z"),
+      expiresAt: null,
+      resolvedAt: new Date("2026-09-22T08:00:00.000Z"),
+      deletedAt: null,
+    };
+    retainedRows = [
+      {
+        ...common,
+        id: "att-1",
+        namespaceId: "namespace:room-1",
+        filename: "screen.png",
+        mimeType: "image/png",
+        sizeBytes: 73,
+        turnId: humanFp,
+      },
+      {
+        ...common,
+        id: "att-1",
+        namespaceId: "namespace:foreign",
+        filename: "foreign.png",
+        mimeType: "image/png",
+        sizeBytes: 99,
+        turnId: humanFp,
+      },
+      {
+        ...common,
+        id: "att-1",
+        namespaceId: "namespace:room-1",
+        filename: "other-turn.png",
+        mimeType: "image/png",
+        sizeBytes: 101,
+        turnId: "mockfp:human:other",
+      },
+      {
+        ...common,
+        id: "att-unselected",
+        namespaceId: "namespace:room-1",
+        filename: "unselected.png",
+        mimeType: "image/png",
+        sizeBytes: 55,
+        turnId: humanFp,
+      },
+    ];
+    const emitted: ServerEvent[] = [];
+    const bus = { emit: (event: ServerEvent) => {
+      if (event.type === "message.new") projectionSteps.push("emit");
+      emitted.push(event);
+    } };
+
+    await persistMessages("t1", "owner-1", [new HumanMessage("hello")], new Set(), {
+      eventBus: bus,
+      humanTurnId: "turn-xyz",
+      roomId: "room-1",
+      laneKey: "room:room-1",
+      retainedAttachmentIds: ["att-1"],
+    });
+
+    expect(projectionSteps).toEqual(["stamp", "query", "emit"]);
+    expect(attachmentQueryCalls).toEqual([[humanFp]]);
+    expect(emitted.find((event) => event.type === "message.new")).toMatchObject({
+      type: "message.new",
+      attachments: [{
+        attachmentId: "att-1",
+        filename: "screen.png",
+        mimeType: "image/png",
+        sizeBytes: 73,
+      }],
+    });
+  });
+
+  test("suppressed Human events still link retained attachments without publishing", async () => {
+    const { bus, emitted } = makeBus();
+    await persistMessages("t1", "owner-1", [new HumanMessage("hidden")], new Set(), {
+      eventBus: bus,
+      humanTurnId: "turn-hidden",
+      retainedAttachmentIds: ["att-hidden"],
+      suppressUserMessageEvents: true,
+    });
+
+    expect(stampCalls).toEqual([{
+      attachmentIds: ["att-hidden"],
+      turnId: "mockfp:human:hidden:turn-hidden",
+    }]);
+    expect(emitted.some((event) => event.type === "message.new")).toBe(false);
+  });
+
+  test("linkage failure keeps the persisted turn and emits its attachment-free live row", async () => {
+    stampBehavior = async () => {
+      projectionSteps.push("stamp");
+      throw new Error("link unavailable");
+    };
+    const saved = new Set<string>();
+    const { bus, emitted } = makeBus();
+
+    await persistMessages("t1", "owner-1", [new HumanMessage("hello")], saved, {
+      eventBus: bus,
+      humanTurnId: "turn-xyz",
+      roomId: "room-1",
+      laneKey: "room:room-1",
+      retainedAttachmentIds: ["att-1"],
+    });
+
+    expect(saved).toContain("mockfp:human:hello:turn-xyz");
+    const event = emitted.find((candidate) => candidate.type === "message.new");
+    expect(event?.type).toBe("message.new");
+    expect(event).not.toHaveProperty("attachments");
+    expect(emitted.some((candidate) => candidate.type === "session.persistence_failed")).toBe(false);
   });
 
   test("publishes live edit identity for a newly persisted Human row", async () => {

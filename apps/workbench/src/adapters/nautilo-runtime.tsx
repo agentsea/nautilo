@@ -387,7 +387,11 @@ export function recoverDesktopRoomPendingAttention(
       : result;
   });
 }
-import { reconcileCanonicalHumanMessage, settleHumanMessageVerification } from "./message-new-reconciliation";
+import {
+  OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY,
+  reconcileCanonicalHumanMessage,
+  settleHumanMessageVerification,
+} from "./message-new-reconciliation";
 import { projectVerifiedFullHumanEvent, readPendingFullHumanMessage, reconcileVerifiedFullHumanMessage, takePendingFullHumanEvents } from "./full-human-message-reconciliation";
 import {
   liveArrivalsSince,
@@ -6909,6 +6913,13 @@ export function NautiloRuntimeProvider({
               metadata: {
                 custom: {
                   optimisticAuthoredText: text,
+                  ...(attachments.length > 0
+                    ? {
+                        [OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY]: attachments.map(
+                          (attachment) => attachment.attachmentId,
+                        ),
+                      }
+                    : {}),
                   ...(options?.replyToMessageId !== undefined
                     ? { replyToMessageId: options.replyToMessageId }
                     : {}),
