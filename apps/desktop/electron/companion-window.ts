@@ -294,7 +294,7 @@ export class CompanionWindowManager {
         { label: bound.state.snapshot.capture === "listening" ? "Finish recording and send" : "Record a message", enabled: !["requesting", "transcribing"].includes(bound.state.snapshot.capture), click: () => { if (this.bound === bound) this.command(bound, { type: "mic" }); } },
         { label: "Mute microphone / discard recording", click: () => { if (this.bound === bound) this.command(bound, { type: "mute" }); } },
         { label: "Stop talking", enabled: bound.state.snapshot.voiceEnabled, click: () => { if (this.bound === bound) this.command(bound, { type: "stop-talking" }); } },
-        { label: "Stop task in this Room", click: () => { if (this.bound === bound) this.command(bound, { type: "stop-task" }); } },
+        { label: "Stop action in this Room", click: () => { if (this.bound === bound) this.command(bound, { type: "stop-task" }); } },
         { label: "Attach files…", enabled: bound.state.snapshot.canAttach, click: () => { if (this.bound === bound) this.command(bound, { type: "view", value: "chat" }); if (this.bound === bound) this.command(bound, { type: "attach" }); } },
         { type: "separator" },
         { label: "Open Room in Nautilo", click: () => { if (this.bound === bound) this.command(bound, { type: "return" }); } },

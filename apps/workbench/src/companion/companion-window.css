@@ -27,6 +27,9 @@ html.companion-document, .companion-document body, .companion-document #root { m
 
 .companion-composer-controls { display: flex; align-items: center; gap: 4px; }
 .companion-control-spacer { flex: 1; }
+.companion-send-status { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.companion-send[aria-busy="true"]:disabled { opacity: .85; }
+.companion-stop-task { display: flex; width: auto; gap: 5px; padding: 0 7px; color: #ffc6b8 !important; background: #ffffff0b; font-size: 11px !important; white-space: nowrap; }
 .companion-composer-controls button:disabled { opacity: .35; cursor: default; }
 .companion-composer-controls button[aria-pressed="true"] { color: #a6dfcf; background: #a6dfcf18; }
 .companion-control-error { margin: 0; color: #ffcf9f; font-size: 11px; max-height: 50px; overflow-y: auto; user-select: text; }
@@ -38,6 +41,8 @@ html.companion-document, .companion-document body, .companion-document #root { m
 .companion-small-stop, .companion-small-mute { position: absolute; left: 2px; bottom: 3px; border-radius: 50%; background: #322438; color: #ffc6b8; }
 .companion-small-mute { left: auto; right: 3px; bottom: 3px; width: 24px; height: 24px; display: grid; place-items: center; }
 .companion-small-stop .companion-icon { width: 24px; height: 24px; }
+.companion-small-stop .companion-stop-task { display: grid; padding: 0; }
+.companion-small-stop .companion-stop-task span { display: none; }
 .companion-waveform .companion-small-stop { left: auto; right: 35px; bottom: 6px; }
 .companion-waveform .companion-small-mute { left: auto; right: 35px; top: 5px; bottom: auto; }
 .companion-prompt .companion-room-composer { min-height: 0; overflow-y: auto; }

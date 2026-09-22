@@ -45,6 +45,8 @@
 .companion[data-state="listening"] .companion-state-icon { color: #baebdf; border-color: #a6dfcf; }
 .companion .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @keyframes companion-wave { to { transform: scaleY(.35); opacity: .55; } }
+@keyframes companion-spin { to { transform: rotate(360deg); } }
+.companion-spinner { animation: companion-spin 1.2s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .companion *, .companion *::before, .companion *::after { animation: none !important; transition: none !important; } }
 
 .companion-waveform .companion-compact { display: flex; align-items: center; gap: 9px; padding: 10px 35px 10px 9px; }

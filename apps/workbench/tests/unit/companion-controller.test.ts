@@ -192,12 +192,18 @@ test("Stop reaches the Room during a stalled send and also cancels work admitted
   expect(failed.snapshot()?.stopState).toBe("failed"); expect(failed.snapshot()?.error).toContain("could not be confirmed");
 });
 test("spoken replies follow the pinned voice owner and stop-talking never cancels tasks", async () => {
-  let speechStops = 0; let taskStops = 0; const modes: boolean[] = [];
+  let speechStops = 0; let taskStops = 0; let running = true; const modes: boolean[] = [];
   const f = fixture({ media: { prepare() {}, createCapture: () => ({ cancel() {} }) as any, enable() {}, release() {}, stopTalking() { speechStops++; } },
-    stopTask: async () => { taskStops++; return { stopped: true }; },
+    workRunning: async () => running,
+    stopTask: async () => { taskStops++; running = false; return { stopped: true }; },
     send: async (_target, _text, options) => { modes.push(options.voiceMode); } });
   await f.controller.enable(binding); f.controller.updateMedia(binding.roomId, true, true);
   await f.controller.action("1", { type: "stop-talking" }); expect(speechStops).toBe(1); expect(taskStops).toBe(0);
+  expect(f.snapshot()?.workRunning).toBe(true);
+  // A separate cancel must not invoke the playback stop or hide remaining speech.
+  await f.controller.action("1", { type: "stop-task" });
+  expect(taskStops).toBe(1); expect(speechStops).toBe(1);
+  expect(f.snapshot()?.workRunning).toBe(false); expect(f.snapshot()?.speaking).toBe(true);
   await f.controller.action("1", { type: "send", text: "Hello" });
   f.controller.updateMedia("other-room", true, true); await f.controller.action("1", { type: "send", text: "Hi" });
   expect(modes).toEqual([true, false]);

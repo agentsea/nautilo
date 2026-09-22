@@ -92,6 +92,12 @@ store update, or Desktop/Host installation.
   while unresolved and blocked conversations continue to reject uploads.
 - Desktop users can open Servers and connect another server even when their
   current server does not allow Genie invocation, including Guest accounts.
+- Floating Genie distinguishes Sending from running work, with visible send
+  progress. Speaker × stops talking; the separate square Stop action control
+  remains available while the Genie speaks and works at the same time.
+
+- Room and floating Genie messages summarize recognized legacy attachment
+  envelopes as filenames after history reload. Ambiguous envelopes remain intact.
 
 - Server Admin places the Nautilo Gateway URL and key together at the end of
   API Keys, following the separate OpenAI-compatible gateway.

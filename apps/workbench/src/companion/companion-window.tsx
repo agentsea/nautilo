@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { OrbCanvas } from "../../../../packages/genie-customization-ui/src/components/OrbCanvas";
 import type { CompanionAction, CompanionWindowAPI, CompanionWindowState } from "../../../desktop/electron/companion-contract";
 import { CompanionSurface } from "./companion-surface";
+import { companionStatus } from "./companion-status";
 import "./companion-window.css";
 
 declare global { interface Window { nautiloCompanion?: CompanionWindowAPI } }
@@ -83,17 +84,15 @@ function CompanionWindow() {
   const talkLabel = snapshot.speaking ? "Stop talking" : micLabel;
   const activity = error || snapshot.error ? "error" : snapshot.capture === "listening" ? "listening"
     : snapshot.speaking ? "speaking" : working || capturing || stopping ? "thinking" : "muted";
-  const status = stopping ? "Stopping task…" : snapshot.capture === "requesting" ? "Opening microphone…"
-    : snapshot.capture === "listening" ? "Listening · tap mic to send" : snapshot.capture === "transcribing" ? "Transcribing…"
-    : snapshot.speaking ? "Speaking · tap to stop" : working ? "Working · microphone off" : "Microphone off";
+  const status = companionStatus(snapshot);
   const mic = () => command({ type: "mic" });
-  const stopTask = <button type="button" className="companion-icon companion-stop-task" disabled={stopping} aria-label={stopping ? "Stopping task" : "Stop task"}
-    title="Stop task in this Room" onClick={() => command({ type: "stop-task" })}><Square size={14} fill="currentColor" /></button>;
+  const stopTask = <button type="button" className="companion-icon companion-stop-task" disabled={stopping} aria-label={stopping ? "Stopping action" : "Stop action"}
+    title="Stop action in this Room" onClick={() => command({ type: "stop-task" })}><Square size={14} /><span>{stopping ? "Stopping…" : "Stop action"}</span></button>;
   const controls = <>
     <button type="button" className="companion-icon" disabled={!snapshot.canAttach || snapshot.pickingAttachments || snapshot.busy} title="Attach files" aria-label="Attach files"
       onClick={() => { command({ type: "view", value: "chat" }); command({ type: "attach" }); }}><Paperclip size={16} /></button>
     <button type="button" className="companion-icon" title={micLabel} aria-label={micLabel} aria-pressed={snapshot.capture === "listening"} onClick={mic}>
-      {snapshot.capture === "transcribing" || snapshot.capture === "requesting" ? <LoaderCircle size={16} /> : <Mic size={16} />}
+      {snapshot.capture === "transcribing" || snapshot.capture === "requesting" ? <LoaderCircle className="companion-spinner" size={16} /> : <Mic size={16} />}
     </button>
     {capturing && <button type="button" className="companion-icon" title="Mute and discard recording" aria-label="Mute and discard recording" onClick={() => command({ type: "mute" })}><MicOff size={16} /></button>}
     {snapshot.voiceEnabled && <button type="button" className="companion-icon" title="Stop talking" aria-label="Stop talking" onClick={() => command({ type: "stop-talking" })}><VolumeX size={16} /></button>}

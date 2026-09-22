@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useComposer, useComposerRuntime, useExternalStoreRuntime, useMessage } from "@assistant-ui/react";
-import { ArrowUp, X } from "lucide-react";
+import { ArrowUp, LoaderCircle, X } from "lucide-react";
 import type { ThreadMessageLike } from "@assistant-ui/core";
 import type { CompanionAttachment, CompanionSnapshot } from "../../../desktop/electron/companion-contract";
 import { ConversationTranscriptRows } from "../components/conversation-transcript-rows";
@@ -73,6 +73,11 @@ export function CompanionComposer({ draft, name, busy, onDraft, onSubmit, contro
     <MentionAwareLexicalComposerInput autoFocus aria-label={`Message ${name}`} placeholder={`Message ${name}…`}
       className="companion-lexical-input" submitMode="none" cancelOnEscape
       onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }} />
-    <div className="companion-composer-controls">{controls}<button type="submit" className="companion-send" aria-label="Send to Genie" disabled={busy || (!text.trim() && !attachments.length)}><ArrowUp size={17} /></button></div>
+    <div className="companion-composer-controls">{controls}
+      {sending && <span className="companion-send-status" role="status">Sending…</span>}
+      <button type="submit" className="companion-send" aria-label={sending ? "Sending message" : "Send to Genie"} aria-busy={sending} disabled={busy || (!text.trim() && !attachments.length)}>
+        {sending ? <LoaderCircle className="companion-spinner" size={17} /> : <ArrowUp size={17} />}
+      </button>
+    </div>
   </ComposerPrimitive.Root>;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, type CSSProperties, type PointerEvent, type ReactNode } from "react";
-import { ArrowUp, CircleAlert, Expand, Grip, Mic, MicOff, Minimize2, MoreHorizontal, Square, X } from "lucide-react";
+import { ArrowUp, CircleAlert, Expand, Grip, LoaderCircle, Mic, MicOff, Minimize2, MoreHorizontal, VolumeX, X } from "lucide-react";
 import "./companion.css";
 
 export type CompanionView = "orb" | "waveform" | "prompt" | "chat";
@@ -70,7 +70,7 @@ export function CompanionSurface(props: CompanionSurfaceProps) {
     if (suppressClick.current) { suppressClick.current = false; return; }
     props.onTalk();
   }
-  const StateIcon = state === "muted" ? MicOff : state === "error" ? CircleAlert : state === "speaking" ? Square : Mic;
+  const StateIcon = state === "muted" ? MicOff : state === "error" ? CircleAlert : state === "speaking" ? VolumeX : state === "thinking" ? LoaderCircle : Mic;
   const compact = view === "orb" || view === "waveform";
   const visual = <div className="companion-avatar" aria-hidden>{props.avatar}</div>;
   return (
@@ -79,7 +79,7 @@ export function CompanionSurface(props: CompanionSurfaceProps) {
         <>
         <button ref={compactButton} className="companion-compact" {...dragHandlers} onClick={talk} aria-label={props.talkLabel} title={`${props.talkLabel} · Right-click or Shift+F10 for controls`}>
           {visual}{view === "waveform" && <Waveform state={state} />}
-          <span className="companion-state-icon"><StateIcon size={13} /></span>
+          <span className="companion-state-icon"><StateIcon size={13} className={state === "thinking" ? "companion-spinner" : undefined} /></span>
           <span className="sr-only" role="status">{props.status}</span>
         </button>
         {props.compactControls}

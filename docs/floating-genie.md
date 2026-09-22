@@ -45,10 +45,23 @@ stops hardware capture and cancels pending transcription. This prototype is
 turn-by-turn: automatic speech detection, wake phrases and addressee classification
 are follow-on work.
 
-**Stop talking** immediately clears local playback and suppresses later audio
-from that turn. **Stop task** separately uses the existing cancellation endpoint
+The status distinguishes listening, transcription, sending and running work.
+While a send is pending, the composer shows **Sending…** and a spinner;
+compact views show activity without adding persistent text. Sending is not a
+delivery receipt: uncertain sends retain their existing recovery message.
+
+Room and companion history share filename presentation for complete leading
+legacy attachment envelopes. Ambiguous delimiters preserve the original message.
+This text-only presentation cannot distinguish an intentionally typed exact
+envelope from historical adapter output; it does not establish attachment identity.
+
+**Stop talking** (speaker ×) immediately clears local playback and suppresses later audio
+from that turn, while work continues. **Stop action** separately uses the existing cancellation endpoint
 for the pinned Room, including queued work. Its square button appears during work
 in compact and expanded views and is always available in the controls menu.
+Both controls remain available when Genie is speaking and working simultaneously.
+Prompt and chat label the square **Stop action**; compact views use distinct
+speaker and square icons. Stopping work does not implicitly silence playback.
 It shows **Stopping** until the server responds; a failed request does not claim
 the work stopped. A pending send does not delay the initial stop request. If that
 send is unresolved, the control reports uncertainty and requests stop again when
