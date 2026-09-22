@@ -1582,6 +1582,9 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/src/memory/foreground-protected-agent-memory-session.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/memory/protected-agent-scope-close-worker.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/lease-registry.ts -> @nautilo/lattice-bridge",
+  // Task creation consumes bridge-owned payload and authority contracts only;
+  // key custody, crypto storage, and protected persistence remain outside Runtime.
+  "packages/runtime/src/tasks/task-creation-admission.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/src/protected-execution/background-authorization/repository.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/stenographer/postgres-protected-stenographer-work-recovery.ts -> @nautilo/lattice-bridge/server",
@@ -1621,6 +1624,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/tests/unit/protected-stenographer-work-composition.test.ts -> @nautilo/lattice-bridge",
   "packages/runtime/tests/unit/protected-stenographer-work-repository.test.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/tests/unit/stenographer-protected-source-loader.test.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/unit/task-creation-admission.test.ts -> @nautilo/lattice-bridge",
   // M268 — the unified foreground Memory conformance assembler is test-only;
   // production registration remains absent until the transition wave.
   "packages/server/package.json dependency @nautilo/lattice-bridge -> workspace:*",
