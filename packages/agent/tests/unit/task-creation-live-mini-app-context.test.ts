@@ -8,8 +8,11 @@ import {
   taskCreationLiveMiniAppContextForState,
 } from "../../src/runtime/task-creation-live-mini-app-context";
 import {
+  getTaskCreationInvocationProvenance,
   getTaskCreationReturnContext,
+  runWithTaskCreationInvocationProvenance,
   runWithTaskCreationReturnContext,
+  taskCreationInvocationProvenanceForState,
 } from "../../src/runtime/task-creation-return-context";
 
 const writerSession = {
@@ -102,6 +105,42 @@ describe("D569 Task live mini-app capture", () => {
       taskRunId: "run-1",
     });
     expect(taskCreationLiveMiniAppContextForState(backgroundState)).toBeNull();
+  });
+
+  test("captures positive root and child creation origins without serializing them", () => {
+    const root = taskCreationInvocationProvenanceForState(state({ roomId: "room-1" }));
+    const child = taskCreationInvocationProvenanceForState(state({
+      trustedExecutionEntrypoint: "background.task",
+      roomId: "room-2",
+      currentTaskId: "task-1",
+      currentTaskRunId: "run-1",
+    }));
+    expect(root).toEqual({
+      ownerId: "human-1",
+      roomId: "room-1",
+      entrypoint: "foreground.main",
+    });
+    expect(child).toEqual({
+      ownerId: "human-1",
+      roomId: "room-2",
+      entrypoint: "background.task",
+      taskId: "task-1",
+      taskRunId: "run-1",
+    });
+    runWithTaskCreationInvocationProvenance(child, () => {
+      expect(getTaskCreationInvocationProvenance()).toBe(child);
+    });
+    expect(getTaskCreationInvocationProvenance()).toBeNull();
+  });
+
+  test("never treats missing or incomplete trusted state as a root", () => {
+    expect(taskCreationInvocationProvenanceForState(state({
+      trustedExecutionEntrypoint: null,
+    }))).toBeNull();
+    expect(taskCreationInvocationProvenanceForState(state({
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+    }))).toBeNull();
   });
 
   test.each([

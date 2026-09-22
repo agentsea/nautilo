@@ -7,6 +7,10 @@ import {
 } from "../../src/tasks/create-task";
 import { nextCronOccurrence } from "../../src/tasks/cron";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import {
+  createHumanApiTaskCreationProvenance,
+  getPlaintextTaskCreationAdmission,
+} from "../../src/tasks/task-creation-admission";
 
 function fakeDb(): { db: DirectDatabase; lastValues: () => Record<string, unknown> } {
   let captured: Record<string, unknown> = {};
@@ -37,6 +41,16 @@ const baseInput = (over: Partial<TaskCreateInput> = {}): TaskCreateInput =>
 
 const accepted = () =>
   createAcceptedInvocationAuthority("11111111-1111-1111-1111-111111111111");
+
+const taskDeps = (db: DirectDatabase) => ({
+  db,
+  observer: { kick: () => {} },
+  invocationAuthority: accepted(),
+  provenance: createHumanApiTaskCreationProvenance({
+    ownerId: "11111111-1111-1111-1111-111111111111",
+  }),
+  admission: getPlaintextTaskCreationAdmission(),
+});
 
 describe("computeNextFireAt (M146)", () => {
   const fixedNow = new Date("2026-06-09T12:00:00Z");
@@ -76,7 +90,7 @@ describe("computeNextFireAt (M146)", () => {
     const { db } = fakeDb();
     const runAt = new Date("2030-06-15T14:30:00Z");
     const res = await createTask(
-      { db, observer: { kick: () => {} }, invocationAuthority: accepted() },
+      taskDeps(db),
       baseInput({ scheduleKind: "one_shot", runAt }),
     );
     const expected = computeNextFireAt("one_shot", runAt, undefined, "UTC");
@@ -88,7 +102,7 @@ describe("computeNextFireAt (M146)", () => {
     const cron = "0 9 * * *";
     const tz = "UTC";
     const res = await createTask(
-      { db, observer: { kick: () => {} }, invocationAuthority: accepted() },
+      taskDeps(db),
       baseInput({ scheduleKind: "cron", cron, timezone: tz }),
     );
     const expected = computeNextFireAt("cron", undefined, cron, tz);

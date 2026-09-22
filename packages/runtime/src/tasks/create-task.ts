@@ -11,6 +11,12 @@ import {
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import {
+  assertTaskCreationProvenance,
+  TaskCreationUnavailableError,
+  type TaskCreationAdmissionPort,
+  type TaskCreationProvenance,
+} from "./task-creation-admission";
 
 /** Input to the runtime `createTask` wrapper. `nextFireAt` / `status` are
  * computed here; everything else is a `tasks` insert field. */
@@ -22,6 +28,10 @@ export interface CreateTaskDeps {
   observer: { kick(): void };
   /** Explicit external acceptance, or inherited from an executing parent Job. */
   invocationAuthority?: AcceptedInvocationAuthority;
+  /** Server-authored origin, carried outside caller-controlled Task fields. */
+  provenance: TaskCreationProvenance;
+  /** Lattice-selected admission. Plain uses the inert ordinary port. */
+  admission: TaskCreationAdmissionPort<unknown>;
 }
 
 /**
@@ -81,9 +91,23 @@ export async function createTask(
     throw new TypeError("createTask requires accepted invocation authority");
   }
   assertAcceptedInvocationAuthoritySubject(invocationAuthority, input.requestorId);
+  assertTaskCreationProvenance(deps.provenance, input.ownerId);
+
+  const admission = await deps.admission.admit({
+    db: deps.db,
+    candidate: input,
+    provenance: deps.provenance,
+    invocationAuthority,
+  });
+  if (admission.kind === "unavailable") {
+    throw new TaskCreationUnavailableError(admission.reason);
+  }
+  if (admission.kind === "protected") {
+    throw new TaskCreationUnavailableError("task_shape_unsupported");
+  }
 
   const row = await dbCreateTask(deps.db, {
-    ...input,
+    ...admission.candidate,
     nextFireAt,
     status: "pending",
   });

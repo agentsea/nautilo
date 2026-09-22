@@ -332,6 +332,24 @@ export {
 } from "./tasks/resolve-target-room";
 export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps } from "./tasks/create-task";
 export {
+  TaskCreationUnavailableError,
+  assertTaskCreationProvenance,
+  createAgentTurnTaskCreationProvenance,
+  createArtifactEventTaskCreationProvenance,
+  createHumanApiTaskCreationProvenance,
+  createProtectedTaskCreationAdmissionV1,
+  getPlaintextTaskCreationAdmission,
+  type ProtectedTaskCreationAuthorityPortsV1,
+  type ProtectedTaskCreationPlanV1,
+  type ProtectedTaskCreationResolutionInputV1,
+  type ProtectedTaskExecutionShapeResolutionV1,
+  type TaskCreationAdmissionInput,
+  type TaskCreationAdmissionPort,
+  type TaskCreationAdmissionResult,
+  type TaskCreationEntrypoint,
+  type TaskCreationProvenance,
+} from "./tasks/task-creation-admission";
+export {
   LIVE_MINI_APP_TASK_DELEGATION_METADATA_KEY,
   claimTaskWriterReviewAcceptance,
   hasTaskWriterReviewBindingForTaskRun,

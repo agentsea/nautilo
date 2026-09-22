@@ -70,6 +70,10 @@ import {
 import { setupAgentTestEnv, closeAgentDb } from "./agent-helpers";
 import { createStubProvider } from "./helpers/stub-provider";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import {
+  createAgentTurnTaskCreationProvenance,
+  getPlaintextTaskCreationAdmission,
+} from "../../src/tasks/task-creation-admission";
 
 const TZ = "America/New_York";
 
@@ -123,6 +127,11 @@ beforeAll(async () => {
         db,
         observer: { kick: () => {} },
         invocationAuthority: createAcceptedInvocationAuthority(input.requestorId),
+        provenance: createAgentTurnTaskCreationProvenance({
+          ownerId: input.requestorId,
+          invocation: null,
+        }),
+        admission: getPlaintextTaskCreationAdmission(),
       }, input),
     computeNextFireAt: runtimeComputeNextFireAt,
     // M147 — lifecycle not exercised by this suite; satisfy the DI contract.

@@ -453,6 +453,8 @@ import {
   setTaskObserver,
   setTaskRunJobManager,
   createTask as runtimeCreateTask,
+  createAgentTurnTaskCreationProvenance,
+  getPlaintextTaskCreationAdmission,
   clearTaskReturnBindings,
   advanceTaskLiveMiniAppBindingDocumentVersion,
   claimTaskWriterReviewAcceptance,
@@ -527,6 +529,7 @@ import {
   getTaskCreationReturnContext,
   getTaskCreationLiveMiniAppContext,
   getTaskCreationBackgroundTaskProvenance,
+  getTaskCreationInvocationProvenance,
   setMiniAppToolRuntime,
   setLocalMcpToolRuntime,
   setConnectedAppActionRuntime,
@@ -3866,6 +3869,7 @@ export async function createApp(options?: CreateAppOptions) {
   ) => {
     const liveMiniAppContext = getTaskCreationLiveMiniAppContext();
     const taskProvenance = getTaskCreationBackgroundTaskProvenance();
+    const invocationProvenance = getTaskCreationInvocationProvenance();
     const parentLiveMiniAppBinding = taskProvenance
       ? resolveTaskLiveMiniAppBinding(
           taskProvenance.taskId,
@@ -3969,6 +3973,11 @@ export async function createApp(options?: CreateAppOptions) {
           {
             db: tx as unknown as Parameters<typeof runtimeCreateTask>[0]["db"],
             observer: { kick() {} },
+            provenance: createAgentTurnTaskCreationProvenance({
+              ownerId: task.ownerId,
+              invocation: invocationProvenance,
+            }),
+            admission: getPlaintextTaskCreationAdmission(),
           },
           taskForCreate,
         );

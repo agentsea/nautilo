@@ -813,9 +813,13 @@ export {
 } from "./tools/file/workspace-runtime-adapter";
 export { createTaskTool } from "./tools/tasks/task-tool";
 export {
+  getTaskCreationInvocationProvenance,
   getTaskCreationReturnContext,
+  runWithTaskCreationInvocationProvenance,
   runWithTaskCreationReturnContext,
+  taskCreationInvocationProvenanceForState,
   taskCreationReturnContextForState,
+  type TaskCreationInvocationProvenance,
   type TaskCreationReturnContext,
 } from "./runtime/task-creation-return-context";
 export {

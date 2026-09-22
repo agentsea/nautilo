@@ -65,6 +65,8 @@ import { registerAllTools } from "../../src/tools/register-all";
 import { runWithInitiatingClientSurface } from "../../src/runtime/initiating-client-surface-context";
 import { setOrdinaryHostResolver } from "../../src/runtime/ordinary-host-resolver";
 import { getRequiredOrdinaryHostContext } from "../../src/runtime/ordinary-host-dispatch-context";
+import { getTaskCreationInvocationProvenance } from
+  "../../src/runtime/task-creation-return-context";
 import { describeResearchContextIndex, describeResearchContextMessage } from "../../src/tools/security/research-context";
 
 let initialOpenRouterKey: string | undefined;
@@ -331,6 +333,53 @@ describe("live mini-app tool execution context", () => {
     const captured = capturedContext as Record<string, unknown>;
     expect(captured["toolCallId"]).toBe("design-tool-call-1");
     expect(captured["liveMiniAppSession"]).toEqual(liveMiniAppSession);
+  });
+});
+
+describe("Task creation invocation provenance", () => {
+  test("binds exact foreground and background origins through approved tool execution", async () => {
+    register("task_origin_probe", async () => {
+      await Promise.resolve();
+      return JSON.stringify(getTaskCreationInvocationProvenance());
+    });
+    const invoke = (invocationState: NautiloState) =>
+      createNautiloToolInvocationSession(
+        createServerToolInvocationContext(
+          invocationState,
+          () => ({ status: "allowed" }),
+        ),
+      ).invoke(call("task_origin_probe"));
+
+    const foreground = await invoke(state({
+      trustedExecutionEntrypoint: "foreground.main",
+    }));
+    expect(foreground.status).toBe("success");
+    if (typeof foreground.content !== "string") {
+      throw new Error("foreground provenance probe returned non-text content");
+    }
+    expect(JSON.parse(foreground.content)).toEqual({
+      ownerId: "owner",
+      roomId: "room",
+      entrypoint: "foreground.main",
+    });
+
+    const background = await invoke(state({
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "run-1",
+    }));
+    expect(background.status).toBe("success");
+    if (typeof background.content !== "string") {
+      throw new Error("background provenance probe returned non-text content");
+    }
+    expect(JSON.parse(background.content)).toEqual({
+      ownerId: "owner",
+      roomId: "room",
+      entrypoint: "background.task",
+      taskId: "task-1",
+      taskRunId: "run-1",
+    });
+    expect(getTaskCreationInvocationProvenance()).toBeNull();
   });
 });
 

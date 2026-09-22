@@ -41,6 +41,8 @@ export * from "./local-tool-control";
 export * from "./security-scan-card";
 export * from "./task-api";
 export * from "./task-presentation";
+export * from "./protected-task-metadata";
+export * from "./protected-task-dto";
 export * from "./task-transcript-presentation";
 export * from "./test-mode";
 export * from "./tool-catalog";

@@ -135,6 +135,42 @@ export {
   type MemoryPayloadV1,
 } from "./memory/memory-payload-v1.ts";
 export {
+  TASK_CONTENT_AUTHORITY_RESOLVER_VERSION_V1,
+  resolveTaskContentAuthorityV1,
+  type RequesterPrivateNamespaceFactV1,
+  type RequesterPrivateNamespaceUnavailableReasonV1,
+  type ResolveTaskContentAuthorityInputV1,
+  type TaskContentAuthorityResolutionV1,
+  type TaskContentAuthorityUnavailableReasonV1,
+  type TaskContentAuthorityV1,
+  type TaskConversationShapeV1,
+  type TaskDeliveryDestinationsV1,
+  type TaskExecutionDeliveryShapeV1,
+  type TaskExecutorShapeV1,
+  type TaskMemoryExecutionShapeV1,
+  type TaskMessageDestinationV1,
+} from "./task/task-content-authority-v1.ts";
+export {
+  TASK_PAYLOAD_FORMAT_VERSION_V1,
+  TASK_PAYLOAD_MAX_METADATA_ENTRIES_V1,
+  TASK_PAYLOAD_MAX_METADATA_JSON_DEPTH_V1,
+  TASK_PAYLOAD_MAX_METADATA_JSON_NODES_V1,
+  TASK_PAYLOAD_MAX_METADATA_NAME_BYTES_V1,
+  TASK_PAYLOAD_MAX_METADATA_TEXT_BYTES_V1,
+  TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+  TASK_PAYLOAD_MAX_WIRE_BYTES_V1,
+  TASK_RUN_RESULT_PAYLOAD_FORMAT_VERSION_V1,
+  TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1,
+  TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1,
+  decodeTaskPayloadV1,
+  decodeTaskRunResultPayloadV1,
+  encodeTaskPayloadV1,
+  encodeTaskRunResultPayloadV1,
+  type TaskPayloadV1,
+  type TaskProtectedMetadataContentV1,
+  type TaskRunResultPayloadV1,
+} from "./task/task-payload-v1.ts";
+export {
   commitMemoryMutationV1,
   type MemoryMutationCommitmentInput,
 } from "./memory/memory-mutation-commitment.ts";
