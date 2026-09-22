@@ -55,6 +55,7 @@ import {
 } from "../../../../lib/desktop";
 import { useProfile } from "../../../../hooks/use-profile";
 import { useAuth } from "../../../../hooks/use-auth";
+import { useCan } from "../../../../hooks/use-can";
 import { useNotificationState } from "../../../../notifications/notification-state-context";
 import {
   buildMemberByHandle,
@@ -341,9 +342,10 @@ function ThreadComposer({
   const composer = useComposerRuntime();
   const composerText = useComposer((snapshot) => snapshot.text);
   const auth = useAuth();
+  const can = useCan();
   const viewerActorId = auth.viewer.sessionActorId ?? undefined;
   const composerRootRef = useRef<HTMLDivElement>(null);
-  const mentionAdapter = useMentionAdapterForRoom(members, viewerActorId);
+  const mentionAdapter = useMentionAdapterForRoom(members, viewerActorId, can("manage_rooms"));
   const memberByHandle = useMemo(() => buildMemberByHandle(members), [members]);
   const { state } = controller;
   const hasChildWork = state.activeJobIds.length > 0 ||

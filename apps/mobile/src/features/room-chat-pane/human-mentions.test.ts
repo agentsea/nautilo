@@ -22,7 +22,7 @@ const jeannie: RoomMemberDto = {
 
 describe("mobile Room Human mentions", () => {
   test("suggestions come from canonical roster handles and exclude the viewer", () => {
-    expect(mobileMentionCandidates([casey, jeannie], casey.actorId)).toEqual([
+    expect(mobileMentionCandidates([casey, jeannie], casey.actorId, true)).toEqual([
       {
         actorId: "room-audience-everyone",
         kind: "audience",
@@ -33,7 +33,7 @@ describe("mobile Room Human mentions", () => {
     ]);
   });
 
-  test("reserves everyone for the room audience instead of offering an ambiguous person", () => {
+  test("gates the room audience while retaining ordinary individual suggestions", () => {
     const namedEveryone: RoomMemberDto = {
       ...casey,
       actorId: "everyone-actor",
@@ -47,12 +47,26 @@ describe("mobile Room Human mentions", () => {
       displayName: "Everyone Genie",
       handle: "everyone",
     };
-    expect(mobileMentionCandidates([namedEveryone, genieEveryone], null)).toEqual([{
-      actorId: "room-audience-everyone",
-      kind: "audience",
-      displayName: "@everyone — Notify everyone in this room",
-      handle: "everyone",
+    expect(mobileMentionCandidates([casey, namedEveryone, genieEveryone], null, false)).toEqual([{
+      actorId: casey.actorId,
+      kind: "user",
+      displayName: "Casey",
+      handle: "casey",
     }]);
+    expect(mobileMentionCandidates([casey, namedEveryone, genieEveryone], null, true)).toEqual([
+      {
+        actorId: "room-audience-everyone",
+        kind: "audience",
+        displayName: "@everyone — Notify everyone in this room",
+        handle: "everyone",
+      },
+      {
+        actorId: casey.actorId,
+        kind: "user",
+        displayName: "Casey",
+        handle: "casey",
+      },
+    ]);
     expect(projectMobileHumanMentions("@everyone", [namedEveryone])).toEqual({
       content: "@everyone",
       mentionedHumanUserIds: [],

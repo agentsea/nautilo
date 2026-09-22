@@ -17,6 +17,7 @@ const MARKDOWN_CODE_RE = /```[\s\S]*?(?:```|$)|`[^`\n]*(?:`|$)/g;
 export function mobileMentionCandidates(
   members: readonly RoomMemberDto[],
   viewerActorId: string | null,
+  canMentionEveryone: boolean,
 ): ComposerMentionCandidate[] {
   const people = members
     .filter((member) => {
@@ -34,12 +35,13 @@ export function mobileMentionCandidates(
     .sort((left, right) =>
       left.displayName.localeCompare(right.displayName) || left.handle.localeCompare(right.handle),
     );
-  return [{
+  const everyone: ComposerMentionCandidate[] = canMentionEveryone ? [{
     actorId: "room-audience-everyone",
     kind: "audience",
     displayName: "@everyone — Notify everyone in this room",
     handle: "everyone",
-  }, ...people];
+  }] : [];
+  return [...everyone, ...people];
 }
 
 function withoutCode(text: string): string {

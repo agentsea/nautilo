@@ -157,6 +157,10 @@ import {
   parseStructuredHumanMentionIds,
   StructuredHumanMentionError,
 } from "./structured-human-mentions";
+import {
+  canNotifyEveryone,
+  manageRoomsRequiredForEveryoneResponse,
+} from "../lib/everyone-mention-authorization";
 import type { VerifiedOrdinaryOrigin } from "@nautilo/types";
 import {
   getProductionLiveShadowMessageComposition,
@@ -255,26 +259,39 @@ function decodeCanonicalBase64url(value: string): Uint8Array | null {
 }
 
 /**
- * A prepared Full request has to choose the direct or conductor topology
+ * Prepared protected requests have to pass current broadcast authorization,
+ * and a prepared Full request has to choose the direct or conductor topology,
  * before protected admission runs. Reading this content-free signed-plan bit
- * is only a routing hint: the admission result later replaces it as the
- * authoritative intent before persistence or conductor classification.
+ * supports that fail-closed entrance check for both Shadow and Full requests;
+ * the verified admission result later replaces it as the authoritative intent
+ * before persistence or conductor classification.
  */
-function preparedEveryoneRoutingHint(raw: unknown, roomId: string): boolean {
+function preparedEveryoneIntent(
+  raw: unknown,
+  roomId: string,
+): Readonly<{ requested: boolean; routingHint: boolean }> {
+  const absent = Object.freeze({ requested: false, routingHint: false });
   const parsed = liveShadowMessageSendAttemptV1Schema.safeParse(raw);
   if (
     !parsed.success
     || parsed.data.status !== "prepared"
     || !("authorizationScheme" in parsed.data)
-    || (parsed.data.authorizationScheme !== "human_ai_readable_v1"
+    || (parsed.data.authorizationScheme !== "human_peer_v1"
+      && parsed.data.authorizationScheme !== "human_ai_readable_v1"
       && parsed.data.authorizationScheme !== "human_ai_readable_v2")
-  ) return false;
+  ) return absent;
   const planBytes = decodeCanonicalBase64url(parsed.data.planBytesBase64url);
-  if (planBytes === null) return false;
+  if (planBytes === null) return absent;
   try {
-    const plan = decodeHumanAiReadableLiveShadowMessagePlan(planBytes);
+    const plan = parsed.data.authorizationScheme === "human_peer_v1"
+      ? decodeHumanPeerLiveShadowMessagePlanV1(planBytes)
+      : decodeHumanAiReadableLiveShadowMessagePlan(planBytes);
     try {
-      return plan.roomId === roomId && plan.mentionEveryone === true;
+      const requested = plan.mentionEveryone === true;
+      return Object.freeze({
+        requested,
+        routingHint: requested && plan.roomId === roomId,
+      });
     } finally {
       plan.namespaceHeadDigest.fill(0);
       plan.namespacePublicationDigest.fill(0);
@@ -282,7 +299,7 @@ function preparedEveryoneRoutingHint(raw: unknown, roomId: string): boolean {
       plan.namespaceAudienceFingerprint.fill(0);
     }
   } catch {
-    return false;
+    return absent;
   } finally {
     planBytes.fill(0);
   }
@@ -973,6 +990,10 @@ export async function dispatchRoomMessageSend(
     && opts.body.liveShadow !== null
     && "requestVersion" in opts.body.liveShadow
     && opts.body.liveShadow.requestVersion === 2;
+  const contentRaw = opts.body.content;
+  if (typeof contentRaw !== "string" && !fullPrepared) {
+    return reply.code(400).send({ error: "content must be a string" });
+  }
   let mentionEveryone: boolean;
   try {
     mentionEveryone = parseMentionEveryone(opts.body.mentionEveryone);
@@ -986,9 +1007,21 @@ export async function dispatchRoomMessageSend(
     }
     throw err;
   }
+  const protectedEveryoneIntent = preparedEveryoneIntent(
+    opts.body.liveShadow,
+    detail.id,
+  );
   const mentionEveryoneRoutingHint = fullPrepared
-    ? preparedEveryoneRoutingHint(opts.body.liveShadow, detail.id)
-    : mentionEveryone;
+    ? protectedEveryoneIntent.routingHint
+    : mentionEveryone || protectedEveryoneIntent.routingHint;
+  if (
+    (fullPrepared
+      ? protectedEveryoneIntent.requested
+      : mentionEveryone || protectedEveryoneIntent.requested)
+    && !(await canNotifyEveryone(sessionUserId))
+  ) {
+    return reply.code(403).send(manageRoomsRequiredForEveryoneResponse);
+  }
   // Full-encryption intent is accepted only from a successfully verified
   // signed plan later in the protected admission path.
   if (fullPrepared) mentionEveryone = false;
@@ -1007,10 +1040,6 @@ export async function dispatchRoomMessageSend(
       workspaceArtifactExternalIds: [],
       liveShadow: opts.body.liveShadow,
     });
-  }
-  const contentRaw = opts.body.content;
-  if (typeof contentRaw !== "string" && !fullPrepared) {
-    return reply.code(400).send({ error: "content must be a string" });
   }
   let content: string | undefined = typeof contentRaw === "string"
     ? normalizeHumanMessageText(contentRaw) : undefined;

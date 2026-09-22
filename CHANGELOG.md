@@ -8,9 +8,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 ## [Unreleased]
 
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
-  Mobile. It addresses current Human members through their existing notification
-  preferences, supports encrypted messages, and leaves Genies quiet unless
-  explicitly addressed.
+  Mobile for users with the `manage_rooms` permission. It addresses current Human
+  members through their existing notification preferences, supports encrypted
+  messages, and leaves Genies quiet unless explicitly addressed.
 
 - Desktop now presents the official Nautilo Community as an explicit first-run,
   Add Server, and Switch Server destination while keeping private servers and

@@ -22,8 +22,13 @@ import type {
   LiveShadowClientVerificationResult,
   LiveShadowTurnRecoveryResult,
 } from "@nautilo/lattice-bridge/server";
+import type { userHasCapability } from "@nautilo/trust";
 import { liveShadowLargeRequestRouteOptions } from
   "./live-shadow-request-boundary";
+import {
+  canNotifyEveryone,
+  manageRoomsRequiredForEveryoneResponse,
+} from "../lib/everyone-mention-authorization";
 
 export interface LiveShadowMessagePlanComposition {
   plan(input: LiveShadowTurnPlanInput): Promise<
@@ -252,6 +257,7 @@ export function liveShadowMessageRoutes(
   options: Readonly<{
     composition: LiveShadowMessagePlanComposition;
     clientSessions: LiveShadowMessageClientSessionInspector;
+    hasCapability?: typeof userHasCapability;
     now?: () => number;
   }>,
 ): void {
@@ -263,6 +269,12 @@ export function liveShadowMessageRoutes(
       if (authority === null) return reply.code(401).send({ error: "unauthorized" });
       const parsed = liveShadowMessagePlanRequestSchema.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
+      if (
+        parsed.data.mentionEveryone === true
+        && !(await canNotifyEveryone(authority.userId, options.hasCapability))
+      ) {
+        return reply.code(403).send(manageRoomsRequiredForEveryoneResponse);
+      }
       const session = options.clientSessions.inspect({
         clientActionSessionId: parsed.data.clientActionSessionId,
         actorId: authority.humanActorId,

@@ -85,7 +85,7 @@ describe("mention directive serialization", () => {
     const items = mentionItemsForRoom([
       human("everyone-actor", "Everyone Person", "11111111-1111-4111-8111-111111111111", "everyone"),
       agent("everyone-agent", "Everyone Genie", "everyone"),
-    ], undefined);
+    ], undefined, true);
     expect(items[0]).toEqual({
       id: EVERYONE_MENTION_ITEM_ID,
       type: "user",
@@ -94,9 +94,23 @@ describe("mention directive serialization", () => {
     });
     expect(items[1]?.id).toBe("11111111-1111-4111-8111-111111111111");
     expect(items).toHaveLength(2);
-    expect(mentionAtHandleFormatter.serialize(items[0]!)).toBe("@[everyone] ");
-    expect(projectHumanMentionDirectives(mentionAtHandleFormatter.serialize(items[0]!)))
+    expect(mentionAtHandleFormatter.serialize(items[0])).toBe("@[everyone] ");
+    expect(projectHumanMentionDirectives(mentionAtHandleFormatter.serialize(items[0])))
       .toEqual({ text: "@everyone ", mentionedHumanUserIds: [], mentionEveryone: true });
+  });
+
+  test("hides the room audience without manage_rooms while retaining a Human named everyone", () => {
+    const items = mentionItemsForRoom([
+      human("everyone-actor", "Everyone Person", "11111111-1111-4111-8111-111111111111", "everyone"),
+      agent("everyone-agent", "Everyone Genie", "everyone"),
+    ], undefined, false);
+
+    expect(items).toEqual([{
+      id: "11111111-1111-4111-8111-111111111111",
+      type: "user",
+      label: "everyone",
+      description: "Everyone Person",
+    }]);
   });
   test("Human picker items retain stable identity while sending readable handles", () => {
     const userId = "11111111-1111-4111-8111-111111111111";

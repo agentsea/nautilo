@@ -95,12 +95,14 @@ const EMPTY_LAST_SPOKE: ReadonlyMap<string, number> = new Map();
 export function useMentionAdapterForRoom(
   members: readonly RoomMemberDto[],
   viewerActorId: string | undefined,
+  canMentionEveryone: boolean,
   lastSpokeAtMs?: ReadonlyMap<string, number>,
 ): Unstable_TriggerAdapter {
   return useMemo(() => {
     const allRanked = mentionItemsForRoom(
       members,
       viewerActorId,
+      canMentionEveryone,
       lastSpokeAtMs ?? EMPTY_LAST_SPOKE,
     );
 
@@ -117,12 +119,13 @@ export function useMentionAdapterForRoom(
         return allRanked.filter(match).slice(0, 8);
       },
     };
-  }, [members, viewerActorId, lastSpokeAtMs]);
+  }, [members, viewerActorId, canMentionEveryone, lastSpokeAtMs]);
 }
 
 export function mentionItemsForRoom(
   members: readonly RoomMemberDto[],
   viewerActorId: string | undefined,
+  canMentionEveryone: boolean,
   lastSpokeAtMs: ReadonlyMap<string, number> = EMPTY_LAST_SPOKE,
 ): Unstable_TriggerItem[] {
   const eligible = members.filter((member) => {
@@ -132,12 +135,13 @@ export function mentionItemsForRoom(
     if (member.kind === "agent" && handle.toLowerCase() === "everyone") return false;
     return handle.length > 0;
   });
-  return [{
+  const everyone = canMentionEveryone ? [{
     id: EVERYONE_MENTION_ITEM_ID,
     type: "user",
     label: "everyone",
     description: "Notify everyone in this room",
-  }, ...sortMembersForMentionPicker(eligible, lastSpokeAtMs).map(memberToTriggerItem)];
+  } satisfies Unstable_TriggerItem] : [];
+  return [...everyone, ...sortMembersForMentionPicker(eligible, lastSpokeAtMs).map(memberToTriggerItem)];
 }
 
 /** Handle-keyed lookup for rendering suggestion rows (avatar + H/G suffix). */
