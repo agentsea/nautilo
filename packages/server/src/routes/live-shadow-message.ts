@@ -281,6 +281,7 @@ export function liveShadowMessageRoutes(
         clientActionSessionId: parsed.data.clientActionSessionId,
         clientDeviceId: parsed.data.clientDeviceId,
         idempotencyKey: parsed.data.idempotencyKey,
+        ...(parsed.data.mentionEveryone ? { mentionEveryone: true as const } : {}),
         now: now(),
       })));
     },

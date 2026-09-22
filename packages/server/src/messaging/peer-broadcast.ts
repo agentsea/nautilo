@@ -83,6 +83,8 @@ export async function peerBroadcastHumanMessage(args: {
   replyToMessageId?: number | undefined;
   /** M233 — validated current Human recipients selected by composer directives. */
   mentionedHumanUserIds?: readonly string[] | undefined;
+  /** Structured Room-wide Human mention intent. */
+  mentionEveryone?: boolean | undefined;
   /** Pre-normalized attachment statuses for HTTP response */
   attachmentStatuses: ChatAttachmentStatus[];
   /**
@@ -149,6 +151,7 @@ export async function peerBroadcastHumanMessage(args: {
         ...(room.kind === "subthread" ? { subthreadRoomId: room.id } : {}),
         notificationContext: {
           mentionedHumanUserIds: [...(args.mentionedHumanUserIds ?? [])],
+          ...(args.mentionEveryone === true ? { mentionEveryone: true } : {}),
           causalHumanUserId: null,
           causalHumanTurnId: null,
         },

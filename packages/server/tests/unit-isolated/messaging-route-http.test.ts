@@ -164,7 +164,11 @@ function fullForegroundPlan(operationId: string, sessionId: string): Uint8Array 
   });
 }
 
-function fullHumanAiReadablePlan(operationId: string, sessionId: string): Uint8Array {
+function fullHumanAiReadablePlan(
+  operationId: string,
+  sessionId: string,
+  mentionEveryone = false,
+): Uint8Array {
   return encodeHumanAiReadableLiveShadowMessagePlanV1({
     formatVersion: 1, purpose: "message.human_ai_readable_live_shadow_plan",
     operationId, clientIdempotencyKey: `client:${operationId}`, policyRevision: 4,
@@ -178,6 +182,7 @@ function fullHumanAiReadablePlan(operationId: string, sessionId: string): Uint8A
     namespacePublicationSetDigest: new Uint8Array(32).fill(3), namespaceAudienceFingerprint: new Uint8Array(32).fill(4),
     attemptCoordinate: `attempt:${operationId}`, issuedAt: unixTimestamp(1_800_300_000_000),
     deadlineAt: unixTimestamp(1_800_300_030_000),
+    ...(mentionEveryone ? { mentionEveryone: true as const } : {}),
   });
 }
 
@@ -503,6 +508,115 @@ afterAll(() => {
 });
 
 describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
+  test("routes an audience-only strict DM as Human history without directly waking its Genie", async () => {
+    peerBroadcastHumanMessage.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
+      roomId === R1_ID ? r1Detail() : null,
+    );
+    mocks.loadRoomRoster.mockImplementation(async () => r1Roster());
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "guest", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/rooms/${R1_ID}/messages`,
+        payload: { content: "Hello everyone", mentionEveryone: true },
+      });
+      expect(response.statusCode).toBe(202);
+      expect(peerBroadcastHumanMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ mentionEveryone: true }),
+      );
+      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects a malformed everyone intent at HTTP ingress", async () => {
+    peerBroadcastHumanMessage.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
+      roomId === R1_ID ? r1Detail() : null,
+    );
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "guest", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/rooms/${R1_ID}/messages`,
+        payload: { content: "Hello", mentionEveryone: "true" },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        code: "invalid_mention_everyone",
+      });
+      expect(peerBroadcastHumanMessage).not.toHaveBeenCalled();
+      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("ignores an unsigned outer everyone flag when the Full signed plan omits it", async () => {
+    invocationCapabilityEnabled = false;
+    peerBroadcastHumanMessage.mockClear();
+    finalizeProtectedHumanPeerMessage.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
+      roomId === R1_ID ? r1Detail() : null,
+    );
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "guest", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    const operationId = "full-human-ai-unsigned-everyone";
+    const planBytes = fullHumanAiReadablePlan(
+      operationId,
+      "22222222-3333-4444-8555-666666666666",
+    );
+    const requestBytes = humanAiReadableRequestBytes(planBytes);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/rooms/${R1_ID}/messages`,
+        payload: {
+          mentionEveryone: true,
+          clientActionSessionId: "browser:unsigned-everyone",
+          liveShadow: {
+            requestVersion: 2,
+            representationMode: "full_encryption",
+            status: "prepared",
+            operationId,
+            authorizationScheme: "human_ai_readable_v1",
+            planBytesBase64url: Buffer.from(planBytes).toString("base64url"),
+            signedRequestBytesBase64url:
+              Buffer.from(requestBytes).toString("base64url"),
+            encryptedPayloadBytesBase64url: "BA",
+            accessManifestBytesBase64url: "BQ",
+            namespaceEnvelopeBytesBase64url: "Bg",
+          },
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(peerBroadcastHumanMessage).not.toHaveBeenCalled();
+      expect(finalizeProtectedHumanPeerMessage).not.toHaveBeenCalled();
+      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+    } finally {
+      planBytes.fill(0);
+      requestBytes.fill(0);
+      invocationCapabilityEnabled = true;
+      await app.close();
+    }
+  });
+
   test.each(["direct", "human_peer", "group"] as const)("keeps ordinary fallback for a diagnostic-only failed %s plan", async (topology) => {
     peerBroadcastHumanMessage.mockClear();
     const mocks = makeTestMocks();
@@ -1061,6 +1175,9 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
         url: `/api/rooms/${R1_ID}/messages`,
         payload: {
           content: "Protected shared hello",
+          // The signed legacy plan has no everyone intent. The untrusted
+          // outer flag must be overwritten by the verified admission result.
+          mentionEveryone: true,
           liveShadow: {
             requestVersion: 1,
             status: "prepared",
@@ -1082,6 +1199,9 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
         liveShadow: { status: "human_verified", operationId },
       });
       expect(peerBroadcastHumanMessage).toHaveBeenCalledTimes(1);
+      expect(peerBroadcastHumanMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ mentionEveryone: false }),
+      );
       expect(published).toHaveBeenCalledTimes(1);
       expect(conductor).toHaveBeenCalledWith(expect.objectContaining({
         operationIds: [operationId],
@@ -1770,6 +1890,100 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     } finally {
       planBytes.fill(0); requestBytes.fill(0);
       uninstallProductionLiveShadowMessageComposition(app); await app.close();
+    }
+  });
+
+  test("uses signed everyone intent to keep a Full strict-DM send out of the direct wake path", async () => {
+    peerBroadcastHumanMessage.mockClear();
+    finalizeProtectedHumanPeerMessage.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
+      roomId === R1_ID ? r1Detail() : null,
+    );
+    mocks.loadRoomRoster.mockImplementation(async () => r1Roster());
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "guest", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    const operationId = "full-human-ai-everyone-dm";
+    const sessionId = "22222222-3333-4444-8555-666666666666";
+    const namespace = "11111111-2222-4333-8444-555555555555";
+    const planBytes = fullHumanAiReadablePlan(operationId, sessionId, true);
+    const requestBytes = humanAiReadableRequestBytes(planBytes);
+    const protectedMessage = {
+      dtoVersion: 2 as const,
+      projection: {
+        messageId: "73", sessionId, roomId: R1_ID, namespaceId: namespace,
+        role: "user" as const,
+        createdAt: new Date(1_800_300_000_000).toISOString(), editRevision: 0,
+      },
+      protectedPayload: {
+        status: "encrypted" as const,
+        cryptoObjectId: `message:live-shadow:v1:${"c".repeat(64)}`,
+        payloadVersion: 2 as const, keyClass: "ai" as const,
+        encryptedPayloadBytesBase64url: "BA",
+        accessManifestBytesBase64url: "BQ",
+        namespaceEnvelopeBytesBase64url: "Bg",
+      },
+    };
+    installProductionLiveShadowMessageComposition(app, {
+      recipients: new LiveShadowRecipientRegistry(),
+      plan: () => Promise.reject(new Error("not used")),
+      admitPrepared: () => Promise.reject(new Error("not used")),
+      admitHumanPeer: () => Promise.reject(new Error("not used")),
+      recordHumanPeerPublished: () => Promise.reject(new Error("not used")),
+      recordHumanPeerFallback: () => Promise.reject(new Error("not used")),
+      acknowledgeHumanPeer: () => Promise.reject(new Error("not used")),
+      planHumanPeerAcknowledgement: () => Promise.reject(new Error("not used")),
+      admitSharedAgent: async () => ({
+        status: "human_verified" as const,
+        representationMode: "full_encryption" as const,
+        operationId,
+        messageId: 73,
+        mentionEveryone: true as const,
+        protectedMessage,
+        protectedMessageDigest: new Uint8Array(32).fill(5),
+        senderDeviceSigningPublicKey: new Uint8Array(32).fill(6),
+      }),
+      recordSharedAgentPublished: async () => "published" as const,
+      recordFallback: () => Promise.resolve(true),
+      bindJob: () => Promise.resolve(true),
+      runDispatchOnce: (input) => input.work(),
+      recover: () => Promise.resolve({ status: "absent" }),
+      verifyClient: () => Promise.reject(new Error("not used")),
+      runAgentTurn: () => Promise.reject(new Error("must not run")),
+      shutdown: () => Promise.resolve(),
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/rooms/${R1_ID}/messages`,
+        payload: {
+          clientActionSessionId: "browser:full-everyone-dm",
+          liveShadow: {
+            requestVersion: 2,
+            representationMode: "full_encryption",
+            status: "prepared",
+            operationId,
+            authorizationScheme: "human_ai_readable_v1",
+            planBytesBase64url: Buffer.from(planBytes).toString("base64url"),
+            signedRequestBytesBase64url: Buffer.from(requestBytes).toString("base64url"),
+            encryptedPayloadBytesBase64url: "BA",
+            accessManifestBytesBase64url: "BQ",
+            namespaceEnvelopeBytesBase64url: "Bg",
+          },
+        },
+      });
+      expect(response.statusCode).toBe(202);
+      expect(finalizeProtectedHumanPeerMessage).toHaveBeenCalledTimes(1);
+      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+      expect(peerBroadcastHumanMessage).not.toHaveBeenCalled();
+    } finally {
+      planBytes.fill(0);
+      requestBytes.fill(0);
+      uninstallProductionLiveShadowMessageComposition(app);
+      await app.close();
     }
   });
 

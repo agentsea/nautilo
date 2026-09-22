@@ -370,6 +370,7 @@ function ThreadComposer({
         ...(projected.mentionedHumanUserIds.length > 0
           ? { mentionedHumanUserIds: projected.mentionedHumanUserIds }
           : {}),
+        ...(projected.mentionEveryone ? { mentionEveryone: true } : {}),
       },
     );
     if (sent) {

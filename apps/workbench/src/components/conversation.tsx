@@ -2533,6 +2533,7 @@ function Composer({
                   projectedMentions.mentionedHumanUserIds,
               }
             : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
           ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
         }),
       });

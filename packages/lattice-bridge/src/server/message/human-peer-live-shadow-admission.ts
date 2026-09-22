@@ -37,6 +37,7 @@ export type HumanPeerLiveShadowAdmissionResult =
       status: "human_verified" | "human_replayed";
       operationId: string;
       messageId: number;
+      mentionEveryone?: boolean;
       content: string;
       protectedMessage: ProtectedMessageDtoV2;
       protectedMessageDigest: Uint8Array;
@@ -49,6 +50,7 @@ export type HumanPeerLiveShadowAdmissionResult =
       representationMode: "full_encryption";
       operationId: string;
       messageId: number;
+      mentionEveryone?: boolean;
       protectedMessage: ProtectedMessageDtoV2;
       protectedMessageDigest: Uint8Array;
       senderDeviceSigningPublicKey: Uint8Array;
@@ -168,6 +170,7 @@ export async function admitAndPersistHumanPeerLiveShadowMessage(
         replyToMessageId: null,
         notificationContext: {
           mentionedHumanUserIds: [],
+          ...(plan.mentionEveryone ? { mentionEveryone: true } : {}),
           causalHumanUserId: null,
           causalHumanTurnId: null,
         },
@@ -248,6 +251,7 @@ export async function admitAndPersistHumanPeerLiveShadowMessage(
           : "human_verified" as const,
         operationId: plan.operationId,
         messageId: plan.humanMessageId,
+        ...(plan.mentionEveryone ? { mentionEveryone: true } : {}),
         ...(full ? { representationMode: "full_encryption" as const } : {
           content: admitted.ordinaryContent!,
         }),

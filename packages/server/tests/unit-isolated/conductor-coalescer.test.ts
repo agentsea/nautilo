@@ -99,6 +99,15 @@ describe("shouldBypassConductorCoalescing", () => {
     expect(shouldBypassConductorCoalescing(baseItem({ content: "plain ambient" }))).toBe(false);
   });
 
+  test("structured Room-wide Human mention bypasses", () => {
+    expect(
+      shouldBypassConductorCoalescing(baseItem({ mentionEveryone: true })),
+    ).toBe(true);
+    expect(
+      shouldBypassConductorCoalescing(baseItem({ mentionEveryone: false })),
+    ).toBe(false);
+  });
+
   test("paired-mobile origin bypasses because one signature covers one exact body", () => {
     expect(shouldBypassConductorCoalescing(baseItem({
       ordinaryOrigin: {

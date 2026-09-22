@@ -52,11 +52,14 @@ import {
 } from "./resource-directives";
 import {
   humanMentionDirectivesToPlainText,
+  parseEveryoneMentionDirectiveSegments,
   parseHumanMentionDirectiveSegments,
+  serializeEveryoneMentionDirective,
   serializeHumanMentionDirective,
 } from "./human-mention-directives";
 
 const NO_CATEGORIES: readonly Unstable_TriggerCategory[] = [];
+export const EVERYONE_MENTION_ITEM_ID = "__room_everyone__";
 
 export function shouldCaptureComposerSubmit(input: {
   key: string;
@@ -95,15 +98,11 @@ export function useMentionAdapterForRoom(
   lastSpokeAtMs?: ReadonlyMap<string, number>,
 ): Unstable_TriggerAdapter {
   return useMemo(() => {
-    const eligible = members.filter((m) => {
-      if (m.actorId === viewerActorId) return false;
-      if (m.kind === "user" && !m.userId) return false;
-      const handle = mentionHandleForMember(m);
-      return handle.length > 0;
-    });
-
-    const ranked = sortMembersForMentionPicker(eligible, lastSpokeAtMs ?? EMPTY_LAST_SPOKE);
-    const allRanked = ranked.map(memberToTriggerItem);
+    const allRanked = mentionItemsForRoom(
+      members,
+      viewerActorId,
+      lastSpokeAtMs ?? EMPTY_LAST_SPOKE,
+    );
 
     return {
       categories: () => NO_CATEGORIES,
@@ -119,6 +118,26 @@ export function useMentionAdapterForRoom(
       },
     };
   }, [members, viewerActorId, lastSpokeAtMs]);
+}
+
+export function mentionItemsForRoom(
+  members: readonly RoomMemberDto[],
+  viewerActorId: string | undefined,
+  lastSpokeAtMs: ReadonlyMap<string, number> = EMPTY_LAST_SPOKE,
+): Unstable_TriggerItem[] {
+  const eligible = members.filter((member) => {
+    if (member.actorId === viewerActorId) return false;
+    if (member.kind === "user" && !member.userId) return false;
+    const handle = mentionHandleForMember(member);
+    if (member.kind === "agent" && handle.toLowerCase() === "everyone") return false;
+    return handle.length > 0;
+  });
+  return [{
+    id: EVERYONE_MENTION_ITEM_ID,
+    type: "user",
+    label: "everyone",
+    description: "Notify everyone in this room",
+  }, ...sortMembersForMentionPicker(eligible, lastSpokeAtMs).map(memberToTriggerItem)];
 }
 
 /** Handle-keyed lookup for rendering suggestion rows (avatar + H/G suffix). */
@@ -158,6 +177,14 @@ export function MentionSuggestionRow({
   item: Unstable_TriggerItem;
   member: RoomMemberDto | undefined;
 }): ReactElement {
+  if (item.id === EVERYONE_MENTION_ITEM_ID && member === undefined) {
+    return (
+      <div className="min-w-0 flex-1">
+        <span className="font-medium text-foreground">@everyone</span>
+        <span className="ml-1.5 text-xs text-foreground-muted">— Notify everyone in this room</span>
+      </div>
+    );
+  }
   const suffix = member ? memberTypeSuffix(member) : item.type === "agent" ? "G" : "H";
 
   return (
@@ -339,6 +366,9 @@ export const mentionAtHandleFormatter: Unstable_DirectiveFormatter = {
 };
 
 function serializePlainDirective(item: Unstable_TriggerItem): string {
+  if (item.id === EVERYONE_MENTION_ITEM_ID && item.label === "everyone") {
+    return `${serializeEveryoneMentionDirective()} `;
+  }
   // Focused-resource chips retain their opaque entry id in Lexical, but that
   // id is strictly client-local. Preserve the directive so submit projection
   // can emit the public filename while the parallel focusedResources payload
@@ -353,6 +383,12 @@ function serializePlainDirective(item: Unstable_TriggerItem): string {
 }
 
 function parsePlainDirectives(text: string): Unstable_DirectiveSegment[] {
+  const everyoneSegments = parseEveryoneMentionDirectiveSegments(text);
+  if (everyoneSegments) {
+    return everyoneSegments.flatMap((segment) =>
+      segment.kind === "text" ? parsePlainDirectives(segment.text) : [segment],
+    );
+  }
   const humanSegments = parseHumanMentionDirectiveSegments(text);
   if (humanSegments) {
     return humanSegments.flatMap((segment) =>

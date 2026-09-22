@@ -7,8 +7,10 @@ import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import {
   applyLexicalComposerAccessibility,
   buildMemberByHandle,
+  EVERYONE_MENTION_ITEM_ID,
   mentionHandleForMember,
   mentionAtHandleFormatter,
+  mentionItemsForRoom,
   MentionSuggestionRow,
 } from "../../src/components/composer/MentionAdapter";
 import { projectResourceDirectives } from "../../src/components/composer/resource-directives";
@@ -79,6 +81,23 @@ describe("mentionHandleForMember", () => {
 });
 
 describe("mention directive serialization", () => {
+  test("offers the room audience before people and serializes it without a user UUID", () => {
+    const items = mentionItemsForRoom([
+      human("everyone-actor", "Everyone Person", "11111111-1111-4111-8111-111111111111", "everyone"),
+      agent("everyone-agent", "Everyone Genie", "everyone"),
+    ], undefined);
+    expect(items[0]).toEqual({
+      id: EVERYONE_MENTION_ITEM_ID,
+      type: "user",
+      label: "everyone",
+      description: "Notify everyone in this room",
+    });
+    expect(items[1]?.id).toBe("11111111-1111-4111-8111-111111111111");
+    expect(items).toHaveLength(2);
+    expect(mentionAtHandleFormatter.serialize(items[0]!)).toBe("@[everyone] ");
+    expect(projectHumanMentionDirectives(mentionAtHandleFormatter.serialize(items[0]!)))
+      .toEqual({ text: "@everyone ", mentionedHumanUserIds: [], mentionEveryone: true });
+  });
   test("Human picker items retain stable identity while sending readable handles", () => {
     const userId = "11111111-1111-4111-8111-111111111111";
     const serialized = mentionAtHandleFormatter.serialize({
@@ -216,6 +235,18 @@ describe("MentionSuggestionRow", () => {
     expect(html).toContain("data-testid=\"user-avatar\"");
     expect(html).toContain("data-user-id=\"user-sender\"");
     expect(html).toContain("(H)");
+  });
+
+  test("renders the room audience choice with its complete purpose", () => {
+    const html = renderToStaticMarkup(<MentionSuggestionRow item={{
+      id: EVERYONE_MENTION_ITEM_ID,
+      type: "user",
+      label: "everyone",
+      description: "Notify everyone in this room",
+    }} member={undefined} />);
+    expect(html).toContain("@everyone");
+    expect(html).toContain("Notify everyone in this room");
+    expect(html).not.toContain("data-testid=\"user-avatar\"");
   });
 
   test("renders agent initials glyph and (G) for agent members", () => {

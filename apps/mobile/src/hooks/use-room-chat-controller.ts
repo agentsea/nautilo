@@ -1395,6 +1395,7 @@ export function useRoomChatController({
           ...(projectedMentions.mentionedHumanUserIds.length > 0
             ? { mentionedHumanUserIds: projectedMentions.mentionedHumanUserIds }
             : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
         };
         const boundMessageBody = withClientActionSession(messageBody);
         const messagePath = `/api/rooms/${encodeURIComponent(roomId)}/messages`;

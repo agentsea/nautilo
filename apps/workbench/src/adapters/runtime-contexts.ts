@@ -543,6 +543,7 @@ export interface VoiceControls {
   sendText: (text: string, options?: {
     replyToMessageId?: number;
     mentionedHumanUserIds?: string[];
+    mentionEveryone?: boolean;
     onOptimisticUserMessage?: () => void;
     /**
      * D371 R2 — optional per-turn model override. Forwarded through the

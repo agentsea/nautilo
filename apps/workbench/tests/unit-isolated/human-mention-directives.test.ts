@@ -5,6 +5,7 @@ import {
   parseHumanMentionDirective,
   parseHumanMentionDirectiveSegments,
   projectHumanMentionDirectives,
+  serializeEveryoneMentionDirective,
   serializeHumanMentionDirective,
 } from "../../src/components/composer/human-mention-directives";
 
@@ -70,6 +71,50 @@ describe("Human mention directives", () => {
     expect(projectHumanMentionDirectives(bob).mentionedHumanUserIds).toEqual([
       BOB,
     ]);
+  });
+
+  test("projects the room audience directive to readable text and drops intent on deletion", () => {
+    const everyone = serializeEveryoneMentionDirective();
+    expect(projectHumanMentionDirectives(`Hello ${everyone}.`)).toEqual({
+      text: "Hello @everyone.",
+      mentionedHumanUserIds: [],
+      mentionEveryone: true,
+    });
+    expect(projectHumanMentionDirectives("Hello .")).toEqual({
+      text: "Hello .",
+      mentionedHumanUserIds: [],
+    });
+  });
+
+  test("recognizes standalone typed or pasted audience mentions outside code", () => {
+    expect(projectHumanMentionDirectives("typed @everyone and pasted (@everyone)."))
+      .toMatchObject({ mentionEveryone: true });
+    expect(projectHumanMentionDirectives("`@everyone @[everyone]`\n```txt\n@everyone\n@[everyone]\n```"))
+      .toEqual({
+        text: "`@everyone @everyone`\n```txt\n@everyone\n@everyone\n```",
+        mentionedHumanUserIds: [],
+      });
+    expect(projectHumanMentionDirectives(
+      "x@everyone @@everyone @everyone-home @everyone.example @everyone@example.com",
+    )).toEqual({
+      text: "x@everyone @@everyone @everyone-home @everyone.example @everyone@example.com",
+      mentionedHumanUserIds: [],
+    });
+  });
+
+  test("keeps a selected Human named everyone distinct and supports direct plus room audience", () => {
+    const namedEveryone = serializeHumanMentionDirective(ALICE, "everyone");
+    expect(projectHumanMentionDirectives(namedEveryone)).toEqual({
+      text: "@everyone",
+      mentionedHumanUserIds: [ALICE],
+    });
+    expect(projectHumanMentionDirectives(
+      `${serializeHumanMentionDirective(BOB, "bob")} ${serializeEveryoneMentionDirective()}`,
+    )).toEqual({
+      text: "@bob @everyone",
+      mentionedHumanUserIds: [BOB],
+      mentionEveryone: true,
+    });
   });
 
   test("resolves exact plaintext handles against current Human members", () => {

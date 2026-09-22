@@ -153,6 +153,7 @@ import {
 } from "../lib/maintenance-rejection";
 import { getClientActionBindingRegistry } from "../realtime/client-action-binding-registry";
 import {
+  parseMentionEveryone,
   parseStructuredHumanMentionIds,
   StructuredHumanMentionError,
 } from "./structured-human-mentions";
@@ -183,6 +184,8 @@ export type RoomPostMessageBody = {
     clientActionSessionId?: unknown;
   /** M233 — picker-authored stable Human recipient ids; never inferred from content. */
   mentionedHumanUserIds?: unknown;
+  /** Structured Room-wide Human mention intent. */
+  mentionEveryone?: boolean;
   replyToMessageId?: number | null;
   attachments?: unknown;
   /** D356 — metadata-only "focus on these artifacts" references (validated downstream). */
@@ -248,6 +251,40 @@ function decodeCanonicalBase64url(value: string): Uint8Array | null {
       : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * A prepared Full request has to choose the direct or conductor topology
+ * before protected admission runs. Reading this content-free signed-plan bit
+ * is only a routing hint: the admission result later replaces it as the
+ * authoritative intent before persistence or conductor classification.
+ */
+function preparedEveryoneRoutingHint(raw: unknown, roomId: string): boolean {
+  const parsed = liveShadowMessageSendAttemptV1Schema.safeParse(raw);
+  if (
+    !parsed.success
+    || parsed.data.status !== "prepared"
+    || !("authorizationScheme" in parsed.data)
+    || (parsed.data.authorizationScheme !== "human_ai_readable_v1"
+      && parsed.data.authorizationScheme !== "human_ai_readable_v2")
+  ) return false;
+  const planBytes = decodeCanonicalBase64url(parsed.data.planBytesBase64url);
+  if (planBytes === null) return false;
+  try {
+    const plan = decodeHumanAiReadableLiveShadowMessagePlan(planBytes);
+    try {
+      return plan.roomId === roomId && plan.mentionEveryone === true;
+    } finally {
+      plan.namespaceHeadDigest.fill(0);
+      plan.namespacePublicationDigest.fill(0);
+      plan.namespacePublicationSetDigest.fill(0);
+      plan.namespaceAudienceFingerprint.fill(0);
+    }
+  } catch {
+    return false;
+  } finally {
+    planBytes.fill(0);
   }
 }
 
@@ -399,6 +436,7 @@ type GroupRoomConductorAfterPersistArgs = {
    */
   focusedResources: ChatFocusedResourceRef[];
   mentionedHumanUserIds: string[];
+  mentionEveryone: boolean;
   replyToMessageId?: number;
   uiSelectedBotActorId: string | null;
   resumeTurnId?: string;
@@ -476,6 +514,7 @@ async function enqueueConductorBotWake(args: {
     artifactRefs: source.artifactRefs,
     focusedResources: source.focusedResources,
     mentionedHumanUserIds: source.mentionedHumanUserIds,
+    mentionEveryone: source.mentionEveryone,
     ...(source.ordinaryOrigin ? { ordinaryOrigin: source.ordinaryOrigin } : {}),
     ...(source.model ? { model: source.model } : {}),
     ...(source.replyToMessageId !== undefined
@@ -934,6 +973,25 @@ export async function dispatchRoomMessageSend(
     && opts.body.liveShadow !== null
     && "requestVersion" in opts.body.liveShadow
     && opts.body.liveShadow.requestVersion === 2;
+  let mentionEveryone: boolean;
+  try {
+    mentionEveryone = parseMentionEveryone(opts.body.mentionEveryone);
+  } catch (err) {
+    if (err instanceof StructuredHumanMentionError) {
+      return reply.code(400).send({
+        error: "invalid_mention_everyone",
+        code: "invalid_mention_everyone",
+        message: err.message,
+      });
+    }
+    throw err;
+  }
+  const mentionEveryoneRoutingHint = fullPrepared
+    ? preparedEveryoneRoutingHint(opts.body.liveShadow, detail.id)
+    : mentionEveryone;
+  // Full-encryption intent is accepted only from a successfully verified
+  // signed plan later in the protected admission path.
+  if (fullPrepared) mentionEveryone = false;
   if (fullPrepared && detail.members.every((member) => member.kind === "user")) {
     if (attachmentRefs.length > 0 || workspaceArtifactExternalIds.length > 0
       || opts.body.replyToMessageId != null || opts.body.cardContinuation != null
@@ -945,7 +1003,8 @@ export async function dispatchRoomMessageSend(
       chatDeps: resolvedChatRoutesDeps(app, opts.chatDeps),
       alias: opts.aliasHttpContract === true,
       sessionUserId,
-      attachmentRefs: [], mentionedHumanUserIds: [], workspaceArtifactExternalIds: [],
+      attachmentRefs: [], mentionedHumanUserIds: [], mentionEveryone,
+      workspaceArtifactExternalIds: [],
       liveShadow: opts.body.liveShadow,
     });
   }
@@ -1052,6 +1111,7 @@ export async function dispatchRoomMessageSend(
       ...(content === undefined ? {} : { content }),
       attachmentRefs,
       mentionedHumanUserIds,
+      mentionEveryone,
       workspaceArtifactExternalIds,
       ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
       ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
@@ -1110,8 +1170,13 @@ export async function dispatchRoomMessageSend(
         (member) =>
           typeof member.handle === "string" &&
           member.handle.length > 0 &&
+          !(mentionEveryoneRoutingHint
+            && member.handle.trim().toLowerCase() === "everyone") &&
           parseAgentMentions(contentRaw, member.handle).hasMention,
       ));
+    const audienceOnlyDm = isDm
+      && mentionEveryoneRoutingHint
+      && !hasExplicitAgentTarget;
 
     let canInvokeAgent = true;
     try {
@@ -1123,7 +1188,7 @@ export async function dispatchRoomMessageSend(
     } catch (err) {
       if (!(err instanceof AgentInvocationDeniedError)) throw err;
       canInvokeAgent = false;
-      if (isDm || hasExplicitAgentTarget) {
+      if ((isDm && !audienceOnlyDm) || hasExplicitAgentTarget) {
         return reply.code(403).send(toActionCapabilityHttpDenial(err));
       }
     }
@@ -1140,6 +1205,7 @@ export async function dispatchRoomMessageSend(
         ...(content === undefined ? {} : { content }),
         attachmentRefs,
         mentionedHumanUserIds,
+        mentionEveryone,
         workspaceArtifactExternalIds,
         ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
         ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
@@ -1160,7 +1226,7 @@ export async function dispatchRoomMessageSend(
       throw err;
     }
 
-    if (!isDm) {
+    if (!isDm || mentionEveryoneRoutingHint) {
       return dispatchGroupRoomMessage(app, request, reply, {
         detail,
         chatDeps,
@@ -1180,6 +1246,7 @@ export async function dispatchRoomMessageSend(
         artifactRefs,
         focusedResources,
         mentionedHumanUserIds,
+        mentionEveryone,
         ...(opts.ordinaryOrigin ? { ordinaryOrigin: opts.ordinaryOrigin } : {}),
         workspaceArtifactExternalIds,
         ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
@@ -1257,6 +1324,7 @@ export async function dispatchRoomMessageSend(
           senderDeviceSigningPublicKey: Uint8Array;
           messageId: number;
           representationMode: "shadow_encryption" | "full_encryption";
+          mentionEveryone?: boolean;
         }>
       | undefined;
     let liveShadowSharedExecutionId: string | undefined;
@@ -1414,7 +1482,13 @@ export async function dispatchRoomMessageSend(
                     admitted.senderDeviceSigningPublicKey.slice(),
                   messageId: admitted.messageId,
                   representationMode: decoded.representationMode,
+                  ...("mentionEveryone" in admitted
+                    && admitted.mentionEveryone === true
+                    ? { mentionEveryone: true }
+                    : {}),
                 });
+                mentionEveryone = "mentionEveryone" in admitted
+                  && admitted.mentionEveryone === true;
                 if (decoded.representationMode === "full_encryption") {
                   // The foreground candidate replaces this content-free
                   // transient placeholder with the authenticated device-opened
@@ -1495,6 +1569,8 @@ export async function dispatchRoomMessageSend(
                 admitted.status === "human_verified"
                 || admitted.status === "human_replayed"
               ) {
+                mentionEveryone = "mentionEveryone" in admitted
+                  && admitted.mentionEveryone === true;
                 if (decoded.representationMode === "full_encryption") {
                   const signedPlan = decodeLiveShadowMessagePlanV4(decoded.planBytes);
                   try {
@@ -1875,6 +1951,7 @@ export async function dispatchRoomMessageSend(
         artifactRefs,
         focusedResources,
         mentionedHumanUserIds,
+        mentionEveryone,
         ...(opts.ordinaryOrigin ? { ordinaryOrigin: opts.ordinaryOrigin } : {}),
         ...(model ? { model } : {}),
         ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
@@ -2000,6 +2077,7 @@ export async function dispatchRoomMessageSend(
     ...(content === undefined ? {} : { content }),
     attachmentRefs,
     mentionedHumanUserIds,
+    mentionEveryone,
     workspaceArtifactExternalIds,
     liveShadow: opts.body.liveShadow,
     ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
@@ -2019,6 +2097,7 @@ async function dispatchHumanOnlyRoomMessage(
     content?: string;
     attachmentRefs: string[];
     mentionedHumanUserIds: string[];
+    mentionEveryone: boolean;
     workspaceArtifactExternalIds: string[];
     canonicalRoomNamespaceId?: string;
     replyToMessageId?: number;
@@ -2050,6 +2129,7 @@ async function dispatchHumanOnlyRoomMessage(
           messageId: number;
           content?: string;
           representationMode: "shadow_encryption" | "full_encryption";
+          mentionEveryone?: boolean;
         }>
       | undefined;
     let humanPeerFallback:
@@ -2067,6 +2147,7 @@ async function dispatchHumanOnlyRoomMessage(
       | undefined;
     let sharedAgent: typeof humanPeer;
     let sharedAgentFallback: typeof humanPeerFallback;
+    let effectiveMentionEveryone = opts.mentionEveryone;
     const parsed = liveShadowMessageSendAttemptV1Schema.safeParse(
       opts.liveShadow,
     );
@@ -2117,7 +2198,13 @@ async function dispatchHumanOnlyRoomMessage(
               ...(admitted.representationMode === "full_encryption"
                 ? {} : { content: admitted.content }),
               representationMode: decoded.representationMode,
+              ...("mentionEveryone" in admitted
+                && admitted.mentionEveryone === true
+                ? { mentionEveryone: true }
+                : {}),
             });
+            effectiveMentionEveryone = "mentionEveryone" in admitted
+              && admitted.mentionEveryone === true;
           } else if (admitted.status === "ordinary_fallback") {
             humanPeerFallback = Object.freeze({
               operationId: admitted.operationId,
@@ -2188,7 +2275,13 @@ async function dispatchHumanOnlyRoomMessage(
               messageId: admitted.messageId,
               content: admitted.content,
               representationMode: "shadow_encryption",
+              ...("mentionEveryone" in admitted
+                && admitted.mentionEveryone === true
+                ? { mentionEveryone: true }
+                : {}),
             });
+            effectiveMentionEveryone = "mentionEveryone" in admitted
+              && admitted.mentionEveryone === true;
             admitted.protectedMessageDigest.fill(0);
             admitted.senderDeviceSigningPublicKey.fill(0);
           }
@@ -2251,6 +2344,7 @@ async function dispatchHumanOnlyRoomMessage(
       attachmentStatuses: normalizedAttachments.statuses,
       workspaceArtifactExternalIds: opts.workspaceArtifactExternalIds,
       mentionedHumanUserIds: opts.mentionedHumanUserIds,
+      mentionEveryone: effectiveMentionEveryone,
       ...(opts.canonicalRoomNamespaceId
         ? { canonicalRoomNamespaceId: opts.canonicalRoomNamespaceId }
         : {}),
@@ -2593,6 +2687,7 @@ async function dispatchGroupRoomMessage(
     artifactRefs: ChatArtifactRef[];
     focusedResources: ChatFocusedResourceRef[];
     mentionedHumanUserIds: string[];
+    mentionEveryone: boolean;
     ordinaryOrigin?: VerifiedOrdinaryOrigin;
     /** D424 — external workspace-artifact ids that may become cards. */
     workspaceArtifactExternalIds: string[];
@@ -2640,10 +2735,12 @@ async function dispatchGroupRoomMessage(
     artifactRefs,
     focusedResources,
     mentionedHumanUserIds,
+    mentionEveryone: bodyMentionEveryone,
     workspaceArtifactExternalIds,
     searchHistoryFlag,
     uiSelectedBotActorId,
   } = opts;
+  let mentionEveryone = bodyMentionEveryone;
   const replyToMessageId = opts.replyToMessageId;
   const model = opts.model ?? null;
   const canonicalRoomNamespaceId = opts.canonicalRoomNamespaceId;
@@ -2705,6 +2802,7 @@ async function dispatchGroupRoomMessage(
             messageId: number;
             content?: string;
             representationMode?: "shadow_encryption" | "full_encryption";
+            mentionEveryone?: boolean;
           }>
         | undefined;
       let sharedAgentFallback:
@@ -2793,7 +2891,13 @@ async function dispatchGroupRoomMessage(
                 senderDeviceSigningPublicKey:
                   admitted.senderDeviceSigningPublicKey.slice(),
                 messageId: admitted.messageId,
+                ...("mentionEveryone" in admitted
+                  && admitted.mentionEveryone === true
+                  ? { mentionEveryone: true }
+                  : {}),
               });
+              mentionEveryone = "mentionEveryone" in admitted
+                && admitted.mentionEveryone === true;
             }
             if (admitted.status !== "ordinary_fallback") {
               admitted.protectedMessageDigest.fill(0);
@@ -2849,6 +2953,7 @@ async function dispatchGroupRoomMessage(
         attachmentStatuses: normalizedAttachments.statuses,
         workspaceArtifactExternalIds,
         mentionedHumanUserIds,
+        mentionEveryone,
         ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
         ...(sharedAgent === undefined && sharedAgentFallback?.messageId == null
           ? {}
@@ -3039,6 +3144,7 @@ async function dispatchGroupRoomMessage(
     artifactRefs,
     focusedResources,
     mentionedHumanUserIds,
+    mentionEveryone,
     ...(opts.ordinaryOrigin ? { ordinaryOrigin: opts.ordinaryOrigin } : {}),
     ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
     uiSelectedBotActorId,
@@ -3118,6 +3224,7 @@ function scheduleGroupRoomConductorAfterPersist(args: GroupRoomConductorAfterPer
     attachmentRefs: args.attachmentRefs,
     artifactRefs: args.artifactRefs,
     focusedResources: args.focusedResources,
+    mentionEveryone: args.mentionEveryone,
     ...(args.replyToMessageId !== undefined ? { replyToMessageId: args.replyToMessageId } : {}),
     uiSelectedBotActorId: args.uiSelectedBotActorId,
     searchHistoryFlag: args.searchHistoryFlag,
@@ -3205,6 +3312,7 @@ async function flushCoalescedGroupRoomConductorAfterPersist(
     attachmentRefs: merged.attachmentRefs,
     artifactRefs: merged.artifactRefs,
     focusedResources: merged.focusedResources ?? [],
+    mentionEveryone: merged.mentionEveryone === true,
     ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
     uiSelectedBotActorId: merged.uiSelectedBotActorId ?? null,
     searchHistoryFlag: merged.searchHistoryFlag,
@@ -3495,6 +3603,7 @@ async function runGroupRoomConductorAfterPersist(
           userActorId: sessionActorId,
           message: {
             content: routingContent,
+            ...(args.mentionEveryone ? { mentionEveryone: true } : {}),
             sourceMessageId: persistedHuman.messageId,
             ...(args.burstHint ? { burstHint: args.burstHint } : {}),
             replyToMessageId: replyToMessageId ?? null,

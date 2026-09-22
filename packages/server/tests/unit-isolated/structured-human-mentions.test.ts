@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  parseMentionEveryone,
   parseStructuredHumanMentionIds,
   StructuredHumanMentionError,
 } from "../../src/messaging/structured-human-mentions";
@@ -64,5 +65,21 @@ describe("parseStructuredHumanMentionIds", () => {
       "must be an array",
     );
     expect(parseStructuredHumanMentionIds(undefined, room)).toEqual([]);
+  });
+});
+
+describe("parseMentionEveryone", () => {
+  test("defaults absence to false and accepts only booleans", () => {
+    expect(parseMentionEveryone(undefined)).toBe(false);
+    expect(parseMentionEveryone(false)).toBe(false);
+    expect(parseMentionEveryone(true)).toBe(true);
+  });
+
+  test("rejects truthy, null, and structured impostors", () => {
+    for (const value of ["true", 1, null, {}, []]) {
+      expect(() => parseMentionEveryone(value)).toThrow(
+        "mentionEveryone must be a boolean",
+      );
+    }
   });
 });

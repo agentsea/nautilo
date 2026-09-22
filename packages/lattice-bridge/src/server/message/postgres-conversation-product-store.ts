@@ -2006,6 +2006,8 @@ export class PostgresConversationProductStore
             },
           }],
           notificationContext: {
+            ...(input.notificationContext.mentionEveryone === true
+              ? { mentionEveryone: true } : {}),
             mentionedHumanUserIds: [
               ...input.notificationContext.mentionedHumanUserIds,
             ],
@@ -2445,6 +2447,8 @@ export class PostgresConversationProductStore
             },
           }],
           notificationContext: {
+            ...(input.notificationContext.mentionEveryone === true
+              ? { mentionEveryone: true } : {}),
             mentionedHumanUserIds: [
               ...input.notificationContext.mentionedHumanUserIds,
             ],

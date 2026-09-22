@@ -39,6 +39,7 @@ export interface ThreadRoomApi {
       workspacePath: string | null;
       replyToMessageId?: number;
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
     },
   ): Promise<{ messageId: number | null; jobId: string | null }>;
   stopRoom(roomId: string): Promise<unknown>;
@@ -132,6 +133,7 @@ export interface ThreadRoomController {
     options?: {
       replyToMessageId?: number;
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
     },
   ): Promise<boolean>;
   markRead: () => Promise<boolean>;
@@ -221,6 +223,7 @@ export function useThreadRoomController({
     options?: {
       replyToMessageId?: number;
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
     },
   ): Promise<boolean> => {
     const current = stateRef.current;
@@ -256,6 +259,7 @@ export function useThreadRoomController({
         options.mentionedHumanUserIds.length > 0
           ? { mentionedHumanUserIds: options.mentionedHumanUserIds }
           : {}),
+        ...(options?.mentionEveryone ? { mentionEveryone: true } : {}),
       };
       const result = await messageOperations.sendRoomMessage(targetRoomId, body);
       dispatch({
