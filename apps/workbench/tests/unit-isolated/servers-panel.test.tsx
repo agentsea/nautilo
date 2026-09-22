@@ -108,6 +108,36 @@ async function renderPanel(activeSession = true) {
 }
 
 describe("ServersPanel", () => {
+  test.each([false, true])("connects a second server with only one saved server (signedIn=%s)", async (signedIn) => {
+    listMock.mockImplementationOnce(async () => ({
+      servers: [{
+        url: "https://alpha.example",
+        iconUrl: "",
+        connection: "live" as const,
+        active: true,
+        signedIn,
+        notificationSummary: {
+          state: "fresh" as const,
+          unreadCount: 0,
+          importantUnreadCount: 0,
+        },
+      }],
+      aggregate: { unreadCount: 0, importantUnreadCount: 0, unavailableServerCount: 0 },
+    }));
+    const container = await renderPanel();
+    expect(container.querySelectorAll('[data-testid="servers-panel-row"]')).toHaveLength(1);
+    const connect = container.querySelector<HTMLButtonElement>('[data-testid="servers-panel-add"]');
+    expect(connect).not.toBeNull();
+    expect(connect?.textContent).toContain("Connect to server…");
+    expect(connect?.disabled).toBe(false);
+
+    await act(async () => {
+      connect?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(addMock).toHaveBeenCalledTimes(1);
+  });
+
   test("does not list or subscribe while inactive, then refreshes exactly once on activation", async () => {
     const container = await renderPanel(false);
     expect(listMock).not.toHaveBeenCalled();
