@@ -56,6 +56,9 @@ store update, or Desktop/Host installation.
 
 ### Fixed
 
+- Authenticated Guests can attach files to messages in their selected Room,
+  while unresolved and blocked conversations continue to reject uploads.
+
 - Server Admin places the Nautilo Gateway URL and key together at the end of
   API Keys, following the separate OpenAI-compatible gateway.
 

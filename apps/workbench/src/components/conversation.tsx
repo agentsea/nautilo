@@ -157,6 +157,7 @@ import {
   preflightComposerChatAttachment,
   type ComposerChatAttachmentSkip,
 } from "../lib/composer-attachment-preflight";
+import { resolveComposerMessageAttachmentRoomId } from "../lib/composer-message-attachment-authority";
 import { useToast } from "./toast";
 import { AssistantMarkdownTextPrimitive } from "./assistant-markdown-text";
 import {
@@ -2019,10 +2020,10 @@ function Composer({
   const auth = useAuth();
   const can = useCan();
   const canInvokeAgents = can("invoke_agents");
-  const canWriteArtifacts = can("write_artifacts");
   const composerText = useComposer((s) => s.text);
   const composerRuntime = useComposerRuntime();
   const browserAttachmentInputRef = useRef<HTMLInputElement>(null);
+  const browserAttachmentPickerRoomIdRef = useRef<string | null>(null);
   useEffect(() => {
     setHasUnsentComposerText(composerText.trim().length > 0);
     return () => setHasUnsentComposerText(false);
@@ -2280,6 +2281,13 @@ function Composer({
     roomReady &&
     voice.roomBindingReady &&
     !directHumanInteractionBlocked;
+  const messageAttachmentRoomId = resolveComposerMessageAttachmentRoomId({
+    viewer: auth.viewer,
+    activeResolution: roomNav.activeResolution,
+    directHumanInteractionBlocked,
+  });
+  const messageAttachmentRoomIdRef = useRef(messageAttachmentRoomId);
+  messageAttachmentRoomIdRef.current = messageAttachmentRoomId;
   // ISSUE-D145 — composer-disabled tooltip extracted into
   // `pickComposerDisabledTitle` so both `authenticated_disconnected`
   // AND `authenticated_resuming` produce the honest "Server
@@ -2617,15 +2625,20 @@ function Composer({
     const types = Array.from(e.dataTransfer.types);
     if (
       types.includes(NAUTILO_ARTIFACT_REF_MIME) ||
-      (canWriteArtifacts && types.includes("Files")) ||
+      (messageAttachmentRoomId !== null && types.includes("Files")) ||
       (isDesktop && auth.viewer.isVerified && types.includes(NAUTILO_FILE_REF_MIME))
     ) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
-  }, [auth.viewer.isVerified, canWriteArtifacts]);
+  }, [auth.viewer.isVerified, messageAttachmentRoomId]);
 
-  const queueBrowserComposerFiles = useCallback((files: Iterable<File>) => {
+  const queueBrowserComposerFiles = useCallback((
+    files: Iterable<File>,
+    expectedRoomId?: string,
+  ) => {
+    const uploadRoomId = messageAttachmentRoomIdRef.current;
+    if (!uploadRoomId || (expectedRoomId !== undefined && uploadRoomId !== expectedRoomId)) return;
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of files) {
       const pf = preflightComposerChatAttachment(file.name);
@@ -2647,13 +2660,13 @@ function Composer({
         break;
       }
       setAttachmentError(null);
-      void uploadComposerBlob(id, file, file.name, { roomId: activeRoomId });
+      void uploadComposerBlob(id, file, file.name, { roomId: uploadRoomId });
     }
     if (skipped.length > 0) {
       const { title, message } = formatComposerAttachmentSkipToast(skipped);
       toast.show({ variant: "warning", title, message });
     }
-  }, [activeRoomId, toast]);
+  }, [toast]);
 
   const handleComposerDrop = useCallback(
     (e: DragEvent<HTMLElement>) => {
@@ -2687,7 +2700,7 @@ function Composer({
         return;
       }
       if (e.dataTransfer.files.length > 0) {
-        if (!canWriteArtifacts) return;
+        if (!messageAttachmentRoomIdRef.current) return;
         e.preventDefault();
         queueBrowserComposerFiles(e.dataTransfer.files);
         return;
@@ -2728,12 +2741,14 @@ function Composer({
         }
       });
     },
-    [auth.viewer.isVerified, canWriteArtifacts, composerRuntime, queueBrowserComposerFiles],
+    [auth.viewer.isVerified, composerRuntime, queueBrowserComposerFiles],
   );
 
   const handlePaperclipClick = useCallback(async () => {
-    if (!canWriteArtifacts) return;
+    const pickerRoomId = messageAttachmentRoomIdRef.current;
+    if (!pickerRoomId) return;
     if (!isDesktop || !desktopAPI) {
+      browserAttachmentPickerRoomIdRef.current = pickerRoomId;
       browserAttachmentInputRef.current?.click();
       return;
     }
@@ -2749,6 +2764,10 @@ function Composer({
       setPickingAttachments(false);
     }
     if (pickedFiles.length === 0) return;
+    if (messageAttachmentRoomIdRef.current !== pickerRoomId) {
+      setAttachmentError("Files were not attached because the active room changed.");
+      return;
+    }
 
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of pickedFiles) {
@@ -2771,16 +2790,26 @@ function Composer({
         break;
       }
       setAttachmentError(null);
-      void uploadComposerAttachment(id, file, { roomId: activeRoomId });
+      void uploadComposerAttachment(id, file, { roomId: pickerRoomId });
     }
     if (skipped.length > 0) {
       const { title, message } = formatComposerAttachmentSkipToast(skipped);
       toast.show({ variant: "warning", title, message });
     }
-  }, [activeRoomId, canWriteArtifacts, toast]);
+  }, [toast]);
 
   const handleBrowserAttachmentChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.currentTarget.files) queueBrowserComposerFiles(e.currentTarget.files);
+    const pickerRoomId = browserAttachmentPickerRoomIdRef.current;
+    browserAttachmentPickerRoomIdRef.current = null;
+    if (
+      e.currentTarget.files &&
+      pickerRoomId &&
+      messageAttachmentRoomIdRef.current === pickerRoomId
+    ) {
+      queueBrowserComposerFiles(e.currentTarget.files, pickerRoomId);
+    } else if (e.currentTarget.files?.length) {
+      setAttachmentError("Files were not attached because the active room changed.");
+    }
     e.currentTarget.value = "";
   }, [queueBrowserComposerFiles]);
 
@@ -2941,7 +2970,7 @@ function Composer({
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-        {canWriteArtifacts && (
+        {messageAttachmentRoomId !== null && (
           <>
           <input
             ref={browserAttachmentInputRef}
