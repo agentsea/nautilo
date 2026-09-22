@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   agentBrowserArgv,
   agentBrowserSnapshotJsonArgv,
@@ -7,7 +7,6 @@ import {
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
   agentBrowserViewportEvalArgv,
-  browserImageCoordsToCss,
   parseAgentBrowserSnapshot,
   BROWSER_EMPTY_DOM_TEXT_HINT,
   isBrowserTool,
@@ -23,6 +22,11 @@ import {
 } from "../browser-page-read-dispatch.ts";
 import type { BrowserPageSnapshotStore } from "../browser-page-snapshot-store.ts";
 import { browserObservationSettleExpression } from "../browser-observation-settle.ts";
+import type {
+  BrowserVisualObservationBinding,
+  BrowserVisualObservationEnvelope,
+  BrowserVisualExtraction,
+} from "../browser-visual-observation.ts";
 import {
   FIXED_DESKTOP_DISPATCH_NOT_HANDLED,
   type FixedDesktopDispatchHandler,
@@ -53,8 +57,11 @@ export interface InteractiveBrowserDispatchPorts {
     readonly action: "back" | "forward" | "reload";
   }) => Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }>) | undefined;
   readonly snapshotStore?: BrowserPageSnapshotStore | undefined;
-  readonly getCoordinateScale: (session: string) => number | undefined;
-  readonly setCoordinateScale: (session: string, scale: number) => void;
+  readonly getCoordinateScale: (session: string) => { readonly x: number; readonly y: number } | undefined;
+  readonly setCoordinateScale: (session: string, scale: { readonly x: number; readonly y: number }) => void;
+  readonly getVisualObservation: (session: string) => BrowserVisualObservationBinding | undefined;
+  readonly setVisualObservation: (session: string, binding: BrowserVisualObservationBinding) => void;
+  readonly deleteVisualObservation: (session: string) => void;
   readonly exec: (
     binary: string,
     argv: string[],
@@ -62,9 +69,19 @@ export interface InteractiveBrowserDispatchPorts {
   ) => Promise<{ readonly stdout: string; readonly stderr?: string }>;
   readonly pruneCaptures: () => void;
   readonly capturePath: () => string;
+  readonly removeCapture: (path: string) => void;
   readonly readCapturePng: (path: string) => Buffer;
   readonly captureDimensions: (png: Buffer) => { readonly width: number; readonly height: number };
-  readonly visionFromPng: (path: string, text: string) => RelayDispatchResult;
+  readonly extractVisualObservation: (
+    path: string,
+    image: { readonly width: number; readonly height: number },
+    signal?: AbortSignal,
+  ) => Promise<BrowserVisualExtraction>;
+  readonly visionFromPng: (
+    path: string,
+    text: string,
+    visualObservation?: BrowserVisualObservationEnvelope,
+  ) => RelayDispatchResult;
 }
 
 function browserExecError(
@@ -171,20 +188,29 @@ export function createInteractiveBrowserDispatchHandler(
 
     const requiredObservationId = typeof request.args["_requiredObservationId"] === "string"
       ? request.args["_requiredObservationId"] : null;
-    const boundObservation = requiredObservationId === null ? null : latestObservation;
-    if (requiredObservationId !== null && (!boundObservation || boundObservation.observationId !== requiredObservationId)) {
+    const boundObservation = requiredObservationId !== null
+      && latestObservation?.observationId === requiredObservationId ? latestObservation : null;
+    const requestedSession = typeof request.args["_requiredSession"] === "string"
+      ? request.args["_requiredSession"] : null;
+    const possibleVisualObservation = requestedSession === null
+      ? undefined : ports.getVisualObservation(requestedSession);
+    const boundVisualObservation = possibleVisualObservation?.observationId === requiredObservationId
+      ? possibleVisualObservation : null;
+    if (requiredObservationId !== null
+      && boundObservation === null
+      && boundVisualObservation === null) {
       return browserFailure("browser_observation_stale", "The browser observation was consumed or superseded. Take a fresh snapshot before choosing an action.");
     }
     if (boundObservation && !browserToolMayMutate(request.toolName) && request.toolName !== "browser_read") {
       return browserFailure("browser_authority_lost", "This action is outside the admitted routine browser contract.");
     }
+    if (boundVisualObservation && !["browser_mouse", "browser_scroll", "browser_press"].includes(request.toolName)) {
+      return browserFailure("browser_authority_lost", "This action is outside the admitted visual browser contract.");
+    }
     // Every mutation attempt consumes the observation, including ordinary Genie actions.
     if (browserToolMayMutate(request.toolName) || request.toolName === "browser_snapshot") latestObservation = null;
 
-    const requiredSession =
-      typeof request.args["_requiredSession"] === "string"
-        ? request.args["_requiredSession"]
-        : null;
+    const requiredSession = requestedSession;
     if (
       requiredSession !== null &&
       (!ports.hasPublishedView() || ports.sessionFor({}) !== requiredSession)
@@ -307,6 +333,37 @@ export function createInteractiveBrowserDispatchHandler(
     const session =
       requiredSession ??
       ports.sessionFor(request.toolName === "browser_read_page" ? {} : request.args);
+    // Visual evidence is one-shot. A later observation or any mutation attempt
+    // supersedes the stored token; a matching bound action retains its local
+    // immutable copy solely for immediate freshness verification below.
+    if (browserToolMayMutate(request.toolName)
+      || request.toolName === "browser_snapshot"
+      || request.toolName === "browser_screenshot") {
+      ports.deleteVisualObservation(session);
+    }
+
+    const readViewport = async (): Promise<{
+      readonly cssWidth: number;
+      readonly cssHeight: number;
+      readonly dpr: number;
+      readonly pageUrl: string | null;
+    }> => {
+      const { stdout } = await ports.exec(binary, [
+        ...browserArgvPrefix(configPath, session),
+        "eval",
+        "({w:innerWidth,h:innerHeight,dpr:devicePixelRatio,url:location.href})",
+      ], { timeout: BROWSER_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024, ...(signal ? { signal } : {}) });
+      assertLive();
+      const parsed = JSON.parse(stdout.trim()) as { readonly w?: unknown; readonly h?: unknown; readonly dpr?: unknown; readonly url?: unknown };
+      const cssWidth = typeof parsed.w === "number" && Number.isFinite(parsed.w) && parsed.w > 0 ? parsed.w : 0;
+      const cssHeight = typeof parsed.h === "number" && Number.isFinite(parsed.h) && parsed.h > 0 ? parsed.h : 0;
+      const dpr = typeof parsed.dpr === "number" && Number.isFinite(parsed.dpr) && parsed.dpr > 0 ? parsed.dpr : 1;
+      let pageUrl: string | null = null;
+      try {
+        if (typeof parsed.url === "string") pageUrl = new URL(parsed.url).href;
+      } catch { /* invalid page URL remains unavailable */ }
+      return { cssWidth, cssHeight, dpr, pageUrl };
+    };
 
     const readSnapshot = async (): Promise<BrowserObservation> => {
       assertLive();
@@ -335,6 +392,50 @@ export function createInteractiveBrowserDispatchHandler(
       try { return parseBrowserSnapshot(stdout, session); } catch {
         throw new BrowserDispatchFailure("browser_observation_invalid", "The browser did not return a complete structured observation. Return to the Genie for inspection.");
       }
+    };
+
+    const assertFreshVisualObservation = async (): Promise<void> => {
+      if (boundVisualObservation === null) return;
+      const freshCapturePath = ports.capturePath();
+      try {
+        await ports.exec(
+          binary,
+          agentBrowserArgv("browser_screenshot", { _capturePath: freshCapturePath }, configPath, session),
+          { timeout: BROWSER_EXEC_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, ...(signal ? { signal } : {}) },
+        );
+        assertLive();
+        const png = ports.readCapturePng(freshCapturePath);
+        const dimensions = ports.captureDimensions(png);
+        const viewport = await readViewport();
+        const digest = createHash("sha256").update(png).digest("hex");
+        if (session !== boundVisualObservation.browserSessionId
+          || viewport.pageUrl !== boundVisualObservation.pageUrl
+          || dimensions.width !== boundVisualObservation.imageWidth
+          || dimensions.height !== boundVisualObservation.imageHeight
+          || viewport.cssWidth !== boundVisualObservation.cssWidth
+          || viewport.cssHeight !== boundVisualObservation.cssHeight
+          || viewport.dpr !== boundVisualObservation.dpr
+          || digest !== boundVisualObservation.screenshotSha256) {
+          ports.deleteVisualObservation(session);
+          throw new BrowserDispatchFailure(
+            "browser_observation_stale",
+            "The browser pixels or viewport changed since the visual decision. Take a fresh screenshot; the proposed action was not executed.",
+          );
+        }
+      } catch (error) {
+        if (error instanceof BrowserDispatchFailure) throw error;
+        ports.deleteVisualObservation(session);
+        throw new BrowserDispatchFailure(
+          "browser_observation_invalid",
+          "The browser could not verify the visual observation immediately before the action.",
+        );
+      } finally {
+        ports.removeCapture(freshCapturePath);
+      }
+    };
+
+    const consumeVisualObservation = (): void => {
+      if (boundVisualObservation !== null) ports.deleteVisualObservation(session);
     };
     const navigationObservation = async (result: string) => {
       try {
@@ -459,41 +560,77 @@ export function createInteractiveBrowserDispatchHandler(
         });
         const png = ports.readCapturePng(capturePath);
         const { width: imageWidth, height: imageHeight } = ports.captureDimensions(png);
-        let css = { w: 0, h: 0, dpr: 1 };
-        let scale = 1;
+        let css = { w: 0, h: 0, dpr: 1, pageUrl: null as string | null };
+        let scale = { x: 1, y: 1 };
         try {
-          const evaluation = agentBrowserViewportEvalArgv(configPath, session);
-          const { stdout } = await exec(binary, evaluation, {
-            timeout: BROWSER_EXEC_TIMEOUT_MS,
-            maxBuffer: 1024 * 1024,
-          });
-          const parsed = JSON.parse(stdout.trim()) as {
-            readonly w?: number;
-            readonly h?: number;
-            readonly dpr?: number;
-          };
+          const viewport = await readViewport();
           css = {
-            w: typeof parsed.w === "number" ? parsed.w : 0,
-            h: typeof parsed.h === "number" ? parsed.h : 0,
-            dpr:
-              typeof parsed.dpr === "number" && parsed.dpr > 0 ? parsed.dpr : 1,
+            w: viewport.cssWidth,
+            h: viewport.cssHeight,
+            dpr: viewport.dpr,
+            pageUrl: viewport.pageUrl,
           };
-          scale = css.w > 0 ? imageWidth / css.w : 1;
+          scale = {
+            x: css.w > 0 ? imageWidth / css.w : 1,
+            y: css.h > 0 ? imageHeight / css.h : 1,
+          };
         } catch {
-          // Viewport evaluation is best effort; scale=1 remains the fallback.
+          // Ordinary screenshot geometry remains best effort. Visual observations fail closed below.
         }
         ports.setCoordinateScale(session, scale);
         const scaleLine =
           `viewport_css=${css.w}x${css.h} image_px=${imageWidth}x${imageHeight} ` +
-          `dpr=${css.dpr} scale=${scale.toFixed(3)}`;
+          `dpr=${css.dpr} scale=${scale.x.toFixed(3)}`;
+        let visualObservation: BrowserVisualObservationEnvelope | undefined;
+        let visualBinding: BrowserVisualObservationBinding | undefined;
+        if (request.args["_visualObservation"] === true) {
+          if (css.w <= 0 || css.h <= 0 || css.pageUrl === null) {
+            throw new BrowserDispatchFailure(
+              "browser_observation_invalid",
+              "The browser did not return complete viewport geometry for visual observation.",
+            );
+          }
+          const extraction = await ports.extractVisualObservation(
+            capturePath,
+            { width: imageWidth, height: imageHeight },
+            signal,
+          );
+          assertLive();
+          const observationId = randomUUID();
+          visualObservation = {
+            version: 1,
+            pageUrl: css.pageUrl,
+            browserSessionId: session,
+            observationId,
+            image: { width: imageWidth, height: imageHeight },
+            viewport: { cssWidth: css.w, cssHeight: css.h, dpr: css.dpr },
+            extraction,
+          };
+          visualBinding = {
+            observationId,
+            browserSessionId: session,
+            pageUrl: css.pageUrl,
+            imageWidth,
+            imageHeight,
+            cssWidth: css.w,
+            cssHeight: css.h,
+            dpr: css.dpr,
+            xScale: scale.x,
+            yScale: scale.y,
+            screenshotSha256: createHash("sha256").update(png).digest("hex"),
+          };
+        }
+        const result = ports.visionFromPng(
+          capturePath,
+          "Browser app surface screenshot captured. Use this image to read canvas-rendered content " +
+            "(e.g. Google Docs) and browser_mouse to click pixel coordinates from what you see in this image.\n" +
+            scaleLine,
+          visualObservation,
+        );
+        if (result.status === "ok" && visualBinding) ports.setVisualObservation(session, visualBinding);
         return {
           handled: true,
-          result: ports.visionFromPng(
-            capturePath,
-            "Browser app surface screenshot captured. Use this image to read canvas-rendered content " +
-              "(e.g. Google Docs) and browser_mouse to click pixel coordinates from what you see in this image.\n" +
-              scaleLine,
-          ),
+          result,
         };
       } catch (error) {
         return {
@@ -523,10 +660,13 @@ export function createInteractiveBrowserDispatchHandler(
       }
       let cssX = x;
       let cssY = y;
-      let scaleUsed: number | undefined;
+      let scaleUsed: { readonly x: number; readonly y: number } | undefined;
       let scaleNote = "";
       if (space === "image") {
-        let scale = ports.getCoordinateScale(session);
+        let scale = boundVisualObservation === null ? ports.getCoordinateScale(session) : {
+          x: boundVisualObservation.xScale,
+          y: boundVisualObservation.yScale,
+        };
         if (scale === undefined) {
           try {
             const evaluation = agentBrowserViewportEvalArgv(configPath, session);
@@ -535,30 +675,32 @@ export function createInteractiveBrowserDispatchHandler(
               maxBuffer: 1024 * 1024,
             });
             const parsed = JSON.parse(stdout.trim()) as { readonly dpr?: number };
-            scale =
+            const fallback =
               typeof parsed.dpr === "number" &&
               parsed.dpr > 0 &&
               Number.isFinite(parsed.dpr)
                 ? parsed.dpr
                 : 1;
+            scale = { x: fallback, y: fallback };
             scaleNote = "; scale from dpr fallback (re-screenshot for exact scale)";
           } catch {
-            scale = 1;
+            scale = { x: 1, y: 1 };
             scaleNote = "; scale=1 fallback (re-screenshot for exact scale)";
           }
         }
         scaleUsed = scale;
-        const converted = browserImageCoordsToCss(x, y, scale);
-        cssX = converted.cssX;
-        cssY = converted.cssY;
+        cssX = Math.round(x / scale.x);
+        cssY = Math.round(y / scale.y);
       }
       try {
+        await assertFreshVisualObservation();
         const commands = agentBrowserMouseClickArgvs(
           configPath,
           session,
           cssX,
           cssY,
         );
+        consumeVisualObservation();
         for (const argv of commands) {
           await exec(binary, argv, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
@@ -568,7 +710,7 @@ export function createInteractiveBrowserDispatchHandler(
         const result =
           space === "css"
             ? `Clicked at css(${cssX},${cssY}) space=css`
-            : `Clicked at css(${cssX},${cssY}) from image(${x},${y}) space=image scale=${scaleUsed!.toFixed(3)}${scaleNote}`;
+            : `Clicked at css(${cssX},${cssY}) from image(${x},${y}) space=image scale=${scaleUsed!.x.toFixed(3)}${scaleNote}`;
         return { handled: true, result: { status: "ok", result } };
       } catch (error) {
         return {
@@ -610,10 +752,12 @@ export function createInteractiveBrowserDispatchHandler(
       if (direction === "down" || direction === "up") {
         try {
           const evaluation = agentBrowserViewportEvalArgv(configPath, session);
-          const { stdout } = await exec(binary, evaluation, {
+          const { stdout } = await ports.exec(binary, evaluation, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
             maxBuffer: 1024 * 1024,
+            ...(signal ? { signal } : {}),
           });
+          assertLive();
           const parsed = JSON.parse(stdout.trim()) as {
             readonly w?: number;
             readonly h?: number;
@@ -648,6 +792,8 @@ export function createInteractiveBrowserDispatchHandler(
         };
       }
       try {
+        await assertFreshVisualObservation();
+        consumeVisualObservation();
         for (const argv of commands) {
           await exec(binary, argv, {
             timeout: BROWSER_EXEC_TIMEOUT_MS,
@@ -734,6 +880,10 @@ export function createInteractiveBrowserDispatchHandler(
       };
     }
     try {
+      if (request.toolName === "browser_press") {
+        await assertFreshVisualObservation();
+        consumeVisualObservation();
+      }
       const { stdout } = await exec(binary, argv, {
         timeout: BROWSER_EXEC_TIMEOUT_MS,
         maxBuffer: 8 * 1024 * 1024,

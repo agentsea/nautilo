@@ -43,8 +43,19 @@ These commands do not publish a catalog or enable the decision route for other i
 
 A Genie delegates a routine segment with a singleton `browser_snapshot` call
 whose optional `decisionPlan` contains the goal and optional named exact typing
-values. Omit `actions` to discover click targets from fresh observations. Exact
-role/name action templates remain available for narrower delegation. Reusable action
+values. Omit `actions` to discover click targets from fresh observations.
+For an embedded page whose meaningful controls are painted into a canvas, the
+Genie may instead start the same decision episode with a singleton
+`browser_screenshot { decisionPlan }` call. Desktop extracts OCR and visual
+regions locally, the server renders a task-independent textual observation,
+and Jev chooses among bound image-coordinate clicks and vertical scrolling.
+The PNG is not included in Jev's request. Every selected action consumes its
+visual observation and is followed by a fresh screenshot. This prototype does
+not offer visual typing; plans requiring visually grounded text input return to
+the Genie. Connected Browser Use continues to share the decision graph but does
+not yet expose screenshot-coordinate capture or execution.
+
+Exact role/name action templates remain available for narrower delegation. Reusable action
 templates also support `press` (any key or combination accepted by the ordinary
 tool), `hover`, `double_click`, `scroll_into_view`, `select`, `set_checked`,
 `drag`, `scroll`, and navigation (`open`, `back`, `forward`, `reload`). Include

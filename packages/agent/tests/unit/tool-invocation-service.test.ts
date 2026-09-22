@@ -1392,6 +1392,73 @@ describe("structured SSH uncertain dispatch outcome", () => {
 });
 
 describe("Nautilo tool invocation service", () => {
+  test("privately requests local visual extraction while preserving the screenshot result", async () => {
+    const catalog = new ToolCatalog();
+    registerAllTools(catalog);
+    initToolCatalog(catalog);
+    const dispatched: Record<string, unknown>[] = [];
+    setRelayRegistry({
+      findByCapabilityForUser: () => ["relay-1"],
+      getCapabilities: () => ({ profile: "desktop-agent", canControlBrowser: true, browserSessionId: "browser-1" }),
+      getUserId: () => "owner",
+      getRelaySessionId: () => "socket-1",
+      getDesktopSessionId: () => "desktop-1",
+      getPairingGeneration: () => "pairing-1",
+      isRelayHeartbeatFresh: () => true,
+      dispatch: async (_relayId, request) => {
+        dispatched.push(request.args);
+        return { status: "ok", result: {
+          kind: "browser_screenshot_vision",
+          text: "Browser screenshot captured",
+          image: { mime: "image/png", base64: "AA==" },
+          visualObservation: {
+            version: 1,
+            pageUrl: "https://example.com/canvas",
+            browserSessionId: "browser-1",
+            observationId: "visual-1",
+            image: { width: 800, height: 600 },
+            viewport: { cssWidth: 400, cssHeight: 300, dpr: 2 },
+            extraction: {
+              recognitionMode: "hybrid",
+              durationMs: 80,
+              globalDurationMs: 60,
+              cropDurationMs: 20,
+              cropRequestCount: 1,
+              text: [{ text: "Apple", box: { x: 100, y: 200, width: 80, height: 30 }, confidence: 0.95 }],
+              rectangles: [{ x: 90, y: 190, width: 120, height: 60 }],
+              contours: [],
+              contourCount: 0,
+            },
+          },
+        } };
+      },
+    });
+    const decisionPlan = { goal: "Choose Apple", actions: [{ kind: "click_observed" }] };
+    const screenshot = call("browser_screenshot", { decisionPlan, _visualObservation: false });
+    const invocationState = state({
+      messages: [new AIMessage({ content: "", tool_calls: [{ id: screenshot.callId,
+        name: screenshot.toolName, args: screenshot.args, type: "tool_call" }] })],
+      relayCapabilities: { canControlBrowser: true, control_browser: true },
+      requiredHostRelays: { [screenshot.callId]: "relay-1" },
+      trustedExecutionEntrypoint: "foreground.main",
+      verifiedOrdinaryOrigin: { kind: "local_electron", userId: "owner", actorId: "owner", relayId: "relay-1",
+        desktopSessionId: "desktop-1", pairingGeneration: "pairing-1", requestId: "request-visual" },
+    });
+    configureRuntimeModelCatalog({ catalogPointerUrl: null });
+    process.env["OPENROUTER_API_KEY"] = "synthetic-decision-key";
+    const result = await createNautiloToolInvocationSession(
+      createServerToolInvocationContext(invocationState, () => ({ status: "allowed" })),
+    ).invoke(screenshot);
+    expect(result.status).toBe("success");
+    expect(dispatched).toEqual([{ _visualObservation: true }]);
+    expect(Array.isArray(result.content)).toBe(true);
+    const text = Array.isArray(result.content)
+      ? (result.content.find((block) => block && typeof block === "object" && (block as { type?: unknown }).type === "text") as { text?: unknown } | undefined)?.text
+      : null;
+    const envelope = JSON.parse(String(text)) as { observation: { visual?: { targets: Array<{ name: string }> } } };
+    expect(envelope.observation.visual?.targets.some((target) => target.name === "Apple")).toBe(true);
+  });
+
   test("recovers an exact top-level browser plan and rejects ambiguous shapes without a plain-read fallback", async () => {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);

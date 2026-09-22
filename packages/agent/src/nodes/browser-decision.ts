@@ -14,11 +14,13 @@ import {
 } from "../providers/choice-driver";
 import {
   browserDecisionCandidates,
+  browserDecisionAdditionalInstructions,
   browserDecisionChoiceInput,
   browserDecisionDriverCall,
   browserDecisionHandoffMessage,
   currentBrowserDecision,
   interpretBrowserDecisionCall,
+  isBrowserDecisionObservationCall,
   recordBrowserDecisionEvent,
   type BrowserDecisionState,
 } from "../graph/browser-decision";
@@ -64,7 +66,10 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
     }
     const observation = decision.observation;
     if (!observation) return handoff(state, decision, "fresh_observation_required");
-    let call: { name: string; args: Record<string, unknown> } = { name: "browser_snapshot", args: {} };
+    let call: { name: string; args: Record<string, unknown> } = {
+      name: observation.visual ? "browser_screenshot" : "browser_snapshot",
+      args: {},
+    };
     let receipt: Record<string, unknown> = { operation: "reobserve" };
     let nextDecision = decision;
     if (decision.phase === "decide") {
@@ -97,6 +102,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
       });
       const continuations = built.candidates.filter((candidate) => candidate.sequence && candidate.call);
       const continuation = decision.sequence?.step != null && continuations.length === 1 ? continuations[0] : undefined;
+      const additionalInstructions = browserDecisionAdditionalInstructions(observation);
       const started = performance.now();
       try {
         const result = continuation ? null : await runWithUsageContext({
@@ -115,6 +121,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           recentActions,
           lastAction: decision.lastAction,
           sequence: decision.sequence,
+          ...(additionalInstructions === undefined ? {} : { additionalInstructions }),
         }), maxChoices, deps.choose ?? invokeChoice));
         if (config.signal.aborted) return handoff(state, decision, "run_cancelled");
         const selected = continuation ?? built.candidates.find(({ id }) => id === result?.selectedId);
@@ -149,7 +156,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
     return {
       browserDecision: { ...nextDecision, phase: "waiting", reason: null, pending: {
         call: proposal, browserSessionId: observation.browserSessionId,
-        observationId: call.name === "browser_snapshot" ? null : observation.observationId,
+        observationId: isBrowserDecisionObservationCall(call) ? null : observation.observationId,
       } },
       // This is a proposal only. Normal preflights and post-model admission decide whether it may execute.
       messages: mergeMessagesPreservingInvariants(state.messages, [new AIMessage({

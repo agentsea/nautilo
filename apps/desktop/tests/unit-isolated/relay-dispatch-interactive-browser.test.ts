@@ -47,11 +47,19 @@ function ports(
     waitForPublishedView: async () => true,
     getCoordinateScale: () => undefined,
     setCoordinateScale: () => {},
+    getVisualObservation: () => undefined,
+    setVisualObservation: () => {},
+    deleteVisualObservation: () => {},
     exec: async () => ({ stdout: "ok", stderr: "" }),
     pruneCaptures: () => {},
     capturePath: () => "/owned/browser-shot.png",
+    removeCapture: () => {},
     readCapturePng: () => Buffer.alloc(24),
     captureDimensions: () => ({ width: 1000, height: 800 }),
+    extractVisualObservation: async () => ({
+      recognitionMode: "hybrid", durationMs: 1, globalDurationMs: 1, cropDurationMs: 0,
+      cropRequestCount: 0, text: [], rectangles: [], contours: [], contourCount: 0,
+    }),
     visionFromPng: (_path, text) => ({ status: "ok", result: { text } }),
     ...overrides,
   };
@@ -111,6 +119,152 @@ function page(content: string): BrowserPageReadResult {
 }
 
 describe("createInteractiveBrowserDispatchHandler", () => {
+  test("adds local extraction only for server-owned visual screenshot requests", async () => {
+    let extractionCalls = 0;
+    let published: unknown;
+    let storedObservationId: string | undefined;
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      exec: async (_binary, argv) => ({
+        stdout: argv.includes("eval")
+          ? JSON.stringify({ w: 500, h: 200, dpr: 2, url: "https://example.com/canvas" })
+          : "",
+      }),
+      readCapturePng: () => Buffer.from("stable-png"),
+      captureDimensions: () => ({ width: 1000, height: 600 }),
+      extractVisualObservation: async () => {
+        extractionCalls += 1;
+        return {
+          recognitionMode: "hybrid", durationMs: 4, globalDurationMs: 3, cropDurationMs: 1,
+          cropRequestCount: 1,
+          text: [{ text: "Eight", confidence: 1, box: { x: 100, y: 120, width: 40, height: 20 } }],
+          rectangles: [], contours: [], contourCount: 0,
+        };
+      },
+      setVisualObservation: (_session, binding) => { storedObservationId = binding.observationId; },
+      visionFromPng: (_path, _text, visualObservation) => {
+        published = visualObservation;
+        return { status: "ok", result: { kind: "browser_screenshot_vision", visualObservation } };
+      },
+    }));
+
+    expect((await handler({
+      request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+    })).result.status).toBe("ok");
+    expect(extractionCalls).toBe(1);
+    expect(published).toMatchObject({
+      version: 1,
+      pageUrl: "https://example.com/canvas",
+      browserSessionId: "browser-session",
+      image: { width: 1000, height: 600 },
+      viewport: { cssWidth: 500, cssHeight: 200, dpr: 2 },
+      extraction: { recognitionMode: "hybrid", text: [{ text: "Eight" }] },
+    });
+    expect(storedObservationId).toBe((published as { observationId: string }).observationId);
+
+    await handler({ request: request("browser_screenshot"), signal: undefined, guard });
+    expect(extractionCalls).toBe(1);
+  });
+
+  test("revalidates a one-shot visual observation and uses independent x/y scales", async () => {
+    let binding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
+    const executions: string[][] = [];
+    let removedRecaptures = 0;
+    const png = Buffer.from("unchanged-pixels");
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      getVisualObservation: () => binding,
+      setVisualObservation: (_session, value) => { binding = value; },
+      deleteVisualObservation: () => { binding = undefined; },
+      exec: async (_binary, argv) => {
+        executions.push(argv);
+        return { stdout: argv.includes("eval")
+          ? JSON.stringify({ w: 500, h: 200, dpr: 2, url: "https://example.com/canvas" }) : "" };
+      },
+      readCapturePng: () => png,
+      captureDimensions: () => ({ width: 1000, height: 600 }),
+      removeCapture: () => { removedRecaptures += 1; },
+      visionFromPng: (_path, _text, visualObservation) => ({
+        status: "ok", result: { kind: "browser_screenshot_vision", visualObservation },
+      }),
+    }));
+    const screenshot = await handler({
+      request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+    });
+    const result = screenshot.result.status === "ok" ? screenshot.result.result as {
+      visualObservation: { observationId: string };
+    } : null;
+    const id = result!.visualObservation.observationId;
+    executions.splice(0);
+    const clicked = await handler({
+      request: request("browser_mouse", {
+        x: 200, y: 150, space: "image",
+        _requiredSession: "browser-session", _requiredObservationId: id,
+      }),
+      signal: undefined, guard,
+    });
+    expect(clicked).toMatchObject({ result: { status: "ok", result: expect.stringContaining("css(100,50)") as unknown } });
+    expect(executions.some((argv) => argv.slice(-3).join(" ") === "move 100 50")).toBe(true);
+    expect(binding).toBeUndefined();
+    expect(removedRecaptures).toBe(1);
+  });
+
+  test("a later ordinary mutation supersedes an unused visual observation", async () => {
+    let binding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      getVisualObservation: () => binding,
+      setVisualObservation: (_session, value) => { binding = value; },
+      deleteVisualObservation: () => { binding = undefined; },
+      exec: async (_binary, argv) => ({ stdout: argv.includes("eval")
+        ? JSON.stringify({ w: 500, h: 300, dpr: 2, url: "https://example.com/canvas" }) : "" }),
+      readCapturePng: () => Buffer.from("pixels"),
+      captureDimensions: () => ({ width: 1000, height: 600 }),
+      visionFromPng: (_path, _text, visualObservation) => ({
+        status: "ok", result: { kind: "browser_screenshot_vision", visualObservation },
+      }),
+    }));
+    await handler({
+      request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+    });
+    expect(binding).toBeDefined();
+    await handler({ request: request("browser_press", { key: "Escape" }), signal: undefined, guard });
+    expect(binding).toBeUndefined();
+  });
+
+  test("rejects a bound visual action when recaptured pixels changed", async () => {
+    let binding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
+    let png = Buffer.from("initial-pixels");
+    const executions: string[][] = [];
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      getVisualObservation: () => binding,
+      setVisualObservation: (_session, value) => { binding = value; },
+      deleteVisualObservation: () => { binding = undefined; },
+      exec: async (_binary, argv) => {
+        executions.push(argv);
+        return { stdout: argv.includes("eval")
+          ? JSON.stringify({ w: 500, h: 300, dpr: 2, url: "https://example.com/canvas" }) : "" };
+      },
+      readCapturePng: () => png,
+      captureDimensions: () => ({ width: 1000, height: 600 }),
+      visionFromPng: (_path, _text, visualObservation) => ({
+        status: "ok", result: { kind: "browser_screenshot_vision", visualObservation },
+      }),
+    }));
+    const screenshot = await handler({
+      request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+    });
+    const id = ((screenshot.result as { result: { visualObservation: { observationId: string } } })
+      .result.visualObservation.observationId);
+    png = Buffer.from("changed-pixels");
+    executions.splice(0);
+    expect(await handler({
+      request: request("browser_mouse", {
+        x: 20, y: 30, space: "image",
+        _requiredSession: "browser-session", _requiredObservationId: id,
+      }), signal: undefined, guard,
+    })).toMatchObject({ result: { status: "error", errorCode: "browser_observation_stale" } });
+    expect(executions.some((argv) => argv.includes("mouse"))).toBe(false);
+    expect(binding).toBeUndefined();
+  });
+
   test("declines nonmatches and handles an unknown browser-class request", async () => {
     const handler = createInteractiveBrowserDispatchHandler(ports({
       resolveBinary: () => {
@@ -991,7 +1145,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
 
   test("captures screenshot geometry and reuses its scale for image-coordinate clicks", async () => {
     const executions: string[][] = [];
-    const scales = new Map<string, number>();
+    const scales = new Map<string, { readonly x: number; readonly y: number }>();
     let pruneCalls = 0;
     let visionInput: { path: string; text: string } | undefined;
     const visionResult: RelayDispatchResult = {
@@ -1027,7 +1181,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       guard,
     })).toEqual({ handled: true, result: visionResult });
     expect(pruneCalls).toBe(1);
-    expect(scales.get("browser-session")).toBe(2);
+    expect(scales.get("browser-session")).toEqual({ x: 2, y: 2 });
     expect(visionInput).toEqual({
       path: "/owned/browser-shot.png",
       text:

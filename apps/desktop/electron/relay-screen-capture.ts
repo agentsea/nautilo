@@ -4,12 +4,13 @@
  */
 
 import type { RelayDispatchResult } from "@nautilo/relay";
+import { randomUUID } from "node:crypto";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
 
 export function captureFilePath(dir: string, prefix: string): string {
   fsSync.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${prefix}${Date.now()}.png`);
+  return path.join(dir, `${prefix}${Date.now()}-${randomUUID()}.png`);
 }
 
 export function visionResultFromPng(options: {
@@ -17,8 +18,9 @@ export function visionResultFromPng(options: {
   text: string;
   kind: string;
   maxBytes: number;
+  visualObservation?: unknown;
 }): RelayDispatchResult {
-  const { path: capturePath, text, kind, maxBytes } = options;
+  const { path: capturePath, text, kind, maxBytes, visualObservation } = options;
   try {
     const pngBytes = fsSync.readFileSync(capturePath);
     if (pngBytes.length > maxBytes) {
@@ -38,6 +40,7 @@ export function visionResultFromPng(options: {
           mime: "image/png",
           base64: pngBytes.toString("base64"),
         },
+        ...(visualObservation === undefined ? {} : { visualObservation }),
       },
     };
   } catch (err) {

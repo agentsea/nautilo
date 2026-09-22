@@ -805,7 +805,7 @@ export function registerAllTools(
 
   catalog.register({
     name: "browser_screenshot",
-    factory: () => createBrowserScreenshotTool(),
+    factory: (ctx) => createBrowserScreenshotTool(ctx),
     category: "computer",
     executor: "relay",
     trustTier: "standard",
@@ -816,6 +816,7 @@ export function registerAllTools(
     requiredCapabilities: ["control_browser"],
     requiredModelCapabilities: ["image"],
     resultScanPolicy: "on-suspicious",
+    scanInvisibleUnicode: "strip",
   });
 
   catalog.register({

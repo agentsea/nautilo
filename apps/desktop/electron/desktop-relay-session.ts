@@ -13,6 +13,7 @@ import type {
 } from "./relay-dispatch/media.ts";
 import type { StructuredSshDispatchRuntime } from "./relay-dispatch/structured-ssh.ts";
 import { RunShellOutputArtifactStore } from "./run-shell-output-continuity.ts";
+import type { BrowserVisualObservationBinding } from "./browser-visual-observation.ts";
 
 export type DesktopRelayGoogleOAuthContext = Readonly<{
   serverUrl: string;
@@ -21,8 +22,14 @@ export type DesktopRelayGoogleOAuthContext = Readonly<{
 }>;
 
 export interface BrowserCoordinateScalePort {
-  readonly get: (sessionId: string) => number | undefined;
-  readonly set: (sessionId: string, scale: number) => void;
+  readonly get: (sessionId: string) => { readonly x: number; readonly y: number } | undefined;
+  readonly set: (sessionId: string, scale: { readonly x: number; readonly y: number }) => void;
+}
+
+export interface BrowserVisualObservationPort {
+  readonly get: (sessionId: string) => BrowserVisualObservationBinding | undefined;
+  readonly set: (sessionId: string, binding: BrowserVisualObservationBinding) => void;
+  readonly delete: (sessionId: string) => void;
 }
 
 export interface DesktopRelayRetiredTransport {
@@ -46,7 +53,8 @@ export class DesktopRelaySession {
     new RunShellOutputArtifactStore();
   private readonly pageSnapshotStoreValue = new BrowserPageSnapshotStore();
   private readonly mediaSessionRecords = new Map<string, MediaSessionRecord>();
-  private readonly coordinateScales = new Map<string, number>();
+  private readonly coordinateScales = new Map<string, { readonly x: number; readonly y: number }>();
+  private readonly visualObservations = new Map<string, BrowserVisualObservationBinding>();
   private mediaBufferedBytes = 0;
   private closedValue = false;
   private googleOAuthContextValue: DesktopRelayGoogleOAuthContext | null;
@@ -63,6 +71,7 @@ export class DesktopRelaySession {
 
   readonly mediaSessions: MediaSessionsPort;
   readonly browserCoordinateScales: BrowserCoordinateScalePort;
+  readonly browserVisualObservations: BrowserVisualObservationPort;
 
   constructor(options: DesktopRelaySessionOptions) {
     this.googleOAuthContextValue = Object.freeze({
@@ -104,8 +113,17 @@ export class DesktopRelaySession {
       get: (sessionId: string) => this.closedValue
         ? undefined
         : this.coordinateScales.get(sessionId),
-      set: (sessionId: string, scale: number) => {
+      set: (sessionId: string, scale: { readonly x: number; readonly y: number }) => {
         if (!this.closedValue) this.coordinateScales.set(sessionId, scale);
+      },
+    });
+    this.browserVisualObservations = Object.freeze({
+      get: (sessionId: string) => this.closedValue ? undefined : this.visualObservations.get(sessionId),
+      set: (sessionId: string, binding: BrowserVisualObservationBinding) => {
+        if (!this.closedValue) this.visualObservations.set(sessionId, binding);
+      },
+      delete: (sessionId: string) => {
+        if (!this.closedValue) this.visualObservations.delete(sessionId);
       },
     });
   }
@@ -240,6 +258,7 @@ export class DesktopRelaySession {
     }
     this.mediaBufferedBytes = 0;
     this.coordinateScales.clear();
+    this.visualObservations.clear();
     this.googleOAuthContextValue = null;
     this.structuredSshRuntimeValue = null;
   }

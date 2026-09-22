@@ -192,6 +192,20 @@ describe("browser_screenshot tool", () => {
     expect(tool.schema.safeParse({}).success).toBe(true);
   });
 
+  test("exposes visual delegation only in an eligible turn", () => {
+    expect(createBrowserScreenshotTool().schema.shape.decisionPlan).toBeUndefined();
+    const prior = process.env["OPENROUTER_API_KEY"];
+    process.env["OPENROUTER_API_KEY"] = "visual-decision-test";
+    try {
+      const tool = createBrowserScreenshotTool({ turnId: "turn-1", fullEncryptionOnly: false });
+      expect(tool.schema.shape.decisionPlan).toBeDefined();
+      expect(tool.description).toContain("local visual extractor");
+    } finally {
+      if (prior === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = prior;
+    }
+  });
+
   test("func rejects as relay stub", () => {
     const tool = createBrowserScreenshotTool();
     expect(tool.invoke({})).rejects.toThrow(/relay tool/i);
@@ -322,7 +336,7 @@ describe("browser tools catalog registration", () => {
     }
   });
 
-  test("text browser tools carry scanInvisibleUnicode:strip through catalog metadata", () => {
+  test("browser tools with page-derived text carry scanInvisibleUnicode:strip through catalog metadata", () => {
     // Regression: the metadata projection (toMetadata) must preserve this flag,
     // or nodes/tools.ts can't strip zero-width chars and live web reads get
     // blocked when document content includes U+200B.
@@ -333,6 +347,7 @@ describe("browser tools catalog registration", () => {
       "browser_press",
       "browser_read",
       "browser_read_page",
+      "browser_screenshot",
       "browser_get",
       "browser_scroll",
       "browser_back",
@@ -355,7 +370,7 @@ describe("browser tools catalog registration", () => {
     const entry = catalog.get("browser_screenshot");
     expect(entry).toBeDefined();
     expect(entry!.requiredModelCapabilities).toEqual(["image"]);
-    expect(entry!.scanInvisibleUnicode).toBeUndefined();
+    expect(entry!.scanInvisibleUnicode).toBe("strip");
   });
 
   test("browser_snapshot registered as low-impact relay tool without approval", () => {

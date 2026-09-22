@@ -685,9 +685,52 @@ describe("browser decision policy", () => {
     expect(currentBrowserDecision(state({ turnId: "turn-2" }))).toBeNull();
     expect(currentBrowserDecision(state({ turnId: "" }))).toBeNull();
   });
+
+  test("builds image-space clicks and scrolling from a visual observation", () => {
+    const visualPlan = browserDecisionPlanSchema.parse({ goal: "Choose Apple", allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "click_observed" }] });
+    const visualObservation = observation({
+      refs: {},
+      snapshot: '- visual viewport [image_width=800, image_height=600]\n  - visible text "Apple" [visual_ref=v1]',
+      visual: {
+        viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+        targets: [{ visualRef: "v1", role: "visible text", name: "Apple", interaction: "unknown",
+          x: 150, y: 225, context: "in the first row" }],
+      },
+    });
+    const built = browserDecisionCandidates(visualPlan, visualObservation, 255);
+    expect(built.reason).toBeNull();
+    if (built.reason !== null) throw new Error("expected visual candidates");
+    expect(built.candidates.find(({ id }) => id === "visual_v1")?.call)
+      .toEqual({ name: "browser_mouse", args: { x: 150, y: 225, space: "image" } });
+    expect(built.candidates.find(({ id }) => id === "scroll_up")?.call)
+      .toEqual({ name: "browser_scroll", args: { direction: "up" } });
+    expect(built.candidates.find(({ id }) => id === "scroll_down")?.call)
+      .toEqual({ name: "browser_scroll", args: { direction: "down" } });
+    expect(built.candidates.find(({ id }) => id === "reobserve")?.call)
+      .toEqual({ name: "browser_screenshot", args: {} });
+  });
 });
 
 describe("browser decision settlement", () => {
+  test("starts a visual episode from multimodal screenshot text", () => {
+    const screenshot = call("visual-start", "browser_screenshot", {
+      decisionPlan: { goal: "Choose Apple", actions: [{ kind: "click_observed" }] },
+    });
+    const visual = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v1", role: "visible text", name: "Apple", interaction: "unknown",
+        x: 150, y: 225, context: "first row" }],
+    } });
+    const result = successfulResult(screenshot, "unused");
+    result.content = [
+      { type: "text", text: JSON.stringify({ observation: visual }) },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
+    ] as never;
+    expect(settleBrowserDecision(startingState(screenshot), [screenshot], [result], [], JEV_ID))
+      .toMatchObject({ phase: "decide", observation: visual });
+  });
+
   test("ordinary snapshot, click, type, and press results remain outside the optional decision loop", () => {
     const ordinaryCalls = [
       call("ordinary-snapshot", "browser_snapshot", {}),
@@ -1365,6 +1408,35 @@ describe("browser decision node", () => {
     if (priorOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorOpenRouterKey;
     invalidateRuntimeConfigCache();
+  });
+
+  test("selects a visual target and re-observes with a screenshot after the action", async () => {
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v1", role: "visible text", name: "Apple", interaction: "unknown",
+        x: 150, y: 225, context: "first row" }],
+    } });
+    const visualDecision = decision({
+      plan: browserDecisionPlanSchema.parse({ goal: "Choose Apple", allowedOrigins: ["https://shop.example"] }),
+      observation: visualObservation,
+    });
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      expect(input.instructions).toContain("visual_ref targets execute through browser_mouse");
+      return { selectedId: "visual_v1", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 5, outputTokens: 1, actualCostUsd: 0 } };
+    } });
+    const selected = await node(state({ browserDecision: visualDecision }), { signal: new AbortController().signal });
+    const mouse = proposedToolCall(selected);
+    expect(mouse).toMatchObject({ name: "browser_mouse", args: { x: 150, y: 225, space: "image" } });
+    expect(selected.browserDecision?.pending?.observationId).toBe("observation-1");
+    const afterMouse = settleBrowserDecision(
+      state({ browserDecision: selected.browserDecision as BrowserDecisionState }),
+      [mouse], [successfulResult(mouse, "clicked")], [], JEV_ID,
+    );
+    expect(afterMouse).toMatchObject({ phase: "observe", lastAction: { execution: "executed" } });
+    const reobserve = await node(state({ browserDecision: afterMouse }), { signal: new AbortController().signal });
+    expect(proposedToolCall(reobserve)).toMatchObject({ name: "browser_screenshot", args: {} });
+    expect(reobserve.browserDecision?.pending?.observationId).toBeNull();
   });
 
   for (const connected of [false, true]) {
