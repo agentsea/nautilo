@@ -4,9 +4,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
-코드와 문서는 현재 영어로 작성되어 있습니다. 번역 PR을 환영합니다. [번역 기여 안내](CONTRIBUTING.md#translations-and-localization)(영문)를 참고해 주세요. 이 페이지는 README의 한국어 번역이며, 앱 화면이나 링크된 문서가 한국어를 지원한다는 뜻은 아닙니다.
+로컬 설치 그림 가이드: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-<!-- Translation source: README.md; SHA-256: 5c6d085a926391280d5405985c83c3f2236d382ac02895dd292929224f6742a2 -->
+Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
+
+<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -17,70 +19,35 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 **나만의 슈퍼 에이전트. 함께하는 사람들과 그들의 Genie. 지능의 주인은 당신입니다.**
 
-당신의 Genie를 만나보세요. 성격, 기억, 얼굴, 목소리까지 직접 고를 수 있는, 자유롭게 맞춤 설정할 수 있는 에이전트입니다. 글쓰기, 조사, 웹 탐색, 코딩 에이전트 조율, 영화 제작을 맡겨보세요. 친구와 팀, 그들의 Genie를 같은 Room으로 초대하세요. 함께 일하세요. 직접 하고 싶어지면 언제든 조작을 넘겨받으세요.
-
-이것이 Nautilo입니다. 처음부터 여러 사용자를 위해, 사람과 기계 동료를 위해 만들었습니다. 데스크톱, 모바일, 웹에서. 당신의 서버, 당신의 모델, 당신의 규칙. 오픈 소스. MIT 라이선스.
-
-[웹사이트와 데모](https://nautilo.ai) ·
-[시작하기](#get-started) ·
-[문서](https://nautilo.ai/docs) ·
-[다운로드](https://nautilo.ai/download) ·
-[패키지](#explore-the-code) ·
-[기여하기](CONTRIBUTING.md)
+나만의 Genie를 만나보세요. 개성과 기억, 얼굴과 목소리를 정해 주세요. 함께 쓰고, 조사하고, 만들어 보세요. 사람들과 그들의 Genie를 같은 Room으로 초대하세요. 내 서버. 내 모델. 내 규칙. 오픈 소스. MIT 라이선스.
 
 <a id="get-started"></a>
 
 ## 시작하기
 
-모든 Nautilo 클라이언트는 Nautilo 서버에 연결됩니다. 상황에 맞는 방법을 고르세요.
+**나의 첫 Nautilo. 빈 서버에서 시작해 함께 만든 첫 결과물까지.**
 
-Mac에서 Nautilo를 처음 사용해 보시나요? [로컬 배포 빠른 시작](https://nautilo.ai/docs/operator/deploy/local)으로 시작하세요. 이 구성은 컴퓨터 한 대에서 평가하기 위한 것입니다. 모바일로 접속하거나 팀이 함께 접속할 서버가 필요하다면 아래의 호스팅 배포 방법을 선택하세요.
+[![Elias와 Lyra가 Writer에서 함께 작업하며 변경 제안을 검토하는 화면입니다. 클릭하면 스크린샷이 포함된 로컬 설치 가이드가 열립니다.](https://nautilo.ai/docs/operator/first-nautilo/writer-review.png)](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-| 원하는 일 | 시작할 곳 |
-| --- | --- |
-| 기존 서버에 참여하기 | [Nautilo를 다운로드](https://nautilo.ai/download)한 뒤 서버 주소나 초대장을 사용해 [설치 및 연결 안내](https://nautilo.ai/docs/use/install-and-connect)를 따르세요. |
-| Mac에서 첫 서버 실행하기 | Docker Desktop과 서명된 Nautilo CLI를 사용해 [로컬 배포 빠른 시작](https://nautilo.ai/docs/operator/deploy/local)을 따르세요. |
-| 팀을 위한 클라우드 서버 마련하기 | [Railway 배포 안내](https://nautilo.ai/docs/operator/deploy/railway)를 사용하세요. |
-| 자체 Docker 인프라에서 실행하기 | [Docker Compose 안내](https://nautilo.ai/docs/operator/deploy/docker-compose)를 따르거나 [배포 옵션을 비교](https://nautilo.ai/docs/operator/choose-a-deployment)하세요. |
-| 코드 수정하기 | [소스에서 개발하기](#develop-from-source)로 이동하세요. |
+### [내 Mac에서 로컬로 시작하기 →](https://nautilo.ai/docs/operator/deploy/local-ko)
 
-다운로드 페이지에서 현재 Desktop, 모바일, CLI 옵션을 확인할 수 있습니다. 서버의 웹 클라이언트를 열어도 됩니다. Desktop은 서버에 연결하는 클라이언트입니다. Desktop을 설치해도 서버나 데이터베이스가 설치되지는 않습니다. 모바일에는 HTTPS로 접근할 수 있는 서버가 필요합니다.
+Genie를 만나 나에게 맞게 꾸미고, 첫 문서를 함께 만들어 보세요. 스크린샷 가이드를 따라가면 됩니다.
 
-새 서버에서는 소유자 설정을 마치고 [제공업체 키를 추가](https://nautilo.ai/docs/operator/provider-keys)하세요. 그다음 Genie를 맞춤 설정하고 Room을 열어, 정말 만들고 싶은 것을 가져오세요. [첫 한 시간](https://nautilo.ai/docs/use/first-hour)에서 함께 문서를 만들고, 직접 편집하고, 결과를 저장하는 과정을 안내합니다.
+**Docker Desktop**과 **모델 제공업체의 API 키**가 필요합니다. Nautilo는 **alpha** 단계입니다.
 
-Nautilo는 **alpha** 단계입니다.
+**팀에서 쓰려면:** [내 데이터센터나 VPS에 배포하기 →](https://nautilo.ai/docs/operator/deploy/linux-server)
+
+**이미 서버가 있나요?** [Mac용 Desktop 다운로드 →](https://nautilo.ai/download/mac) · [Mobile 다운로드 →](https://nautilo.ai/download#download-platforms-title)
 
 ## 사람들을 데려오세요. 그들의 Genie도 함께.
 
-사람들과 각자의 Genie가 같은 Room에서 함께 일합니다. 자연스럽게 대화하세요. Smart Routing이 알맞은 Genie를 대화에 참여시킵니다. 특정 상대의 관심이 필요하면 직접 불러주세요. 문서를 공유하고, 아이디어를 뜯어보고, 함께 더 나은 것을 만드세요.
+사람들과 그들의 Genie를 같은 Room으로 모으세요. 아이디어를 뜯어보고, 초안을 쓰고, 빠진 조각을 찾는 조사는 Genie에게 맡기세요. 내 Genie에게는 함께 시간을 보내고 싶은 개성을 주세요.
 
-Genie에게 누군가의 답을 받아오게 하거나, 백그라운드 작업을 맡기거나, 나중에 할 일을 예약하세요. Genie가 일하는 동안 당신도 계속 나아가세요.
+그러다 직접 조작하세요. 문단을 고치고, 글자의 위치를 옮기세요. 단어 하나를 왼쪽으로 몇 센티미터 옮기자고 더 나은 프롬프트를 고민할 필요는 없어야죠.
 
-## 가끔은 그냥 내 손으로 하고 싶잖아요
+내 집 열쇠도 내가 갖고 있어야 합니다. 모델을 고르고, 서버를 운영하고, 누가 접근할지 정하는 사람은 나입니다. Room 하나를 공유한다고 내 삶 전부를 내줄 필요는 없으니까요.
 
-문단을 다시 쓰세요. 글자를 옮기세요. 터미널 조작을 넘겨받으세요. 당신과 Genie는 같은 작업물을 다루며, 작업에 맞춰 조작을 주고받습니다.
-
-단어 하나를 왼쪽으로 몇 센티미터 옮기려고 더 좋은 프롬프트를 쓸 필요는 없어야 합니다.
-
-## 해볼 만한 일을 맡기세요
-
-성격을 만들고, 얼굴과 목소리, 모델을 고르세요. 도구를 주고 일을 맡기세요. 웹을 조사하고, 코딩 에이전트를 조율하고, 이미지와 영상, 음악을 만들게 하세요. 서비스와 MCP 도구를 연결해 할 수 있는 일을 넓히세요.
-
-기억은 함께하는 작업에 연속성을 더합니다. 권한과 승인은 당신이 통제권을 갖도록 합니다.
-
-사용 가능한 도구는 클라이언트, 연결된 환경, 권한, 설정된 제공업체에 따라 달라집니다. 모델과 서비스 사용에는 제공업체 요금이 발생할 수 있습니다. [API 키 안내](https://nautilo.ai/docs/operator/provider-keys)에서 각 연결로 무엇을 할 수 있는지 설명합니다.
-
-[nautilo.ai](https://nautilo.ai)에서 소개 영상을 보거나, [첫 한 시간](https://nautilo.ai/docs/use/first-hour)을 따라 직접 시작해 보세요.
-
-## 내 집 열쇠는 내가 갖고 있어야죠
-
-AI가 당신을 잘 알게 될수록, 누가 그 관계를 통제하는지가 더 중요해집니다. 일하는 습관, 나눈 대화, 함께 만든 것들. 당신 삶에서 점점 더 큰 부분을 차지하는 것들입니다.
-
-Nautilo는 서버와 데이터베이스의 통제권을 당신에게 줍니다. 어디서 실행할지, 어떤 모델을 쓸지, 누가 참여할지, 데이터를 어떻게 백업할지 직접 선택합니다. 코드는 MIT 라이선스입니다. 읽고, 고치고, 그 위에 만드세요.
-
-서버를 공유하려면 경계도 제대로 세워야 합니다. Human과 Genie에게는 정체성이 있고, Room에는 멤버십이 있으며, 기억에는 범위가 있고, 도구에는 권한과 승인 절차가 있습니다. 누군가를 대화에 초대하는 것이 다른 모든 것의 열쇠까지 건네는 일이 되어서는 안 됩니다.
-
-연결된 모델과 도구 제공업체는 작업에 필요한 데이터를 받습니다. 직접 호스팅하면 연결할 제공업체를 선택할 수 있지만, 각 업체의 데이터 정책은 여전히 적용됩니다. 환경을 선택할 때 [보안 문서](https://nautilo.ai/docs/security)와 [서버 보안 강화 안내](https://nautilo.ai/docs/operator/security-hardening)를 읽어보세요.
+[모델과 API 키](https://nautilo.ai/docs/operator/provider-keys) · [보안과 개인정보 보호](https://nautilo.ai/docs/security)
 
 ## 필요한 정보 찾기
 
@@ -169,3 +136,9 @@ Nautilo는 [MIT 라이선스](LICENSE)로 제공됩니다. 의존성 라이선�
 [![GitHub Sponsors에서 Nautilo를 후원하세요.](assets/brand/donation-banner.png)](https://github.com/sponsors/agentsea)
 
 [GitHub Sponsors의 agentsea를 통해 Nautilo 후원하기](https://github.com/sponsors/agentsea) · 일회성 또는 월간 후원.
+
+[![Bankr 커뮤니티에 감사드립니다](https://nautilo.ai/community/bankr-thanks-ko.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+
+오픈 소스는 서로를 돕는 사람들의 힘으로 움직입니다. Bankr 커뮤니티는 독립적인 [Nautilo 토큰](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)을 만들고 거래 수수료의 일부를 저희 작업을 지원하는 데 배정해 주었습니다. 계속 만들어 갈 수 있도록 도와주셔서 감사합니다.
+
+이 토큰은 커뮤니티가 만든 것으로, Nautilo가 발행하거나 지지하는 토큰이 아닙니다. 소프트웨어에서 어떤 역할도 하지 않으며, 제품 이용권이나 소유권, 거버넌스 권한을 부여하지 않습니다.
