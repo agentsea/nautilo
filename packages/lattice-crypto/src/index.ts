@@ -974,6 +974,8 @@ export type {
     as PrepareDeviceWrappedAgentObjectAccessManifestGenesisSetInput,
 } from "./object/device-wrapped-agent-access-manifest-set-v1.ts";
 export {
+  assertAuthenticPreparedAgentObjectAccessManifestGenesisSetV3
+    as assertAuthenticPreparedAgentObjectAccessManifestGenesisSet,
   assertAuthenticPreparedAgentMemoryDeletionV1
     as assertAuthenticPreparedAgentObjectAccessManifestEmptySetUpdate,
   assertAuthenticPreparedAgentObjectAccessManifestUpdateSetV3

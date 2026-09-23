@@ -12,7 +12,7 @@ function handler(channel: string, nextChannel: string): string {
   return main.slice(start, end);
 }
 
-describe("M300 foreground Shadow main-process contract", () => {
+describe("foreground Shadow main-process contract", () => {
   test("validates every renderer payload before resolving or touching custody", () => {
     const send = handler("foregroundShadow:send", "foregroundShadow:recoverPending");
     expect(send.indexOf("boundedForegroundShadowValue(")).toBeLessThan(
@@ -49,10 +49,11 @@ describe("M300 foreground Shadow main-process contract", () => {
     );
     expect(background).toContain("foregroundShadowControllerForSender(e)");
     expect(background).toContain("controller.serviceBackgroundAuthorization()");
-    const history = main.slice(
-      main.indexOf('ipcMain.handle("foregroundShadow:history:reconcile"'),
-      main.indexOf("/**\n * D458 Wave 7", main.indexOf('ipcMain.handle("foregroundShadow:history:reconcile"')),
-    );
+    const historyStart = main.indexOf('ipcMain.handle("foregroundShadow:history:reconcile"');
+    const historyEnd = main.indexOf("async function remoteControlClientForSender", historyStart);
+    expect(historyStart).toBeGreaterThan(-1);
+    expect(historyEnd).toBeGreaterThan(historyStart);
+    const history = main.slice(historyStart, historyEnd);
     expect(history.indexOf("assertForegroundShadowHistoryShape(value)")).toBeLessThan(
       history.indexOf("foregroundShadowControllerForSender(e)"),
     );

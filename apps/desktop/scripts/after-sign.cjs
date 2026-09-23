@@ -1,5 +1,5 @@
 /**
- * D489 — inspect the completed macOS app after electron-builder's signing
+ * inspect the completed macOS app after electron-builder's signing
  * phase. This records the final plist and actual signature identity/mode for
  * both ad-hoc local packages and Developer ID packages without launching the
  * app or touching TCC.
@@ -12,6 +12,7 @@ const {
   SCREEN_RECORDING_PERMISSION_IDENTIFIER: EXPECTED_SCREEN_RECORDING_PERMISSION_IDENTIFIER,
 } = require("./native-helper-contract.cjs");
 const { COMPUTER_USE_HOST_IDENTIFIER: EXPECTED_COMPUTER_USE_HOST_IDENTIFIER } = require("./native-helper-contract.cjs");
+const { WINDOW_PRESENCE_IDENTIFIER: EXPECTED_WINDOW_PRESENCE_IDENTIFIER } = require("./native-helper-contract.cjs");
 
 const EXPECTED_NAUTILO_IDENTIFIER = "com.nautilo.desktop";
 const PACKAGED_HOST_VERIFIER_TIMEOUT_MS = 90_000;
@@ -122,6 +123,26 @@ function assertComputerUseHostMatchesNautiloIdentity(hostIdentity, appIdentity, 
   if (expectedTeam !== undefined && appIdentity.teamIdentifier !== expectedTeam) throw new Error(`[after-sign] Nautilo app TeamIdentifier must be ${expectedTeam}; found ${appIdentity.teamIdentifier ?? "none"}`);
 }
 
+function assertWindowPresenceMatchesNautiloIdentity(helperIdentity, appIdentity, expectedTeam) {
+  if (helperIdentity.identifier !== EXPECTED_WINDOW_PRESENCE_IDENTIFIER) {
+    throw new Error(`[after-sign] Window presence helper must retain codesign identifier ${EXPECTED_WINDOW_PRESENCE_IDENTIFIER}; found ${helperIdentity.identifier ?? "none"}`);
+  }
+  if (appIdentity.identifier !== EXPECTED_NAUTILO_IDENTIFIER || helperIdentity.teamIdentifier !== appIdentity.teamIdentifier) {
+    throw new Error("[after-sign] Window presence helper identity must match enclosing Nautilo.app");
+  }
+  if (helperIdentity.teamIdentifier === null) {
+    if (helperIdentity.authorities.length !== 0 || appIdentity.authorities.length !== 0) {
+      throw new Error("[after-sign] ad-hoc Nautilo and Window presence helper signatures must not advertise certificate authorities");
+    }
+  } else if (!helperIdentity.authorities[0]?.startsWith("Developer ID Application:") || JSON.stringify(helperIdentity.authorities) !== JSON.stringify(appIdentity.authorities)) {
+    throw new Error("[after-sign] Window presence helper certificate authority chain must match enclosing Nautilo.app");
+  }
+  if (expectedTeam !== undefined) {
+    if (!/^[A-Z0-9]{10}$/.test(expectedTeam)) throw new Error("[after-sign] APPLE_TEAM_ID must be a 10-character Developer ID team identifier");
+    if (appIdentity.teamIdentifier !== expectedTeam) throw new Error(`[after-sign] Nautilo app TeamIdentifier must be ${expectedTeam}; found ${appIdentity.teamIdentifier ?? "none"}`);
+  }
+}
+
 
 const EXPECTED_CUA_ENTITLEMENTS = {
   "com.apple.security.automation.apple-events": true,
@@ -164,6 +185,16 @@ function assertExactScreenRecordingPermissionEntitlements(entitlements) {
     if (entitlements[key] !== true) {
       throw new Error(`[after-sign] Screen Recording helper entitlement ${key} must be true`);
     }
+  }
+}
+
+function assertExactWindowPresenceEntitlements(entitlements) {
+  if (entitlements === null || typeof entitlements !== "object" || Array.isArray(entitlements)) {
+    throw new Error("[after-sign] Window presence helper entitlements must be a dictionary");
+  }
+  const actualKeys = Object.keys(entitlements).sort();
+  if (actualKeys.length !== 0) {
+    throw new Error(`[after-sign] Window presence helper entitlements must contain exactly no keys; found ${actualKeys.join(", ")}`);
   }
 }
 
@@ -244,14 +275,29 @@ function assertPackagedComputerUseHostSignature(bundlePath) {
   inspectExactEntitlements(hostPath, {}, "Computer Use Host");
 }
 
+function assertPackagedWindowPresenceSignature(bundlePath) {
+  const helperPath = join(bundlePath, "Contents", "Resources", "tools-window-presence", "nautilo-window-presence");
+  if (!existsSync(helperPath)) throw new Error(`[after-sign] missing packaged Window presence helper at ${helperPath}`);
+  execFileSync("codesign", ["--verify", "--strict", "--verbose=4", helperPath], { stdio: "inherit" });
+  assertWindowPresenceMatchesNautiloIdentity(
+    inspectCodesignIdentity(helperPath),
+    inspectCodesignIdentity(bundlePath),
+    process.env.APPLE_TEAM_ID,
+  );
+  inspectExactEntitlements(helperPath, {}, "Window presence helper", assertExactWindowPresenceEntitlements);
+}
+
 
 exports.parseCodesignIdentity = parseCodesignIdentity;
 exports.assertCuaDriverMatchesNautiloIdentity = assertCuaDriverMatchesNautiloIdentity;
 exports.assertExactCuaDriverEntitlements = assertExactCuaDriverEntitlements;
 exports.assertScreenRecordingPermissionMatchesNautiloIdentity = assertScreenRecordingPermissionMatchesNautiloIdentity;
 exports.assertComputerUseHostMatchesNautiloIdentity = assertComputerUseHostMatchesNautiloIdentity;
+exports.assertWindowPresenceMatchesNautiloIdentity = assertWindowPresenceMatchesNautiloIdentity;
 exports.assertExactScreenRecordingPermissionEntitlements = assertExactScreenRecordingPermissionEntitlements;
+exports.assertExactWindowPresenceEntitlements = assertExactWindowPresenceEntitlements;
 exports.assertPackagedScreenRecordingPermissionSignature = assertPackagedScreenRecordingPermissionSignature;
+exports.assertPackagedWindowPresenceSignature = assertPackagedWindowPresenceSignature;
 
 /**
  * @param {{ appOutDir: string, packager: { appInfo: { productFilename: string, productName: string } }, electronPlatformName: string }} context
@@ -270,6 +316,7 @@ exports.default = async function afterSign(context) {
   assertPackagedCuaDriverSignature(bundlePath);
   assertPackagedScreenRecordingPermissionSignature(bundlePath);
   assertPackagedComputerUseHostSignature(bundlePath);
+  assertPackagedWindowPresenceSignature(bundlePath);
   if (process.env.APPLE_TEAM_ID) {
     // Run the production loader against the final recursively signed bytes.
     // This catches any mismatch introduced after extraResources were staged.

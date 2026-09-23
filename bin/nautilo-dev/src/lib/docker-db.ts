@@ -147,7 +147,7 @@ export function dropAndCreateDb(): void {
 export const DATA_TABLES = [
   // Identity roots.
   "public.users",
-  // D452 — owner-scoped Claude harness enablement and safe runtime observations.
+  // Owner-scoped Claude harness enablement and safe runtime observations.
   "public.claude_connections",
   // M297 — directional Human safety policy. References users in both directions.
   "public.human_blocks",
@@ -161,19 +161,19 @@ export const DATA_TABLES = [
   "public.agent_scope_close_items",
   "public.actors",
   "public.profiles",
-  // D453 — Codex connection state. Account profiles must precede the
+  // Codex connection state. Account profiles must precede the
   // user/agent preference rows that reference them.
   "public.codex_account_profiles",
   "public.codex_user_preferences",
-  // D487 — owned photo metadata first, then selection history that may point
+  // Owned photo metadata first, then selection history that may point
   // at those entries, followed by the owner/agent-scoped operation ledger.
   "public.owned_photo_entries",
   "public.agent_photo_selection_revisions",
   "public.photo_library_operations",
-  // D539 — unfinished post-commit blob deletion must survive backup/restore.
+  // Unfinished post-commit blob deletion must survive backup/restore.
   "public.account_deletion_photo_cleanup",
   "public.relay_tokens",
-  // D458 — durable controller enrollment, pairing ceremonies, host bindings,
+  // Durable controller enrollment, pairing ceremonies, host bindings,
   // and short-lived ordinary-request admissions. Keep this FK-safe order.
   "public.remote_controller_installations",
   "public.remote_pairing_challenges",
@@ -200,14 +200,14 @@ export const DATA_TABLES = [
   "public.groups",
   "public.group_roles",
   "public.group_members",
-  // D518 — rollout headers reference their creating user; items reference the
+  // Rollout headers reference their creating user; items reference the
   // header and may reference the committed member. Restore parent first.
   "public.member_rollouts",
   "public.member_rollout_items",
 
   // Namespaces/rooms before anything that points at rooms.
   "public.namespaces",
-  // D456 — provider setup and Human-scoped connection state reference users
+  // Provider setup and Human-scoped connection state reference users
   // and namespaces; preserve all three across backup/restore.
   "public.connected_app_provider_configs",
   "public.connected_app_profiles",
@@ -217,7 +217,7 @@ export const DATA_TABLES = [
   // be verified, resumed, or explicitly revoked instead of silently lost.
   "public.connected_web_accounts",
   "public.rooms",
-  // D568 — restore operation custody and reported activity after all owner,
+  // Restore operation custody and reported activity after all owner,
   // account, Genie, and Room parents; effects precede their operation links.
   "public.connected_web_action_operations",
   "public.connected_web_operations",
@@ -225,7 +225,7 @@ export const DATA_TABLES = [
   "public.room_members",
   "public.room_agent_model_control_selections",
   "public.room_silence_state",
-  // D453 — room-scoped bindings reference users, rooms, and Codex profiles.
+  // Room-scoped bindings reference users, rooms, and Codex profiles.
   "public.codex_thread_bindings",
   // M233 — optional Human policy override. References users + rooms.
   "public.room_notification_settings",
@@ -233,10 +233,10 @@ export const DATA_TABLES = [
   // message/person targets deliberately remain stable identifiers without FKs.
   "public.content_reports",
 
-  // D384 — MCP server config store (config only; no secrets at rest).
+  // MCP server config store (config only; no secrets at rest).
   "public.mcp_servers",
 
-  // D420 — permanent maintenance lease singleton (no FK deps).
+  // Permanent maintenance lease singleton (no FK deps).
   "public.server_maintenance",
 
   // Memory/session/message substrate.
@@ -250,10 +250,13 @@ export const DATA_TABLES = [
   "public.memory_crypto_revisions",
   "public.memory_crypto_operations",
   "public.jobs",
-  // D420 — payload-free work-acceptance ledger (FK jobs.id ON DELETE SET NULL).
+  // Payload-free work-acceptance ledger (FK jobs.id ON DELETE SET NULL).
   "public.work_acceptances",
   "public.sessions",
   "public.session_messages",
+  // Content-free deletion receipts have no foreign-key parents and survive the
+  // message they record; keep them in every full backup and restore.
+  "public.message_deletion_receipts",
   // M313 — durable Message backfill sweep, sparse failure, and resumable Tool
   // correlation state. Actor and Message parents are restored above; the Tool
   // pending rows share Human custody with their parser context.
@@ -288,7 +291,7 @@ export const DATA_TABLES = [
   "public.conversation_shared_agent_shadow_execution_inputs",
   "public.conversation_shared_agent_shadow_acknowledgements",
   "public.conversation_shared_agent_shadow_plan_attempts",
-  // D468 — durable push state. The installation binding owns the encrypted
+  // Durable push state. The installation binding owns the encrypted
   // provider token; candidates reference canonical messages; test intents and
   // deliveries both reference the binding. Full backups restore these rows
   // together with the separately protected per-instance encryption key, so
@@ -351,7 +354,7 @@ export const DATA_TABLES = [
   "public.reflection_record_source_dependency_index",
   "public.reflection_record_semantic_work_admissions",
   "public.reflection_record_semantic_work",
-  // D426 — durable thread-responder focus; FKs rooms, actors, session_messages.
+  // Durable thread-responder focus; FKs rooms, actors, session_messages.
   "public.subthread_user_focus",
 
   // Approval/invite surfaces.
@@ -389,7 +392,7 @@ export const DATA_TABLES = [
   // cannot regrant access. COPY inserts unchanged receipts after all four FK
   // parents (users, actors, memories, artifacts); no trigger bypass is needed.
   "public.content_access_operations",
-  // D525 — durable paid-media receipts reference users, a room/namespace
+  // Durable paid-media receipts reference users, a room/namespace
   // pair, and (once ready) an Artifact. Restore after the Artifact parent so
   // restart/recovery state is preserved without weakening foreign keys.
   "public.media_generations",
@@ -401,7 +404,7 @@ export const DATA_TABLES = [
   "public.artifact_crypto_operations",
   "public.artifact_crypto_blobs",
   "public.artifact_crypto_revisions",
-  // D448 — canonical Workspace mutation receipts, per-entry identities, and
+  // Canonical Workspace mutation receipts, per-entry identities, and
   // durable publication outbox. Ordered after artifacts to satisfy FKs.
   "public.workspace_document_mutations",
   "public.workspace_document_mutation_entries",
@@ -409,20 +412,24 @@ export const DATA_TABLES = [
   "public.workspace_document_mutation_outbox",
   "public.pending_artifact_events",
   "public.provider_catalog_cache",
-  // D405 — LLM usage metering for costs dashboard. FKs users + rooms (both earlier).
+  // LLM usage metering for costs dashboard. FKs users + rooms (both earlier).
   "public.llm_usage_events",
-  // D571 — paid provider/tool cost evidence. FKs users + rooms + agents (all earlier).
+  // Paid provider/tool cost evidence. FKs users + rooms + agents (all earlier).
   "public.provider_cost_events",
-  // M141 — Task substrate. Ordered after users/agents/rooms/agent_scopes
-  // (tasks FKs) and jobs (task_runs FK) so COPY restore satisfies FKs.
+  // Task substrate. Crypto revision ledgers depend only on namespaces and must
+  // be restored before the Task/TaskRun rows that point at their current
+  // protected representations. The product rows remain after all of their
+  // users/agents/rooms/agent_scopes/jobs parents.
+  "public.task_definition_crypto_revisions",
+  "public.task_run_result_crypto_revisions",
   "public.tasks",
   "public.task_runs",
-  // D453 — pending/recoverable Plan input references the Task, run, Job,
+  // Pending/recoverable Plan input references the Task, run, Job,
   // Room, and Codex binding, so every parent must be restored first.
   "public.codex_user_input_requests",
-  // D263 — agent skills. FKs agents + users (both earlier), so safe at the tail.
+  // Agent skills. FKs agents + users (both earlier), so safe at the tail.
   "public.skills",
-  // D379 — agent slash-commands. FKs agents + users (both earlier), safe at the tail.
+  // Agent slash-commands. FKs agents + users (both earlier), safe at the tail.
   "public.commands",
 
   // M231 — dormant lattice persistence. Public metadata and opaque
@@ -536,6 +543,16 @@ export const SERIAL_PK_TABLES: ReadonlyArray<{
     pkCol: "sequence",
   },
   {
+    table: "task_definition_crypto_revisions",
+    seq: "task_definition_crypto_revisions_sequence_seq",
+    pkCol: "sequence",
+  },
+  {
+    table: "task_run_result_crypto_revisions",
+    seq: "task_run_result_crypto_revisions_sequence_seq",
+    pkCol: "sequence",
+  },
+  {
     table: "agent_scope_close_operations",
     seq: "agent_scope_close_operations_sequence_seq",
     pkCol: "sequence",
@@ -599,8 +616,8 @@ export async function restoreFromGzip(
   // `bun run db:migrate` from the repo root, which routes through Turbo.
   // The M212 direct-Postgres migration env supplies both DB_DIRECT_CONNECTION
   // and DB_CONNECTION_STRING, so Drizzle targets the named restore DB.
-  // On a named instance (e.g. d425-source on a different port) that
-  // migrates the WRONG database, leaving the target DB with zero public
+  // Without it, a named source instance using a different port would
+  // migrate the WRONG database, leaving the target DB with zero public
   // tables and causing restore to fail at `COPY public.users`.
   runRestoreMigrations(log, undefined, migrationEnv);
 

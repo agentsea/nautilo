@@ -59,6 +59,7 @@ export const CLEAN_RUNTIME_EXPORTS = [
   "appendNamespaceGeneration",
   "artifactBlobSealedChunkBytes",
   "assertAuthenticPreparedAgentObjectAccessManifestEmptySetUpdate",
+  "assertAuthenticPreparedAgentObjectAccessManifestGenesisSet",
   "assertAuthenticPreparedAgentObjectAccessManifestUpdateSet",
   "assertAuthenticPreparedHumanMemoryDeletion",
   "assertAuthenticPreparedHumanObjectAccessManifestGenesisSet",

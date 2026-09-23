@@ -2087,6 +2087,20 @@
       "when": 1789982513111,
       "tag": "0297_small_chameleon",
       "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1790106543979,
+      "tag": "0298_message_deletion_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1790106543980,
+      "tag": "0299_mushy_jasper_sitwell",
+      "breakpoints": true
     }
   ]
 }

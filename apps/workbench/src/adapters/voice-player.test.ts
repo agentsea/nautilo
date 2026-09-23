@@ -49,6 +49,19 @@ describe("VoicePlayer", () => {
     expect(player.currentTurnId()).toBeNull();
   });
 
+  test("Stop talking rejects later sentences from the stopped turn but accepts the next turn", () => {
+    player.setEnabled(true);
+    player.handleAudioEvent({ turnId: "turn-a", data: btoa("first"), chunkIndex: 0, sentenceIndex: 0, final: false });
+    player.stopTalking();
+    player.stopTalking();
+    player.handleAudioEvent({ turnId: "turn-a", data: btoa("late"), chunkIndex: 0, sentenceIndex: 1, final: false });
+    expect(player.currentTurnId()).toBeNull();
+    expect(player.isEnabled()).toBe(true);
+    player.handleAudioEvent({ turnId: "turn-b", data: btoa("next"), chunkIndex: 0, sentenceIndex: 0, final: false });
+    expect(player.currentTurnId()).toBe("turn-b");
+    player.stop();
+  });
+
   test("setEnabled(false) calls stop internally", () => {
     player.setEnabled(true);
     // Queue a chunk

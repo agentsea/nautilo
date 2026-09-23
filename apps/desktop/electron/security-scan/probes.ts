@@ -3,7 +3,8 @@ import { JSONParser } from "@streamparser/json";
 import { createReadStream } from "node:fs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   securityScanObservationSchema,
@@ -266,7 +267,7 @@ export function parseSemgrepReport(root: string, raw: string): ParsedReport {
 
 export async function runSecurityProbeProcess(request: SecurityProbeProcessRequest): Promise<SecurityProbeProcessResult> {
   if (request.signal?.aborted) return { exitCode: null, cancelled: true, timedOut: false };
-  const stdout = request.stdoutPath ? await open(request.stdoutPath, "wx", 0o600) : undefined;
+  const stdout = request.stdoutPath ? await fsPromises.open(request.stdoutPath, "wx", 0o600) : undefined;
   try { return await new Promise<SecurityProbeProcessResult>((resolveProcess, reject) => {
     const child = spawn(request.executablePath, [...request.argv], {
       cwd: request.cwd, detached: process.platform !== "win32",

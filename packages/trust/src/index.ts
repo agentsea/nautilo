@@ -589,7 +589,7 @@ export {
   assertUserCanDeleteMessage,
   decideMessageDelete,
 } from "./membership";
-export type { DeleteDenyReason } from "./membership";
+export type { DeleteDenyReason, MessageDeleteAuthority } from "./membership";
 export { deleteMessageHard } from "./message-delete";
 export {
   appendCanonicalTranscriptRowsInTx,

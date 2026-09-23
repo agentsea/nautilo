@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# M114: nautilo-server container image (deploy-stack precursor).
+# Nautilo server container image.
 #
 # Build shape (after the bundle fallback was triggered by argon2's
 # native addon — see commit history for the trail):
@@ -39,7 +39,7 @@
 # never waits for a host-side Neon proxy (compose's depends_on already
 # gates startup behind in-cluster app-postgres).
 #
-# M118 (2026-05-21): refactored for build-cache survival across
+# Layering preserves the build cache across
 # source-only edits. Layer ordering is dep-manifests → install →
 # source. Postinstalls run ONCE in the deps stage, against an
 # apt-installed build toolchain; the workbench-build stage derives its
@@ -53,7 +53,7 @@
 # Cache budget on incremental rebuilds:
 #   - source-only edit:      ~30–60 s (manifests + deps layers hit)
 #   - lockfile edit:         ~2–3 min (manifests miss, install hits bun cache)
-#   - cold:                  comparable to pre-M118 (~10 min) — irreducible
+#   - cold:                  comparable to the original build (~10 min) — irreducible
 #
 # BuildKit IS REQUIRED. Building with DOCKER_BUILDKIT=0 will fail at
 # the first `--mount=type=cache` directive. BuildKit is default on
@@ -173,6 +173,7 @@ COPY packages/first-party-apps/design/package.json \
 COPY packages/first-party-apps/design/bun.lock \
      packages/first-party-apps/design/bun.lock
 COPY dev/tools/electron-debug/package.json       dev/tools/electron-debug/package.json
+COPY dev/tools/genie-lab/package.json            dev/tools/genie-lab/package.json
 COPY dev/tools/nautilo-backup/package.json       dev/tools/nautilo-backup/package.json
 COPY dev/tools/nautilo-db/package.json           dev/tools/nautilo-db/package.json
 COPY dev/tools/nautilo-server-logs/package.json  dev/tools/nautilo-server-logs/package.json
@@ -190,7 +191,7 @@ COPY deploy/compose-driver/package.json          deploy/compose-driver/package.j
 #     run their lifecycle scripts. Both are desktop/relay-only deps the server
 #     never loads (the `terminal` tool is executor:"relay"; node-pty runs on the
 #     relay). node-pty ships darwin/win32 prebuilds only → on linux its install
-#     falls through to `node-gyp rebuild` (node-gyp not on PATH → exit 127, D402);
+#     falls through to `node-gyp rebuild` (node-gyp not on PATH → exit 127);
 #     electron's postinstall downloads its ~100MB binary. Both fetch over HTTPS
 #     and also fail behind a TLS-intercepting proxy ("unable to get local issuer
 #     certificate"), and are pure waste in the server image regardless. Do NOT
@@ -260,7 +261,7 @@ COPY packages/office-core packages/office-core
 COPY packages/office-docs packages/office-docs
 RUN bunx turbo run build --filter=@nautilo/office-docs...
 
-# M187 — first-party mini-app dependencies are intentionally app-local because
+# First-party mini-app dependencies are intentionally app-local because
 # installed app source is built from its own folder. Keep each app's dependency
 # tree beside its seeded source so `scanInstalledApps` reports dependency-backed
 # first-party apps as ready in clean containers.
@@ -277,7 +278,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
 # and first-party app installers. It is not a valid runtime payload: copying it
 # would ship every desktop/mobile/dev dependency. The generated projection is
 # the deterministic runtime install boundary.
-# This stage consumes the generated D490 projection: production workspace
+# This stage consumes the generated dependency projection: production workspace
 # edges only, projected manifests without dev inputs, reviewed root overrides,
 # and a dedicated frozen lockfile. The invariant suite reconstructs the
 # projection and rejects drift.
@@ -324,6 +325,7 @@ COPY apps/desktop/electron/connection-presentation.ts apps/desktop/electron/conn
 COPY apps/desktop/electron/connection-support-receipt.ts apps/desktop/electron/connection-support-receipt.ts
 COPY apps/desktop/electron/ready-to-work-contract.ts apps/desktop/electron/ready-to-work-contract.ts
 COPY apps/desktop/electron/mini-app-draft-recovery-contract.ts apps/desktop/electron/mini-app-draft-recovery-contract.ts
+COPY apps/desktop/electron/companion-contract.ts apps/desktop/electron/companion-contract.ts
 COPY packages/api-client           packages/api-client
 COPY packages/attachments          packages/attachments
 COPY packages/computer-use-contracts packages/computer-use-contracts
@@ -554,7 +556,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && rm /tmp/check-security-package-floors.sh /tmp/server-security-package-floors.txt
 
 WORKDIR /srv
-# M139: artifact bytes are persisted to the `app_artifacts` named volume
+# Artifact bytes are persisted to the `app_artifacts` named volume
 # mounted at /var/lib/nautilo/artifacts (NAUTILO_ARTIFACTS_ROOT in the
 # deploy compose template). This runtime stage runs as root (no USER
 # directive), so the root-owned volume mountpoint is writable as-is — no
@@ -567,8 +569,8 @@ WORKDIR /srv
 # immutable from the build context's perspective once the lockfile is frozen,
 # and keeping the three artifacts together makes runtime-deps the canonical
 # "runtime install completed" boundary. Placed immediately after WORKDIR so
-# source-only / derived-output edits do not re-copy this stable tree (M209
-# cache topology).
+# source-only / derived-output edits do not re-copy this stable tree,
+# preserving the cache topology.
 COPY --from=runtime-deps /repo/package.json ./repo/package.json
 COPY --from=runtime-deps /repo/bun.lock     ./repo/bun.lock
 COPY --from=runtime-deps /repo/node_modules ./repo/node_modules
@@ -587,7 +589,7 @@ COPY turbo.json         ./repo/turbo.json
 # source-only edit in (say) `apps/desktop/` doesn't bust any of these
 # `packages/*` COPY layers, and an edit in `packages/agent/` only
 # busts the `packages/agent` COPY. That's the actual cache topology
-# the M118 budget assumes.
+# the incremental build budget assumes.
 #
 # Do NOT switch any of these to `COPY packages ./repo/packages` —
 # that re-introduces the 6 dropped workspace packages and silently
@@ -648,7 +650,7 @@ COPY packages/runtime             ./repo/packages/runtime
 COPY packages/sandbox             ./repo/packages/sandbox
 COPY packages/security            ./repo/packages/security
 COPY packages/server              ./repo/packages/server
-# OfficeCLI binary vendored in the dedicated officecli-vendor stage (M209).
+# OfficeCLI binary vendored in the dedicated officecli-vendor stage.
 COPY --from=officecli-vendor /repo/packages/server/vendor/officecli \
      ./repo/packages/server/vendor/officecli
 # Raw CDP attachment tooling for the future Browser Use connected-account lane.
@@ -676,7 +678,7 @@ COPY --from=runtime-deps /repo/bin/nautilo-server ./repo/bin/nautilo-server
 COPY --from=runtime-deps /repo/packages ./repo/packages
 
 # Non-workspace first-party runtime assets consumed by server startup seeding
-# (M182 mini-app registry). Keep the default image explicit: only shipped apps
+# (mini-app registry). Keep the default image explicit: only shipped apps
 # are copied from context. The Sheets stage contributes its reviewed artifact
 # closure unless the build explicitly opts out. Restore app-local dependency
 # trees after source copies because source overlay would otherwise empty them.
@@ -727,7 +729,7 @@ RUN chmod +x ./entrypoint.sh
 
 # Workbench dist served by the server when NAUTILO_WORKBENCH_DIST is set.
 # Placed after mutable runtime assembly so workbench-only edits do not
-# invalidate the server source / first-party / migration layers (M209).
+# invalidate the server source / first-party / migration layers.
 COPY --from=workbench-build /repo/apps/workbench/dist ./workbench
 
 # Expo's optional Mobile Web export is a static payload only. It shares the

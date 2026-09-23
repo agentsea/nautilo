@@ -576,9 +576,11 @@ export {
 export {
   createTask,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   listTasksForOwner,
   listStoppableTasksForOwnerRoom,
   updateTask,
+  updateTaskIfCurrent,
   insertTaskRun,
   getTaskRuns,
   getLatestRunModelByTask,

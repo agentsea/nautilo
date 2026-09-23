@@ -1,5 +1,5 @@
 /**
- * D103 P4.3 — electron-builder afterPack hook.
+ * electron-builder afterPack hook.
  *
  * electron-builder requires CommonJS for hook entry points. This hook
  * mutates the packaged app (fuse flip, executable permission fixes)
@@ -10,9 +10,9 @@
  *
  * `context.appOutDir` is the platform-specific directory containing
  * the packaged app:
- *   - macOS: `release/mac-arm64/` (or `mac/`) — contains `<productName>.app`
- *   - Windows: `release/win-unpacked/` — contains `<productName>.exe`
- *   - Linux: `release/linux-unpacked/` — contains the binary directory
+ * - macOS: `release/mac-arm64/` (or `mac/`) — contains `<productName>.app`
+ * - Windows: `release/win-unpacked/` — contains `<productName>.exe`
+ * - Linux: `release/linux-unpacked/` — contains the binary directory
  *
  * The fuses tool accepts the path TO the bundle (.app on macOS, the
  * .exe on Windows, the binary on Linux); we resolve it per-platform.
@@ -40,10 +40,11 @@ const VENDORED_TOOL_BINARY_NAMES = new Set([
   "openhue",
   "rg",
   "nautilo-screen-recording-permission",
+  "nautilo-window-presence",
 ]);
 
 /**
- * D489 — inspect the generated Info.plist, not merely the YAML source. This
+ * inspect the generated Info.plist, not merely the YAML source. This
  * runs before electron-builder's normal post-afterPack signing step, so both
  * unsigned development bundles and Developer-ID bundles share the same guard.
  */
@@ -124,7 +125,7 @@ function fixVendoredToolBinaryPerms(appOutDir) {
 }
 
 /**
- * D373 stack-137 — re-assert +x on node-pty's `spawn-helper` in the packed app.
+ * re-assert +x on node-pty's `spawn-helper` in the packed app.
  *
  * node-pty `posix_spawn`s `spawn-helper` at runtime; it MUST be mode 0755.
  * The packaged bit is inherited from the source file at pack time, and bun's

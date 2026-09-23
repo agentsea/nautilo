@@ -63,10 +63,10 @@ const RUNTIME_LOCATORS = [
 
 const BUILD_AND_TEST_LOCATORS = [
   "apps/desktop/scripts/build-electron.ts#filesystem_write:d005bf0747616ddb:2",
-  "apps/desktop/scripts/d514-desktop-connection-smoke.ts#filesystem_write:d005bf0747616ddb:1",
-  "apps/desktop/scripts/d514-desktop-connection-smoke.ts#subprocess_processor:15eda82f572bacc4:1",
-  "apps/desktop/scripts/d514-desktop-connection-smoke.ts#temporary_storage:6195c4a697612961:1",
-  "apps/desktop/scripts/d514-desktop-connection-smoke.ts#temporary_storage:6d75cfad7940ae8b:1",
+  "apps/desktop/scripts/desktop-connection-smoke.ts#filesystem_write:d005bf0747616ddb:1",
+  "apps/desktop/scripts/desktop-connection-smoke.ts#subprocess_processor:15eda82f572bacc4:1",
+  "apps/desktop/scripts/desktop-connection-smoke.ts#temporary_storage:6195c4a697612961:1",
+  "apps/desktop/scripts/desktop-connection-smoke.ts#temporary_storage:6d75cfad7940ae8b:1",
 ] as const;
 
 const DEBT_KIND = {

@@ -19,6 +19,7 @@ import {
   getContentReport,
   listContentReports,
 } from "../lib/content-reports";
+import { findMessageDeletionReceiptByReportId } from "../lib/message-deletion-receipts";
 import { deleteMessageWithConvergence } from "../messaging/message-deletion";
 
 export type ContentReportRoutesDeps = Readonly<{
@@ -29,6 +30,7 @@ export type ContentReportRoutesDeps = Readonly<{
   listReports?: typeof listContentReports;
   getReport?: typeof getContentReport;
   closeReport?: typeof closeContentReport;
+  findDeletionReceipt?: typeof findMessageDeletionReceiptByReportId;
 }>;
 
 function sendContentReportError(error: unknown, reply: FastifyReply) {
@@ -60,6 +62,7 @@ export function contentReportRoutes(
   const listReports = deps.listReports ?? listContentReports;
   const getReport = deps.getReport ?? getContentReport;
   const closeReport = deps.closeReport ?? closeContentReport;
+  const findDeletionReceipt = deps.findDeletionReceipt ?? findMessageDeletionReceiptByReportId;
 
   async function requireModerator(userId: string): Promise<boolean> {
     return hasCapability(userId, CAP_MODERATE_CONTENT_REPORTS);
@@ -127,6 +130,11 @@ export function contentReportRoutes(
           await deleteMessage({
             roomId: report.roomId,
             messageId: report.targetMessageId,
+            actorUserId: callerUserId,
+            actorId: request.sessionActorId ?? null,
+            source: "content_report",
+            authority: "report_action",
+            reportId: report.id,
             logContext: "content report",
           });
         }
@@ -136,6 +144,14 @@ export function contentReportRoutes(
         if (error instanceof MessageDeleteError) {
           if (error.reason === "message_anchors_thread") {
             return reply.code(409).send({ error: "message_anchors_thread" });
+          }
+          // The delete and receipt commit together, but closing the report is
+          // a separate operation. A retry after that boundary must not try to
+          // delete the already-gone message again.
+          const receipt = await findDeletionReceipt(request.params.reportId);
+          if (receipt?.source === "content_report" && receipt.reportId === request.params.reportId) {
+            const closed = await closeReport(db, request.params.reportId, callerUserId);
+            return reply.send({ reportId: closed.id, status: "closed" });
           }
           return reply.code(404).send({ error: "reported_message_not_found" });
         }
