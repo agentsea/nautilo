@@ -35,9 +35,12 @@ import {
   type SoulFileInput,
 } from "@nautilo/agent";
 import {
+  assertCanUseServerProviderCredentials,
   findAgentById,
   findPersonalAgentsForUser,
   persistUserTimezoneIfChanged,
+  ServerProviderCredentialsDeniedError,
+  toActionCapabilityHttpDenial,
 } from "@nautilo/trust";
 import { validateIanaTimezone } from "../lib/timezone";
 import { eventBus } from "@nautilo/runtime";
@@ -111,6 +114,7 @@ export function profileRoutes(
       agentId: string,
       policy: { enabled: boolean; chain: string[] },
     ) => Promise<{ fallbackEnabled: boolean; fallbackChain: string[] }>;
+    assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
   },
 ) {
   const resolveSubjectUserId = (request: FastifyRequest): string =>
@@ -472,10 +476,20 @@ export function profileRoutes(
       if (!agentId) {
         return reply.code(409).send({ error: "no_personal_agent" });
       }
-      const soulFile = await generateSoulFile(request.body);
+      await (deps?.assertCanUseServerProviderCredentials
+        ?? assertCanUseServerProviderCredentials)(request.sessionUserId, "profile_soul_generation");
+      const soulFile = await generateSoulFile(request.body, undefined, {
+        humanUserId: request.sessionUserId,
+        ...(deps?.assertCanUseServerProviderCredentials
+          ? { assertServerProviderCredentials: deps.assertCanUseServerProviderCredentials }
+          : {}),
+      });
       await upsertProfile(resolveSubjectUserId(request), agentId, { soulFile });
       return reply.send({ soulFile });
     } catch (e) {
+      if (e instanceof ServerProviderCredentialsDeniedError) {
+        return reply.code(403).send(toActionCapabilityHttpDenial(e));
+      }
       logError("[profile] generate-soul failed:", e instanceof Error ? e.stack ?? e.message : String(e));
       return reply.code(500).send({ error: "Failed to generate soul file." });
     }
@@ -485,6 +499,16 @@ export function profileRoutes(
     // M128 D4-A: self-edit by construction (writes to subject = session user).
     if (!request.sessionUserId) {
       return reply.code(401).send({ error: "Authentication required" });
+    }
+
+    try {
+      await (deps?.assertCanUseServerProviderCredentials
+        ?? assertCanUseServerProviderCredentials)(request.sessionUserId, "profile_soul_generation_stream");
+    } catch (error) {
+      if (error instanceof ServerProviderCredentialsDeniedError) {
+        return reply.code(403).send(toActionCapabilityHttpDenial(error));
+      }
+      throw error;
     }
 
     reply.hijack();
@@ -503,7 +527,12 @@ export function profileRoutes(
     }, generationAbort);
 
     try {
-      for await (const event of generateSoulFileStream(request.body, generationAbort.signal)) {
+      for await (const event of generateSoulFileStream(request.body, generationAbort.signal, {
+        humanUserId: request.sessionUserId,
+        ...(deps?.assertCanUseServerProviderCredentials
+          ? { assertServerProviderCredentials: deps.assertCanUseServerProviderCredentials }
+          : {}),
+      })) {
         if (closeGuard.clientClosed() || isSseClosed(reply.raw)) break;
         if (event.type === "started") {
           writeSse(reply.raw, "soul.started", {});

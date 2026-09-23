@@ -1,11 +1,11 @@
 import type { CapabilitySlug } from "./capabilities";
 
 /**
- * M128 — extended to include the six canonical server-wide Role slugs
- * (`owner`, `admin`, `superuser`, `member`, `contributor`, `guest`).
+ * The canonical server-wide Role slugs include Community between
+ * Contributor and Guest.
  * The legacy slug `stranger` is kept for `getViewerRole`; `household`/
  * `teammate` were retired in M133. Server-side resolution post-M128
- * returns only the canonical six + `anonymous` (for unauthenticated
+ * returns only the canonical roles + `anonymous` (for unauthenticated
  * `buildAnonymousContext`).
  */
 export type ViewerRole =
@@ -14,6 +14,7 @@ export type ViewerRole =
   | "superuser"
   | "member"
   | "contributor"
+  | "community"
   | "guest"
   | "anonymous"
   | "stranger";

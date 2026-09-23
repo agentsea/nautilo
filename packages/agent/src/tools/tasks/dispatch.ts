@@ -40,6 +40,7 @@ import { genieRecoveryResult } from "../genie-recovery";
 
 export interface TaskDispatchContext {
   ownerId: string;
+  causalHumanUserId: string;
   agentId: string;
   roomId: string;
   /** Server-authored durable Task currently executing this graph, if any. */
@@ -234,6 +235,7 @@ export async function dispatchTaskCommand(
         ).join("\n");
       }
       case "create": {
+        if (!ctx.causalHumanUserId) return "Cannot create task: initiating Human is unavailable.";
         if (!ctx.ownerId || !ctx.agentId) {
           return "Cannot create task: missing owner or agent context.";
         }
@@ -288,7 +290,7 @@ export async function dispatchTaskCommand(
           }
           const created = await rt.createHarnessTask({
             ownerId: ctx.ownerId,
-            requestorId: ctx.ownerId,
+            requestorId: ctx.causalHumanUserId,
             agentId: ctx.agentId,
             prompt: args.prompt,
             callingRoomId: ctx.roomId,
@@ -369,7 +371,7 @@ export async function dispatchTaskCommand(
         // seam; orthogonal to `target_chat` (where the result lands).
         const targets = await resolveTargetUserIds(
           rt.db,
-          ctx.ownerId,
+          ctx.causalHumanUserId,
           args.target_users,
         );
         if (!targets.ok) return targets.message;
@@ -386,7 +388,7 @@ export async function dispatchTaskCommand(
 
         const input: TaskToolCreateInput = {
           ownerId: ctx.ownerId,
-          requestorId: ctx.ownerId,
+          requestorId: ctx.causalHumanUserId,
           agentId: ctx.agentId,
           prompt: args.prompt,
           ...(args.expected_output !== undefined

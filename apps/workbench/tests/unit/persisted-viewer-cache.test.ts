@@ -67,6 +67,7 @@ describe("persisted-viewer-cache (D145 / Stack 19)", () => {
       "superuser",
       "member",
       "contributor",
+      "community",
       "guest",
       "anonymous",
       "stranger",

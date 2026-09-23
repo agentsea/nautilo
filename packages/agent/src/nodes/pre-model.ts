@@ -761,6 +761,7 @@ export async function preModelNode(
           ...ordinaryContentAccessContext,
           deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
           ownerId: state.userId,
+          causalHumanUserId: state.causalHumanUserId,
           personaId: state.personaId,
           currentThreadId: state.currentThreadId,
           actorRole: state.actorRole,

@@ -93,6 +93,7 @@ beforeAll(async () => {
     ownerActorId: OWNER_ID,
     ownerId: OWNER_ID,
     resumeThreadMembershipForUser: async () => true,
+    resumeCausalHumanUserIdForThread: async () => OWNER_ID,
     assertCanInvokeAgent: async () => {},
     // Exercise authenticated approval transport, not durable policy storage.
     strictShadowPolicyReader: async () => ({

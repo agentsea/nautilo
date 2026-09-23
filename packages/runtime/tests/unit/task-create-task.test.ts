@@ -51,6 +51,8 @@ const taskDeps = (db: DirectDatabase, observer: { kick(): void }) => ({
     ownerId: "11111111-1111-1111-1111-111111111111",
   }),
   admission: getPlaintextTaskCreationAdmission(),
+  assertInvocation: async () => {},
+  assertServerFunding: async () => {},
 });
 
 describe("M142 — createTask wrapper", () => {
@@ -147,6 +149,8 @@ describe("M142 — createTask wrapper", () => {
             ownerId: "11111111-1111-1111-1111-111111111111",
           }),
           admission: getPlaintextTaskCreationAdmission(),
+          assertInvocation: async () => {},
+          assertServerFunding: async () => {},
         },
         baseInput(),
       );
@@ -192,6 +196,20 @@ describe("M142 — createTask wrapper", () => {
         reason: "task_shape_unsupported",
       });
     }
+    expect(lastValues()).toEqual({});
+  });
+
+  test("a revoked exact-target grant creates no Task", async () => {
+    const { db, lastValues } = fakeDb();
+    let checkedAgentId: string | undefined;
+    expect(createTask({
+      ...taskDeps(db, { kick: () => {} }),
+      assertInvocation: async (input) => {
+        checkedAgentId = input.agentId;
+        throw new Error("invocation denied");
+      },
+    }, baseInput())).rejects.toThrow("invocation denied");
+    expect(checkedAgentId).toBe("22222222-2222-2222-2222-222222222222");
     expect(lastValues()).toEqual({});
   });
 });

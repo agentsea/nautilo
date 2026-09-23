@@ -44,6 +44,7 @@ beforeAll(async () => {
     assertCanInvokeAgent: async () => undefined,
     resumeThreadMembershipForUser: async () => true,
     projectionResumeBindingForThread: async () => ({ kind: "none" }),
+    resumeCausalHumanUserIdForThread: async () => OWNER_ID,
   });
 
   await app.ready();

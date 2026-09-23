@@ -11,8 +11,10 @@ import type {
 import { randomUUID } from "node:crypto";
 import {
   BrowserUseCloudAdapter,
+  canUseBrowserUseServerFunding,
   type BrowserUseBrowserSession,
   type BrowserUseProviderFailure,
+  type BrowserUseServerFundingAdmission,
 } from "../browser-use/browser-use-cloud";
 import {
   ConnectedWebAccountStoreError,
@@ -37,7 +39,7 @@ export interface ConnectedWebAccountNavigator {
 }
 
 export class ConnectedWebAccountControllerError extends Error {
-  constructor(readonly kind: "invalid_target" | "provider_unavailable" | "authentication_incomplete") {
+  constructor(readonly kind: "invalid_target" | "provider_unavailable" | "authentication_incomplete" | "server_funding_required") {
     super(kind);
     this.name = "ConnectedWebAccountControllerError";
   }
@@ -101,6 +103,7 @@ export class ConnectedWebAccountController {
     readonly stopDirectOperations?: (input: { readonly ownerUserId: string; readonly accountId: string }) => Promise<boolean>;
     readonly lookup?: ConnectedWebAccountDnsLookup;
     readonly now?: () => Date;
+    readonly assertServerFunding?: BrowserUseServerFundingAdmission;
   }) {}
 
   providerSetupStatus(): ConnectedWebAccountProviderSetupStatus {
@@ -126,10 +129,19 @@ export class ConnectedWebAccountController {
         return this.reconnect({ ownerUserId: input.ownerUserId, accountId: reusable.id });
       }
     }
+    await this.requireServerFunding(input.ownerUserId, "connected_web_account_profile");
     const account = await this.deps.store.createPending({
       ownerUserId: input.ownerUserId,
       account: { ...input.account, origin: target.origin },
     });
+    try {
+      // Recheck after persistence so a concurrent grant revocation cannot use
+      // the process-wide Browser Use key for profile creation.
+      await this.requireServerFunding(input.ownerUserId, "connected_web_account_profile");
+    } catch (error) {
+      await this.deps.store.revokeForOwner({ ownerUserId: input.ownerUserId, accountId: account.id });
+      throw error;
+    }
     const profile = await this.deps.browser.createProfile();
     if (isFailure(profile)) {
       await this.deps.store.revokeForOwner({ ownerUserId: input.ownerUserId, accountId: account.id });
@@ -173,6 +185,7 @@ export class ConnectedWebAccountController {
       }
       binding = await this.deps.store.getBindingForOwner(input);
     }
+    await this.requireServerFunding(input.ownerUserId, "connected_web_account_login");
     const account = await this.deps.store.beginReconnect(input);
     return this.startNewLogin({
       ownerUserId: input.ownerUserId,
@@ -233,6 +246,7 @@ export class ConnectedWebAccountController {
     const account = await this.deps.store.getForOwner(input);
     if (!account) throw new ConnectedWebAccountStoreError("not_found");
 
+    await this.requireServerFunding(input.ownerUserId, "connected_web_account_view");
     const reservationToken = randomUUID();
     await this.deps.store.reserveExecutionCheckpoint({
       ownerUserId: input.ownerUserId,
@@ -630,6 +644,7 @@ export class ConnectedWebAccountController {
   private async startNewLogin(input: { readonly ownerUserId: string; readonly accountId: string; readonly targetUrl: string; readonly account: ConnectedWebAccount; readonly createdNewAccount: boolean }): Promise<ConnectedWebAccountLoginResponse> {
     const binding = await this.deps.store.getBindingForOwner(input);
     if (!binding.profileRef) throw new ConnectedWebAccountStoreError("conflict");
+    await this.requireServerFunding(input.ownerUserId, "connected_web_account_login");
     const reservationToken = randomUUID();
     await this.deps.store.reserveExecutionCheckpoint({
       ownerUserId: input.ownerUserId,
@@ -694,6 +709,12 @@ export class ConnectedWebAccountController {
     } catch {
       // The revoked row remains a future boot candidate if persistence itself
       // is temporarily unavailable.
+    }
+  }
+
+  private async requireServerFunding(ownerUserId: string, origin: string): Promise<void> {
+    if (!await canUseBrowserUseServerFunding(ownerUserId, origin, this.deps.assertServerFunding)) {
+      throw new ConnectedWebAccountControllerError("server_funding_required");
     }
   }
 }

@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { FindVoiceToolResult } from "@nautilo/types";
 import { ELEVENLABS_CURATED_VOICE_IDS } from "@nautilo/voice";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import {
   createFindVoiceTool,
   localeConflictsWithLanguage,
@@ -37,6 +38,13 @@ function parseFindResult(raw: string): FindVoiceToolResult {
   return JSON.parse(raw) as FindVoiceToolResult;
 }
 
+function fundedFindVoiceTool() {
+  return createFindVoiceTool(
+    { causalHumanUserId: "voice-human" },
+    { assertCanUseServerProviderCredentials: async () => {} },
+  );
+}
+
 describe("find_voice discovery", () => {
   const prevKey = process.env["ELEVENLABS_API_KEY"];
 
@@ -63,7 +71,7 @@ describe("find_voice discovery", () => {
         verified_languages: [{ language: "es", model_id: "eleven_v3", accent: "peninsular", locale: "es-ES" }],
       },
     ]);
-    const tool = createFindVoiceTool();
+    const tool = fundedFindVoiceTool();
     const raw = await tool.invoke({ query: "", language: "es", accent: "peninsular", limit: 12 });
     const result = parseFindResult(raw);
     expect(result.candidates.length).toBeGreaterThan(0);
@@ -96,7 +104,7 @@ describe("find_voice discovery", () => {
         age: "young",
       },
     ]);
-    const tool = createFindVoiceTool();
+    const tool = fundedFindVoiceTool();
     const raw = await tool.invoke({ query: "", language: "es", accent: "peninsular", limit: 15 });
     const result = parseFindResult(raw);
     const providerIds = result.candidates
@@ -144,7 +152,7 @@ describe("find_voice discovery", () => {
         accent: "standard",
       },
     ]);
-    const tool = createFindVoiceTool();
+    const tool = fundedFindVoiceTool();
     const raw = await tool.invoke({ query: "", language: "ru", limit: 12 });
     const result = parseFindResult(raw);
     const bad = result.candidates.find((c) => c.voiceId === "bad-ru");
@@ -167,5 +175,29 @@ describe("find_voice discovery", () => {
       true,
     );
     expect(result.candidates.find((c) => c.badge === "curated")?.name).toMatch(/beatriz/i);
+  });
+
+  test("denies remote discovery before fetch for the exact causal Human", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return Response.json({ voices: [], has_more: false });
+    }) as unknown as typeof fetch;
+    const tool = createFindVoiceTool(
+      { causalHumanUserId: "voice-human-denied" },
+      {
+        assertCanUseServerProviderCredentials: async (humanUserId, origin) => {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+        },
+      },
+    );
+    const error = await tool.invoke({ query: "", language: "es", limit: 10 })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "server_provider_credentials_required",
+      humanUserId: "voice-human-denied",
+      origin: "voice_catalog_discovery",
+    });
+    expect(fetchCalls).toBe(0);
   });
 });

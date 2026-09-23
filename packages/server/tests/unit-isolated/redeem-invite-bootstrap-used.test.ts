@@ -14,6 +14,11 @@ const actors = { __kind: "actors" as const };
 const credentials = { __kind: "credentials" as const };
 const channelIdentities = { __kind: "channelIdentities" as const };
 const groupMembers = { __kind: "groupMembers" as const };
+const groups = { __kind: "groups" as const };
+const groupRoles = { __kind: "groupRoles" as const };
+const roles = { __kind: "roles" as const };
+let targetRoleSlug = "member";
+const groupMembershipWrites: string[] = [];
 const profiles = { __kind: "profiles" as const };
 const rooms = { __kind: "rooms" as const };
 const roomMembers = { __kind: "roomMembers" as const };
@@ -77,6 +82,11 @@ function makeTx() {
             }),
           };
         }
+        if (table === groups) {
+          return { leftJoin: () => ({ leftJoin: () => ({
+            where: () => Promise.resolve([{ groupType: targetRoleSlug === "community" ? "communities" : "members", roleSlug: targetRoleSlug }]),
+          }) }) };
+        }
         throw new Error(`unexpected select.from in tx: ${String(table)}`);
       },
     }),
@@ -107,7 +117,7 @@ function makeTx() {
         }
         if (table === groupMembers) {
           return {
-            onConflictDoNothing: () => Promise.resolve(),
+            onConflictDoNothing: () => { groupMembershipWrites.push("insert"); return Promise.resolve(); },
           };
         }
         if (table === roomMembers) {
@@ -167,7 +177,9 @@ beforeAll(() => {
     profiles,
     rooms,
     roomMembers,
-    groups: { __kind: "groups" },
+    groups,
+    groupRoles,
+    roles,
     eq,
     ne,
     and,
@@ -258,5 +270,24 @@ describe("redeemInviteAtomically — bootstrap .used sentinel", () => {
     );
     expect(serverRes.ok).toBe(true);
     expect(marked).toEqual([]);
+  });
+
+  test("an outstanding invite cannot enroll a Human into Community during the dormant phase", async () => {
+    const { redeemInviteAtomically } = await import("../../src/lib/redeem-invite.ts");
+    inviteRowState.kind = "server";
+    inviteRowState.targetGroupId = "group-x";
+    targetRoleSlug = "community";
+    groupMembershipWrites.length = 0;
+    try {
+      const result = await redeemInviteAtomically("inv_srvtoken", {
+        handle: "charlie", displayName: "Candidate", password: "Str0ng!Pass", pin: "123456",
+      }, { logto: { findUserByEmailOrUsername: async () => null,
+        createUser: async () => ({ id: "logto-sub-2" }), deleteUser: async () => {} } as never,
+        allowLogtoSessionMint: false });
+      expect(result).toMatchObject({ ok: false, httpStatus: 409, code: "community_enrollment_unavailable" });
+      expect(groupMembershipWrites).toEqual([]);
+    } finally {
+      targetRoleSlug = "member";
+    }
   });
 });

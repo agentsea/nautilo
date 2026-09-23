@@ -48,6 +48,7 @@ import {
   VeniceMediaLifecycleError,
   type VeniceAcceptedMediaWork,
 } from "./venice-lifecycle";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 
 const DEFAULT_APPROVAL_TTL_MS = 10 * 60 * 1_000;
 const MAX_PREPARATIONS = 256;
@@ -127,6 +128,7 @@ export interface MediaGenerationServerCoreDependencies {
   readonly providerAccountFingerprint: string;
   readonly now?: () => Date;
   readonly approvalTtlMs?: number;
+  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }
 
 function canonical(value: unknown): string {
@@ -456,6 +458,8 @@ export function createMediaGenerationServerCore(
 ): MediaGenerationApprovalRuntime {
   const now = dependencies.now ?? (() => new Date());
   const approvalTtlMs = dependencies.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
+  const assertServerFunding = dependencies.assertCanUseServerProviderCredentials
+    ?? assertCanUseServerProviderCredentials;
   if (!Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0) {
     throw new Error("media generation approval TTL must be a positive safe integer");
   }
@@ -500,6 +504,7 @@ export function createMediaGenerationServerCore(
       };
     }
     let amountUsdMicros: number;
+    await assertServerFunding(actor.userId, "media_generation_quote");
     try {
       const quote = await dependencies.quotes.quote({
         endpoint: quoteEndpointFor(request),
@@ -660,6 +665,7 @@ export function createMediaGenerationServerCore(
     }
     if (receipt.state !== "prequeue") return unavailableResult(prepared);
 
+    await assertServerFunding(actor.userId, "media_generation_submit");
     let proof: MediaGenerationAdmissionProof | null;
     try {
       proof = await dependencies.repository.beginAdmission(scope, receipt.receiptId, receipt.revision);

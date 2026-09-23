@@ -38,6 +38,7 @@ export interface ConnectedWebAccountReadToolContext {
   readonly voiceMode?: boolean | undefined;
   /** Authenticated user id from the current Genie invocation. */
   readonly userId?: string | undefined;
+  readonly causalHumanUserId?: string | undefined;
   /** Current Genie id from the current Genie invocation. */
   readonly agentId?: string | undefined;
   /** Current foreground Room; this is required for personal-account authority. */
@@ -69,12 +70,14 @@ export function resolveConnectedWebAccountReadActor(
   context?: ConnectedWebAccountReadToolContext,
 ): ConnectedWebAccountReadToolActorContext | null {
   const userId = nonEmptyString(context?.userId);
+  const causalHumanUserId = nonEmptyString(context?.causalHumanUserId);
   const agentId = nonEmptyString(context?.agentId);
   const roomId = nonEmptyString(context?.roomId);
   const callingRoomId = nonEmptyString(context?.callingRoomId);
   return userId && agentId && roomId && context?.memoryAccessEnvelope
     ? {
       userId,
+      ...(causalHumanUserId ? { causalHumanUserId } : {}),
       agentId,
       roomId,
       callingRoomId,

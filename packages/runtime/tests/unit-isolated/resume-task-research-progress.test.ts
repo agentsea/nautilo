@@ -54,7 +54,10 @@ async function resume(preparation: unknown) {
       kind: "prove_it", approved: true,
       invocationAuthority: createAcceptedInvocationAuthority("owner"),
       maintenanceAuthority: createMaintenanceAcceptanceAuthority(),
-    }, { db: {} as DirectDatabase });
+    }, { db: {} as DirectDatabase,
+      assertInvocation: async () => {},
+      assertServerFunding: async () => {},
+    });
   } finally { eventBus.off(listen); }
   expect(failure).not.toHaveBeenCalled();
   expect(completion).toHaveBeenCalledTimes(1);

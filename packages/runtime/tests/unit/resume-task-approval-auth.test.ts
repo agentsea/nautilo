@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import type { DirectDatabase, Task, TaskRun } from "@nautilo/db";
 import { authorizeTaskApprovalResume } from "../../src/tasks/resume-task-approval";
-import { AgentInvocationDeniedError } from "@nautilo/trust";
+import { AgentInvocationDeniedError, ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 /**
  * M164 (MV3) — owner-only authorization for a Task approval resume. DB-free:
@@ -54,6 +54,7 @@ describe("M164 authorizeTaskApprovalResume", () => {
       {
         db: fakeDb({ task: task({ requestorId: "owner-1" }), run: run() }),
         assertInvocation: async () => {},
+        assertServerFunding: async () => {},
       },
     );
     expect(res.ok).toBe(true);
@@ -79,7 +80,7 @@ describe("M164 authorizeTaskApprovalResume", () => {
     expect(res).toEqual({ ok: false, status: 404, error: "task_approval_not_found" });
   });
 
-  test("an incapable responder gets the stable denial and leaves the parked rows untouched", async () => {
+  test("an incapable initiating Human gets the stable denial and pauses the parked work", async () => {
     const res = await authorizeTaskApprovalResume(
       { taskId: "task-1", threadId: "subagent:thread-1", sessionUserId: "owner-1" },
       {
@@ -88,10 +89,12 @@ describe("M164 authorizeTaskApprovalResume", () => {
           run: run(),
         }),
         assertInvocation: async (input) => {
-          if (input.humanUserId === "owner-1") {
+          if (input.humanUserId === "requestor-2") {
             throw new AgentInvocationDeniedError(input);
           }
         },
+        assertServerFunding: async () => {},
+        pauseForAuthorizationDenial: async () => ({ task: task({ status: "paused" }), run: run({ status: "paused" }), transitioned: true }),
       },
     );
     expect(res).toEqual({
@@ -100,6 +103,29 @@ describe("M164 authorizeTaskApprovalResume", () => {
       error: "invoke_agents_required",
       code: "invoke_agents_required",
       capability: "invoke_agents",
+    });
+  });
+
+  test("an initiating Human without server funding cannot resume paid work", async () => {
+    const res = await authorizeTaskApprovalResume(
+      { taskId: "task-1", threadId: "subagent:thread-1", sessionUserId: "owner-1" },
+      {
+        db: fakeDb({ task: task({ requestorId: "requestor-2" }), run: run() }),
+        assertInvocation: async () => {},
+        assertServerFunding: async (humanUserId) => {
+          if (humanUserId === "requestor-2") {
+            throw new ServerProviderCredentialsDeniedError(humanUserId);
+          }
+        },
+        pauseForAuthorizationDenial: async () => ({ task: task({ status: "paused" }), run: run({ status: "paused" }), transitioned: true }),
+      },
+    );
+    expect(res).toEqual({
+      ok: false,
+      status: 403,
+      error: "server_provider_credentials_required",
+      code: "server_provider_credentials_required",
+      capability: "use_server_provider_credentials",
     });
   });
 });

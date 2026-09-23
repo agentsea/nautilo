@@ -142,7 +142,7 @@ function supervisor(input: {
         workspaceId: "workspace-private-id",
         browserId: null,
       }),
-      unsealIntent: async () => input.intent ?? JSON.stringify({ version: 1, kind: "read_connected_web_account", origin: "https://example.com", request: "read", delivery: "text", deliveryId: "delivery-id", threadId: "thread-id", lane: "foreground", turnId: "turn-id" }),
+      unsealIntent: async () => input.intent ?? JSON.stringify({ version: 2, kind: "read_connected_web_account", fundingHumanUserId: "77777777-7777-4777-8777-777777777777", origin: "https://example.com", request: "read", delivery: "text", deliveryId: "delivery-id", threadId: "thread-id", lane: "foreground", turnId: "turn-id" }),
     },
     clock: { now: () => NOW },
     eventPageLimit: 2,
@@ -419,7 +419,7 @@ describe("ConnectedWebOperationSupervisor", () => {
 
 describe("D585 public browser completion", () => {
   const publicOp = () => operation({ accountId: null, id: "55555555-5555-4555-8555-555555555555" });
-  const intent = JSON.stringify({ version: 1, kind: "browse_web", targetUrl: "https://example.com/search", origin: "https://example.com", request: "Read", delivery: "text", deliveryId: "delivery-id", threadId: "thread-id", lane: "foreground", turnId: "turn-id", voiceMode: false });
+  const intent = JSON.stringify({ version: 2, kind: "browse_web", fundingHumanUserId: "77777777-7777-4777-8777-777777777777", targetUrl: "https://example.com/search", origin: "https://example.com", request: "Read", delivery: "text", deliveryId: "delivery-id", threadId: "thread-id", lane: "foreground", turnId: "turn-id", voiceMode: false });
   test("a task stopped over a dangerous step retains partial evidence, not a fabricated success", async () => {
     const terminalizations: unknown[] = [];
     await supervisor({ store: storeFor({ operations: [publicOp()], records: [], releases: [], terminalizations }),

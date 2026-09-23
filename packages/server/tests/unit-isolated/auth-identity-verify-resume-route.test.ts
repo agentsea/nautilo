@@ -180,6 +180,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
       assertCanInvokeAgent: async () => undefined,
       resumeThreadMembershipForUser: async () => true,
       resumeThreadScopeForUser: async () => ({ roomId, kind: "direct" }),
+      resumeCausalHumanUserIdForThread: async () => OWNER_ID,
       resumeAgentIdForThread: async () => options?.protectedResume === undefined
         ? null
         : "resumed-agent",

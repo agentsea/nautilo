@@ -32,6 +32,7 @@ import { getCurrentTurnId, log } from "@nautilo/logger";
 import type { ModelFallbackMode } from "../../utils/chat-model-invocation";
 import { omitSensitiveToolArgs } from "../../utils/tool-argument-redaction";
 import { runWithInitiatingClientSurface } from "../../runtime/initiating-client-surface-context";
+import { runWithTaskCausalHuman } from "../../runtime/causal-human-context";
 import { runWithLiveMiniAppExecutionContext } from "../../runtime/live-mini-app-execution-context";
 import type {
   ActiveMiniAppRequestContext,
@@ -523,6 +524,8 @@ export type RunScopeSubagentOpts = {
   parentThreadId: string;
   parentTurnId: string;
   parentOwnerId: string;
+  /** Persisted initiating Human for paid provider admission on this run. */
+  causalHumanUserId?: string;
   /**
    * the user id that OWNS the run's transcript session (the `sessions`
    * row). Defaults to `parentOwnerId`. For an `ask_peer` DM the target room is
@@ -718,7 +721,8 @@ export function runScopeSubagentUntilPause(
           activeMiniApp: opts.activeMiniApp,
         })
       : null,
-    () => runWithInitiatingClientSurface("unknown", () => runScopeSubagentUntilPauseInternal(opts)),
+    () => runWithTaskCausalHuman(opts.causalHumanUserId ?? "", () =>
+      runWithInitiatingClientSurface("unknown", () => runScopeSubagentUntilPauseInternal(opts))),
   );
 }
 
@@ -839,7 +843,7 @@ async function runScopeSubagentUntilPauseInternal(
     desktopAutomationRouteBinding: null,
     relayCapabilities: opts.relayCapabilities,
     verifiedOrdinaryOrigin: null,
-    causalHumanUserId: "",
+    causalHumanUserId: opts.causalHumanUserId ?? "",
     // await-response context (only meaningful when awaitResponse is set).
     awaitResponse: opts.awaitResponse ?? false,
     awaitRoomId: opts.awaitRoomId ?? "",

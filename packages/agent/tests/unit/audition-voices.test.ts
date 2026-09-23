@@ -6,6 +6,7 @@ import type { AuditionVoicesToolResult, VoiceDiscoveryCandidate } from "@nautilo
 import { createAuditionVoicesTool } from "../../src/tools/config/audition-voices";
 import { createManageVoicesTool } from "../../src/tools/config/manage-voices";
 import type { ElevenLabsSharedVoiceRaw } from "../../src/tools/config/find-voice";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -33,6 +34,13 @@ function mockSharedVoices(voices: ElevenLabsSharedVoiceRaw[]) {
 function parseAudition(raw: unknown): AuditionVoicesToolResult {
   if (typeof raw !== "string") throw new Error("expected string tool result");
   return JSON.parse(raw) as AuditionVoicesToolResult;
+}
+
+function fundedAuditionVoicesTool() {
+  return createAuditionVoicesTool(
+    { causalHumanUserId: "voice-human" },
+    { assertCanUseServerProviderCredentials: async () => {} },
+  );
 }
 
 function candidate(overrides: Partial<VoiceDiscoveryCandidate> = {}): VoiceDiscoveryCandidate {
@@ -82,7 +90,7 @@ describe("D261 P4 — audition_voices", () => {
       { preconnect: ORIGINAL_FETCH.preconnect },
     );
 
-    const tool = createAuditionVoicesTool();
+    const tool = fundedAuditionVoicesTool();
     const raw = await tool.invoke({
       role: "de",
       sampleText: "Hallo, ich bin Jeannie.",
@@ -102,7 +110,7 @@ describe("D261 P4 — audition_voices", () => {
   });
 
   test("explicit candidate slate preserves every supplied candidate", async () => {
-    const tool = createAuditionVoicesTool();
+    const tool = fundedAuditionVoicesTool();
     const raw = await tool.invoke({
       candidates: [
         candidate({ voiceId: "one" }),
@@ -125,7 +133,7 @@ describe("D261 P4 — audition_voices", () => {
         accent: "peninsular",
       })),
     );
-    const tool = createAuditionVoicesTool();
+    const tool = fundedAuditionVoicesTool();
     const raw = await tool.invoke({
       language: "es",
       accent: "peninsular",
@@ -149,7 +157,7 @@ describe("D261 P4 — audition_voices", () => {
         accent: "peninsular",
       })),
     );
-    const tool = createAuditionVoicesTool();
+    const tool = fundedAuditionVoicesTool();
     const raw = await tool.invoke({ language: "es", limit: 4 });
     const result = parseAudition(raw);
     expect(result.suggestedSlate).toBe(true);
@@ -163,5 +171,28 @@ describe("D261 P4 — audition_voices", () => {
     expect(manage.name).toBe("manage_voices");
     expect(audition.description).toMatch(/read-only/i);
     expect(audition.description).not.toMatch(/add.*profile/i);
+  });
+
+  test("convenience discovery preserves funding denial and makes no provider call", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return Response.json({ voices: [], has_more: false });
+    }) as unknown as typeof fetch;
+    const tool = createAuditionVoicesTool(
+      { causalHumanUserId: "voice-human-denied" },
+      {
+        assertCanUseServerProviderCredentials: async (humanUserId, origin) => {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+        },
+      },
+    );
+    const error = await tool.invoke({ language: "es", limit: 3 })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "server_provider_credentials_required",
+      humanUserId: "voice-human-denied",
+    });
+    expect(fetchCalls).toBe(0);
   });
 });

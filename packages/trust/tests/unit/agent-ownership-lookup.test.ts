@@ -72,6 +72,16 @@ describe("M045 — findAgentActorForAgent", () => {
   });
 });
 
+describe("exact Genie owner lookup", () => {
+  test("is exported from @nautilo/trust", () => {
+    expect(typeof trustIndex.findAgentOwnerUserId).toBe("function");
+  });
+
+  test("returns null for an absent agent id without opening a DB connection", async () => {
+    expect(await queries.findAgentOwnerUserId("")).toBeNull();
+  });
+});
+
 describe("M045 — findAgentById return shape", () => {
   test("public surface type exposes only { id, handle, displayName }", () => {
     // Compile-time invariant: the exported function's return type has
@@ -148,4 +158,3 @@ describe("M045 — agent insert payload shape", () => {
     expect((candidate as Record<string, unknown>)["displayName"]).toBeUndefined();
   });
 });
-

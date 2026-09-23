@@ -10,9 +10,11 @@
 import type { CapabilitySlug } from "./capabilities";
 import {
   CAP_INVOKE_AGENTS,
+  CAP_INVOKE_OTHER_AGENTS,
+  CAP_USE_SERVER_PROVIDER_CREDENTIALS,
   CAP_WRITE_ARTIFACTS,
 } from "./capabilities";
-import { getUserCapabilities } from "./queries";
+import { AmbiguousAgentOwnerError, findAgentOwnerUserId, getUserCapabilities } from "./queries";
 
 export type AgentInvocationOrigin =
   | "room_message"
@@ -40,12 +42,17 @@ export interface ArtifactWriteAdmissionInput {
   readonly artifactId?: string;
 }
 
+export type ServerProviderCredentialOrigin = string;
+
 export interface ActionCapabilityAdmissionDeps {
   getUserCapabilities(humanUserId: string): Promise<string[]>;
+  /** Resolve the canonical Human owner for one exact Genie target. */
+  findAgentOwnerUserId(agentId: string): Promise<string | null>;
 }
 
 const DEFAULT_DEPS: ActionCapabilityAdmissionDeps = {
   getUserCapabilities,
+  findAgentOwnerUserId,
 };
 
 declare const acceptedInvocationAuthorityBrand: unique symbol;
@@ -111,13 +118,16 @@ export function getAcceptedInvocationAuthoritySubject(
 
 export type ActionCapabilityDenialCode =
   | "invoke_agents_required"
+  | "invoke_other_agents_required"
+  | "agent_target_unavailable"
+  | "server_provider_credentials_required"
   | "write_artifacts_required";
 
 interface ActionCapabilityDeniedErrorOptions {
   readonly code: ActionCapabilityDenialCode;
   readonly capability: CapabilitySlug;
   readonly humanUserId: string;
-  readonly origin: AgentInvocationOrigin | "artifact_write";
+  readonly origin: string;
   readonly roomId?: string | undefined;
   readonly agentId?: string | undefined;
   readonly namespaceId?: string | undefined;
@@ -130,7 +140,7 @@ export abstract class ActionCapabilityDeniedError extends Error {
   readonly code: ActionCapabilityDenialCode;
   readonly capability: CapabilitySlug;
   readonly humanUserId: string;
-  readonly origin: AgentInvocationOrigin | "artifact_write";
+  readonly origin: string;
   readonly roomId: string | undefined;
   readonly agentId: string | undefined;
   readonly namespaceId: string | undefined;
@@ -150,18 +160,71 @@ export abstract class ActionCapabilityDeniedError extends Error {
 }
 
 export class AgentInvocationDeniedError extends ActionCapabilityDeniedError {
-  override readonly name = "AgentInvocationDeniedError";
+  override readonly name: string = "AgentInvocationDeniedError";
 
-  constructor(input: AgentInvocationAdmissionInput) {
+  constructor(
+    input: AgentInvocationAdmissionInput,
+    denial:
+      | typeof CAP_INVOKE_AGENTS
+      | typeof CAP_INVOKE_OTHER_AGENTS
+      | "agent_target_unavailable" =
+      CAP_INVOKE_AGENTS,
+  ) {
     super({
-      code: "invoke_agents_required",
-      capability: CAP_INVOKE_AGENTS,
+      code: denial === "agent_target_unavailable"
+        ? "agent_target_unavailable"
+        : denial === CAP_INVOKE_OTHER_AGENTS
+          ? "invoke_other_agents_required"
+          : "invoke_agents_required",
+      capability: denial === "agent_target_unavailable"
+        ? CAP_INVOKE_AGENTS
+        : denial,
       humanUserId: input.humanUserId,
       origin: input.origin,
       roomId: input.roomId,
       agentId: input.agentId,
     });
   }
+}
+
+/**
+ * The caller supplied an exact Genie id, but current canonical ownership could
+ * not resolve it. This is separate from a missing Capability: even a Human who
+ * may invoke other Genies cannot authorize a nonexistent target.
+ */
+export class AgentInvocationTargetUnavailableError extends AgentInvocationDeniedError {
+  override readonly name = "AgentInvocationTargetUnavailableError";
+
+  constructor(input: AgentInvocationAdmissionInput & { readonly agentId: string }) {
+    super(input, "agent_target_unavailable");
+  }
+}
+
+export class ServerProviderCredentialsDeniedError extends ActionCapabilityDeniedError {
+  override readonly name = "ServerProviderCredentialsDeniedError";
+
+  constructor(humanUserId: string, origin?: ServerProviderCredentialOrigin) {
+    super({
+      code: "server_provider_credentials_required",
+      capability: CAP_USE_SERVER_PROVIDER_CREDENTIALS,
+      humanUserId,
+      origin: origin ?? "server_provider_credentials",
+    });
+  }
+}
+
+export interface AgentInvocationTargetUnavailableHttpDenial {
+  readonly error: "agent_target_unavailable";
+  readonly code: "agent_target_unavailable";
+}
+
+export function toAgentInvocationTargetUnavailableHttpDenial(
+  _error: AgentInvocationTargetUnavailableError,
+): AgentInvocationTargetUnavailableHttpDenial {
+  return {
+    error: "agent_target_unavailable",
+    code: "agent_target_unavailable",
+  };
 }
 
 export class ArtifactWriteDeniedError extends ActionCapabilityDeniedError {
@@ -194,8 +257,53 @@ export async function assertCanInvokeAgent(
   input: AgentInvocationAdmissionInput,
   deps: ActionCapabilityAdmissionDeps = DEFAULT_DEPS,
 ): Promise<void> {
-  if (!(await hasCapability(deps, input.humanUserId, CAP_INVOKE_AGENTS))) {
+  if (!input.humanUserId.trim()) throw new AgentInvocationDeniedError(input);
+  const capabilities = await deps.getUserCapabilities(input.humanUserId);
+  if (!capabilities.includes(CAP_INVOKE_AGENTS)) {
     throw new AgentInvocationDeniedError(input);
+  }
+
+  // A pre-routing check intentionally omits agentId and establishes only the
+  // base ability to invoke Genies. Once routing resolves an exact target, every
+  // dispatch/resume seam presents it here so ownership cannot be inferred from
+  // a Room, Agent actor, prior acceptance token, or the caller's highest Role.
+  if (input.agentId === undefined) return;
+
+  let ownerUserId: string | null;
+  try {
+    ownerUserId = await deps.findAgentOwnerUserId(input.agentId);
+  } catch (error) {
+    if (error instanceof AmbiguousAgentOwnerError) {
+      throw new AgentInvocationTargetUnavailableError({ ...input, agentId: input.agentId });
+    }
+    throw error;
+  }
+  if (ownerUserId === null) {
+    throw new AgentInvocationTargetUnavailableError({ ...input, agentId: input.agentId });
+  }
+  if (
+    ownerUserId !== input.humanUserId &&
+    !capabilities.includes(CAP_INVOKE_OTHER_AGENTS)
+  ) {
+    throw new AgentInvocationDeniedError(input, CAP_INVOKE_OTHER_AGENTS);
+  }
+}
+
+/** Resolve current Human authority before any server-funded provider dispatch. */
+export async function assertCanUseServerProviderCredentials(
+  humanUserId: string,
+  origin?: ServerProviderCredentialOrigin,
+  deps: Pick<ActionCapabilityAdmissionDeps, "getUserCapabilities"> = DEFAULT_DEPS,
+): Promise<void> {
+  if (!humanUserId.trim()) {
+    throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+  }
+  if (
+    !(await deps.getUserCapabilities(humanUserId)).includes(
+      CAP_USE_SERVER_PROVIDER_CREDENTIALS,
+    )
+  ) {
+    throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
   }
 }
 
@@ -231,7 +339,7 @@ export interface ActionCapabilityDenialDiagnostic {
   readonly code: ActionCapabilityDenialCode;
   readonly capability: CapabilitySlug;
   readonly humanUserId: string;
-  readonly origin: AgentInvocationOrigin | "artifact_write";
+  readonly origin: string;
   readonly occurredAt: string;
   readonly roomId?: string;
   readonly agentId?: string;

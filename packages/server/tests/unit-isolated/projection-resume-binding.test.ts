@@ -63,6 +63,7 @@ beforeAll(async () => {
     assertCanInvokeAgent: async () => undefined,
     resumeThreadMembershipForUser: async () => true,
     projectionResumeBindingForThread: async () => binding,
+    resumeCausalHumanUserIdForThread: async () => INITIATOR.userId,
     auditEvent: async (event) => { auditEvents.push(event); },
   });
   await app.ready();

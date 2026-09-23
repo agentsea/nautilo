@@ -9,13 +9,17 @@ import { createAccessModule } from "../../src/commands/access.ts";
 import type { AuthenticatedAdminClient } from "../../src/lib/authenticated-admin-client.ts";
 
 const catalogue: AccessControlCatalogue = {
-  capabilities: [{ slug: "manage_members", description: "Manage people", category: "admin" }],
-  roles: [{ id: "role-1", slug: "admin", label: "Admins", isSystem: true, capabilitySlugs: ["manage_members"], groupCount: 1 }],
-  groups: [{ id: "group-1", type: "admins", label: "Admins", isSystem: true, ownerId: null, roleSlugs: ["admin"], memberCount: 1 }],
+  capabilities: [
+    { slug: "invoke_other_agents", description: "Invoke other agents", category: "agents" },
+    { slug: "use_personal_provider_credentials", description: "Use personal credentials", category: "providers" },
+    { slug: "use_server_provider_credentials", description: "Use server credentials", category: "providers" },
+  ],
+  roles: [{ id: "role-1", slug: "community", label: "Community", isSystem: true, capabilitySlugs: ["use_personal_provider_credentials"], groupCount: 1 }],
+  groups: [{ id: "group-1", type: "communities", label: "Communities", isSystem: true, ownerId: null, roleSlugs: ["community"], memberCount: 0 }],
 };
 const effective: EffectiveAccessResponse = {
   user: { id: "user-1", handle: "agent_tester", displayName: "AgentX", server: null },
-  highestRole: "admin",
+  highestRole: "community",
   capabilities: [{
     slug: "manage_members",
     description: "Manage people",
@@ -70,7 +74,15 @@ test("catalogue returns canonical built-in/custom facts", async () => {
     .parseAsync();
   expect(JSON.parse(stdout)).toMatchObject({
     ok: true,
-    data: { roles: [{ slug: "admin", isSystem: true }], groups: [{ type: "admins" }] },
+    data: {
+      capabilities: [
+        { slug: "invoke_other_agents" },
+        { slug: "use_personal_provider_credentials" },
+        { slug: "use_server_provider_credentials" },
+      ],
+      roles: [{ slug: "community", isSystem: true }],
+      groups: [{ type: "communities" }],
+    },
   });
 });
 

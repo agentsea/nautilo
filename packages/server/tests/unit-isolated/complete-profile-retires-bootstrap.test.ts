@@ -12,6 +12,8 @@ const rooms = { kind: "rooms" };
 const groupMembers = { kind: "groupMembers" };
 const roomMembers = { kind: "roomMembers" };
 const groups = { kind: "groups" };
+const groupRoles = { kind: "groupRoles" };
+const roles = { kind: "roles" };
 
 const invite = {
   id: "claim-1",
@@ -86,7 +88,7 @@ beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb: makeDb,
     hasClaimedOwner: async () => false,
-    inviteRedemptions, invites, users, actors, credentials, channelIdentities, groupMembers, profiles, rooms, roomMembers, groups,
+    inviteRedemptions, invites, users, actors, credentials, channelIdentities, groupMembers, profiles, rooms, roomMembers, groups, groupRoles, roles,
     eq, ne, and, asc, isNull,
     markPasswordChangeRequired: async () => {},
     PASSWORD_CHANGE_REASON: { SETUP_TEMP_PASSWORD: "setup_temp_password" },

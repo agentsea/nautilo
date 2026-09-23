@@ -110,6 +110,16 @@ describe("MembersSection invite presentation", () => {
     expect(view.getByRole("button", { name: "New invite" })).toBeTruthy();
   });
 
+  test("shows Community as unavailable for enrollment", async () => {
+    const view = render(<InvitePeopleSection />);
+    fireEvent.click(await view.findByRole("button", { name: "New invite" }));
+
+    const option = view.getByRole("option", {
+      name: "Community — unavailable until personal-key chat launches",
+    }) as HTMLOptionElement;
+    expect(option.disabled).toBeTrue();
+  });
+
   test("shows one create response's exact code and server-issued URL", async () => {
     const view = await createFreshInvite();
 

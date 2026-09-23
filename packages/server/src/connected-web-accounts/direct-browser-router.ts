@@ -21,6 +21,10 @@ import type {
   ConnectedWebAccountStore,
   ConnectedWebOperation,
 } from "./store";
+import {
+  canUseBrowserUseServerFunding,
+  type BrowserUseServerFundingAdmission,
+} from "../browser-use/browser-use-cloud";
 
 const MAX_ROUTER_RESULT_BYTES = 96 * 1024;
 
@@ -119,6 +123,8 @@ export interface DirectBrowserRouterDependencies {
   readonly navigateSavedProfileBrowser: (cdpUrl: string, origin: string, timeoutMs: number) => Promise<void>;
   readonly now?: () => Date;
   readonly discoveryTimeoutMs?: number;
+  /** Fresh current-Human funding authority before creating a paid browser. */
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 export interface DirectBrowserRouterCleanupResult {
@@ -553,6 +559,11 @@ export class DirectBrowserRouter {
 
   private async startOrAttach(input: DirectBrowserRouterAdmission, binding: ConnectedWebAccountBinding, operation: ConnectedWebOperation): Promise<BrowserUseBrowserSession & { readonly cdpUrl: string }> {
     if (input.source === "saved_profile") {
+      if (!await canUseBrowserUseServerFunding(
+        input.ownerUserId,
+        "connected_web_direct_browser",
+        this.deps.assertServerFunding,
+      )) throw new DirectBrowserRouterError("unavailable");
       const browser = browserForStart(await this.deps.provider.startBrowser({
         profileId: binding.profileRef!, timeoutMinutes: this.deps.browserTimeoutMinutes,
       }).catch(() => ({ kind: "failure", code: "network_error" } as const)));

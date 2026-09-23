@@ -556,6 +556,7 @@ export function adminUsersRoutes(app: FastifyInstance): void {
       || (email !== undefined
         && (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)))
       || roleSlug === "owner"
+      || roleSlug === "community"
       || !Object.hasOwn(SERVER_ROLE_RANK, roleSlug)
       || (permanentCredential !== undefined && parsedPermanentCredential === undefined)
     ) {

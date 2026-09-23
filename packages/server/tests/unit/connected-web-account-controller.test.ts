@@ -58,10 +58,58 @@ test("D568 reserves before starting a browser, activates before navigation, and 
     },
     lookup: async () => [{ address: "93.184.216.34", family: 4 }],
     now: () => new Date(timestamp),
+    assertServerFunding: async () => undefined,
   });
   const result = await controller.create({ ownerUserId, account: { service: "Example", origin: "https://example.com/login", label: "Example", createAnother: true } });
   expect(events).toEqual(["pending", "profile", "bind", "reserve", "start", "activate", "navigate:https://example.com/login"]);
   expect(result).toEqual({ account, login: { liveViewUrl: "https://live.browser-use.com/session", expiresAt: "2026-09-01T16:00:00.000Z" }, createdNewAccount: true });
+});
+
+test("server-funding denial creates no account, profile, or browser reservation", async () => {
+  const events: string[] = [];
+  const store = {
+    async createPending() { events.push("pending"); return connectedAccount("connecting"); },
+  } as unknown as ConnectedWebAccountStore;
+  const browser = {
+    async createProfile() { events.push("profile"); return { profileId: "profile" }; },
+    async startBrowser() { events.push("start"); return browserSession(); },
+  } as unknown as BrowserUseCloudAdapter;
+  const controller = controllerFor({
+    store,
+    browser,
+    events,
+    assertServerFunding: async () => { throw new Error("server_provider_credentials_required"); },
+  });
+
+  const error = await controller.create({ ownerUserId, account: createRequest() }).catch((cause: unknown) => cause);
+  expect(error).toMatchObject({ kind: "server_funding_required" });
+  expect(events).toEqual([]);
+});
+
+test("reconnect and open-page denial preserve existing state before paid browser start", async () => {
+  for (const operation of ["reconnect", "openPage"] as const) {
+    const events: string[] = [];
+    const account = connectedAccount("connected");
+    const store = {
+      async getBindingForOwner() { events.push("binding"); return { ...account, ownerUserId, profileRef: "profile", executionCheckpoint: null }; },
+      async getForOwner() { events.push("get"); return account; },
+      async beginReconnect() { events.push("begin"); return { ...account, status: "connecting" as const }; },
+      async reserveExecutionCheckpoint() { events.push("reserve"); },
+    } as unknown as ConnectedWebAccountStore;
+    const browser = {
+      async startBrowser() { events.push("start"); return browserSession(); },
+    } as unknown as BrowserUseCloudAdapter;
+    const controller = controllerFor({
+      store,
+      browser,
+      events,
+      assertServerFunding: async () => { throw new Error("server_provider_credentials_required"); },
+    });
+
+    const error = await controller[operation]({ ownerUserId, accountId }).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ kind: "server_funding_required" });
+    expect(events).toEqual(operation === "reconnect" ? ["binding"] : ["binding", "get"]);
+  }
 });
 
 test("D568 reuses the canonical account unless the Human explicitly connects another", async () => {
@@ -612,6 +660,7 @@ function controllerFor(input: {
     readonly atExpectedOrigin: boolean;
     readonly authenticationRequired: boolean;
   }>;
+  readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
 }): ConnectedWebAccountController {
   return new ConnectedWebAccountController({
     store: input.store,
@@ -625,6 +674,7 @@ function controllerFor(input: {
     },
     lookup: async () => [{ address: "93.184.216.34", family: 4 }],
     now: () => new Date(timestamp),
+    assertServerFunding: input.assertServerFunding ?? (async () => undefined),
   });
 }
 

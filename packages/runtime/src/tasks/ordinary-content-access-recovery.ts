@@ -2,7 +2,7 @@ import { desc, eq, getTaskById, getJobById, getSharedDirectDb, taskRuns, transit
   type DirectDatabase, type Task, type TaskRun } from "@nautilo/db";
 import { OrdinaryContentAccessRetryRequiredError, readOrdinaryContentAccessRecovery,
   type OrdinaryContentAccessRecoveryCoordinate, type OrdinaryContentAccessRecoveryDeps } from "@nautilo/agent";
-import { assertCanInvokeAgent, findActorByOwnerId, type AcceptedInvocationAuthority } from "@nautilo/trust";
+import { assertCanInvokeAgent, assertCanUseServerProviderCredentials, findActorByOwnerId, type AcceptedInvocationAuthority } from "@nautilo/trust";
 import { laneLock } from "../lane-lock";
 import type { LaneLock } from "../types";
 import { jobManager, type JobManager } from "../job-manager";
@@ -29,6 +29,7 @@ interface TaskContentAccessRecoveryDeps {
   readonly db?: DirectDatabase;
   readonly lock?: LaneLock;
   readonly assertInvocation?: typeof assertCanInvokeAgent;
+  readonly assertServerFunding?: typeof assertCanUseServerProviderCredentials;
   readonly actorForOwner?: typeof findActorByOwnerId;
   readonly manager?: Pick<JobManager, "runResumeJobLifecycle" | "hasTaskContentAccessRecoveryWorker">;
   readonly originalJob?: typeof getJobById;
@@ -57,12 +58,9 @@ async function locate(taskId: string, sessionUserId: string, deps: TaskContentAc
       || original.input["ownerId"] !== task.ownerId
       || (deps.manager ?? jobManager).hasTaskContentAccessRecoveryWorker(run.graphThreadId, `task:${task.id}`)) return null;
   }
-  // Preserve both existing Task subjects. The responder is not a substitute
-  // for the Human whose invocation created the Task.
-  for (const humanUserId of new Set([task.ownerId, task.requestorId])) {
-    await (deps.assertInvocation ?? assertCanInvokeAgent)({ humanUserId, agentId: task.agentId,
-      roomId: task.targetRoomId!, origin: "foreground_resume" });
-  }
+  await (deps.assertInvocation ?? assertCanInvokeAgent)({ humanUserId: task.requestorId,
+    agentId: task.agentId, roomId: task.targetRoomId!, origin: "foreground_resume" });
+  await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(task.requestorId, "task_content_recovery");
   const actor = await (deps.actorForOwner ?? findActorByOwnerId)(task.ownerId);
   if (!actor) return null;
   const checkpoint = await readOrdinaryContentAccessRecovery({
@@ -119,7 +117,9 @@ export async function runTaskContentAccessRecovery(expected: TaskContentAccessRe
     const result = await runTaskApprovalResume({ task: current.task, run: current.run,
       invocationAuthority: authorities.invocation, maintenanceAuthority: authorities.maintenance,
       kind: "ordinary_recovery", ordinaryRecovery: { expected: current.checkpoint, deps: deps.graph },
-    }, { db: deps.db ?? getSharedDirectDb(), ...(deps.manager ? { jobManager: deps.manager } : {}) });
+    }, { db: deps.db ?? getSharedDirectDb(), ...(deps.manager ? { jobManager: deps.manager } : {}),
+      ...(deps.assertInvocation ? { assertInvocation: deps.assertInvocation } : {}),
+      ...(deps.assertServerFunding ? { assertServerFunding: deps.assertServerFunding } : {}) });
     return result.recoveryOutcome ?? "unavailable";
   } finally { await lock.release(); }
 }

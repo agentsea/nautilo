@@ -118,6 +118,7 @@ export function createConductorModelInvoker(opts: {
           opts.laneKey,
           undefined,
           {
+            fundingHumanUserId: opts.userId,
             reasoningOutput: false,
             modelFallbackMode: opts.modelFallbackMode ?? "agent_chain",
           },

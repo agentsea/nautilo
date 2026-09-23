@@ -81,6 +81,8 @@ const db = { update: (table: unknown) => {
 const authority = createAcceptedInvocationAuthority("owner");
 const maintenance = createMaintenanceAcceptanceAuthority();
 const manager = () => new JobManager({ persist: async () => randomUUID(), updateStatus: async () => {} });
+const allowInvocation = async () => {};
+const allowServerFunding = async () => {};
 function resetStream() {
   started = new Promise<void>((resolve) => { announce = resolve; });
   observedSignal = undefined;
@@ -94,7 +96,12 @@ beforeEach(() => {
 });
 function start(manager: InstanceType<typeof JobManager>, kind: "ask" | "prove_it" | "identity") {
   return runTaskApprovalResume({ task, run, kind, verb: "once", approved: true,
-    policyContext: {} as RuntimePolicyContext, invocationAuthority: authority, maintenanceAuthority: maintenance }, { db, jobManager: manager });
+    policyContext: {} as RuntimePolicyContext, invocationAuthority: authority, maintenanceAuthority: maintenance }, {
+    db,
+    jobManager: manager,
+    assertInvocation: allowInvocation,
+    assertServerFunding: allowServerFunding,
+  });
 }
 
 test("pause and stop reach all three approval-resumed workers after the original Job completed", async () => {
@@ -177,7 +184,12 @@ test("a stale invalid paid-media reply cannot error the exact pair after Pause",
     mediaGenerationApprovalId: "partial-echo", policyContext: {} as RuntimePolicyContext,
     invocationAuthority: authority, maintenanceAuthority: maintenance };
   await pauseTask({ db, jobManager: jobs }, task.id);
-  await runTaskApprovalResume(staleArgs, { db, jobManager: jobs });
+  await runTaskApprovalResume(staleArgs, {
+    db,
+    jobManager: jobs,
+    assertInvocation: allowInvocation,
+    assertServerFunding: allowServerFunding,
+  });
   expect(task.status).toBe("paused"); expect(run.status).toBe("paused");
   expect(observedSignal).toBeUndefined(); expect(failure).not.toHaveBeenCalled();
   expect(completion).not.toHaveBeenCalled(); expect(jobs.getActiveJobs()).toHaveLength(0);
@@ -187,7 +199,12 @@ test("an admitted invalid paid-media reply fails only the running pair without i
   const jobs = manager();
   await runTaskApprovalResume({ task, run, kind: "ask", verb: "once", approved: true,
     mediaGenerationApprovalId: "partial-echo", policyContext: {} as RuntimePolicyContext,
-    invocationAuthority: authority, maintenanceAuthority: maintenance }, { db, jobManager: jobs });
+    invocationAuthority: authority, maintenanceAuthority: maintenance }, {
+    db,
+    jobManager: jobs,
+    assertInvocation: allowInvocation,
+    assertServerFunding: allowServerFunding,
+  });
   expect(observedSignal).toBeUndefined(); expect(failure).toHaveBeenCalledTimes(1);
   expect(failure.mock.calls[0]![1]).toMatchObject({ taskId: task.id, runId: run.id, requireRunningPair: true });
   expect(completion).not.toHaveBeenCalled(); expect(jobs.getActiveJobs()).toHaveLength(0);

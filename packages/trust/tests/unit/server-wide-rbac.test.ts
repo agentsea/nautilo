@@ -8,7 +8,11 @@
  */
 import { describe, expect, test } from "bun:test";
 import { M128_ROLE_CAPABILITIES, M128_ROLE_SLUGS } from "@nautilo/db";
-import { SERVER_ROLE_RANK } from "../../src/queries.ts";
+import {
+  assertCommunityEnrollmentAvailable,
+  MembershipOpError,
+  SERVER_ROLE_RANK,
+} from "../../src/queries.ts";
 
 const APPROVER_CAP = "approve_destructive_actions";
 
@@ -140,7 +144,7 @@ describe("M128 server-wide RBAC (T15, grid + ladder)", () => {
     expect(capsForRole("superuser").has("use_workstation")).toBe(true);
   });
 
-  test("ladder ordering owner > admin > superuser > member > contributor > guest", () => {
+  test("ladder ordering owner > admin > superuser > member > contributor > community > guest", () => {
     expect(highestRole(["guest", "admin", "member"])).toBe("admin");
     const pairs: ReadonlyArray<readonly [keyof typeof SERVER_ROLE_RANK, keyof typeof SERVER_ROLE_RANK]> =
       [
@@ -148,10 +152,50 @@ describe("M128 server-wide RBAC (T15, grid + ladder)", () => {
         ["superuser", "admin"],
         ["member", "superuser"],
         ["contributor", "member"],
-        ["guest", "contributor"],
+        ["community", "contributor"],
+        ["guest", "community"],
       ];
     for (const [lower, higher] of pairs) {
       expect(SERVER_ROLE_RANK[lower]).toBeGreaterThan(SERVER_ROLE_RANK[higher]);
     }
+  });
+
+  test("Community retains personal invocation but not server funding or cross-owner invocation", () => {
+    const contributor = capsForRole("contributor");
+    const community = capsForRole("community");
+    expect(community.has("invoke_agents")).toBe(true);
+    expect(community.has("use_personal_provider_credentials")).toBe(true);
+    expect(community.has("use_server_provider_credentials")).toBe(false);
+    expect(community.has("invoke_other_agents")).toBe(false);
+    expect([...community].sort()).toEqual(
+      [...contributor]
+        .filter(
+          (slug) =>
+            slug !== "use_server_provider_credentials" &&
+            slug !== "invoke_other_agents",
+        )
+        .sort(),
+    );
+  });
+
+  test("Community enrollment fence follows the Role onto custom Groups", () => {
+    for (const [groupType, roleSlugs] of [
+      ["communities", ["community"]],
+      ["custom-builders", ["contributor", "community"]],
+    ] as const) {
+      expect(() =>
+        assertCommunityEnrollmentAvailable(groupType, roleSlugs),
+      ).toThrow(MembershipOpError);
+      try {
+        assertCommunityEnrollmentAvailable(groupType, roleSlugs);
+      } catch (error) {
+        expect((error as MembershipOpError).opCode).toBe(
+          "community_enrollment_unavailable",
+        );
+      }
+    }
+    expect(() =>
+      assertCommunityEnrollmentAvailable("custom-builders", ["contributor"]),
+    ).not.toThrow();
   });
 });

@@ -261,6 +261,7 @@ beforeAll(async () => {
       roomId: RESUME_ROOM_ID,
       kind: "group",
     }),
+    resumeCausalHumanUserIdForThread: async () => OWNER_ID,
     policyResolver: {
       buildEnvelope: buildEnvelopeSpy,
     } as never,

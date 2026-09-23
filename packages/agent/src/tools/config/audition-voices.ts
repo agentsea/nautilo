@@ -1,7 +1,12 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { AuditionVoicesToolResult, VoiceDiscoveryCandidate } from "@nautilo/types";
-import { discoverVoices, type DiscoverVoicesInput } from "./find-voice";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import {
+  discoverVoices,
+  type DiscoverVoicesInput,
+  type VoiceDiscoveryDependencies,
+} from "./find-voice";
 
 /**
  * A suggested slate starts small so a Human can compare it comfortably. This
@@ -33,7 +38,10 @@ const discoveryCandidateSchema = z.object({
   honestyWarning: z.string().optional(),
 });
 
-export function createAuditionVoicesTool() {
+export function createAuditionVoicesTool(
+  context?: { readonly causalHumanUserId?: string | undefined },
+  dependencies: VoiceDiscoveryDependencies = {},
+) {
   return new DynamicStructuredTool({
     name: "audition_voices",
     description: `Preview slate ("hear") for voice picking — read-only structured JSON, no audio bytes.
@@ -89,7 +97,7 @@ The tool-card loads a preview only when the Human requests it; lock in with mana
         }
 
         const convenienceInput = { ...discoveryInput, limit: limit ?? DEFAULT_SUGGESTED_SLATE_SIZE };
-        const discovered = await discoverVoices(convenienceInput);
+        const discovered = await discoverVoices(convenienceInput, context, dependencies);
         const result: AuditionVoicesToolResult = {
           slate: discovered.candidates,
           suggestedSlate: true,
@@ -108,6 +116,7 @@ The tool-card loads a preview only when the Human requests it; lock in with mana
         }
         return JSON.stringify(result);
       } catch (e) {
+        if (e instanceof ServerProviderCredentialsDeniedError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         return JSON.stringify({
           slate: [],

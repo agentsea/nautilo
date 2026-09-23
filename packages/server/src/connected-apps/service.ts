@@ -46,6 +46,8 @@ import {
 } from "./providers";
 import { safelyRecordProviderCost } from "../costs/provider-cost-recorder";
 import { warn } from "@nautilo/logger";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import { assertConnectedAppExecutionFunding } from "./funding-admission";
 
 const HOSTED_CUSTODY = "Credentials managed by Nautilo Cloud through OOMOL.";
 const LOCAL_CUSTODY = "Credentials remain in this server's OpenConnector runtime; Nautilo stores only restricted runtime access in its vault.";
@@ -104,6 +106,9 @@ function accountFromRow(row: ConnectedAppProfileRow): ConnectedAppAccount {
 
 function safeServiceError(error: unknown): ConnectedAppServiceError {
   if (error instanceof ConnectedAppServiceError) return error;
+  if (error instanceof ServerProviderCredentialsDeniedError) {
+    return new ConnectedAppServiceError(error.code, 403);
+  }
   if (error instanceof ConnectedAppArtifactInputError) {
     return new ConnectedAppServiceError(error.code, error.status);
   }
@@ -167,6 +172,11 @@ function descriptor(input: {
 
 type Inspection = HostedOauthInspection | LocalOauthInspection;
 
+export interface ConnectedAppServiceDependencies {
+  readonly assertExecutionFunding?: typeof assertConnectedAppExecutionFunding;
+  readonly recordProviderCost?: typeof safelyRecordProviderCost;
+}
+
 export class ConnectedAppService {
   private readonly inspectionFlights = new Map<string, Promise<ConnectedAppOAuthAttemptResponse>>();
   private readonly admissions: readonly ConnectedAppOperationAdmission[];
@@ -180,6 +190,7 @@ export class ConnectedAppService {
     private readonly localDriver: OpenConnectorLocalConnectedAppDriver | null = null,
     private readonly provider: ConnectedAppProviderDefinition,
     private readonly resultPresenter: ConnectedAppResultPresenter | null = null,
+    private readonly dependencies: ConnectedAppServiceDependencies = {},
   ) {
     const contract = catalog.catalog.providers.find((candidate) => candidate.id === provider.id);
     if (!contract) throw new ConnectedAppServiceError("connected_app_provider_not_found", 404);
@@ -188,6 +199,10 @@ export class ConnectedAppService {
 
   get providerId(): ConnectedAppProviderId {
     return this.provider.id;
+  }
+
+  get usesHostedDriver(): boolean {
+    return this.activeDriverKind === "oomol_hosted";
   }
 
   /**
@@ -551,6 +566,7 @@ export class ConnectedAppService {
 
   async execute(input: {
     readonly scope: ConnectedAppScope;
+    readonly causalHumanUserId?: string | undefined;
     readonly operationId: string;
     readonly effect: "read" | "write";
     readonly args: Record<string, unknown>;
@@ -605,7 +621,14 @@ export class ConnectedAppService {
           mimeType: staged.mimeType,
         };
       }
-      const result = await this.executeDriver(input.scope, profile, input.operationId, driverArgs, input.signal);
+      const result = await this.executeDriver(
+        input.scope,
+        input.causalHumanUserId ?? "",
+        profile,
+        input.operationId,
+        driverArgs,
+        input.signal,
+      );
       const parsedOutput = admission.outputSchema.safeParse(result.data);
       if (!parsedOutput.success) {
         if (input.effect === "write" && admission.reconciliationOperationId) {
@@ -639,6 +662,7 @@ export class ConnectedAppService {
           try {
             const reconciled = await this.executeDriver(
               input.scope,
+              input.causalHumanUserId ?? "",
               profile,
               admission.reconciliationOperationId,
               reconciliationInput,
@@ -717,6 +741,7 @@ export class ConnectedAppService {
 
   private async executeDriver(
     scope: ConnectedAppScope,
+    causalHumanUserId: string,
     profile: ConnectedAppProfileRow,
     operationId: string,
     args: Record<string, unknown>,
@@ -737,6 +762,11 @@ export class ConnectedAppService {
       });
     }
     if (!this.hostedDriver) throw new ConnectedAppServiceError("hosted_driver_not_configured", 503);
+    await (this.dependencies.assertExecutionFunding
+      ?? assertConnectedAppExecutionFunding)({
+        hosted: true,
+        causalHumanUserId,
+      });
     const result = await this.hostedDriver.execute({
       binding: hostedDriverBinding(this.provider.id, scope.userId, scope.namespaceId),
       connectedAccountId: profile.connectedAccountId,
@@ -746,9 +776,9 @@ export class ConnectedAppService {
       args,
       signal,
     });
-    await safelyRecordProviderCost({
+    await (this.dependencies.recordProviderCost ?? safelyRecordProviderCost)({
       identity: `oomol:connected-app:${result.executionId}`,
-      userId: scope.userId,
+      userId: causalHumanUserId,
       provider: "oomol",
       operation: "connected_app_execute",
       evidenceState: "unknown",

@@ -47,8 +47,14 @@ import {
   getRunAgentTranscript,
 } from "@nautilo/agent";
 import { getServerDirectDb } from "../lib/server-direct-db";
-import { requireAgentInvocation } from "../lib/agent-invocation-admission";
-import { createAcceptedInvocationAuthority, isUuidString } from "@nautilo/trust";
+import { requireAgentInvocation, requireServerFunding } from "../lib/agent-invocation-admission";
+import {
+  AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
+  createAcceptedInvocationAuthority,
+  isUuidString,
+  toActionCapabilityHttpDenial,
+} from "@nautilo/trust";
 import { SHELL_AVATAR_REF } from "@nautilo/types";
 import { sendAvatar, setMediaCacheHeaders } from "./_helpers/avatar";
 
@@ -221,6 +227,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     ) {
       return;
     }
+    if (!(await requireServerFunding(ownerId, "task_create", reply))) return;
 
     const input: TaskCreateInput = {
       ownerId,
@@ -274,6 +281,10 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         input,
       );
     } catch (err) {
+      if (err instanceof AgentInvocationDeniedError
+        || err instanceof ServerProviderCredentialsDeniedError) {
+        return reply.status(403).send(toActionCapabilityHttpDenial(err));
+      }
       return reply
         .status(400)
         .send({ error: err instanceof Error ? err.message : String(err) });
@@ -630,7 +641,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         Object.keys(patch).length > 0 &&
         !(await requireAgentInvocation(
           {
-            humanUserId: ownerId,
+            humanUserId: task.requestorId,
             origin: "task_update",
             agentId: task.agentId,
             ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
@@ -640,6 +651,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       ) {
         return;
       }
+      if (Object.keys(patch).length > 0
+        && !(await requireServerFunding(task.requestorId, "task_update", reply))) return;
 
       const updated = await updateTaskIfCurrent(
         db,
@@ -687,7 +700,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       requiresInvocation &&
       !(await requireAgentInvocation(
         {
-          humanUserId: ownerId,
+          humanUserId: task.requestorId,
           origin: "task_unpause",
           agentId: task.agentId,
           ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
@@ -697,6 +710,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     ) {
       return;
     }
+    if (requiresInvocation
+      && !(await requireServerFunding(task.requestorId, "task_unpause", reply))) return;
     const result = await fn();
     const response: TaskLifecycleResponse = {
       taskId: request.params.id,

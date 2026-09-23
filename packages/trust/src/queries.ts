@@ -148,6 +148,36 @@ export async function findAgentActorForAgent(
   };
 }
 
+/**
+ * Resolve the canonical Human owner of one exact Genie mirror Actor.
+ * REL-ACT-AGT is 1:1; duplicate mirror rows are malformed authority and must
+ * fail closed instead of silently selecting one owner.
+ */
+export async function findAgentOwnerUserId(
+  agentId: string,
+): Promise<string | null> {
+  if (!agentId) return null;
+  const db = getSharedDirectDb();
+  const rows = await db
+    .select({ userId: users.id })
+    .from(actors)
+    .innerJoin(users, eq(users.id, actors.ownerId))
+    .where(and(eq(actors.kind, "agent"), eq(actors.agentId, agentId)))
+    .limit(2);
+  if (rows.length === 0) return null;
+  if (rows.length !== 1) {
+    throw new AmbiguousAgentOwnerError();
+  }
+  return rows[0]!.userId;
+}
+
+export class AmbiguousAgentOwnerError extends Error {
+  constructor() {
+    super("Agent target unavailable: ambiguous owner");
+    this.name = "AmbiguousAgentOwnerError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Agent queries
 // ---------------------------------------------------------------------------
@@ -4077,6 +4107,9 @@ export class MembershipOpError extends Error {
       | "not_open"
       | "not_found"
       | "room_owner_last_admin"
+      // Community exists for a later enrollment phase but is not yet an
+      // assignable Role, directly or through a custom Group.
+      | "community_enrollment_unavailable"
       // M258 — hidden access Rooms are immutable authority containers.
       | "access_room_immutable"
       // D194 — visibility flip (open ↔ group only).
@@ -4264,10 +4297,11 @@ export type ServerRoleSlug =
   | "superuser"
   | "member"
   | "contributor"
+  | "community"
   | "guest";
 
 /**
- * Strict-subset ladder rank. Lower = stronger (owner=0, guest=5).
+ * Strict-subset ladder rank. Lower = stronger (owner=0, guest=6).
  * Used to compute "highest-rank Role across every Group the Human
  * is in" for the resolver's `actorRole` derivation.
  */
@@ -4277,7 +4311,8 @@ export const SERVER_ROLE_RANK: Record<ServerRoleSlug, number> = {
   superuser: 2,
   member: 3,
   contributor: 4,
-  guest: 5,
+  community: 5,
+  guest: 6,
 };
 
 /**
@@ -4290,6 +4325,7 @@ export const SERVER_ROLE_TO_GROUP_TYPE: Record<ServerRoleSlug, string> = {
   superuser: "superusers",
   member: "members",
   contributor: "contributors",
+  community: "communities",
   guest: "guests",
 };
 
@@ -4551,12 +4587,43 @@ export async function addUserToGroup(
   grantedBy: string | null,
 ): Promise<void> {
   const db = getSharedDirectDb();
-  await db
-    .insert(groupMembers)
-    .values({ groupId, userId, grantedBy: grantedBy ?? null })
-    .onConflictDoNothing({
-      target: [groupMembers.groupId, groupMembers.userId],
-    });
+  await db.transaction(async (tx) => {
+    const [group] = await tx
+      .select({ type: groups.type })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1)
+      .for("update");
+    const roleRows = await tx
+      .select({ slug: roles.slug })
+      .from(groupRoles)
+      .innerJoin(roles, eq(roles.id, groupRoles.roleId))
+      .where(eq(groupRoles.groupId, groupId));
+    assertCommunityEnrollmentAvailable(
+      group?.type ?? "",
+      roleRows.map((row) => row.slug),
+    );
+    await tx
+      .insert(groupMembers)
+      .values({ groupId, userId, grantedBy: grantedBy ?? null })
+      .onConflictDoNothing({
+        target: [groupMembers.groupId, groupMembers.userId],
+      });
+  });
+}
+
+/**
+ * Community enrollment stays closed until its complete personal-funding
+ * journey ships. The fence follows the effective Role assignment so a custom
+ * Group carrying `community` cannot bypass the canonical `communities` Group.
+ */
+export function assertCommunityEnrollmentAvailable(
+  groupType: string,
+  roleSlugs: readonly string[],
+): void {
+  if (groupType === "communities" || roleSlugs.includes("community")) {
+    throw new MembershipOpError("community_enrollment_unavailable");
+  }
 }
 
 /**
@@ -4622,6 +4689,9 @@ export async function addUserToAgentRole(
   void agentOwnerUserId;
   if (!isServerRoleSlug(newRoleSlug)) {
     throw new Error(`addUserToAgentRole: unknown server role slug ${String(newRoleSlug)}`);
+  }
+  if (newRoleSlug === "community") {
+    throw new MembershipOpError("community_enrollment_unavailable");
   }
   const targetGroupType = SERVER_ROLE_TO_GROUP_TYPE[newRoleSlug];
   const db = getSharedDirectDb();

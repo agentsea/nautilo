@@ -632,6 +632,7 @@ describe.skipIf(taskSuiteSkipReason !== null)(
     expect(calls).toHaveLength(1);
     const input = calls[0]?.[3] as {
       voiceMode: boolean;
+      causalHumanUserId: string;
       memoryAccessEnvelope: {
         actorId: string;
         ownerId: string;
@@ -639,6 +640,7 @@ describe.skipIf(taskSuiteSkipReason !== null)(
       };
     };
     expect(input.voiceMode).toBe(false);
+    expect(input.causalHumanUserId).toBe(userId);
     expect(input.memoryAccessEnvelope.actorId).toBe(humanActor.id);
     expect(input.memoryAccessEnvelope.actorId).not.toBe(userId);
     expect(input.memoryAccessEnvelope.ownerId).toBe(userId);

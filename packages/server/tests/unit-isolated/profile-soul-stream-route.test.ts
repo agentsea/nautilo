@@ -2,6 +2,7 @@ import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { SoulFileInput, SoulGenerationStreamEvent } from "@nautilo/agent";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 const realAgent = await import("@nautilo/agent");
 const generateSoulFileStreamMock = mock(
@@ -31,10 +32,16 @@ describe("POST /api/profile/generate-soul/stream", () => {
     mock.module("@nautilo/agent", () => realAgent);
   });
 
-  function makeApp(): FastifyInstance {
+  function makeApp(serverFunding = true): FastifyInstance {
     const app = Fastify({ logger: false });
     app.decorateRequest("sessionUserId", null);
-    profileRoutes(app);
+    profileRoutes(app, {
+      assertCanUseServerProviderCredentials: async (humanUserId) => {
+        if (!serverFunding) {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, "soul_test");
+        }
+      },
+    });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = "test-user";
     });
@@ -89,6 +96,20 @@ describe("POST /api/profile/generate-soul/stream", () => {
     expect(response.statusCode).toBe(200);
     expect(signal).toBeDefined();
     expect(signal?.aborted).toBe(false);
+  });
+
+  test("denies before starting the soul provider stream without server funding", async () => {
+    const response = await makeApp(false).inject({
+      method: "POST",
+      url: "/api/profile/generate-soul/stream",
+      payload: {},
+    });
+    expect(response.statusCode).toBe(403);
+    expect(generateSoulFileStreamMock).not.toHaveBeenCalled();
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: "server_provider_credentials_required",
+      capability: "use_server_provider_credentials",
+    });
   });
 
   test("response/socket close aborts provider work and cleanup detaches listeners", () => {

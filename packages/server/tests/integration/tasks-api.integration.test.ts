@@ -28,6 +28,7 @@ import {
   actors,
   agents,
   profiles,
+  groups,
   groupMembers,
   channelIdentities,
   credentials,
@@ -54,6 +55,7 @@ let fx: AppFixture;
 let ownerAgentId: string;
 let peer: { userId: string; actorId: string; agentId: string; bearer: string };
 let guest: { userId: string; actorId: string; agentId: string; bearer: string };
+let community: { userId: string; actorId: string; agentId: string; bearer: string };
 
 const FUTURE_RUN_AT = "2035-01-01T00:00:00.000Z";
 
@@ -71,6 +73,22 @@ beforeAll(async () => {
     suiteName: "tasksapi",
     groupType: "guests",
   });
+  community = await seatPeerUser(fx.db, {
+    suiteName: "tasksapi-community",
+    groupType: "guests",
+  });
+  const [communityGroup] = await fx.db
+    .select({ id: groups.id })
+    .from(groups)
+    .where(eq(groups.type, "communities"))
+    .limit(1);
+  if (!communityGroup) throw new Error("canonical communities group missing");
+  await fx.db.delete(groupMembers).where(eq(groupMembers.userId, community.userId));
+  await fx.db.insert(groupMembers).values({
+    groupId: communityGroup.id,
+    userId: community.userId,
+    grantedBy: community.actorId,
+  });
 });
 
 afterAll(async () => {
@@ -78,7 +96,7 @@ afterAll(async () => {
   // Owner tasks/task_runs cascade off the owner-user delete in fx.cleanup();
   // sessions are deleted by ownerId there too. Clean the peer's rows manually
   // BEFORE fx.cleanup() (which ends the shared pool last).
-  for (const user of [peer, guest]) {
+  for (const user of [peer, guest, community]) {
     if (!user) continue;
     await fx.db.delete(tasks).where(eq(tasks.ownerId, user.userId));
     await fx.db.delete(profiles).where(eq(profiles.userId, user.userId));
@@ -136,6 +154,7 @@ describe("tasks HTTP API (M146)", () => {
     };
     const context = {
       ownerId: fx.ownerId,
+      causalHumanUserId: fx.ownerId,
       agentId: ownerAgentId,
       roomId: fx.defaultRoomId!,
       currentTaskId: parent.id,
@@ -757,6 +776,95 @@ describe("tasks HTTP API (M146)", () => {
     expect(after).toEqual({ prompt: "unchanged guest task", status: "paused" });
 
     await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+  });
+
+  test("Task owner can patch and unpause when the distinct requestor retains paid authority", async () => {
+    const [seeded] = await fx.db
+      .insert(tasks)
+      .values({
+        ownerId: guest.userId,
+        requestorId: peer.userId,
+        agentId: peer.agentId,
+        prompt: "requestor-funded task",
+        status: "paused",
+        scheduleKind: "one_shot",
+        runAt: new Date(FUTURE_RUN_AT),
+        nextFireAt: new Date(FUTURE_RUN_AT),
+      })
+      .returning({ id: tasks.id });
+    if (!seeded) throw new Error("seed requestor-funded task failed");
+
+    try {
+      const patchRes = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: guest.bearer,
+        payload: { prompt: "owner-controlled, requestor-funded task" },
+      });
+      expect(patchRes.statusCode).toBe(200);
+
+      const unpauseRes = await authedInject(fx.app, {
+        method: "POST",
+        url: `/api/tasks/${seeded.id}/unpause`,
+        bearer: guest.bearer,
+      });
+      expect(unpauseRes.statusCode).toBe(200);
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
+  });
+
+  test("Task owner cannot patch or unpause when the distinct requestor lacks server funding", async () => {
+    const [seeded] = await fx.db
+      .insert(tasks)
+      .values({
+        ownerId: fx.ownerId,
+        requestorId: community.userId,
+        agentId: community.agentId,
+        prompt: "community-funded task",
+        status: "paused",
+        scheduleKind: "one_shot",
+        runAt: new Date(FUTURE_RUN_AT),
+        nextFireAt: new Date(FUTURE_RUN_AT),
+      })
+      .returning({ id: tasks.id });
+    if (!seeded) throw new Error("seed community-funded task failed");
+
+    try {
+      const ownerToken = await fx.mintOwnerBearer();
+      const patchRes = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: ownerToken,
+        payload: { prompt: "must remain unchanged" },
+      });
+      expect(patchRes.statusCode).toBe(403);
+      expect(JSON.parse(patchRes.body)).toEqual({
+        error: "server_provider_credentials_required",
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+
+      const unpauseRes = await authedInject(fx.app, {
+        method: "POST",
+        url: `/api/tasks/${seeded.id}/unpause`,
+        bearer: ownerToken,
+      });
+      expect(unpauseRes.statusCode).toBe(403);
+      expect(JSON.parse(unpauseRes.body)).toEqual({
+        error: "server_provider_credentials_required",
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+
+      const [after] = await fx.db
+        .select({ prompt: tasks.prompt, status: tasks.status })
+        .from(tasks)
+        .where(eq(tasks.id, seeded.id));
+      expect(after).toEqual({ prompt: "community-funded task", status: "paused" });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
   });
 
   test("PATCH on a pending cron task recomputes next_fire_at (UTC)", async () => {

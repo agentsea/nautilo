@@ -3,6 +3,7 @@ import { TtsService, type TtsServiceDependencies } from "../../src/realtime/tts-
 import type { VoiceAudience } from "../../src/realtime/voice-delivery";
 import { getServerSpeechModel } from "@nautilo/agent";
 import type { VoiceSentenceEvent } from "@nautilo/types";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 const services: TtsService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(service => service.dispose())); });
@@ -20,6 +21,7 @@ function harness(overrides: Partial<TtsServiceDependencies> = {}, format: VoiceA
   const requests: Array<{ url: string; init: RequestInit }> = [];
   let voiceReads = 0;
   const service = new TtsService({
+    assertCanUseServerProviderCredentials: async () => {},
     apiKey: () => "synthetic-test-key",
     model: () => getServerSpeechModel("elevenlabs:eleven_v3", { ELEVENLABS_API_KEY: "synthetic-test-key" }),
     voices: async () => { voiceReads++; return { default: { voiceId: "TestVoice1234", voiceName: "Test" } }; },
@@ -64,6 +66,42 @@ describe("turn-owned streaming speech", () => {
     h.service.enqueue({ ...sentence(), turnId: undefined });
     await Bun.sleep(1);
     expect(h.requests).toHaveLength(0);
+  });
+
+  test("a Human without current server funding authority never reaches the provider", async () => {
+    const checked: string[] = [];
+    const h = harness({
+      assertCanUseServerProviderCredentials: async (humanUserId) => {
+        checked.push(humanUserId);
+        throw new ServerProviderCredentialsDeniedError(humanUserId, "realtime_text_to_speech");
+      },
+    });
+    h.service.enqueue(sentence("community-human"));
+    h.service.finish("community-human", "turn-a", false);
+    await until(() => checked.length === 1);
+    expect(checked).toEqual(["community-human"]);
+    expect(h.requests).toHaveLength(0);
+    expect(h.receipts).toHaveLength(0);
+    expect(h.controls).toHaveLength(0);
+  });
+
+  test("rechecks current Human authority before every paid sentence dispatch", async () => {
+    let checks = 0;
+    const h = harness({
+      assertCanUseServerProviderCredentials: async (humanUserId) => {
+        checks += 1;
+        if (checks > 1) {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, "realtime_text_to_speech");
+        }
+      },
+    });
+    h.service.enqueue(sentence());
+    h.service.enqueue({ ...sentence("owner-a", "turn-a", 1), text: "Authority was revoked." });
+    h.service.finish("owner-a", "turn-a", false);
+    await until(() => checks === 2);
+    expect(h.requests).toHaveLength(1);
+    expect(h.receipts).toHaveLength(1);
+    await until(() => h.controls.some(item => item.event["type"] === "voice.stream.abort"));
   });
 
   test("enabling voice after the first segment does not admit a partial turn", async () => {

@@ -1,8 +1,21 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { check } from "@nautilo/config-guard";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 
-export function createCheckConfigTool() {
+interface CheckConfigContext {
+  causalHumanUserId?: string;
+}
+
+interface CheckConfigDeps {
+  check?: typeof check;
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
+}
+
+export function createCheckConfigTool(
+  context?: CheckConfigContext,
+  deps: CheckConfigDeps = {},
+) {
   return new DynamicStructuredTool({
     name: "check_config",
     description:
@@ -14,7 +27,13 @@ export function createCheckConfigTool() {
         .describe("If true, ping providers (slow, uses network)"),
     }),
     func: async ({ validate }) => {
-      const result = await check({ validate });
+      if (validate) {
+        await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+          context?.causalHumanUserId?.trim() ?? "",
+          "provider_key_health_validation",
+        );
+      }
+      const result = await (deps.check ?? check)({ validate });
 
       const lines = result.keys.map((k) => {
         const status =

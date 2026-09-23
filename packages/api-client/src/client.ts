@@ -1087,6 +1087,7 @@ const ROLE_LADDER: readonly RoleSlug[] = [
   "superuser",
   "member",
   "contributor",
+  "community",
   "guest",
 ] as const;
 
@@ -1400,11 +1401,24 @@ export type AdminPasswordResetResponse = {
   | { delivery: "temporary_password"; temporaryPassword: string; mustChangePassword: true }
 );
 export type AdminProvisionMemberResponse = z.infer<typeof adminProvisionMemberResponseSchema>;
+export type CanonicalServerRoleSlug =
+  | "owner"
+  | "admin"
+  | "superuser"
+  | "member"
+  | "contributor"
+  | "community"
+  | "guest";
+/** Community is installed but remains closed to enrollment in this phase. */
+export type EnrollableServerRoleSlug = Exclude<
+  CanonicalServerRoleSlug,
+  "community"
+>;
 export interface AdminProvisionMemberInput {
   handle: string;
   displayName: string;
   email?: string | undefined;
-  roleSlug: "admin" | "superuser" | "member" | "contributor" | "guest";
+  roleSlug: Exclude<EnrollableServerRoleSlug, "owner">;
   permanentCredential?: { password: string; pin: string } | undefined;
 }
 export interface AdminPermanentCredentialInput { password: string; pin: string }
@@ -1868,16 +1882,10 @@ export interface CreateInviteInput {
   kind: "server";
   /**
    * Required. The canonical Group rung the invitee joins on redeem.
-   * One of the six ladder slugs: owner / admin / superuser / member /
-   * contributor / guest.
+   * One of the currently enrollable ladder slugs. Community is canonical but
+   * remains unavailable as an invitation target in this phase.
    */
-  targetGroupRoleSlug:
-    | "owner"
-    | "admin"
-    | "superuser"
-    | "member"
-    | "contributor"
-    | "guest";
+  targetGroupRoleSlug: EnrollableServerRoleSlug;
   /**
    * Optional. When set, the invitee is ALSO added to this Room on
    * redeem (in addition to the canonical Group). Inviter must own the

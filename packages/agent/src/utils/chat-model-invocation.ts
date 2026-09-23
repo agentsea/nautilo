@@ -6,6 +6,8 @@ import { CallbackManager } from "@langchain/core/callbacks/manager";
 import { isInteropZodSchema } from "@langchain/core/utils/types";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
 import { log, getCurrentTurnId } from "@nautilo/logger";
+import { ServerProviderCredentialsDeniedError, assertCanUseServerProviderCredentials } from "@nautilo/trust";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import {
   bindModelAttemptProgressSinkByKey,
   clearModelAttemptProgressSinkByKey,
@@ -86,6 +88,14 @@ export function isStrictNoChain(mode: ModelFallbackMode | undefined): boolean {
 
 const COMPLETION_SAFETY_MARGIN_TOKENS = 4_096;
 const SAME_MODEL_RETRYABLE_ATTEMPTS = 2;
+type ModelFundingService = "shared_memory_maintenance";
+
+async function assertModelFunding(humanUserId: string | undefined, service?: ModelFundingService): Promise<void> {
+  if (service === "shared_memory_maintenance") return;
+  const causalHumanUserId = causalHumanForExecution(humanUserId);
+  if (!causalHumanUserId) throw new ServerProviderCredentialsDeniedError("", "chat_model");
+  await assertCanUseServerProviderCredentials(causalHumanUserId, "chat_model");
+}
 
 /** @internal Tests may shorten the first-token budget without waiting 60s. */
 let firstTokenTimeoutMsOverride: number | undefined;
@@ -329,6 +339,8 @@ async function invokeOnceWithShortRetries(
   messages: BaseMessage[],
   llmCallConfig: RunnableConfig,
   modelId: string,
+  fundingHumanUserId: string,
+  fundingService: ModelFundingService | undefined,
   agentId: string | null,
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
@@ -339,6 +351,7 @@ async function invokeOnceWithShortRetries(
         ? llmCallConfig.signal.reason
         : new Error("Model invocation cancelled by caller");
     }
+    if (attempt > 1) await assertModelFunding(fundingHumanUserId, fundingService);
     try {
       const attemptPolicy = resolveModelAttemptPolicy(modelId, {
         ...attemptPolicyOptions,
@@ -375,6 +388,8 @@ async function invokeForegroundAttemptWithUsageContext(
   messages: BaseMessage[],
   llmCallConfig: RunnableConfig,
   modelId: string,
+  fundingHumanUserId: string,
+  fundingService: ModelFundingService | undefined,
   agentId: string | null,
   controls: ResolvedForegroundModelControls | undefined,
   serving: ResolvedFireworksKimiK3ServingProfile | undefined,
@@ -387,6 +402,8 @@ async function invokeForegroundAttemptWithUsageContext(
     messages,
     llmCallConfig,
     modelId,
+    fundingHumanUserId,
+    fundingService,
     agentId,
     attemptPolicyOptions,
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
@@ -549,6 +566,10 @@ export async function invokeChatModelWithFallback(
   laneKey: string | null,
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
+    /** Exact initiating Human; separate from the Agent owner's model policy. */
+    fundingHumanUserId?: string;
+    /** Reserved for the server-owned Room-side shared-memory pipeline. */
+    serverFundedService?: ModelFundingService;
     /** Global force: when false, reasoning output is off for every hop (e.g. conductor). */
     reasoningOutput?: boolean;
     /** Per-model operator override map . Resolved per fallback hop; absent key ⇒ ON. */
@@ -711,6 +732,11 @@ export async function invokeChatModelWithFallback(
       && managedGatewayKeyIsPresent();
     let managedGatewayInvocationStarted = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
+    // Recheck the initiating Human at every provider attempt, including a
+    // fallback hop or a retry after context recovery. This is outside the
+    // provider-error catch so authorization denial can never select a new
+    // server-key model.
+    await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
     try {
       log(`[nautilo/agent] Attempting model: ${currentModelId}`);
       const controls = invokeOptions?.resolveForegroundControls?.(currentModelId);
@@ -773,6 +799,8 @@ export async function invokeChatModelWithFallback(
         attemptMessages,
         llmCallConfig,
         currentModelId,
+        invokeOptions?.fundingHumanUserId ?? "",
+        invokeOptions?.serverFundedService,
         agentId,
         controls,
         serving,

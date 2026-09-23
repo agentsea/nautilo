@@ -123,7 +123,7 @@ test("owner and selected-run checks happen before transcript access and use the 
   const transcript = spyOn(store, "getRunAgentTranscriptSnapshot").mockResolvedValue({ end: null, messages: [] });
   const full = spyOn(store, "getRunAgentTranscript").mockRejectedValue(new Error("must not load all transcripts for an explicit selection"));
   restores.push(() => { task.mockRestore(); runs.mockRestore(); transcript.mockRestore(); full.mockRestore(); });
-  const dispatchCtx = { ownerId: "owner", agentId: "caller-agent", roomId: "room", taskReadMaxResponseBytes: 2400 };
+  const dispatchCtx = { ownerId: "owner", causalHumanUserId: "owner", agentId: "caller-agent", roomId: "room", taskReadMaxResponseBytes: 2400 };
   await dispatchTaskCommand({ ...args, readSection: "metadata" }, dispatchCtx);
   await dispatchTaskCommand({ ...args, readSection: "result" }, dispatchCtx);
   expect(transcript).not.toHaveBeenCalled();

@@ -18,6 +18,7 @@ export const CliSessionV1 = z.object({
       "superuser",
       "member",
       "contributor",
+      "community",
       "guest",
       "anonymous",
       "household",

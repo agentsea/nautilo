@@ -20,7 +20,9 @@ import {
 import { log, warn } from "@nautilo/logger";
 import {
   AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   createAcceptedInvocationAuthority,
 } from "@nautilo/trust";
 
@@ -50,36 +52,20 @@ export async function maybeResumeAwaitingTask(
 
     const { task, graphThreadId, runId } = found;
 
-    // M254 R7 — the persisted reply is ordinary transcript history until both
-    // the responder and durable Task requestor pass current-RBAC admission.
-    // A responder-only denial leaves the parked rows untouched; this reply is
-    // never replayed after authority is restored.
-    let responderAllowed = true;
+    // The reply is ordinary Room participation. Only the Task's persisted
+    // requestor authorizes and funds the resumed Agent execution.
+    let requestorAllowed = true;
     try {
       await assertCanInvokeAgent({
-        humanUserId: fromUserId,
+        humanUserId: task.requestorId,
         origin: "task_human_reply",
         roomId,
         agentId: task.agentId,
       });
+      await assertCanUseServerProviderCredentials(task.requestorId, "task_human_reply");
     } catch (error) {
-      if (!(error instanceof AgentInvocationDeniedError)) throw error;
-      responderAllowed = false;
-    }
-
-    let requestorAllowed = responderAllowed;
-    try {
-      if (task.requestorId !== fromUserId) {
-        await assertCanInvokeAgent({
-          humanUserId: task.requestorId,
-          origin: "task_human_reply",
-          roomId,
-          agentId: task.agentId,
-        });
-        requestorAllowed = true;
-      }
-    } catch (error) {
-      if (!(error instanceof AgentInvocationDeniedError)) throw error;
+      if (!(error instanceof AgentInvocationDeniedError)
+        && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
       requestorAllowed = false;
     }
 
@@ -99,13 +85,6 @@ export async function maybeResumeAwaitingTask(
       }
       log(
         `[task-await-resume] requestor authorization paused task=${task.id} run=${runId}`,
-      );
-      return;
-    }
-
-    if (!responderAllowed) {
-      log(
-        `[task-await-resume] responder lacks invoke_agents task=${task.id} run=${runId}`,
       );
       return;
     }

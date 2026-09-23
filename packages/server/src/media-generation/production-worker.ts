@@ -39,6 +39,7 @@ import {
   type ClaimedMediaGeneration,
   type DirectDatabase,
   videoGenerationLinks, and, eq,
+  actors,
 } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import {
@@ -48,6 +49,11 @@ import {
 } from "@nautilo/runtime";
 import {
   createAcceptedInvocationAuthority,
+  assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
+  AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
+  type AgentInvocationAdmissionInput,
   getPolicyResolver,
 } from "@nautilo/trust";
 import { getServerDirectDb } from "../lib/server-direct-db";
@@ -68,6 +74,8 @@ export async function deliverProductionMediaGenerationCompletionWakes(input: {
   readonly batch?: number;
   readonly jobs?: MediaCompletionWakeJobManager;
   readonly resolveEnvelope?: (claim: import("@nautilo/db").ClaimedMediaGenerationCompletionWake) => Promise<unknown>;
+  readonly assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
+  readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
   readonly operations?: Readonly<{
     claim: typeof claimDueMediaGenerationCompletionWakes;
     complete: typeof completeMediaGenerationCompletionWake;
@@ -87,13 +95,28 @@ export async function deliverProductionMediaGenerationCompletionWakes(input: {
   let delivered = 0;
   for (const claim of claims) {
     try {
+      await (input.assertInvocation ?? assertCanInvokeAgent)({
+        humanUserId: claim.ownerId,
+        origin: "foreground_resume",
+        roomId: claim.roomId,
+        agentId: claim.initiatingAgentId,
+      });
+      await (input.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+        claim.ownerId,
+        "media_completion_wake",
+      );
       const laneKey = `room:${claim.roomId}`;
       const envelope = input.resolveEnvelope
         ? await input.resolveEnvelope(claim)
-        : await (() => {
+        : await (async () => {
             const resolver = getPolicyResolver();
             if (!resolver) throw new Error("policy resolver unavailable");
-            return resolver.buildEnvelope(claim.ownerId, laneKey, claim.initiatingAgentId, claim.roomId);
+            const humanActors = await input.db.select({ id: actors.id }).from(actors).where(and(
+              eq(actors.ownerId, claim.ownerId),
+              eq(actors.kind, "user"),
+            )).limit(2);
+            if (humanActors.length !== 1) throw new Error("media generation owner actor unavailable");
+            return resolver.buildEnvelope(humanActors[0]!.id, laneKey, claim.initiatingAgentId, claim.roomId);
           })();
       const note = `[MEDIA GENERATION READY] A ${claim.kind === "music" ? "music" : "video"} generation initiated in this Room is now durably saved to Workspace. The existing generation card has the playable artifact. You may briefly tell the user it is ready; do not claim anything beyond completion.`;
       await (input.jobs ?? jobManager).createSystemForegroundJob(
@@ -104,6 +127,7 @@ export async function deliverProductionMediaGenerationCompletionWakes(input: {
           message: note,
           ownerId: claim.ownerId,
           requestorId: claim.ownerId,
+          causalHumanUserId: claim.ownerId,
           agentId: claim.initiatingAgentId,
           roomId: claim.roomId,
           roomRoster: [],
@@ -125,7 +149,12 @@ export async function deliverProductionMediaGenerationCompletionWakes(input: {
       if (await operations.complete(input.db, { ...claim, now: now() })) {
         delivered += 1;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof AgentInvocationDeniedError
+        || error instanceof ServerProviderCredentialsDeniedError) {
+        await operations.complete(input.db, { ...claim, now: now() });
+        continue;
+      }
       await operations.release(input.db, { ...claim, now: now() }).catch(() => false);
       warn("[media-generation] completion wake failed; the durable notification will be retried");
     }

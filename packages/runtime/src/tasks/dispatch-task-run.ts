@@ -34,7 +34,9 @@ import {
   getRoomWithAccess,
   findActorByOwnerId,
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   createAcceptedInvocationAuthority,
   envelopeReadableNamespaces,
   isNamespaceMemoryEnvelope,
@@ -142,6 +144,7 @@ export interface DispatchTaskRunDeps {
   executionRouteSelector?: TaskExecutionRouteSelector;
   /** Test seam for the current-RBAC durable-fire decision. */
   assertInvocation?: typeof assertCanInvokeAgent;
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
   /**
    * Server-owned realtime convergence for Rooms created by target resolution.
    * It must finish before Job creation can publish the Room's first message.
@@ -303,8 +306,13 @@ export async function dispatchTaskRun(
       agentId: task.agentId,
       ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
     });
+    await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+      task.requestorId,
+      "task_dispatch",
+    );
   } catch (error) {
-    if (!(error instanceof AgentInvocationDeniedError)) throw error;
+    if (!(error instanceof AgentInvocationDeniedError)
+      && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
     if (!task.fireLockId) {
       throw new Error(
         `dispatchTaskRun: authorization denial for unclaimed task ${task.id}`,

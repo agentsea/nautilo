@@ -18,6 +18,7 @@ function roleToneClass(role: ViewerRole): string {
     case "member":
       return "bg-[var(--warning)]/20 text-[var(--warning)]";
     case "contributor":
+    case "community":
       return "bg-primary/10 text-primary";
     case "guest":
     case "stranger":

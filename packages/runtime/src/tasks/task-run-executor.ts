@@ -216,6 +216,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
         },
         taskRunId,
         signal,
+        str(input, "requestorId"),
       );
       let resultText = "";
       for (;;) {
@@ -374,6 +375,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
           }
         : {}),
       subagentThreadId: str(input, "graphThreadId"),
+      causalHumanUserId: str(input, "requestorId"),
       // M150 — presence-gated relay tools + Task-run relay-drop semantics.
       relayCapabilities,
       taskRun: true,

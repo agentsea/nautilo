@@ -12,6 +12,14 @@ import { configureRuntimeModelCatalog, getActiveModelCatalogSync, hydrateRuntime
 import { estimateTokenCount } from "../../src/utils/history-manager";
 import type { RecoverPreparedContext } from "../../src/utils/chat-model-invocation";
 
+const FUNDING_HUMAN = "research-context-human";
+const actualTrust = await import("@nautilo/trust");
+mock.module("@nautilo/trust", () => ({ ...actualTrust,
+  assertCanUseServerProviderCredentials: mock(async (humanUserId: string) => {
+    expect(humanUserId).toBe(FUNDING_HUMAN);
+  }),
+}));
+
 const MODEL = "openai:gpt-5.6-sol";
 const FALLBACK = "anthropic:claude-sonnet-4-6";
 const rejected = new Error("context length exceeded");
@@ -63,7 +71,11 @@ afterAll(() => {
 
 const run = (messages: BaseMessage[], recoverContext?: RecoverPreparedContext, signal?: AbortSignal) =>
   invocation.invokeChatModelWithFallback(messages, [], MODEL, "research-owner", null, null,
-    signal ? { signal } : undefined, { modelFallbackMode: "none", ...(recoverContext ? { recoverContext } : {}) });
+    signal ? { signal } : undefined, {
+      fundingHumanUserId: FUNDING_HUMAN,
+      modelFallbackMode: "none",
+      ...(recoverContext ? { recoverContext } : {}),
+    });
 
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   try { await promise; } catch (error) { return error; }
@@ -128,7 +140,11 @@ describe("D581 ordinary model context recovery", () => {
     };
     const recover = mock(() => [new HumanMessage("smaller")]);
     expect(await rejectionOf(invocation.invokeChatModelWithFallback([new HumanMessage("source ".repeat(100))], [], MODEL,
-      "owner", null, null, { callbacks: [{ handleLLMNewToken: observed }] }, { recoverContext: recover, modelFallbackMode: "none" }))).toBe(rejected);
+      "owner", null, null, { callbacks: [{ handleLLMNewToken: observed }] }, {
+        fundingHumanUserId: FUNDING_HUMAN,
+        recoverContext: recover,
+        modelFallbackMode: "none",
+      }))).toBe(rejected);
     expect(recover).not.toHaveBeenCalled();
     expect(created).toEqual([MODEL]);
     expect(observed).toHaveBeenCalledTimes(1);
@@ -174,7 +190,7 @@ describe("D581 ordinary model context recovery", () => {
     const original = [new SystemMessage("x".repeat(limits.contextTokens * 4))];
     const recover = mock(({ messages }: Parameters<RecoverPreparedContext>[0]) => messages);
     expect(await rejectionOf(invocation.invokeChatModelWithFallback(original, [], MODEL, "owner", null, null,
-      undefined, { recoverContext: recover }))).toBeInstanceOf(invocation.PreparedContextExceededError);
+      undefined, { fundingHumanUserId: FUNDING_HUMAN, recoverContext: recover }))).toBeInstanceOf(invocation.PreparedContextExceededError);
     expect(recover).toHaveBeenCalledTimes(1);
     expect(created).toEqual([]);
   });
@@ -203,7 +219,7 @@ describe("D581 ordinary model context recovery", () => {
       return [new HumanMessage("Saved audit notes and exact historical references")];
     });
     const result = await invocation.invokeChatModelWithFallback([new HumanMessage("x".repeat(100_000))],
-      [], MODEL, "owner", null, null, undefined, { recoverContext: recover });
+      [], MODEL, "owner", null, null, undefined, { fundingHumanUserId: FUNDING_HUMAN, recoverContext: recover });
     expect(result.modelUsed).toBe(FALLBACK);
     expect(created).toEqual([MODEL, FALLBACK]);
     expect(recover).toHaveBeenCalledTimes(1);

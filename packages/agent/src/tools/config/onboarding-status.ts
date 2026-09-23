@@ -2,10 +2,17 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { check } from "@nautilo/config-guard";
 import { DEFAULT_VOICE_KEY } from "@nautilo/types";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { getProfile } from "../../store/profile-store";
 
 interface OnboardingStatusContext {
   ownerId?: string;
+  causalHumanUserId?: string;
+}
+
+interface OnboardingStatusDeps {
+  check?: typeof check;
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
 }
 
 function keyLine(name: string, k: { status: string; required: boolean }): string {
@@ -13,7 +20,10 @@ function keyLine(name: string, k: { status: string; required: boolean }): string
   return `${name}${req}: ${k.status}`;
 }
 
-export function createOnboardingStatusTool(context?: OnboardingStatusContext) {
+export function createOnboardingStatusTool(
+  context?: OnboardingStatusContext,
+  deps: OnboardingStatusDeps = {},
+) {
   return new DynamicStructuredTool({
     name: "onboarding_status",
     description: `Combined onboarding diagnostic: profile state, key health, and concrete next steps.
@@ -32,8 +42,14 @@ Set include_key_health true only if you need live provider verification (slow, u
       const ownerId = context?.ownerId ?? "00000000-0000-0000-0000-000000000000";
 
       try {
+        if (include_key_health) {
+          await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+            context?.causalHumanUserId?.trim() ?? "",
+            "provider_key_health_validation",
+          );
+        }
         const [result, profile] = await Promise.all([
-          check({ validate: include_key_health }),
+          (deps.check ?? check)({ validate: include_key_health }),
           getProfile(ownerId),
         ]);
 

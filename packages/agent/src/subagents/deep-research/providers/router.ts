@@ -1,8 +1,28 @@
 import type { Configuration } from "../shared/config";
 import type { ChatModel } from "../../../providers/types";
 import { createUniversalModel } from "../../../providers/universal";
+import { assertDeepResearchServerFunding } from "../shared/funding";
 
 export type Provider = "openai" | "anthropic" | "google" | "fireworks" | "openrouter" | "xai" | "together" | "venice";
+
+function guardPaidModel(model: ChatModel): ChatModel {
+  return {
+    invoke: async (messages, options) => {
+      await assertDeepResearchServerFunding("deep_research_model_dispatch");
+      return model.invoke(messages, options);
+    },
+    ...(model.stream ? {
+      stream: async function* (messages, options) {
+        await assertDeepResearchServerFunding("deep_research_model_dispatch");
+        const chunks = await model.stream!(messages, options);
+        yield* chunks;
+      },
+    } : {}),
+    ...(model.bindTools ? {
+      bindTools: (tools, options) => guardPaidModel(model.bindTools!(tools, options)),
+    } : {}),
+  };
+}
 
 function inferProvider(modelId: string): Provider {
   const id = modelId.toLowerCase();
@@ -58,6 +78,7 @@ export async function createModel(
   cfg: Configuration,
   options?: { maxTokens?: number | undefined },
 ): Promise<ChatModel> {
+  await assertDeepResearchServerFunding("deep_research_model");
   const apiKey = getApiKey(modelId, cfg);
   const baseUrl = getBaseUrl(modelId, cfg);
   const opts: Record<string, unknown> = {};
@@ -65,5 +86,5 @@ export async function createModel(
   if (baseUrl) opts["baseURL"] = baseUrl;
   if (cfg.anthropic_long_context_beta) opts["anthropicLongContextBeta"] = true;
   if (options?.maxTokens !== undefined) opts["maxTokens"] = options.maxTokens;
-  return createUniversalModel(modelId, opts);
+  return guardPaidModel(await createUniversalModel(modelId, opts));
 }

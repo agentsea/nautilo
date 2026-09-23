@@ -18,9 +18,10 @@ describe("D420 group-conductor continuation authority", () => {
     const deps = {
       createForegroundJob,
       loadRoomRoster: async () => [],
+      assertInvocation: async () => {},
     } as unknown as ChatRoutesDeps;
     const request = {
-      sessionUserId: "",
+      sessionUserId: "test-user",
       sessionActorId: "",
       memoryEnvelope: null,
       policyContext: null,
@@ -97,7 +98,7 @@ describe("D420 group-conductor continuation authority", () => {
 
     await executeAgentMediatedRoomMessage({
       request,
-      deps: { createForegroundJob, loadRoomRoster: async () => [] } as unknown as ChatRoutesDeps,
+      deps: { createForegroundJob, loadRoomRoster: async () => [], assertInvocation: async () => {} } as unknown as ChatRoutesDeps,
       content: "opened protected text",
       voiceMode: false,
       currentFolder: null,
