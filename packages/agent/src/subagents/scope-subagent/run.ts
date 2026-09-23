@@ -601,10 +601,16 @@ export type RunScopeSubagentOpts = {
   /**
    * Wave 9 — exact child-thread saver for an invocation-bound protected child.
    *
-   * Background/task runs must omit it and continue through their legacy saver
-   * until Wave 10 gives them independently acquired authority.
+   * Background/task runs must never receive foreground invocation authority.
    */
   invocationCheckpointSaver?: EncryptedCheckpointSaver;
+  /**
+   * Opaque typed handoff for an exact child-thread saver acquired independently
+   * for one protected TaskRun. The saver enforces its construction-time
+   * Lattice scope and logical thread; production composition must validate the
+   * Task/TaskRun grant before supplying it here.
+   */
+  taskRunCheckpointSaver?: EncryptedCheckpointSaver;
   /** Resume payload after a bridged interrupt (same shape as HTTP resume) */
   resume?: unknown;
   /** When resuming, reuse the same subagent thread */
@@ -731,10 +737,26 @@ async function runScopeSubagentUntilPauseInternal(
 ): Promise<RunScopeSubagentResult> {
   if (
     opts.invocationCheckpointSaver !== undefined
+    && opts.taskRunCheckpointSaver !== undefined
+  ) {
+    throw new TypeError(
+      "Subagent cannot receive both invocation and Task-run checkpoint savers",
+    );
+  }
+  if (
+    opts.invocationCheckpointSaver !== undefined
     && !(opts.invocationCheckpointSaver instanceof EncryptedCheckpointSaver)
   ) {
     throw new TypeError(
       "Invocation-bound subagent requires an encrypted checkpoint saver",
+    );
+  }
+  if (
+    opts.taskRunCheckpointSaver !== undefined
+    && !(opts.taskRunCheckpointSaver instanceof EncryptedCheckpointSaver)
+  ) {
+    throw new TypeError(
+      "Task-run subagent requires an encrypted checkpoint saver",
     );
   }
   if (opts.taskRun && opts.invocationCheckpointSaver !== undefined) {
@@ -742,7 +764,26 @@ async function runScopeSubagentUntilPauseInternal(
       "Background task subagent cannot inherit foreground checkpoint authority",
     );
   }
-  const checkpointSaver = opts.invocationCheckpointSaver ?? createCheckpointSaver();
+  if (
+    opts.taskRunCheckpointSaver !== undefined
+    && (
+      opts.taskRun !== true
+      || opts.trustedExecutionEntrypoint !== "background.task"
+      || typeof opts.currentTaskId !== "string"
+      || opts.currentTaskId.length === 0
+      || typeof opts.currentTaskRunId !== "string"
+      || opts.currentTaskRunId.length === 0
+      || typeof opts.subagentThreadId !== "string"
+      || opts.subagentThreadId.length === 0
+    )
+  ) {
+    throw new TypeError(
+      "Task-run checkpoint authority requires an exact trusted background Task identity and graph thread",
+    );
+  }
+  const checkpointSaver = opts.taskRunCheckpointSaver
+    ?? opts.invocationCheckpointSaver
+    ?? createCheckpointSaver();
   const policyResolver = getPolicyResolver();
   // one shared graph execution policy seam (recursion ceiling
   // resolved here, threaded into `streamConfig` below). Metrics counts
