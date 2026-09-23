@@ -89,7 +89,7 @@ export function MessageActionRail(props: MessageActionRailProps): ReactElement {
               onClick={onClick}
               className={
                 descriptor.destructive
-                  ? "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground-muted hover:bg-red-500/10 hover:text-red-500 focus:text-red-500 active:text-red-500"
+                  ? `${props.alwaysVisible ? "hidden group-hover:flex group-focus:flex group-focus-within:flex" : "flex"} h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground-muted hover:bg-red-500/10 hover:text-red-500 focus:text-red-500 active:text-red-500`
                   : "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-foreground-muted hover:bg-background-element"
               }
             >

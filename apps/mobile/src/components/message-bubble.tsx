@@ -169,6 +169,9 @@ export function MessageBubble({
     },
   }) : [];
   const actionDescriptors = baseActionDescriptors;
+  const automaticActionDescriptors = actionDescriptors.filter(
+    (action) => action.destructive !== true,
+  );
   const visibleReactions = (reactions ?? []).filter((r) => r.count > 0);
   const showReactionStrip =
     visibleReactions.length > 0 && typeof onToggleReaction === 'function';
@@ -321,7 +324,7 @@ export function MessageBubble({
         </View>
       ) : null}
       <MessageActionRail
-        actions={actionDescriptors}
+        actions={automaticActionDescriptors}
         visible={actionRailVisible}
         outgoing={isUser}
         onAction={handleAction}

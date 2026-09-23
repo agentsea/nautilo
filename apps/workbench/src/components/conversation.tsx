@@ -40,6 +40,12 @@ import { MessageEditConflictError } from "@nautilo/api-client/browser";
 import { FileText, Mic, Paperclip, SendHorizontal, Loader2, Square, X } from "lucide-react";
 import { HumanMessageContent } from "./human-message-content";
 import {
+  hasKnownHumanMessageAuthor,
+  isCurrentMessageDeleteConfirmation,
+  isOwnHumanMessage,
+  resolveHumanMessageAuthorLabel,
+} from "./message-author";
+import {
   TerminalExecutionNotices,
   terminalExecutionsFromMessageMetadata,
 } from "./terminal-execution-notice";
@@ -534,8 +540,8 @@ function makeReplySnippet(text: string): string {
 /**
  * Resolve a display sender name for an arbitrary thread message (used by the
  * inline quoted strip). Mirrors the bubble's own author resolution: assistant
- * rows resolve via `authorAgentId`, human rows via the peer-label map (falling
- * back to "You" for the viewer, or the roster label for a peer).
+ * rows resolve via `authorAgentId`, human rows via an exact viewer id or the
+ * peer-label map. Missing human authorship remains unknown.
  */
 function resolveThreadMessageSender(
   message: { role?: string; metadata?: unknown },
@@ -565,8 +571,11 @@ function resolveThreadMessageSender(
   }
   const sourceUserId =
     typeof custom?.sourceUserId === "string" ? custom.sourceUserId : undefined;
-  if (!sourceUserId || sourceUserId === ctx.viewerUserId) return "You";
-  return ctx.labels?.get(sourceUserId) ?? "Someone";
+  return resolveHumanMessageAuthorLabel({
+    sourceUserId,
+    viewerUserId: ctx.viewerUserId,
+    labels: ctx.labels,
+  });
 }
 
 /**
@@ -3483,11 +3492,8 @@ function Message({
   const replyCount = useMessage(
     (state) => (state.metadata as { custom?: { replyCount?: number } })?.custom?.replyCount ?? 0,
   );
-  // resolve message author for multi-human
-  // rooms. `sourceUserId` lives in `metadata.custom` and is set by the
-  // runtime adapter when the WS `message.new` event or rehydrated history
-  // carries it (provided by the server). Default null = "viewer
-  // is the author OR no peer label available" → render "You:" as before.
+  // Resolve message authorship from the persisted source id. A missing id is
+  // unknown, not evidence that the current viewer authored the message.
   const sourceUserId = useMessage((state) => {
     const c = (state.metadata as { custom?: { sourceUserId?: unknown } })?.custom;
     return typeof c?.sourceUserId === "string" ? c.sourceUserId : undefined;
@@ -3564,7 +3570,7 @@ function Message({
       : null;
   });
   const highlighted = reply?.highlightedMessageId != null && reply.highlightedMessageId === messageId;
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteScope, setConfirmDeleteScope] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState("");
   const [editBaseRevision, setEditBaseRevision] = useState(0);
@@ -3589,12 +3595,33 @@ function Message({
   // on agent-authored (role !== "user") rows for non-admins.
   const isOwnUserMessage =
     role === "user" &&
-    (sourceUserId == null || sourceUserId === auth.viewer.sessionUserId);
+    isOwnHumanMessage(sourceUserId, auth.viewer.sessionUserId);
+  const hasKnownHumanAuthor = hasKnownHumanMessageAuthor(role, sourceUserId);
   const canDelete =
-    (interactive || childDeleteEnabled) && (isOwnUserMessage || can("manage_rooms"));
+    (interactive || childDeleteEnabled) &&
+    auth.viewer.isVerified && !auth.viewer.staleWhoami &&
+    hasKnownHumanAuthor &&
+    (isOwnUserMessage || can("manage_rooms"));
+  const currentDeleteScope = JSON.stringify([
+    auth.viewerGeneration,
+    auth.viewer.sessionUserId,
+    auth.viewer.sessionActorId,
+    roomId,
+    messageId,
+  ]);
+  const openDeleteConfirmation = useCallback(() => {
+    if (canDelete && roomId && messageId !== null) {
+      setConfirmDeleteScope(currentDeleteScope);
+    }
+  }, [canDelete, roomId, messageId, currentDeleteScope]);
+  useEffect(() => {
+    if (confirmDeleteScope !== null && !isCurrentMessageDeleteConfirmation(confirmDeleteScope, currentDeleteScope, canDelete)) {
+      setConfirmDeleteScope(null);
+    }
+  }, [confirmDeleteScope, currentDeleteScope, canDelete]);
   const performDelete = useCallback(async () => {
-    setConfirmDelete(false);
-    if (messageId === null || !roomId) return;
+    if (!isCurrentMessageDeleteConfirmation(confirmDeleteScope, currentDeleteScope, canDelete) || messageId === null || !roomId) return;
+    setConfirmDeleteScope(null);
     try {
       await apiClient.deleteRoomMessage(roomId, String(messageId));
       // Removal is applied by the message.deleted WS echo (idempotent).
@@ -3614,14 +3641,9 @@ function Message({
         });
       }
     }
-  }, [messageId, roomId, toast]);
-  // author identity for the per-message avatar. When the
-  // message has a `sourceUserId` (any peer in a multi-human room),
-  // use that. Otherwise the message is the viewer's own optimistic
-  // bubble or echoed-back send → use the viewer's session userId so
-  // their own avatar shows next to "You:".
-  const authorUserId = sourceUserId ?? auth.viewer.sessionUserId ?? "";
-  const avatarLabel = peerLabel ?? "You";
+  }, [canDelete, confirmDeleteScope, currentDeleteScope, messageId, roomId, toast]);
+  const authorUserId = sourceUserId ?? "";
+  const userAuthorLabel = isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender");
   const { toggleReaction } = useRoomReactions();
   const editRoomMessage = useRoomMessageEdit();
   const {
@@ -3788,7 +3810,7 @@ function Message({
           fallbackAvatarSrc: assistantAvatarSrc,
           roomId,
         }).name
-      : (peerLabel ?? "You");
+      : userAuthorLabel;
   const currentSnippet = makeReplySnippet(
     role === "assistant" ? stripAssistantArtifacts(userText) : userText,
   );
@@ -3882,7 +3904,7 @@ function Message({
           ...(canCopyInSurface ? { onCopy: handleCopyMessage } : {}),
           ...(canEdit ? { onEdit: beginEdit } : {}),
           ...(canDelete && roomId
-            ? { onDelete: () => setConfirmDelete(true) }
+            ? { onDelete: openDeleteConfirmation }
             : {}),
         });
       }
@@ -3896,7 +3918,7 @@ function Message({
         ...(canCopyInSurface ? { onCopy: handleCopyMessage } : {}),
         ...(canEdit ? { onEdit: beginEdit } : {}),
         ...(canDelete && roomId
-          ? { onDelete: () => setConfirmDelete(true) }
+          ? { onDelete: openDeleteConfirmation }
           : {}),
       });
     },
@@ -3909,6 +3931,7 @@ function Message({
       canEdit,
       beginEdit,
       canDelete,
+      openDeleteConfirmation,
       interactive,
       roomId,
     ],
@@ -3968,7 +3991,7 @@ function Message({
       }}
       onCopy={handleCopyMessage}
       onEdit={beginEdit}
-      onDelete={() => setConfirmDelete(true)}
+      onDelete={openDeleteConfirmation}
     />
   );
 
@@ -3991,18 +4014,18 @@ function Message({
         <MessagePrimitive.If user>
           <div className="flex items-start gap-2">
             {authorUserId.length > 0 ? (
-              <UserAvatar userId={authorUserId} size={24} displayName={avatarLabel} />
+              <UserAvatar userId={authorUserId} size={24} displayName={userAuthorLabel} />
             ) : null}
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-x-1.5">
               <span
                 className={
-                  peerLabel !== null
-                    ? "text-xs font-semibold text-foreground-muted"
-                    : "text-xs font-semibold text-label-user"
+                  isOwnUserMessage
+                    ? "text-xs font-semibold text-label-user"
+                    : "text-xs font-semibold text-foreground-muted"
                 }
               >
-                {peerLabel !== null ? peerLabel : "You"}
+                {userAuthorLabel}
               </span>
               <MessageTimestamp />
               </div>
@@ -4158,13 +4181,13 @@ function Message({
             : {})}
           {...(canCopyInSurface ? { onCopy: handleCopyMessage } : {})}
           {...(canEdit ? { onEdit: beginEdit } : {})}
-          {...(canDelete && roomId ? { onDelete: () => setConfirmDelete(true) } : {})}
+          {...(canDelete && roomId ? { onDelete: openDeleteConfirmation } : {})}
         />
       )}
-      {(interactive || childDeleteEnabled) && confirmDelete && (
+      {(interactive || childDeleteEnabled) && isCurrentMessageDeleteConfirmation(confirmDeleteScope, currentDeleteScope, canDelete) && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={() => setConfirmDelete(false)}
+          onClick={() => setConfirmDeleteScope(null)}
         >
           <div
             className="w-[320px] rounded-lg border border-border bg-background p-4 shadow-xl"
@@ -4178,7 +4201,7 @@ function Message({
               <button
                 type="button"
                 className="rounded px-3 py-1.5 text-sm text-foreground hover:bg-[var(--primary-muted)]"
-                onClick={() => setConfirmDelete(false)}
+                onClick={() => setConfirmDeleteScope(null)}
               >
                 Cancel
               </button>

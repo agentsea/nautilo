@@ -43,6 +43,7 @@ import {
   writeSecurityAuditEvent,
   type SecurityAuditEvent,
 } from "../../src/lib/security-audit-log";
+import type { MessageDeletionReceiptQuery } from "../../src/lib/message-deletion-receipts";
 import { SessionStore } from "../helpers/test-session-store";
 
 function installBearerSessionPreHandler(
@@ -109,6 +110,7 @@ let auditLogPath: string;
 // actor/ip/prev/next contract + the audit-on-failure contract.
 let mutatorCalls: PostureMutationMeta[] = [];
 let auditCalls: SecurityAuditEvent[] = [];
+let deletionReceiptQueries: MessageDeletionReceiptQuery[] = [];
 
 // D060 Sprint 1 G5.5 + M043 — in-memory Capability store, keyed on
 // user_id (post-M043 caps are user-scoped, not actor-scoped).
@@ -144,6 +146,10 @@ beforeAll(async () => {
     auditLogPath,
     getCapabilities: (userId) =>
       Promise.resolve(userCaps.get(userId) ?? []),
+    listMessageDeletionReceipts: async (query) => {
+      deletionReceiptQueries.push(query);
+      return { receipts: [], nextCursor: null };
+    },
     // Stub the sandbox-backend probe so this stays a real unit test —
     // the production `resolveBackendSummary()` spawns `/usr/bin/sandbox-exec`
     // / `bwrap` via `execFile`, which under heavy parallel load
@@ -177,6 +183,7 @@ beforeAll(async () => {
 beforeEach(() => {
   mutatorCalls = [];
   auditCalls = [];
+  deletionReceiptQueries = [];
   // Reset cap seed before each test so a test that mutates can\u0027t
   // leak state. Keyed on user_id (post-M043).
   userCaps.clear();
@@ -864,6 +871,47 @@ describe("D538 uncontained-host-command session controller", () => {
     } finally {
       await routeApp.close();
     }
+  });
+});
+
+describe("GET /api/security/message-deletions", () => {
+  test("requires authentication and audit capability", async () => {
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/security/message-deletions",
+    })).statusCode).toBe(401);
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/security/message-deletions",
+      headers: { Authorization: `Bearer ${householdToken}` },
+    })).statusCode).toBe(403);
+    expect(deletionReceiptQueries).toHaveLength(0);
+  });
+
+  test("owner can query a Room; admin is restricted to their own actor", async () => {
+    const owner = await app.inject({
+      method: "GET",
+      url: "/api/security/message-deletions?roomId=11111111-1111-4111-8111-111111111111&limit=10",
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    expect(owner.statusCode).toBe(200);
+    expect(deletionReceiptQueries[0]).toMatchObject({
+      roomId: "11111111-1111-4111-8111-111111111111",
+      limit: "10",
+    });
+    expect(deletionReceiptQueries[0]?.actorId).toBeUndefined();
+
+    userCaps.set(HOUSEHOLD_USER_ID, ["view_audit_log"]);
+    const admin = await app.inject({
+      method: "GET",
+      url: "/api/security/message-deletions?messageId=42",
+      headers: { Authorization: `Bearer ${householdToken}` },
+    });
+    expect(admin.statusCode).toBe(200);
+    expect(deletionReceiptQueries[1]).toMatchObject({
+      messageId: "42",
+      actorId: HOUSEHOLD_ACTOR_ID,
+    });
   });
 });
 

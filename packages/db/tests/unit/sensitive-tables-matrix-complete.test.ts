@@ -6,6 +6,7 @@ import * as schema from "../../src/schema/index.ts";
 
 /** Versioned alongside the schema; a clean checkout has no private fallback. */
 const MATRIX_RELATIVE = "../../audits/sensitive-tables-matrix.md";
+const ADDENDUM_RELATIVE = "../../audits/sensitive-tables-matrix-addendum.md";
 
 function drizzleTableName(value: unknown): string | undefined {
   return isTable(value) ? getTableName(value) : undefined;
@@ -38,13 +39,18 @@ function exportedPgTableNames(): Set<string> {
   return names;
 }
 
-describe("sensitive-tables-matrix completeness (D129 P2)", () => {
-  it("lists every exported Drizzle pgTable in packages/db/audits/sensitive-tables-matrix.md (nautilo rows)", () => {
+describe("sensitive-tables-matrix completeness", () => {
+  it("lists every exported Drizzle pgTable across the matrix and addendum", () => {
     const matrixPath = pathToSensitiveTablesMatrix();
+    const addendumPath = resolve(import.meta.dir, ADDENDUM_RELATIVE);
     expect(existsSync(matrixPath)).toBe(true);
+    expect(existsSync(addendumPath)).toBe(true);
 
-    const markdown = readFileSync(matrixPath, "utf8");
-    const matrixNames = parseNautiloTableNamesFromMatrix(markdown);
+    const matrixNames = parseNautiloTableNamesFromMatrix(readFileSync(matrixPath, "utf8"));
+    const addendumNames = parseNautiloTableNamesFromMatrix(readFileSync(addendumPath, "utf8"));
+    const duplicateNames = [...addendumNames].filter((name) => matrixNames.has(name));
+    expect(duplicateNames).toEqual([]);
+    for (const name of addendumNames) matrixNames.add(name);
     const schemaNames = exportedPgTableNames();
 
     const missingInMatrix = [...schemaNames].filter((t) => !matrixNames.has(t)).sort();
