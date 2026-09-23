@@ -127,6 +127,100 @@ describe("Job", () => {
     )).toBeTrue();
   });
 
+  test("persists only a protected Task reference while executing transient content", async () => {
+    // This is deliberately a low-level Job sink test. Production protected
+    // Task execution must construct this transient input inside its authorized
+    // callback; passing plaintext to Job before authorization is not an
+    // execution-boundary contract and is not wired by this foundation.
+    const persisted: PersistJobPayload[] = [];
+    let executedMessage: unknown;
+    const durableInputReference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:request-1",
+      policyRevision: 11,
+    };
+    const job = new Job({
+      ownerId: "o1",
+      requestorId: "r1",
+      laneKey: "task:10000000-0000-4000-8000-000000000001",
+      type: "foreground",
+      input: {
+        message: "protected-task-input-sentinel",
+        expectedOutput: "protected-task-output-sentinel",
+        metadata: { private: "protected-task-metadata-sentinel" },
+      },
+      durableInputReference,
+      durableInputDisposition: "full",
+      executor: async function* (input) {
+        executedMessage = input["message"];
+        yield* yieldNothing();
+      },
+      persist: async (payload) => {
+        persisted.push(payload);
+        return "job-protected-task";
+      },
+      updateStatus: async () => {},
+    });
+
+    await job.persist();
+    expect(JSON.stringify(persisted[0]!.input)).not.toContain("sentinel");
+    expect(persisted[0]!.input).toEqual(durableInputReference);
+    expect(persisted[0]!.publicationPolicy).toEqual({
+      expectedRevision: 11,
+      representation: "protected_only",
+    });
+
+    await job.execute();
+    expect(executedMessage).toBe("protected-task-input-sentinel");
+  });
+
+  test("rejects malformed protected Task references before persistence", async () => {
+    const valid = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:request-1",
+      policyRevision: 11,
+    };
+    const malformed = [
+      { ...valid, taskId: "not-a-task-id" },
+      { ...valid, inputObjectId: valid.resultObjectId },
+      { ...valid, resultObjectId: valid.inputObjectId },
+      { ...valid, authorizationRequestId: "contains spaces" },
+      { ...valid, policyRevision: 0 },
+      { ...valid, prompt: "must-not-be-durable" },
+    ];
+
+    for (const durableInputReference of malformed) {
+      let persistCalls = 0;
+      const job = new Job({
+        ownerId: "o1",
+        requestorId: "r1",
+        laneKey: null,
+        type: "foreground",
+        input: { message: "must-not-persist" },
+        durableInputDisposition: "full",
+        durableInputReference: durableInputReference as typeof valid,
+        executor: yieldNothing,
+        persist: async () => {
+          persistCalls += 1;
+          return "unexpected";
+        },
+        updateStatus: async () => {},
+      });
+      expect(job.persist()).rejects.toThrow(
+        "Protected Task durable Job reference is invalid",
+      );
+      expect(persistCalls).toBe(0);
+    }
+  });
+
   test("Full cancellation never publishes or persists caller text", async () => {
     const sentinel = "FULL_CANCEL_SENTINEL_DO_NOT_DISCLOSE";
     const updates: unknown[] = [];

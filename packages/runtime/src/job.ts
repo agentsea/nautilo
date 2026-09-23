@@ -17,6 +17,10 @@ import {
 import { getCurrentLiveShadowTurnContext } from "./conversation/live-shadow-turn-context";
 import type { FullEncryptionDurableJobInputReferenceV1 } from
   "./foreground-turn-lifecycle";
+import {
+  assertProtectedTaskJobReferenceV1,
+  type ProtectedTaskJobReferenceV1,
+} from "./tasks/protected-task-job-reference";
 
 const FOREGROUND_CONTEXT_PREPARATION_FALLBACK_RETRY_WINDOW_MS = 30_000;
 const FOREGROUND_CONTEXT_PREPARATION_RETRY_MAX_DELAY_MS = 1_000;
@@ -26,9 +30,17 @@ const FULL_JOB_PROTECTED_HISTORY_UNAVAILABLE_MESSAGE =
   "Encrypted history is not available for this turn yet";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
+export type FullEncryptionDurableJobInputReference =
+  | FullEncryptionDurableJobInputReferenceV1
+  | ProtectedTaskJobReferenceV1;
+
 function assertFullEncryptionDurableJobInputReference(
-  value: FullEncryptionDurableJobInputReferenceV1,
+  value: FullEncryptionDurableJobInputReference,
 ): void {
+  if (value.kind === "protected_task_run_v1") {
+    assertProtectedTaskJobReferenceV1(value);
+    return;
+  }
   if (
     Object.keys(value).sort().join(",")
       !== "kind,operationId,policyRevision,roomId"
@@ -76,7 +88,7 @@ export interface JobConfig {
     authorAgentId: string;
   }>;
   /** Full-only durable projection; `input` remains transient executor state. */
-  durableInputReference?: FullEncryptionDurableJobInputReferenceV1;
+  durableInputReference?: FullEncryptionDurableJobInputReference;
   durableInputDisposition?: "full";
   /** Privacy-only sink policy for ephemeral work that has no durable input row. */
   ephemeralSinkDisposition?: "full";
@@ -162,8 +174,10 @@ export class Job {
     // M042B: extract roomId from input when present. Non-string /
     // absent values store NULL (guest, background, legacy callers).
     const durableInput = this.config.durableInputReference ?? this.config.input;
-    const rawRoomId = this.config.durableInputReference?.roomId
-      ?? this.config.input["roomId"];
+    const rawRoomId =
+      this.config.durableInputReference?.kind === "full_encryption_foreground_operation_v1"
+        ? this.config.durableInputReference.roomId
+        : this.config.input["roomId"];
     const roomId = typeof rawRoomId === "string" && rawRoomId ? rawRoomId : null;
 
     this._id = await this.config.persist({
