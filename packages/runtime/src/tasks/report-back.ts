@@ -13,6 +13,10 @@ import {
 } from "@nautilo/agent";
 import {
   createAcceptedInvocationAuthority,
+  assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
+  AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   findActorByOwnerId,
   getRoomDetailForMember,
   getPolicyResolver,
@@ -455,6 +459,24 @@ async function wakeCallingRoom(
   const callingRoomId = task.callingRoomId;
   if (!callingRoomId) return;
 
+  // A completed Task may be delivered after a grant is revoked or a process
+  // restarts. Its durable result remains readable, but a fresh model-backed
+  // Room continuation needs the requestor's current exact-target authority.
+  try {
+    await assertCanInvokeAgent({
+      humanUserId: task.requestorId,
+      origin: "foreground_resume",
+      roomId: callingRoomId,
+      agentId: task.agentId,
+    });
+    await assertCanUseServerProviderCredentials(task.requestorId, "task_report_back");
+  } catch (error) {
+    if (!(error instanceof AgentInvocationDeniedError)
+      && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
+    log(`[task-report-back] skipped model wake after current authorization denial task=${task.id}`);
+    return;
+  }
+
   const jobManager = getTaskRunJobManager();
   if (!jobManager) {
     throw new Error(`TASK_REPORT_BACK_JOB_MANAGER_UNAVAILABLE:${task.id}`);
@@ -509,6 +531,7 @@ async function wakeCallingRoom(
       message: note + inspection,
       ownerId: task.ownerId,
       requestorId: task.requestorId,
+      causalHumanUserId: task.requestorId,
       agentId: task.agentId,
       roomId: callingRoomId,
       roomRoster: [],

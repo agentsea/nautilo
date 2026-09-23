@@ -22,7 +22,11 @@ import { posix } from "node:path";
 import { z } from "zod";
 import { log, warn } from "@nautilo/logger";
 import { getArtifactsRoot } from "@nautilo/config";
-import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+  type MemoryAccessEnvelope,
+} from "@nautilo/trust";
 import {
   getDefaultImageModel,
   getImageModel,
@@ -39,6 +43,11 @@ import {
 
 interface GenerateImageContext {
   memoryAccessEnvelope: MemoryAccessEnvelope | null;
+  causalHumanUserId: string;
+}
+
+export interface GenerateImageToolDeps {
+  assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }
 
 function contextFromUnknown(ctx: unknown): GenerateImageContext {
@@ -48,7 +57,12 @@ function contextFromUnknown(ctx: unknown): GenerateImageContext {
     envRaw && typeof envRaw === "object"
       ? (envRaw as MemoryAccessEnvelope)
       : null;
-  return { memoryAccessEnvelope: envelope };
+  return {
+    memoryAccessEnvelope: envelope,
+    causalHumanUserId: typeof c["causalHumanUserId"] === "string"
+      ? c["causalHumanUserId"].trim()
+      : "",
+  };
 }
 
 const GenerateImageSchema = z.object({
@@ -97,7 +111,10 @@ function mimeForFormat(fmt: z.infer<typeof GenerateImageSchema>["format"]): stri
   return "image/png";
 }
 
-export function createGenerateImageTool(context?: unknown) {
+export function createGenerateImageTool(
+  context?: unknown,
+  deps: GenerateImageToolDeps = {},
+) {
   const ctx = contextFromUnknown(context);
   return new DynamicStructuredTool({
     name: "generate_image",
@@ -150,6 +167,11 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
 
       let result: Awaited<ReturnType<typeof generateImages>>;
       try {
+        if (!ctx.causalHumanUserId) {
+          throw new ServerProviderCredentialsDeniedError("", "image_generation");
+        }
+        await (deps.assertCanUseServerProviderCredentials
+          ?? assertCanUseServerProviderCredentials)(ctx.causalHumanUserId, "image_generation");
         result = await generateImages(
           {
             model: modelEntry.apiModel,
@@ -164,6 +186,7 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
           modelEntry.provider,
         );
       } catch (err) {
+        if (err instanceof ServerProviderCredentialsDeniedError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         warn(`[generate_image] failed: ${msg}`);
         return `Error: ${msg}`;

@@ -427,6 +427,7 @@ export async function* forkLanggraphExecutor(
   // Like the main executor, a live Shadow fork verifies all selected context
   // before allowing the image-summary model to run.
   const visionSummaryBlocks = await maybeSummarizeImagesWithVisionFallback({
+    humanUserId: causalHumanUserId ?? "",
     mainModelId: modelId,
     images: multimodalImages,
     signal,

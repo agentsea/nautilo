@@ -53,6 +53,7 @@ export function createInPrivateNamespaceTool(context?: unknown) {
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start private-namespace task: missing owner or agent context.";
       }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       const selectionError = validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
@@ -66,7 +67,7 @@ export function createInPrivateNamespaceTool(context?: unknown) {
       const rt = getTaskToolRuntime();
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
-        requestorId: ctx.ownerId,
+        requestorId: ctx.causalHumanUserId,
         agentId: ctx.agentId,
         prompt: args.brief,
         preset: "in_private_namespace",
@@ -76,7 +77,7 @@ export function createInPrivateNamespaceTool(context?: unknown) {
         targetChat: "orphan",
         awaitResponse: false,
         callingRoomId: ctx.roomId || null,
-        targetUserIds: [ctx.ownerId],
+        targetUserIds: [ctx.causalHumanUserId],
         metadata: { bringBack },
         depth: 0,
         ...(args.model_selection !== undefined

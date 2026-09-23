@@ -8,6 +8,7 @@ import {
 import { isExactOwnersPersonalPrivateRoom } from "../../src/connected-web-accounts/read-tool-runtime-composition.ts";
 
 const OWNER_ID = "human-1";
+const FUNDING_HUMAN_ID = "human-caller";
 const AGENT_ID = "agent-1";
 const ROOM_ID = "room-personal";
 const ACCOUNT_ID = "00000000-0000-4000-8000-000000000001";
@@ -120,7 +121,7 @@ function makeRuntime(
   return { runtime: createConnectedWebAccountReadServerRuntime(options), providerCalls, checkpoints, finishes, recordedCosts };
 }
 
-const ACTOR = { userId: OWNER_ID, agentId: AGENT_ID, roomId: ROOM_ID, callingRoomId: null, memoryAccessEnvelope: {} as never };
+const ACTOR = { userId: OWNER_ID, causalHumanUserId: FUNDING_HUMAN_ID, agentId: AGENT_ID, roomId: ROOM_ID, callingRoomId: null, memoryAccessEnvelope: {} as never };
 const INPUT = { account: "My Example", request: "How many pending items are there?", delivery: "text" as const };
 
 describe("ConnectedWebAccount read runtime authority", () => {
@@ -334,7 +335,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
     expect(recordedCosts).toHaveLength(1);
     expect(recordedCosts[0]).toMatchObject({
       occurredAt: NOW,
-      userId: OWNER_ID,
+      userId: FUNDING_HUMAN_ID,
       roomId: ROOM_ID,
       agentId: AGENT_ID,
       provider: "browser_use",

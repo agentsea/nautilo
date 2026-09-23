@@ -70,6 +70,7 @@ export function createGenerateRepoDocsTool(context?: unknown) {
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start repo_docs task: missing owner or agent context.";
       }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       // Preserve the D363 smart_cheap default only when no exact pin is
       // supplied. An exact model_id must not conflict with an implicit
       // profile the caller never requested.
@@ -89,7 +90,7 @@ export function createGenerateRepoDocsTool(context?: unknown) {
       const rt = getTaskToolRuntime();
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
-        requestorId: ctx.ownerId,
+        requestorId: ctx.causalHumanUserId,
         agentId: ctx.agentId,
         prompt: args.instructions ?? "Generate/maintain repository documentation.",
         preset: "repo_docs",
@@ -98,7 +99,7 @@ export function createGenerateRepoDocsTool(context?: unknown) {
         targetChat: "orphan",
         awaitResponse: false,
         callingRoomId: ctx.roomId || null,
-        targetUserIds: [ctx.ownerId],
+        targetUserIds: [ctx.causalHumanUserId],
         depth: 0,
         ...(selection !== undefined ? { selectionProfile: selection } : {}),
         ...(args.model_id != null

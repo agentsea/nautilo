@@ -15,6 +15,10 @@ import {
   type ProviderCostRecorder,
 } from "../../usage/provider-cost-recorder";
 import { estimateProviderToolCostUsd } from "@nautilo/db";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+} from "@nautilo/trust";
 
 const WEB_SEARCH_TURN_TIMEOUT_MS = 300_000;
 
@@ -473,6 +477,7 @@ export function buildTavilySearchFetcher(options: {
   apiKey?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
   recordProviderCost?: ProviderCostRecorder | undefined;
+  beforeProviderDispatch?: (() => Promise<void>) | undefined;
 } = {}) {
   const {
     maxResults = 5,
@@ -482,7 +487,11 @@ export function buildTavilySearchFetcher(options: {
     apiKey = process.env["TAVILY_API_KEY"],
     fetchImpl = fetch,
     recordProviderCost,
+    beforeProviderDispatch,
   } = options;
+  const requireProviderAdmission = beforeProviderDispatch ?? (() => Promise.reject(
+    new ServerProviderCredentialsDeniedError("", "web_search_tavily"),
+  ));
 
   return async (
     query: string,
@@ -498,6 +507,10 @@ export function buildTavilySearchFetcher(options: {
       };
     }
     try {
+      await requireProviderAdmission();
+      if (executionOptions.signal?.aborted) {
+        return { provider: "tavily", query, items: [], outcome: "unavailable", failure: "tavily_failed" };
+      }
       const response = await fetchImpl("https://api.tavily.com/search", {
         method: "POST",
         headers: {
@@ -557,7 +570,8 @@ export function buildTavilySearchFetcher(options: {
         items,
         outcome: items.length > 0 ? "success_with_results" : "success_empty_after_policy",
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof ServerProviderCredentialsDeniedError) throw error;
       warn("[web_search] Tavily search failed");
       return {
         provider: "tavily",
@@ -729,6 +743,7 @@ export function buildSearchFetcher(options: {
   tavilyFetchImpl?: typeof fetch | undefined;
   browserResearchExecutionPort?: BrowserResearchExecutionPort | undefined;
   recordProviderCost?: ProviderCostRecorder | undefined;
+  beforeTavilyDispatch?: (() => Promise<void>) | undefined;
 }) {
   const tavily = buildTavilySearchFetcher({
     ...(options.maxResults === undefined ? {} : { maxResults: options.maxResults }),
@@ -738,6 +753,7 @@ export function buildSearchFetcher(options: {
     apiKey: options.apiKey,
     ...(options.tavilyFetchImpl === undefined ? {} : { fetchImpl: options.tavilyFetchImpl }),
     ...(options.recordProviderCost === undefined ? {} : { recordProviderCost: options.recordProviderCost }),
+    ...(options.beforeTavilyDispatch === undefined ? {} : { beforeProviderDispatch: options.beforeTavilyDispatch }),
   });
   const duckDuckGo = buildDuckDuckGoSearchFetcher({
     ...(options.maxResults === undefined ? {} : { maxResults: options.maxResults }),
@@ -783,6 +799,12 @@ export interface RunWebSearchToolDependencies {
   /** Short deterministic deadline seam for unit tests; production is 300 seconds. */
   readonly turnTimeoutMs?: number;
   readonly now?: () => number;
+  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+}
+
+function webSearchHumanUserId(context?: ToolContext): string {
+  const causalHumanUserId: unknown = context?.["causalHumanUserId"];
+  return typeof causalHumanUserId === "string" ? causalHumanUserId.trim() : "";
 }
 
 export function createRunWebSearchTool(
@@ -790,6 +812,15 @@ export function createRunWebSearchTool(
   dependencies: RunWebSearchToolDependencies = {},
 ): DynamicStructuredTool {
   const recordProviderCost = createToolProviderCostRecorder(context);
+  const humanUserId = webSearchHumanUserId(context);
+  const assertServerFunding = dependencies.assertCanUseServerProviderCredentials
+    ?? assertCanUseServerProviderCredentials;
+  const requireServerFunding = (origin: string): Promise<void> => {
+    if (!humanUserId) {
+      return Promise.reject(new ServerProviderCredentialsDeniedError("", origin));
+    }
+    return assertServerFunding(humanUserId, origin);
+  };
   return new DynamicStructuredTool({
     name: "run_web_search",
     description: `Invoke the Web Search Agent for quick online research.
@@ -922,6 +953,7 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
         excludeDomains: effectiveExcludeDomains,
         browserResearchExecutionPort: context?.["browserResearchExecutionPort"] as BrowserResearchExecutionPort | undefined,
         recordProviderCost,
+        beforeTavilyDispatch: () => requireServerFunding("web_search_tavily"),
       });
       const pageOptions = {
         maxContentLength: effectiveMaxPageContentLength,
@@ -966,6 +998,7 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
               includeDomains: config.nautilo_search_trusted_domains,
               excludeDomains: effectiveExcludeDomains,
               recordProviderCost,
+              beforeProviderDispatch: () => requireServerFunding("web_search_tavily_enrichment"),
             })
           : searchResults.provider === "duckduckgo_html"
             ? (dependencies.createDuckDuckGoSearchFetcher ?? buildDuckDuckGoSearchFetcher)({
@@ -1021,6 +1054,7 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
         effectiveMaxPageContentLength,
       );
       const response = await runStage("synthesis", async () => {
+        await requireServerFunding("web_search_synthesis");
         const synthesisModelId = resolveModelRole("webSearchSynthesis", {
           ...(config.nautilo_web_search_model
             ? { configuredId: config.nautilo_web_search_model }
@@ -1030,7 +1064,7 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
           reasoningOutput: false,
         });
         return runWithUsageContext(
-          { callType: "web_search" },
+          { callType: "web_search", userId: humanUserId },
           () =>
             synthesisModel.invoke([{ role: "user", content: synthesisPrompt }], {
               callbacks: [],

@@ -5,7 +5,12 @@ import { check, getModeReport } from "@nautilo/config-guard";
 import { getPasswordRecoveryDriver, resolveInstance } from "@nautilo/config";
 import { requestAllowsLoopbackTrust, requestAllowsOwnerOrLoopback } from "../lib/request-trust";
 import type { PinChallengeProvider } from "@nautilo/trust";
-import { getUserCapabilities } from "@nautilo/trust";
+import {
+  assertCanUseServerProviderCredentials,
+  getUserCapabilities,
+  ServerProviderCredentialsDeniedError,
+  toActionCapabilityHttpDenial,
+} from "@nautilo/trust";
 import { resolvePublicServerUrl, resolvePublicWorkbenchUrl } from "../lib/public-urls";
 import { managedProviderCredentialRouteIsBlocked } from "../managed-provider-route-inventory";
 
@@ -34,13 +39,16 @@ export interface HealthRouteDeps {
    * upgrade from a merely live server without exposing operator work counts.
    */
   getMaintenanceState?: (() => Promise<MaintenanceState> | MaintenanceState) | undefined;
+  /** Test seam for current Human server-funding authority. */
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
 }
 
 /**
  * D445 Phase 1 — Provider-management or owner capability gates
  * remote provider-key inspection/validation (permission-model.md §5).
- * Loopback callers bypass this in the route handlers; remote callers
- * must hold it on top of a verified session.
+ * Loopback callers bypass this management check for local recovery. Paid key
+ * validation independently gives any authenticated Human's funding authority
+ * precedence over the transport.
  */
 async function viewerCanManageProviderKeys(userId: string): Promise<boolean> {
   try {
@@ -254,7 +262,7 @@ export function healthRoutes(app: FastifyInstance, deps?: HealthRouteDeps) {
   // into `sessionUserId` / `policyContext` before these handlers run.
   //
   // Authorization:
-  //   - loopback / unix-socket callers (preserve the dev + CLI path), OR
+  //   - loopback / unix-socket operator callers (preserve the dev + CLI path), OR
   //   - an authenticated provider manager or owner.
   //
   // Remote callers without a session fail closed with 401; an authenticated
@@ -290,17 +298,26 @@ export function healthRoutes(app: FastifyInstance, deps?: HealthRouteDeps) {
     if (managedProviderCredentialRouteIsBlocked("/api/health/keys/validate")) {
       return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
     }
-    if (requestAllowsLoopbackTrust(request)) {
-      // loopback fast-path
-    } else {
-      const sessionUserId = request.sessionUserId;
-      if (!sessionUserId) {
-        return reply.code(401).send({ error: "Authentication required" });
-      }
+    const sessionUserId = request.sessionUserId;
+    if (sessionUserId) {
       if (!(await viewerCanManageProviderKeys(sessionUserId))) {
         return reply.code(403).send({ error: "admin only" });
       }
+      try {
+        await (deps?.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+          sessionUserId,
+          "provider_key_health_validation",
+        );
+      } catch (error) {
+        if (!(error instanceof ServerProviderCredentialsDeniedError)) throw error;
+        return reply.code(403).send(toActionCapabilityHttpDenial(error));
+      }
+    } else if (!requestAllowsLoopbackTrust(request)) {
+      return reply.code(401).send({ error: "Authentication required" });
     }
+    // An unauthenticated loopback/Unix-socket call is the existing local
+    // operator authority. Once a Human session is present, its RBAC and
+    // funding authority take precedence even when the transport is loopback.
     const result = await check({ validate: true });
     return reply.send({
       keys: result.keys,

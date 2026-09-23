@@ -126,6 +126,7 @@ export function createAskPeerTool(context?: unknown) {
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start ask_peer task: missing owner or agent context.";
       }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       const hasTools = Array.isArray(args.tools) && args.tools.length > 0;
       const selectionError = validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
@@ -230,7 +231,7 @@ export function createAskPeerTool(context?: unknown) {
       };
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
-        requestorId: ctx.ownerId,
+        requestorId: ctx.causalHumanUserId,
         agentId: ctx.agentId,
         prompt: buildAskPeerBrief({
           handle,
@@ -249,7 +250,7 @@ export function createAskPeerTool(context?: unknown) {
         // The requester is element 0 (existing invariant). The peer's user id
         // is appended at the dispatch seam (`resolveDm`) once the handle is
         // resolved, so `findAwaitingTaskForRoom` matches the peer's reply.
-        targetUserIds: [ctx.ownerId],
+        targetUserIds: [ctx.causalHumanUserId],
         depth: 0,
         ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         ...(args.model_selection !== undefined

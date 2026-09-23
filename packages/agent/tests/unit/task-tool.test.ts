@@ -20,7 +20,7 @@ const AGENT_ID = "20000000-0000-4000-8000-000000000002";
 const ROOM_ID = "30000000-0000-4000-8000-000000000003";
 const OTHER_OWNER_ID = "40000000-0000-4000-8000-000000000004";
 
-const CTX = { ownerId: OWNER_ID, agentId: AGENT_ID, roomId: ROOM_ID, taskReadMaxResponseBytes: 100_000 };
+const CTX = { ownerId: OWNER_ID, causalHumanUserId: OWNER_ID, agentId: AGENT_ID, roomId: ROOM_ID, taskReadMaxResponseBytes: 100_000 };
 
 describe("task tool (M143)", () => {
   let capturedCreate: TaskToolCreateInput | null = null;
@@ -373,6 +373,17 @@ describe("task tool (M143)", () => {
       resultDelivery: "wake",
     });
     expect(capturedCreate?.parentTaskId).toBeUndefined();
+  });
+
+  test("a foreign Genie's task records the initiating Human and includes that Human in its target set", async () => {
+    stubRuntime();
+    await dispatchTaskCommand({ command: "create", prompt: "x" },
+      { ...CTX, causalHumanUserId: OTHER_OWNER_ID });
+    expect(capturedCreate).toMatchObject({
+      ownerId: OWNER_ID,
+      requestorId: OTHER_OWNER_ID,
+      targetUserIds: [OTHER_OWNER_ID],
+    });
   });
 
   test("create maps undefined tools → auto", async () => {
@@ -732,9 +743,9 @@ describe("task tool (M143)", () => {
     stubRuntime();
     const raw = await dispatchTaskCommand(
       { command: "create", prompt: "x" },
-      { ownerId: "", agentId: "", roomId: "" },
+      { ownerId: "", causalHumanUserId: "", agentId: "", roomId: "" },
     );
-    expect(raw).toBe("Cannot create task: missing owner or agent context.");
+    expect(raw).toBe("Cannot create task: initiating Human is unavailable.");
   });
 
   test("read and list expose only the runtime-confirmed research resume affordance", async () => {
@@ -891,6 +902,7 @@ describe("task tool (M143)", () => {
     stubRuntime();
     const tool = createTaskTool({
       ownerId: OWNER_ID,
+      causalHumanUserId: OWNER_ID,
       agentId: AGENT_ID,
       roomId: ROOM_ID,
     });
@@ -916,6 +928,7 @@ describe("task tool (M143)", () => {
     });
     const tool = createTaskTool({
       ownerId: OWNER_ID,
+      causalHumanUserId: OWNER_ID,
       agentId: AGENT_ID,
       roomId: "",
       callingRoomId: ROOM_ID,
@@ -982,6 +995,7 @@ describe("task tool (M143)", () => {
 
     await createTaskTool({
       ownerId: OWNER_ID,
+      causalHumanUserId: OWNER_ID,
       agentId: AGENT_ID,
       roomId: "",
       callingRoomId: ROOM_ID,

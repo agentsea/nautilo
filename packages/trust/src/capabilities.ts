@@ -35,6 +35,11 @@ export {
  */
 export const CAP_MANAGE_SERVER_SECURITY = "manage_server_security" as const;
 export const CAP_INVOKE_AGENTS = "invoke_agents" as const;
+export const CAP_INVOKE_OTHER_AGENTS = "invoke_other_agents" as const;
+export const CAP_USE_PERSONAL_PROVIDER_CREDENTIALS =
+  "use_personal_provider_credentials" as const;
+export const CAP_USE_SERVER_PROVIDER_CREDENTIALS =
+  "use_server_provider_credentials" as const;
 export const CAP_WRITE_ARTIFACTS = "write_artifacts" as const;
 
 // Existing M042D caps — kept here as a reference point so the

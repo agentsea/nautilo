@@ -3,9 +3,16 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
 
 const catalogue = {
-  capabilities: [{ slug: "use_terminal", description: "", category: "tools" }, { slug: "manage_server_security", description: "", category: "security" }],
+  capabilities: [
+    { slug: "use_terminal", description: "", category: "tools" },
+    { slug: "manage_server_security", description: "", category: "security" },
+    { slug: "invoke_other_agents", description: "", category: "agents" },
+    { slug: "use_personal_provider_credentials", description: "", category: "providers" },
+    { slug: "use_server_provider_credentials", description: "", category: "providers" },
+  ],
   roles: [
     { id: "system", slug: "member", label: "Member", isSystem: true, capabilitySlugs: ["use_terminal"], groupCount: 1 },
+    { id: "community", slug: "community", label: "Community", isSystem: true, capabilitySlugs: ["use_personal_provider_credentials"], groupCount: 1 },
     { id: "custom", slug: "mobile-dev", label: "Mobile development", isSystem: false, capabilitySlugs: ["use_terminal"], groupCount: 0 },
   ], groups: [],
 };
@@ -32,6 +39,17 @@ describe("RolesTab", () => {
     expect(view.getByText(/free-text permissions are not supported/)).toBeTruthy();
     expect(view.getByRole("checkbox", { name: /use_terminal/ })).toBeTruthy();
     expect(view.getByRole("checkbox", { name: /manage_server_security/ }).hasAttribute("disabled")).toBe(true);
+    expect(view.getByRole("checkbox", { name: /invoke_other_agents/ })).toBeTruthy();
+    expect(view.getByRole("checkbox", { name: /use_personal_provider_credentials/ })).toBeTruthy();
+    expect(view.getByRole("checkbox", { name: /use_server_provider_credentials/ })).toBeTruthy();
+  });
+
+  test("shows Community as a protected built-in Permission set", () => {
+    reapplyHappyDomGlobals();
+    const view = render(<RolesTab onReview={() => undefined} />);
+    fireEvent.click(view.getByText("Community"));
+    expect(view.getByText(/Protected built-in Permission set/)).toBeTruthy();
+    expect(view.getAllByText("use_personal_provider_credentials")).toHaveLength(2);
   });
 
   test("hydrates a custom role editor from its current bundle", () => {

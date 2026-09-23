@@ -3,7 +3,10 @@ import { canRunWebsiteTask } from "./website-task-contract";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConnectedWebOperationProviderReferences, DirectDatabase } from "@nautilo/db";
-import type { BrowserUseCloudAdapter } from "../browser-use/browser-use-cloud";
+import type {
+  BrowserUseCloudAdapter,
+  BrowserUseServerFundingAdmission,
+} from "../browser-use/browser-use-cloud";
 import { navigateBrowserUseCdpPage, resolveBrowserUseCdpWebSocketUrl } from "./cdp-navigator";
 import { createServerDirectBrowserDirectoryAuthority } from "./direct-browser-directory-authority";
 import { createServerDirectBrowserHarness, resolveServerVendoredAgentBrowserBinary } from "./direct-browser-harness";
@@ -24,6 +27,7 @@ export interface ConnectedWebOperationDirectProductionOptions {
   readonly secrets: ConnectedWebOperationSecrets;
   /** Stable local instance identity; used only as input to path hashing. */
   readonly instanceIdentity: string;
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 export function directBrowserPrivateRoot(instanceIdentity: string, platform: NodeJS.Platform = process.platform): string {
@@ -84,6 +88,7 @@ export function createConnectedWebOperationDirectProductionRuntime(
     // Browser Use V4 itself permits at most 240 minutes. This is provider
     // lifecycle policy, not an operation/Genie wall-clock limit.
     browserTimeoutMinutes: 240,
+    ...(options.assertServerFunding === undefined ? {} : { assertServerFunding: options.assertServerFunding }),
   });
   const facts = {
     hasExactOwnedGenie: (input: { readonly ownerUserId: string; readonly agentId: string }) => hasExactOwnedConnectedWebGenie(options.db, input),

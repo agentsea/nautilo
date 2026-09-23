@@ -158,6 +158,25 @@ describe("access-control schemas parse canonical shapes", () => {
     };
     expect(() => effectiveAccessResponseSchema.parse(withFuture)).not.toThrow();
   });
+
+  test("schemas retain Community and provider-key capabilities", () => {
+    const parsed = effectiveAccessResponseSchema.parse({
+      ...EFFECTIVE_ACCESS,
+      highestRole: "community",
+      capabilities: [
+        { slug: "invoke_other_agents", description: "Invoke other agents", category: "agents", granted: false, provenance: [] },
+        { slug: "use_personal_provider_credentials", description: "Use personal credentials", category: "providers", granted: true, provenance: [] },
+        { slug: "use_server_provider_credentials", description: "Use server credentials", category: "providers", granted: false, provenance: [] },
+      ],
+    });
+
+    expect(parsed.highestRole).toBe("community");
+    expect(parsed.capabilities.map((capability) => capability.slug)).toEqual([
+      "invoke_other_agents",
+      "use_personal_provider_credentials",
+      "use_server_provider_credentials",
+    ]);
+  });
 });
 
 describe("access-control api-client HTTP contract (mocked fetch)", () => {

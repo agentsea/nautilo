@@ -196,6 +196,8 @@ export type {
   MemorySearchResponse,
   MemoryDetailResponse,
   AdminUserRow,
+  CanonicalServerRoleSlug,
+  EnrollableServerRoleSlug,
   AdminUsersListResponse,
   AdminUsersListOptions,
   GroupRow,

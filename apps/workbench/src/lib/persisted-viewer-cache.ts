@@ -106,6 +106,7 @@ function isViewerRole(value: unknown): value is ViewerRole {
     value === "superuser" ||
     value === "member" ||
     value === "contributor" ||
+    value === "community" ||
     value === "guest" ||
     value === "anonymous" ||
     value === "stranger"

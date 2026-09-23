@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ClaimedMediaGeneration, ClaimedMediaGenerationCompletionWake, Artifact } from "@nautilo/db";
 import { setWorkspaceArtifactCreatedSink, type WorkspaceArtifactCreatedFact } from "@nautilo/agent";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import {
   MEDIA_GENERATION_MAX_BYTES,
   createMediaGenerationWorkerScheduler,
@@ -278,6 +279,8 @@ describe("D525 production media worker", () => {
     let completed = 0;
     let released = 0;
     const result = await deliverProductionMediaGenerationCompletionWakes({
+      assertInvocation: async () => {},
+      assertServerFunding: async () => {},
       db: {} as never,
       now: () => new Date("2030-01-01T00:00:01.000Z"),
       resolveEnvelope: async () => ({ safe: "envelope" }),
@@ -298,6 +301,7 @@ describe("D525 production media worker", () => {
     expect(released).toBe(0);
     expect(acceptedInputs).toHaveLength(1);
     expect(acceptedInputs[0]).toMatchObject({
+      causalHumanUserId: wake.ownerId,
       agentId: wake.initiatingAgentId,
       roomId: wake.roomId,
       graphThreadId: wake.initiatingThreadId,
@@ -306,6 +310,46 @@ describe("D525 production media worker", () => {
     const note = String(acceptedInputs[0]?.["message"]);
     expect(note).toContain("now durably saved to Workspace");
     expect(note).not.toMatch(/prompt|lyrics|provider|queue|https?:\/\//iu);
+  });
+
+  test("does not enqueue a completion wake after server-funding authority is denied", async () => {
+    const wake: ClaimedMediaGenerationCompletionWake = {
+      receiptId: "mg_fedcba9876543210",
+      ownerId: "11111111-1111-4111-8111-111111111111",
+      roomId: "22222222-2222-4222-8222-222222222222",
+      namespaceId: "33333333-3333-4333-8333-333333333333",
+      revision: 4,
+      kind: "music",
+      initiatingAgentId: "44444444-4444-4444-8444-444444444444",
+      initiatingThreadId: "thread-denied-wake",
+      claimedAt: new Date("2030-01-01T00:00:00.000Z"),
+    };
+    let enqueued = 0;
+    let completed = 0;
+    let released = 0;
+    const result = await deliverProductionMediaGenerationCompletionWakes({
+      assertInvocation: async () => {},
+      assertServerFunding: async (humanUserId) => {
+        throw new ServerProviderCredentialsDeniedError(humanUserId, "media_completion_wake");
+      },
+      db: {} as never,
+      jobs: {
+        async createSystemForegroundJob() {
+          enqueued += 1;
+          return { id: "must-not-enqueue", virtualJobId: "must-not-enqueue" };
+        },
+      },
+      operations: {
+        claim: async () => [wake],
+        complete: async () => { completed += 1; return true; },
+        release: async () => { released += 1; return true; },
+      } as never,
+    });
+
+    expect(result).toEqual({ claimed: 1, delivered: 0 });
+    expect(enqueued).toBe(0);
+    expect(completed).toBe(1);
+    expect(released).toBe(0);
   });
 
   test("per-model output caps are conservative for browser-backed playback", () => {

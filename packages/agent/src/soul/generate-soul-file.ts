@@ -5,6 +5,10 @@ import { createUniversalModel } from "../providers/universal";
 import { runWithUsageContext } from "../usage/usage-context";
 import { normalizeSoulFileInput, type SoulFileInput } from "./types";
 import { resolveModelRole } from "../config/model-role-resolution";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+} from "@nautilo/trust";
 
 /**
  * D220 — soul generation prompt. The user's personality direction is the
@@ -224,6 +228,24 @@ export type SoulGenerationStreamEvent =
   | { readonly type: "completed"; readonly soulFile: string }
   | { readonly type: "error"; readonly error: string; readonly fallback: string };
 
+export interface SoulGenerationAuthorization {
+  /** Exact initiating Human (`users.id`), never an Agent Actor id. */
+  readonly humanUserId: string;
+  /** Test seam; production always resolves current canonical RBAC state. */
+  readonly assertServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+}
+
+async function assertSoulServerFunding(
+  authorization: SoulGenerationAuthorization,
+): Promise<void> {
+  const humanUserId = authorization.humanUserId.trim();
+  if (!humanUserId) {
+    throw new ServerProviderCredentialsDeniedError("", "soul_generation");
+  }
+  await (authorization.assertServerProviderCredentials
+    ?? assertCanUseServerProviderCredentials)(humanUserId, "soul_generation");
+}
+
 /**
  * Provider errors may include API credentials, endpoints, or account details.
  * Keep logs useful for operations without ever serializing the provider's
@@ -284,7 +306,8 @@ function createGenerationAbortContext(externalSignal?: AbortSignal): {
 
 export async function generateSoulFile(
   input: Partial<SoulFileInput>,
-  externalSignal?: AbortSignal,
+  externalSignal: AbortSignal | undefined,
+  authorization: SoulGenerationAuthorization,
 ): Promise<string> {
   const normalized = normalizeSoulFileInput(input);
   const fallback = generateSoulFileFallback(normalized);
@@ -298,6 +321,7 @@ export async function generateSoulFile(
       ...(configuredModelId ? { configuredId: configuredModelId } : {}),
     });
     const model = await createUniversalModel(modelId);
+    await assertSoulServerFunding(authorization);
     const response = (await runWithUsageContext({ callType: "soul" }, () =>
       model.invoke(
         [
@@ -318,7 +342,8 @@ export async function generateSoulFile(
       `[soul] LLM returned short/non-markdown content (${content.length} chars) for model ${modelId ?? "unset"} — using fallback`,
     );
     return fallback;
-  } catch {
+  } catch (error) {
+    if (error instanceof ServerProviderCredentialsDeniedError) throw error;
     warnSoulGenerationFailure(modelId, abortContext.signal, false);
     return fallback;
   } finally {
@@ -328,7 +353,8 @@ export async function generateSoulFile(
 
 export async function* generateSoulFileStream(
   input: Partial<SoulFileInput>,
-  externalSignal?: AbortSignal,
+  externalSignal: AbortSignal | undefined,
+  authorization: SoulGenerationAuthorization,
 ): AsyncGenerator<SoulGenerationStreamEvent> {
   const normalized = normalizeSoulFileInput(input);
   const fallback = generateSoulFileFallback(normalized);
@@ -344,12 +370,13 @@ export async function* generateSoulFileStream(
     });
     const model = await createUniversalModel(modelId);
     if (!model.stream) {
-      const soulFile = await generateSoulFile(normalized, abortContext.signal);
+      const soulFile = await generateSoulFile(normalized, abortContext.signal, authorization);
       yield { type: "completed", soulFile };
       return;
     }
 
     let content = "";
+    await assertSoulServerFunding(authorization);
     const stream = await model.stream(
       [
         new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AccessControlCatalogue, AccessControlMutationOperation, EffectiveAccessResponse } from "@nautilo/api-client";
 import {
   canManageGroupMembership,
+  isCommunityEnrollmentTarget,
   missingGroupMembershipCapabilities,
 } from "./group-membership-authority";
 
@@ -37,7 +38,9 @@ export function ManageAccessDrawer({
   const additional = catalogue.groups.filter((group) => !group.isSystem);
   const choose = (group: Group) => {
     if (!canManageGroupMembership(catalogue, group, viewerCapabilities)) return;
-    setPending(memberships.has(group.id)
+    const isMember = memberships.has(group.id);
+    if (!isMember && isCommunityEnrollmentTarget(group)) return;
+    setPending(isMember
       ? { kind: "membership.remove", groupId: group.id, userId: access.user.id }
       : { kind: "membership.add", groupId: group.id, userId: access.user.id });
   };
@@ -85,6 +88,7 @@ function MembershipList({ title, groups, memberships, pending, previewPending, c
     const checked = pending?.groupId === group.id ? pending.kind === "membership.add" : memberships.has(group.id);
     const missing = missingGroupMembershipCapabilities(catalogue, group, viewerCapabilities);
     const allowed = canManageGroupMembership(catalogue, group, viewerCapabilities);
-    return <label key={group.id} className="flex gap-3 rounded border border-border p-3 text-sm"><input type="checkbox" checked={checked} disabled={previewPending || !allowed} onChange={() => onChoose(group)} /><span><span className="block font-medium">{group.label}</span><span className="font-mono text-xs text-foreground-muted">{group.roleSlugs.join(", ") || "No Permission sets"}</span>{!allowed ? <span className="mt-1 block text-xs text-foreground-muted">{viewerCapabilities.includes("manage_members") ? `Requires the target Group bundle: ${missing.join(", ")}.` : "Requires manage_members."}</span> : null}</span></label>;
+    const communityEnrollmentUnavailable = !checked && isCommunityEnrollmentTarget(group);
+    return <label key={group.id} className="flex gap-3 rounded border border-border p-3 text-sm"><input type="checkbox" checked={checked} disabled={previewPending || !allowed || communityEnrollmentUnavailable} onChange={() => onChoose(group)} /><span><span className="block font-medium">{group.label}</span><span className="font-mono text-xs text-foreground-muted">{group.roleSlugs.join(", ") || "No Permission sets"}</span>{communityEnrollmentUnavailable ? <span className="mt-1 block text-xs text-foreground-muted">Community enrollment is unavailable until personal-key chat launches.</span> : !allowed ? <span className="mt-1 block text-xs text-foreground-muted">{viewerCapabilities.includes("manage_members") ? `Requires the target Group bundle: ${missing.join(", ")}.` : "Requires manage_members."}</span> : null}</span></label>;
   })}</div></fieldset>;
 }

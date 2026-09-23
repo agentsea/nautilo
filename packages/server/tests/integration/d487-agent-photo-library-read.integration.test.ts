@@ -105,6 +105,8 @@ function appFor(
   });
   agentPhotoLibraryRoutes(app, {
     ...(options.routeDeps ?? {}),
+    assertCanUseServerProviderCredentials:
+      options.routeDeps?.assertCanUseServerProviderCredentials ?? (async () => {}),
     db,
     now: () => new Date(nowMs),
     cursorCodec: createPhotoLibraryCursorCodec("p".repeat(32), () => new Date(nowMs)),

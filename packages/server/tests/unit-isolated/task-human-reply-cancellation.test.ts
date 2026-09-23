@@ -60,6 +60,9 @@ mock.module("@nautilo/trust", () => ({ ...trust,
   assertCanInvokeAgent: async (input: Parameters<typeof trust.assertCanInvokeAgent>[0]) => {
     if (!allowed) throw new trust.AgentInvocationDeniedError(input);
   },
+  assertCanUseServerProviderCredentials: async (humanUserId: string) => {
+    expect(humanUserId).toBe("owner");
+  },
 }));
 const runtime = await import("@nautilo/runtime");
 let jobs: InstanceType<typeof runtime.JobManager>;

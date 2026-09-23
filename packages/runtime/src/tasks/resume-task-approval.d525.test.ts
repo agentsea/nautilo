@@ -8,8 +8,11 @@ const transitionTaskApprovalExecution = mock(async (_db: unknown, input: { from:
   transitions.push(input);
   return true;
 });
+const pauseForAuthorizationDenial = mock(async () => ({ transitioned: true,
+  task: { id: "task-1", ownerId: "owner-1" } }));
 const actualDb = await import("@nautilo/db");
-mock.module("@nautilo/db", () => ({ ...actualDb, transitionTaskApprovalExecution }));
+mock.module("@nautilo/db", () => ({ ...actualDb, transitionTaskApprovalExecution,
+  pauseAwaitingTaskRunForAuthorizationDenial: pauseForAuthorizationDenial }));
 const statusEvents: unknown[] = [];
 const resumeGraphWithAskReply = mock<(...args: unknown[]) => Promise<void>>(async () => undefined);
 const resumeGraphWithApproval = mock<(...args: unknown[]) => Promise<void>>(async () => undefined);
@@ -28,8 +31,10 @@ mock.module("@nautilo/agent", () => ({
 }));
 mock.module("@nautilo/trust", () => ({
   AgentInvocationDeniedError: class AgentInvocationDeniedError extends Error {},
+  ServerProviderCredentialsDeniedError: class ServerProviderCredentialsDeniedError extends Error {},
   assertAcceptedInvocationAuthoritySubject: mock(() => undefined),
   assertCanInvokeAgent: mock(async () => undefined),
+  assertCanUseServerProviderCredentials: mock(async () => undefined),
 }));
 mock.module("@nautilo/logger", () => ({
   setLogLevel: mock(() => undefined),
@@ -188,11 +193,23 @@ describe("D525 Task paid media approval echo", () => {
     transitions.length = 0;
     statusEvents.length = 0;
     transitionTaskApprovalExecution.mockClear();
+    pauseForAuthorizationDenial.mockClear();
     resumeGraphWithAskReply.mockClear();
     resumeGraphWithApproval.mockClear();
     inspectTaskResumeOutcome.mockClear();
     reportBackTaskError.mockClear();
     replayTaskInterruptEvents.mockClear();
+  });
+
+  test("revoked funding before a queued resume leaves the graph unrun and pauses the awaiting Task", async () => {
+    const trust = await import("@nautilo/trust");
+    const result = await runTaskApprovalResume(resumeArgs(), {
+      assertServerFunding: async () => { throw new trust.ServerProviderCredentialsDeniedError("owner-1"); },
+    });
+    expect(result).toEqual({ reparked: false });
+    expect(pauseForAuthorizationDenial).toHaveBeenCalledTimes(1);
+    expect(transitionTaskApprovalExecution).not.toHaveBeenCalled();
+    expect(resumeGraphWithAskReply).not.toHaveBeenCalled();
   });
 
   test("passes the exact five checkpoint-validation fields into the public task resume", async () => {

@@ -123,6 +123,7 @@ beforeAll(async () => {
       membershipChecks.push({ threadId, userId });
       return true;
     },
+    resumeCausalHumanUserIdForThread: async () => OWNER_ID,
     resumeThreadScopeForUser: async () => ({
       roomId: SUBTHREAD_ROOM_ID,
       kind: resumeRoomKind,

@@ -21,6 +21,7 @@ const canonicalGroups = [
   { id: "g-admins", type: "admins", label: "Admins", roleSlugs: ["admin"] },
   { id: "g-superusers", type: "superusers", label: "Superusers", roleSlugs: ["superuser"] },
   { id: "g-members", type: "members", label: "Members", roleSlugs: ["member"] },
+  { id: "g-communities", type: "communities", label: "Communities", roleSlugs: ["community"] },
   {
     id: "g-uncontained",
     type: "uncontained_host_commands_grantees",
@@ -393,6 +394,19 @@ describe("UsersSection", () => {
 
     await waitFor(() => {
       expect(removeGroupMemberMock).toHaveBeenCalledWith("g-members", "user-local");
+    });
+  });
+
+  test("shows Community in the ladder but disables enrollment", async () => {
+    const view = render(<UsersSection />);
+    await waitFor(() => expect(view.getByTestId("user-row-user-local")).toBeTruthy());
+    fireEvent.click(view.getByTestId("user-row-user-local"));
+
+    await waitFor(() => {
+      const communityToggle = view.getByTestId("group-toggle-communities") as HTMLButtonElement;
+      expect(communityToggle.textContent).toBe("Add");
+      expect(communityToggle.disabled).toBeTrue();
+      expect(communityToggle.title).toContain("Community enrollment is unavailable");
     });
   });
 

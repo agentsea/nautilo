@@ -19,6 +19,7 @@ import {
   inspectTaskResumeOutcome,
   extractTaskProgressFromStreamEvent,
   retainTaskWorkProgress,
+  runWithTaskCausalHuman,
   type ObservedTaskProgress,
   type StreamEventProcessor,
   resumeOrdinaryContentAccessRecovery,
@@ -32,7 +33,9 @@ import { taskPreparationText, readTaskPreparation, type ApprovalReplyVerb, type 
 import type { RuntimePolicyContext } from "@nautilo/trust";
 import {
   AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   assertAcceptedInvocationAuthoritySubject,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
@@ -79,8 +82,8 @@ export interface TaskApprovalAuthFailure {
   ok: false;
   status: number;
   error: string;
-  code?: "invoke_agents_required";
-  capability?: "invoke_agents";
+  code?: string;
+  capability?: string;
 }
 export type TaskApprovalAuthResult =
   | TaskApprovalAuthSuccess
@@ -95,7 +98,12 @@ export type TaskApprovalAuthResult =
  */
 export async function authorizeTaskApprovalResume(
   args: { taskId: string; threadId: string; sessionUserId: string },
-  deps: { db?: DirectDatabase; assertInvocation?: typeof assertCanInvokeAgent } = {},
+  deps: {
+    db?: DirectDatabase;
+    assertInvocation?: typeof assertCanInvokeAgent;
+    assertServerFunding?: typeof assertCanUseServerProviderCredentials;
+    pauseForAuthorizationDenial?: typeof pauseAwaitingTaskRunForAuthorizationDenial;
+  } = {},
 ): Promise<TaskApprovalAuthResult> {
   const db = deps.db ?? getSharedDirectDb();
   const found = await findAwaitingTaskRunForApproval(db, args.taskId, args.threadId);
@@ -105,37 +113,19 @@ export async function authorizeTaskApprovalResume(
   }
 
   const assertInvocation = deps.assertInvocation ?? assertCanInvokeAgent;
-  let responderAllowed = true;
+  const assertServerFunding = deps.assertServerFunding ?? assertCanUseServerProviderCredentials;
   try {
     await assertInvocation({
-      humanUserId: args.sessionUserId,
+      humanUserId: found.task.requestorId,
       origin: "foreground_resume",
       agentId: found.task.agentId,
       ...(found.task.targetRoomId ? { roomId: found.task.targetRoomId } : {}),
     });
+    await assertServerFunding(found.task.requestorId, "task_approval_resume");
   } catch (error) {
-    if (!(error instanceof AgentInvocationDeniedError)) throw error;
-    responderAllowed = false;
-  }
-
-  let requestorAllowed = responderAllowed;
-  try {
-    if (found.task.requestorId !== args.sessionUserId) {
-      await assertInvocation({
-        humanUserId: found.task.requestorId,
-        origin: "foreground_resume",
-        agentId: found.task.agentId,
-        ...(found.task.targetRoomId ? { roomId: found.task.targetRoomId } : {}),
-      });
-      requestorAllowed = true;
-    }
-  } catch (error) {
-    if (!(error instanceof AgentInvocationDeniedError)) throw error;
-    requestorAllowed = false;
-  }
-
-  if (!requestorAllowed) {
-    const transition = await pauseAwaitingTaskRunForAuthorizationDenial(db, {
+    if (!(error instanceof AgentInvocationDeniedError)
+      && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
+    const transition = await (deps.pauseForAuthorizationDenial ?? pauseAwaitingTaskRunForAuthorizationDenial)(db, {
       taskId: found.task.id,
       taskRunId: found.run.id,
       graphThreadId: found.run.graphThreadId,
@@ -151,18 +141,9 @@ export async function authorizeTaskApprovalResume(
     return {
       ok: false,
       status: 403,
-      error: "invoke_agents_required",
-      code: "invoke_agents_required",
-      capability: "invoke_agents",
-    };
-  }
-  if (!responderAllowed) {
-    return {
-      ok: false,
-      status: 403,
-      error: "invoke_agents_required",
-      code: "invoke_agents_required",
-      capability: "invoke_agents",
+      error: error.code,
+      code: error.code,
+      capability: error.capability,
     };
   }
   return { ok: true, task: found.task, run: found.run };
@@ -243,7 +224,9 @@ function exactTaskMediaGenerationResumeEcho(
  */
 export async function runTaskApprovalResume(
   args: RunTaskApprovalResumeArgs,
-  deps: { db?: DirectDatabase; jobManager?: Pick<JobManager, "runResumeJobLifecycle"> } = {},
+  deps: { db?: DirectDatabase; jobManager?: Pick<JobManager, "runResumeJobLifecycle">;
+    assertInvocation?: typeof assertCanInvokeAgent;
+    assertServerFunding?: typeof assertCanUseServerProviderCredentials } = {},
 ): Promise<RunTaskApprovalResumeResult> {
   let result: RunTaskApprovalResumeResult = { reparked: false };
   await (deps.jobManager ?? jobManager).runResumeJobLifecycle({
@@ -253,13 +236,15 @@ export async function runTaskApprovalResume(
     humanUserId: args.task.requestorId,
     taskRun: { taskId: args.task.id, taskRunId: args.run.id },
   }, async (signal) => {
-    result = await runTaskApprovalResumeWorker(args, deps.db ?? getSharedDirectDb(), signal);
+    result = await runTaskApprovalResumeWorker(args, deps.db ?? getSharedDirectDb(), signal, deps);
   }, args.invocationAuthority, args.maintenanceAuthority);
   return result;
 }
 
 async function runTaskApprovalResumeWorker(
   args: RunTaskApprovalResumeArgs, db: DirectDatabase, signal: AbortSignal,
+  deps: { assertInvocation?: typeof assertCanInvokeAgent;
+    assertServerFunding?: typeof assertCanUseServerProviderCredentials },
 ): Promise<RunTaskApprovalResumeResult> {
   const { task, run } = args;
   assertAcceptedInvocationAuthoritySubject(
@@ -268,6 +253,25 @@ async function runTaskApprovalResumeWorker(
   );
   const laneKey = `task:${task.id}`;
   if (signal.aborted) return { reparked: false };
+  try {
+    // Re-read the persisted requestor immediately before the parked graph
+    // can spend again. The approving owner is a responder, not the payer.
+    await (deps.assertInvocation ?? assertCanInvokeAgent)({ humanUserId: task.requestorId,
+      agentId: task.agentId, ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
+      origin: "foreground_resume" });
+    await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(task.requestorId, "task_approval_resume");
+  } catch (error) {
+    if (!(error instanceof AgentInvocationDeniedError)
+      && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
+    const transition = await pauseAwaitingTaskRunForAuthorizationDenial(db, {
+      taskId: task.id, taskRunId: run.id, graphThreadId: run.graphThreadId,
+    });
+    if (transition.transitioned && transition.task) eventBus.emit({
+      type: "task.status", taskId: transition.task.id,
+      ownerId: transition.task.ownerId, status: "paused",
+    });
+    return { reparked: false };
+  }
   const transition = (from: "awaiting" | "running", to: "awaiting" | "running") =>
     transitionTaskApprovalExecution(db, {
       taskId: task.id, runId: run.id, graphThreadId: run.graphThreadId,
@@ -357,7 +361,7 @@ async function runTaskApprovalResumeWorker(
     await runWithAcceptedWorkAuthorities(
       args.maintenanceAuthority,
       args.invocationAuthority,
-      async () => {
+      () => runWithTaskCausalHuman(task.requestorId, async () => {
         if (args.kind === "ordinary_recovery") {
           if (!args.ordinaryRecovery) throw new OrdinaryContentAccessRecoveryUnavailableError();
           await resumeOrdinaryContentAccessRecovery(args.ordinaryRecovery.expected, args.ordinaryRecovery.deps, processor, signal);
@@ -415,7 +419,7 @@ async function runTaskApprovalResumeWorker(
             signal,
           );
         }
-      },
+      }),
     );
     // R10 / R11 — finalize via the Task finalizer, or stay awaiting if the
     // resume re-parked on a chained approval/PIN/identity interrupt (the patched

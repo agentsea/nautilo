@@ -128,6 +128,8 @@ export type {
   AdminUserDeleteResponse,
   AdminPasswordResetResponse,
   AdminProvisionMemberInput,
+  CanonicalServerRoleSlug,
+  EnrollableServerRoleSlug,
   AdminProvisionMemberResponse,
   AdminPermanentCredentialInput,
   AdminPermanentCredentialResponse,

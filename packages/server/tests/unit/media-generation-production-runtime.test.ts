@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test, type Mock } from "bun:test";
+import * as trust from "@nautilo/trust";
 import {
   hasMediaGenerationApprovalRuntime,
   type MediaGenerationPreparationInput,
@@ -49,7 +50,16 @@ const preparation: MediaGenerationPreparationInput = {
   toolCallId: "tool-call-production-1",
 };
 
-afterEach(() => resetProductionMediaGenerationRuntime());
+let fundingSpy: Mock<typeof trust.assertCanUseServerProviderCredentials>;
+
+beforeEach(() => {
+  fundingSpy = spyOn(trust, "assertCanUseServerProviderCredentials").mockResolvedValue();
+});
+
+afterEach(() => {
+  fundingSpy.mockRestore();
+  resetProductionMediaGenerationRuntime();
+});
 
 async function expectRejectionMessage(operation: Promise<unknown>, message: string): Promise<void> {
   try {
@@ -535,6 +545,49 @@ describe("D525 production media generation runtime", () => {
       recovery: "The durable quote changed. Request a fresh generation; no new generation was started.",
     });
     expect(provider.requests.filter((request) => request.url.endsWith("/video/queue"))).toHaveLength(0);
+  });
+
+  test("denies an exact quote before provider dispatch without current Human funding", async () => {
+    fundingSpy.mockRejectedValue(new trust.ServerProviderCredentialsDeniedError(
+      actor.userId,
+      "media_generation_quote",
+    ));
+    const provider = providerFetch();
+    const runtime = createProductionMediaGenerationRuntime({
+      apiKey: "venice-secret",
+      db: authorityDb(),
+      dbOperations: operations().dbOperations,
+      fetchImpl: provider.fetchImpl,
+    });
+
+    await expectRejectionMessage(runtime.prepare(actor, preparation), "server_provider_credentials_required");
+    expect(provider.requests).toHaveLength(0);
+    expect(fundingSpy).toHaveBeenCalledWith(actor.userId, "media_generation_quote");
+  });
+
+  test("rechecks revoked Human funding before durable queue admission", async () => {
+    const state = operations();
+    const provider = providerFetch();
+    const runtime = createProductionMediaGenerationRuntime({
+      apiKey: "venice-secret",
+      db: authorityDb(),
+      dbOperations: state.dbOperations,
+      fetchImpl: provider.fetchImpl,
+    });
+    const prepared = await runtime.prepare(actor, preparation);
+    if (!prepared.ok) throw new Error(prepared.recovery);
+    fundingSpy.mockRejectedValue(new trust.ServerProviderCredentialsDeniedError(
+      actor.userId,
+      "media_generation_submit",
+    ));
+
+    await expectRejectionMessage(
+      runtime.submit(actor, submitInput(prepared)),
+      "server_provider_credentials_required",
+    );
+    expect(provider.requests.filter((request) => request.url.endsWith("/video/queue"))).toHaveLength(0);
+    expect(state.read()?.state).toBe("prequeue");
+    expect(fundingSpy).toHaveBeenLastCalledWith(actor.userId, "media_generation_submit");
   });
 
   test("public result contains no provider topology and signed delivery is fenced unknown", async () => {

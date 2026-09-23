@@ -16,6 +16,8 @@ const rooms = { kind: "rooms" };
 const credentials = { kind: "credentials" };
 const channelIdentities = { kind: "channelIdentities" };
 const groups = { kind: "groups" };
+const groupRoles = { kind: "groupRoles" };
+const roles = { kind: "roles" };
 const ownerBoundTransitions: boolean[] = [];
 let legacyExistingUser = false;
 let bindingUserId: string | null = null;
@@ -134,6 +136,8 @@ beforeAll(() => {
     rooms,
     roomMembers,
     groups,
+    groupRoles,
+    roles,
     eq,
     ne,
     and,

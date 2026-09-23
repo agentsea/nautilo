@@ -1,7 +1,9 @@
 import type { FastifyReply } from "fastify";
 import {
   AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   toActionCapabilityHttpDenial,
   type AgentInvocationAdmissionInput,
 } from "@nautilo/trust";
@@ -9,6 +11,27 @@ import {
 export type AssertCanInvokeAgent = (
   input: AgentInvocationAdmissionInput,
 ) => Promise<void>;
+
+export type AssertServerFunding = (
+  humanUserId: string,
+  origin?: string,
+) => Promise<void>;
+
+export async function requireServerFunding(
+  humanUserId: string,
+  origin: string,
+  reply: FastifyReply,
+  assertFunding: AssertServerFunding = assertCanUseServerProviderCredentials,
+): Promise<boolean> {
+  try {
+    await assertFunding(humanUserId, origin);
+    return true;
+  } catch (error) {
+    if (!(error instanceof ServerProviderCredentialsDeniedError)) throw error;
+    reply.code(403).send(toActionCapabilityHttpDenial(error));
+    return false;
+  }
+}
 
 /**
  * Apply the canonical current-RBAC decision and render only a known absence as

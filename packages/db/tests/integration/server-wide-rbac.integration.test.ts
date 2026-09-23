@@ -5,7 +5,7 @@
  * Source spec: ISSUE-M128 §5.1 / §12.3 (T15), §5.2 / §12.2 (TP11).
  *
  * Covers:
- *   MVS #2 — ladder coverage: for each of the 6 canonical Groups,
+ *   MVS #2 — ladder coverage: for each canonical Group,
  *     a fixture user inserted into that Group receives the exact
  *     ROLE_CAPABILITIES bundle for that rung (mirror of §6 grid).
  *   MVS #6 — server-wide caps: a user inserted into two Groups
@@ -35,6 +35,7 @@ import { ensureDatabase, resolveDirectDatabaseConnectionString } from "@nautilo/
 import { M128_ROLE_CAPABILITIES, M128_CAPABILITY_SLUGS, M128_ROLE_SLUGS } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 import {
+  CUSTOM_ROLE_COMPATIBILITY_GRANTS,
   RETIRED_CAPABILITY_REPLACEMENTS,
   seedTrustPersonal,
 } from "../../src/utils/seed-trust-personal";
@@ -58,6 +59,7 @@ const LADDER: ReadonlyArray<{ groupType: string; roleSlug: string }> = [
   { groupType: "superusers", roleSlug: "superuser" },
   { groupType: "members", roleSlug: "member" },
   { groupType: "contributors", roleSlug: "contributor" },
+  { groupType: "communities", roleSlug: "community" },
   { groupType: "guests", roleSlug: "guest" },
 ];
 
@@ -151,12 +153,12 @@ describe("D556 retired capability reconciliation", () => {
 
       const replacementSlugs = RETIRED_CAPABILITY_REPLACEMENTS["use_high_impact_tools"]!;
       const expected: Readonly<Record<string, readonly string[]>> = {
-        [roleSlugs.hil]: replacementSlugs,
+        [roleSlugs.hil]: [...replacementSlugs, "use_server_provider_credentials"],
         [roleSlugs.terminal]: ["use_workstation"],
         [roleSlugs.profile]: ["use_workstation"],
         [roleSlugs.destructive]: [],
-        [roleSlugs.overlap]: replacementSlugs,
-        [roleSlugs.unrelated]: [...replacementSlugs, "use_research_tools"].sort(),
+        [roleSlugs.overlap]: [...replacementSlugs, "use_server_provider_credentials"],
+        [roleSlugs.unrelated]: [...replacementSlugs, "use_research_tools", "use_server_provider_credentials"].sort(),
       };
       for (const [roleSlug, expectedSlugs] of Object.entries(expected)) {
         const rows = await sql<{ slug: string }[]>`
@@ -193,6 +195,243 @@ describe("D556 retired capability reconciliation", () => {
       await sql`DELETE FROM channel_identities WHERE user_id = ${ownerId}`;
       await sql`DELETE FROM actors WHERE owner_id = ${ownerId}`;
       await sql`DELETE FROM users WHERE id = ${ownerId}`;
+    }
+  }, 60_000);
+});
+
+describe("custom Role funding compatibility reconciliation", () => {
+  test("widens historical entrances idempotently and preserves effective custom-Group, union, Guest, and Community boundaries", async () => {
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const userRows = await sql<{ id: string; name: string }[]>`
+      INSERT INTO users (name, email, handle)
+      VALUES
+        (${`funding-seed-${suffix}`}, ${`funding-seed-${suffix}@t`}, ${`fs${suffix.slice(-6)}`}),
+        (${`funding-effective-${suffix}`}, ${`funding-effective-${suffix}@t`}, ${`fe${suffix.slice(-6)}`}),
+        (${`funding-union-${suffix}`}, ${`funding-union-${suffix}@t`}, ${`fu${suffix.slice(-6)}`}),
+        (${`funding-guest-${suffix}`}, ${`funding-guest-${suffix}@t`}, ${`fg${suffix.slice(-6)}`})
+      RETURNING id, name
+    `;
+    const userIdByName = new Map(userRows.map((row) => [row.name, row.id]));
+    const ownerId = userIdByName.get(`funding-seed-${suffix}`)!;
+    const effectiveUserId = userIdByName.get(`funding-effective-${suffix}`)!;
+    const unionUserId = userIdByName.get(`funding-union-${suffix}`)!;
+    const guestUserId = userIdByName.get(`funding-guest-${suffix}`)!;
+    const fixtureUserIds = [ownerId, effectiveUserId, unionUserId, guestUserId];
+    const sourceSlugs = Object.keys(CUSTOM_ROLE_COMPATIBILITY_GRANTS);
+    const roleSlugs = [
+      ...sourceSlugs.map((source) => `compat-${source}-${suffix}`),
+      `compat-both-${suffix}`,
+      `compat-neither-${suffix}`,
+    ];
+    const customGroupTypes = [
+      `compat-effective-${suffix}`,
+      `compat-union-a-${suffix}`,
+      `compat-union-b-${suffix}`,
+    ];
+
+    const customRoleGrantSnapshot = async (): Promise<readonly string[]> => {
+      const rows = await sql<{ role_slug: string; capability_slug: string }[]>`
+        SELECT roles.slug AS role_slug, capabilities.slug AS capability_slug
+        FROM role_capabilities
+        INNER JOIN roles ON roles.id = role_capabilities.role_id
+        INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+        WHERE roles.slug = ANY(${roleSlugs as unknown as string[]})
+        ORDER BY roles.slug, capabilities.slug
+      `;
+      return rows.map((row) => `${row.role_slug}:${row.capability_slug}`);
+    };
+
+    const effectiveCapabilities = async (userId: string): Promise<readonly string[]> => {
+      const rows = await sql<{ slug: string }[]>`
+        SELECT DISTINCT capabilities.slug
+        FROM group_members
+        INNER JOIN "groups" ON "groups".id = group_members.group_id
+        INNER JOIN group_roles ON group_roles.group_id = "groups".id
+        INNER JOIN roles ON roles.id = group_roles.role_id
+        INNER JOIN role_capabilities ON role_capabilities.role_id = roles.id
+        INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+        WHERE group_members.user_id = ${userId}
+        ORDER BY capabilities.slug
+      `;
+      return rows.map((row) => row.slug);
+    };
+
+    try {
+      await seedTrustPersonal(ownerId, `Funding seed ${suffix}`);
+      for (const slug of roleSlugs) {
+        await sql`
+          INSERT INTO roles (slug, label, is_system)
+          VALUES (${slug}, ${slug}, false)
+        `;
+      }
+      for (const sourceSlug of sourceSlugs) {
+        await sql`
+          INSERT INTO role_capabilities (role_id, capability_id)
+          SELECT roles.id, capabilities.id
+          FROM roles, capabilities
+          WHERE roles.slug = ${`compat-${sourceSlug}-${suffix}`}
+            AND capabilities.slug = ${sourceSlug}
+        `;
+      }
+      await sql`
+        INSERT INTO role_capabilities (role_id, capability_id)
+        SELECT roles.id, capabilities.id
+        FROM roles, capabilities
+        WHERE roles.slug = ${`compat-both-${suffix}`}
+          AND capabilities.slug IN ('invoke_agents', 'use_research_tools', 'write_artifacts')
+      `;
+      await sql`
+        INSERT INTO role_capabilities (role_id, capability_id)
+        SELECT roles.id, capabilities.id
+        FROM roles, capabilities
+        WHERE roles.slug = ${`compat-neither-${suffix}`}
+          AND capabilities.slug = 'write_artifacts'
+      `;
+
+      for (const groupType of customGroupTypes) {
+        await sql`
+          INSERT INTO "groups" (owner_id, type, label, trust_preset)
+          VALUES (${ownerId}, ${groupType}, ${groupType}, 'personal')
+        `;
+      }
+      const customGroupRolePairs: ReadonlyArray<readonly [string, string]> = [
+        [customGroupTypes[0]!, `compat-use_project_content-${suffix}`],
+        [customGroupTypes[1]!, `compat-invoke_agents-${suffix}`],
+        [customGroupTypes[2]!, `compat-neither-${suffix}`],
+      ];
+      for (const [groupType, roleSlug] of customGroupRolePairs) {
+        await sql`
+          INSERT INTO group_roles (group_id, role_id)
+          SELECT "groups".id, roles.id
+          FROM "groups", roles
+          WHERE "groups".type = ${groupType} AND roles.slug = ${roleSlug}
+        `;
+      }
+      await sql`
+        INSERT INTO group_members (group_id, user_id)
+        SELECT id, ${effectiveUserId} FROM "groups" WHERE type = ${customGroupTypes[0]!}
+      `;
+      await sql`
+        INSERT INTO group_members (group_id, user_id)
+        SELECT id, ${unionUserId} FROM "groups"
+        WHERE type = ANY(${customGroupTypes.slice(1) as unknown as string[]})
+      `;
+
+      const guestGroupRows = await sql<{ id: string }[]>`
+        SELECT id FROM "groups" WHERE type = 'guests' LIMIT 1
+      `;
+      await sql`
+        INSERT INTO group_members (group_id, user_id)
+        VALUES (${guestGroupRows[0]!.id}, ${guestUserId})
+        ON CONFLICT (group_id, user_id) DO NOTHING
+      `;
+
+      await seedTrustPersonal(ownerId, `Funding seed ${suffix}`);
+      const firstGrantSnapshot = await customRoleGrantSnapshot();
+      const firstEffectiveSnapshot = {
+        effective: await effectiveCapabilities(effectiveUserId),
+        union: await effectiveCapabilities(unionUserId),
+        guest: await effectiveCapabilities(guestUserId),
+      };
+      await seedTrustPersonal(ownerId, `Funding seed ${suffix}`);
+      expect(await customRoleGrantSnapshot()).toEqual(firstGrantSnapshot);
+      expect({
+        effective: await effectiveCapabilities(effectiveUserId),
+        union: await effectiveCapabilities(unionUserId),
+        guest: await effectiveCapabilities(guestUserId),
+      }).toEqual(firstEffectiveSnapshot);
+
+      for (const sourceSlug of sourceSlugs) {
+        const rows = await sql<{ slug: string }[]>`
+          SELECT capabilities.slug
+          FROM role_capabilities
+          INNER JOIN roles ON roles.id = role_capabilities.role_id
+          INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+          WHERE roles.slug = ${`compat-${sourceSlug}-${suffix}`}
+          ORDER BY capabilities.slug
+        `;
+        const expected = [
+          sourceSlug,
+          ...(CUSTOM_ROLE_COMPATIBILITY_GRANTS[sourceSlug] ?? []),
+        ];
+        expect(rows.map((row) => row.slug)).toEqual([...new Set(expected)].sort());
+        expect(rows.some((row) => row.slug === "use_personal_provider_credentials"))
+          .toBe(false);
+      }
+
+      const bothRows = await sql<{ slug: string }[]>`
+        SELECT capabilities.slug
+        FROM role_capabilities
+        INNER JOIN roles ON roles.id = role_capabilities.role_id
+        INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+        WHERE roles.slug = ${`compat-both-${suffix}`}
+        ORDER BY capabilities.slug
+      `;
+      expect(bothRows.map((row) => row.slug)).toEqual([
+        "invoke_agents",
+        "invoke_other_agents",
+        "use_research_tools",
+        "use_server_provider_credentials",
+        "write_artifacts",
+      ]);
+      const neitherRows = await sql<{ slug: string }[]>`
+        SELECT capabilities.slug
+        FROM role_capabilities
+        INNER JOIN roles ON roles.id = role_capabilities.role_id
+        INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+        WHERE roles.slug = ${`compat-neither-${suffix}`}
+      `;
+      expect(neitherRows.map((row) => row.slug)).toEqual(["write_artifacts"]);
+
+      expect(firstEffectiveSnapshot.effective).toEqual([
+        "use_project_content",
+        "use_server_provider_credentials",
+      ]);
+      expect(firstEffectiveSnapshot.union).toEqual([
+        "invoke_agents",
+        "invoke_other_agents",
+        "use_server_provider_credentials",
+        "write_artifacts",
+      ]);
+      expect(firstEffectiveSnapshot.guest).toEqual([]);
+
+      const membershipRows = await sql<{ type: string }[]>`
+        SELECT "groups".type
+        FROM group_members
+        INNER JOIN "groups" ON "groups".id = group_members.group_id
+        WHERE group_members.user_id = ${guestUserId}
+          AND "groups".type IN ('guests', 'communities')
+        ORDER BY "groups".type
+      `;
+      expect(membershipRows.map((row) => row.type)).toEqual(["guests"]);
+      const communityFixtureMemberships = await sql<{ count: number }[]>`
+        SELECT count(*)::int AS count
+        FROM group_members
+        INNER JOIN "groups" ON "groups".id = group_members.group_id
+        WHERE "groups".type = 'communities'
+          AND group_members.user_id = ANY(${fixtureUserIds as unknown as string[]})
+      `;
+      expect(communityFixtureMemberships[0]?.count).toBe(0);
+    } finally {
+      await sql`
+        DELETE FROM group_members
+        WHERE user_id = ANY(${fixtureUserIds as unknown as string[]})
+      `;
+      await sql`
+        DELETE FROM group_roles
+        WHERE group_id IN (
+          SELECT id FROM "groups" WHERE type = ANY(${customGroupTypes as unknown as string[]})
+        )
+      `;
+      await sql`DELETE FROM "groups" WHERE type = ANY(${customGroupTypes as unknown as string[]})`;
+      await sql`
+        DELETE FROM role_capabilities
+        WHERE role_id IN (SELECT id FROM roles WHERE slug = ANY(${roleSlugs as unknown as string[]}))
+      `;
+      await sql`DELETE FROM roles WHERE slug = ANY(${roleSlugs as unknown as string[]})`;
+      await sql`DELETE FROM channel_identities WHERE user_id = ANY(${fixtureUserIds as unknown as string[]})`;
+      await sql`DELETE FROM actors WHERE owner_id = ANY(${fixtureUserIds as unknown as string[]})`;
+      await sql`DELETE FROM users WHERE id = ANY(${fixtureUserIds as unknown as string[]})`;
     }
   }, 60_000);
 });
@@ -252,7 +491,7 @@ async function getCanonicalGroupId(
 }
 
 /**
- * Ensure the canonical catalogue (34 caps + 6 roles + 6 canonical groups +
+ * Ensure the canonical catalogue (capabilities + roles + canonical groups +
  * role_capabilities) exists inside the TX. Mirrors `seedTrustPersonal`'s
  * catalogue half. Idempotent. All writes inside the TX roll back, so
  * this leaves the DB unchanged after the test.
@@ -279,7 +518,7 @@ async function ensureM128CatalogueInTx(
     `;
   }
 
-  // 2. Roles — insert all 6 ladder roles.
+  // 2. Roles — insert every ladder role.
   for (const slug of M128_ROLE_SLUGS) {
     await tx`
       INSERT INTO "roles" (slug, label, is_system)
@@ -325,6 +564,7 @@ async function ensureM128CatalogueInTx(
     ["superusers", "Superusers", "superuser"],
     ["members", "Members", "member"],
     ["contributors", "Contributors", "contributor"],
+    ["communities", "Communities", "community"],
     ["guests", "Guests", "guest"],
   ];
   for (const [type, label, roleSlug] of ladder) {
@@ -360,7 +600,7 @@ describe("M128 — server-wide RBAC integration (T15 + TP11 + MVS #6 + MVS #9)",
     let ok = false;
     try {
       await sql.begin(async (tx) => {
-        // Seed 6 fixture users, one per rung.
+        // Seed one fixture user per rung.
         const userRows = await tx<{ id: string }[]>`
           INSERT INTO users (name, email, handle) VALUES
             (${`u-owner-${suffix}`},       ${`u-owner-${suffix}@t`},       ${`uo${suffix.slice(-6)}`}),
@@ -368,10 +608,11 @@ describe("M128 — server-wide RBAC integration (T15 + TP11 + MVS #6 + MVS #9)",
             (${`u-superuser-${suffix}`},   ${`u-superuser-${suffix}@t`},   ${`us${suffix.slice(-6)}`}),
             (${`u-member-${suffix}`},      ${`u-member-${suffix}@t`},      ${`um${suffix.slice(-6)}`}),
             (${`u-contributor-${suffix}`}, ${`u-contributor-${suffix}@t`}, ${`uc${suffix.slice(-6)}`}),
+            (${`u-community-${suffix}`},   ${`u-community-${suffix}@t`},   ${`uy${suffix.slice(-6)}`}),
             (${`u-guest-${suffix}`},       ${`u-guest-${suffix}@t`},       ${`ug${suffix.slice(-6)}`})
           RETURNING id
         `;
-        expect(userRows.length).toBe(6);
+        expect(userRows.length).toBe(7);
 
         // Ensure M128 catalogue exists (idempotent; rolls back with TX).
         await ensureM128CatalogueInTx(tx, userRows[0]!.id);
@@ -556,13 +797,13 @@ describe("M128 — server-wide RBAC integration (T15 + TP11 + MVS #6 + MVS #9)",
     expect(ok).toBe(true);
   }, 30_000);
 
-  test("MVS #9 approver pool: findUsersWithCapability('approve_destructive_actions') returns owner ∪ admin ∪ superuser; not member/contributor/guest", async () => {
+  test("MVS #9 approver pool: findUsersWithCapability('approve_destructive_actions') returns owner ∪ admin ∪ superuser only", async () => {
     const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
     let ok = false;
     try {
       await sql.begin(async (tx) => {
-        // Seed 6 fixture users, one per rung (same fixture shape as MVS #2).
+        // Seed one fixture user per rung (same fixture shape as MVS #2).
         const userRows = await tx<{ id: string }[]>`
           INSERT INTO users (name, email, handle) VALUES
             (${`a-owner-${suffix}`},       ${`a-owner-${suffix}@t`},       ${`ao${suffix.slice(-6)}`}),
@@ -570,6 +811,7 @@ describe("M128 — server-wide RBAC integration (T15 + TP11 + MVS #6 + MVS #9)",
             (${`a-superuser-${suffix}`},   ${`a-superuser-${suffix}@t`},   ${`as${suffix.slice(-6)}`}),
             (${`a-member-${suffix}`},      ${`a-member-${suffix}@t`},      ${`am${suffix.slice(-6)}`}),
             (${`a-contributor-${suffix}`}, ${`a-contributor-${suffix}@t`}, ${`ac${suffix.slice(-6)}`}),
+            (${`a-community-${suffix}`},   ${`a-community-${suffix}@t`},   ${`ay${suffix.slice(-6)}`}),
             (${`a-guest-${suffix}`},       ${`a-guest-${suffix}@t`},       ${`ag${suffix.slice(-6)}`})
           RETURNING id
         `;
@@ -604,13 +846,14 @@ describe("M128 — server-wide RBAC integration (T15 + TP11 + MVS #6 + MVS #9)",
         );
 
         // Expect: owner, admin, superuser in the pool (indices 0, 1, 2).
-        // member, contributor, guest NOT in the pool (indices 3, 4, 5).
+        // member, contributor, community, guest are not in the pool.
         expect(approvers.has(userRows[0]!.id)).toBe(true); // owner
         expect(approvers.has(userRows[1]!.id)).toBe(true); // admin
         expect(approvers.has(userRows[2]!.id)).toBe(true); // superuser
         expect(approvers.has(userRows[3]!.id)).toBe(false); // member
         expect(approvers.has(userRows[4]!.id)).toBe(false); // contributor
-        expect(approvers.has(userRows[5]!.id)).toBe(false); // guest
+        expect(approvers.has(userRows[5]!.id)).toBe(false); // community
+        expect(approvers.has(userRows[6]!.id)).toBe(false); // guest
         // Exactly 3 approvers among the fixture (no false positives).
         expect(approvers.size).toBe(3);
 
@@ -690,12 +933,12 @@ describe("M128 — server-wide RBAC integration (T15 + TP11 + MVS #6 + MVS #9)",
 // (independent of any Human lifecycle) and that membership administration
 // of a canonical system Group still resolves capabilities correctly.
 describe("D418 — system-managed Role + Group semantics (live Postgres)", () => {
-  test("the six ladder Roles are is_system=true", async () => {
+  test("the ladder Roles are is_system=true", async () => {
     const rows = await sql<{ slug: string; is_system: boolean }[]>`
       SELECT slug, is_system FROM "roles"
-      WHERE slug = ANY(${["owner", "admin", "superuser", "member", "contributor", "guest"] as unknown as string[]})
+      WHERE slug = ANY(${[...M128_ROLE_SLUGS] as unknown as string[]})
     `;
-    expect(rows.length).toBe(6);
+    expect(rows.length).toBe(7);
     for (const r of rows) {
       expect(r.is_system).toBe(true);
     }
@@ -704,9 +947,9 @@ describe("D418 — system-managed Role + Group semantics (live Postgres)", () =>
   test("the canonical ladder Groups are is_system=true with NULL owner_id", async () => {
     const rows = await sql<{ type: string; is_system: boolean; owner_id: string | null }[]>`
       SELECT type, is_system, owner_id FROM "groups"
-      WHERE type = ANY(${["owners", "admins", "superusers", "members", "contributors", "guests"] as unknown as string[]})
+      WHERE type = ANY(${LADDER.map((rung) => rung.groupType) as unknown as string[]})
     `;
-    expect(rows.length).toBe(6);
+    expect(rows.length).toBe(7);
     for (const r of rows) {
       expect(r.is_system).toBe(true);
       expect(r.owner_id).toBeNull();
@@ -813,7 +1056,7 @@ describe("D556 — Member and Contributor effective-cap matrix (live Postgres)",
     expect(guestCaps.length).toBe(0);
   });
 
-  test("strict-subset ladder: owner ⊃ admin ⊃ superuser ⊃ member ⊃ contributor ⊃ guest", async () => {
+  test("strict-subset ladder: owner ⊃ admin ⊃ superuser ⊃ member ⊃ contributor ⊃ community ⊃ guest", async () => {
     const caps = (slug: string): Set<string> =>
       new Set(M128_ROLE_CAPABILITIES[slug] ?? []);
     const owner = caps("owner");
@@ -821,6 +1064,7 @@ describe("D556 — Member and Contributor effective-cap matrix (live Postgres)",
     const superuser = caps("superuser");
     const member = caps("member");
     const contributor = caps("contributor");
+    const community = caps("community");
     const guest = caps("guest");
     // Every lower rung is a strict subset of the rung above it.
     const isStrictSubset = (a: Set<string>, b: Set<string>): boolean => {
@@ -840,6 +1084,7 @@ describe("D556 — Member and Contributor effective-cap matrix (live Postgres)",
     expect(isStrictSubset(superuser, admin)).toBe(true);
     expect(isStrictSubset(member, superuser)).toBe(true);
     expect(isStrictSubset(contributor, member)).toBe(true);
+    expect(isStrictSubset(community, contributor)).toBe(true);
     expect(guest.size).toBe(0);
   });
 

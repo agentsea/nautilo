@@ -190,6 +190,53 @@ function failureCodes(res: ReturnType<typeof evalOp>): string[] {
   return res.failures.map((f) => f.code);
 }
 
+describe("Community enrollment is unavailable until personal-funded chat is ready", () => {
+  test("rejects direct membership in the canonical Group", () => {
+    const base = makeState();
+    const state = makeState({
+      groups: [
+        ...base.groups,
+        {
+          id: "g-communities",
+          type: "communities",
+          label: "Communities",
+          isSystem: true,
+          ownerId: null,
+          roleSlugs: ["community"],
+          capabilities: ["invoke_agents", "use_personal_provider_credentials"],
+          members: [],
+          memberCount: 0,
+          approvalChallengeCount: 0,
+        },
+      ],
+    });
+    const result = evalOp({ kind: "membership.add", groupId: "g-communities", userId: "u-new" }, { state });
+    expect(failureCodes(result)).toContain("community_enrollment_unavailable");
+  });
+
+  test("rejects enrollment through a legacy custom Group carrying Community", () => {
+    const base = makeState();
+    const state = makeState({
+      groups: base.groups.map((group) => group.id === "g-mobile"
+        ? { ...group, roleSlugs: ["community"], members: [], memberCount: 0 }
+        : group),
+    });
+    const result = evalOp({ kind: "membership.add", groupId: "g-mobile", userId: "u-new" }, { state });
+    expect(failureCodes(result)).toContain("community_enrollment_unavailable");
+  });
+
+  test("rejects applying Community to an occupied Group", () => {
+    const base = makeState();
+    const state = makeState({
+      groups: base.groups.map((group) => group.id === "g-mobile"
+        ? { ...group, roleSlugs: ["mobile-dev"], members: ["u-ada"], memberCount: 1 }
+        : group),
+    });
+    const result = evalOp({ kind: "group.set_roles", groupId: "g-mobile", roleSlugs: ["community"] }, { state });
+    expect(failureCodes(result)).toContain("community_enrollment_unavailable");
+  });
+});
+
 describe("Stack 195 W3.2 — managementCapabilityFor / managementCapabilitiesFor", () => {
   test("role.* → manage_roles, group.* → manage_groups, membership.* → manage_members", () => {
     expect(managementCapabilityFor({ kind: "role.create", slug: "x", label: "X", capabilities: [] })).toBe("manage_roles");
@@ -688,8 +735,8 @@ describe("Stack 195 W3.2 — computeFingerprint", () => {
 
 describe("Stack 195 W3.2 — canonical sets", () => {
   test("six canonical role slugs and group types", () => {
-    expect([...CANONICAL_ROLE_SLUGS]).toEqual(["owner", "admin", "superuser", "member", "contributor", "guest"]);
-    expect([...CANONICAL_GROUP_TYPES]).toEqual(["owners", "admins", "superusers", "members", "contributors", "guests"]);
+    expect([...CANONICAL_ROLE_SLUGS]).toEqual(["owner", "admin", "superuser", "member", "contributor", "community", "guest"]);
+    expect([...CANONICAL_GROUP_TYPES]).toEqual(["owners", "admins", "superusers", "members", "contributors", "communities", "guests"]);
   });
 });
 

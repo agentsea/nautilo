@@ -4,6 +4,7 @@ import {
 } from "@nautilo/config-guard";
 import { RELAY_MEDIA_MAX_BYTES } from "@nautilo/relay";
 import { createHash } from "node:crypto";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import {
   safelyRecordProviderCost,
   type ServerProviderCostReceipt,
@@ -20,6 +21,30 @@ export interface BrowserUseFetch {
 
 export interface BrowserUseClock {
   now(): Date;
+}
+
+/** Fresh Human authority check used immediately before a server-funded Browser Use dispatch. */
+export type BrowserUseServerFundingAdmission = (
+  humanUserId: string,
+  origin?: string,
+) => Promise<void>;
+
+/**
+ * Browser Use callers fail closed when RBAC is unavailable or the current
+ * Human has selected BYOK-only funding. Provider-neutral callers can map the
+ * false result to their existing unavailable response without exposing RBAC.
+ */
+export async function canUseBrowserUseServerFunding(
+  humanUserId: string,
+  origin: string,
+  admit: BrowserUseServerFundingAdmission = assertCanUseServerProviderCredentials,
+): Promise<boolean> {
+  try {
+    await admit(humanUserId, origin);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface BrowserUseCloudAdapterOptions {

@@ -1,6 +1,11 @@
 import type { AccessControlCatalogue } from "@nautilo/api-client";
 
 type Group = AccessControlCatalogue["groups"][number];
+type EnrollmentTargetGroup = Pick<Group, "type" | "roleSlugs">;
+
+export function isCommunityEnrollmentTarget(group: EnrollmentTargetGroup): boolean {
+  return group.type === "communities" || group.roleSlugs.includes("community");
+}
 
 export function groupCapabilityBundle(
   catalogue: AccessControlCatalogue,

@@ -61,6 +61,7 @@ function checkpointState(model: string): NautiloState {
     messages: [new HumanMessage("D526 hermetic cache wire probe")],
     model,
     userId: "d526-user",
+    causalHumanUserId: "d526-user",
     agentId: "d526-agent",
     actorRole: "owner",
     roomId: "d526-room",
@@ -119,6 +120,9 @@ beforeAll(async () => {
   // contract is strictly the model wire.
   mock.module("@nautilo/trust", () => ({
     ...realTrust,
+    assertCanUseServerProviderCredentials: async (humanUserId: string) => {
+      expect(humanUserId).toBe("d526-user");
+    },
     envelopeReadableNamespaces: () => [],
   }));
 

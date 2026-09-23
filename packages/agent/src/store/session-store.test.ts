@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   AIMessage,
+  type BaseMessage,
   HumanMessage,
   SystemMessage,
   ToolMessage,
@@ -9,6 +10,7 @@ import {
   extractReplyToMessageId,
   parseTranscriptToolCalls,
   projectRoomHistorySelectedMessageCoordinate,
+  summarizeSessionSearchSources,
   visibleTranscriptContent,
 } from "./session-store";
 import { computeMessageFingerprint } from "./fingerprint";
@@ -38,6 +40,86 @@ describe("Computer Use durable transcript result", () => {
     expect(visibleTranscriptContent(computer)).toBe(full);
     expect(visibleTranscriptContent(ordinary)).toBe("ordinary compact content");
     expect(computer.content).toBe(compact);
+  });
+});
+
+describe("session search model admission", () => {
+  test("fresh-checks the initiating Human before every summary dispatch", async () => {
+    const checked: string[] = [];
+    const prompts: BaseMessage[][] = [];
+    const sources = [
+      ["session-1", { title: "One", startedAt: new Date("2026-01-01"), snippets: ["alpha"] }],
+      ["session-2", { title: "Two", startedAt: new Date("2026-01-02"), snippets: ["beta"] }],
+    ] as const;
+
+    const results = await summarizeSessionSearchSources(sources, {
+      humanUserId: "user-1",
+      query: "project",
+      assertServerProviderCredentials: async (humanUserId) => { checked.push(humanUserId); },
+      model: {
+        async invoke(messages) {
+          prompts.push(messages);
+          return new AIMessage("Relevant summary");
+        },
+      },
+    });
+
+    expect(checked).toEqual(["user-1", "user-1"]);
+    expect(prompts).toHaveLength(2);
+    expect(results.map((result) => result.summary)).toEqual([
+      "Relevant summary",
+      "Relevant summary",
+    ]);
+  });
+
+  test("fails closed before summary dispatch when the Human identity is missing", async () => {
+    let invoked = false;
+    let caught: unknown;
+    try {
+      await summarizeSessionSearchSources([
+        ["session-1", { title: null, startedAt: new Date("2026-01-01"), snippets: ["alpha"] }],
+      ], {
+        humanUserId: "",
+        query: "project",
+        assertServerProviderCredentials: async () => {},
+        model: {
+          async invoke() {
+            invoked = true;
+            return new AIMessage("summary");
+          },
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(invoked).toBeFalse();
+  });
+
+  test("does not dispatch a summary after server funding is revoked", async () => {
+    let invoked = false;
+    let caught: unknown;
+    try {
+      await summarizeSessionSearchSources([
+        ["session-1", { title: null, startedAt: new Date("2026-01-01"), snippets: ["alpha"] }],
+      ], {
+        humanUserId: "user-1",
+        query: "project",
+        assertServerProviderCredentials: async () => {
+          throw new Error("revoked");
+        },
+        model: {
+          async invoke() {
+            invoked = true;
+            return new AIMessage("summary");
+          },
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(invoked).toBeFalse();
   });
 });
 

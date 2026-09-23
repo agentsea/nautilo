@@ -7,6 +7,13 @@ import { ModelCatalogSchema, type ModelCatalogReasoningEffort } from "@nautilo/t
 import { configureRuntimeModelCatalog, getActiveModelCatalogSync, hydrateRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { resolveModelControlSelection, type ModelControlPolicy } from "../../src/config/model-control-selection";
 
+const actualTrust = await import("@nautilo/trust");
+mock.module("@nautilo/trust", () => ({ ...actualTrust,
+  assertCanUseServerProviderCredentials: mock(async (humanUserId: string) => {
+    expect(humanUserId).toBe("owner");
+  }),
+}));
+
 const MODELS = ["openrouter:deepseek/deepseek-v4-flash-0731", "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731"] as const;
 const oldFetch = globalThis.fetch;
 const keys = ["OPENROUTER_API_KEY", "FIREWORKS_API_KEY"] as const;
@@ -70,7 +77,7 @@ async function catalog(mode: "optional" | "mandatory" | "absent" = "optional") {
 
 function call(modelId: string, effort?: ModelCatalogReasoningEffort, policy?: ModelControlPolicy, rawControl = false, reasoningOutput = true) {
   return invocation.invokeChatModelWithFallback([new HumanMessage("Wire contract fixture")], [], modelId, "owner", "agent", null, { callbacks: [] }, {
-    modelFallbackMode: "none", sameModelRetryMode: "none", reasoningOutput,
+    modelFallbackMode: "none", sameModelRetryMode: "none", reasoningOutput, fundingHumanUserId: "owner",
     ...(effort === undefined ? {} : { resolveForegroundControls: (id: string) => {
       if (rawControl) return { canonicalModelId: id, reasoningEffort: effort };
       const resolved = resolveModelControlSelection({ catalogByModelId: new Map(getActiveModelCatalogSync().catalog.entries.map((entry) => [entry.id, entry])),

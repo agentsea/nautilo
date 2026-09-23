@@ -1,7 +1,11 @@
 import { validateConnectedWebTarget, type ValidatedConnectedWebTarget } from "./target-validator";
 import { buildWebsiteTask, canRunWebsiteTask } from "./website-task-contract";
 import { createHash, randomUUID } from "node:crypto";
-import type { BrowserUseCloudAdapter } from "../browser-use/browser-use-cloud";
+import {
+  canUseBrowserUseServerFunding,
+  type BrowserUseCloudAdapter,
+  type BrowserUseServerFundingAdmission,
+} from "../browser-use/browser-use-cloud";
 import { stopIdleConnectedWebBrowser } from "./browser-idle-cleanup";
 import type { ConnectedWebAccountReadResult, ConnectedWebAccountReadToolInput, PublicBrowserReadResult } from "@nautilo/agent";
 import type { ConnectedWebAccount } from "@nautilo/types";
@@ -50,6 +54,8 @@ export interface ConnectedWebAccountReadAdmissionRuntimeOptions {
   readonly validatePublicTarget?: typeof validateConnectedWebTarget;
   readonly createReservationToken?: () => string;
   readonly mintOperationId?: () => string;
+  /** Fresh current-Human RBAC lookup; injected only for focused tests. */
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 const SYSTEM_CLOCK: ConnectedWebAccountReadAdmissionClock = { now: () => new Date() };
@@ -115,6 +121,7 @@ function trustedInvocation(actor: ConnectedWebAccountReadRuntimeActor): {
 function requestDigest(input: {
   readonly accountId: string | null;
   readonly ownerUserId: string;
+  readonly fundingHumanUserId: string;
   readonly agentId: string;
   readonly roomId: string;
   readonly deliveryId: string;
@@ -123,18 +130,20 @@ function requestDigest(input: {
   readonly turnId: string;
   readonly request: ConnectedWebAccountReadToolInput;
 }): string {
-  return createHash("sha256").update(JSON.stringify({ version: 1, ...input })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ version: 2, ...input })).digest("hex");
 }
 
 function sealedIntentPayload(input: {
   readonly voiceMode: boolean;
+  readonly fundingHumanUserId: string;
   readonly publicTarget?: ValidatedConnectedWebTarget;
   readonly request: ConnectedWebAccountReadToolInput;
   readonly authority: { readonly deliveryId: string; readonly threadId: string; readonly lane: string; readonly turnId: string };
   readonly origin: string;
 }): string {
   return JSON.stringify({
-    version: 1,
+    version: 2,
+    fundingHumanUserId: input.fundingHumanUserId,
     kind: input.request.intent === "task" ? "run_website_task" : input.publicTarget ? "browse_web" : "read_connected_web_account",
     ...(input.publicTarget ? { targetUrl: input.publicTarget.targetUrl } : {}),
     voiceMode: input.voiceMode,
@@ -293,17 +302,22 @@ export function createConnectedWebAccountReadAdmissionRuntime(
       if (binding.status === "provider_unavailable") return providerUnavailable();
       if (binding.status !== "connected" || binding.profileRef === null || binding.origin !== account.origin) return unavailable();
       }
+      if (!await canUseBrowserUseServerFunding(
+        actor.causalHumanUserId ?? "",
+        input.intent === "task" ? "connected_web_task" : publicTarget ? "public_web_read" : "connected_web_read",
+        options.assertServerFunding,
+      )) return unavailable();
       const accountId = account?.id ?? null;
 
       const operationId = mintOperationId();
       const secretContext = { operationId, ownerUserId: actor.userId, accountId: accountId };
       const digest = requestDigest({
-        accountId: accountId, ownerUserId: actor.userId, agentId: actor.agentId, roomId: actor.roomId,
+        accountId: accountId, ownerUserId: actor.userId, fundingHumanUserId: actor.causalHumanUserId ?? "", agentId: actor.agentId, roomId: actor.roomId,
         deliveryId: invocation.deliveryId, threadId: invocation.threadId, lane: invocation.lane, turnId: invocation.turnId, request: input,
       });
       let sealedIntent: string;
       try {
-        sealedIntent = secrets.sealIntent({ context: secretContext, intent: sealedIntentPayload({ request: input, authority: invocation, origin: binding.origin, voiceMode: actor.voiceMode === true, ...(publicTarget ? { publicTarget } : {}) }) });
+        sealedIntent = secrets.sealIntent({ context: secretContext, intent: sealedIntentPayload({ request: input, authority: invocation, origin: binding.origin, voiceMode: actor.voiceMode === true, fundingHumanUserId: actor.causalHumanUserId ?? "", ...(publicTarget ? { publicTarget } : {}) }) });
       } catch {
         return unavailable();
       }

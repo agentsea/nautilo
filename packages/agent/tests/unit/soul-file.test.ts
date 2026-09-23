@@ -5,6 +5,12 @@ import { generateSoulFileFallback, normalizeSoulFileInput } from "../../src/inde
 import * as soulModule from "../../src/soul/generate-soul-file";
 import { __setStubModelForTests } from "../../src/providers/universal";
 import type { ChatModel } from "../../src/providers/types";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+
+const SOUL_AUTHORIZATION = {
+  humanUserId: "user-1",
+  assertServerProviderCredentials: async () => {},
+} as const;
 
 let originalOpenRouterKey: string | undefined;
 
@@ -110,12 +116,14 @@ describe("streaming soul generation safety", () => {
       const soulFile = await soulModule.generateSoulFile({
         name: "Vex",
         personalityPrompt: "Patient, dry, and exacting",
-      });
+      }, undefined, SOUL_AUTHORIZATION);
       expect(soulFile).toContain("# Vex — Soul File");
       expect(soulFile).toContain("Patient, dry, and exacting");
 
       const events = [];
-      for await (const event of soulModule.generateSoulFileStream({ name: "Vex" })) {
+      for await (const event of soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )) {
         events.push(event);
       }
       expect(events[0]).toEqual({ type: "started" });
@@ -139,10 +147,14 @@ describe("streaming soul generation safety", () => {
     const stderr = spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      const soulFile = await soulModule.generateSoulFile({ name: "Vex" });
+      const soulFile = await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      );
       expect(soulFile).toContain("# Vex — Soul File");
 
-      const stream = soulModule.generateSoulFileStream({ name: "Vex" });
+      const stream = soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      );
       expect((await stream.next()).value).toEqual({ type: "started" });
       const terminal = await stream.next();
       expect(terminal.done).toBe(false);
@@ -191,7 +203,11 @@ describe("streaming soul generation safety", () => {
 
     try {
       const externalAbort = new AbortController();
-      const stream = soulModule.generateSoulFileStream({ name: "Vex" }, externalAbort.signal);
+      const stream = soulModule.generateSoulFileStream(
+        { name: "Vex" },
+        externalAbort.signal,
+        SOUL_AUTHORIZATION,
+      );
       expect((await stream.next()).value).toEqual({ type: "started" });
 
       const errorEventPromise = stream.next();
@@ -246,7 +262,11 @@ describe("streaming soul generation safety", () => {
 
     try {
       const externalAbort = new AbortController();
-      const stream = soulModule.generateSoulFileStream({ name: "Vex" }, externalAbort.signal);
+      const stream = soulModule.generateSoulFileStream(
+        { name: "Vex" },
+        externalAbort.signal,
+        SOUL_AUTHORIZATION,
+      );
       expect((await stream.next()).value).toEqual({ type: "started" });
 
       const completionEventPromise = stream.next();
@@ -266,5 +286,53 @@ describe("streaming soul generation safety", () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+
+  test("fails closed before dispatch when the initiating Human is missing", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    let invoked = false;
+    __setStubModelForTests({
+      async invoke() {
+        invoked = true;
+        return { content: "## Essence\nEnough content to pass the soul-file shape check.\n## Tone\nExact." };
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await soulModule.generateSoulFile(
+        { name: "Vex" },
+        undefined,
+        { humanUserId: "" },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServerProviderCredentialsDeniedError);
+    expect(invoked).toBeFalse();
+  });
+
+  test("fresh-checks revoked server funding before dispatch", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    let invoked = false;
+    __setStubModelForTests({
+      async invoke() {
+        invoked = true;
+        return { content: "## Essence\nGenerated.\n## Tone\nExact." };
+      },
+    });
+    let caught: unknown;
+    try {
+      await soulModule.generateSoulFile({ name: "Vex" }, undefined, {
+        humanUserId: "user-1",
+        assertServerProviderCredentials: async (humanUserId, origin) => {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServerProviderCredentialsDeniedError);
+    expect(invoked).toBeFalse();
   });
 });

@@ -13,6 +13,11 @@ import type {
   VoiceDiscoveryBadge,
   VoiceDiscoveryCandidate,
 } from "@nautilo/types";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+} from "@nautilo/trust";
+import { causalHumanForExecution } from "../../runtime/causal-human-context";
 
 /** Curated slug → primary language subtag (matches server catalog metadata). */
 const CURATED_VOICE_LANGUAGE: Record<string, string> = {
@@ -71,6 +76,14 @@ export type DiscoverVoicesInput = {
   age?: string;
   qualityPreference?: "high_quality" | "any";
   limit?: number;
+};
+
+type VoiceDiscoveryContext = {
+  readonly causalHumanUserId?: string | undefined;
+};
+
+export type VoiceDiscoveryDependencies = {
+  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 };
 
 function catalogLanguageLabel(language: string | null | undefined): string {
@@ -382,6 +395,8 @@ function rankAndLimit(
 
 export async function discoverVoices(
   input: DiscoverVoicesInput,
+  context?: VoiceDiscoveryContext,
+  dependencies: VoiceDiscoveryDependencies = {},
 ): Promise<FindVoiceToolResult> {
   const limit = Math.min(
     Math.max(input.limit ?? DEFAULT_BROWSE_LIMIT, 1),
@@ -394,6 +409,11 @@ export async function discoverVoices(
   let consideredCount = pool.length;
 
   if (apiKey) {
+    await (dependencies.assertCanUseServerProviderCredentials
+      ?? assertCanUseServerProviderCredentials)(
+        causalHumanForExecution(context?.causalHumanUserId),
+        "voice_catalog_discovery",
+      );
     try {
       const remote = await fetchSharedCatalog(apiKey, input, limit);
       pool = dedupeVoices([...pool, ...remote.voices]);
@@ -419,7 +439,10 @@ export async function discoverVoices(
   return result;
 }
 
-export function createFindVoiceTool() {
+export function createFindVoiceTool(
+  context?: VoiceDiscoveryContext,
+  dependencies: VoiceDiscoveryDependencies = {},
+) {
   return new DynamicStructuredTool({
     name: "find_voice",
     description: `Discovery ("see") over assistant voices — returns structured JSON candidates.
@@ -463,7 +486,7 @@ After the user listens via audition_voices, lock in with manage_voices add.`,
         if (accent !== undefined) input.accent = accent;
         if (gender !== undefined) input.gender = gender;
         if (age !== undefined) input.age = age;
-        const result = await discoverVoices(input);
+        const result = await discoverVoices(input, context, dependencies);
         if (result.candidates.length === 0) {
           return JSON.stringify({
             ...result,
@@ -472,6 +495,7 @@ After the user listens via audition_voices, lock in with manage_voices add.`,
         }
         return JSON.stringify(result);
       } catch (e) {
+        if (e instanceof ServerProviderCredentialsDeniedError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         return JSON.stringify({
           candidates: [],

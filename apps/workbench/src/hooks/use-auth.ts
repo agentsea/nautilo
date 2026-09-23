@@ -166,6 +166,7 @@ const VIEWER_ROLE_SET: ReadonlySet<ViewerRole> = new Set<ViewerRole>([
   "superuser",
   "member",
   "contributor",
+  "community",
   "guest",
   "anonymous",
   "stranger",

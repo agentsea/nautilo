@@ -61,6 +61,27 @@ describe("effective access presentation", () => {
     expect(roleLabel(overview.highestRole)).toBe("No role granted");
   });
 
+  test("presents Community and the provider-key capability boundary", () => {
+    const overview = accessOverview({
+      ...verifiedAccess,
+      highestRole: "community",
+      capabilities: [
+        { slug: "invoke_other_agents", description: "Invoke other agents", category: "agents", granted: false, provenance: [] },
+        { slug: "use_personal_provider_credentials", description: "Use personal credentials", category: "providers", granted: true, provenance: [] },
+        { slug: "use_server_provider_credentials", description: "Use server credentials", category: "providers", granted: false, provenance: [] },
+      ],
+    });
+
+    expect(roleLabel(overview.highestRole)).toBe("Community");
+    expect(overview.granted.map((capability) => capability.slug)).toEqual([
+      "use_personal_provider_credentials",
+    ]);
+    expect(overview.denied.map((capability) => capability.slug)).toEqual([
+      "invoke_other_agents",
+      "use_server_provider_credentials",
+    ]);
+  });
+
   test("keeps server provenance intact for the focused source detail", () => {
     const path = verifiedAccess.capabilities.flatMap((capability) => capability.provenance)[0];
     if (!path) throw new Error("Fixture must include a provenance path.");
