@@ -1,5 +1,6 @@
 html.companion-document, .companion-document body, .companion-document #root { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
 .companion-document #root { padding: 5px; box-sizing: border-box; }
+.companion-document #root:has(.companion-orb) { padding: 0; }
 .companion-static-orb { width: 100%; height: 100%; border-radius: 50%; background: radial-gradient(circle at 30% 22%, #e2b4fb, #9976e3 30%, #626bea 60%, #3e2b5a 90%); box-shadow: inset -5px -5px 12px #2b214b; }
 .companion-room-actions { display: flex; justify-content: space-between; gap: 12px; padding: 12px 22px 0; }
 .companion-room-actions button { background: transparent; color: #c3b0ed; font-size: 11px; padding: 0; }
@@ -22,6 +23,7 @@ html.companion-document, .companion-document body, .companion-document #root { m
 .companion[data-state="listening"] .companion-portrait { border-color: #a6dfcf; animation: companion-portrait-pulse 1s ease-in-out infinite alternate; }
 .companion[data-state="speaking"] .companion-portrait { border-color: #d4c0ff; animation: companion-portrait-pulse .65s ease-in-out infinite alternate; }
 .companion[data-state="error"] .companion-portrait { border-color: #ffcf9f; }
+.companion.companion-orb .companion-portrait { border: 0; padding: 0; background: transparent; animation: none; box-shadow: none; }
 @keyframes companion-portrait-pulse { to { box-shadow: inset 0 0 0 2px #c7acff55, 0 0 8px #b6a1ff40; } }
 @media (prefers-reduced-motion: reduce) { .companion .companion-portrait { animation: none; } }
 
@@ -38,11 +40,12 @@ html.companion-document, .companion-document body, .companion-document #root { m
 .companion-attachment span { min-width: 0; overflow-wrap: anywhere; }
 .companion-attachment small { display: block; color: #b4a9c3; }
 .companion-attachment button { background: transparent; }
-.companion-small-stop, .companion-small-mute { position: absolute; left: 2px; bottom: 3px; border-radius: 50%; background: #322438; color: #ffc6b8; }
-.companion-small-mute { left: auto; right: 3px; bottom: 3px; width: 24px; height: 24px; display: grid; place-items: center; }
+.companion-small-stop { position: absolute; left: 2px; bottom: 3px; border-radius: 50%; background: #322438; color: #ffc6b8; }
 .companion-small-stop .companion-icon { width: 24px; height: 24px; }
 .companion-small-stop .companion-stop-task { display: grid; padding: 0; }
 .companion-small-stop .companion-stop-task span { display: none; }
+.companion-orb .companion-small-stop { left: 2px; bottom: 2px; background: var(--bubble-bg); }
+.companion-orb .companion-small-stop .companion-stop-task { width: 23px; height: 23px; border-radius: 50%; padding: 0; border: 1px solid var(--bubble-line); background: var(--bubble-bg); color: #ffbd95 !important; }
+.companion .companion-stop-task:disabled { color: var(--muted) !important; opacity: .5; cursor: default; }
 .companion-waveform .companion-small-stop { left: auto; right: 35px; bottom: 6px; }
-.companion-waveform .companion-small-mute { left: auto; right: 35px; top: 5px; bottom: auto; }
 .companion-prompt .companion-room-composer { min-height: 0; overflow-y: auto; }

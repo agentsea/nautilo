@@ -52,6 +52,14 @@ store update, or Desktop/Host installation.
   Native Space-change notifications also reapply visibility on repeated swipes.
   Visibility also checks the exact native main window when the panel
   retains keyboard focus. A visible × attaches Genie again in one click.
+  While recording, compact views keep the active microphone visible for
+  finish-and-send; Escape and the controls menu discard the recording.
+  Stop action stays in a fixed position in every view, enabled throughout
+  unfinished work and grayed out when idle. The bubble matches the portrait frame, activity ring,
+  and separate corner controls used by its compact design.
+  Its corner controls leave transparent space at the window edge so the
+  circular borders render completely.
+  The expanded header stays draggable without a dotted grip beside the avatar.
 
 - Contributor-only floating Genie shell lab with four compact views, screen-edge
   docking and a Nautilo/Persona visual comparison. Voice states are simulations;

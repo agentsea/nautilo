@@ -1,4 +1,4 @@
-import { Mic, MicOff, Paperclip, Square, VolumeX, LoaderCircle } from "lucide-react";
+import { AudioLines, Mic, Paperclip, Square, VolumeX, LoaderCircle } from "lucide-react";
 import { CompanionComposer, CompanionConversationProvider, CompanionTranscript } from "./companion-conversation";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -86,17 +86,16 @@ function CompanionWindow() {
     : snapshot.speaking ? "speaking" : working || capturing || stopping ? "thinking" : "muted";
   const status = companionStatus(snapshot);
   const mic = () => command({ type: "mic" });
-  const stopTask = <button type="button" className="companion-icon companion-stop-task" disabled={stopping} aria-label={stopping ? "Stopping action" : "Stop action"}
+  const stopTask = <button type="button" className="companion-icon companion-stop-task" disabled={stopping || (!working && !capturing && snapshot.stopState !== "failed")} aria-label={stopping ? "Stopping action" : "Stop action"}
     title="Stop action in this Room" onClick={() => command({ type: "stop-task" })}><Square size={14} /><span>{stopping ? "Stopping…" : "Stop action"}</span></button>;
   const controls = <>
     <button type="button" className="companion-icon" disabled={!snapshot.canAttach || snapshot.pickingAttachments || snapshot.busy} title="Attach files" aria-label="Attach files"
       onClick={() => { command({ type: "view", value: "chat" }); command({ type: "attach" }); }}><Paperclip size={16} /></button>
     <button type="button" className="companion-icon" title={micLabel} aria-label={micLabel} aria-pressed={snapshot.capture === "listening"} onClick={mic}>
-      {snapshot.capture === "transcribing" || snapshot.capture === "requesting" ? <LoaderCircle className="companion-spinner" size={16} /> : <Mic size={16} />}
+      {snapshot.capture === "transcribing" || snapshot.capture === "requesting" ? <LoaderCircle className="companion-spinner" size={16} /> : snapshot.capture === "listening" ? <AudioLines size={16} /> : <Mic size={16} />}
     </button>
-    {capturing && <button type="button" className="companion-icon" title="Mute and discard recording" aria-label="Mute and discard recording" onClick={() => command({ type: "mute" })}><MicOff size={16} /></button>}
-    {snapshot.voiceEnabled && <button type="button" className="companion-icon" title="Stop talking" aria-label="Stop talking" onClick={() => command({ type: "stop-talking" })}><VolumeX size={16} /></button>}
-    {(working || stopping || snapshot.stopState === "failed") && stopTask}
+    {snapshot.speaking && <button type="button" className="companion-icon" title="Stop talking" aria-label="Stop talking" onClick={() => command({ type: "stop-talking" })}><VolumeX size={16} /></button>}
+    {stopTask}
     <span className="companion-control-spacer" />
   </>;
   const portrait = <div className="companion-portrait">
@@ -126,8 +125,7 @@ function CompanionWindow() {
     talkLabel={talkLabel} submitLabel="Send to Genie"
     busy={snapshot.busy}
     compactControls={<>
-      {(working || stopping || snapshot.stopState === "failed") && <span className="companion-small-stop">{stopTask}</span>}
-      {capturing && <button className="companion-small-mute" title="Mute and discard recording" aria-label="Mute and discard recording" onClick={() => command({ type: "mute" })}><MicOff size={12} /></button>}
+      <span className="companion-small-stop">{stopTask}</span>
       {(error || snapshot.error) && <span className="sr-only" role="alert">{error || snapshot.error}</span>}
     </>}
     transcript={<CompanionTranscript snapshot={snapshot} />}

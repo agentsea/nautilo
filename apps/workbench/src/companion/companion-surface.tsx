@@ -1,5 +1,5 @@
 import { useEffect, useRef, type CSSProperties, type PointerEvent, type ReactNode } from "react";
-import { ArrowUp, CircleAlert, Expand, Grip, LoaderCircle, Mic, MicOff, Minimize2, MoreHorizontal, VolumeX, X } from "lucide-react";
+import { ArrowUp, AudioLines, CircleAlert, Expand, LoaderCircle, Mic, Minimize2, MoreHorizontal, VolumeX, X } from "lucide-react";
 import "./companion.css";
 
 export type CompanionView = "orb" | "waveform" | "prompt" | "chat";
@@ -70,27 +70,30 @@ export function CompanionSurface(props: CompanionSurfaceProps) {
     if (suppressClick.current) { suppressClick.current = false; return; }
     props.onTalk();
   }
-  const StateIcon = state === "muted" ? MicOff : state === "error" ? CircleAlert : state === "speaking" ? VolumeX : state === "thinking" ? LoaderCircle : Mic;
+  const StateIcon = state === "error" ? CircleAlert : state === "speaking" ? VolumeX : state === "thinking" ? LoaderCircle : state === "listening" ? AudioLines : Mic;
   const compact = view === "orb" || view === "waveform";
   const visual = <div className="companion-avatar" aria-hidden>{props.avatar}</div>;
   return (
     <section className={`companion companion-${view}`} data-state={state} aria-label={`${props.name} companion`}>
       {compact ? (
         <>
-        <button ref={compactButton} className="companion-compact" {...dragHandlers} onClick={talk} aria-label={props.talkLabel} title={`${props.talkLabel} · Right-click or Shift+F10 for controls`}>
+        <button className="companion-compact" {...dragHandlers} onClick={talk} aria-label={`${props.talkLabel} — ${props.name}`} title={`${props.talkLabel} · Right-click or Shift+F10 for controls`}>
           {visual}{view === "waveform" && <Waveform state={state} />}
-          <span className="companion-state-icon"><StateIcon size={13} className={state === "thinking" ? "companion-spinner" : undefined} /></span>
+          {view === "orb" && <span className="companion-ring" aria-hidden />}
           <span className="sr-only" role="status">{props.status}</span>
+        </button>
+        <button ref={compactButton} type="button" className="companion-state-icon" onClick={props.onTalk} aria-label={props.talkLabel} title={props.talkLabel}>
+          <StateIcon size={16} className={state === "thinking" ? "companion-spinner" : undefined} />
         </button>
         {props.compactControls}
         {props.onClose && <button type="button" className="companion-small-close" onClick={props.onClose} aria-label="Stop floating and attach Genie" title="Stop floating and attach Genie"><X size={11} /></button>}
-        <button className="companion-small-expand" onClick={() => props.onView("chat")} aria-label="Expand Genie" title="Expand Genie"><Expand size={12} /></button>
+        <button className="companion-small-expand" onClick={() => props.onView("chat")} aria-label="Expand Genie" title="Expand Genie"><Expand size={11} /></button>
         </>
       ) : (
         <>
           <header className="companion-header" {...dragHandlers} title="Drag Genie">
             {props.onClose && <button type="button" className="companion-icon" onClick={props.onClose} aria-label="Stop floating and attach Genie" title="Stop floating and attach Genie"><X size={16} /></button>}
-            <div className="companion-handle"><Grip size={12} />{visual}</div>
+            {visual}
             <div className="companion-identity"><strong>{props.name}</strong><span role="status">{props.status}</span></div>
             <button className="companion-icon" aria-label={view === "chat" ? "Collapse to bubble" : "Expand chat"} onClick={() => props.onView(view === "chat" ? "orb" : "chat")}>
               {view === "chat" ? <Minimize2 size={16} /> : <Expand size={16} />}
