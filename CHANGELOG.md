@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
+  Mobile for users with the `manage_rooms` permission. It addresses current Human
+  members through their existing notification preferences, supports encrypted
+  messages, and leaves Genies quiet unless explicitly addressed.
+
 - Desktop now presents the official Nautilo Community as an explicit first-run,
   Add Server, and Switch Server destination while keeping private servers and
   manual connection available. New members use a stable, revocable community
@@ -55,6 +60,16 @@ store update, or Desktop/Host installation.
   anyone else's settings or chat notifications.
 
 ### Fixed
+
+- Screenshot messages now render inline in ordinary Room, thread, and Genie chats as
+  they arrive and after reload, with authenticated downloads and full-size
+  viewing. Accepted image previews replace temporary upload filename labels.
+  Mixed uploads preserve rejection feedback when live delivery arrives first,
+  and attachment lookup failures no longer suppress saved peer messages.
+- Authenticated Guests can attach files to messages in their selected Room,
+  while unresolved and blocked conversations continue to reject uploads.
+- Desktop users can open Servers and connect another server even when their
+  current server does not allow Genie invocation, including Guest accounts.
 
 - Server Admin places the Nautilo Gateway URL and key together at the end of
   API Keys, following the separate OpenAI-compatible gateway.

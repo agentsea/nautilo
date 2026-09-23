@@ -203,6 +203,7 @@ export async function* forkLanggraphExecutor(
       ? input["causalHumanUserId"]
       : null;
   const mentionedHumanUserIds = parseStringArray(input["mentionedHumanUserIds"]);
+  const mentionEveryone = input["mentionEveryone"] === true;
   // A fork has its own checkpoint, but is still a fresh foreground execution.
   // Seed exactly the same fresh lifecycle/activation projection as main turns;
   // do not borrow a parent turn's one-shot approval or activation state.
@@ -578,6 +579,7 @@ export async function* forkLanggraphExecutor(
         ...persistOptsBase,
         notificationContext: {
           mentionedHumanUserIds,
+          ...(mentionEveryone ? { mentionEveryone: true } : {}),
           causalHumanUserId: null,
           causalHumanTurnId: null,
         },

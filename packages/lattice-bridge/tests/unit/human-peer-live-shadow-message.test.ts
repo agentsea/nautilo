@@ -2,7 +2,7 @@ import { createAuthorizedHumanLiveShadowMessageClient } from
   "../../src/client/message/authorized-human-live-shadow-message-client.ts";
 import { createPreparedMutationJournal } from
   "../../src/client/memory/prepared-mutation-journal.ts";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   LatticeCrypto,
   accessRevision,
@@ -220,7 +220,7 @@ function namespaceAuthority(
 }
 
 describe("M295 Human-peer live Shadow message", () => {
-  test("maps one canonical row and lets an independent recipient open, compare, and acknowledge it", async () => {
+  test.each([false, true])("maps one canonical row and verifies peer receipt (everyone: %s)", async (mentionEveryone) => {
     const crypto = new LatticeCrypto(seededRng(295_900));
     const sender = await createProfile({
       crypto,
@@ -244,6 +244,7 @@ describe("M295 Human-peer live Shadow message", () => {
     const planBytes = encodeHumanPeerLiveShadowMessagePlanV1({
       formatVersion: 1,
       purpose: "message.human_peer_live_shadow_plan",
+      ...(mentionEveryone ? { mentionEveryone: true as const } : {}),
       operationId: OPERATION,
       clientIdempotencyKey: "human_peer_client_m295_live",
       policyRevision: 4,
@@ -437,6 +438,7 @@ describe("M295 Human-peer live Shadow message", () => {
       crypto, now: () => new Date(NOW + 1),
     });
     fullHarness.product.addSession({ sessionId: SESSION, roomId: ROOM, namespaceId: NAMESPACE });
+    const append = spyOn(fullHarness.product, "appendAllocated");
     const full = await admitAndPersistHumanPeerLiveShadowMessage({
       ...dependencies,
       product: fullHarness.product,
@@ -460,6 +462,9 @@ describe("M295 Human-peer live Shadow message", () => {
       } },
     });
     expect(full).not.toHaveProperty("content");
+    expect(append.mock.calls[0]?.[0].notificationContext.mentionEveryone).toBe(mentionEveryone || undefined);
+    expect("mentionEveryone" in full ? full.mentionEveryone : undefined).toBe(mentionEveryone || undefined);
+    append.mockRestore();
     expect(fullHarness.product.peekMessage(MESSAGE_ID)).toMatchObject({ content: null });
 
     const eventDigest = liveShadowDurableEventDigestV1(crypto, {

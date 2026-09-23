@@ -193,3 +193,21 @@ describe("actual Room row consumption", () => {
     expect(result[0]?.historyUnavailableReason).toBeUndefined();
   });
 });
+
+
+test("ordinary attachment descriptors follow the selected history representation", async () => {
+  const attachments = [{ attachmentId: "screen", filename: "screen.png", mimeType: "image/png", sizeBytes: 12 }];
+  const row = { id: "2", role: "user", content: "picture", editRevision: 0, attachments };
+  const ordinary = await consumeRoomHistoryRows(owner(policies[0]!), [row], []);
+  expect(ordinary[0]?.attachments).toEqual(attachments);
+  const fallback = await consumeRoomHistoryRows(owner(policies[1]!), [row], [waiting]);
+  expect(fallback[0]?.attachments).toEqual(attachments);
+  const unavailable = await consumeRoomHistoryRows(owner(policies[2]!), [row], [waiting]);
+  expect(unavailable[0]?.attachments).toEqual([]);
+  const opened = await consumeRoomHistoryRows(owner(policies[2]!), [row], [{
+    sessionId: "session", messageId: "2", editRevision: 0, status: "verified",
+    verification: "signed_representation_authenticated",
+    payload: { role: "user", content: "verified picture text" },
+  }]);
+  expect(opened[0]?.attachments).toBeUndefined();
+});

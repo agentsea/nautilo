@@ -281,3 +281,21 @@ describe("Human AI-readable live Shadow V2", () => {
     )).toThrow("signature is invalid");
   });
 });
+
+
+describe("signed room-wide mention intent", () => {
+  test("retains old plan bytes and binds the opt-in audience into the digest", () => {
+    const value = fixture();
+    const addressed = encodeHumanAiReadableLiveShadowMessagePlanV2({ ...value.plan, mentionEveryone: true });
+    expect(decodeHumanAiReadableLiveShadowMessagePlanV2(value.planBytes)).not.toHaveProperty("mentionEveryone");
+    expect(encodeHumanAiReadableLiveShadowMessagePlanV2(decodeHumanAiReadableLiveShadowMessagePlanV2(value.planBytes))).toEqual(value.planBytes);
+    expect(decodeHumanAiReadableLiveShadowMessagePlanV2(addressed).mentionEveryone).toBe(true);
+    expect(encodeHumanAiReadableLiveShadowMessagePlanV2(decodeHumanAiReadableLiveShadowMessagePlanV2(addressed))).toEqual(addressed);
+    expect(humanAiReadableLiveShadowMessagePlanDigestV2(addressed)).not.toEqual(humanAiReadableLiveShadowMessagePlanDigestV2(value.planBytes));
+    expect(() => encodeHumanAiReadableLiveShadowMessagePlanV2({ ...value.plan, mentionEveryone: false } as unknown as HumanAiReadableLiveShadowMessagePlanV2)).toThrow();
+    expect(() => decodeHumanAiReadableLiveShadowMessagePlanV2(new Uint8Array([...addressed, 0]))).toThrow();
+    const corrupted = addressed.slice();
+    corrupted[corrupted.length - 1] = corrupted[corrupted.length - 1]! ^ 1;
+    expect(() => decodeHumanAiReadableLiveShadowMessagePlanV2(corrupted)).toThrow();
+  });
+});

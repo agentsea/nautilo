@@ -35,6 +35,7 @@ export const liveShadowMessagePlanRequestV1Schema = z.object({
   clientDeviceId: portableId,
   idempotencyKey: portableId,
   requestShape: z.literal("text_only"),
+  mentionEveryone: z.literal(true).optional(),
 }).strict();
 
 /** Explicit opt-in to five-minute Human submission freshness, not execution authority. */

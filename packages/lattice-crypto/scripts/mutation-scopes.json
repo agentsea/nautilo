@@ -256,6 +256,7 @@
         "src/message/human-ai-readable-live-shadow-v1.ts",
         "src/message/human-ai-readable-live-shadow-v2.ts",
         "src/message/human-peer-live-shadow-v1.ts",
+        "src/message/room-mention-intent.ts",
         "src/message/shared-agent-live-shadow-v1.ts",
         "src/message/live-shadow-client-verification-v1.ts",
         "src/message/live-shadow-message-request-v1.ts",

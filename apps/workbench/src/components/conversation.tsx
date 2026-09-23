@@ -53,11 +53,14 @@ import { useSpeechRecognition } from "../hooks/use-speech-recognition";
 import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
+import { MessageAttachmentImages } from "./message-attachment-images";
+import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
   SHELL_AGENT_NAME,
   type MessageActionDescriptor,
   type ChatFocusedResourceRef,
+  type MessageAttachmentRef,
 } from "@nautilo/types";
 import { useWsState } from "../hooks/use-ws-state";
 import { MENU_SPEAK_EVENT } from "../hooks/use-desktop-menu";
@@ -157,6 +160,7 @@ import {
   preflightComposerChatAttachment,
   type ComposerChatAttachmentSkip,
 } from "../lib/composer-attachment-preflight";
+import { resolveComposerMessageAttachmentRoomId } from "../lib/composer-message-attachment-authority";
 import { useToast } from "./toast";
 import { AssistantMarkdownTextPrimitive } from "./assistant-markdown-text";
 import {
@@ -2019,10 +2023,11 @@ function Composer({
   const auth = useAuth();
   const can = useCan();
   const canInvokeAgents = can("invoke_agents");
-  const canWriteArtifacts = can("write_artifacts");
+  const canMentionEveryone = can("manage_rooms");
   const composerText = useComposer((s) => s.text);
   const composerRuntime = useComposerRuntime();
   const browserAttachmentInputRef = useRef<HTMLInputElement>(null);
+  const browserAttachmentPickerRoomIdRef = useRef<string | null>(null);
   useEffect(() => {
     setHasUnsentComposerText(composerText.trim().length > 0);
     return () => setHasUnsentComposerText(false);
@@ -2108,6 +2113,7 @@ function Composer({
   const mentionAdapter = useMentionAdapterForRoom(
     mentionableRoomMembers,
     auth.viewer.sessionActorId ?? undefined,
+    canMentionEveryone,
     lastSpokeAtMs,
   );
   const commandAdapter = useCommandAdapter();
@@ -2280,6 +2286,13 @@ function Composer({
     roomReady &&
     voice.roomBindingReady &&
     !directHumanInteractionBlocked;
+  const messageAttachmentRoomId = resolveComposerMessageAttachmentRoomId({
+    viewer: auth.viewer,
+    activeResolution: roomNav.activeResolution,
+    directHumanInteractionBlocked,
+  });
+  const messageAttachmentRoomIdRef = useRef(messageAttachmentRoomId);
+  messageAttachmentRoomIdRef.current = messageAttachmentRoomId;
   // ISSUE-D145 — composer-disabled tooltip extracted into
   // `pickComposerDisabledTitle` so both `authenticated_disconnected`
   // AND `authenticated_resuming` produce the honest "Server
@@ -2332,8 +2345,6 @@ function Composer({
     return () => window.removeEventListener(MENU_SPEAK_EVENT, onMenuSpeak);
   }, [handleMicToggle]);
 
-  const showMic = speech.isSupported && !hasText;
-
   const insertEmoji = useCallback(
     (emoji: string) => {
       composerRuntime.setText(composerTextRef.current + emoji);
@@ -2377,6 +2388,9 @@ function Composer({
     getFocusedResourcesSnapshot,
     getFocusedResourcesSnapshot,
   );
+  const showMic = speech.isSupported && !hasText
+    && attachments.length === 0 && focusedResources.length === 0;
+
   const focusedResourcesRef = useRef(focusedResources);
   focusedResourcesRef.current = focusedResources;
   const unboundComposerSendInFlightRef = useRef(false);
@@ -2533,6 +2547,7 @@ function Composer({
                   projectedMentions.mentionedHumanUserIds,
               }
             : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
           ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
         }),
       });
@@ -2617,15 +2632,20 @@ function Composer({
     const types = Array.from(e.dataTransfer.types);
     if (
       types.includes(NAUTILO_ARTIFACT_REF_MIME) ||
-      (canWriteArtifacts && types.includes("Files")) ||
+      (messageAttachmentRoomId !== null && types.includes("Files")) ||
       (isDesktop && auth.viewer.isVerified && types.includes(NAUTILO_FILE_REF_MIME))
     ) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
-  }, [auth.viewer.isVerified, canWriteArtifacts]);
+  }, [auth.viewer.isVerified, messageAttachmentRoomId]);
 
-  const queueBrowserComposerFiles = useCallback((files: Iterable<File>) => {
+  const queueBrowserComposerFiles = useCallback((
+    files: Iterable<File>,
+    expectedRoomId?: string,
+  ) => {
+    const uploadRoomId = messageAttachmentRoomIdRef.current;
+    if (!uploadRoomId || (expectedRoomId !== undefined && uploadRoomId !== expectedRoomId)) return;
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of files) {
       const pf = preflightComposerChatAttachment(file.name);
@@ -2647,13 +2667,13 @@ function Composer({
         break;
       }
       setAttachmentError(null);
-      void uploadComposerBlob(id, file, file.name, { roomId: activeRoomId });
+      void uploadComposerBlob(id, file, file.name, { roomId: uploadRoomId });
     }
     if (skipped.length > 0) {
       const { title, message } = formatComposerAttachmentSkipToast(skipped);
       toast.show({ variant: "warning", title, message });
     }
-  }, [activeRoomId, toast]);
+  }, [toast]);
 
   const handleComposerDrop = useCallback(
     (e: DragEvent<HTMLElement>) => {
@@ -2687,7 +2707,7 @@ function Composer({
         return;
       }
       if (e.dataTransfer.files.length > 0) {
-        if (!canWriteArtifacts) return;
+        if (!messageAttachmentRoomIdRef.current) return;
         e.preventDefault();
         queueBrowserComposerFiles(e.dataTransfer.files);
         return;
@@ -2728,12 +2748,14 @@ function Composer({
         }
       });
     },
-    [auth.viewer.isVerified, canWriteArtifacts, composerRuntime, queueBrowserComposerFiles],
+    [auth.viewer.isVerified, composerRuntime, queueBrowserComposerFiles],
   );
 
   const handlePaperclipClick = useCallback(async () => {
-    if (!canWriteArtifacts) return;
+    const pickerRoomId = messageAttachmentRoomIdRef.current;
+    if (!pickerRoomId) return;
     if (!isDesktop || !desktopAPI) {
+      browserAttachmentPickerRoomIdRef.current = pickerRoomId;
       browserAttachmentInputRef.current?.click();
       return;
     }
@@ -2749,6 +2771,10 @@ function Composer({
       setPickingAttachments(false);
     }
     if (pickedFiles.length === 0) return;
+    if (messageAttachmentRoomIdRef.current !== pickerRoomId) {
+      setAttachmentError("Files were not attached because the active room changed.");
+      return;
+    }
 
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of pickedFiles) {
@@ -2771,16 +2797,26 @@ function Composer({
         break;
       }
       setAttachmentError(null);
-      void uploadComposerAttachment(id, file, { roomId: activeRoomId });
+      void uploadComposerAttachment(id, file, { roomId: pickerRoomId });
     }
     if (skipped.length > 0) {
       const { title, message } = formatComposerAttachmentSkipToast(skipped);
       toast.show({ variant: "warning", title, message });
     }
-  }, [activeRoomId, canWriteArtifacts, toast]);
+  }, [toast]);
 
   const handleBrowserAttachmentChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.currentTarget.files) queueBrowserComposerFiles(e.currentTarget.files);
+    const pickerRoomId = browserAttachmentPickerRoomIdRef.current;
+    browserAttachmentPickerRoomIdRef.current = null;
+    if (
+      e.currentTarget.files &&
+      pickerRoomId &&
+      messageAttachmentRoomIdRef.current === pickerRoomId
+    ) {
+      queueBrowserComposerFiles(e.currentTarget.files, pickerRoomId);
+    } else if (e.currentTarget.files?.length) {
+      setAttachmentError("Files were not attached because the active room changed.");
+    }
     e.currentTarget.value = "";
   }, [queueBrowserComposerFiles]);
 
@@ -2941,7 +2977,7 @@ function Composer({
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-        {canWriteArtifacts && (
+        {messageAttachmentRoomId !== null && (
           <>
           <input
             ref={browserAttachmentInputRef}
@@ -3518,6 +3554,21 @@ function Message({
   const artifactOpenRefs = useMessage((state) => {
     return artifactOpenRefsFromMessageMetadata(state.metadata);
   });
+  const messageAttachmentRefs = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    const value = custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY];
+    return Array.isArray(value) ? value as readonly MessageAttachmentRef[] : undefined;
+  });
+  const humanMessageVerification = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    return typeof custom?.humanMessageVerification === "string"
+      ? custom.humanMessageVerification
+      : undefined;
+  });
+  const historyUnavailable = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    return custom?.historyUnavailable === true;
+  });
   const terminalExecutions = useMessage((state) => {
     return terminalExecutionsFromMessageMetadata(state.metadata);
   });
@@ -3997,6 +4048,14 @@ function Message({
                   <QuotedReplyStrip parentId={replyToMessageId} assistantName={assistantName} />
                 </div>
               ) : null}
+              <MessageAttachmentImages
+                attachments={
+                  humanMessageVerification === undefined && !historyUnavailable
+                    ? messageAttachmentRefs
+                    : undefined
+                }
+                roomId={roomId}
+              />
               {editing ? (
                 <div className="mt-1">
                   <textarea

@@ -10,6 +10,10 @@ import {
   SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS,
 } from "./reviewed-main-2026-09-17-dto";
 import {
+  reviewedRoomEveryoneMentionDtoReplacements,
+  SUPERSEDED_ROOM_EVERYONE_MENTION_DTO_LOCATORS,
+} from "./reviewed-room-everyone-mention-dto";
+import {
   REVIEWED_M322_DTO_DECLARATIONS,
   REVIEWED_M322_DTO_REPLACEMENTS,
   reviewedM322DtoReplacements,
@@ -6163,7 +6167,8 @@ const PRE_MAIN_2026_09_17_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...REVIEWED_MAIN_2026_09_12_NEW_DTO_DECLARATIONS,
 ];
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+const PRE_ROOM_EVERYONE_MENTION_DTO_DECLARATIONS:
+  readonly DtoDeclaration[] = [
   ...PRE_MAIN_2026_09_17_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS.has(entry.locator)
   ),
@@ -6171,4 +6176,13 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
     PRE_MAIN_2026_09_17_DTO_DECLARATIONS,
   ),
   ...REVIEWED_MAIN_2026_09_17_NEW_DTO_DECLARATIONS,
+];
+
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+  ...PRE_ROOM_EVERYONE_MENTION_DTO_DECLARATIONS.filter((entry) =>
+    !SUPERSEDED_ROOM_EVERYONE_MENTION_DTO_LOCATORS.has(entry.locator)
+  ),
+  ...reviewedRoomEveryoneMentionDtoReplacements(
+    PRE_ROOM_EVERYONE_MENTION_DTO_DECLARATIONS,
+  ),
 ];

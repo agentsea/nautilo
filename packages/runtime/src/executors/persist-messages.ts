@@ -3,6 +3,7 @@ import { HumanMessage, ToolMessage, AIMessage } from "@langchain/core/messages";
 import {
   logicalMessageKey,
   type AdvancedVideoWorkcardContinuation,
+  type MessageAttachmentRef,
   type MessageArtifactOpenRef,
   type ServerEvent,
 } from "@nautilo/types";
@@ -11,6 +12,7 @@ import type { AppendNotificationContext } from "@nautilo/trust";
 import {
   type MemoryReviewAdmission,
   findArtifactInternalIdsForCanonicalNamespace,
+  getAttachmentsForTurns,
   getRoomNamespaceId,
   hydrateMessageArtifacts,
   recordMessageArtifacts,
@@ -277,6 +279,59 @@ export async function persistMessages(
       });
     }
 
+    // Link retained uploads before publishing their Human row. History reads
+    // use this same retained-row query, so the live descriptor and subsequent
+    // history projection share one durable identity. Linkage remains useful
+    // for suppressed and non-Room calls, while projection requires the exact
+    // canonical Room namespace. Failures stay best-effort and never discard a
+    // successfully persisted turn.
+    const retainedAttachmentRefsByFingerprint = new Map<
+      string,
+      MessageAttachmentRef[]
+    >();
+    if (options.retainedAttachmentIds && options.retainedAttachmentIds.length > 0) {
+      const humanFp = newPairs.find(
+        (pair, index) => pair.msg instanceof HumanMessage && !failed.has(index),
+      )?.fp;
+      if (humanFp) {
+        try {
+          const retainedAttachmentIds = [...options.retainedAttachmentIds];
+          await stampTurnIdOnAttachments({
+            attachmentIds: retainedAttachmentIds,
+            turnId: humanFp,
+          });
+          if (options.roomId) {
+            const canonicalRoomNamespaceId = await getRoomNamespaceId(
+              options.roomId,
+            );
+            if (canonicalRoomNamespaceId) {
+              const retainedIdSet = new Set(retainedAttachmentIds);
+              const rows = await getAttachmentsForTurns([humanFp]);
+              const refs = rows
+                .filter((row) =>
+                  row.turnId === humanFp
+                  && row.namespaceId === canonicalRoomNamespaceId
+                  && retainedIdSet.has(row.id)
+                )
+                .map((row) => ({
+                  attachmentId: row.id,
+                  filename: row.filename,
+                  mimeType: row.mimeType,
+                  sizeBytes: row.sizeBytes,
+                }));
+              if (refs.length > 0) {
+                retainedAttachmentRefsByFingerprint.set(humanFp, refs);
+              }
+            }
+          }
+        } catch (e) {
+          warn(
+            `[nautilo/executor] attachment turn stamp/projection failed (${options.retainedAttachmentIds.length} attachment(s)): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+    }
+
     const laneKey = options.laneKey;
     // A tool-call AIMessage may contain narration even when token/tool streams
     // are quiet. Do not republish that internal audit row via message.new.
@@ -354,6 +409,9 @@ export async function persistMessages(
             }
           }
           const workcardContinuation = advancedVideoWorkcardContinuation(options.metadata);
+          const attachments = row.fingerprint
+            ? retainedAttachmentRefsByFingerprint.get(row.fingerprint)
+            : undefined;
           options.eventBus.emit({
             type: "message.new",
             laneKey,
@@ -370,6 +428,7 @@ export async function persistMessages(
             row.replyToMessageId > 0
               ? { replyToMessageId: row.replyToMessageId }
               : {}),
+            ...(attachments && attachments.length > 0 ? { attachments } : {}),
             ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
             ...(workcardContinuation
               ? { workcardContinuation }
@@ -403,29 +462,6 @@ export async function persistMessages(
               ? { assistantMessageKey: options.assistantMessageKey }
               : {}),
           });
-        }
-      }
-    }
-
-    // D391 — link this turn's retained attachments to the human row's M134
-    // fingerprint (= `turn_id`) so they render from room history. Runs on the
-    // human persist call (the only one carrying `retainedAttachmentIds`); the
-    // stamp is idempotent (matches `turn_id IS NULL`). Best-effort — a failure
-    // just means the image won't render from history, never a turn failure.
-    if (options.retainedAttachmentIds && options.retainedAttachmentIds.length > 0) {
-      const humanFp = newPairs.find(
-        (p, i) => p.msg instanceof HumanMessage && !failed.has(i),
-      )?.fp;
-      if (humanFp) {
-        try {
-          await stampTurnIdOnAttachments({
-            attachmentIds: [...options.retainedAttachmentIds],
-            turnId: humanFp,
-          });
-        } catch (e) {
-          warn(
-            `[nautilo/executor] D391 turn_id stamp failed (${options.retainedAttachmentIds.length} attachment(s)): ${e instanceof Error ? e.message : String(e)}`,
-          );
         }
       }
     }

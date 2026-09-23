@@ -153,7 +153,7 @@ describe("M229 mutation governance", () => {
       new URL("../..", import.meta.url).pathname,
     );
     expect(parsed.scopes).toHaveLength(28);
-    expect(eligible).toHaveLength(124);
+    expect(eligible).toHaveLength(125);
     expect(parsed.scopes.filter((scope) =>
       scope.name.startsWith("background-")
     ).map((scope) => ({

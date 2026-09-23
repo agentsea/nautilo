@@ -91,6 +91,7 @@ export type LiveShadowTurnPlanResult =
       representationMode?: "full_encryption" }>;
 
 export interface LiveShadowTurnPlanInput {
+  readonly mentionEveryone?: boolean;
   readonly requestVersion?: 1 | 2;
   readonly authority: Readonly<{
     userId: string;

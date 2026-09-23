@@ -85,6 +85,7 @@ export type SharedAgentLiveShadowPlanResult =
       representationMode?: "full_encryption" }>;
 
 export interface SharedAgentLiveShadowPlanInput {
+  readonly mentionEveryone?: boolean;
   readonly requestVersion?: 1 | 2;
   readonly authority: Readonly<{
     userId: string;
@@ -714,6 +715,7 @@ export class PostgresSharedAgentLiveShadowPlanner {
           purpose: "message.human_ai_readable_live_shadow_plan",
           operationId,
           clientIdempotencyKey: input.idempotencyKey,
+          ...(input.mentionEveryone === true ? { mentionEveryone: true as const } : {}),
           policyRevision: product.policyRevision,
           sessionId: product.sessionId,
           roomId: input.roomId,

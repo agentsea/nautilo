@@ -16,6 +16,8 @@
 
 import { describe, test, expect } from "bun:test";
 import {
+  MESSAGE_ATTACHMENTS_METADATA_KEY,
+  projectAuthenticatedRoomHistoryPayload,
   reconcileRoomHistoryShadowPayloads,
   reconcileFetchedRoomHistoryPage,
   restoreSessionMessages,
@@ -494,6 +496,26 @@ describe("restoreSessionMessages — authenticated protected tool correlation", 
         args: { proposed_content: "fresh" },
         result: "fresh result",
       }]);
+    }
+  });
+});
+
+
+describe("ordinary screenshot history", () => {
+  const attachments = [{ attachmentId: "screenshot", filename: "screen.png", mimeType: "image/png", sizeBytes: 128 }];
+  const row = { id: "image-only", role: "user", content: "", attachments };
+
+  test("restores attachment-only messages with their download descriptors", () => {
+    const restored = restoreSessionMessages([row]);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.metadata?.custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY]).toEqual(attachments);
+  });
+
+  test("withheld and authenticated protected text cannot expose ordinary blobs", () => {
+    const protectedRow = projectAuthenticatedRoomHistoryPayload(row, { role: "user", content: "verified" });
+    expect(protectedRow.attachments).toBeUndefined();
+    for (const candidate of [protectedRow, { ...row, historyUnavailable: true as const }]) {
+      expect(restoreSessionMessages([candidate])[0]?.metadata?.custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY]).toBeUndefined();
     }
   });
 });

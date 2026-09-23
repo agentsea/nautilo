@@ -12,6 +12,7 @@ import type { DocumentMutationCommittedEvent } from "./document-mutations";
 import type {
   AdvancedVideoWorkcardContinuation,
   MaintenanceState,
+  MessageAttachmentRef,
   MessageArtifactOpenRef,
 } from "./api";
 import type {
@@ -106,6 +107,8 @@ export interface MessageNewEvent {
    * persist-messages, report-back) intentionally leave it unset.
    */
   replyToMessageId?: number;
+  /** Retained attachment descriptors for this persisted Human message. */
+  attachments?: MessageAttachmentRef[];
   /**
    * Server-authored ArtifactOpenCard refs. Present on an ordinary
    * focused user send or on the assistant question in a trusted ask_peer

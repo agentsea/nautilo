@@ -17,6 +17,7 @@ const ROOM = "00000000-0000-4000-8000-000000000003";
 function appWith(input: Readonly<{
   composition: LiveShadowMessagePlanComposition;
   surface: string | null;
+  hasCapability?: (userId: string, capability: string) => Promise<boolean>;
 }>) {
   const app = Fastify();
   app.addHook("preHandler", (request, _reply, done) => {
@@ -35,6 +36,7 @@ function appWith(input: Readonly<{
         ? null
         : { initiatingClientSurface: input.surface },
     },
+    ...(input.hasCapability ? { hasCapability: input.hasCapability } : {}),
     now: () => 1_800_000_000_000,
   });
   return app;
@@ -51,6 +53,74 @@ function payload() {
 }
 
 describe("live Shadow Message plan route", () => {
+  test("requires manage_rooms before planning an everyone notification", async () => {
+    let planCalls = 0;
+    const capabilityCalls: Array<[string, string]> = [];
+    const app = appWith({
+      surface: "workbench.browser",
+      hasCapability: async (userId, capability) => {
+        capabilityCalls.push([userId, capability]);
+        return false;
+      },
+      composition: {
+        plan: () => {
+          planCalls++;
+          return Promise.resolve({ status: "disabled", mode: "plaintext_only" });
+        },
+        verifyClient: () => Promise.resolve({ status: "conflict" }),
+      },
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/rooms/${ROOM}/live-shadow/plan`,
+        headers: { authorization: "Bearer ok" },
+        payload: { ...payload(), mentionEveryone: true },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json<Record<string, unknown>>()).toEqual({
+        error: "manage_rooms_required",
+        code: "manage_rooms_required",
+        capability: "manage_rooms",
+        message: "The manage_rooms permission is required to notify everyone in this room.",
+      });
+      expect(capabilityCalls).toEqual([[USER, "manage_rooms"]]);
+      expect(planCalls).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("plans an everyone notification when manage_rooms is current", async () => {
+    let seen: unknown;
+    const app = appWith({
+      surface: "workbench.browser",
+      hasCapability: async () => true,
+      composition: {
+        plan: (input) => {
+          seen = input;
+          return Promise.resolve({ status: "planned", planBytes: new Uint8Array([1]) });
+        },
+        verifyClient: () => Promise.resolve({ status: "conflict" }),
+      },
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/rooms/${ROOM}/live-shadow/plan`,
+        headers: { authorization: "Bearer ok" },
+        payload: { ...payload(), mentionEveryone: true },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(seen).toMatchObject({
+        authority: { userId: USER, humanActorId: HUMAN },
+        mentionEveryone: true,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("passes V2 opt-in and marker only on modern Browser/Desktop plans", async () => {
     let seen: unknown;
     const app = appWith({

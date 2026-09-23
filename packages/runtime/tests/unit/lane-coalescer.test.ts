@@ -168,6 +168,24 @@ describe("M233 — notification provenance survives coalescing", () => {
       mentionedHumanUserIds: ["human-2", "human-3"],
     });
   });
+
+  test("round-trips and ORs Room-wide Human mention intent", () => {
+    const parsed = jobInputToCoalescedInput(
+      { message: "hello everyone", mentionEveryone: true },
+      "room:r:user:u:bot:b",
+      "owner",
+      "owner",
+    );
+    expect(parsed.mentionEveryone).toBe(true);
+    expect(coalescedInputToJobInput(parsed)["mentionEveryone"]).toBe(true);
+
+    const merged = mergeInputs([
+      baseInput({ laneKey: "room:r:user:u:bot:b", mentionEveryone: false }),
+      baseInput({ laneKey: "room:r:user:u:bot:b", mentionEveryone: true }),
+    ]);
+    expect(merged.mentionEveryone).toBe(true);
+    expect(coalescedInputToJobInput(merged)["mentionEveryone"]).toBe(true);
+  });
 });
 
 function baseInput(partial: Partial<Omit<CoalescedInput, "laneKey">> & { laneKey: string }): CoalescedInput {
