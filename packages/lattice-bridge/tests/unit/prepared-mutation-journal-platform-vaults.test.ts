@@ -17,8 +17,10 @@ import {
   PREPARED_MUTATION_JOURNAL_LIMITS,
   PreparedMutationJournalBackpressureError,
   createPreparedMutationJournal,
+  decodePreparedMutationJournalIndex,
   type PreparedMutationJournalIndex,
   type PreparedHumanMemoryMutation,
+  type PreparedHumanTaskMutation,
 } from "../../src/client/memory/prepared-mutation-journal.ts";
 
 const MEMORY_ID = "88000000-0000-4000-8000-000000000001";
@@ -63,7 +65,70 @@ function mutation(operationId = "electron-create:1"): PreparedHumanMemoryMutatio
   };
 }
 
+function taskMutation(): PreparedHumanTaskMutation {
+  const taskId = "89000000-0000-4000-8000-000000000001";
+  return {
+    kind: "task_create",
+    taskId,
+    request: {
+      requestVersion: 1,
+      operationId: "electron-task-create:1",
+      planDigestBase64url: "T".repeat(43),
+      taskId,
+      expectedContentRevision: 0,
+      nextContentRevision: 1,
+      expectedCryptoAccessRevision: 0,
+      resultCryptoAccessRevision: 0,
+      cryptoObjectId: `task:v1:${taskId}:1`,
+      payloadVersion: 1,
+      requiredNamespaceIds: [NAMESPACE_ID],
+      encryptedPayloadBytesBase64url: "dGFzay1jaXBoZXJ0ZXh0",
+      accessManifestBytesBase64url: "dGFzay1tYW5pZmVzdA",
+      namespaceEnvelopes: [{
+        namespaceId: NAMESPACE_ID,
+        envelopeBytesBase64url: "dGFzay1lbnZlbG9wZQ",
+      }],
+      signedPublicationRequestBytesBase64url: "dGFzay1zaWduZWQ",
+      operation: "create",
+    },
+  };
+}
+
 describe("Electron vault-sealed prepared mutation journal", () => {
+  test("reopens a prepared Task publication without changing the file generation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "nautilo-mutation-journal-"));
+    const storage = safeStorage();
+    try {
+      const firstVault = createElectronPreparedMutationJournalVault({
+        directory,
+        safeStorage: storage,
+      });
+      expect(await firstVault.unlock()).toEqual({ status: "available" });
+      await createPreparedMutationJournal({ vault: firstVault, now: () => 1 })
+        .putBeforeSend(taskMutation());
+      await firstVault.lock();
+
+      const restartedVault = createElectronPreparedMutationJournalVault({
+        directory,
+        safeStorage: storage,
+      });
+      expect(await restartedVault.unlock()).toEqual({ status: "available" });
+      const restarted = createPreparedMutationJournal({
+        vault: restartedVault,
+        now: () => 2,
+      });
+      let opened: unknown;
+      await restarted.withPrepared("electron-task-create:1", (mutation) => {
+        opened = mutation;
+      });
+      expect(opened).toEqual(taskMutation());
+      expect(await readFile(join(directory, JOURNAL_FILE), "utf8"))
+        .toContain('"formatVersion":1');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("accepts the supported Artifact access recovery record after restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "nautilo-mutation-journal-"));
     const storage = safeStorage();
@@ -95,6 +160,58 @@ describe("Electron vault-sealed prepared mutation journal", () => {
       expect(await first.unlock()).toEqual({ status: "available" });
       expect(await first.putSealed({ index, canonicalBody })).toBe("inserted");
       await first.lock();
+      const restarted = createElectronPreparedMutationJournalVault({
+        directory,
+        safeStorage: storage,
+      });
+      expect(await restarted.unlock()).toEqual({ status: "available" });
+      expect(await restarted.listIndexes()).toEqual([index]);
+    } finally {
+      canonicalBody.fill(0);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("reopens a legacy live-shadow record with a 256-character operation-ID contract", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "nautilo-mutation-journal-"));
+    const storage = safeStorage();
+    const operationId = "l".repeat(256);
+    const canonicalBody = new TextEncoder().encode("legacy-live-shadow-body");
+    const index: PreparedMutationJournalIndex = {
+      formatVersion: 1,
+      operationId,
+      authenticatedRequestDigestBase64url: "L".repeat(43),
+      kind: "live_shadow_message",
+      roomId: "88000000-0000-4000-8000-000000000030",
+      canonicalBytes: canonicalBody.length,
+      sealedBytes: canonicalBody.length + 16,
+      createdAt: 1,
+      updatedAt: 1,
+      attempts: 0,
+      attemptWindowStartedAt: null,
+      attemptsInWindow: 0,
+      nextAttemptAt: 1,
+      lastAttemptAt: null,
+      state: "pending",
+    };
+    const { roomId: _roomId, ...commonIndex } = index;
+    for (const kind of ["task_create", "task_update"] as const) {
+      expect(() => decodePreparedMutationJournalIndex({
+        ...commonIndex,
+        kind,
+        operationId: "t".repeat(129),
+        taskId: "89000000-0000-4000-8000-000000000001",
+      })).toThrow("corrupt");
+    }
+    try {
+      const first = createElectronPreparedMutationJournalVault({
+        directory,
+        safeStorage: storage,
+      });
+      expect(await first.unlock()).toEqual({ status: "available" });
+      expect(await first.putSealed({ index, canonicalBody })).toBe("inserted");
+      await first.lock();
+
       const restarted = createElectronPreparedMutationJournalVault({
         directory,
         safeStorage: storage,

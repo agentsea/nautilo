@@ -273,6 +273,16 @@ export type {
   ProtectedArtifactPreparedAccessRequestV1,
   ProtectedArtifactAccessUpdateResponseV1,
 } from "./schemas/protected-artifact";
+export {
+  protectedTaskPreparedCreateRequestV1Schema,
+  protectedTaskPreparedPublicationRequestV1Schema,
+  protectedTaskPreparedUpdateRequestV1Schema,
+} from "./schemas/protected-task";
+export type {
+  ProtectedTaskPreparedCreateRequestV1,
+  ProtectedTaskPreparedPublicationRequestV1,
+  ProtectedTaskPreparedUpdateRequestV1,
+} from "./schemas/protected-task";
 export type {
   ProtectedMemoryBriefResponseV1,
   ProtectedMemoryArchiveRequestV1,

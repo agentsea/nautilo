@@ -29,12 +29,13 @@ import {
   and,
   eq,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   getTaskRuns,
   getLatestRunModelByTask,
   listTasksForOwner,
   listAwaitingTaskRunsForOwner,
   profiles,
-  updateTask,
+  updateTaskIfCurrent,
   type NewTask,
   getOwnerAgentDisplayNamesByAgentId,
   type Task,
@@ -513,7 +514,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       }
 
       const db = getServerDirectDb();
-      const task = await getTaskById(db, request.params.id);
+      const task = await getTaskByIdWithMutationVersion(db, request.params.id);
       if (!task || task.ownerId !== ownerId) {
         return reply.status(404).send({ error: "Task not found" });
       }
@@ -640,9 +641,21 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         return;
       }
 
-      const updated = await updateTask(db, task.id, patch);
+      const updated = await updateTaskIfCurrent(
+        db,
+        {
+          id: task.id,
+          ownerId,
+          expectedStatus: task.status,
+          expectedMutationVersion: task.mutationVersion,
+          expectedContentRevision: task.contentRevision,
+        },
+        patch,
+      );
       if (!updated) {
-        return reply.status(404).send({ error: "Task not found" });
+        return reply.status(409).send({
+          error: "Task changed while this update was being prepared. Reload and try again.",
+        });
       }
       return reply.send({ ...toTaskSummary(updated),
         ...(await canResumeSecurityResearchContextFailure(db, updated) ? { canResumeResearch: true } : {}),

@@ -8,8 +8,11 @@ import {
   PROTECTED_TASK_CODEX_WORKING_DIRECTORY_MAX_UTF8_BYTES_V1,
   PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1,
   PROTECTED_TASK_LIVE_MINI_APP_ID_MAX_CHARS_V1,
+  assertProtectedTaskOperationalMetadataProjectionV1,
   classifyProtectedTaskMetadataV1,
+  isProtectedTaskOperationalMetadataProjectionV1,
   type ProtectedTaskMetadataClassificationV1,
+  type ProtectedTaskMetadataProjectionV1,
 } from "../../src/protected-task-metadata";
 
 const ACTOR_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -19,6 +22,12 @@ function supported(input: unknown) {
   expect(result.status).toBe("supported");
   if (result.status !== "supported") throw new Error(`expected supported metadata at ${result.path}`);
   return result;
+}
+
+function jsonProjection(
+  value: ProtectedTaskMetadataProjectionV1,
+): ProtectedTaskMetadataProjectionV1 {
+  return value;
 }
 
 function expectUnsupported(
@@ -71,8 +80,41 @@ function codexExecution(overrides: Record<string, unknown> = {}) {
 }
 
 describe("protected Task metadata v1", () => {
+  test("brands only canonical operational projections", () => {
+    const classified = supported({
+      target: "/work/repository",
+      mode: "update",
+      publish: "branch",
+      instructions: "Keep this protected.",
+    });
+
+    expect(isProtectedTaskOperationalMetadataProjectionV1(
+      classified.operational,
+    )).toBe(true);
+    expect(() => assertProtectedTaskOperationalMetadataProjectionV1(
+      classified.operational,
+    )).not.toThrow();
+    for (const unclassified of [
+      { mode: "update", publish: "branch" },
+      { target: "/work/repository", instructions: "protected" },
+      { unknown: true },
+      { execution: { harnessModelId: "x".repeat(
+        PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1 + 1,
+      ) } },
+    ]) {
+      expect(isProtectedTaskOperationalMetadataProjectionV1(unclassified))
+        .toBe(false);
+      expect(() => assertProtectedTaskOperationalMetadataProjectionV1(
+        unclassified,
+      )).toThrow("canonical classifier output");
+    }
+  });
+
   test("accepts the canonical empty Task case and keeps unrelated metadata outside the API", () => {
-    expect(supported({})).toEqual({ status: "supported", version: 1, operational: {}, protectedContent: {} });
+    const result = supported({});
+    expect({ ...result, operational: jsonProjection(result.operational) }).toEqual({
+      status: "supported", version: 1, operational: {}, protectedContent: {},
+    });
     expectUnsupported(null, "unsupported_shape", "$");
     expectUnsupported(new Date(), "unsupported_shape", "$");
     expectUnsupported({ ordinary: "metadata" }, "unknown_field", "$");
@@ -120,7 +162,7 @@ describe("protected Task metadata v1", () => {
       },
     });
 
-    expect(result.operational).toEqual({
+    expect(jsonProjection(result.operational)).toEqual({
       preparation: {
         stage: "using_tools",
         activity: "reading_source",
@@ -225,7 +267,7 @@ describe("protected Task metadata v1", () => {
 
   test("classifies artifact ping identifiers and topic as protected content", () => {
     const result = supported({ artifactId: "board/events", topic: "selection.changed", source: "artifact_ping" });
-    expect(result.operational).toEqual({ source: "artifact_ping" });
+    expect(jsonProjection(result.operational)).toEqual({ source: "artifact_ping" });
     expect(result.protectedContent).toEqual({ artifactId: "board/events", topic: "selection.changed" });
   });
 
@@ -274,7 +316,7 @@ describe("protected Task metadata v1", () => {
         desktopSessionId: "desktop", selectedProtocolVersion: 15, capabilityRevision: 1 },
     }],
   ])("accepts the exact %s execution producer", (_name, execution) => {
-    expect(supported({ execution }).operational).toEqual({ execution });
+    expect(jsonProjection(supported({ execution }).operational)).toEqual({ execution });
   });
 
   test("accepts canonical Writer revisions and rejects legacy nested receipt values", () => {
@@ -407,7 +449,7 @@ describe("protected Task metadata v1", () => {
       },
     });
 
-    expect(result.operational).toEqual({
+    expect(jsonProjection(result.operational)).toEqual({
       lastInterruption: {
         code: "no_progress",
         cause: "repeated_tool_failure",

@@ -390,6 +390,32 @@ window.runNautiloBrowserVaultTest = async () => {
         "YnJvd3Nlci1zZWNyZXQtc2lnbmVkLXBsYWludGV4dA",
     },
   });
+  const mutationTaskId = "84000000-0000-4000-8000-000000000001";
+  await journal.putBeforeSend({
+    kind: "task_create",
+    taskId: mutationTaskId,
+    request: {
+      requestVersion: 1,
+      operationId: "browser-task-mutation:1",
+      planDigestBase64url: "T".repeat(43),
+      taskId: mutationTaskId,
+      expectedContentRevision: 0,
+      nextContentRevision: 1,
+      expectedCryptoAccessRevision: 0,
+      resultCryptoAccessRevision: 0,
+      cryptoObjectId: `task:v1:${mutationTaskId}:1`,
+      payloadVersion: 1,
+      requiredNamespaceIds: [mutationNamespaceId],
+      encryptedPayloadBytesBase64url: "YnJvd3Nlci10YXNrLWNpcGhlcnRleHQ",
+      accessManifestBytesBase64url: "YnJvd3Nlci10YXNrLW1hbmlmZXN0",
+      namespaceEnvelopes: [{
+        namespaceId: mutationNamespaceId,
+        envelopeBytesBase64url: "YnJvd3Nlci10YXNrLWVudmVsb3Bl",
+      }],
+      signedPublicationRequestBytesBase64url: "YnJvd3Nlci10YXNrLXNpZ25lZA",
+      operation: "create",
+    },
+  });
   const artifactAccessOperationId = "browser-artifact-access:1";
   const artifactAccessDigest = "A".repeat(43);
   const artifactAccessBody = new TextEncoder().encode("artifact-access-body");
@@ -414,6 +440,30 @@ window.runNautiloBrowserVaultTest = async () => {
     canonicalBody: artifactAccessBody,
   });
   artifactAccessBody.fill(0);
+  const legacyLiveShadowOperationId = "l".repeat(256);
+  const legacyLiveShadowDigest = "L".repeat(43);
+  const legacyLiveShadowBody = new TextEncoder().encode("legacy-live-shadow-body");
+  await mutationVault.putSealed({
+    index: {
+      formatVersion: 1,
+      operationId: legacyLiveShadowOperationId,
+      authenticatedRequestDigestBase64url: legacyLiveShadowDigest,
+      kind: "live_shadow_message",
+      roomId: "83000000-0000-4000-8000-000000000099",
+      canonicalBytes: legacyLiveShadowBody.length,
+      sealedBytes: legacyLiveShadowBody.length + 16,
+      createdAt: mutationNow,
+      updatedAt: mutationNow,
+      attempts: 0,
+      attemptWindowStartedAt: null,
+      attemptsInWindow: 0,
+      nextAttemptAt: mutationNow,
+      lastAttemptAt: null,
+      state: "pending",
+    },
+    canonicalBody: legacyLiveShadowBody,
+  });
+  legacyLiveShadowBody.fill(0);
   await mutationVault.lock();
   const resumedMutationVault = createBrowserPreparedMutationJournalVault();
   if ((await resumedMutationVault.unlock()).status !== "available") {
@@ -423,9 +473,17 @@ window.runNautiloBrowserVaultTest = async () => {
     entry.kind === "artifact_access"
     && entry.operationId === artifactAccessOperationId
   )) throw new Error("browser Artifact access journal record failed restart");
+  if (!(await resumedMutationVault.listIndexes()).some((entry) =>
+    entry.kind === "live_shadow_message"
+    && entry.operationId === legacyLiveShadowOperationId
+  )) throw new Error("browser legacy live-shadow journal record failed restart");
   await resumedMutationVault.removeExact(
     artifactAccessOperationId,
     artifactAccessDigest,
+  );
+  await resumedMutationVault.removeExact(
+    legacyLiveShadowOperationId,
+    legacyLiveShadowDigest,
   );
   checks.push("journal-artifact-access-restart");
   const resumedJournal = createPreparedMutationJournal({
@@ -439,12 +497,17 @@ window.runNautiloBrowserVaultTest = async () => {
   if (openedMutation !== "browser-mutation:1") {
     throw new Error("browser prepared mutation journal round-trip failed");
   }
+  await resumedJournal.withPrepared("browser-task-mutation:1", (prepared) => {
+    if (prepared.kind !== "task_create" || prepared.taskId !== mutationTaskId) {
+      throw new Error("browser prepared Task mutation journal round-trip failed");
+    }
+  });
   const mutationIndex = (await resumedJournal.listStatus())[0];
   if (mutationIndex === undefined) {
     throw new Error("browser prepared mutation journal index missing");
   }
   await resumedJournal.withPrepared("browser-mutation:1", async () => {
-    if ((await resumedJournal.listStatus()).length !== 1) {
+    if ((await resumedJournal.listStatus()).length !== 2) {
       throw new Error("browser prepared mutation journal reentrant read failed");
     }
   });

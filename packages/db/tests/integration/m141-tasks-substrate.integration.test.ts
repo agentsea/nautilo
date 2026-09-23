@@ -18,8 +18,10 @@ import {
   tasks,
   createTask,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   listTasksForOwner,
   updateTask,
+  updateTaskIfCurrent,
   insertTaskRun,
   getTaskRuns,
   countActiveTaskWorkWith,
@@ -545,6 +547,47 @@ describe("M141 store layer", () => {
     expect(patched?.prompt).toBe("changed");
     expect(patched?.selectionProfile).toBe("cheapest");
     expect(patched!.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  test("conditional update uses a lossless tuple version across microsecond timestamps", async () => {
+    const owner = await newOwner("conditional-update");
+    const task = await createTask(db, taskInput(owner));
+
+    await db
+      .update(tasks)
+      .set({
+        updatedAt: sql`date_trunc('second', clock_timestamp()) + interval '123456 microseconds'`,
+      })
+      .where(eq(tasks.id, task.id));
+
+    const [precision] = await db
+      .select({ microseconds: sql<string>`to_char(${tasks.updatedAt}, 'US')` })
+      .from(tasks)
+      .where(eq(tasks.id, task.id));
+    expect(precision?.microseconds).toBe("123456");
+
+    const snapshot = await getTaskByIdWithMutationVersion(db, task.id);
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.updatedAt.toISOString()).toEndWith(".123Z");
+
+    const updated = await updateTaskIfCurrent(db, {
+      id: task.id,
+      ownerId: owner.userId,
+      expectedStatus: "pending",
+      expectedMutationVersion: snapshot!.mutationVersion,
+      expectedContentRevision: snapshot!.contentRevision,
+    }, { prompt: "changed exactly once" });
+    expect(updated?.prompt).toBe("changed exactly once");
+
+    const staleRetry = await updateTaskIfCurrent(db, {
+      id: task.id,
+      ownerId: owner.userId,
+      expectedStatus: "pending",
+      expectedMutationVersion: snapshot!.mutationVersion,
+      expectedContentRevision: snapshot!.contentRevision,
+    }, { prompt: "stale overwrite" });
+    expect(staleRetry).toBeUndefined();
+    expect((await getTaskById(db, task.id))?.prompt).toBe("changed exactly once");
   });
 
   test("markTaskRunStatus updates a task_runs row", async () => {
