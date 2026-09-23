@@ -95,6 +95,7 @@ describe("MessageActionRail", () => {
     expect(deleteButton?.className).toContain("hover:text-red-500");
     expect(deleteButton?.className).toContain("focus:text-red-500");
     expect(deleteButton?.className).toContain("active:text-red-500");
+    expect(deleteButton?.className).toContain("hidden group-hover:flex");
     unmount();
   });
 
@@ -106,6 +107,7 @@ describe("MessageActionRail", () => {
     expect(rail?.className).toContain("opacity-0");
     expect(rail?.className).toContain("group-hover:opacity-100");
     expect(rail?.className).toContain("group-focus-within:opacity-100");
+    expect(container.querySelector("[data-testid='message-action-rail-delete']")?.className).not.toContain("hidden");
     unmount();
   });
 

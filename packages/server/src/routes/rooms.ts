@@ -2841,8 +2841,9 @@ export function roomsRoutes(
         return reply.code(404).send({ error: "Not found" });
       }
 
+      let authority: Awaited<ReturnType<typeof assertUserCanDeleteMessage>>;
       try {
-        await assertUserCanDeleteMessage(messageId, sessionUserId);
+        authority = await assertUserCanDeleteMessage(messageId, sessionUserId);
       } catch (err) {
         if (err instanceof MessageDeleteError) {
           return err.reason === "forbidden"
@@ -2856,7 +2857,14 @@ export function roomsRoutes(
       }
 
       try {
-        await deleteMessageWithConvergence({ roomId, messageId });
+        await deleteMessageWithConvergence({
+          roomId,
+          messageId,
+          actorUserId: sessionUserId,
+          actorId: sessionActorId,
+          source: "room_message",
+          authority,
+        });
       } catch (err) {
         if (err instanceof MessageDeleteError) {
           if (err.reason === "message_anchors_thread") {

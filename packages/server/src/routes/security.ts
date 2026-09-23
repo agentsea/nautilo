@@ -67,6 +67,11 @@ import {
   type SecurityAuditEvent,
   type SecurityAuditEventKind,
 } from "../lib/security-audit-log";
+import {
+  InvalidMessageDeletionQuery,
+  listMessageDeletionReceipts,
+  type MessageDeletionReceiptQuery,
+} from "../lib/message-deletion-receipts";
 
 /**
  * Metadata the posture mutator needs for the audit log row
@@ -268,6 +273,7 @@ export interface SecurityRouteDeps {
    * trust preHandler (`request.sessionUserId`).
    */
   readonly getCapabilities: (userId: string) => Promise<readonly string[]>;
+  readonly listMessageDeletionReceipts?: typeof listMessageDeletionReceipts;
   readonly auditLogPath?: string;
   readonly now?: () => Date;
   /**
@@ -924,6 +930,35 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       return reply.status(code === "stale_audit_cursor" ? 409 : 400).send({ error: code });
     }
   });
+
+  app.get<{ Querystring: Omit<MessageDeletionReceiptQuery, "actorId"> }>(
+    "/api/security/message-deletions",
+    async (request, reply) => {
+      if (!request.sessionUserId) {
+        return reply.status(401).send({ error: "Authentication required" });
+      }
+      const capabilities = await getCapabilities(request.sessionUserId);
+      if (!capabilities.includes("view_audit_log")) {
+        return reply.status(403).send({ error: "audit_log_forbidden" });
+      }
+      const role = resolveActorRole(request.policyContext?.actorRole, null);
+      const actorId = role === "owner" ? undefined : request.sessionActorId;
+      if (role !== "owner" && !actorId) {
+        return reply.status(403).send({ error: "audit_log_forbidden" });
+      }
+      try {
+        return reply.send(await (deps.listMessageDeletionReceipts ?? listMessageDeletionReceipts)({
+          ...request.query,
+          ...(actorId ? { actorId } : {}),
+        }));
+      } catch (error) {
+        if (error instanceof InvalidMessageDeletionQuery) {
+          return reply.status(400).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
 
   // -------------------------------------------------------------------------
   // M037 — standing command approvals (per-user). The caller manages their

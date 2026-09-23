@@ -1,5 +1,5 @@
 {
-  "id": "d1b4b2d0-b802-4dae-8a6f-d1606e3c8d5c",
+  "id": "34880f6c-1e30-410a-bb41-230c1c8eff4a",
   "prevId": "b6b1d72f-a71d-412a-bf47-9c3afe75944e",
   "version": "7",
   "dialect": "postgresql",
@@ -403,6 +403,190 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.message_deletion_receipts": {
+      "name": "message_deletion_receipts",
+      "schema": "",
+      "columns": {
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority": {
+          "name": "authority",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "report_id": {
+          "name": "report_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "committed_at": {
+          "name": "committed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "message_deletion_receipts_message": {
+          "name": "message_deletion_receipts_message",
+          "columns": [
+            {
+              "expression": "message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "message_deletion_receipts_report": {
+          "name": "message_deletion_receipts_report",
+          "columns": [
+            {
+              "expression": "report_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "message_deletion_receipts_room_time": {
+          "name": "message_deletion_receipts_room_time",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "committed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "message_deletion_receipts_actor_time": {
+          "name": "message_deletion_receipts_actor_time",
+          "columns": [
+            {
+              "expression": "actor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "committed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "message_deletion_receipts_message_positive": {
+          "name": "message_deletion_receipts_message_positive",
+          "value": "\"message_deletion_receipts\".\"message_id\" > 0"
+        },
+        "message_deletion_receipts_source_valid": {
+          "name": "message_deletion_receipts_source_valid",
+          "value": "\"message_deletion_receipts\".\"source\" in ('room_message', 'content_report')"
+        },
+        "message_deletion_receipts_authority_valid": {
+          "name": "message_deletion_receipts_authority_valid",
+          "value": "\"message_deletion_receipts\".\"authority\" in ('author', 'room_owner', 'room_steward', 'manage_rooms', 'report_action')"
+        },
+        "message_deletion_receipts_outcome_valid": {
+          "name": "message_deletion_receipts_outcome_valid",
+          "value": "\"message_deletion_receipts\".\"outcome\" = 'deleted'"
+        },
+        "message_deletion_receipts_report_source": {
+          "name": "message_deletion_receipts_report_source",
+          "value": "(\"message_deletion_receipts\".\"source\" = 'content_report') = (\"message_deletion_receipts\".\"report_id\" is not null)"
+        },
+        "message_deletion_receipts_report_authority": {
+          "name": "message_deletion_receipts_report_authority",
+          "value": "(\"message_deletion_receipts\".\"source\" = 'content_report') = (\"message_deletion_receipts\".\"authority\" = 'report_action')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.mobile_user_agreement_acceptances": {
@@ -14981,52 +15165,6 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
-        "content_representation": {
-          "name": "content_representation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'ordinary'"
-        },
-        "content_namespace_id": {
-          "name": "content_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "content_revision": {
-          "name": "content_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "crypto_access_revision": {
-          "name": "crypto_access_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "crypto_required_namespace_fingerprint": {
-          "name": "crypto_required_namespace_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "crypto_mapping_state": {
-          "name": "crypto_mapping_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unmapped'"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -15185,72 +15323,12 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "tasks_content_namespace_id_namespaces_id_fk": {
-          "name": "tasks_content_namespace_id_namespaces_id_fk",
-          "tableFrom": "tasks",
-          "tableTo": "namespaces",
-          "columnsFrom": [
-            "content_namespace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "tasks_crypto_object_id_crypto_objects_object_id_fk": {
-          "name": "tasks_crypto_object_id_crypto_objects_object_id_fk",
-          "tableFrom": "tasks",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tasks_current_crypto_revision_fk": {
-          "name": "tasks_current_crypto_revision_fk",
-          "tableFrom": "tasks",
-          "tableTo": "task_definition_crypto_revisions",
-          "columnsFrom": [
-            "id",
-            "content_namespace_id",
-            "content_revision",
-            "crypto_object_id",
-            "crypto_required_namespace_fingerprint"
-          ],
-          "columnsTo": [
-            "task_id",
-            "content_namespace_id",
-            "content_revision",
-            "crypto_object_id",
-            "required_namespace_fingerprint"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "tasks_content_revision_nonnegative": {
-          "name": "tasks_content_revision_nonnegative",
-          "value": "\"tasks\".\"content_revision\" >= 0"
-        },
-        "tasks_crypto_access_revision_nonnegative": {
-          "name": "tasks_crypto_access_revision_nonnegative",
-          "value": "\"tasks\".\"crypto_access_revision\" >= 0"
-        },
-        "tasks_crypto_mapping_coherent": {
-          "name": "tasks_crypto_mapping_coherent",
-          "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.task_runs": {
@@ -15319,52 +15397,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "result_representation": {
-          "name": "result_representation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'ordinary'"
-        },
-        "result_content_namespace_id": {
-          "name": "result_content_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_revision": {
-          "name": "result_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "result_crypto_object_id": {
-          "name": "result_crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_crypto_access_revision": {
-          "name": "result_crypto_access_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "result_crypto_required_namespace_fingerprint": {
-          "name": "result_crypto_required_namespace_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "result_crypto_mapping_state": {
-          "name": "result_crypto_mapping_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unmapped'"
         }
       },
       "indexes": {
@@ -15416,716 +15448,13 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "task_runs_result_content_namespace_id_namespaces_id_fk": {
-          "name": "task_runs_result_content_namespace_id_namespaces_id_fk",
-          "tableFrom": "task_runs",
-          "tableTo": "namespaces",
-          "columnsFrom": [
-            "result_content_namespace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "task_runs_result_crypto_object_id_crypto_objects_object_id_fk": {
-          "name": "task_runs_result_crypto_object_id_crypto_objects_object_id_fk",
-          "tableFrom": "task_runs",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "result_crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "task_runs_current_crypto_result_revision_fk": {
-          "name": "task_runs_current_crypto_result_revision_fk",
-          "tableFrom": "task_runs",
-          "tableTo": "task_run_result_crypto_revisions",
-          "columnsFrom": [
-            "task_id",
-            "id",
-            "result_content_namespace_id",
-            "result_revision",
-            "result_crypto_object_id",
-            "result_crypto_required_namespace_fingerprint"
-          ],
-          "columnsTo": [
-            "task_id",
-            "task_run_id",
-            "content_namespace_id",
-            "result_revision",
-            "crypto_object_id",
-            "required_namespace_fingerprint"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "task_runs_result_revision_nonnegative": {
-          "name": "task_runs_result_revision_nonnegative",
-          "value": "\"task_runs\".\"result_revision\" >= 0"
-        },
-        "task_runs_result_crypto_access_revision_nonnegative": {
-          "name": "task_runs_result_crypto_access_revision_nonnegative",
-          "value": "\"task_runs\".\"result_crypto_access_revision\" >= 0"
-        },
-        "task_runs_result_crypto_mapping_coherent": {
-          "name": "task_runs_result_crypto_mapping_coherent",
-          "value": "(\n      \"task_runs\".\"result_representation\" = 'ordinary'\n      and \"task_runs\".\"result_content_namespace_id\" is null\n      and \"task_runs\".\"result_revision\" = 0\n      and \"task_runs\".\"result_crypto_object_id\" is null\n      and \"task_runs\".\"result_crypto_access_revision\" = 0\n      and \"task_runs\".\"result_crypto_required_namespace_fingerprint\" is null\n      and \"task_runs\".\"result_crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"task_runs\".\"result_representation\" in ('dual', 'protected')\n      and \"task_runs\".\"result_content_namespace_id\" is not null\n      and \"task_runs\".\"result_revision\" > 0\n      and \"task_runs\".\"result_crypto_object_id\" is not null\n      and \"task_runs\".\"result_crypto_access_revision\" >= 0\n      and octet_length(\"task_runs\".\"result_crypto_required_namespace_fingerprint\") = 32\n      and \"task_runs\".\"result_crypto_mapping_state\" in ('verified', 'stale')\n      and (\"task_runs\".\"result_representation\" <> 'protected' or (\"task_runs\".\"result_text\" is null and \"task_runs\".\"last_error\" is null))\n    )"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
-    },
-    "public.task_definition_crypto_revisions": {
-      "name": "task_definition_crypto_revisions",
-      "schema": "",
-      "columns": {
-        "sequence": {
-          "name": "sequence",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_namespace_id": {
-          "name": "content_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_revision": {
-          "name": "content_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_digest": {
-          "name": "request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requester_human_id": {
-          "name": "requester_human_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "anchor_namespace_id": {
-          "name": "anchor_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "representation": {
-          "name": "representation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payload_version": {
-          "name": "payload_version",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "crypto_access_revision": {
-          "name": "crypto_access_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "required_namespace_fingerprint": {
-          "name": "required_namespace_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operational_metadata": {
-          "name": "operational_metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "completion": {
-          "name": "completion",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "disposition": {
-          "name": "disposition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "attempt_count": {
-          "name": "attempt_count",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        },
-        "lease_token": {
-          "name": "lease_token",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_code": {
-          "name": "failure_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "crypto_completed_at": {
-          "name": "crypto_completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_task_definition_crypto_revisions_due": {
-          "name": "idx_task_definition_crypto_revisions_due",
-          "columns": [
-            {
-              "expression": "disposition",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "next_attempt_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sequence",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "completion",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"task_definition_crypto_revisions\".\"disposition\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_definition_crypto_revisions_anchor_namespace_id_namespaces_id_fk": {
-          "name": "task_definition_crypto_revisions_anchor_namespace_id_namespaces_id_fk",
-          "tableFrom": "task_definition_crypto_revisions",
-          "tableTo": "namespaces",
-          "columnsFrom": [
-            "anchor_namespace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_definition_crypto_revisions_coordinate": {
-          "name": "uq_task_definition_crypto_revisions_coordinate",
-          "nullsNotDistinct": false,
-          "columns": [
-            "task_id",
-            "content_revision"
-          ]
-        },
-        "uq_task_definition_crypto_revisions_mapping": {
-          "name": "uq_task_definition_crypto_revisions_mapping",
-          "nullsNotDistinct": false,
-          "columns": [
-            "task_id",
-            "content_namespace_id",
-            "content_revision",
-            "crypto_object_id",
-            "required_namespace_fingerprint"
-          ]
-        },
-        "uq_task_definition_crypto_revisions_operation": {
-          "name": "uq_task_definition_crypto_revisions_operation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "operation_id"
-          ]
-        },
-        "uq_task_definition_crypto_revisions_object": {
-          "name": "uq_task_definition_crypto_revisions_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_definition_crypto_revisions_product_all": {
-          "name": "task_definition_crypto_revisions_product_all",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true",
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_definition_crypto_revisions_revision_positive": {
-          "name": "task_definition_crypto_revisions_revision_positive",
-          "value": "\"task_definition_crypto_revisions\".\"content_revision\" > 0"
-        },
-        "task_definition_crypto_revisions_payload_version": {
-          "name": "task_definition_crypto_revisions_payload_version",
-          "value": "\"task_definition_crypto_revisions\".\"payload_version\" = 1"
-        },
-        "task_definition_crypto_revisions_access_revision": {
-          "name": "task_definition_crypto_revisions_access_revision",
-          "value": "\"task_definition_crypto_revisions\".\"crypto_access_revision\" = 0"
-        },
-        "task_definition_crypto_revisions_namespace_authority": {
-          "name": "task_definition_crypto_revisions_namespace_authority",
-          "value": "\"task_definition_crypto_revisions\".\"content_namespace_id\" = \"task_definition_crypto_revisions\".\"anchor_namespace_id\""
-        },
-        "task_definition_crypto_revisions_operation_portable": {
-          "name": "task_definition_crypto_revisions_operation_portable",
-          "value": "octet_length(\"task_definition_crypto_revisions\".\"operation_id\") between 1 and 128 and \"task_definition_crypto_revisions\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_definition_crypto_revisions_object_shape": {
-          "name": "task_definition_crypto_revisions_object_shape",
-          "value": "\"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'"
-        },
-        "task_definition_crypto_revisions_digest_sizes": {
-          "name": "task_definition_crypto_revisions_digest_sizes",
-          "value": "octet_length(\"task_definition_crypto_revisions\".\"request_digest\") = 32 and octet_length(\"task_definition_crypto_revisions\".\"authority_fingerprint\") = 32 and octet_length(\"task_definition_crypto_revisions\".\"required_namespace_fingerprint\") = 32"
-        },
-        "task_definition_crypto_revisions_retry_coherent": {
-          "name": "task_definition_crypto_revisions_retry_coherent",
-          "value": "\"task_definition_crypto_revisions\".\"attempt_count\" between 0 and 8 and (\"task_definition_crypto_revisions\".\"lease_token\" is null) = (\"task_definition_crypto_revisions\".\"lease_expires_at\" is null)"
-        },
-        "task_definition_crypto_revisions_lifecycle_coherent": {
-          "name": "task_definition_crypto_revisions_lifecycle_coherent",
-          "value": "(\n      \"task_definition_crypto_revisions\".\"completion\" = 'pending' and \"task_definition_crypto_revisions\".\"crypto_completed_at\" is null\n      and \"task_definition_crypto_revisions\".\"disposition\" in ('active', 'quarantined')\n    ) or (\n      \"task_definition_crypto_revisions\".\"completion\" = 'complete' and \"task_definition_crypto_revisions\".\"crypto_completed_at\" is not null\n      and \"task_definition_crypto_revisions\".\"disposition\" in ('active', 'mapped', 'quarantined', 'stale_mapping')\n    )"
-        },
-        "task_definition_crypto_revisions_failure_coherent": {
-          "name": "task_definition_crypto_revisions_failure_coherent",
-          "value": "(\n      \"task_definition_crypto_revisions\".\"disposition\" in ('active', 'mapped') and \"task_definition_crypto_revisions\".\"failure_code\" is null\n    ) or (\n      \"task_definition_crypto_revisions\".\"disposition\" in ('quarantined', 'stale_mapping')\n      and \"task_definition_crypto_revisions\".\"failure_code\" in (\n        'authority_stale', 'crypto_absent', 'crypto_incomplete',\n        'crypto_mismatch', 'storage_transient', 'mapping_conflict', 'retry_exhausted'\n      )\n    )"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_run_result_crypto_revisions": {
-      "name": "task_run_result_crypto_revisions",
-      "schema": "",
-      "columns": {
-        "sequence": {
-          "name": "sequence",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_namespace_id": {
-          "name": "content_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "result_revision": {
-          "name": "result_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_digest": {
-          "name": "request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requester_human_id": {
-          "name": "requester_human_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "anchor_namespace_id": {
-          "name": "anchor_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "representation": {
-          "name": "representation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payload_version": {
-          "name": "payload_version",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "crypto_access_revision": {
-          "name": "crypto_access_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "required_namespace_fingerprint": {
-          "name": "required_namespace_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "completion": {
-          "name": "completion",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "disposition": {
-          "name": "disposition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "attempt_count": {
-          "name": "attempt_count",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        },
-        "lease_token": {
-          "name": "lease_token",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_code": {
-          "name": "failure_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "crypto_completed_at": {
-          "name": "crypto_completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_task_run_result_crypto_revisions_due": {
-          "name": "idx_task_run_result_crypto_revisions_due",
-          "columns": [
-            {
-              "expression": "disposition",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "next_attempt_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sequence",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "completion",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"task_run_result_crypto_revisions\".\"disposition\" = 'active'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_task_run_result_crypto_revisions_task": {
-          "name": "idx_task_run_result_crypto_revisions_task",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "task_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "result_revision",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_run_result_crypto_revisions_anchor_namespace_id_namespaces_id_fk": {
-          "name": "task_run_result_crypto_revisions_anchor_namespace_id_namespaces_id_fk",
-          "tableFrom": "task_run_result_crypto_revisions",
-          "tableTo": "namespaces",
-          "columnsFrom": [
-            "anchor_namespace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_run_result_crypto_revisions_coordinate": {
-          "name": "uq_task_run_result_crypto_revisions_coordinate",
-          "nullsNotDistinct": false,
-          "columns": [
-            "task_run_id",
-            "result_revision"
-          ]
-        },
-        "uq_task_run_result_crypto_revisions_mapping": {
-          "name": "uq_task_run_result_crypto_revisions_mapping",
-          "nullsNotDistinct": false,
-          "columns": [
-            "task_id",
-            "task_run_id",
-            "content_namespace_id",
-            "result_revision",
-            "crypto_object_id",
-            "required_namespace_fingerprint"
-          ]
-        },
-        "uq_task_run_result_crypto_revisions_operation": {
-          "name": "uq_task_run_result_crypto_revisions_operation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "operation_id"
-          ]
-        },
-        "uq_task_run_result_crypto_revisions_object": {
-          "name": "uq_task_run_result_crypto_revisions_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_run_result_crypto_revisions_product_all": {
-          "name": "task_run_result_crypto_revisions_product_all",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true",
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_run_result_crypto_revisions_revision_positive": {
-          "name": "task_run_result_crypto_revisions_revision_positive",
-          "value": "\"task_run_result_crypto_revisions\".\"result_revision\" > 0"
-        },
-        "task_run_result_crypto_revisions_payload_version": {
-          "name": "task_run_result_crypto_revisions_payload_version",
-          "value": "\"task_run_result_crypto_revisions\".\"payload_version\" = 1"
-        },
-        "task_run_result_crypto_revisions_access_revision": {
-          "name": "task_run_result_crypto_revisions_access_revision",
-          "value": "\"task_run_result_crypto_revisions\".\"crypto_access_revision\" = 0"
-        },
-        "task_run_result_crypto_revisions_namespace_authority": {
-          "name": "task_run_result_crypto_revisions_namespace_authority",
-          "value": "\"task_run_result_crypto_revisions\".\"content_namespace_id\" = \"task_run_result_crypto_revisions\".\"anchor_namespace_id\""
-        },
-        "task_run_result_crypto_revisions_operation_portable": {
-          "name": "task_run_result_crypto_revisions_operation_portable",
-          "value": "octet_length(\"task_run_result_crypto_revisions\".\"operation_id\") between 1 and 128 and \"task_run_result_crypto_revisions\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_run_result_crypto_revisions_object_shape": {
-          "name": "task_run_result_crypto_revisions_object_shape",
-          "value": "\"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
-        },
-        "task_run_result_crypto_revisions_digest_sizes": {
-          "name": "task_run_result_crypto_revisions_digest_sizes",
-          "value": "octet_length(\"task_run_result_crypto_revisions\".\"request_digest\") = 32 and octet_length(\"task_run_result_crypto_revisions\".\"authority_fingerprint\") = 32 and octet_length(\"task_run_result_crypto_revisions\".\"required_namespace_fingerprint\") = 32"
-        },
-        "task_run_result_crypto_revisions_retry_coherent": {
-          "name": "task_run_result_crypto_revisions_retry_coherent",
-          "value": "\"task_run_result_crypto_revisions\".\"attempt_count\" between 0 and 8 and (\"task_run_result_crypto_revisions\".\"lease_token\" is null) = (\"task_run_result_crypto_revisions\".\"lease_expires_at\" is null)"
-        },
-        "task_run_result_crypto_revisions_lifecycle_coherent": {
-          "name": "task_run_result_crypto_revisions_lifecycle_coherent",
-          "value": "(\"task_run_result_crypto_revisions\".\"completion\" = 'pending' and \"task_run_result_crypto_revisions\".\"crypto_completed_at\" is null and \"task_run_result_crypto_revisions\".\"disposition\" in ('active', 'quarantined')) or (\"task_run_result_crypto_revisions\".\"completion\" = 'complete' and \"task_run_result_crypto_revisions\".\"crypto_completed_at\" is not null and \"task_run_result_crypto_revisions\".\"disposition\" in ('active', 'mapped', 'quarantined', 'stale_mapping'))"
-        },
-        "task_run_result_crypto_revisions_failure_coherent": {
-          "name": "task_run_result_crypto_revisions_failure_coherent",
-          "value": "(\"task_run_result_crypto_revisions\".\"disposition\" in ('active', 'mapped') and \"task_run_result_crypto_revisions\".\"failure_code\" is null) or (\"task_run_result_crypto_revisions\".\"disposition\" in ('quarantined', 'stale_mapping') and \"task_run_result_crypto_revisions\".\"failure_code\" in ('authority_stale', 'crypto_absent', 'crypto_incomplete', 'crypto_mismatch', 'storage_transient', 'mapping_conflict', 'retry_exhausted'))"
-        }
-      },
-      "isRLSEnabled": true
     },
     "public.focus_events": {
       "name": "focus_events",

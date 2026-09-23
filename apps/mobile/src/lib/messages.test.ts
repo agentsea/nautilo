@@ -8,7 +8,9 @@ import {
   applyThreadSummaryEvent,
   applyStreamEvent,
   chatItemPresentationKey,
+  computeMessageGroupings,
   fromHistoryMessages,
+  isSelfUserMessage,
   makeOptimisticUserItem,
   reconcileLatestHistoryItems,
   reconcilePersistedHumanMessage,
@@ -20,7 +22,54 @@ function apply(items: ChatItem[], event: ServerEvent): ChatItem[] {
   return applyStreamEvent(items, event);
 }
 
+describe("mobile human message authorship", () => {
+  const message = (id: string, sourceUserId?: string): MessageItem => ({
+    kind: "message",
+    id,
+    role: "user",
+    text: id,
+    createdAt: "2026-09-22T00:00:00.000Z",
+    sourceUserId,
+  });
+
+  test("requires an exact source id before treating a message as self", () => {
+    expect(isSelfUserMessage(message("1", "viewer"), "viewer")).toBe(true);
+    expect(isSelfUserMessage(message("2", "peer"), "viewer")).toBe(false);
+    expect(isSelfUserMessage(message("3"), "viewer")).toBe(false);
+    expect(isSelfUserMessage(message("4", "viewer"), null)).toBe(false);
+  });
+
+  test("keeps consecutive missing-author rows separate and incoming", () => {
+    const grouping = computeMessageGroupings([message("1"), message("2")], "viewer");
+    expect(grouping.get("1")).toMatchObject({
+      isSelf: false, isFirstOfRun: true, isLastOfRun: true,
+    });
+    expect(grouping.get("2")).toMatchObject({
+      isSelf: false, isFirstOfRun: true, isLastOfRun: true,
+    });
+  });
+});
+
 describe("mobile chat item presentation identity", () => {
+  test("preserves multilingual content and its canonical Human source id", () => {
+    const text = "こんにちは、你好 — transcript integrity";
+    const [history] = fromHistoryMessages([{
+      id: "41", role: "user", content: text, sourceUserId: "peer-user",
+      createdAt: "2026-09-22T00:00:00.000Z",
+    }]);
+    expect(history).toMatchObject({ text, sourceUserId: "peer-user" });
+
+    const [realtime] = apply([], {
+      type: "message.new",
+      laneKey: "room:00000000-0000-4000-8000-000000000001",
+      messageId: "42",
+      role: "user",
+      content: text,
+      sourceUserId: "peer-user",
+    });
+    expect(realtime).toMatchObject({ text, sourceUserId: "peer-user" });
+  });
+
   test("preserves canonical retained attachment identity through history projection", () => {
     const [message] = fromHistoryMessages([{
       id: "42", role: "human", content: "", createdAt: "2026-08-27T00:00:00.000Z",

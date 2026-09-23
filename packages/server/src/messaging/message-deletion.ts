@@ -1,6 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { getSharedDirectDb, messageDeletionReceipts } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { eventBus } from "@nautilo/runtime";
-import { deleteMessageHard, listHumanUserIdsInRoom } from "@nautilo/trust";
+import {
+  deleteMessageHardInTx,
+  listHumanUserIdsInRoom,
+  type MessageDeleteAuthority,
+} from "@nautilo/trust";
 
 import { cleanupRetainedAttachmentsForTurn } from "./attachments";
 import {
@@ -16,11 +22,34 @@ import {
 export async function deleteMessageWithConvergence(input: {
   roomId: string;
   messageId: number;
+  actorUserId: string;
+  actorId: string | null;
+  source: "room_message" | "content_report";
+  authority: MessageDeleteAuthority | "report_action";
+  reportId?: string;
+  operationId?: string;
   logContext?: string;
 }): Promise<void> {
   const context = input.logContext ?? "room message";
-  const { wasUnread, orphanedTurnId, rootSummary } = await deleteMessageHard(
-    input.messageId,
+  const operationId = input.operationId ?? randomUUID();
+  const db = getSharedDirectDb();
+  const { wasUnread, orphanedTurnId, rootSummary } = await db.transaction(async (tx) =>
+    deleteMessageHardInTx(tx, input.messageId, {
+      afterDeleteEffects: async ({ effects }) => {
+        if (effects.roomId !== input.roomId) throw new Error("Message Room changed during deletion");
+        await tx.insert(messageDeletionReceipts).values({
+          operationId,
+          roomId: effects.roomId,
+          messageId: input.messageId,
+          actorUserId: input.actorUserId,
+          actorId: input.actorId,
+          source: input.source,
+          authority: input.authority,
+          reportId: input.reportId ?? null,
+          outcome: "deleted",
+        });
+      },
+    }),
   );
 
   if (orphanedTurnId) {

@@ -2,7 +2,7 @@ import type { AvatarRef, RoomMemberDto } from "@nautilo/types";
 import { harnessPresentation } from "../subagents/harness-presentation";
 
 /**
- * D352 — build the `userId → displayName` label map used for multi-author
+ * build the `userId → displayName` label map used for multi-author
  * (peer-human) message rendering. Extracted here so the center path
  * (`SlackShapeRoom` via `RoomAuthorScope`) and the reader-rail self-source
  * fallback build it identically — single source, no second split-brain.
@@ -133,7 +133,7 @@ function avatarVersion(avatar: AvatarRef | null | undefined): string | null {
   return avatar.blobId;
 }
 
-function agentAvatarUrl(args: {
+export function agentAvatarUrl(args: {
   roomId: string | null | undefined;
   agentId: string | undefined;
   avatar: AvatarRef | null | undefined;

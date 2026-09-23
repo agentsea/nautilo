@@ -24,3 +24,6 @@ module.exports.SCREEN_RECORDING_PERMISSION_IDENTIFIER = SCREEN_RECORDING_PERMISS
 module.exports.CUA_DRIVER_ENTITLEMENTS = CUA_DRIVER_ENTITLEMENTS;
 module.exports.COMPUTER_USE_HOST_ENTITLEMENTS = COMPUTER_USE_HOST_ENTITLEMENTS;
 module.exports.SCREEN_RECORDING_PERMISSION_ENTITLEMENTS = SCREEN_RECORDING_PERMISSION_ENTITLEMENTS;
+module.exports.WINDOW_PRESENCE_RELATIVE_PATH = join("Contents", "Resources", "tools-window-presence", "nautilo-window-presence");
+module.exports.WINDOW_PRESENCE_IDENTIFIER = "com.nautilo.desktop.window-presence";
+module.exports.WINDOW_PRESENCE_ENTITLEMENTS = resolve(__dirname, "..", "entitlements.window-presence.plist");

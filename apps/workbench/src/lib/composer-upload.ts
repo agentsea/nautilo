@@ -1,5 +1,5 @@
 /**
- * D271 — upload a composer attachment's bytes and patch the chip with the
+ * upload a composer attachment's bytes and patch the chip with the
  * resulting server `attachmentId`. Shared by every attach entry point
  * (paperclip now; drag-drop next) so there is ONE ingestion path.
  */
@@ -49,6 +49,18 @@ export async function uploadComposerAttachment(
   file: { name: string; base64: string },
   opts?: { roomId?: string | null },
 ): Promise<void> {
+  try {
+    const result = await uploadPickedAttachment(file, opts);
+    updateAttachment(id, { status: "queued", errorReason: null, attachmentId: result.attachmentId });
+  } catch (error) {
+    updateAttachment(id, { status: "error", errorReason: error instanceof Error ? error.message : "Attachment upload failed" });
+  }
+}
+
+/** Shared native-picker ingestion; each composer retains its own Room-bound queue. */
+export function uploadPickedAttachment(file: { name: string; base64: string }, opts?: { roomId?: string | null }) {
   const bytes = base64ToBytes(file.base64);
-  await uploadBlob(id, new Blob([bytes.buffer as ArrayBuffer]), file.name, opts);
+  return apiClient.uploadMessageAttachment(new Blob([bytes.buffer as ArrayBuffer]), file.name, {
+    ...(opts?.roomId ? { roomId: opts.roomId } : {}),
+  });
 }

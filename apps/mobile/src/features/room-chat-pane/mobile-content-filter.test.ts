@@ -36,6 +36,8 @@ describe("Mobile Human posting filter", () => {
     "Black people are artists",
     "I hate waiting for slow tests",
     "Skilled yourself at the tutorial",
+    "こんにちは、今日の会議は何時ですか？",
+    "你好，请把会议记录发给我。",
   ])("allows an ordinary boundary or false-positive fixture: %s", (text) => {
     expect(assessMobileHumanPosting({ text })).toBe("allowed");
   });

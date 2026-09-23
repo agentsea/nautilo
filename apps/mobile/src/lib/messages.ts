@@ -1103,14 +1103,12 @@ export type MessageGroupingFlags = {
   isSelf: boolean;
 };
 
-function messageSenderKey(
-  item: MessageItem,
-  viewerUserId?: string | null,
-): string | null {
+function messageSenderKey(item: MessageItem): string | null {
   if (item.role === "system") return null;
   if (item.role === "user") {
-    const uid = item.sourceUserId ?? viewerUserId ?? "__viewer__";
-    return `user:${uid}`;
+    return item.sourceUserId
+      ? `user:${item.sourceUserId}`
+      : `unknown-user:${item.id}`;
   }
   if (item.role === "assistant") {
     // Legacy assistant rows can lack an author id. Keep each such row in
@@ -1123,13 +1121,14 @@ function messageSenderKey(
   return null;
 }
 
-function isSelfUserMessage(
+export function isSelfUserMessage(
   item: MessageItem,
   viewerUserId?: string | null,
 ): boolean {
-  if (item.role !== "user") return false;
-  if (item.sourceUserId == null) return true;
-  return viewerUserId != null && item.sourceUserId === viewerUserId;
+  return item.role === "user"
+    && viewerUserId != null
+    && item.sourceUserId != null
+    && item.sourceUserId === viewerUserId;
 }
 
 /**
@@ -1146,7 +1145,7 @@ export function computeMessageGroupings(
     const it = items[i];
     if (it.kind !== "message" || it.role === "system") continue;
     const item = it;
-    const senderKey = messageSenderKey(item, viewerUserId);
+    const senderKey = messageSenderKey(item);
     if (!senderKey) continue;
 
     // Use direct neighbors in the original ordered list. A tool card or
@@ -1156,11 +1155,11 @@ export function computeMessageGroupings(
     const following = items[i + 1];
     const prevSender =
       previous?.kind === "message" && previous.role !== "system"
-        ? messageSenderKey(previous, viewerUserId)
+        ? messageSenderKey(previous)
         : null;
     const nextSender =
       following?.kind === "message" && following.role !== "system"
-        ? messageSenderKey(following, viewerUserId)
+        ? messageSenderKey(following)
         : null;
 
     const isFirstOfRun = senderKey !== prevSender;

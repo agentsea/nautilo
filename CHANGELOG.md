@@ -35,6 +35,36 @@ store update, or Desktop/Host installation.
   media routes still require their direct credentials, and failed Gateway
   requests are not replayed through retries or paid fallback chains.
 
+- Desktop Float Genie pins a Genie and Room to a dockable orb, waveform, prompt
+  or chat window. It hides while the Workbench is active, appears when working
+  elsewhere without taking focus, and sends text through the existing Room.
+  Activation starts compact, with a visible expand button and a draggable
+  avatar/name header. Chat reuses Room history, transcript rendering and the
+  wrapping Lexical composer. A quiet detach icon beside the Genie portrait
+  replaces the large composer button. Tap-to-record hosted voice, separate
+  Stop talking and Stop task controls, and native-picker attachments reuse
+  the existing runtime owners. Capture starts off; automatic listening remains
+  separate follow-on work.
+  The configured Genie avatar appears in every view; the bubble adds a state
+  ring and offers an abstract-orb alternative.
+  Returning to the main Workbench hides the floating surface even when macOS
+  reports stale visibility during a window or desktop Space transition.
+  Native Space-change notifications also reapply visibility on repeated swipes.
+  Visibility also checks the exact native main window when the panel
+  retains keyboard focus. A visible × attaches Genie again in one click.
+  While recording, compact views keep the active microphone visible for
+  finish-and-send; Escape and the controls menu discard the recording.
+  Stop action stays in a fixed position in every view, enabled throughout
+  unfinished work and grayed out when idle. The bubble matches the portrait frame, activity ring,
+  and separate corner controls used by its compact design.
+  Its corner controls leave transparent space at the window edge so the
+  circular borders render completely.
+  The expanded header stays draggable without a dotted grip beside the avatar.
+
+- Contributor-only floating Genie shell lab with four compact views, screen-edge
+  docking and a Nautilo/Persona visual comparison. Voice states are simulations;
+  microphone access and external runtime requests are disabled in this first lab.
+
 - Routine Jev delegation for connected websites already under direct Genie
   control through Browser Use. It reuses the browser decision loop, verifies
   fresh observations against the exact operation and control epoch, and returns
@@ -70,6 +100,12 @@ store update, or Desktop/Host installation.
   while unresolved and blocked conversations continue to reject uploads.
 - Desktop users can open Servers and connect another server even when their
   current server does not allow Genie invocation, including Guest accounts.
+- Floating Genie distinguishes Sending from running work, with visible send
+  progress. Speaker × stops talking; the separate square Stop action control
+  remains available while the Genie speaks and works at the same time.
+
+- Room and floating Genie messages summarize recognized legacy attachment
+  envelopes as filenames after history reload. Ambiguous envelopes remain intact.
 
 - Server Admin places the Nautilo Gateway URL and key together at the end of
   API Keys, following the separate OpenAI-compatible gateway.

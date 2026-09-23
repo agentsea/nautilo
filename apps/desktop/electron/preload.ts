@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import type { CompanionOwnerAPI, CompanionAction } from "./companion-contract";
 import type { ConnectionPresentation } from "./connection-presentation";
 import type {
   ReadyToWorkAggregateStatus,
@@ -376,7 +377,7 @@ import type {
 } from "./passwords/types";
 
 /**
- * D057 2a.4 — menu action dispatch from main. Renderer subscribes via
+ * menu action dispatch from main. Renderer subscribes via
  * `nautiloDesktop.menu.onAction(handler)`; main fires actions when menu
  * items are clicked. String union kept in lock-step with
  * apps/desktop/electron/menu.ts MenuAction.
@@ -390,13 +391,13 @@ type MenuAction =
   | "toggle-browser-column"
   | "toggle-context-panel"
   | "toggle-nav-rail"
-  // M055 — Account → Manage devices… (no-op until M056).
+  // Account → Manage devices…
   | "open-account-devices"
   | "open-change-pin"
   | "open-restore-pin";
 
 /**
- * D057 2a.5 — microphone permission status values surfaced to the
+ * microphone permission status values surfaced to the
  * renderer. Mirrors the MicStatus union in main-process media.ts.
  */
 type MicStatus =
@@ -434,7 +435,7 @@ type DesktopFilesystemGrantCreateRequest = {
   lifetime: DesktopFilesystemGrantLifetime;
 };
 
-/** D458 Wave 7 — deliberately narrow mobile-control renderer bridge. */
+/** deliberately narrow mobile-control renderer bridge. */
 type RemoteControlReadiness = {
   relayReady: boolean;
   relayStatus: string;
@@ -666,7 +667,7 @@ const ordinaryChatAPI = {
 };
 
 /**
- * D418 — narrow human-only grant-management bridge. It intentionally has no
+ * narrow human-only grant-management bridge. It intentionally has no
  * directory browsing/read APIs and a picked path is never persisted here.
  */
 const desktopFilesystemGrantsAPI = {
@@ -705,7 +706,7 @@ const desktopFilesystemGrantsAPI = {
     >,
 };
 
-// ── D418 — Workstation Profile review / activation-preparation bridge ──────
+// ── Workstation Profile review / activation-preparation bridge ─────────
 //
 // Read-only-ish review operations + a narrow activation-preparation IPC for
 // the shipped Developer Workstation seed. The renderer supplies NO roots, env,
@@ -720,7 +721,7 @@ type WorkstationProfileIpcFailureCode =
   | "store_unavailable"
   | "store_corrupt"
   | "store_instance_mismatch"
-  // D418 — profile-selector activation seam failures.
+  // Profile-selector activation seam failures.
   | "no_relay"
   | "no_user"
   | "no_server"
@@ -866,13 +867,13 @@ const workstationProfilesAPI = {
       }>
     >,
   /**
-   * D418 — select + activate an EXISTING stored Workstation Profile. The
+   * select + activate an EXISTING stored Workstation Profile. The
    * renderer supplies ONLY the selected profile's id + exact revision +
    * the activating user's OWN fresh PIN. Electron main verifies the stored
    * revision, posts the profile selectors + relay binding evidence + PIN
    * to the authoritative server `/api/workstation-access/activate-profile`
    * route (which enforces the `use_workstation` capability gate
-   * (B3 — D418 Commit 1: `control_desktop` is no longer required for
+   * (`control_desktop` is no longer required for
    * activation) + the user's OWN PIN proof + the authoritative relay
    * binding), and ONLY on a 200 server proof success compiles the stored
    * profile into live policy-pack / session authority and re-advertises the
@@ -897,7 +898,7 @@ const workstationProfilesAPI = {
 };
 
 /**
- * D538 — renderer-safe session-permission bridge. The renderer may provide
+ * renderer-safe session-permission bridge. The renderer may provide
  * only its own PIN; relay and Desktop-session identity stay in Electron main.
  */
 const uncontainedHostCommandsAPI = {
@@ -920,7 +921,7 @@ const uncontainedHostCommandsAPI = {
 };
 
 /**
- * D079 Phase 1 — the `currentFolder` namespace is the canonical
+ * the `currentFolder` namespace is the canonical
  * filesystem surface for the user's task-scoped folder. Phase 3 will
  * add a sibling `workspace` namespace for Genie's Workspace (Surface
  * A). Don't re-use the old `workspace` name in new code — it stays
@@ -934,22 +935,22 @@ const currentFolderAPI = {
       currentFolder: string | null;
       relayId: string | null;
     }>,
-  /** D075 chunk 2 — commit a Recent entry (already-validated path). */
+  /** chunk 2 — commit a Recent entry (already-validated path). */
   setPath: (p: string) =>
     ipcRenderer.invoke("currentFolder:setPath", { path: p }) as Promise<void>,
-  /** D075 chunk 2 — pick + validate + commit in one round-trip. */
+  /** chunk 2 — pick + validate + commit in one round-trip. */
   pickAndCommit: () =>
     ipcRenderer.invoke("currentFolder:pickAndCommit") as Promise<string | null>,
-  /** D075 chunk 2 — recent current folders (most-recent first). */
+  /** chunk 2 — recent current folders (most-recent first). */
   listRecent: () =>
     ipcRenderer.invoke("currentFolder:listRecent") as Promise<string[]>,
-  /** D075 — pre-commit validator for edge paths. */
+  /** pre-commit validator for edge paths. */
   validate: (p: string) =>
     ipcRenderer.invoke("currentFolder:validate", { path: p }) as Promise<
       { ok: true; resolved: string } | { ok: false; reason: string }
     >,
   /**
-   * D075 chunk 2 — push notification from main when any commit path
+   * chunk 2 — push notification from main when any commit path
    * (dropdown / tray / native menu) changes the current folder.
    * Renderer's BrowserColumnContext subscribes so the header + file
    * tree update live without a reload. Returns an unsubscribe
@@ -963,7 +964,7 @@ const currentFolderAPI = {
 };
 
 /**
- * D079 Phase 1 — deprecation alias for `nautiloDesktop.workspace.*`.
+ * deprecation alias for `nautiloDesktop.workspace.*`.
  * One-shot warning the first time any legacy method is called; each
  * method delegates to the new IPC channel (main.ts also accepts the
  * old IPC channel names as aliases, but we prefer to route through
@@ -971,7 +972,7 @@ const currentFolderAPI = {
  * sees only direct legacy-IPC callers).
  *
  * `useDefault` is intentionally missing from the alias — current
- * folder has no default in D079. Existing callers will see a
+ * folder has no default in . Existing callers will see a
  * TypeError if they try; that's a clear breakage surfacing a real
  * semantic shift.
  */
@@ -981,12 +982,12 @@ function warnDeprecated(method: string): void {
   deprecationWarned.add(method);
 
   console.warn(
-    `[nautilo-desktop][deprecated] nautiloDesktop.workspace.${method} is renamed to nautiloDesktop.currentFolder.${method} per D079 Phase 1.`,
+    `[nautilo-desktop][deprecated] nautiloDesktop.workspace.${method} is renamed to nautiloDesktop.currentFolder.${method}.`,
   );
 }
 
 /**
- * D079 Phase 3 — Genie's Workspace API (Surface A). Read-only for
+ * Genie's Workspace API (Surface A). Read-only for
  * now — `getRoot` returns the always-set workspace root (default
  * `~/Documents/Nautilo/`, user-overridable via Settings in follow-up
  * work). `setRoot`, `pickAndSetRoot`, `revealInFinder`, `listRecent`,
@@ -1025,7 +1026,7 @@ const workspaceAliasAPI = {
 };
 
 /**
- * M055 — Logto auth bridge. The renderer's `useAuth()` Electron
+ * Logto auth bridge. The renderer's `useAuth` Electron
  * branch (Phase 9) consumes this through `desktopAPI!.auth.*`.
  *
  * `onStateChange` returns an unsubscribe fn — same shape as
@@ -1115,7 +1116,7 @@ const authAPI = {
   signOut: (): Promise<void> =>
     ipcRenderer.invoke("auth:signOut") as Promise<void>,
   /**
-   * M101 — embedded OIDC step-up (`prompt=login` + `max_age`) for a
+   * embedded OIDC step-up (`prompt=login` + `max_age`) for a
    * fresh access token; persists any rotated refresh token in the shell.
    */
   stepUp: (opts?: { maxAgeSeconds?: number }) =>
@@ -1123,7 +1124,7 @@ const authAPI = {
       { accessToken: string; issuedAt: number } | { error: "cancelled" }
     >,
   /**
-   * D103 P4d.9 — Ask the main process to re-probe the server's
+   * P4d.9 — Ask the main process to re-probe the server's
    * `/health` endpoint and refresh the cached Logto config. Call this
    * after a `disconnected → connected` transition so a boot-time probe
    * failure (server was down, HTTPS/HTTP mismatch, etc.) recovers
@@ -1161,12 +1162,12 @@ const authAPI = {
 };
 
 /**
- * D154 — cold-boot bootstrap + static picker surface (main window only).
+ * cold-boot bootstrap + static picker surface (main window only).
  */
 type ShellStateOnBoot = "live" | "disconnected" | "wrong-server" | "no-pairing";
 
 /**
- * M123 / Stack 39 Phase 3E + M161 Phase 3 — in-app server switcher IPC.
+ * In-app server switcher IPC.
  *
  * `openPicker` (legacy/recovery) still relaunches on commit; the Phase 3
  * `list` / `switchTo` / `add` / `close` / `onChanged` surface performs
@@ -1339,7 +1340,7 @@ type NotificationDeliveryStatus = {
   state: "unsupported" | "supported" | "delivery-failed";
 };
 
-/** M239/M240 — narrow native delivery and content-free summary bridge. */
+/** narrow native delivery and content-free summary bridge. */
 const notificationsAPI = {
   showImportantMessage: (
     input: ImportantMessageNotificationInput,
@@ -1540,7 +1541,7 @@ const browserResearchAPI = {
 };
 
 /**
- * D403 (ISSUE-D403) P3 — human-only save/autofill bridge for the embedded
+ * P3 — human-only save/autofill bridge for the embedded
  * browser. Exposed to the HOST (mainWindow) renderer's save/autofill UX only.
  *
  * SECURITY (R6, non-negotiable): NO method here returns or accepts a raw
@@ -1623,7 +1624,7 @@ const toolRuntimesAPI = {
     >,
 };
 
-// D103 — the renderer gets a deliberately tiny, data-only updater projection.
+// the renderer gets a deliberately tiny, data-only updater projection.
 // It cannot set a channel/feed, choose an artifact, download directly, or
 // install. `open()` only asks Electron main to present its native flow.
 type SanitizedUpdateStatus =
@@ -1703,7 +1704,7 @@ const googleWorkspaceAPI = {
 };
 
 /**
- * D373 / Stack 137 — terminal (PTY) bridge. `create` spawns a shell in
+ * terminal (PTY) bridge. `create` spawns a shell in
  * main and returns its session id; `onData`/`onExit` stream output +
  * lifecycle. Subscriptions return an unsubscribe fn (React useEffect
  * cleanup) matching the menu/currentFolder pattern.
@@ -1716,8 +1717,8 @@ type TerminalSessionInfo = {
   sandboxed: boolean;
   controller: Controller;
   requested: boolean;
-  /** D438 — main-owned per-PTY consent; true once the user has handed this
-   *  one PTY to Genie (survives retake for the PTY's lifetime). */
+  /** main-owned per-PTY consent; true once the user has handed this
+   * one PTY to Genie (survives retake for the PTY's lifetime). */
   agentControlConsented: boolean;
 };
 type WriteResult =
@@ -1748,8 +1749,8 @@ const terminalAPI = {
       sessionId,
       controller,
     }) as Promise<boolean>,
-  /** D438 — explicit, active-sender-validated grant: records per-PTY consent
-   *  and transfers control to Genie atomically. The only consent-minting op. */
+  /** explicit, active-sender-validated grant: records per-PTY consent
+   * and transfers control to Genie atomically. The only consent-minting op. */
   grantAgentControl: (sessionId: string) =>
     ipcRenderer.invoke("terminal:grant-agent-control", {
       sessionId,
@@ -1851,7 +1852,7 @@ const githubCliAPI = {
   cancel: () => ipcRenderer.invoke("githubCli:cancel") as Promise<void>,
 };
 
-/** D500 — only the transient Human PIN crosses; no Agent selector, SSH credential, or operation authority does. */
+/** only the transient Human PIN crosses; no Agent selector, SSH credential, or operation authority does. */
 const structuredSshAPI = {
   status: () => ipcRenderer.invoke("structuredSsh:status") as Promise<unknown>,
   check: () => ipcRenderer.invoke("structuredSsh:check") as Promise<unknown>,
@@ -1882,7 +1883,7 @@ type ComputerUseIpcStatus = {
 
 type ComputerUseOwnedAgentIpc = { agentId: string; displayName: string; handle: string };
 
-/** D516 — only a transient own-Human PIN crosses the renderer boundary. */
+/** only a transient own-Human PIN crosses the renderer boundary. */
 const computerUseAPI = {
   status: () => ipcRenderer.invoke("computerUse:status") as Promise<ComputerUseIpcStatus>,
   onStatusChanged: (callback: () => void) => {
@@ -1908,7 +1909,7 @@ const workstationShellAPI = {
 };
 
 /**
- * D453 — intentionally tiny human-only Codex Connection bridge. Main owns
+ * intentionally tiny human-only Codex Connection bridge. Main owns
  * all identity, account, runtime, workspace, and auth decisions; this sends
  * no renderer-controlled arguments across the privilege boundary.
  */
@@ -1940,7 +1941,7 @@ const hermesConnectionAPI = {
 };
 
 /**
- * D557 — deliberately narrow desired-state bridge. The selection is the only
+ * deliberately narrow desired-state bridge. The selection is the only
  * renderer input; Electron derives the Human and active server binding. PINs,
  * startup receipts, credentials, roots, and owner authority stay in main.
  */
@@ -1978,7 +1979,7 @@ const readyToWorkAPI = {
 };
 
 /**
- * M300 PR 1 — data-only foreground Shadow bridge. Electron main retains all
+ * PR 1 — data-only foreground Shadow bridge. Electron main retains all
  * profile, Namespace, Grant, signing, and wrapping-key bytes; the renderer can
  * submit only ordinary product DTOs and authenticated realtime ciphertext
  * events, and receives only display projections or content-free status.
@@ -2109,7 +2110,7 @@ const foregroundShadowAPI = {
 };
 
 /**
- * D403 (ISSUE-D403) P0 — the built guest `<webview>` preload path (a file:// URL)
+ * P0 — the built guest `<webview>` preload path (a file:// URL)
  * for the embedded-browser password layer. Resolved ONCE here (sync, at preload
  * load) from main so the SaaS surface can set it as the `<webview preload>`
  * attribute at render time. `null` when main doesn't provide it (older builds).
@@ -2129,6 +2130,22 @@ const embeddedBrowserGuestPreloadPath: string | null = (() => {
 })();
 
 contextBridge.exposeInMainWorld("nautiloDesktop", {
+  companion: {
+    enable: binding => ipcRenderer.invoke("companion:enable", binding),
+    pickFiles: generation => ipcRenderer.invoke("companion:pick-files", generation),
+    disable: generation => ipcRenderer.invoke("companion:disable", generation),
+    publish: (generation, snapshot) => ipcRenderer.invoke("companion:publish", generation, snapshot),
+    onAction: callback => {
+      const listener = (_event: IpcRendererEvent, generation: string, action: CompanionAction) => callback(generation, action);
+      ipcRenderer.on("companion:action", listener);
+      return () => ipcRenderer.removeListener("companion:action", listener);
+    },
+    onClosed: callback => {
+      const listener = (_event: IpcRendererEvent, generation: string) => callback(generation);
+      ipcRenderer.on("companion:closed", listener);
+      return () => ipcRenderer.removeListener("companion:closed", listener);
+    },
+  } satisfies CompanionOwnerAPI,
   miniAppRecovery: {
     open: (input: MiniAppRecoveryOpenInput) =>
       ipcRenderer.invoke("miniAppRecovery:open", input) as Promise<{ handle: string }>,
@@ -2177,14 +2194,14 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
   },
   isDesktop: true as const,
   /**
-   * D403 P0 — built guest <webview> preload path (file:// URL) for the
+   * P0 — built guest <webview> preload path (file:// URL) for the
    * embedded-browser password layer, or null on builds that don't provide it.
    */
   embeddedBrowserGuestPreloadPath,
-  /** M055 — Logto auth namespace (loopback PKCE). */
+  /** Logto auth namespace (loopback PKCE). */
   auth: authAPI,
   /**
-   * D154 — cold-boot shell classification (bootstrap + picker set this
+   * cold-boot shell classification (bootstrap + picker set this
    * before the workbench loads).
    */
   shellStateOnBoot: (): ShellStateOnBoot =>
@@ -2217,90 +2234,90 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
       };
     },
   },
-  /** D103 — optional updater affordance; all authority remains in Electron main. */
+  /** optional updater affordance; all authority remains in Electron main. */
   updates: updatesAPI,
 
   openFolder: () =>
     ipcRenderer.invoke("dialog:openFolder") as Promise<string | null>,
 
-  /** D271 — multi-select native file open; returns bytes (base64) to upload. */
+  /** multi-select native file open; returns bytes (base64) to upload. */
   pickFiles: () =>
     ipcRenderer.invoke("dialog:pickFiles") as Promise<
       Array<{ name: string; sizeBytes: number; base64: string }>
     >,
 
-  /** D079 — canonical current-folder surface. Use this in new code. */
+  /** canonical current-folder surface. Use this in new code. */
   currentFolder: currentFolderAPI,
 
   /**
-   * D079 Phase 3 — Genie's Workspace (Surface A). Distinct from
+   * Genie's Workspace (Surface A). Distinct from
    * `currentFolder` (Surface B) and from `workspace` (deprecation
    * alias). The rename cost is worth it: three distinct namespaces
    * at the preload boundary make surface confusion impossible.
    */
   genieWorkspace: genieWorkspaceAPI,
 
-  /** D079 — deprecated alias; remove after Phase 4 ships. */
+  /** deprecated alias; remove after Phase 4 ships. */
   workspace: workspaceAliasAPI,
 
-  /** M123 — account-menu "Switch server…" + mismatch recovery picker. */
+  /** account-menu "Switch server…" + mismatch recovery picker. */
   servers: serversAPI,
-  /** M161 Stack 198 — active-only privileged IPC lifecycle. */
+  /** active-only privileged IPC lifecycle. */
   activeSession: activeSessionAPI,
 
-  /** M239 — macOS important-message delivery and Dock attention. */
+  /** macOS important-message delivery and Dock attention. */
   notifications: notificationsAPI,
 
-  /** D336 — SaaS <webview> CDP-adoption bridge. */
+  /** SaaS <webview> CDP-adoption bridge. */
   browserControl: browserControlAPI,
-  /** D504 — exact opaque challenged-research lease controls. */
+  /** exact opaque challenged-research lease controls. */
   browserResearch: browserResearchAPI,
 
   /**
-   * D403 P3 — human-only embedded-browser save/autofill bridge. No raw password
+   * P3 — human-only embedded-browser save/autofill bridge. No raw password
    * ever crosses this surface (see `passwordsAPI`). Must never be exposed to any
    * agent/tool/CDP path.
    */
   passwords: passwordsAPI,
 
-  /** D345 — configured local tool runtimes (`agent-browser`, `gog`). */
+  /** configured local tool runtimes (`agent-browser`, `gog`). */
   toolRuntimes: toolRuntimesAPI,
 
-  /** M196 — Google Workspace OAuth connect / status (explicit UI only for keychain). */
+  /** Google Workspace OAuth connect / status (explicit UI only for keychain). */
   googleWorkspace: googleWorkspaceAPI,
 
-  /** D373 — terminal (PTY) work surface bridge. */
+  /** terminal (PTY) work surface bridge. */
   terminal: terminalAPI,
 
-  /** D418 — local Desktop Filesystem Grant administration (human renderer only). */
+  /** local Desktop Filesystem Grant administration (human renderer only). */
   desktopFilesystemGrants: desktopFilesystemGrantsAPI,
 
   /**
-   * D418 — Workstation Profile review / activation-preparation bridge
+   * Workstation Profile review / activation-preparation bridge
    * (human renderer only). Read-only review + seed discovery; never activates.
    */
   workstationProfiles: workstationProfilesAPI,
 
-  /** D538 — human-only own-PIN control; no relay binding crosses renderer. */
+  /** human-only own-PIN control; no relay binding crosses renderer. */
   uncontainedHostCommands: uncontainedHostCommandsAPI,
 
   githubCli: githubCliAPI,
   structuredSsh: structuredSshAPI,
   computerUse: computerUseAPI,
   workstationShell: workstationShellAPI,
-  /** D453 — human Connection controls; feature-detect on older builds. */
+  /** human Connection controls; feature-detect on older builds. */
   codexConnection: codexConnectionAPI,
-  /** D557 — durable Hermes owner choice; each accepted Task remains ephemeral. */
+  /** durable Hermes owner choice; each accepted Task remains ephemeral. */
   hermesConnection: hermesConnectionAPI,
-  /** D557 — current Desktop builds only; desired state is not live authority. */
+  /** current Desktop builds only; desired state is not live authority. */
   readyToWork: readyToWorkAPI,
 
-  /** D458 — human settings surface only; no raw relay token or blocker id. */
+  /** human settings surface only; no raw relay token or blocker id. */
   remoteControl: remoteControlAPI,
 
-  /** D458 — ordinary Electron messages submitted wholly by main. */
+  /** ordinary Electron messages submitted wholly by main. */
   ordinaryChat: ordinaryChatAPI,
-  /** M300 PR 1 — main-owned foreground Shadow encryption and projection. */
+  /** PR 1 — main-owned foreground Shadow encryption and projection. */
   foregroundShadow: foregroundShadowAPI,
   encryptionRecovery: encryptionRecoveryAPI,
 
@@ -2314,7 +2331,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
   },
 
   /**
-   * D423 4.1.3 — persisted Electron relay identity. The renderer reads the
+   * persisted Electron relay identity. The renderer reads the
    * relay id that `startRelay` registered; it NEVER generates or accepts a
    * renderer-supplied replacement (a local-file focus ref's `relayId` must be
    * the exact originating relay). `null` when the relay has not been started.
@@ -2326,7 +2343,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
       }>,
   },
 
-  // D431 — opaque, sender-owned sessions. The preload never exposes a file
+  // opaque, sender-owned sessions. The preload never exposes a file
   // descriptor, canonical path, or base64 conversion surface.
   binaryRead: {
     open: (filePath: string) =>
@@ -2351,7 +2368,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
       >,
   },
 
-  // D385/D378 — host-only request shape. The Workbench binds documentPath;
+  // host-only request shape. The Workbench binds documentPath;
   // sandboxed mini-apps receive only the returned opaque URL/token.
   mediaProxy: {
     importVideo: (documentPath: string) =>
@@ -2512,7 +2529,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
             message?: string;
           }
       >,
-    // D357 Phase 3 — jailed fs.mkdir / fs.rename. Mirrors writeFile's
+    // jailed fs.mkdir / fs.rename. Mirrors writeFile's
     // result shape: { ok: true } or { ok: false, code, message? }.
     mkdir: (filePath: string) =>
       ipcRenderer.invoke("fs:mkdir", { path: filePath }) as Promise<
@@ -2535,7 +2552,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
             message?: string;
           }
       >,
-    // D357 — move a file/dir to the OS trash (recoverable delete).
+    // move a file/dir to the OS trash (recoverable delete).
     trash: (filePath: string) =>
       ipcRenderer.invoke("fs:trash", { path: filePath }) as Promise<
         | { ok: true }
@@ -2572,7 +2589,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
     },
   },
 
-  // D057 2a.6.3 — fire-and-forget log forwarding into the main-process
+  // fire-and-forget log forwarding into the main-process
   // electron-log pipeline so renderer-side problems land in main.log
   // alongside desktop-main events. ipcRenderer.send (not invoke) so
   // logging never blocks the renderer on main-process backpressure.
@@ -2582,7 +2599,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
     error: (msg: string) => ipcRenderer.send("log", "error", msg),
   },
 
-  // D091 Phase 3 — Settings → Personalize your Genie re-trigger.
+  // Settings → Personalize your Genie re-trigger.
   //
   // open() asks main to hide this workbench window and open the
   // onboarding wizard against the existing profile. Main resolves
@@ -2597,14 +2614,14 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
   // re-render, matching the menu.onAction pattern above.
   onboarding: {
     /**
-     * @param _accessTokenArg Ignored (M072). The wizard uses the
-     *   main-process Logto token store; workbench may still pass
-     *   `getAccessToken()` for API shape compatibility.
+     * @param _accessTokenArg Ignored . The wizard uses the
+     * main-process Logto token store; workbench may still pass
+     * `getAccessToken` for API shape compatibility.
      * @param theme Workbench's active theme (from
-     *   `localStorage["nautilo-theme"]`). Main sets
-     *   `nativeTheme.themeSource` for the wizard's lifetime so
-     *   the wizard's `prefers-color-scheme` CSS resolves to the
-     *   user's chosen theme. `null` falls back to OS preference.
+     * `localStorage["nautilo-theme"]`). Main sets
+     * `nativeTheme.themeSource` for the wizard's lifetime so
+     * the wizard's `prefers-color-scheme` CSS resolves to the
+     * user's chosen theme. `null` falls back to OS preference.
      */
     open: (
       _accessTokenArg: string | null,
@@ -2624,7 +2641,7 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
     },
   },
 
-  /** M101 Phase 3 — `nautilo://` deep links forwarded from main. */
+  /** `nautilo://` deep links forwarded from main. */
   deepLink: {
     onReceived: (
       cb: (link: { kind: string; payload: Record<string, string> }) => void,

@@ -1,5 +1,5 @@
 /**
- * D083 Phase 1 — generic inline ToolCard primitive.
+ * generic inline ToolCard primitive.
  *
  * Replaces the minimal inline `ToolCallCard` that previously lived
  * in `conversation.tsx`. The assistant-ui framework already threads
@@ -69,6 +69,8 @@ import { GenieRecoveryAction, parseGenieRecoveryToolResult } from "./genie-recov
 const TOOL_CARD_UI_SESSION_STARTED_AT = Date.now();
 
 export interface ToolCardProps {
+  /** Display an admitted snapshot without network observers or actionable renderers. */
+  readOnly?: boolean;
   toolName: string;
   /** User-facing label when the protocol tool name is implementation-specific. */
   displayName?: string;
@@ -92,7 +94,7 @@ export interface ToolCardProps {
   addResult?: (result: unknown) => void;
   resume?: (payload: unknown) => void;
   /**
-   * D314 Phase A (Stack 92) — historical/decoupled rendering.
+   * Historical/decoupled rendering.
    *
    * When provided, the card uses THIS event instead of matching one from the
    * live `useToolActivity()` stream, so a ToolCard can render from static
@@ -205,7 +207,7 @@ export class ToolCardBodyErrorBoundary extends Component<
 /**
  * The runtime owns decoding and offset reconciliation. Keep this defensive
  * projection local so historical events and older servers continue to render
- * while D502's event field rolls out.
+ * while the event field rolls out.
  */
 function runShellProgressFromEvent(
   event: ToolActivityEvent | undefined,
@@ -316,10 +318,11 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
     expandedContent,
     onExpandedChange,
     savedExpansionChoice,
+    readOnly = false,
   } = props;
 
-  // Match up to the WS-backed event for accurate timestamps. D314 Phase A:
-  // when `activityOverride` is provided (historical/transcript rendering) it
+  // Match up to the WS-backed event for accurate timestamps.
+  // When `activityOverride` is provided (historical/transcript rendering) it
   // wins over the live match, letting the card render with no live WS event.
   // When absent the live path below is unchanged (byte-identical to today).
   const events = useToolActivity();
@@ -329,7 +332,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
   );
   const event = activityOverride ?? liveEvent;
 
-  // D083 Phase 2 — `resultText` comes from the ToolActivityEvent
+  // `resultText` comes from the ToolActivityEvent
   // (populated by nautilo-runtime's tool.end handler from the WS
   // event's `result` field); it's the real stdout / file content /
   // search matches, not the assistant-ui synthetic "Done (Xms)"
@@ -363,8 +366,8 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
   // above state derivation so a verified receipt and an outcome-unknown
   // receipt cannot share a green glyph.
   const renderer = useMemo(
-    () => getToolRenderer(toolName, rawResultText, displayArgs),
-    [displayArgs, rawResultText, toolName],
+    () => readOnly ? undefined : getToolRenderer(toolName, rawResultText, displayArgs),
+    [displayArgs, rawResultText, toolName, readOnly],
   );
   // Generic transcript projection deliberately strips opaque capabilities.
   // A renderer may opt into parsing the untouched envelope only when it owns
@@ -405,7 +408,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
   const connectedReceipt = toolName === "run_website_task"
     ? parseWebsiteTaskActive(rendererResultText)
     : toolName === "browse_web" ? parsePublicBrowserReadActive(rendererResultText) : toolName === "read_connected_web_account" ? parseConnectedWebAccountReadActive(rendererResultText) : null;
-  const connectedObservation = useConnectedWebOperation(connectedReceipt?.operation.operationId ?? null);
+  const connectedObservation = useConnectedWebOperation(readOnly ? null : connectedReceipt?.operation.operationId ?? null);
   const connectedOperation = connectedObservation.value;
   const connectedStatusLabel = connectedReceipt && connectedObservation.status !== "available"
     ? connectedObservation.status === "loading" ? "Checking browser status" : "Browser status unavailable"
@@ -674,7 +677,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
 
       {expanded && (
         <ToolCardBodyErrorBoundary toolName={toolName}>
-          {localControl ? <LocalToolControlBody receipt={localControl} /> : expandedContent !== undefined ? (
+          {localControl && !readOnly ? <LocalToolControlBody receipt={localControl} /> : expandedContent !== undefined ? (
             expandedContent
           ) : renderer ? (
             <renderer.ExpandedBody
@@ -692,6 +695,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
             />
           ) : (
             <ToolCardBody
+              readOnly={readOnly}
               toolName={toolName}
               args={displayArgs}
               result={displayResult}
@@ -716,6 +720,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
 }
 
 function ToolCardBody({
+  readOnly,
   toolName,
   args,
   result,
@@ -723,6 +728,7 @@ function ToolCardBody({
   event,
   resultText,
 }: {
+  readOnly?: boolean;
   toolName: string;
   args: Record<string, unknown>;
   result: unknown;
@@ -734,7 +740,7 @@ function ToolCardBody({
   const recovery = [resultText, event?.result, event?.error]
     .map((candidate) => parseGenieRecoveryToolResult(toolName, candidate))
     .find((candidate) => candidate !== null) ?? null;
-  // D083 Phase 2 — prefer the real `resultText` from the
+  // prefer the real `resultText` from the
   // ToolActivityEvent (populated by the WS tool.end event) over
   // the assistant-ui synthesized `result` (often "Done (Xms)"
   // for tools without a registered renderer pre-Phase-2).
@@ -746,7 +752,7 @@ function ToolCardBody({
 
   return (
     <div className="border-t border-border px-3 py-2 space-y-2">
-      {recovery ? <GenieRecoveryAction recovery={recovery} stopParent={(event) => event.stopPropagation()} /> : null}
+      {recovery && !readOnly ? <GenieRecoveryAction recovery={recovery} stopParent={(event) => event.stopPropagation()} /> : null}
 
       {hasArgs && (
         <section aria-label="arguments">

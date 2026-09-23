@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { FloatGenieButton } from "../../companion/companion-provider";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Square, Volume2, VolumeX } from "lucide-react";
 import { SHELL_AGENT_NAME, type AgentProfileResponse } from "@nautilo/types";
@@ -40,7 +41,7 @@ export function AssistantIdentity({
 type PanelVoiceControls = Pick<VoiceControls, "enabled" | "playing" | "toggle" | "stop">;
 
 function ConnectedPanelIdentity(
-  props: Omit<Parameters<typeof PanelIdentity>[0], "canToggleSessionSpeech" | "voice">,
+  props: Omit<Parameters<typeof PanelIdentity>[0], "canToggleSessionSpeech" | "voice" | "floatingControl">,
 ) {
   const voice = useVoiceControls();
   const { canToggleSessionSpeech } = useViewerAffordances();
@@ -48,6 +49,7 @@ function ConnectedPanelIdentity(
     <PanelIdentity
       {...props}
       voice={voice}
+      floatingControl={props.showSubagentDock ? <FloatGenieButton /> : null}
       canToggleSessionSpeech={canToggleSessionSpeech}
     />
   );
@@ -79,7 +81,7 @@ function SettingsIdentity({
   return (
     <div className="flex items-center gap-2">
       {/*
-        D243 — when the avatar is mid-fetch (`avatarLoading`), dim the
+        when the avatar is mid-fetch (`avatarLoading`), dim the
         SHELL/old object URL slightly to give a passive "refreshing"
         cue. `transition-opacity` smooths the swap when the new
         thumbnail bytes arrive and the object URL updates.
@@ -110,12 +112,13 @@ export function PanelIdentity({
   showSubagentDock = true,
   canToggleSessionSpeech = false,
   voice,
+  floatingControl,
 }: {
   response: AgentProfileResponse | null;
   name: string;
   avatarSrc: string;
   /**
-   * D243 — when true, the avatar fetch is in flight. Renders the same
+   * when true, the avatar fetch is in flight. Renders the same
    * `<img>` with a brief dim so cold-load and avatar-change refreshes
    * feel intentional instead of staring at the SHELL placeholder
    * silently. Defaults to false for direct test and non-wrapper callers.
@@ -127,14 +130,15 @@ export function PanelIdentity({
   /** Runtime affordance and state are injected by the connected panel wrapper. */
   canToggleSessionSpeech?: boolean;
   voice?: PanelVoiceControls;
+  floatingControl?: ReactNode;
 }) {
   const [avatarFailed, setAvatarFailed] = useState(false);
   const can = useCan();
   const isOwner = response?.viewerRole === "owner";
-  // M129 / AR-5 — the soul preview is visible for your OWN agent
+  // The soul preview is visible for your OWN agent
   // (per-agent `viewerRole === "owner"`) or to a `manage_agents` holder
   // (editing others' agents). Soul bytes are only present in the owner
-  // projection today, so the cap branch is forward-compatible with D225.
+  // projection today, so the cap branch is forward-compatible with capability enforcement.
   const canSeeSoul = isOwner || can("manage_agents");
   const soulFile = response?.viewerRole === "owner" ? response.agent.soulFile : null;
   const essence = useMemo(() => extractSoulEssence(soulFile), [soulFile]);
@@ -168,7 +172,7 @@ export function PanelIdentity({
             </div>
           )}
           <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold text-foreground">{name}</h2>
+            <div className="flex items-center gap-1.5"><h2 className="truncate text-lg font-semibold text-foreground">{name}</h2>{floatingControl}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
               <span className="flex items-center gap-2">
                 <span aria-hidden className="text-xs text-online">●</span>

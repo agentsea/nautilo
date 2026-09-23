@@ -259,6 +259,15 @@ describe("sendText optimistic ordering (source contract)", () => {
     expect(roomAwait).toBeGreaterThan(optimisticAdd);
   });
 
+  test("the optimistic Human bubble carries the verified viewer id", () => {
+    const block = sendTextBlock();
+    const optimisticAdd = block.indexOf("id: optimisticId");
+    const roomAwait = block.indexOf("await roomMessageOperations.sendRoomMessage");
+    expect(block.slice(optimisticAdd, roomAwait)).toContain(
+      "sourceUserId: auth.viewer.sessionUserId",
+    );
+  });
+
   test("legacy /api/chat sends also add the user bubble before awaiting sendMessage", () => {
     const block = sendTextBlock();
     const optimisticAdd = block.indexOf("id: optimisticId");
