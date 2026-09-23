@@ -3,10 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const migrations = resolve(import.meta.dir, "../../src/migrations");
-const journal = JSON.parse(readFileSync(resolve(migrations, "meta/_journal.json"), "utf8")) as {
-  entries: readonly { tag: string }[];
-};
-const sql = readFileSync(resolve(migrations, `${journal.entries.at(-1)!.tag}.sql`), "utf8");
+const sql = readFileSync(resolve(migrations, "0299_mushy_jasper_sitwell.sql"), "utf8");
 
 describe("generated protected Task persistence migration", () => {
   test("is additive for existing Plain rows and installs exact mappings", () => {
