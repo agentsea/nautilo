@@ -140,6 +140,11 @@ class FakeProduct implements TaskContentProductStorePort {
     return this.state;
   }
 
+  async getRevisionByOperation() {
+    this.events.push("product:get-operation");
+    return { status: "found" as const, state: this.state };
+  }
+
   async markCryptoComplete() {
     this.events.push("product:complete");
     const duplicate = this.state.lifecycle.completion === "complete";
@@ -369,6 +374,49 @@ function quarantinedReconciliationState(
 }
 
 describe("dormant Task content shadow repository", () => {
+  test("admits only an exact active prepared replay under current authority", async () => {
+    const testHarness = harness();
+    setDefinitionState(testHarness, emptyOperationalMetadata());
+    const lookup = (overrides: Partial<Parameters<
+      typeof testHarness.repository.lookupPreparedReplay
+    >[0]> = {}) => testHarness.repository.lookupPreparedReplay({
+      operationId: "task-definition-operation.1",
+      requestDigest: new Uint8Array(32).fill(1),
+      representation: "dual",
+      coordinate: definitionCoordinate,
+      requesterHumanId: authority.requesterHumanId,
+      namespaceId: authority.namespaceId,
+      ...overrides,
+    });
+    expect(await lookup()).toEqual({ status: "exact", authority });
+    expect(await lookup({ requestDigest: new Uint8Array(32).fill(2) }))
+      .toEqual({ status: "unavailable" });
+    expect(await lookup({ requesterHumanId: TASK_ID }))
+      .toEqual({ status: "unavailable" });
+
+    testHarness.product.state = Object.freeze({
+      ...testHarness.product.state,
+      lifecycle: lifecycle({
+        ...testHarness.product.state.lifecycle,
+        disposition: "quarantined",
+        failureCode: "crypto_mismatch",
+      }),
+    });
+    expect(await lookup()).toEqual({ status: "unavailable" });
+
+    setDefinitionState(testHarness, emptyOperationalMetadata());
+    testHarness.product.state = Object.freeze({
+      ...testHarness.product.state,
+      authority: Object.freeze({
+        ...authority,
+        expectedPolicyRevision: authority.expectedPolicyRevision + 1,
+      }),
+    });
+    expect(await lookup()).toEqual({ status: "unavailable" });
+    expect(testHarness.events.filter((event) => event === "product:get-operation"))
+      .toHaveLength(5);
+  });
+
   test("completes and verifies exact crypto before mapping a result", async () => {
     const testHarness = harness();
     expect(await reserve(testHarness)).toMatchObject({ status: "reserved" });

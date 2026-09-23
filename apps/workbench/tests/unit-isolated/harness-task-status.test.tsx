@@ -26,7 +26,10 @@ mock.module("../../src/contexts/task-state/task-state-context", () => ({ ...task
   useTaskState: () => ({ taskMap: canonicalStatus ? { task: { status: canonicalStatus, preparation: { research } } } : {}, busyIds: new Set(), stopTask }),
 }));
 mock.module("../../src/lib/api", () => ({ ...api,
-  apiClient: { ...api.apiClient, getTask: async () => ({ task: { status: durableStatus }, runs: [] }) },
+  apiClient: { ...api.apiClient,
+    getTaskContentV1: async () => ({ task: { id: "task" }, definition: { status: "ordinary" } }),
+    getTask: async () => ({ task: { status: durableStatus }, runs: [] }),
+  },
 }));
 mock.module("../../src/modes/rooms/subagents/use-subagent-transcript", () => ({
   useSubagentTranscript: () => ({ error: null, messages: [{ key: "read", role: "tool", toolName: "file",

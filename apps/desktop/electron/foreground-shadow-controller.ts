@@ -8,6 +8,7 @@ import {
   createElectronLiveShadowMessageClient,
   createElectronLiveShadowMessageReceiver,
   createElectronHumanMemoryClient,
+  createElectronHumanTaskClient,
   createElectronMessageBackfillClient,
   createElectronRoomHistoryShadowMessageReader,
   createElectronSharedAgentLiveShadowMessageReceiver,
@@ -18,6 +19,7 @@ import {
   type ElectronLiveShadowMessageClientInput,
   type ElectronLiveShadowMessageReceiverInput,
   type ElectronHumanMemoryClientInput,
+  type ElectronHumanTaskClientInput,
   type ElectronMessageBackfillClientInput,
   type ElectronRoomHistoryShadowAcknowledgementInput,
   type ElectronRoomHistoryShadowMessageReaderInput,
@@ -50,6 +52,7 @@ type RoomHistoryReader = ReturnType<
   typeof createElectronRoomHistoryShadowMessageReader
 >;
 type HumanMemoryClient = ReturnType<typeof createElectronHumanMemoryClient>;
+type HumanTaskClient = ReturnType<typeof createElectronHumanTaskClient>;
 type MessageBackfillClient = ReturnType<
   typeof createElectronMessageBackfillClient
 >;
@@ -145,6 +148,7 @@ export interface ElectronForegroundShadowControllerFactories {
     input: ElectronRoomHistoryShadowMessageReaderInput,
   ): RoomHistoryReader;
   createHumanMemory(input: ElectronHumanMemoryClientInput): HumanMemoryClient;
+  createHumanTask(input: ElectronHumanTaskClientInput): HumanTaskClient;
   createMessageBackfill(
     input: ElectronMessageBackfillClientInput,
   ): MessageBackfillClient;
@@ -166,6 +170,7 @@ const productionFactories: ElectronForegroundShadowControllerFactories =
       createElectronSharedAgentOutputLiveShadowReceiver,
     createHistoryReader: createElectronRoomHistoryShadowMessageReader,
     createHumanMemory: createElectronHumanMemoryClient,
+    createHumanTask: createElectronHumanTaskClient,
     createMessageBackfill: createElectronMessageBackfillClient,
     createBackgroundAuthorization:
       createElectronBackgroundAuthorizationClientV2,
@@ -227,6 +232,7 @@ export class ElectronForegroundShadowController {
   readonly #sharedAgentOutputReceiver: SharedAgentOutputReceiver;
   readonly #historyReader: RoomHistoryReader;
   readonly #humanMemory: HumanMemoryClient;
+  readonly #humanTask: HumanTaskClient;
   readonly #messageBackfill: MessageBackfillClient;
   readonly #backgroundAuthorization: BackgroundAuthorizationClient;
   readonly #backgroundAuthorizationSweeps:
@@ -326,6 +332,11 @@ export class ElectronForegroundShadowController {
         },
       } });
     this.#humanMemory = factories.createHumanMemory({
+      ...clientInput,
+      dataOperationOwner,
+      resolveDeviceAdmissionStatus: () => api.deviceAdmission.status(),
+    });
+    this.#humanTask = factories.createHumanTask({
       ...clientInput,
       dataOperationOwner,
       resolveDeviceAdmissionStatus: () => api.deviceAdmission.status(),
@@ -525,6 +536,25 @@ export class ElectronForegroundShadowController {
           observationDelivery: page.observationDelivery,
         }) });
     });
+  }
+
+  taskList(options: Parameters<HumanTaskClient["list"]>[0]) {
+    return this.#runMemory(() => this.#humanTask.list(options));
+  }
+
+  taskOpen(task: Parameters<HumanTaskClient["open"]>[0]) {
+    return this.#runMemory(() => this.#humanTask.open(task));
+  }
+
+  taskCreate(intent: Parameters<HumanTaskClient["create"]>[0]) {
+    return this.#runMemory(() => this.#humanTask.create(intent));
+  }
+
+  taskUpdate(
+    current: Parameters<HumanTaskClient["update"]>[0],
+    intent: Parameters<HumanTaskClient["update"]>[1],
+  ) {
+    return this.#runMemory(() => this.#humanTask.update(current, intent));
   }
 
   memorySearch(options: Parameters<HumanMemoryClient["withSearch"]>[0]) {

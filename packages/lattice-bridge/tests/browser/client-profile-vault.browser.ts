@@ -413,6 +413,7 @@ window.runNautiloBrowserVaultTest = async () => {
         envelopeBytesBase64url: "YnJvd3Nlci10YXNrLWVudmVsb3Bl",
       }],
       signedPublicationRequestBytesBase64url: "YnJvd3Nlci10YXNrLXNpZ25lZA",
+      task: {},
       operation: "create",
     },
   });

@@ -250,6 +250,9 @@ import {
   parseForegroundShadowPendingAttention,
 } from "./foreground-shadow-ipc-validation.ts";
 import {
+  parseTaskOperationRequestV1,
+} from "./task-operation-ipc";
+import {
   clearRelayToken,
   retireRelayToken,
   getOrCreateInstallationId,
@@ -8102,6 +8105,47 @@ async function foregroundShadowControllerForSender(
 ipcMain.handle("foregroundShadow:inspect", async (e) => {
   const { controller } = await foregroundShadowControllerForSender(e);
   return Object.freeze({ status: "ready" as const, deviceId: controller.deviceId });
+});
+
+ipcMain.handle("foregroundShadow:task:operateV1", async (e, raw: unknown) => {
+  const request = parseTaskOperationRequestV1(raw);
+  const { controller } = await foregroundShadowControllerForSender(e);
+  switch (request.operation) {
+    case "list":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "list" as const,
+        data: await controller.taskList(request.query ?? {}),
+      });
+    case "open":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "open" as const,
+        data: await controller.taskOpen(request.task),
+      });
+    case "create":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "create" as const,
+        data: await controller.taskCreate({
+          payload: request.payload,
+          task: request.task,
+        }),
+      });
+    case "update":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "update" as const,
+        data: await controller.taskUpdate(request.current, {
+          payload: request.payload,
+          task: request.task,
+        }),
+      });
+  }
 });
 
 ipcMain.handle("foregroundShadow:memory:list", async (e, raw: unknown) => {

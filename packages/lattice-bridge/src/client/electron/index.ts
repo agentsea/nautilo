@@ -42,6 +42,7 @@ import {
   recoverPersonalDomainAuthorityV2,
   createForegroundLiveShadowMessageClient,
   createForegroundHumanMemoryClient,
+  createForegroundHumanTaskClient,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
@@ -52,6 +53,7 @@ import {
   type ForegroundBackgroundAuthorizationClientInput,
   type ForegroundLiveShadowMessageClientInput,
   type ForegroundHumanMemoryClientInput,
+  type ForegroundHumanTaskClientInput,
   type ForegroundLiveShadowMessageReceiverInput,
   type ForegroundMessageBackfillClientInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
@@ -492,6 +494,9 @@ export function createElectronBackgroundAuthorizationClientV2(
 export type ElectronHumanMemoryClientInput =
   ForegroundHumanMemoryClientInput & ElectronForegroundShadowCustodyInput;
 
+export type ElectronHumanTaskClientInput =
+  ForegroundHumanTaskClientInput & ElectronForegroundShadowCustodyInput;
+
 export type ElectronMessageBackfillClientInput =
   ForegroundMessageBackfillClientInput & ElectronForegroundShadowCustodyInput;
 
@@ -510,6 +515,13 @@ export function createElectronHumanMemoryClient(
   input: ElectronHumanMemoryClientInput,
 ): AuthorizedHumanMemoryClient {
   return createForegroundHumanMemoryClient(electronForegroundShadowPlatform(input), input);
+}
+
+/** Electron-main protected Task client using the controller's private custody. */
+export function createElectronHumanTaskClient(
+  input: ElectronHumanTaskClientInput,
+) {
+  return createForegroundHumanTaskClient(electronForegroundShadowPlatform(input), input);
 }
 
 /** Electron-main foreground sender with file-backed private custody. */
@@ -660,6 +672,17 @@ export {
   type HumanMemoryObjectAccessAnchorPort,
   type VaultHumanMemoryDeviceContentInput,
 } from "../memory/vault-human-memory-device-content.ts";
+export {
+  createAuthorizedHumanTaskClientV1,
+  type HumanTaskDeviceContentPortV1,
+  type HumanTaskOpenedDefinitionV1,
+  type HumanTaskPreparedJournalV1,
+  type HumanTaskPublicationPlansV1,
+} from "../task/authorized-human-task-client.ts";
+export {
+  createVaultHumanTaskDeviceContentPortV1,
+  type VaultHumanTaskDeviceContentInputV1,
+} from "../task/vault-human-task-device-content.ts";
 export {
   createVaultHumanArtifactDeviceContentPort,
   type AuthorizedHumanArtifactContentIntentV1,

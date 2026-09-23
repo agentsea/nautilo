@@ -172,6 +172,7 @@ export {
 } from "./task/task-payload-v1.ts";
 export * from "./task/task-content-repository.ts";
 export * from "./task/task-content-prepared-revision.ts";
+export * from "./task/task-operational-fields-digest-v1.ts";
 export * from "./task/task-content-shadow-saga.ts";
 export * from "./task/task-content-operation.ts";
 export {

@@ -353,6 +353,34 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     }, { isolationLevel: "serializable" });
   }
 
+  async getRevisionByOperation(
+    input: Parameters<TaskContentProductStorePort["getRevisionByOperation"]>[0],
+  ): ReturnType<TaskContentProductStorePort["getRevisionByOperation"]> {
+    if (!PORTABLE_ID.test(input.operationId)
+      || new TextEncoder().encode(input.operationId).length > 128) {
+      throw new TypeError("Task content operation ID is invalid");
+    }
+    return this.#handle.transaction(async (transaction) => {
+      const rows = await this.#operationRows(transaction, input.operationId, false);
+      if (rows.length === 0) return { status: "missing" as const };
+      if (rows.length !== 1) return { status: "conflict" as const };
+      const row = rows[0]!;
+      const kind = text(row, "kind") as LedgerKind;
+      const lifecycle = lifecycleFromRow(kind, row);
+      const authority = await this.#currentAuthority(lifecycle);
+      if (authority === null) return { status: "authority_unavailable" as const };
+      return Object.freeze({
+        status: "found" as const,
+        state: await this.#stateFromLifecycle(
+          transaction,
+          lifecycle,
+          authority,
+          false,
+        ),
+      });
+    }, { isolationLevel: "serializable" });
+  }
+
   async markCryptoComplete(
     input: Parameters<TaskContentProductStorePort["markCryptoComplete"]>[0],
   ): ReturnType<TaskContentProductStorePort["markCryptoComplete"]> {
@@ -655,6 +683,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
         owner_id: tasks.ownerId,
         task_status: sql<string>`${tasks.status}`.as("task_status"),
+        fire_lock_id: tasks.fireLockId,
         content_namespace_id: tasks.contentNamespaceId,
         content_revision: tasks.contentRevision, content_representation: tasks.contentRepresentation,
         crypto_object_id: tasks.cryptoObjectId,
@@ -665,12 +694,14 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       if (input.coordinate.contentRevision === 1) {
         return row === null || (text(row, "owner_id") === input.requesterHumanId
           && inAllowedDefinitionStatus(row)
+          && nullableText(row, "fire_lock_id") === null
           && integer(row, "content_revision") === 0
           && nullableText(row, "content_namespace_id") === null
           && text(row, "content_representation") === "ordinary");
       }
       return row !== null && text(row, "owner_id") === input.requesterHumanId
         && inAllowedDefinitionStatus(row)
+        && nullableText(row, "fire_lock_id") === null
         && nullableText(row, "content_namespace_id") === input.namespaceId
         && integer(row, "content_revision") === input.coordinate.contentRevision - 1
         && ["protected", "dual"].includes(text(row, "content_representation"))
@@ -762,7 +793,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         metadata: sql`convert_from(${new TextEncoder().encode(JSON.stringify(lifecycle.operationalMetadata ?? {}))}::bytea, 'UTF8')::jsonb`,
       } : {}),
       updatedAt: sql`CURRENT_TIMESTAMP`,
-    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, lifecycle.requesterHumanId), inArray(tasks.status, ["pending", "paused"]), eq(tasks.contentRevision, expected), expected === 0
+    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, lifecycle.requesterHumanId), inArray(tasks.status, ["pending", "paused"]), isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
       ? and(isNull(tasks.contentNamespaceId), eq(tasks.contentRepresentation, "ordinary"))
       : and(eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
     return oneOrNone(updated, "Task definition mapping CAS") === null ? "stale" : "applied";

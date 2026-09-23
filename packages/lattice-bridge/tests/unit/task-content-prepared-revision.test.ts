@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { rejects } from "node:assert/strict";
 import {
   LatticeCrypto,
   accessRevision,
@@ -22,6 +23,7 @@ import {
   prepareAgentObjectAccessManifestGenesisSet,
   prepareAgentRuntimeInitialization,
   prepareHumanObjectAccessManifestGenesisSet,
+  prepareHumanTaskPublicationRequest,
   unixTimestamp,
   wrapObjectDekForNamespace,
   type GrantAuthoritySetAuthorization,
@@ -37,6 +39,7 @@ import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authori
 import {
   createPreparedAgentTaskContentCryptoRevisionV1,
   createPreparedHumanTaskContentCryptoRevisionV1,
+  authenticatePreparedHumanTaskContentCryptoRevisionV1,
   readPreparedTaskContentCryptoRevisionSnapshotV1,
 } from "../../src/task/task-content-prepared-revision.ts";
 import {
@@ -168,7 +171,7 @@ function prepareHuman(coordinate: TaskContentCoordinateV1, seed = 1) {
     object: encrypted.object,
     access,
   });
-  return { ...encrypted, access, prepared };
+  return { ...encrypted, access, prepared, signer };
 }
 
 async function prepareAgent(coordinate: TaskContentCoordinateV1, seed = 2) {
@@ -382,5 +385,128 @@ describe("prepared Task content revision", () => {
     expect(() => readPreparedTaskContentCryptoRevisionSnapshotV1(
       manifestMutation.prepared,
     )).toThrow("foreign or changed");
+  });
+});
+
+function preparedHttpFixture() {
+  const value = prepareHuman(definition, 91);
+  const planDigest = new Uint8Array(32).fill(8);
+  const operationalFieldsDigest = new Uint8Array(32).fill(9);
+  const publicationInput = {
+    operation: "create", operationId: "task-publication-1",
+    taskId: TASK_ID, cryptoObjectId: value.objectIdentity,
+    expectedContentRevision: 0, nextContentRevision: 1,
+    expectedCryptoAccessRevision: 0, resultCryptoAccessRevision: 0,
+    planDigest, operationalFieldsDigest,
+    subjectHumanId: HUMAN_ID, committerDeviceId: "human-device.1",
+    hostAuthorizationRevision: 7,
+    namespaceId: NAMESPACE_ID, domainId: DOMAIN_ID,
+    expectedNamespaceAccessRevision: authority.expectedAccessRevision,
+    expectedPolicyRevision: authority.expectedPolicyRevision,
+    bindingHash: new Uint8Array(32).fill(10), keyGeneration: 4,
+    payloadHash: value.crypto.hash(value.payloadBytes),
+    manifestHash: value.crypto.hash(value.access.manifestBytes),
+    envelopeHash: value.crypto.hash(value.envelopeBytes),
+    issuedAt: NOW, deadlineAt: NOW + 30_000,
+    committerSigningPublicKey: value.signer.publicKey,
+    committerSigningPrivateKey: value.signer.privateKey,
+  } satisfies Parameters<typeof prepareHumanTaskPublicationRequest>[1];
+  const signed = prepareHumanTaskPublicationRequest(value.crypto, publicationInput);
+  const input = {
+    crypto: value.crypto, now: NOW,
+    operation: "create" as const, operationId: "task-publication-1",
+    coordinate: definition, expectedContentRevision: 0,
+    expectedCryptoAccessRevision: 0, authority,
+    planDigest, operationalFieldsDigest,
+    payloadBytes: value.payloadBytes,
+    manifestBytes: value.access.manifestBytes,
+    envelopeBytes: value.envelopeBytes,
+    signedPublicationRequestBytes: signed.bytes,
+    resolveCurrentAuthority: async () => value.signer.publicKey,
+  };
+  return { value, signed, input, publicationInput };
+}
+
+describe("Human Task HTTP preparation import", () => {
+  test("imports authenticated ciphertext into the existing opaque revision", async () => {
+    const { input } = preparedHttpFixture();
+    const revision = await authenticatePreparedHumanTaskContentCryptoRevisionV1(input);
+    expect(revision.coordinate).toEqual(definition);
+    const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(revision);
+    expect(snapshot.object.payloadBytes.ciphertext).toEqual(input.payloadBytes);
+    expect(snapshot.access.manifestBytes).toEqual(input.manifestBytes);
+    // HTTP buffers belong to the caller and cannot mutate accepted storage bytes.
+    input.payloadBytes.fill(0);
+    input.manifestBytes.fill(0);
+    input.envelopeBytes.fill(0);
+    expect(() => readPreparedTaskContentCryptoRevisionSnapshotV1(revision)).not.toThrow();
+    // The imported access is deliberately not crypto's in-process preparation token.
+    expect(() => createPreparedHumanTaskContentCryptoRevisionV1({
+      ...snapshot, signerKind: "human_device",
+      access: snapshot.access,
+    })).toThrow();
+  });
+
+  test("rejects each outer operation, authority, digest and predecessor mismatch", async () => {
+    const { input } = preparedHttpFixture();
+    const patches = [
+      { operationId: "different-operation" },
+      { operation: "update" as const },
+      { expectedContentRevision: 1 },
+      { expectedCryptoAccessRevision: 1 },
+      { planDigest: new Uint8Array(32) },
+      { operationalFieldsDigest: new Uint8Array(32) },
+      { authority: { ...authority, requesterHumanId: "someone-else" } },
+      { authority: { ...authority, domainId: "different-domain" } },
+      { authority: { ...authority, expectedPolicyRevision: 4 } },
+    ];
+    for (const patch of patches) {
+      await rejects(authenticatePreparedHumanTaskContentCryptoRevisionV1({ ...input, ...patch }), /coordinates disagree/u);
+    }
+  });
+
+  test("revoked authority, signature corruption and expiration mint no opaque revision", async () => {
+    const { input } = preparedHttpFixture();
+    await rejects(authenticatePreparedHumanTaskContentCryptoRevisionV1({
+      ...input, resolveCurrentAuthority: async () => null,
+    }), /authority/u);
+    await rejects(authenticatePreparedHumanTaskContentCryptoRevisionV1({
+      ...input, now: NOW + 30_000,
+    }), /currently valid/u);
+    const badSignature = input.signedPublicationRequestBytes.slice();
+    badSignature[badSignature.length - 1]! ^= 1;
+    await rejects(authenticatePreparedHumanTaskContentCryptoRevisionV1({
+      ...input, signedPublicationRequestBytes: badSignature,
+    }), /signature/u);
+  });
+
+  test("a valid publication signature cannot authenticate a corrupt manifest signature", async () => {
+    const { input, value, publicationInput } = preparedHttpFixture();
+    const manifestBytes = input.manifestBytes.slice();
+    manifestBytes[manifestBytes.length - 1]! ^= 1;
+    const signed = prepareHumanTaskPublicationRequest(value.crypto, {
+      ...publicationInput, manifestHash: value.crypto.hash(manifestBytes),
+    });
+    await rejects(authenticatePreparedHumanTaskContentCryptoRevisionV1({
+      ...input, manifestBytes, signedPublicationRequestBytes: signed.bytes,
+    }), /manifest signature/u);
+  });
+
+  test("owns ciphertext and expected facts across an asynchronous resolver", async () => {
+    const { input } = preparedHttpFixture();
+    const original = input.payloadBytes.slice();
+    const revision = await authenticatePreparedHumanTaskContentCryptoRevisionV1({
+      ...input,
+      resolveCurrentAuthority: async () => {
+        input.payloadBytes.fill(0);
+        input.manifestBytes.fill(0);
+        input.envelopeBytes.fill(0);
+        input.planDigest.fill(0);
+        input.operationalFieldsDigest.fill(0);
+        return input.resolveCurrentAuthority();
+      },
+    });
+    expect(readPreparedTaskContentCryptoRevisionSnapshotV1(revision).object.payloadBytes.ciphertext)
+      .toEqual(original);
   });
 });

@@ -8,7 +8,15 @@ import {
   Text,
   View,
 } from "react-native";
-import type { TaskDetail, TaskRunSummary, TaskSummary } from "@nautilo/types";
+import {
+  MOBILE_PROTECTED_TASK_DETAIL,
+  mobileTaskDefinitionContent,
+  mobileTaskRunContent,
+  mobileTaskSummaryContent,
+  type MobileTaskDetail as TaskDetail,
+  type MobileTaskRun as TaskRunSummary,
+  type MobileTaskSummary as TaskSummary,
+} from "@/features/task-work/task-content-mobile";
 
 import { AppBar, useOpenAppDrawer } from "@/components/app-bar";
 import { BottomSheet } from "@/components/bottom-sheet";
@@ -189,16 +197,17 @@ export default function ScheduledWorkScreen() {
 function ScheduleRow({ row, onPress }: { row: TaskSummary; onPress: () => void }) {
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const content = mobileTaskSummaryContent(row);
   return (
     <Pressable
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${row.prompt || "Scheduled work"}, ${scheduleStatus(row.status)}, ${scheduleCadence(row)}, ${scheduleNextFire(row.nextFireAt)}`}
+      accessibilityLabel={`${content.prompt || "Scheduled work"}, ${scheduleStatus(row.status)}, ${scheduleCadence(row)}, ${scheduleNextFire(row.nextFireAt)}`}
       accessibilityHint="Opens schedule details and recent runs."
     >
       <View style={styles.rowCopy}>
-        <Text style={styles.rowTitle} numberOfLines={2}>{row.prompt || "Scheduled work"}</Text>
+        <Text style={styles.rowTitle} numberOfLines={2}>{content.prompt || "Scheduled work"}</Text>
         <Text style={styles.rowMeta}>{scheduleStatus(row.status)} · {scheduleCadence(row)}</Text>
         <Text style={styles.rowMeta}>{scheduleNextFire(row.nextFireAt)}</Text>
       </View>
@@ -217,6 +226,7 @@ function ScheduledWorkDetail({
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const task = detail?.task ?? row;
+  const content = detail ? mobileTaskDefinitionContent(detail) : row ? mobileTaskSummaryContent(row) : null;
   const roomId = detail?.task.targetRoomId ?? row?.targetRoomId ?? detail?.task.callingRoomId ?? row?.callingRoomId ?? null;
   return (
     <BottomSheet visible={visible} snapPoints={["82%"]} onClose={onClose}>
@@ -224,7 +234,7 @@ function ScheduledWorkDetail({
         <View style={styles.sheetHeading}>
           <View style={styles.sheetCopy}>
             <Text style={styles.sheetTitle}>Scheduled work</Text>
-            <Text style={styles.sheetSubtitle} numberOfLines={2}>{task?.prompt || "Loading schedule…"}</Text>
+            <Text style={styles.sheetSubtitle} numberOfLines={2}>{content?.prompt || "Loading schedule…"}</Text>
           </View>
           <Pressable onPress={onClose} disabled={busy} accessibilityRole="button" accessibilityLabel="Close scheduled work details" accessibilityState={{ disabled: busy }} style={styles.done}>
             <Text style={styles.doneLabel}>Done</Text>
@@ -234,6 +244,7 @@ function ScheduledWorkDetail({
         {loadError && !detail ? <DetailLoadFailure error={loadError} onRetry={onRetry} /> : null}
         {task && (!loading || detail) ? (
           <ScrollView contentContainerStyle={styles.sheetScroll} showsVerticalScrollIndicator>
+            {content?.status === "unsupported_client" ? <Text style={styles.noticeText} accessibilityRole="alert">{MOBILE_PROTECTED_TASK_DETAIL}</Text> : null}
             <DetailField label="Status" value={scheduleStatus(task.status)} />
             <DetailField label="Cadence" value={scheduleCadence(task)} mono={task.scheduleKind === "cron"} />
             <DetailField label="Next run" value={scheduleNextFire(task.nextFireAt)} detail={task.nextFireAt ?? undefined} />
@@ -265,7 +276,10 @@ function ActionButton({ label, onPress, disabled, destructive = false }: { label
 
 function RunRow({ run }: { run: TaskRunSummary }) {
   const t = useAppTheme(); const styles = useMemo(() => createStyles(t), [t]);
-  const detail = run.lastError || run.resultText || "No result text.";
+  const content = mobileTaskRunContent(run);
+  const detail = content.status === "unsupported_client"
+    ? MOBILE_PROTECTED_TASK_DETAIL
+    : content.lastError || content.resultText || "No result text.";
   return <View style={styles.run}><Text style={styles.runTitle}>{scheduleStatus(run.status)}</Text><Text style={styles.runTime}>{formatDate(run.completedAt ?? run.startedAt)}</Text><Text selectable style={styles.runResult} numberOfLines={5}>{detail}</Text></View>;
 }
 

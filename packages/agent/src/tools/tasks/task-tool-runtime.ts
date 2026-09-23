@@ -236,6 +236,8 @@ export async function resolveTaskToolCreateLineage(input: {
 
 export interface TaskToolRuntime {
   db: DirectDatabase;
+  /** Production policy fence until Agent Task content publication and reads are wired. */
+  canUseLegacyTaskContent?(): Promise<boolean>;
   /** Server-published opt-in. Omitted runtimes retain the legacy tool surface. */
   readonly claudeCodeTasksEnabled?: true;
   /** Bound to the M142 runtime `createTask({ db, observer }, input)`. */

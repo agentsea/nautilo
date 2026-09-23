@@ -21,8 +21,12 @@ import {
   type FullEncryptionMessagePreparedRequestV2,
 } from "@nautilo/api-client/browser";
 import {
+  dualTaskPreparedCreateRequestV1Schema,
+  dualTaskPreparedUpdateRequestV1Schema,
   protectedTaskPreparedCreateRequestV1Schema,
   protectedTaskPreparedUpdateRequestV1Schema,
+  type DualTaskPreparedCreateRequestV1,
+  type DualTaskPreparedUpdateRequestV1,
   type ProtectedTaskPreparedCreateRequestV1,
   type ProtectedTaskPreparedUpdateRequestV1,
 } from "@nautilo/api-client/browser";
@@ -75,12 +79,14 @@ export type PreparedHumanTaskMutation =
   | Readonly<{
       kind: "task_create";
       taskId: string;
-      request: ProtectedTaskPreparedCreateRequestV1;
+      request: ProtectedTaskPreparedCreateRequestV1
+        | DualTaskPreparedCreateRequestV1;
     }>
   | Readonly<{
       kind: "task_update";
       taskId: string;
-      request: ProtectedTaskPreparedUpdateRequestV1;
+      request: ProtectedTaskPreparedUpdateRequestV1
+        | DualTaskPreparedUpdateRequestV1;
     }>;
 
 export type PreparedAdditionalDeviceTransitionCampaign = Readonly<{
@@ -572,7 +578,9 @@ function canonicalMutation(value: PreparedHumanMutation): Readonly<{
       });
     }
     case "task_create": {
-      const request = protectedTaskPreparedCreateRequestV1Schema.parse(value.request);
+      const request = "representation" in value.request
+        ? dualTaskPreparedCreateRequestV1Schema.parse(value.request)
+        : protectedTaskPreparedCreateRequestV1Schema.parse(value.request);
       if (request.taskId !== value.taskId || request.operation !== "create") {
         throw new TypeError("Prepared Task create coordinates disagree");
       }
@@ -583,7 +591,9 @@ function canonicalMutation(value: PreparedHumanMutation): Readonly<{
       });
     }
     case "task_update": {
-      const request = protectedTaskPreparedUpdateRequestV1Schema.parse(value.request);
+      const request = "representation" in value.request
+        ? dualTaskPreparedUpdateRequestV1Schema.parse(value.request)
+        : protectedTaskPreparedUpdateRequestV1Schema.parse(value.request);
       if (request.taskId !== value.taskId || request.operation !== "update") {
         throw new TypeError("Prepared Task update coordinates disagree");
       }

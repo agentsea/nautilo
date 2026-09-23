@@ -6,8 +6,20 @@ import type { TaskDetail } from "@nautilo/types";
 import { NautiloApiClient } from "@nautilo/api-client/browser";
 import { apiClient } from "../../src/lib/api";
 import type { RunningSubagent } from "../../src/modes/rooms/subagents/running-subagents-model";
-import { RunningSubagentsContext } from "../../src/adapters/runtime-contexts";
-import { useSubagentTranscript } from "../../src/modes/rooms/subagents/use-subagent-transcript";
+import {
+  ConversationEncryptionPolicyModeContext,
+  RunningSubagentsContext,
+} from "../../src/adapters/runtime-contexts";
+
+const actualAuth = await import("../../src/hooks/use-auth");
+mock.module("../../src/hooks/use-auth", () => ({
+  ...actualAuth,
+  useAuth: () => ({
+    viewerGeneration: 1,
+    viewer: { isVerified: true, sessionUserId: "viewer-a", sessionActorId: "viewer-a-actor" },
+  }),
+}));
+const { useSubagentTranscript } = await import("../../src/modes/rooms/subagents/use-subagent-transcript");
 
 beforeEach(() => {
   reapplyHappyDomGlobals();
@@ -92,6 +104,7 @@ describe("useSubagentTranscript", () => {
 
   afterAll(() => {
     apiClient.getTask = originalGetTask;
+    mock.module("../../src/hooks/use-auth", () => actualAuth);
     reapplyHappyDomGlobals();
   });
 
@@ -103,9 +116,11 @@ describe("useSubagentTranscript", () => {
 
   function wrapper({ children }: { children: ReactNode }) {
     return (
-      <RunningSubagentsContext.Provider value={{ list: dockList, heartbeat: { count: 1, line: "" } }}>
-        {children}
-      </RunningSubagentsContext.Provider>
+      <ConversationEncryptionPolicyModeContext.Provider value="plaintext_only">
+        <RunningSubagentsContext.Provider value={{ list: dockList, heartbeat: { count: 1, line: "" } }}>
+          {children}
+        </RunningSubagentsContext.Provider>
+      </ConversationEncryptionPolicyModeContext.Provider>
     );
   }
 

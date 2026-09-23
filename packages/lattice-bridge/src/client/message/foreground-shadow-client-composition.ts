@@ -84,6 +84,7 @@ import {
   createPreparedMutationJournal,
   type PreparedHumanMutation,
   type PreparedHumanMemoryMutation,
+  type PreparedHumanTaskMutation,
   type PreparedMutationRetryCandidate,
   type PreparedMutationJournalVaultPort,
 } from "../memory/prepared-mutation-journal.ts";
@@ -91,8 +92,10 @@ import {
   createAuthorizedHumanMemoryClientFromTrustedPorts,
   type AuthorizedHumanMemoryClient,
 } from "../memory/authorized-human-memory-client.ts";
-import type { EncryptionDataOperationOwner } from
-  "../../transition/encryption-data-operation-owner.ts";
+import {
+  ClassifiedDataOperationError,
+  type EncryptionDataOperationOwner,
+} from "../../transition/encryption-data-operation-owner.ts";
 import { createDeviceMessageBackfillClient, type DeviceMessageBackfillApiPort } from "./device-message-backfill-client.ts";
 import { createHumanMemoryProcessorTransport } from "../memory/human-memory-processor-transport.ts";
 import {
@@ -112,6 +115,11 @@ import {
   respondToCurrentDeviceAuthorizationV2,
   type CurrentBackgroundAuthorizationSigningAuthorityV2,
 } from "../background/device-authorization-responder-v2.ts";
+import {
+  createAuthorizedHumanTaskClientV1,
+} from "../task/authorized-human-task-client.ts";
+import { createVaultHumanTaskDeviceContentPortV1 } from
+  "../task/vault-human-task-device-content.ts";
 
 export type ForegroundShadowClientKind = "browser" | "electron";
 
@@ -886,6 +894,146 @@ export function createForegroundHumanMemoryClient(
       recordOutcome: (outcome) => withJournal(() => journal.recordOutcome(outcome)),
     },
     createOperationId: () => createId(),
+  });
+}
+
+export type ForegroundHumanTaskClientInput = Readonly<{
+  dataOperationOwner: EncryptionDataOperationOwner;
+  api: NautiloApiClient;
+  serverScope: string;
+  userId: string;
+  humanActorId: string;
+  installationId: string;
+  crypto?: LatticeCrypto;
+  now?: () => number;
+  createIdempotencyKey?: () => string;
+  resolveDeviceAdmissionStatus: () => Promise<DeviceAdmissionStatus>;
+}>;
+
+/** Shared protected Task composition. Plain callers keep their legacy adapter. */
+export function createForegroundHumanTaskClient(
+  platform: ForegroundShadowClientPlatform,
+  input: ForegroundHumanTaskClientInput,
+) {
+  const crypto = input.crypto ?? new LatticeCrypto();
+  const clientIdentity = identity(platform, crypto, input);
+  const vault = platform.createProfileVault();
+  const journalVault = platform.createPreparedMutationJournalVault();
+  const now = input.now ?? Date.now;
+  const createId = input.createIdempotencyKey ?? (() => platform.createId());
+  const journal = createPreparedMutationJournal({ vault: journalVault, now });
+  const withJournal = async <Result>(use: () => Promise<Result>): Promise<Result> => {
+    const current = await journalVault.availability();
+    if (current.status !== "available") {
+      const unlocked = await journalVault.unlock();
+      if (unlocked.status !== "available") {
+        throw new ClassifiedDataOperationError(
+          "key_waiting",
+          `Protected Task retry custody is unavailable (${unlocked.status})`,
+        );
+      }
+    }
+    return use();
+  };
+  const isTaskMutation = (
+    mutation: PreparedHumanMutation,
+  ): mutation is PreparedHumanTaskMutation =>
+    mutation.kind === "task_create" || mutation.kind === "task_update";
+
+  return createAuthorizedHumanTaskClientV1({
+    owner: input.dataOperationOwner,
+    api: input.api,
+    plans: {
+      listProtected: (query) => input.api.listProtectedTaskContentV1(query),
+      create: ({ operationId, task }) =>
+        input.api.planProtectedTaskCreateV1({ operationId, task }),
+      update: ({ operationId, taskId, task }) =>
+        input.api.planProtectedTaskUpdateV1(taskId, { operationId, task }),
+      readExact: async ({ taskId, reference }) => {
+        const envelope = await input.api.getProtectedTaskDefinitionEnvelopeV1(
+          taskId,
+          reference,
+        );
+        if (envelope.status === "unavailable") {
+          throw new ClassifiedDataOperationError(
+            "unsupported",
+            "Protected Task access-history reads are unavailable",
+          );
+        }
+        return Object.freeze({
+          readVersion: envelope.readVersion,
+          taskId: envelope.taskId,
+          objectId: envelope.objectId,
+          contentRevision: envelope.contentRevision,
+          cryptoAccessRevision: envelope.cryptoAccessRevision,
+          namespaceId: envelope.namespaceId,
+          encryptedPayloadBytes: decodeCanonicalBase64url(
+            envelope.encryptedPayloadBytesBase64url,
+          ),
+          accessManifestBytes: decodeCanonicalBase64url(
+            envelope.accessManifestBytesBase64url,
+          ),
+          accessManifestProofBytes: envelope.accessManifestProofBytesBase64url
+            .map(decodeCanonicalBase64url),
+          namespaceEnvelopeBytes: decodeCanonicalBase64url(
+            envelope.namespaceEnvelopeBytesBase64url,
+          ),
+          signerEvidence: envelope.signerEvidence,
+        });
+      },
+    },
+    content: createVaultHumanTaskDeviceContentPortV1({
+      crypto,
+      vault,
+      coordinates: clientIdentity.coordinates,
+      subjectHumanId: input.humanActorId,
+      now,
+      resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
+      accessAnchors: createClientProfileObjectAccessAnchorPortV4({
+        crypto,
+        vault,
+        coordinates: clientIdentity.coordinates,
+        createStageId: createId,
+      }),
+    }),
+    journal: {
+      putBeforeSend: (mutation) => withJournal(() => journal.putBeforeSend(mutation)),
+      withPrepared: (operationId, use) => withJournal(() => journal.withPrepared(
+        operationId,
+        (mutation) => {
+          if (!isTaskMutation(mutation)) {
+            throw new TypeError("Prepared mutation is not a Human Task mutation");
+          }
+          return use(mutation);
+        },
+      )),
+      recordOutcome: (outcome) => withJournal(() => journal.recordOutcome(outcome)),
+    },
+    ordinary: {
+      create: ({ payload, task }) => input.api.createOrdinaryTaskV1({
+        ...task,
+        prompt: payload.prompt,
+        expectedOutput: payload.expectedOutput,
+      }),
+      update: async ({ taskId, payload, task }) => {
+        const updated = await input.api.updateOrdinaryTaskV1(taskId, {
+          ...task,
+          prompt: payload.prompt,
+          expectedOutput: payload.expectedOutput,
+        });
+        const { prompt, lastError, ...lifecycle } = updated;
+        return Object.freeze({
+          ...lifecycle,
+          content: Object.freeze({
+            dtoVersion: 1 as const,
+            status: "ordinary" as const,
+            promptPreview: prompt,
+            lastError,
+          }),
+        });
+      },
+    },
+    createOperationId: createId,
   });
 }
 

@@ -89,6 +89,9 @@ function taskMutation(): PreparedHumanTaskMutation {
         envelopeBytesBase64url: "dGFzay1lbnZlbG9wZQ",
       }],
       signedPublicationRequestBytesBase64url: "dGFzay1zaWduZWQ",
+      representation: "dual",
+      ordinaryPayloadBytesBase64url: "c2VjcmV0LXRhc2stcGF5bG9hZA",
+      task: {},
       operation: "create",
     },
   };
@@ -106,6 +109,10 @@ describe("Electron vault-sealed prepared mutation journal", () => {
       expect(await firstVault.unlock()).toEqual({ status: "available" });
       await createPreparedMutationJournal({ vault: firstVault, now: () => 1 })
         .putBeforeSend(taskMutation());
+      const persisted = await readFile(join(directory, JOURNAL_FILE), "utf8");
+      expect(persisted).not.toContain("secret-task-payload");
+      expect(persisted).not.toContain("c2VjcmV0LXRhc2stcGF5bG9hZA");
+      expect(persisted).not.toContain("ordinaryPayloadBytesBase64url");
       await firstVault.lock();
 
       const restartedVault = createElectronPreparedMutationJournalVault({

@@ -1,4 +1,4 @@
-import type { TaskDetail, TaskSummary } from "@nautilo/types";
+import type { MobileTaskDetail as TaskDetail, MobileTaskSummary as TaskSummary } from "@/features/task-work/task-content-mobile";
 import {
   createTaskDetailController,
   type TaskDetailState,

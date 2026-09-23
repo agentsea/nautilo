@@ -7,6 +7,7 @@ import type {
   ProtectedMemoryOrdinaryFallbackCreateRequestV1,
   LiveShadowMessagePreparedRequestV1,
   FullEncryptionMessagePreparedRequestV2,
+  DualTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedUpdateRequestV1,
 } from "@nautilo/api-client/browser";
@@ -172,6 +173,7 @@ function taskCreateRequest(
       envelopeBytesBase64url: "ZW52ZWxvcGU",
     }],
     signedPublicationRequestBytesBase64url: "c2lnbmVk",
+    task: {},
     operation: "create",
   };
 }
@@ -184,6 +186,14 @@ function taskUpdateRequest(): ProtectedTaskPreparedUpdateRequestV1 {
     nextContentRevision: 2,
     expectedCryptoAccessRevision: 2,
     cryptoObjectId: `task:v1:${TASK_ID}:2`,
+  };
+}
+
+function dualTaskCreateRequest(): DualTaskPreparedCreateRequestV1 {
+  return {
+    ...taskCreateRequest("task-dual-create:1"),
+    representation: "dual",
+    ordinaryPayloadBytesBase64url: "c2Vuc2l0aXZlLXRhc2stY2FuYXJ5",
   };
 }
 
@@ -421,6 +431,24 @@ describe("vault-sealed prepared Human Memory mutation journal", () => {
       taskId: TASK_ID,
       request: taskUpdateRequest(),
     });
+    expect(state.vault.openedBufferWiped).toBeTrue();
+  });
+
+  test("seals the complete dual Task body while keeping its index content-free", async () => {
+    const state = fixture();
+    const request = dualTaskCreateRequest();
+    const inserted = await state.journal.putBeforeSend({
+      kind: "task_create",
+      taskId: TASK_ID,
+      request,
+    });
+    expect(JSON.stringify(inserted.index)).not.toContain("ordinaryPayload");
+    expect(JSON.stringify(inserted.index)).not.toContain("sensitive-task-canary");
+    let opened: unknown;
+    await state.journal.withPrepared(request.operationId, (mutation) => {
+      opened = mutation;
+    });
+    expect(opened).toEqual({ kind: "task_create", taskId: TASK_ID, request });
     expect(state.vault.openedBufferWiped).toBeTrue();
   });
 

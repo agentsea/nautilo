@@ -47,6 +47,99 @@ describe("task tool (M143)", () => {
     });
   }
 
+  test("protected Task content stays unavailable to legacy Agent read and update", async () => {
+    stubRuntime();
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "protected-task",
+      ownerId: OWNER_ID,
+      agentId: AGENT_ID,
+      status: "pending",
+      contentRepresentation: "protected",
+      prompt: "",
+    } as never);
+    const getRuns = spyOn(db, "getTaskRuns").mockResolvedValue([]);
+    const update = spyOn(db, "updateTask").mockResolvedValue(undefined);
+    restores.push(() => { getTask.mockRestore(); getRuns.mockRestore(); update.mockRestore(); });
+
+    const read = JSON.parse(await dispatchTaskCommand({
+      command: "read", taskId: "protected-task",
+    }, CTX)) as Record<string, unknown>;
+    expect(read).toEqual({
+      task: { id: "protected-task", status: "pending" },
+      content: { status: "unavailable", reason: "protected_task_read_unavailable" },
+      runs: [],
+    });
+    expect(getRuns).not.toHaveBeenCalled();
+    expect(await dispatchTaskCommand({
+      command: "update", taskId: "protected-task", prompt: "new text",
+    }, CTX)).toBe("Cannot update task: protected Task content requires an authorized client.");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  test("Agent create obeys the injected non-Plain publication fence", async () => {
+    const canUseLegacyTaskContent = async () => false;
+    stubRuntime({ canUseLegacyTaskContent });
+    expect(await dispatchTaskCommand({
+      command: "create", prompt: "must be protected",
+    }, CTX)).toBe("Cannot create task: protected Task creation is not yet available from this Agent tool.");
+    expect(capturedCreate).toBeNull();
+  });
+
+  test("non-Plain policy fences ordinary legacy Agent read, list, and update", async () => {
+    stubRuntime({ canUseLegacyTaskContent: async () => false });
+    const ordinary = {
+      id: "ordinary-task", ownerId: OWNER_ID, agentId: AGENT_ID,
+      status: "pending", contentRepresentation: "ordinary", prompt: "private prompt",
+      scheduleKind: "now", callingRoomId: ROOM_ID, selectionProfile: "balanced",
+      requestedModelId: null, metadata: null,
+    };
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue(ordinary as never);
+    const getRuns = spyOn(db, "getTaskRuns").mockResolvedValue([]);
+    const list = spyOn(db, "listTasksForOwner").mockResolvedValue([ordinary] as never);
+    const models = spyOn(db, "getLatestRunModelByTask").mockResolvedValue(new Map());
+    const update = spyOn(db, "updateTask").mockResolvedValue(undefined);
+    restores.push(() => {
+      getTask.mockRestore(); getRuns.mockRestore(); list.mockRestore();
+      models.mockRestore(); update.mockRestore();
+    });
+
+    const read = await dispatchTaskCommand({ command: "read", taskId: ordinary.id }, CTX);
+    const listed = await dispatchTaskCommand({ command: "list" }, CTX);
+    expect(read).not.toContain("private prompt");
+    expect(listed).not.toContain("private prompt");
+    expect(listed).toContain('"content":{"status":"unavailable"');
+    expect(await dispatchTaskCommand({
+      command: "update", taskId: ordinary.id, prompt: "changed",
+    }, CTX)).toBe("Cannot update task: protected Task content requires an authorized client.");
+    expect(getRuns).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  test("legacy Agent list keeps ordinary previews while withholding protected content", async () => {
+    stubRuntime();
+    const list = spyOn(db, "listTasksForOwner").mockResolvedValue([
+      {
+        id: "ordinary-task", status: "pending", contentRepresentation: "ordinary",
+        prompt: "ordinary prompt", scheduleKind: "now", callingRoomId: ROOM_ID,
+        selectionProfile: "balanced", requestedModelId: null, metadata: null,
+      },
+      {
+        id: "protected-task", status: "pending", contentRepresentation: "protected",
+        prompt: "", scheduleKind: "now", callingRoomId: ROOM_ID,
+        selectionProfile: "balanced", requestedModelId: null, metadata: null,
+      },
+    ] as never);
+    const models = spyOn(db, "getLatestRunModelByTask").mockResolvedValue(new Map());
+    restores.push(() => { list.mockRestore(); models.mockRestore(); });
+
+    const rows = JSON.parse(await dispatchTaskCommand({ command: "list" }, CTX)) as Array<Record<string, unknown>>;
+    expect(rows[0]?.["prompt"]).toBe("ordinary prompt");
+    expect(rows[1]?.["prompt"]).toBeUndefined();
+    expect(rows[1]?.["content"]).toEqual({
+      status: "unavailable", reason: "protected_task_read_unavailable",
+    });
+  });
+
   test("createTaskTool().name === 'task'", () => {
     expect(createTaskTool().name).toBe("task");
   });

@@ -45,6 +45,7 @@ let SubagentDock: (typeof import("../SubagentDock"))["SubagentDock"];
 const actualRuntimeContexts = await import("../../../../adapters/runtime-contexts");
 const actualRoomNav = await import("../../../../contexts/room-navigation-context");
 const actualTaskState = await import("../../../../contexts/task-state/task-state-context");
+const actualAuth = await import("../../../../hooks/use-auth");
 
 function renderDock(): ReturnType<typeof render> {
   return render(
@@ -91,6 +92,14 @@ beforeAll(async () => {
     }),
   }));
 
+  mock.module("../../../../hooks/use-auth", () => ({
+    ...actualAuth,
+    useAuth: () => ({
+      viewerGeneration: 1,
+      viewer: { isVerified: true, sessionUserId: "viewer-1", sessionActorId: "actor-1" },
+    }),
+  }));
+
   ({ SubagentDock } = await import("../SubagentDock"));
 });
 
@@ -114,6 +123,7 @@ afterAll(async () => {
   mock.module("../../../../adapters/runtime-contexts", () => actualRuntimeContexts);
   mock.module("../../../../contexts/room-navigation-context", () => actualRoomNav);
   mock.module("../../../../contexts/task-state/task-state-context", () => actualTaskState);
+  mock.module("../../../../hooks/use-auth", () => actualAuth);
   mock.restore();
   const g = globalThis as Record<string, unknown>;
   for (const key of Object.keys(priorGlobals)) {

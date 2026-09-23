@@ -1,4 +1,4 @@
-import type { TaskDetail } from "@nautilo/types";
+import type { MobileTaskDetail as TaskDetail } from "./task-content-mobile";
 
 import type { TaskWorkScope } from "./use-task-work-scope";
 

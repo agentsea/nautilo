@@ -1847,6 +1847,18 @@ export async function createApp(options?: CreateAppOptions) {
       () => getEncryptionTransitionPolicy(getServerDirectDb()),
     ),
   });
+  // Task protection remains dark until its complete create/read/execution
+  // composition is activated. Preserve the established ordinary Task route
+  // in every server-wide encryption mode through a Task-specific owner.
+  const dormantTaskContentOwner = bindEncryptionDataOperationOwner({
+    policy: {
+      resolve: () => Promise.resolve({
+        policy: { mode: "plaintext_only" as const, shadowBehavior: "fallback" as const },
+        revalidationToken: 0,
+      }),
+      revalidate: () => Promise.resolve(),
+    },
+  });
   let protectedStenographerPromise: ReturnType<typeof createProductionProtectedStenographerComposition> | null = null;
   let stenographerProtectionCryptoHandlePromise: ReturnType<
     typeof verifyCryptoPostgresHandle
@@ -4085,6 +4097,11 @@ export async function createApp(options?: CreateAppOptions) {
   };
   setTaskToolRuntime({
     db: getServerDirectDb(),
+    canUseLegacyTaskContent: () => dormantTaskContentOwner.runMutation({
+      ordinary: () => Promise.resolve(true),
+      dual: () => Promise.resolve(false),
+      protected: () => Promise.resolve(false),
+    }),
     ...(enableClaudeCodeTasks ? { claudeCodeTasksEnabled: true as const } : {}),
     createTask: createTaskForAgentTool,
     createHarnessTask: (input) => {
@@ -4217,6 +4234,7 @@ export async function createApp(options?: CreateAppOptions) {
   tasksRoutes(app, {
     observer: taskObserver,
     prepareStopTask: prepareHarnessStop,
+    contentOwner: dormantTaskContentOwner,
   });
   await taskObserver.start();
   codexRequestsRoutes(app, {

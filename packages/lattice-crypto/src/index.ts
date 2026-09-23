@@ -1555,3 +1555,12 @@ export type {
   RecoveryArchiveStorageExpectationV2 as RecoveryArchiveStorageExpectation,
   V2Storage as LatticeStorage,
 } from "./storage/v2-store.ts";
+export {
+  prepareHumanTaskPublicationRequestV1 as prepareHumanTaskPublicationRequest,
+  verifyHumanTaskPublicationRequestV1 as verifyHumanTaskPublicationRequest,
+  verifyHumanTaskPublicationRequestExactReplayV1 as verifyHumanTaskPublicationRequestExactReplay,
+} from "./task/publication-request-v1.ts";
+export type {
+  HumanTaskPublicationRequestV1 as HumanTaskPublicationRequest,
+  PrepareHumanTaskPublicationRequestInputV1 as PrepareHumanTaskPublicationRequestInput,
+} from "./task/publication-request-v1.ts";
