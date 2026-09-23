@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import { BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS } from "@nautilo/db/schema";
+import {
+  BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS,
+  CRYPTO_STORAGE_COLLECTION_LIMITS,
+} from "@nautilo/db/schema";
 
 import {
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS,
@@ -517,6 +520,15 @@ function canonicalIds(
   return Object.freeze([...value]);
 }
 
+function scopeMaximum(
+  binding: AuthorizationSessionBinding,
+): number {
+  return "recipientKind" in binding
+      && binding.recipientKind === "nautilo_task_runtime"
+    ? CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal + 1
+    : FOREGROUND_AUTHORIZATION_MAX_SESSIONS;
+}
+
 function canonicalOperations(
   value: unknown,
 ): readonly ProtectedExecutionOperation[] | null {
@@ -538,8 +550,9 @@ function canonicalOperations(
 
 function canonicalNamespaceRequirements(
   value: unknown,
+  maximum = FOREGROUND_AUTHORIZATION_MAX_SESSIONS,
 ): readonly ForegroundAuthorizationNamespaceRequirement[] | null {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maximum) {
     return null;
   }
   const entries: readonly unknown[] = value;
@@ -640,8 +653,12 @@ function snapshotDescription(
   ) {
     return null;
   }
-  const namespaceIds = canonicalIds(value.namespaceIds);
-  const domainIds = canonicalIds(value.domainIds);
+  const maximum = "recipientKind" in value
+      && value.recipientKind === "nautilo_task_runtime"
+    ? CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal + 1
+    : FOREGROUND_AUTHORIZATION_MAX_SESSIONS;
+  const namespaceIds = canonicalIds(value.namespaceIds, maximum);
+  const domainIds = canonicalIds(value.domainIds, maximum);
   if (namespaceIds === null || domainIds === null) return null;
   const recipient = "recipientAgentId" in value
     ? (
@@ -1012,8 +1029,9 @@ export class ForegroundAuthorizationSessionRegistry<
     if (parent === undefined) return unavailableChild("view_unavailable");
     const unavailable = this.#availability(parent.session);
     if (unavailable !== null) return unavailableChild(unavailable);
-    const namespaceIds = canonicalIds(input.namespaceIds);
-    const domainIds = canonicalIds(input.domainIds);
+    const maximum = scopeMaximum(parent.session.binding);
+    const namespaceIds = canonicalIds(input.namespaceIds, maximum);
+    const domainIds = canonicalIds(input.domainIds, maximum);
     const operations = canonicalOperations(input.operations);
     if (
       namespaceIds === null
@@ -1179,7 +1197,10 @@ export class ForegroundAuthorizationSessionRegistry<
     if (view === undefined) return unavailableLease("view_unavailable");
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
-    const namespaceIds = canonicalIds(input.namespaceIds);
+    const namespaceIds = canonicalIds(
+      input.namespaceIds,
+      scopeMaximum(view.session.binding),
+    );
     if (
       !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || (
@@ -1267,8 +1288,9 @@ export class ForegroundAuthorizationSessionRegistry<
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
     const operations = canonicalOperations(input.operations);
-    const namespaceIds = canonicalIds(input.namespaceIds);
-    const domainIds = canonicalIds(input.domainIds);
+    const maximum = scopeMaximum(view.session.binding);
+    const namespaceIds = canonicalIds(input.namespaceIds, maximum);
+    const domainIds = canonicalIds(input.domainIds, maximum);
     if (
       !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || operations === null
@@ -1335,7 +1357,10 @@ export class ForegroundAuthorizationSessionRegistry<
     if (view === undefined) return unavailableLease("view_unavailable");
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
-    const requirements = canonicalNamespaceRequirements(input.requirements);
+    const requirements = canonicalNamespaceRequirements(
+      input.requirements,
+      scopeMaximum(view.session.binding),
+    );
     if (
       !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || requirements === null

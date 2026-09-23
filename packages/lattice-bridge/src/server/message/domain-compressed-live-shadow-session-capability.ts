@@ -1,5 +1,6 @@
-import type {
-  DeviceWrappedDomainAgentForegroundAuthorizationSecretEntry,
+import {
+  LATTICE_LIMITS,
+  type DeviceWrappedDomainAgentForegroundAuthorizationSecretEntry,
 } from "@nautilo/lattice-crypto";
 
 declare const domainCompressedLiveShadowSessionCapabilityBrand: unique symbol;
@@ -88,9 +89,13 @@ function portableIdentity(value: unknown): value is string {
     && new TextEncoder().encode(value).length <= 256;
 }
 
-function canonicalIds(values: readonly string[]): readonly string[] {
+function canonicalIds(
+  values: readonly string[],
+  maximum = Number.MAX_SAFE_INTEGER,
+): readonly string[] {
   if (
     values.length < 1
+    || values.length > maximum
     || values.some((value) => value.length < 1 || value.length > 256)
     || values.some((value, index) =>
       index > 0 && values[index - 1]! >= value
@@ -127,8 +132,20 @@ export function createDomainCompressedLiveShadowSessionCapability(
       readonly DeviceWrappedDomainAgentForegroundAuthorizationSecretEntry[];
   }>,
 ): DomainCompressedLiveShadowSessionCapability {
-  const namespaceIds = canonicalIds(input.description.namespaceIds);
-  const grantDomainIds = canonicalIds(input.description.grantDomainIds);
+  const isTaskRuntime = "recipientKind" in input.description
+    && input.description.recipientKind === "nautilo_task_runtime";
+  const namespaceIds = canonicalIds(
+    input.description.namespaceIds,
+    isTaskRuntime
+      ? LATTICE_LIMITS.agentGrantNamespaces
+      : Number.MAX_SAFE_INTEGER,
+  );
+  const grantDomainIds = canonicalIds(
+    input.description.grantDomainIds,
+    isTaskRuntime
+      ? LATTICE_LIMITS.agentGrantDomains
+      : Number.MAX_SAFE_INTEGER,
+  );
   if (
     input.description.authorizationDigest.length !== 32
     || input.description.issuedAt < 0

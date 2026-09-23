@@ -120,6 +120,24 @@ describe("Domain-compressed live Shadow session capability", () => {
     destroyDomainCompressedLiveShadowSessionCapability(capability);
   });
 
+  test("rejects a Task Runtime scope above the protocol grant bound", () => {
+    const namespaceIds = Object.freeze(Array.from(
+      { length: 16_385 },
+      (_, index) => String(index).padStart(5, "0"),
+    ));
+    expect(() => createDomainCompressedLiveShadowSessionCapability({
+      description: {
+        ...description,
+        recipientKind: "nautilo_task_runtime",
+        taskRunId: "task-run-1",
+        authorizationEpisodeId: "task-episode-1",
+        sourceRoomId: "room-source-1",
+        namespaceIds,
+      },
+      entries,
+    })).toThrow();
+  });
+
   test("lends detached key copies and wipes retained authority on destroy", async () => {
     const capability = createDomainCompressedLiveShadowSessionCapability({
       description,

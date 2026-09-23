@@ -334,6 +334,61 @@ function namespaceSetPort(options: Readonly<{
 }
 
 describe("M237 foreground authorization session registry", () => {
+  test("Task Runtime admits the protocol scope bound without widening foreground sessions", () => {
+    const registerCount = (count: number, taskRuntime: boolean) => {
+      const ids = Object.freeze(Array.from(
+        { length: count },
+        (_, index) => String(index).padStart(5, "0"),
+      ));
+      const capability = Object.freeze({
+        description: Object.freeze({
+          authorizationId: "scope-authorization",
+          issuedAt: NOW,
+          expiresAt: NOW + 60_000,
+          issuingHumanId: "human-alice",
+          issuingDeviceId: "device-alice",
+          ...(taskRuntime
+            ? {
+                recipientKind: "nautilo_task_runtime" as const,
+                taskRunId: "task-run-a",
+                authorizationEpisodeId: "task-episode-a",
+                sourceRoomId: "room-source-a",
+              }
+            : { recipientAgentId: "agent-genie" }),
+          recipientKeyId: "scope-recipient-key",
+          namespaceIds: ids,
+          domainIds: ids,
+        }),
+      });
+      const registry = new ForegroundAuthorizationSessionRegistry<typeof capability>({
+        capabilityPort: {
+          inspect: () => capability.description,
+          destroy: () => {},
+        },
+        now: () => NOW,
+        createSessionId: () => "scope-session",
+        createViewId: () => "scope-view",
+        createLeaseId: () => "scope-lease",
+        startSweep: false,
+      });
+      const result = registry.register({
+        capability,
+        authenticatedBinding: taskRuntime
+          ? taskRuntimeBinding()
+          : binding(),
+        allowedOperations: ["decrypt"],
+      });
+      registry.close();
+      return result.status;
+    };
+
+    expect(registerCount(257, false)).toBe("unavailable");
+    expect(registerCount(257, true)).toBe("registered");
+    expect(registerCount(16_383, true)).toBe("registered");
+    expect(registerCount(16_384, true)).toBe("registered");
+    expect(registerCount(16_385, true)).toBe("unavailable");
+  });
+
   test("binds Task Runtime sessions to one exact occurrence and authorization episode", () => {
     type TaskCapability = Readonly<{
       description: ForegroundAuthorizationCapabilityDescription;
