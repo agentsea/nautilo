@@ -1,5 +1,5 @@
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
-import { browserObservationFromResult, type BrowserDecisionObservation } from "../../graph/browser-decision";
+import { browserObservationFromResult, interpretBrowserDecisionCall, type BrowserDecisionObservation } from "../../graph/browser-decision";
 import { isImageContentBlock } from "../../utils/message-modalities";
 
 function liveObservation(message: BaseMessage): BrowserDecisionObservation | null {
@@ -22,10 +22,58 @@ function pageRead(message: BaseMessage): Record<string, unknown> | null {
   } catch { return null; }
 }
 
+function delegatedObservationCallIds(messages: BaseMessage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (!AIMessage.isInstance(message)) continue;
+    for (const call of message.tool_calls ?? []) {
+      if (!call.id) continue;
+      if (call.id.startsWith("browser-choice:")
+        || message.additional_kwargs["nautilo_browser_decision"] !== undefined
+        || interpretBrowserDecisionCall(call).kind === "plan") ids.add(call.id);
+    }
+  }
+  return ids;
+}
+
+function isDelegatedObservationResult(message: BaseMessage, delegatedCalls: Set<string>): message is ToolMessage {
+  return ToolMessage.isInstance(message)
+    && (message.additional_kwargs["nautilo_browser_decision_observation"] === true
+      || delegatedCalls.has(message.tool_call_id) || message.tool_call_id.startsWith("browser-choice:"))
+    && message.status !== "error"
+    && message.additional_kwargs["nautilo_tool_status"] !== "error"
+    && browserObservationFromResult(message.name, message.content) !== null;
+}
+
+function delegatedObservationPlaceholder(message: ToolMessage): ToolMessage {
+  let receipt: Record<string, unknown> = {};
+  if (typeof message.content === "string" && message.name !== "browser_snapshot" && message.name !== "browser_screenshot") {
+    try {
+      const parsed = JSON.parse(message.content) as Record<string, unknown>;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "observation" in parsed) {
+        const { observation: _observation, ...rest } = parsed;
+        receipt = rest;
+      }
+    } catch { /* A parsed observation cannot reach this branch with malformed JSON. */ }
+  }
+  return new ToolMessage({
+    content: JSON.stringify({ ...receipt, version: 1, delegatedObservationOmitted: true,
+      notice: "Internal browser-decision observation omitted. Take a fresh ordinary browser capture when independent verification is needed." }),
+    tool_call_id: message.tool_call_id,
+    ...(message.name === undefined ? {} : { name: message.name }),
+    ...(message.id === undefined ? {} : { id: message.id }),
+    ...(message.status === undefined ? {} : { status: message.status }),
+    additional_kwargs: message.additional_kwargs,
+    response_metadata: message.response_metadata,
+    ...(message.artifact === undefined ? {} : { artifact: message.artifact as unknown }),
+  });
+}
+
 /** Reads only the current conversation's retained canonical result; never dispatches to a browser. */
 export function readBrowserHistory(messages: BaseMessage[], toolCallId: string): string | null {
   const matches = messages.filter(message => ToolMessage.isInstance(message) && message.tool_call_id === toolCallId);
   if (matches.length !== 1) return null;
+  if (isDelegatedObservationResult(matches[0]!, delegatedObservationCallIds(messages))) return null;
   const observation = liveObservation(matches[0]!);
   const page = pageRead(matches[0]!);
   return observation || page ? JSON.stringify({ version: 1, historical: true, sourceToolCallId: toolCallId,
@@ -34,7 +82,7 @@ export function readBrowserHistory(messages: BaseMessage[], toolCallId: string):
       : "Historical evidence only. Its refs are stale; take a fresh browser_snapshot before acting.", ...(observation ? { observation } : { result: page }) }) : null;
 }
 
-/** Provider-only view. Baseline/current observations and all action/error receipts stay intact. */
+/** Provider-only view. Internal decision observations are hidden; ordinary captures and action/error receipts remain. */
 export function projectBrowserHistory(messages: BaseMessage[]): {
   messages: BaseMessage[];
   originals: Map<string, ToolMessage>;
@@ -44,6 +92,7 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
   const observations = new Map<number, BrowserDecisionObservation>();
   const callCounts = new Map<string, number>();
   const historicalCalls = new Map<string, string>();
+  const delegatedCalls = delegatedObservationCallIds(messages);
   let latestScreenshotImage: { messageIndex: number; blockIndex: number } | null = null;
   for (const message of messages) {
     if (ToolMessage.isInstance(message)) callCounts.set(message.tool_call_id, (callCounts.get(message.tool_call_id) ?? 0) + 1);
@@ -94,6 +143,10 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
     }
   }
   const projected = messages.map((message, index) => {
+    if (isDelegatedObservationResult(message, delegatedCalls)) {
+      if (callCounts.get(message.tool_call_id) === 1) originals.set(message.tool_call_id, message);
+      return delegatedObservationPlaceholder(message);
+    }
     if (ToolMessage.isInstance(message) && message.name === "browser_screenshot" && Array.isArray(message.content)
       && message.content.some(isImageContentBlock)) {
       if (callCounts.get(message.tool_call_id) === 1) originals.set(message.tool_call_id, message);

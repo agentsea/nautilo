@@ -1505,6 +1505,13 @@ describe("sustained browser recovery", () => {
     expect(content).not.toContain("text observation");
   });
 
+  test("a completed semantic delegation asks Genie to verify from a fresh ordinary capture", () => {
+    const content = browserDecisionHandoffContent("completion_ready", undefined,
+      decision({ observation: observation() }));
+    expect(content).toContain("fresh ordinary browser capture");
+    expect(content).not.toContain("Inspect the latest observation");
+  });
+
   function round(previous: BrowserDecisionState, kind: string, args: Record<string, unknown>, next: BrowserDecisionObservation): BrowserDecisionState {
     const route = (id: string, name: string, values: Record<string, unknown>) => previous.target
       ? call(id, "control_connected_web_operation", { operationId: previous.target.operationId,
@@ -1641,7 +1648,9 @@ describe("browser decision node", () => {
     const receipt = AIMessage.isInstance(selected.messages?.at(-1))
       ? selected.messages.at(-1)?.additional_kwargs["nautilo_browser_decision"]
       : null;
-    const serializedReceipt = JSON.stringify(receipt);
+    // Wall-clock timing can coincidentally contain a coordinate's digits.
+    const { elapsedMs: _elapsedMs, ...semanticReceipt } = receipt as Record<string, unknown>;
+    const serializedReceipt = JSON.stringify(semanticReceipt);
     for (const forbidden of ['"imageX":', '"imageY":', '"point":', '"box":', "7919", "6357", "79%", "72%"])
       expect(serializedReceipt).not.toContain(forbidden);
     const afterMouse = settleBrowserDecision(
@@ -2069,7 +2078,7 @@ describe("browser decision node", () => {
     expect(update.browserDecision).toMatchObject({ phase: "handoff", reason: selectedId, pending: null });
     expect(SystemMessage.isInstance(update.messages?.at(-1))).toBe(true);
     const projected = projectBrowserHandoffForProvider(update.messages!, state({ messages: update.messages!, browserDecision: update.browserDecision ?? null }));
-    expect(projected.messages.at(-1)?.content).toContain(selectedId === "completion_ready" ? "Independently verify" : selectedId === "needs_input" ? "browser_decision_input_required" : "Inspect a screenshot");
+    expect(projected.messages.at(-1)?.content).toContain(selectedId === "completion_ready" ? "fresh ordinary browser capture" : selectedId === "needs_input" ? "browser_decision_input_required" : "Inspect a screenshot");
   });
 
   test("uses the accounted Choice seam and proposes rather than approves the selected call", async () => {

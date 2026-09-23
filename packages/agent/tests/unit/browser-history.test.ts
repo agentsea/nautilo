@@ -109,7 +109,98 @@ describe("browser history provider projection", () => {
     const projected = projectBrowserHistory(messages).messages;
     expect(JSON.stringify(projected)).not.toContain("data:image/png;base64,stale-before-delegation");
     expect((projected[1] as ToolMessage).content).toContain("screenshotOmitted");
-    expect(projected[3]).toBe(delegated);
+    expect((projected[3] as ToolMessage).content).toContain("delegatedObservationOmitted");
+    expect(JSON.stringify(projected)).not.toContain("snapshot-2");
+    expect(readBrowserHistory(messages, "delegated")).toBeNull();
+  });
+
+  test.each(["browser_screenshot", "browser_snapshot"])(
+    "omits %s observations captured inside Jev while preserving ordinary captures and action receipts", (toolName) => {
+      const begin = new AIMessage({ content: "", tool_calls: [{ id: "delegation", name: toolName,
+        args: { decisionPlan: { goal: "Complete the routine browser task" } } }] });
+      const first = new ToolMessage({ name: toolName, tool_call_id: "delegation", status: "success",
+        content: observation("session", 1, "first-internal-state".repeat(1_000)) });
+      const chosenAction = new AIMessage({ content: "", tool_calls: [{ id: "browser-choice:action", name: "browser_press", args: { key: "Right" } }],
+        additional_kwargs: { nautilo_browser_decision: { operation: "choice" } } });
+      const actionReceipt = new ToolMessage({ name: "browser_press", tool_call_id: "browser-choice:action", status: "success", content: "pressed" });
+      const chosenObservation = new AIMessage({ content: "", tool_calls: [{ id: "browser-choice:observe", name: toolName, args: {} }],
+        additional_kwargs: { nautilo_browser_decision: { operation: "reobserve" } } });
+      const second = new ToolMessage({ name: toolName, tool_call_id: "browser-choice:observe", status: "success",
+        content: observation("session", 2, "second-internal-state".repeat(1_000)) });
+      const outside = new AIMessage({ content: "", tool_calls: [{ id: "outside", name: toolName, args: {} }] });
+      const ordinary = new ToolMessage({ name: toolName, tool_call_id: "outside", status: "success",
+        content: observation("session", 3, "ordinary-verification-state") });
+      const messages = [new HumanMessage("Do the task"), begin, first, chosenAction, actionReceipt,
+        chosenObservation, second, outside, ordinary];
+
+      const processed = processHistory(messages, {
+        validationEnabled: true, pruningEnabled: true, tokenBudgetFraction: 0.9,
+        windowKeepRecent: 100, modelId: "openai:gpt-5.6-sol",
+      });
+      const providerText = JSON.stringify(processed.messages);
+      expect(providerText).not.toContain("first-internal-state");
+      expect(providerText).not.toContain("second-internal-state");
+      expect(providerText).toContain("ordinary-verification-state");
+      expect((processed.messages[2] as ToolMessage).content).toContain("delegatedObservationOmitted");
+      expect((processed.messages[6] as ToolMessage).content).toContain("delegatedObservationOmitted");
+      expect(processed.messages[4]).toBe(actionReceipt);
+      expect(processed.canonicalMessages?.[2]).toBe(first);
+      expect(processed.canonicalMessages?.[6]).toBe(second);
+      expect(readBrowserHistory(messages, "delegation")).toBeNull();
+      expect(readBrowserHistory(messages, "browser-choice:observe")).toBeNull();
+      if (toolName === "browser_snapshot") expect(readBrowserHistory(messages, "outside")).not.toBeNull();
+    },
+  );
+
+  test("removes only an internal connected-browser observation while retaining its execution receipt and errors", () => {
+    const internalCall = new AIMessage({ content: "", tool_calls: [{ id: "browser-choice:connected",
+      name: "control_connected_web_operation", args: { command: { kind: "snapshot" } } }],
+      additional_kwargs: { nautilo_browser_decision: { operation: "reobserve" } } });
+    const internal = new ToolMessage({ name: "control_connected_web_operation",
+      tool_call_id: "browser-choice:connected", status: "success",
+      content: JSON.stringify({ ok: true, execution: "executed", observation: JSON.parse(observation("connected", 1, "internal-connected-state")) as unknown }) });
+    const error = new ToolMessage({ name: "browser_snapshot", tool_call_id: "browser-choice:error", status: "error",
+      content: "Browser disconnected before capture" });
+    const projected = projectBrowserHistory([internalCall, internal, error]);
+    expect(JSON.stringify(projected.messages)).not.toContain("internal-connected-state");
+    expect(JSON.parse((projected.messages[1] as ToolMessage).content as string)).toMatchObject({
+      ok: true, execution: "executed", delegatedObservationOmitted: true,
+    });
+    expect(projected.messages[2]).toBe(error);
+    expect(projected.originals.get("browser-choice:connected")).toBe(internal);
+  });
+
+  test("a long delegated visual loop does not grow Genie's provider history with its captures", () => {
+    const messages: BaseMessage[] = [new HumanMessage("Complete the routine task")];
+    for (let index = 0; index < 60; index++) {
+      const id = `browser-choice:observation-${index}`;
+      messages.push(new AIMessage({ content: "", tool_calls: [{ id, name: "browser_screenshot", args: {} }],
+        additional_kwargs: { nautilo_browser_decision: { operation: "reobserve" } } }));
+      messages.push(new ToolMessage({ name: "browser_screenshot", tool_call_id: id, status: "success",
+        content: observation("long-loop", index, `internal-visual-state-${index} `.repeat(1_500)) }));
+    }
+    const outside = snapshot("ordinary-verification", "long-loop", 60);
+    messages.push(new AIMessage({ content: "", tool_calls: [{ id: "ordinary-verification", name: "browser_snapshot", args: {} }] }), outside);
+    const processed = processHistory(messages, {
+      validationEnabled: true, pruningEnabled: true, tokenBudgetFraction: 0.9,
+      windowKeepRecent: 100, modelId: "openai:gpt-5.6-sol",
+    });
+    const providerText = JSON.stringify(processed.messages);
+    expect(providerText.length).toBeLessThan(JSON.stringify(messages).length / 10);
+    expect(providerText).not.toContain("internal-visual-state-");
+    expect(providerText).toContain("snapshot-60");
+    expect(processed.canonicalMessages?.at(-3)?.content).toContain("internal-visual-state-59");
+    expect(processed.canonicalMessages?.at(-1)).toBe(outside);
+  });
+
+  test("a trusted in-loop marker hides the observation even when its proposing call is outside the window", () => {
+    const internal = new ToolMessage({ name: "browser_snapshot", tool_call_id: "initial-delegation",
+      content: observation("session", 1, "marked-internal-state"), status: "success",
+      additional_kwargs: { nautilo_browser_decision_observation: true } });
+    const projected = projectBrowserHistory([internal]);
+    expect((projected.messages[0] as ToolMessage).content).toContain("delegatedObservationOmitted");
+    expect(JSON.stringify(projected.messages)).not.toContain("marked-internal-state");
+    expect(projected.originals.get("initial-delegation")).toBe(internal);
   });
 
   test("retains baseline/current per session and compacts older snapshots deterministically", () => {
