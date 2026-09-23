@@ -55,6 +55,7 @@ import {
 } from "../../../../lib/desktop";
 import { useProfile } from "../../../../hooks/use-profile";
 import { useAuth } from "../../../../hooks/use-auth";
+import { useCan } from "../../../../hooks/use-can";
 import { useNotificationState } from "../../../../notifications/notification-state-context";
 import {
   buildMemberByHandle,
@@ -341,9 +342,10 @@ function ThreadComposer({
   const composer = useComposerRuntime();
   const composerText = useComposer((snapshot) => snapshot.text);
   const auth = useAuth();
+  const can = useCan();
   const viewerActorId = auth.viewer.sessionActorId ?? undefined;
   const composerRootRef = useRef<HTMLDivElement>(null);
-  const mentionAdapter = useMentionAdapterForRoom(members, viewerActorId);
+  const mentionAdapter = useMentionAdapterForRoom(members, viewerActorId, can("manage_rooms"));
   const memberByHandle = useMemo(() => buildMemberByHandle(members), [members]);
   const { state } = controller;
   const hasChildWork = state.activeJobIds.length > 0 ||
@@ -370,6 +372,7 @@ function ThreadComposer({
         ...(projected.mentionedHumanUserIds.length > 0
           ? { mentionedHumanUserIds: projected.mentionedHumanUserIds }
           : {}),
+        ...(projected.mentionEveryone ? { mentionEveryone: true } : {}),
       },
     );
     if (sent) {
@@ -513,10 +516,12 @@ export function resolveThreadPresenceAgentName({
     (eligible.length === 1 ? eligible[0]?.displayName : undefined) ?? fallbackName;
 }
 
-export function SubthreadSurface({ subthreadRoomId, parentRoomId }: SubthreadSurfaceProps) {
+export function SubthreadSurface({ subthreadRoomId, parentRoomId, anchorMessageId }: SubthreadSurfaceProps) {
   const ws = useWsStateContext();
   const controller = useThreadRoomController({
     roomId: subthreadRoomId,
+    parentRoomId,
+    anchorMessageId,
     visible: true,
     connected: ws.state === "open",
   });

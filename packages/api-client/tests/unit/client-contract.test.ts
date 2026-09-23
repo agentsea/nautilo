@@ -196,6 +196,12 @@ describe("NautiloApiClient HTTP contracts (mocked fetch)", () => {
               replyCount: 3,
               lastReplyAt: "2026-01-02T00:00:00.000Z",
               summaryRevision: 9,
+              attachments: [{
+                attachmentId: "44444444-4444-4444-8444-444444444444",
+                filename: "screen.png",
+                mimeType: "image/png",
+                sizeBytes: 73,
+              }],
               artifacts: [{
                 artifactInternalId: "550e8400-e29b-41d4-a716-446655440001",
                 roomId: "550e8400-e29b-41d4-a716-446655440000",
@@ -236,6 +242,12 @@ describe("NautiloApiClient HTTP contracts (mocked fetch)", () => {
       replyCount: 3,
       lastReplyAt: "2026-01-02T00:00:00.000Z",
       summaryRevision: 9,
+      attachments: [{
+        attachmentId: "44444444-4444-4444-8444-444444444444",
+        filename: "screen.png",
+        mimeType: "image/png",
+        sizeBytes: 73,
+      }],
       artifacts: [{
         artifactInternalId: "550e8400-e29b-41d4-a716-446655440001",
         roomId: "550e8400-e29b-41d4-a716-446655440000",

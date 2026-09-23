@@ -3,6 +3,7 @@ import { createServer, type Socket } from "node:net";
 
 import {
   fetchCdpTargets,
+  NAUTILO_COMPANION_OWNER_SURFACE,
   NAUTILO_DESKTOP_SURFACE,
   NAUTILO_FIRST_RUN_SURFACE,
   surfaceContractMismatch,
@@ -10,6 +11,7 @@ import {
 
 describe("packaged Desktop preload smoke contract", () => {
   test("includes recently added privileged bridges", () => {
+    expect(NAUTILO_DESKTOP_SURFACE).toContain("companion");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("miniAppRecovery");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("binaryRead");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("mediaProxy");
@@ -26,6 +28,32 @@ describe("packaged Desktop preload smoke contract", () => {
     expect(NAUTILO_DESKTOP_SURFACE).toContain("encryptionRecovery");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("browserResearch");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("uncontainedHostCommands");
+  });
+
+  test("pins the exact companion owner bridge", () => {
+    expect(NAUTILO_COMPANION_OWNER_SURFACE).toEqual([
+      "disable",
+      "enable",
+      "onAction",
+      "onClosed",
+      "pickFiles",
+      "publish",
+    ]);
+    expect(
+      surfaceContractMismatch(
+        ["disable", "enable", "onAction", "onClosed", "pickFiles", "publish"],
+        NAUTILO_COMPANION_OWNER_SURFACE,
+      ),
+    ).toEqual({ undocumented: [], missing: [] });
+    expect(
+      surfaceContractMismatch(
+        ["enable", "publish", "unexpected"],
+        NAUTILO_COMPANION_OWNER_SURFACE,
+      ),
+    ).toEqual({
+      undocumented: ["unexpected"],
+      missing: ["disable", "onAction", "onClosed", "pickFiles"],
+    });
   });
 
   test("pins the exact first-run picker bridge", () => {

@@ -233,6 +233,18 @@ export class DurableSleepModelLaneUnavailableError extends Error {
   }
 }
 
+/**
+ * The provider may have accepted a paid model operation, but the caller did
+ * not receive a trustworthy terminal result. Completing the exact durable
+ * generation prevents an automatic replay across later scheduler passes.
+ */
+export class DurableSleepProviderOutcomeUnknownError extends Error {
+  constructor() {
+    super("Reflection provider outcome is unknown");
+    this.name = "DurableSleepProviderOutcomeUnknownError";
+  }
+}
+
 export interface DurableSleepWorkPort {
   /** Claims at most one due generation and owns all lease/attempt policy. */
   claimNext(
@@ -316,6 +328,7 @@ export type DurableSleepTerminalOutcome =
   | "already_covered"
   | "unsupported_authority_shape"
   | "no_effective_audience"
+  | "provider_outcome_unknown"
   | "protected_execution_unavailable";
 
 export type DurableSleepOrganizerViewResult =
@@ -1063,6 +1076,19 @@ export async function runDurableHierarchySleep(input: {
     else if (result.status === "superseded") superseded += 1;
     else leaseLost += 1;
   };
+  const completeTerminalClaim = async (
+    claim: DurableSleepClaim,
+    reason: DurableSleepTerminalOutcome,
+    mode: "same_room" | "cross_room" = "same_room",
+  ): Promise<boolean> => {
+    operations.no_change += 1;
+    terminalOutcomes[reason] = (terminalOutcomes[reason] ?? 0) + 1;
+    const completion = await input.work.complete({ claim });
+    if (!acceptLeaseResult(completion)) return false;
+    completed += 1;
+    recordCompletedItem(claim, completion, mode);
+    return true;
+  };
   const pendingFitsWorstCase = (view: DurableSleepOrganizerView): boolean => {
     const reserved = [...pendingOrganizer.map((item) => item.view), view]
       .map(viewWorstCaseReservation)
@@ -1183,6 +1209,16 @@ export async function runDurableHierarchySleep(input: {
     } catch (error) {
       for (const item of batch) item.outcome = input.signal?.aborted ? "cancelled"
         : error instanceof DurableSleepOrganizationUnavailableError || error instanceof DurableSleepModelLaneUnavailableError ? "unavailable" : "failed";
+      if (error instanceof DurableSleepProviderOutcomeUnknownError) {
+        for (const item of batch) {
+          await completeTerminalClaim(
+            item.claim,
+            "provider_outcome_unknown",
+            item.view.applicationPlanToken === undefined ? "same_room" : "cross_room",
+          );
+        }
+        return;
+      }
       if (error instanceof DurableSleepOrganizationUnavailableError) {
         for (const item of batch) await deferClaim(item.claim, "authority_unavailable");
         return;
@@ -1246,6 +1282,8 @@ export async function runDurableHierarchySleep(input: {
           item.outcome = "unavailable";
           modelRetryAfterMilliseconds = Math.max(modelRetryAfterMilliseconds ?? 0, error.retryAfterMilliseconds);
           await pauseClaim(item.claim);
+        } else if (error instanceof DurableSleepProviderOutcomeUnknownError) {
+          await completeTerminalClaim(item.claim, "provider_outcome_unknown");
         } else {
           await deferClaim(item.claim, "unexpected_failure", "unexpected_model_invocation_failure");
         }
@@ -1791,6 +1829,11 @@ export async function runDurableHierarchySleep(input: {
       }
       continue;
     } catch (error) {
+      if (error instanceof DurableSleepProviderOutcomeUnknownError) {
+        await completeTerminalClaim(claim, "provider_outcome_unknown");
+        attemptOutcome = "failed";
+        continue;
+      }
       if (input.signal?.aborted) break;
       if (error instanceof DurableSleepOrganizationUnavailableError) {
         attemptOutcome = "unavailable";

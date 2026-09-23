@@ -1026,6 +1026,12 @@ export function createAuthorizedHumanLiveShadowMessageClient(
       }
     },
     async send(roomId: string, body: RoomSendBody) {
+      // The room audience already includes every explicit Human recipient.
+      // Keep protected text-only admission independent of an expanded ID list.
+      if (body.mentionEveryone === true) {
+        const { mentionedHumanUserIds: _individualMentions, ...audienceBody } = body;
+        body = audienceBody;
+      }
       const sendPlanUnavailable = (reason: Extract<LiveShadowMessageSendAttemptV1,
         { status: "plan_unavailable" }>["reason"]) => input.api.sendRoomMessage(roomId, {
           ...body,
@@ -1044,13 +1050,14 @@ export function createAuthorizedHumanLiveShadowMessageClient(
         clientDeviceId: input.coordinates.deviceId,
         idempotencyKey: input.createIdempotencyKey(),
         requestShape: "text_only",
+        ...(body.mentionEveryone === true ? { mentionEveryone: true as const } : {}),
       });
       let planRequest = createPlanRequest();
       let plan;
       try {
         plan = await input.api.planLiveShadowRoomMessage(roomId, planRequest);
       } catch (error) {
-        if (isPlanResponseValidationError(error)
+        if (body.mentionEveryone === true || isPlanResponseValidationError(error)
           || (planRequest.requestVersion === 2 && typeof error === "object"
             && error !== null && "status" in error && error.status === 400)) {
           // An endpoint that answered with an unknown policy/plan shape is not
@@ -1153,7 +1160,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
           planRequest = createPlanRequest();
           plan = await input.api.planLiveShadowRoomMessage(roomId, planRequest);
         } catch (error) {
-          if (isPlanResponseValidationError(error)
+          if (body.mentionEveryone === true || isPlanResponseValidationError(error)
             || (planRequest.requestVersion === 2 && typeof error === "object"
               && error !== null && "status" in error && error.status === 400)) throw error;
           input.onUnavailable?.({ stage: "plan", reason: "replan_failed" });
@@ -1173,10 +1180,6 @@ export function createAuthorizedHumanLiveShadowMessageClient(
           : sendPlanUnavailable(plan.reason);
       }
       const full = plan.representationMode === "full_encryption";
-      if ((plan.authorizationScheme === "human_ai_readable_v2")
-        !== (planRequest.requestVersion === 2)) {
-        throw new TypeError("Human AI-readable plan negotiation mismatch");
-      }
       let planBytes: Uint8Array | undefined;
       let operationId: string | undefined;
       let planVersion:
@@ -1185,6 +1188,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
         | "shared_agent"
         | "human_ai_readable";
       let normalizedContent: string;
+      let plannedMentionEveryone = false;
       try {
         planBytes = fromBase64url(plan.planBytesBase64url);
         try {
@@ -1192,9 +1196,16 @@ export function createAuthorizedHumanLiveShadowMessageClient(
           planVersion = 4;
         } catch {
           try {
-            operationId = decodeHumanPeerLiveShadowMessagePlanV1(
-              planBytes,
-            ).operationId;
+            const peerPlan = decodeHumanPeerLiveShadowMessagePlanV1(planBytes);
+            try {
+              operationId = peerPlan.operationId;
+              plannedMentionEveryone = peerPlan.mentionEveryone === true;
+            } finally {
+              peerPlan.namespaceHeadDigest.fill(0);
+              peerPlan.namespacePublicationDigest.fill(0);
+              peerPlan.namespacePublicationSetDigest.fill(0);
+              peerPlan.namespaceAudienceFingerprint.fill(0);
+            }
             planVersion = "human_peer";
           } catch {
             try {
@@ -1205,6 +1216,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
                   throw new TypeError("Human AI-readable plan version mismatch");
                 }
                 operationId = humanAiPlan.operationId;
+                plannedMentionEveryone = humanAiPlan.mentionEveryone === true;
                 planVersion = "human_ai_readable";
               } finally {
                 destroySharedAgentPlan(humanAiPlan);
@@ -1221,14 +1233,24 @@ export function createAuthorizedHumanLiveShadowMessageClient(
             }
           }
         }
-        if (planRequest.requestVersion === 2 && planVersion !== "human_ai_readable") {
-          throw new TypeError("Human AI-readable V2 requires its negotiated plan");
+        // V2 selects either current AI-readable authority or the distinct
+        // Human-only protocol. A topology miss must not admit legacy Agent plans.
+        if ((plan.authorizationScheme === "human_ai_readable_v2")
+          !== (planRequest.requestVersion === 2 && planVersion === "human_ai_readable")) {
+          throw new TypeError("Human AI-readable plan negotiation mismatch");
+        }
+        if (planRequest.requestVersion === 2
+          && planVersion !== "human_ai_readable" && planVersion !== "human_peer") {
+          throw new TypeError("V2 requires current AI-readable or Human-only authority");
+        }
+        if (plannedMentionEveryone !== (body.mentionEveryone === true)) {
+          throw new TypeError("Protected Room mention intent mismatch");
         }
         normalizedContent = input.normalizeContent(body.content!);
       } catch {
         input.onUnavailable?.({ stage: "plan_decode", reason: "invalid_bytes" });
         planBytes?.fill(0);
-        if (full || planRequest.requestVersion === 2) {
+        if (full || planRequest.requestVersion === 2 || body.mentionEveryone === true) {
           throw new TypeError("Protected message plan is invalid");
         }
         return sendPlanUnavailable("invalid_plan");

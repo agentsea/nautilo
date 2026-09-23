@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * D514 Phase 0 controlled Electron acceptance harness.
+ * Controlled Electron cold-boot acceptance harness.
  *
  * This is intentionally an operator-run smoke, not a unit test.  It launches
  * only an explicit source-built (`--unpackaged`) or `package:dev` artifact,
@@ -52,8 +52,8 @@ const FIXTURE_PATHS: Record<FixtureEndpoint, string> = {
 };
 
 class ControlledFixture {
-  readonly marker = `d514-marker-${crypto.randomUUID()}`;
-  readonly identity = `d514-identity-${crypto.randomUUID()}`;
+  readonly marker = `desktop-smoke-marker-${crypto.randomUUID()}`;
+  readonly identity = `desktop-smoke-identity-${crypto.randomUUID()}`;
   private readonly plans = new Map<FixtureEndpoint, FixtureResponse[]>();
   private readonly started = new Map<FixtureEndpoint, number>();
   private readonly completed = new Map<FixtureEndpoint, number>();
@@ -112,7 +112,7 @@ class ControlledFixture {
     switch (endpoint) {
       case "root":
         return {
-          text: `<!doctype html><title>${this.marker}</title><main data-d514-marker="${this.marker}">${this.marker}</main>`,
+          text: `<!doctype html><title>${this.marker}</title><main data-desktop-smoke-marker="${this.marker}">${this.marker}</main>`,
         };
       case "ready":
         return { json: { status: "ready", marker: this.marker } };
@@ -127,7 +127,7 @@ class ControlledFixture {
       case "setup":
         return {
           json: {
-            instanceId: "d514-fixture",
+            instanceId: "desktop-smoke-fixture",
             serverUrl: this.origin,
             deploymentMode: "local-self-host",
             setupState: "ready",
@@ -155,15 +155,15 @@ type Run = {
   stop: () => Promise<void>;
 };
 
-export const D514_DELAYED_HEALTH_HOLD_MS = 5_500;
+export const COLD_BOOT_DELAYED_HEALTH_HOLD_MS = 5_500;
 
-export function d514InitialPageTargetTimeoutMs(
+export function coldBootInitialPageTargetTimeoutMs(
   artifactKind: Artifact["kind"],
 ): number {
   return artifactKind === "packaged" ? 30_000 : 12_000;
 }
 
-export async function reacquireD514Page<
+export async function reacquireDesktopSmokePage<
   Target extends Pick<CDPTarget, "type" | "url" | "webSocketDebuggerUrl">,
 >(input: Readonly<{
   expectedUrl: string;
@@ -192,7 +192,7 @@ export async function reacquireD514Page<
   return null;
 }
 
-export function d514DiagnosticDurationIsClose(
+export function coldBootDiagnosticDurationIsClose(
   line: string,
   expectedMs: number,
   toleranceMs: number,
@@ -243,13 +243,13 @@ async function startRun(
   fixture: ControlledFixture,
   beforeLaunch?: (operatorRoot: string) => void,
 ): Promise<Run> {
-  const userDataParent = mkdtempSync(join(tmpdir(), "nautilo-d514-user-data-"));
+  const userDataParent = mkdtempSync(join(tmpdir(), "nautilo-desktop-smoke-user-data-"));
   const requestedUserDataDir = join(userDataParent, "chromium-user-data");
-  const operatorRoot = mkdtempSync(join(tmpdir(), "nautilo-d514-smoke-"));
+  const operatorRoot = mkdtempSync(join(tmpdir(), "nautilo-desktop-smoke-"));
   chmodSync(operatorRoot, 0o700);
   beforeLaunch?.(operatorRoot);
   const cdpPort = await unusedLoopbackPort();
-  const profile = `d514-smoke-${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
+  const profile = `desktop-smoke-${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
   const instanceId = "test-cruft";
   // `main.ts` rebases Electron's `--user-data-dir` parent to the canonical
   // instance/profile tuple. Use the shared helper rather than copying it.
@@ -330,7 +330,7 @@ async function findTarget(run: Run, predicate: (target: CDPTarget) => boolean, t
   throw new Error(
     `CDP target timeout; childExit=${String(run.child.exitCode)} ` +
     `childSignal=${String(run.child.signalCode)}; pageTargets=${last.length}; ` +
-    `sanitized evidence:\n${boundedD514FailureEvidence(run)}`,
+    `sanitized evidence:\n${boundedDesktopSmokeFailureEvidence(run)}`,
   );
 }
 
@@ -340,7 +340,7 @@ async function waitForPage(
   expected: string,
   timeoutMs = 1_500,
 ): Promise<Readonly<{ target: CDPTarget; text: string }>> {
-  const found = await reacquireD514Page({
+  const found = await reacquireDesktopSmokePage({
     expectedUrl,
     expectedText: expected,
     timeoutMs,
@@ -355,7 +355,7 @@ async function waitForPage(
   if (found) return found;
   throw new Error(
     `CDP page timeout; childExit=${String(run.child.exitCode)} ` +
-    `childSignal=${String(run.child.signalCode)}; sanitized evidence:\n${boundedD514FailureEvidence(run)}`,
+    `childSignal=${String(run.child.signalCode)}; sanitized evidence:\n${boundedDesktopSmokeFailureEvidence(run)}`,
   );
 }
 
@@ -378,69 +378,69 @@ function seededRecentServer(fixture: ControlledFixture, fingerprint: string): st
   });
 }
 
-export function d514DiagnosticIsSanitized(
+export function coldBootDiagnosticIsSanitized(
   line: string,
   sensitiveValues: readonly string[],
 ): boolean {
   return sensitiveValues.every((value) => !value || !line.includes(value));
 }
 
-function d514Diagnostics(run: Run): string[] {
+function coldBootDiagnostics(run: Run): string[] {
   const logCandidates = [join(run.actualUserDataDir, "logs", "main.log")].filter(existsSync);
   assert(
     logCandidates.length === 1,
-    `derived tuple userData log was not created; sanitized evidence:\n${boundedD514FailureEvidence(run)}`,
+    `derived tuple userData log was not created; sanitized evidence:\n${boundedDesktopSmokeFailureEvidence(run)}`,
   );
   const output = [run.stdout, run.stderr, ...logCandidates.map((file) => readFileSync(file, "utf8"))].join("\n");
-  const diagnostics = output.split("\n").filter((line) => line.includes("[d514]"));
-  assert(diagnostics.length > 0, "no D514 diagnostics were observed");
+  const diagnostics = output.split("\n").filter((line) => line.includes("[cold-boot]"));
+  assert(diagnostics.length > 0, "no Cold-boot diagnostics were observed");
   return diagnostics;
 }
 
 /**
  * Child stdio and arbitrary page text can contain server responses, URLs, or
  * credentials. Timeout reporting therefore exposes only byte counts plus the
- * deliberately content-free D514 diagnostic lines emitted by main.ts.
+ * deliberately content-free Cold-boot diagnostic lines emitted by main.ts.
  */
-function boundedD514FailureEvidence(run: Run): string {
+function boundedDesktopSmokeFailureEvidence(run: Run): string {
   const logPath = join(run.actualUserDataDir, "logs", "main.log");
   const fileOutput = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
   const diagnostics = fileOutput
     .split("\n")
-    .filter((line) => line.includes("[d514]"))
+    .filter((line) => line.includes("[cold-boot]"))
     .join("\n")
     .slice(-4_000);
   return [
     `stdoutBytes=${Buffer.byteLength(run.stdout)} stderrBytes=${Buffer.byteLength(run.stderr)} tupleLogBytes=${Buffer.byteLength(fileOutput)}`,
-    diagnostics ? `d514Diagnostics:\n${diagnostics}` : "d514Diagnostics=<none>",
+    diagnostics ? `coldBootDiagnostics:\n${diagnostics}` : "coldBootDiagnostics=<none>",
   ].join("\n");
 }
 
-function assertSanitizedD514Diagnostics(run: Run): void {
-  const diagnostics = d514Diagnostics(run);
+function assertSanitizedColdBootDiagnostics(run: Run): void {
+  const diagnostics = coldBootDiagnostics(run);
   for (const line of diagnostics) {
     assert(
-      d514DiagnosticIsSanitized(line, [
+      coldBootDiagnosticIsSanitized(line, [
         run.fixture.origin,
         run.fixture.identity,
         run.fixture.marker,
-        "expected-d514-fingerprint",
+        "expected-smoke-fingerprint",
       ]),
-      "D514 diagnostic leaked fixture content",
+      "Cold-boot diagnostic leaked fixture content",
     );
   }
 }
 
-function assertD514Category(run: Run, category: string): string {
-  const line = d514Diagnostics(run).find((entry) => entry.includes(`category=${category}`));
-  assert(line, `missing D514 category=${category}`);
+function assertColdBootCategory(run: Run, category: string): string {
+  const line = coldBootDiagnostics(run).find((entry) => entry.includes(`category=${category}`));
+  assert(line, `missing Cold-boot category=${category}`);
   return line;
 }
 
-function assertNoD514Category(run: Run, category: string): void {
+function assertNoColdBootCategory(run: Run, category: string): void {
   assert(
-    !d514Diagnostics(run).some((entry) => entry.includes(`category=${category}`)),
-    `unexpected D514 category=${category}`,
+    !coldBootDiagnostics(run).some((entry) => entry.includes(`category=${category}`)),
+    `unexpected Cold-boot category=${category}`,
   );
 }
 
@@ -450,23 +450,23 @@ function provenance(run: Run, artifact: Artifact): string {
 
 async function delayedHealthyCase(artifact: Artifact): Promise<string> {
   const fixture = new ControlledFixture();
-  const delayMs = D514_DELAYED_HEALTH_HOLD_MS;
+  const delayMs = COLD_BOOT_DELAYED_HEALTH_HOLD_MS;
   fixture.set("health", [{ delayMs, json: { status: "ready", serverIdentity: fixture.identity, marker: fixture.marker } }]);
   const run = await startRun(artifact, fixture);
   try {
     const bootstrap = await findTarget(
       run,
       (target) => target.url.endsWith("/bootstrap.html"),
-      d514InitialPageTargetTimeoutMs(artifact.kind),
+      coldBootInitialPageTargetTimeoutMs(artifact.kind),
     );
     await waitForPage(run, bootstrap.url, "Starting Nautilo");
     assert(run.fixture.completedCalls("health") === 0, "healthy delay completed before local bootstrap painted");
     const workbench = await waitForPage(run, `${fixture.origin}/`, fixture.marker, 15_000);
-    assertSanitizedD514Diagnostics(run);
-    const verified = assertD514Category(run, "verified");
+    assertSanitizedColdBootDiagnostics(run);
+    const verified = assertColdBootCategory(run, "verified");
     assert(
-      d514DiagnosticDurationIsClose(verified, delayMs, 1_000),
-      `D514 verified duration was not within 1000ms of ${delayMs}ms`,
+      coldBootDiagnosticDurationIsClose(verified, delayMs, 1_000),
+      `Cold-boot verified duration was not within 1000ms of ${delayMs}ms`,
     );
     return `delayed healthy: bootstrap before /health completion; final=${workbench.target.url}; ${provenance(run, artifact)}`;
   } finally {
@@ -486,17 +486,17 @@ async function unavailableRetryCase(artifact: Artifact): Promise<string> {
     const recovery = await findTarget(
       run,
       (target) => target.url.includes("cold-boot-picker.html"),
-      d514InitialPageTargetTimeoutMs(artifact.kind),
+      coldBootInitialPageTargetTimeoutMs(artifact.kind),
     );
     const currentRecovery = await waitForPage(run, recovery.url, "Can't reach server right now");
     assert(run.child.exitCode === null, "desktop exited during unavailable recovery");
     await invokeColdBoot(currentRecovery.target, "retry");
     const workbench = await waitForPage(run, `${fixture.origin}/`, fixture.marker, 15_000);
     assert(run.fixture.calls("health") >= 2, "Retry did not perform a second main-owned observation");
-    assertSanitizedD514Diagnostics(run);
-    assertD514Category(run, "status");
-    assertD514Category(run, "retry-requested");
-    assertD514Category(run, "verified");
+    assertSanitizedColdBootDiagnostics(run);
+    assertColdBootCategory(run, "status");
+    assertColdBootCategory(run, "retry-requested");
+    assertColdBootCategory(run, "verified");
     return `unavailable retry: process alive; healthCalls=${fixture.calls("health")}; final=${workbench.target.url}; ${provenance(run, artifact)}`;
   } finally {
     await run.stop();
@@ -509,7 +509,7 @@ async function wrongServerCase(artifact: Artifact): Promise<string> {
   const run = await startRun(artifact, fixture, (operatorRoot) => {
     writeFileSync(
       join(operatorRoot, "recent-servers.json"),
-      seededRecentServer(fixture, "expected-d514-fingerprint"),
+      seededRecentServer(fixture, "expected-smoke-fingerprint"),
       "utf8",
     );
   });
@@ -517,7 +517,7 @@ async function wrongServerCase(artifact: Artifact): Promise<string> {
     const recovery = await findTarget(
       run,
       (target) => target.url.includes("cold-boot-picker.html"),
-      d514InitialPageTargetTimeoutMs(artifact.kind),
+      coldBootInitialPageTargetTimeoutMs(artifact.kind),
     );
     const currentRecovery = await waitForPage(
       run,
@@ -526,9 +526,9 @@ async function wrongServerCase(artifact: Artifact): Promise<string> {
     );
     assert(run.fixture.calls("root") === 0, "wrong identity navigated to the fixture root");
     assert(!currentRecovery.target.url.startsWith(fixture.origin), "wrong identity released remote navigation");
-    assertSanitizedD514Diagnostics(run);
-    assertD514Category(run, "mismatch");
-    assertNoD514Category(run, "navigation-released");
+    assertSanitizedColdBootDiagnostics(run);
+    assertColdBootCategory(run, "mismatch");
+    assertNoColdBootCategory(run, "navigation-released");
     return `wrong server: local recovery retained; rootCalls=${fixture.calls("root")}; ${provenance(run, artifact)}`;
   } finally {
     await run.stop();
@@ -545,13 +545,13 @@ async function main(): Promise<void> {
     await unavailableRetryCase(artifact),
     await wrongServerCase(artifact),
   ];
-  process.stdout.write(`[d514-smoke] artifact=${artifact.kind} input=${artifact.input}\n`);
-  for (const report of reports) process.stdout.write(`[d514-smoke] PASS ${report}\n`);
+  process.stdout.write(`[desktop-smoke] artifact=${artifact.kind} input=${artifact.input}\n`);
+  for (const report of reports) process.stdout.write(`[desktop-smoke] PASS ${report}\n`);
 }
 
 if (import.meta.main) {
   main().catch((error) => {
-    process.stderr.write(`[d514-smoke] FAIL ${(error as Error).stack ?? error}\n`);
+    process.stderr.write(`[desktop-smoke] FAIL ${(error as Error).stack ?? error}\n`);
     process.exit(1);
   });
 }

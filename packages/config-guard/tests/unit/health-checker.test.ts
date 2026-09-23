@@ -89,6 +89,36 @@ describe("health-checker", () => {
     expect(r.status).toBe("unreachable");
   });
 
+  test("Nautilo Gateway validates the candidate key against the configured /v1/key endpoint", async () => {
+    let seenUrl = "";
+    let seenAuth = "";
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      seenUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      seenAuth = new Headers(init?.headers).get("authorization") ?? "";
+      return Promise.resolve(Response.json({ data: { label: "QA", limit: 10, usage: null } }));
+    }) as unknown as typeof fetch;
+    const key = `ngw_${"a".repeat(43)}`;
+    expect(await checkProviderHealth("nautilo-gateway", key, {
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "http://localhost:4010/v1/",
+    })).toEqual({ status: "verified" });
+    expect(seenUrl).toBe("http://localhost:4010/v1/key");
+    expect(seenAuth).toBe(`Bearer ${key}`);
+  });
+
+  test("Nautilo Gateway health rejects a missing or unsafe operator base URL without fetching", async () => {
+    let requested = false;
+    globalThis.fetch = (async () => {
+      requested = true;
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+    const key = `ngw_${"a".repeat(43)}`;
+    expect((await checkProviderHealth("nautilo-gateway", key, {})).status).toBe("unreachable");
+    expect((await checkProviderHealth("nautilo-gateway", key, {
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "http://gateway.example/v1",
+    })).status).toBe("unreachable");
+    expect(requested).toBe(false);
+  });
+
   test("venice uses the models endpoint and bearer header", async () => {
     let seenUrl = "";
     let seenAuth = "";

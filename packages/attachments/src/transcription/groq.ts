@@ -24,7 +24,7 @@ export class GroqTranscriptionProvider implements TranscriptionProvider {
     form.append("model", GROQ_TRANSCRIPTION_MODEL);
     form.append(
       "file",
-      new Blob([input.bytes], { type: input.mime }),
+      new Blob([input.bytes as Uint8Array<ArrayBuffer>], { type: input.mime }),
       input.filename,
     );
     if (input.language) {

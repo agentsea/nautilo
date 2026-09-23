@@ -452,6 +452,20 @@ export {
 } from "./resolve-provider-key";
 export { createUniversalModel, __setStubModelForTests } from "./providers/universal";
 export {
+  hasRunnableOpenRouterTransport,
+  isManagedGatewayOutcomeUnknownError,
+  markManagedGatewayOutcomeUnknown,
+  managedGatewayKeyIsPresent,
+  managedGatewayTransportIsRunnable,
+  normalizeManagedGatewayBaseUrl,
+  resolveOpenRouterTransport,
+  MANAGED_GATEWAY_API_KEY_ENV_VAR,
+  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
+  MANAGED_GATEWAY_OUTCOME_UNKNOWN_ERROR_CODE,
+  ManagedGatewayOutcomeUnknownError,
+  type OpenRouterTransport,
+} from "./providers/openrouter-transport";
+export {
   smokeTestVenice,
   resolveVeniceSmokeModelId,
   DEFAULT_VENICE_SMOKE_MODEL_ID,
@@ -799,9 +813,13 @@ export {
 } from "./tools/file/workspace-runtime-adapter";
 export { createTaskTool } from "./tools/tasks/task-tool";
 export {
+  getTaskCreationInvocationProvenance,
   getTaskCreationReturnContext,
+  runWithTaskCreationInvocationProvenance,
   runWithTaskCreationReturnContext,
+  taskCreationInvocationProvenanceForState,
   taskCreationReturnContextForState,
+  type TaskCreationInvocationProvenance,
   type TaskCreationReturnContext,
 } from "./runtime/task-creation-return-context";
 export {

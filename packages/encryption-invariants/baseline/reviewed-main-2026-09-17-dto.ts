@@ -9,17 +9,28 @@ export const SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS = new Set<string>([
   "http:accepted_arbitrary:packages/types/src/api.ts#IssueLiveMiniAppSessionRequest",
   "http:accepted_arbitrary:packages/types/src/api.ts#RefreshLiveMiniAppSessionRequest",
   "http:accepted_arbitrary:packages/types/src/api.ts#SendMessageRequest",
+  "http:request_response:GET /api/rooms/:id/messages/:messageId/around",
   "http:request_response:GET /api/connected-web-operations/:operationId",
   "http:request_response:GET /api/tasks/pending-attention",
   "http:request_response:POST /api/apps/:appId/live-session",
   "http:request_response:POST /api/apps/:appId/live-session/revoke",
   "http:request_response:POST /api/chat",
   "http:request_response:POST /api/connected-web-operations/:operationId/stop",
+  "http:request_response:POST /api/message-backfill/source",
+  "http:request_response:POST /api/rooms/:id/messages/shadow-read",
   "http:request_response:POST /api/rooms/:roomId/messages",
   "http:request_response:POST /api/rooms/:roomId/pending-attention",
   "http:request_response:POST /api/rooms/:roomId/pending-attention/read",
   "http:request_response:POST /api/video-generations/prepare",
 ]);
+
+const METADATA_RICH_SIGNER_EVIDENCE =
+  "signerEvidence:{committerDeviceSigningPublicKeyBase64url?:string;kind:\"human_ai_readable_live_shadow_request_v1\"|\"human_ai_readable_live_shadow_request_v2\";operationId:string;planBytesBase64url:string;requestBytesBase64url:string;requestDigestBase64url:string}|{evidenceBytesBase64url:string;kind:\"agent_runtime_publication\"|\"processor_authorization\"}";
+const LEGACY_SIGNER_EVIDENCE =
+  "signerEvidence:{evidenceBytesBase64url:string;kind:\"agent_runtime_publication\"|\"processor_authorization\"}|{kind:\"human_ai_readable_live_shadow_request_v1\"|\"human_ai_readable_live_shadow_request_v2\";operationId:string;planBytesBase64url:string;requestBytesBase64url:string;requestDigestBase64url:string}";
+const METADATA_RICH_READY_END =
+  ";status:\"ready\";terminalExecutions:{classification:\"cancelled\"|\"process_lost\";executionId:string;messageId:number}[]}";
+const LEGACY_READY_END = ";status:\"ready\"}";
 
 function replaceExact(
   locator: string,
@@ -37,6 +48,54 @@ function replaceExact(
   if (matches !== expectedMatches) {
     throw new Error(
       `September 17 DTO predecessor mismatch for ${locator}: expected ${expectedMatches} matches, found ${matches}`,
+    );
+  }
+  return updated;
+}
+
+function toLegacyRoomHistoryReadySignature(
+  locator: string,
+  signature: string,
+): string {
+  const withoutSignerMetadata = replaceExact(
+    locator,
+    [signature],
+    METADATA_RICH_SIGNER_EVIDENCE,
+    LEGACY_SIGNER_EVIDENCE,
+  )[0];
+  if (withoutSignerMetadata === undefined) {
+    throw new Error(`September 17 DTO signature missing for ${locator}`);
+  }
+  const withoutTerminalMetadata = replaceExact(
+    locator,
+    [withoutSignerMetadata],
+    METADATA_RICH_READY_END,
+    LEGACY_READY_END,
+  )[0];
+  if (withoutTerminalMetadata === undefined) {
+    throw new Error(`September 17 DTO signature missing for ${locator}`);
+  }
+  return withoutTerminalMetadata;
+}
+
+function includeNegotiatedRoomHistoryReadyAlternative(
+  locator: string,
+  signatures: readonly string[],
+): readonly string[] {
+  let matches = 0;
+  const updated = signatures.map((signature) => {
+    if (!signature.includes(METADATA_RICH_SIGNER_EVIDENCE)) return signature;
+    const readyStart = signature.indexOf("{acknowledgement?:");
+    const readyEnd = signature.indexOf(METADATA_RICH_READY_END, readyStart);
+    if (readyStart < 0 || readyEnd < 0) return signature;
+    matches += 1;
+    const end = readyEnd + METADATA_RICH_READY_END.length;
+    const metadataRichReady = signature.slice(readyStart, end);
+    return `${signature.slice(0, end)}|${toLegacyRoomHistoryReadySignature(locator, metadataRichReady)}${signature.slice(end)}`;
+  });
+  if (matches !== 1) {
+    throw new Error(
+      `September 17 negotiated DTO predecessor mismatch for ${locator}: expected 1 match, found ${matches}`,
     );
   }
   return updated;
@@ -107,6 +166,23 @@ function updateStructuralSignatures(
         "provenance:\"authenticated_website\"|\"user_connected_website\"",
         "provenance:\"authenticated_website\"|\"public_website\"|\"user_connected_website\"",
       );
+      break;
+    // These history routes negotiate authority metadata at their HTTP boundary.
+    // Current clients opt into terminal summaries and retained Human-device signer
+    // material; legacy clients receive the prior strict response shape. Both forms
+    // carry protected-history authority only and preserve every open-path decision.
+    // The scanner collapses the around route's assignable union to its legacy shape;
+    // runtime contract tests separately prove that its opted-in rich form survives.
+    case "http:request_response:GET /api/rooms/:id/messages/:messageId/around":
+      replace(METADATA_RICH_SIGNER_EVIDENCE, LEGACY_SIGNER_EVIDENCE);
+      replace(METADATA_RICH_READY_END, LEGACY_READY_END);
+      break;
+    case "http:request_response:POST /api/message-backfill/source":
+      signatures = includeNegotiatedRoomHistoryReadyAlternative(locator, signatures);
+      replace(";history?:{acknowledgement?:", ";history:{acknowledgement?:");
+      break;
+    case "http:request_response:POST /api/rooms/:id/messages/shadow-read":
+      signatures = includeNegotiatedRoomHistoryReadyAlternative(locator, signatures);
       break;
     case "http:request_response:POST /api/apps/:appId/live-session":
       signatures = [...signatures, "response.body:{error:string}"].sort();

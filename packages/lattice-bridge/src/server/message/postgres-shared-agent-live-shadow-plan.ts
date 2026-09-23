@@ -16,9 +16,11 @@ import {
   notExists,
   notInArray,
   sessionMessages,
+  sessionMessageCryptoRevisions,
   sessions,
   sql,
   type PostgresJsBridgeConnection,
+  type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
 } from "@nautilo/db";
 import {
@@ -83,6 +85,7 @@ export type SharedAgentLiveShadowPlanResult =
       representationMode?: "full_encryption" }>;
 
 export interface SharedAgentLiveShadowPlanInput {
+  readonly mentionEveryone?: boolean;
   readonly requestVersion?: 1 | 2;
   readonly authority: Readonly<{
     userId: string;
@@ -712,6 +715,7 @@ export class PostgresSharedAgentLiveShadowPlanner {
           purpose: "message.human_ai_readable_live_shadow_plan",
           operationId,
           clientIdempotencyKey: input.idempotencyKey,
+          ...(input.mentionEveryone === true ? { mentionEveryone: true as const } : {}),
           policyRevision: product.policyRevision,
           sessionId: product.sessionId,
           roomId: input.roomId,
@@ -2387,6 +2391,36 @@ export class PostgresSharedAgentLiveShadowPlanner {
     }, { isolationLevel: "serializable" });
   }
 
+  /** Close unpublished reservations after their execution has lost authority. */
+  private async quarantineExecutionReservations(
+    connection: PostgresJsBridgeExecutor,
+    executionIds: readonly string[],
+    now: number,
+  ): Promise<void> {
+    if (executionIds.length === 0) return;
+    await executeTypedConversationProductQuery(connection,
+      conversationProductTypedDb.update(sessionMessageCryptoRevisions).set({
+        disposition: "quarantined",
+        failureCode: "authorization_unavailable",
+        nextAttemptAt: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        quarantineLeaseToken: null,
+        updatedAt: new Date(now),
+      }).where(and(
+        inArray(sessionMessageCryptoRevisions.sharedAgentShadowExecutionId,
+          conversationProductTypedDb.select({ executionId: conversationSharedAgentShadowExecutions.executionId })
+            .from(conversationSharedAgentShadowExecutions).where(and(
+              inArray(conversationSharedAgentShadowExecutions.executionId, executionIds),
+              inArray(conversationSharedAgentShadowExecutions.state, ["fallback", "failed"]),
+            )),
+        ),
+        eq(sessionMessageCryptoRevisions.disposition, "active"),
+        isNull(sessionMessageCryptoRevisions.shadowDurableEventDigest),
+      )),
+    );
+  }
+
   async recordExecutionUnavailable(input: Readonly<{
     executionId: string;
     reason: string;
@@ -2469,6 +2503,7 @@ export class PostgresSharedAgentLiveShadowPlanner {
             ),
           )),
       );
+      await this.quarantineExecutionReservations(this.product, [input.executionId], input.now);
       return "recorded";
     }
     const existing = await this.product.query(
@@ -2477,11 +2512,13 @@ export class PostgresSharedAgentLiveShadowPlanner {
         WHERE execution_id = $1 LIMIT 2`,
       [input.executionId],
     );
-    return existing.length === 1
-        && text(existing[0]!, "state") === "fallback"
-        && text(existing[0]!, "terminal_reason") === input.reason
-      ? "replayed"
-      : "conflict";
+    if (existing.length === 1
+      && text(existing[0]!, "state") === "fallback"
+      && text(existing[0]!, "terminal_reason") === input.reason) {
+      await this.quarantineExecutionReservations(this.product, [input.executionId], input.now);
+      return "replayed";
+    }
+    return "conflict";
   }
 
   /**
@@ -2497,7 +2534,7 @@ export class PostgresSharedAgentLiveShadowPlanner {
       || maximum < 1
       || maximum > 256
     ) throw new TypeError("Shared-Agent reconciliation bounds are invalid");
-    return this.product.transactionOnce(async (transaction) => {
+    const reconciled = await this.product.transactionOnce(async (transaction) => {
       const operations = await transaction.query(
         `/* m296_shared_agent_reconcile_expired_operations */
          WITH due AS (
@@ -2556,7 +2593,7 @@ export class PostgresSharedAgentLiveShadowPlanner {
         [new Date(now), maximum],
       );
       const remaining = maximum - operations.length;
-      if (remaining < 1) return operations.length;
+      if (remaining < 1) return { count: operations.length, executionIds: [] as string[] };
       const executions = await transaction.query(
         `/* m296_shared_agent_reconcile_expired_executions */
          WITH due AS (
@@ -2576,8 +2613,9 @@ export class PostgresSharedAgentLiveShadowPlanner {
         RETURNING execution.execution_id`,
         [new Date(now), remaining],
       );
+      const executionIds = executions.map((row) => text(row, "execution_id"));
       const invocationLimit = remaining - executions.length;
-      if (invocationLimit < 1) return operations.length + executions.length;
+      if (invocationLimit < 1) return { count: operations.length + executions.length, executionIds };
       const invocations = await transaction.query(
         `/* m298_runtime_invocation_reconcile_expired */
          WITH due AS (
@@ -2597,8 +2635,12 @@ export class PostgresSharedAgentLiveShadowPlanner {
         RETURNING invocation.invocation_id`,
         [new Date(now), invocationLimit],
       );
-      return operations.length + executions.length + invocations.length;
+      return { count: operations.length + executions.length + invocations.length, executionIds };
     }, { isolationLevel: "read committed" });
+    // Publication takes lifecycle before parent locks. Release terminal parent
+    // locks before quarantining their unpublished reservations in that order.
+    await this.quarantineExecutionReservations(this.product, reconciled.executionIds, now);
+    return reconciled.count;
   }
 
   /** Close only exact process-owned executions during deliberate shutdown. */
@@ -2626,6 +2668,9 @@ export class PostgresSharedAgentLiveShadowPlanner {
           AND state IN ('awaiting_authorization', 'authorized', 'running')
       RETURNING execution_id`,
       [unique, new Date(now)],
+    );
+    await this.quarantineExecutionReservations(
+      this.product, unique, now,
     );
     await this.product.query(
       `/* m298_runtime_invocation_process_loss */

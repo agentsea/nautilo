@@ -100,7 +100,9 @@ export function createRoomMessageOperations(input: Readonly<{
           return Promise.resolve(event);
         },
         consumeOrdinary: (value) => value,
-        consumeProtected: (value) => value,
+        consumeProtected: (value) => value.type === "message.new" && "attachments" in value && value.attachments !== undefined
+          ? { ...value, attachments: [] }
+          : value,
       });
       return opened.value;
     },

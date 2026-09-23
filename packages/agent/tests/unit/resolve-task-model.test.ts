@@ -16,6 +16,8 @@ const KEYS = [
   "FIREWORKS_API_KEY",
   "OPENROUTER_API_KEY",
   "VENICE_API_KEY",
+  "NAUTILO_MANAGED_GATEWAY_API_KEY",
+  "NAUTILO_MANAGED_GATEWAY_BASE_URL",
   "NAUTILO_ALLOW_CHINA_UPSTREAM",
 ];
 const saved: Record<string, string | undefined> = {};
@@ -138,6 +140,25 @@ describe("resolveTaskModel (M152)", () => {
     const { modelId } = resolveTaskModel({ baseModelId: BASE, profile: "most_private" });
     // fireworks open-weights = grade 4 (highest available without venice); anthropic = 1.
     expect(modelId.startsWith("fireworks:")).toBe(true);
+  });
+
+  test("managed Gateway eligibility does not relax a signed privacy floor", () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
+
+    expect(() => resolveTaskModel({
+      baseModelId: "openrouter:moonshotai/kimi-k2.6",
+      spec: { objective: "smart", absoluteFloors: { privacy: 5 } },
+    })).toThrow(ModelSelectionError);
+
+    const failure = validateTaskModelSelection({
+      baseModelId: "openrouter:moonshotai/kimi-k2.6",
+      spec: { objective: "smart", absoluteFloors: { privacy: 5 } },
+    });
+    expect(failure).toMatchObject({
+      reason: "absolute_floor_empty",
+      bestPrivacyAvailable: 4,
+    });
   });
 
   test("smartest picks a frontier-tier configured model", () => {

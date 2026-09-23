@@ -34,3 +34,6 @@ module.exports.SCREEN_RECORDING_PERMISSION_ENTITLEMENTS = SCREEN_RECORDING_PERMI
 module.exports.BROWSER_VISUAL_GROUNDING_RELATIVE_PATH = BROWSER_VISUAL_GROUNDING_RELATIVE_PATH;
 module.exports.BROWSER_VISUAL_GROUNDING_ENTITLEMENTS = BROWSER_VISUAL_GROUNDING_ENTITLEMENTS;
 module.exports.BROWSER_VISUAL_GROUNDING_IDENTIFIER = BROWSER_VISUAL_GROUNDING_IDENTIFIER;
+module.exports.WINDOW_PRESENCE_RELATIVE_PATH = join("Contents", "Resources", "tools-window-presence", "nautilo-window-presence");
+module.exports.WINDOW_PRESENCE_IDENTIFIER = "com.nautilo.desktop.window-presence";
+module.exports.WINDOW_PRESENCE_ENTITLEMENTS = resolve(__dirname, "..", "entitlements.window-presence.plist");

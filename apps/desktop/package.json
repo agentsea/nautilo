@@ -10,7 +10,7 @@
     "dev:launch": "electron --remote-debugging-port=${NAUTILO_REMOTE_DEBUGGING_PORT:-9222} dist/main.js",
     "dev": "export NAUTILO_HOST=${NAUTILO_HOST:-127.0.0.1} NAUTILO_PROFILE=${NAUTILO_PROFILE:-}; bun run dev:prepare && bun run dev:launch",
     "app": "bun run dev:prepare && bun scripts/run-desktop.ts",
-    "build:electron": "bun scripts/build-electron.ts",
+    "build:electron": "bun scripts/build-window-presence.ts && bun scripts/build-electron.ts",
     "rebuild:native": "electron-rebuild -f --module-dir ../.. -w node-pty -w argon2",
     "build": "bun run build:electron",
     "vendor:bun": "bun scripts/vendor-bun.ts",
@@ -86,6 +86,7 @@
     "ws": "8.21.2"
   },
   "devDependencies": {
+    "@assistant-ui/core": "0.2.20",
     "@electron/asar": "3.4.1",
     "@electron/fuses": "2.1.1",
     "@electron/rebuild": "4.1.0",

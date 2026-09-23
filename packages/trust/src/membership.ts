@@ -57,6 +57,7 @@ export async function assertUserCanAccessMessage(
 }
 
 export type DeleteDenyReason = "not_found" | "forbidden" | "message_anchors_thread";
+export type MessageDeleteAuthority = "author" | "room_owner" | "room_steward" | "manage_rooms";
 
 export class MessageDeleteError extends Error {
   readonly reason: DeleteDenyReason;
@@ -103,7 +104,7 @@ export function decideMessageDelete(input: {
 export async function assertUserCanDeleteMessage(
   messageId: number,
   userId: string,
-): Promise<void> {
+): Promise<MessageDeleteAuthority> {
   const db = getSharedDirectDb();
   const [row] = await db
     .select({
@@ -119,7 +120,9 @@ export async function assertUserCanDeleteMessage(
     .limit(1);
 
   let callerIsMember = false;
-  let callerHasRoomStewardship = row?.roomOwnerId === userId;
+  const callerIsRoomOwner = row?.roomOwnerId === userId;
+  let callerHasRoomStewardship = callerIsRoomOwner;
+  let callerIsRoomSteward = false;
   if (row?.roomId) {
     const [actor] = await db
       .select({ id: actors.id })
@@ -133,7 +136,8 @@ export async function assertUserCanDeleteMessage(
         .where(and(eq(roomMembers.roomId, row.roomId), eq(roomMembers.actorId, actor.id)))
         .limit(1);
       callerIsMember = Boolean(mem);
-      callerHasRoomStewardship ||= mem?.roomRole === "admin";
+      callerIsRoomSteward = mem?.roomRole === "admin";
+      callerHasRoomStewardship ||= callerIsRoomSteward;
     }
   }
 
@@ -154,4 +158,8 @@ export async function assertUserCanDeleteMessage(
   if (decision !== "allowed") {
     throw new MessageDeleteError(decision === "not_found" ? "not_found" : "forbidden");
   }
+  if (row?.role === "user" && row.sessionOwnerId === userId) return "author";
+  if (callerIsRoomOwner) return "room_owner";
+  if (callerIsRoomSteward) return "room_steward";
+  return "manage_rooms";
 }

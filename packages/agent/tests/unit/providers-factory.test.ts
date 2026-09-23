@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { BaseMessageLike } from "@langchain/core/messages";
+import { HumanMessage, type BaseMessageLike } from "@langchain/core/messages";
 import {
+  createOpenAI,
   createFireworks,
   createTogetherWithDependencies,
   resolveFireworksWireModel,
@@ -13,6 +14,7 @@ import { activateModelCatalogForTests } from "../helpers/activate-model-catalog"
 beforeAll(async () => activateModelCatalogForTests([
   "together:test-model",
   "fireworks:accounts/fireworks/models/deepseek-v4-flash",
+  "openrouter:moonshotai/kimi-k2.6",
 ]));
 afterAll(() => resetRuntimeModelCatalog());
 
@@ -57,6 +59,78 @@ describe("provider factory helpers", () => {
     expect((llm as unknown as Record<string, unknown>)["model"]).toBe(
       "accounts/fireworks/models/deepseek-v4-flash-0731",
     );
+  });
+
+  test("managed OpenRouter options reach the SDK retry and redirect controls", async () => {
+    const llm = await createOpenAI({
+      modelId: "openrouter:moonshotai/kimi-k2.6",
+      apiKey: `ngw_${"a".repeat(43)}`,
+      baseUrl: "https://gateway.qa.example/v1",
+      maxRetries: 0,
+      forbidRedirects: true,
+      maxTokens: 1024,
+    });
+    const sdk = llm as unknown as {
+      caller: { maxRetries: number };
+      clientConfig: { baseURL?: string; fetch?: typeof fetch };
+    };
+    expect(sdk.caller.maxRetries).toBe(0);
+    expect(sdk.clientConfig.baseURL).toBe("https://gateway.qa.example/v1");
+    expect(sdk.clientConfig.fetch).toBeFunction();
+
+    const originalFetch = globalThis.fetch;
+    let redirect: NonNullable<Parameters<typeof fetch>[1]>["redirect"];
+    globalThis.fetch = (async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response("", { status: 204 });
+    }) as typeof fetch;
+    try {
+      await sdk.clientConfig.fetch?.("https://gateway.qa.example/v1/chat/completions", {
+        redirect: "follow",
+      });
+      expect(redirect).toBe("error");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("managed OpenRouter SDK invocation sends one credentialed request without HTTP retries", async () => {
+    const apiKey = `ngw_${"b".repeat(43)}`;
+    const llm = await createOpenAI({
+      modelId: "openrouter:moonshotai/kimi-k2.6",
+      apiKey,
+      baseUrl: "https://gateway.qa.example/v1",
+      maxRetries: 0,
+      forbidRedirects: true,
+      maxTokens: 1024,
+    });
+    const originalFetch = globalThis.fetch;
+
+    try {
+      for (const status of [429, 502]) {
+        const requests: Array<{ url: string; init?: RequestInit }> = [];
+        globalThis.fetch = (async (input, init) => {
+          requests.push({
+            url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+            ...(init === undefined ? {} : { init }),
+          });
+          return Response.json(
+            { error: { message: `synthetic ${status}`, type: "gateway_test_error" } },
+            { status },
+          );
+        }) as typeof fetch;
+
+        const caught: unknown = await llm.invoke([new HumanMessage("hello")])
+          .catch((error: unknown) => error);
+        expect(caught).toBeInstanceOf(Error);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.url).toBe("https://gateway.qa.example/v1/chat/completions");
+        expect(requests[0]?.init?.redirect).toBe("error");
+        expect(new Headers(requests[0]?.init?.headers).get("authorization")).toBe(`Bearer ${apiKey}`);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

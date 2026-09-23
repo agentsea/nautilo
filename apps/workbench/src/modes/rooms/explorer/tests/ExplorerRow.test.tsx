@@ -1,11 +1,18 @@
 import "../../../../../tests/bun-dom-preload";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { ApiError } from "@nautilo/api-client/browser";
 
 const setRoomNotificationPreference = mock(async () => true);
+const removeRoomMember = mock(async () => ({ ok: true, kind: "user" as const }));
+const toastShow = mock(() => undefined);
+let sessionActorId: string | null = "viewer-actor";
 
 mock.module("../../../../components/toast", () => ({
-  useToast: () => ({ show: () => undefined }),
+  useToast: () => ({ show: toastShow }),
+}));
+mock.module("../../../../hooks/use-auth", () => ({
+  useAuth: () => ({ viewer: { sessionActorId } }),
 }));
 mock.module("../../../../contexts/room-navigation-context", () => ({
   useRoomNavigation: () => ({
@@ -17,6 +24,7 @@ mock.module("../../../../lib/api", () => ({
   apiClient: {
     archiveRoom: mock(async () => {}),
     updateRoomVisibility: mock(async () => {}),
+    removeRoomMember,
   },
 }));
 mock.module("../../../../notifications/notification-state-context", () => ({
@@ -42,6 +50,78 @@ const { ExplorerRow } = await import("../sections/shared/ExplorerRow");
 beforeEach(() => {
   cleanup();
   setRoomNotificationPreference.mockClear();
+  removeRoomMember.mockClear();
+  toastShow.mockClear();
+  sessionActorId = "viewer-actor";
+});
+
+describe("Explorer public-room self-leave", () => {
+  const publicRoom = {
+    id: "public:room-1",
+    kind: "room" as const,
+    depth: 0,
+    label: "# Public room",
+    roomId: "room-1",
+    isSubthread: false,
+    roomKind: "open" as const,
+  };
+
+  test("uses the signed-in actor and publishes success after confirmation", async () => {
+    const confirm = mock(() => true);
+    const previousConfirm = window.confirm;
+    window.confirm = confirm;
+    const received: Event[] = [];
+    const listener = (event: Event) => received.push(event);
+    window.addEventListener("nautilo:explorer-room-left", listener);
+    try {
+      const view = render(<ExplorerRow row={publicRoom} isActive onActivate={() => {}} />);
+      fireEvent.click(view.getByLabelText("Actions for # Public room"));
+      fireEvent.click(await view.findByText("⇱ Leave room…"));
+      await waitFor(() => expect(removeRoomMember).toHaveBeenCalledWith("room-1", "viewer-actor"));
+      expect(confirm).toHaveBeenCalledWith("Leave # Public room?");
+      await waitFor(() => expect(received).toHaveLength(1));
+    } finally {
+      window.removeEventListener("nautilo:explorer-room-left", listener);
+      window.confirm = previousConfirm;
+    }
+  });
+
+  test("cancellation performs no mutation", async () => {
+    const previousConfirm = window.confirm;
+    window.confirm = mock(() => false);
+    try {
+      const view = render(<ExplorerRow row={publicRoom} isActive={false} onActivate={() => {}} />);
+      fireEvent.click(view.getByLabelText("Actions for # Public room"));
+      fireEvent.click(await view.findByText("⇱ Leave room…"));
+      expect(removeRoomMember).not.toHaveBeenCalled();
+    } finally {
+      window.confirm = previousConfirm;
+    }
+  });
+
+  test("does not offer self-leave without a signed-in actor", async () => {
+    sessionActorId = null;
+    const view = render(<ExplorerRow row={publicRoom} isActive={false} onActivate={() => {}} />);
+    fireEvent.click(view.getByLabelText("Actions for # Public room"));
+    expect(view.queryByText("⇱ Leave room…")).toBeNull();
+  });
+
+  test("surfaces a rejected self-leave", async () => {
+    removeRoomMember.mockRejectedValueOnce(new ApiError(409, "DELETE room member failed: 409"));
+    const previousConfirm = window.confirm;
+    window.confirm = mock(() => true);
+    try {
+      const view = render(<ExplorerRow row={publicRoom} isActive={false} onActivate={() => {}} />);
+      fireEvent.click(view.getByLabelText("Actions for # Public room"));
+      fireEvent.click(await view.findByText("⇱ Leave room…"));
+      await waitFor(() => expect(toastShow).toHaveBeenCalledWith(expect.objectContaining({
+        variant: "error",
+        message: "Another room administrator is required before you can leave.",
+      })));
+    } finally {
+      window.confirm = previousConfirm;
+    }
+  });
 });
 
 describe("Explorer Room notification preference", () => {

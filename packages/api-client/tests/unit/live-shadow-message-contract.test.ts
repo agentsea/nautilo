@@ -549,3 +549,20 @@ describe("live Shadow Message HTTP contract", () => {
   });
 
 });
+
+describe("room-wide protected mention planning", () => {
+  test.each([1, 2])("accepts only an explicit true audience flag for version %s", (requestVersion) => {
+    const request = {
+      requestVersion,
+      clientActionSessionId: "everyone-session",
+      clientDeviceId: "everyone-device",
+      idempotencyKey: "everyone-request",
+      requestShape: "text_only",
+      mentionEveryone: true,
+    } as const;
+    expect(liveShadowMessagePlanRequestSchema.parse(request)).toEqual(request);
+    for (const mentionEveryone of [false, "true", 1, null]) {
+      expect(liveShadowMessagePlanRequestSchema.safeParse({ ...request, mentionEveryone }).success).toBeFalse();
+    }
+  });
+});

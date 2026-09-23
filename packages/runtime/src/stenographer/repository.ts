@@ -13,6 +13,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   notExists,
   notInArray,
   or,
@@ -51,6 +52,7 @@ import {
 
 export type StenographerErrorCode =
   | "provider"
+  | "provider_outcome_unknown"
   | "timeout"
   | "invalid_output"
   | "input_too_large"
@@ -100,6 +102,7 @@ interface StateRow {
   has_agent: boolean;
   upper_bound_message_id: number | string | null;
   replay_batch_status: "completed" | "failed" | null;
+  replay_batch_error_code: string | null;
   replay_through_message_id: number | string | null;
   historical_backfill_status: "pending" | "completed" | "not_needed";
   historical_backfill_cursor_message_id: number | string | null;
@@ -231,6 +234,18 @@ export async function candidateRoomIds(
       ),
       eq(roomJournalBatches.status, "failed"),
     ));
+  const uncertainFailedAttempt = db.select({ one: sql`1` })
+    .from(roomJournalBatches)
+    .where(and(
+      eq(roomJournalBatches.roomId, roomJournalState.roomId),
+      eq(roomJournalBatches.lane, "live"),
+      eq(
+        roomJournalBatches.fromMessageIdExclusive,
+        roomJournalState.lastProcessedMessageId,
+      ),
+      eq(roomJournalBatches.status, "failed"),
+      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+    ));
   const agentMember = db.select({ one: sql`1` })
     .from(roomMembers)
     .innerJoin(actors, eq(actors.id, roomMembers.actorId))
@@ -262,6 +277,7 @@ export async function candidateRoomIds(
       notInArray(rooms.kind, ["task", "access"]),
       isNull(roomJournalState.rebuildRequestedAt),
       isNull(roomJournalState.suspendedAt),
+      notExists(uncertainFailedAttempt),
       or(
         isNull(roomJournalState.extractionRetryAfter),
         lte(roomJournalState.extractionRetryAfter, now),
@@ -366,6 +382,18 @@ export async function historicalCandidateRoomIds(
       eq(roomMembers.roomId, rooms.id),
       eq(actors.kind, "agent"),
     ));
+  const uncertainFailedAttempt = db.select({ one: sql`1` })
+    .from(roomJournalBatches)
+    .where(and(
+      eq(roomJournalBatches.roomId, roomJournalState.roomId),
+      eq(roomJournalBatches.lane, "historical"),
+      eq(
+        roomJournalBatches.fromMessageIdExclusive,
+        roomJournalState.historicalBackfillCursorMessageId,
+      ),
+      eq(roomJournalBatches.status, "failed"),
+      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+    ));
   const result = await db.select({ room_id: roomJournalState.roomId })
     .from(roomJournalState)
     .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
@@ -373,6 +401,7 @@ export async function historicalCandidateRoomIds(
       notInArray(rooms.kind, ["task", "access"]),
       isNull(roomJournalState.rebuildRequestedAt),
       isNull(roomJournalState.suspendedAt),
+      notExists(uncertainFailedAttempt),
       eq(roomJournalState.historicalBackfillStatus, "pending"),
       isNotNull(roomJournalState.historicalBackfillCursorMessageId),
       isNotNull(roomJournalState.historicalBackfillTargetMessageId),
@@ -695,6 +724,18 @@ export async function tryClaimRoom(
             LIMIT 1
           ) AS replay_batch_status,
           (
+            SELECT rjb.error_code
+            FROM room_journal_batches rjb
+            WHERE rjb.room_id = r.id
+              AND rjb.lane = ${lane}
+              AND rjb.from_message_id_exclusive = ${cursorExpression}
+              AND rjb.status IN ('completed', 'failed')
+            ORDER BY
+              CASE WHEN rjb.status = 'completed' THEN 0 ELSE 1 END,
+              rjb.created_at DESC
+            LIMIT 1
+          ) AS replay_batch_error_code,
+          (
             SELECT rjb.through_message_id_inclusive
             FROM room_journal_batches rjb
             WHERE rjb.room_id = r.id
@@ -715,6 +756,12 @@ export async function tryClaimRoom(
     const state = stateRows[0];
     if (!state || state.kind === "task" || state.kind === "access") return null;
     if (!state.has_agent || state.suspended_at !== null) return null;
+    if (
+      state.replay_batch_status === "failed"
+      && state.replay_batch_error_code === "provider_outcome_unknown"
+    ) {
+      return null;
+    }
     if (
       lane === "historical" &&
       (state.historical_backfill_status !== "pending" ||
@@ -1260,7 +1307,9 @@ export async function failExtraction(input: {
     const current = rows[0];
     if (!current) return;
     const failureCount = asNumber(current.extraction_failure_count) + 1;
-    const retryAfter = new Date(now.getTime() + retryDelayMs(failureCount));
+    const retryAfter = input.errorCode === "provider_outcome_unknown"
+      ? null
+      : new Date(now.getTime() + retryDelayMs(failureCount));
     await tx
       .update(roomJournalBatches)
       .set({
@@ -1314,6 +1363,7 @@ export async function tryClaimCompactionRoom(
       compaction_lease_token: string | null;
       compaction_lease_expires_at: string | Date | null;
       compaction_retry_after: string | Date | null;
+      last_compaction_error_code: string | null;
       compaction_failure_count: number | string;
     }>(
       await tx.execute(sql`
@@ -1331,6 +1381,7 @@ export async function tryClaimCompactionRoom(
           rjs.compaction_lease_token,
           rjs.compaction_lease_expires_at,
           rjs.compaction_retry_after,
+          rjs.last_compaction_error_code,
           rjs.compaction_failure_count
         FROM room_journal_state rjs
         INNER JOIN rooms r ON r.id = rjs.room_id
@@ -1342,6 +1393,9 @@ export async function tryClaimCompactionRoom(
     );
     const state = stateRows[0];
     if (!state || state.compaction_due_at === null) return null;
+    if (state.last_compaction_error_code === "provider_outcome_unknown") {
+      return null;
+    }
     if (
       state.kind === "task" ||
       state.kind === "access" ||
@@ -1433,6 +1487,10 @@ export async function compactionCandidateRooms(
         exists(agentMember),
         isNotNull(roomJournalState.compactionDueAt),
         isNull(roomJournalState.rebuildRequestedAt),
+        or(
+          isNull(roomJournalState.lastCompactionErrorCode),
+          ne(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+        ),
         or(
           isNull(roomJournalState.compactionRetryAfter),
           lte(roomJournalState.compactionRetryAfter, now),
@@ -1734,9 +1792,9 @@ export async function failCompaction(input: {
         compactionLeaseToken: null,
         compactionLeaseExpiresAt: null,
         compactionFailureCount: failureCount,
-        compactionRetryAfter: new Date(
-          now.getTime() + retryDelayMs(failureCount),
-        ),
+        compactionRetryAfter: input.errorCode === "provider_outcome_unknown"
+          ? null
+          : new Date(now.getTime() + retryDelayMs(failureCount)),
         lastCompactionErrorCode: input.errorCode,
         lastCompactionErrorAt: now,
         lastCompactionErrorAttempt: input.claim.attemptCount,

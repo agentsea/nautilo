@@ -2,6 +2,7 @@ import { describe, test, expect, spyOn } from "bun:test";
 import { Job } from "../../src/job";
 import type { ServerEvent, JobStatus } from "@nautilo/types";
 import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
+import { runWithLiveShadowTurnSession } from "../../src/conversation/live-shadow-turn-context";
 import { eventBus } from "../../src/event-bus";
 
 function mockPersist() {
@@ -416,4 +417,36 @@ describe("Job", () => {
     expect(job.isRunning()).toBe(false);
     expect(job.isTerminal()).toBe(true); // completed
   });
+});
+
+
+test("Stop terminalizes the owned protected session before the executor settles", async () => {
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const failures: string[] = [];
+  const job = new Job({
+    ownerId: "owner", requestorId: "requester", laneKey: null,
+    type: "foreground", input: {}, persist: mockPersist(),
+    updateStatus: trackStatus().fn,
+    executor: async function* () {
+      started.resolve();
+      await finish.promise;
+      yield* yieldTokens(1, "cancelled-lane");
+    },
+  });
+  await job.persist();
+  const running = runWithLiveShadowTurnSession({
+    operationId: "cancel-execution", capability: {} as never,
+    session: { fail: (_stage: string, reason: string) => failures.push(reason) } as never,
+    enforcementPolicy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 1 },
+    work: () => job.execute(),
+  });
+  await started.promise;
+  await job.cancel();
+  expect(failures).toEqual(["cancelled"]);
+  expect(job.status).toBe("cancelled");
+  finish.resolve();
+  await running;
+  await job.cancel();
+  expect(failures).toEqual(["cancelled"]);
 });

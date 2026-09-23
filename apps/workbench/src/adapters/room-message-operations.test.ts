@@ -288,3 +288,12 @@ describe("shared Room data operations", () => {
     });
   });
 });
+
+
+test("ordinary blob descriptors never ride a protected realtime projection", async () => {
+  const attachments = [{ attachmentId: "screen", filename: "screen.png", mimeType: "image/png", sizeBytes: 12 }];
+  const event: ServerEvent = { type: "message.new", laneKey: "room:child", messageId: "screen", role: "user", content: "", attachments };
+  expect(await fixture(modes[0]!).operations.consumeRealtime(event, false)).toBe(event);
+  const accepted = await fixture(modes[2]!).operations.consumeRealtime(event, true);
+  expect(accepted.type === "message.new" && "attachments" in accepted && accepted.attachments).toEqual([]);
+});

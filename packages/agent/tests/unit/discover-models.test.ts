@@ -172,6 +172,39 @@ describe("discover_models (the current implementation)", () => {
     expect(res.model?.input).toContain("file");
   });
 
+  test("managed Gateway exposes OpenRouter chat but not runnable generation", async () => {
+    const tool = createDiscoverModelsTool({
+      env: {
+        NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+        NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+      },
+    });
+
+    const chat = parseGet(await invoke(tool, {
+      command: "get",
+      model_id: "openrouter:moonshotai/kimi-k2.6",
+    }));
+    expect(chat.model?.availability).toBe("selectable");
+
+    const generation = parseGet(await invoke(tool, {
+      command: "get",
+      model_id: "openrouter:openai/gpt-5.4-image-2",
+    }));
+    expect(generation.model).toMatchObject({
+      workload: "generation",
+      availability: "missing_credentials",
+    });
+
+    const runnableGeneration = parseList(await invoke(tool, {
+      command: "list",
+      workload: "generation",
+      provider: "openrouter",
+      runnable_only: true,
+    }));
+    expect(runnableGeneration.items).toEqual([]);
+    expect(runnableGeneration.totalMatched).toBe(0);
+  });
+
   test("list, search, and get expose safe workload-isolated media facts", async () => {
     const tool = createDiscoverModelsTool({ env: { VENICE_API_KEY: "vk-test" } });
     const videos = parseList(await invoke(tool, { command: "list", output: "video" }));

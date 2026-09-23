@@ -94,6 +94,7 @@ export async function consumeRoomHistoryRows(
         || failure === "cancelled" || failure === "unknown") throw error;
       output.push(Object.freeze({
         ...row,
+        attachments: [],
         content: "Encrypted history is unavailable on this device.",
         historyUnavailable: true,
         historyUnavailableReason: failure,

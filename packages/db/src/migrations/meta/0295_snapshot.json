@@ -12522,7 +12522,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },

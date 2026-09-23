@@ -64,6 +64,8 @@ operate, package, or release the public source tree.
 - [`docs/background-authorization-transport.md`](docs/background-authorization-transport.md)
 - [`docs/encryption-data-operation-ownership.md`](docs/encryption-data-operation-ownership.md)
 - [`docs/mobile-time-and-workspace-sharing.md`](docs/mobile-time-and-workspace-sharing.md)
+- [`docs/nautilo-gateway-local-qa.md`](docs/nautilo-gateway-local-qa.md) — local
+  internal QA configuration and routing boundaries.
 - [`docs/security-research-limits.md`](docs/security-research-limits.md)
 - [`docs/quiet-events.md`](docs/quiet-events.md)
 - [`docs/video-generation-recovery.md`](docs/video-generation-recovery.md)

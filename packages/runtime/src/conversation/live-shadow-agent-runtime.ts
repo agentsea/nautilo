@@ -229,7 +229,7 @@ export function createLiveShadowAgentRuntimeTurn(
   const publishingByPayload = new Map<string, Promise<
     LiveShadowAgentSessionResult<LiveShadowAgentPublishedMessage>
   >>();
-  const streams = new Map<string, LiveShadowAgentMessageReservation>();
+  const streams = new Map<string, Promise<LiveShadowAgentStreamReservation | null>>();
   const requireActiveAuthorization = (
     stage: "assistant_stream" | "assistant_message" | "tool_call" | "tool_result",
   ): void => {
@@ -376,10 +376,20 @@ export function createLiveShadowAgentRuntimeTurn(
   const toolBoundary: LiveShadowToolBoundary = Object.freeze({
     protectAssistantToolCall: async (message: AIMessage) => {
       try {
-        const result = await publish(message, "tool_call");
+        // Tool consumption may overtake the awaited stream allocation. Join that
+        // allocation before publishing, so both gates use one transcript ordinal.
+        const stream = Array.from(streams.entries()).at(-1);
+        const reservation = stream === undefined
+          ? undefined
+          : (await stream[1])?.reservation;
+        const result = await publish(message, "tool_call", reservation);
         if (result.status !== "protected") {
           return null;
         }
+        if (
+          stream !== undefined
+          && reservation === result.value.reservation
+        ) streams.delete(stream[0]);
         return openedMessage(result.value.openedPayload, message) as AIMessage;
       } catch (error) {
         if (
@@ -429,32 +439,36 @@ export function createLiveShadowAgentRuntimeTurn(
       requireActiveAuthorization("assistant_stream");
       const prior = streams.get(input.assistantMessageKey);
       if (prior !== undefined) return null;
-      const result = await selectRecoverableOperation<
-        LiveShadowAgentSessionResult<LiveShadowAgentStreamReservation>
-      >(async () => {
-        const attempted = await session.reserveAssistantStream(input);
-        if (attempted.status === "protected") {
+      const pending = (async () => {
+        const result = await selectRecoverableOperation<
+          LiveShadowAgentSessionResult<LiveShadowAgentStreamReservation>
+        >(async () => {
+          const attempted = await session.reserveAssistantStream(input);
+          if (attempted.status === "protected") {
+            requireActiveAuthorization("assistant_stream");
+            return attempted;
+          }
+          if (isTerminalReason(attempted.reason)) throwTerminalAgentFailure(attempted.reason);
           requireActiveAuthorization("assistant_stream");
-          return attempted;
-        }
-        if (isTerminalReason(attempted.reason)) throwTerminalAgentFailure(attempted.reason);
+          session.fail("assistant_stream", "protected_unavailable");
+          await observeBoundary?.({ state: "failed", reason: "publication_failure" });
+          throw new ClassifiedDataOperationError(
+            "recoverable_availability", "Protected stream reservation unavailable",
+          );
+        }, () => Promise.resolve({
+          status: "ordinary_fallback" as const,
+          stage: "assistant_stream" as const,
+          reason: "protected_unavailable" as const,
+        }), "agent", () => requireActiveAuthorization("assistant_stream"));
         requireActiveAuthorization("assistant_stream");
-        session.fail("assistant_stream", "protected_unavailable");
-        await observeBoundary?.({ state: "failed", reason: "publication_failure" });
-        throw new ClassifiedDataOperationError(
-          "recoverable_availability", "Protected stream reservation unavailable",
-        );
-      }, () => Promise.resolve({
-        status: "ordinary_fallback" as const,
-        stage: "assistant_stream" as const,
-        reason: "protected_unavailable" as const,
-      }), "agent", () => requireActiveAuthorization("assistant_stream"));
-      requireActiveAuthorization("assistant_stream");
-      if (result.status !== "protected") {
-        return null;
-      }
-      streams.set(input.assistantMessageKey, result.value.reservation);
-      return result.value;
+        if (result.status !== "protected") {
+          return null;
+        }
+        return result.value;
+      })();
+      // Register before yielding: a tool boundary can run while storage awaits.
+      streams.set(input.assistantMessageKey, pending);
+      return pending;
     },
     async sealAssistantStreamChunk(input: Readonly<{
       assistantMessageKey: string;
@@ -463,7 +477,8 @@ export function createLiveShadowAgentRuntimeTurn(
       finalMessage?: BaseMessage;
     }>) {
       requireActiveAuthorization("assistant_stream");
-      const reservation = streams.get(input.assistantMessageKey);
+      const stream = streams.get(input.assistantMessageKey);
+      const reservation = stream === undefined ? undefined : (await stream)?.reservation;
       if (reservation === undefined) {
         return selectRecoverableOperation(
           () => Promise.reject(new ClassifiedDataOperationError(
@@ -542,7 +557,7 @@ export function createLiveShadowAgentRuntimeTurn(
         const result = await publish(
           message,
           AIMessage.isInstance(message) ? "assistant_message" : "tool_result",
-          key?.[1],
+          key === undefined ? undefined : (await key[1])?.reservation,
         );
         if (result.status !== "protected") {
           const ordinaryPublication = result.ordinaryPublication;
@@ -560,7 +575,10 @@ export function createLiveShadowAgentRuntimeTurn(
           });
         }
         results.push(result.value);
-        if (key !== undefined) streams.delete(key[0]);
+        if (key !== undefined
+          && (await key[1])?.reservation === result.value.reservation) {
+          streams.delete(key[0]);
+        }
       }
       return Object.freeze({
         status: "protected" as const,

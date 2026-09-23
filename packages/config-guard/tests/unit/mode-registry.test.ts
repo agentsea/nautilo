@@ -11,13 +11,14 @@ import { FULL_LOGTO_PROCESS_ENV } from "../fixtures/full-logto-env";
 
 describe("MODE_REGISTRY", () => {
   test("contains 13 LOGTO_* entries, gateway, web research, OpenRouter, M071 instance env, protected recovery/push/pairing secrets, M116 DB passwords, and CloudConvert knobs (D120 A1.P1 retired the default-agent/default-owner pointers)", () => {
-    expect(MODE_REGISTRY.length).toBe(47);
+    expect(MODE_REGISTRY.length).toBe(48);
     expect(MODE_REGISTRY[0]?.envVar).toBe("LOGTO_ENDPOINT");
     const logtoCount = MODE_REGISTRY.filter((m) =>
       m.envVar.startsWith("LOGTO_"),
     ).length;
     expect(logtoCount).toBe(13);
     expect(getModeByEnvVar("NAUTILO_GATEWAY_BASE_URL")).toBeDefined();
+    expect(getModeByEnvVar("NAUTILO_MANAGED_GATEWAY_BASE_URL")).toBeDefined();
     expect(getModeByEnvVar("NAUTILO_GATEWAY_LABEL")).toBeDefined();
     expect(getModeByEnvVar("OPENROUTER_HTTP_REFERER")).toBeDefined();
     expect(getModeByEnvVar("OPENROUTER_TITLE")).toBeDefined();
@@ -108,6 +109,14 @@ describe("MODE_REGISTRY", () => {
     expect(ep?.validator("http://localhost:3301")).toBeNull();
     expect(typeof ep?.validator("auth.example.com")).toBe("string");
     expect(typeof ep?.validator("ftp://x.example.com")).toBe("string");
+  });
+
+  test("managed Gateway base URL requires /v1 and allows HTTP only on localhost", () => {
+    const gateway = getModeByEnvVar("NAUTILO_MANAGED_GATEWAY_BASE_URL");
+    expect(gateway?.validator("https://gateway.example/v1")).toBeNull();
+    expect(gateway?.validator("http://localhost:4010/v1/")).toBeNull();
+    expect(typeof gateway?.validator("http://gateway.example/v1")).toBe("string");
+    expect(typeof gateway?.validator("https://gateway.example/api")).toBe("string");
   });
 
   test("LOGTO_M2M_APP_SECRET validator requires non-empty", () => {

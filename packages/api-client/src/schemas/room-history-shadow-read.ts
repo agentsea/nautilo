@@ -29,6 +29,7 @@ const roomHistoryShadowSignerEvidenceV1Schema = z.discriminatedUnion("kind", [
     planBytesBase64url: base64url.max(350_000),
     requestBytesBase64url: base64url.max(699_052),
     requestDigestBase64url: sha256,
+    committerDeviceSigningPublicKeyBase64url: sha256.optional(),
   }).strict(),
   z.object({
     // Accepted server execution authority, not a portable Human signature.
@@ -129,6 +130,12 @@ const roomHistoryShadowSelectedSourceV1Schema = z.object({
   logicalMessageKey: portableId.optional(),
   sourceUserId: portableId.optional(),
   authorAgentId: canonicalUuid.optional(),
+}).strict();
+
+const roomHistoryTerminalExecutionSummarySchema = z.object({
+  messageId: positiveCounter,
+  executionId: portableId,
+  classification: z.enum(["cancelled", "process_lost"]),
 }).strict();
 
 export const roomHistoryShadowRecordV1Schema = z.union([
@@ -241,6 +248,7 @@ const ready = z.object({
     .max(HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1),
   signerEvidence: z.array(roomHistoryShadowSignerEvidenceV1Schema)
     .max(HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1),
+  terminalExecutions: z.array(roomHistoryTerminalExecutionSummarySchema).default([]),
   acknowledgement: z.discriminatedUnion("status", [
     z.object({
       status: z.literal("required"),
@@ -264,6 +272,28 @@ const ready = z.object({
       code: "custom",
       message: "eligible Room history read records do not close",
     });
+  }
+  const selectedHumanMessageIds = new Set(value.selectedCoordinates
+    .filter((coordinate) => coordinate.role === "user")
+    .map((coordinate) => coordinate.messageId));
+  const terminalIdentities = new Set<string>();
+  for (const [index, terminal] of value.terminalExecutions.entries()) {
+    if (!selectedHumanMessageIds.has(terminal.messageId)) {
+      context.addIssue({
+        code: "custom",
+        message: "terminal execution does not belong to a selected Human input",
+        path: ["terminalExecutions", index, "messageId"],
+      });
+    }
+    const identity = `${terminal.messageId}\0${terminal.executionId}`;
+    if (terminalIdentities.has(identity)) {
+      context.addIssue({
+        code: "custom",
+        message: "terminal execution identity is duplicated",
+        path: ["terminalExecutions", index, "executionId"],
+      });
+    }
+    terminalIdentities.add(identity);
   }
 });
 

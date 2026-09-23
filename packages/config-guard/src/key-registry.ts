@@ -1,4 +1,5 @@
 import type { KeyDefinition } from "./types";
+import { isManagedGatewayKey } from "./managed-gateway";
 
 export const BROWSER_USE_API_KEY_ENV_VAR = "BROWSER_USE_API_KEY";
 
@@ -94,6 +95,31 @@ export const KEY_REGISTRY: KeyDefinition[] = [
       {
         condition: (v) => v.length < 20,
         message: "Key appears truncated",
+      },
+    ],
+  },
+  {
+    id: "nautilo-gateway",
+    name: "Nautilo Gateway key (coming soon)",
+    envVar: "NAUTILO_MANAGED_GATEWAY_API_KEY",
+    category: "llm+embeddings",
+    purpose: "Nautilo Gateway access for signed OpenRouter chat and embedding routes",
+    required: false,
+    signupUrl: "",
+    formatHint: "ngw_...",
+    formatCheck: isManagedGatewayKey,
+    doctorHints: [
+      {
+        condition: (v) => v.trim() !== v,
+        message: "Key has leading/trailing whitespace",
+      },
+      {
+        condition: (v) => v.trim().length > 0 && !v.trim().startsWith("ngw_"),
+        message: "Nautilo Gateway keys start with ngw_",
+      },
+      {
+        condition: (v) => v.trim().startsWith("ngw_") && v.trim().length !== 47,
+        message: "Key must contain exactly 43 base64url characters after ngw_",
       },
     ],
   },

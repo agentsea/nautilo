@@ -3,6 +3,7 @@ import type { RecordSnapshot } from "../../src/contracts/hierarchy";
 import {
   DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1,
   DurableSleepModelLaneUnavailableError,
+  DurableSleepProviderOutcomeUnknownError,
   durableSleepQuarantineRecoveryDelayMilliseconds,
   runDurableHierarchySleep,
   type DurableSleepApplyResult,
@@ -1282,6 +1283,33 @@ describe("durable hierarchy Sleep state machine", () => {
         modelFailures: 1,
       },
       failures: {},
+    });
+  });
+
+  test("completes an outcome-unknown provider attempt without replaying its generation", async () => {
+    const events: string[] = [];
+    const semantic = semanticHarness(events, mixedView(), undefined, () =>
+      Promise.reject(new DurableSleepProviderOutcomeUnknownError()));
+
+    const result = await runDurableHierarchySleep({
+      work: workHarness([claim("record:outcome-unknown", "organization")], events).port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    });
+
+    expect(events).toEqual([
+      "claim:record:outcome-unknown",
+      "view",
+      "complete",
+    ]);
+    expect(result).toMatchObject({
+      completed: 1,
+      deferred: 0,
+      paused: 0,
+      quarantined: 0,
+      terminalOutcomes: { provider_outcome_unknown: 1 },
+      usage: { modelCalls: 1 },
+      diagnostics: { modelAttempts: 1, modelFailures: 1 },
     });
   });
 

@@ -1,8 +1,14 @@
 import "../bun-dom-preload";
 import { afterEach, describe, expect, test } from "bun:test";
+import { act, cleanup, render } from "@testing-library/react";
+import { createElement } from "react";
 import {
   createRoomComposerDraftStore,
   ROOM_COMPOSER_DRAFTS_SESSION_KEY,
+  RoomComposerDraftProvider,
+  type RoomComposerDraftStore,
+  useRoomComposerDraftStore,
+  useRoomComposerSendPending,
 } from "../../src/contexts/room-composer-draft-context";
 
 const resource = {
@@ -12,7 +18,10 @@ const resource = {
 };
 
 describe("room composer draft store", () => {
-  afterEach(() => sessionStorage.removeItem(ROOM_COMPOSER_DRAFTS_SESSION_KEY));
+  afterEach(() => {
+    cleanup();
+    sessionStorage.removeItem(ROOM_COMPOSER_DRAFTS_SESSION_KEY);
+  });
 
   test("keeps composition and reply together per room across presentation handoff", () => {
     const store = createRoomComposerDraftStore();
@@ -53,12 +62,50 @@ describe("room composer draft store", () => {
     const first = store.beginSend("room-a");
     expect(first).not.toBeNull();
     expect(store.beginSend("room-a")).toBeNull();
-    expect(store.beginSend("room-b")).not.toBeNull();
+    const second = store.beginSend("room-b");
+    expect(second).not.toBeNull();
+    expect(store.getSendSnapshot("room-a")).toBe(first);
+    expect(store.getSendSnapshot("room-b")).toBe(second);
 
     store.finishSend("room-a", Number(first) + 1);
     expect(store.beginSend("room-a")).toBeNull();
     store.finishSend("room-a", first!);
     expect(store.beginSend("room-a")).not.toBeNull();
+    expect(store.getSendSnapshot("room-b")).toBe(second);
+  });
+
+  test("keeps pending presentation reactive across composer remounts", () => {
+    let store: RoomComposerDraftStore | null = null;
+    function Probe({ presentation }: { presentation: string }) {
+      store = useRoomComposerDraftStore();
+      const pending = useRoomComposerSendPending("room-a");
+      return createElement("button", { disabled: pending }, presentation);
+    }
+
+    const view = render(createElement(
+      RoomComposerDraftProvider,
+      null,
+      createElement(Probe, { presentation: "center" }),
+    ));
+    expect(view.getByRole("button", { name: "center" }).hasAttribute("disabled")).toBe(false);
+
+    let attemptId: number | null = null;
+    act(() => {
+      attemptId = store!.beginSend("room-a");
+    });
+    expect(view.getByRole("button", { name: "center" }).hasAttribute("disabled")).toBe(true);
+
+    view.rerender(createElement(
+      RoomComposerDraftProvider,
+      null,
+      createElement(Probe, { key: "reader-rail", presentation: "reader rail" }),
+    ));
+    expect(view.getByRole("button", { name: "reader rail" }).hasAttribute("disabled")).toBe(true);
+
+    act(() => {
+      store!.finishSend("room-a", attemptId!);
+    });
+    expect(view.getByRole("button", { name: "reader rail" }).hasAttribute("disabled")).toBe(false);
   });
 
   test("rehydrates composition, focused resources, and reply after a renderer reload", () => {

@@ -4,7 +4,13 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getSharedDirectDb } from "@nautilo/db";
 import { fromRuntimeConfig, invalidateRuntimeConfigCache } from "@nautilo/config";
-import { getAllKeyDefinitions, isCloudManagedDeployment, transaction } from "@nautilo/config-guard";
+import {
+  getAllKeyDefinitions,
+  isCloudManagedDeployment,
+  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
+  normalizeManagedGatewayBaseUrl,
+  transaction,
+} from "@nautilo/config-guard";
 import { getRelayRegistry } from "@nautilo/agent";
 import {
   canRelayExecuteBrowserResearchRead,
@@ -43,6 +49,10 @@ const SetupKeysBodySchema = z.object({
 
 const ResearchProviderBodySchema = z.object({
   provider: z.enum(["auto", "duckduckgo_html"]),
+}).strict();
+
+const NautiloGatewayBodySchema = z.object({
+  baseUrl: z.string(),
 }).strict();
 
 const OwnerClaimInstallBodySchema = z
@@ -102,6 +112,59 @@ function researchDesktopDiagnostics(userId: string): {
 }
 
 export function setupRoutes(app: FastifyInstance) {
+  app.get("/api/setup/nautilo-gateway", async (request, reply) => {
+    const sessionUserId = request.sessionUserId;
+    if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });
+    if (!(await viewerCanManageProviderKeys(sessionUserId))) {
+      return reply.code(403).send({ error: "admin only" });
+    }
+    if (managedProviderCredentialRouteIsBlocked("/api/setup/nautilo-gateway")) {
+      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
+    }
+    return reply.send({
+      baseUrl: normalizeManagedGatewayBaseUrl(process.env[MANAGED_GATEWAY_BASE_URL_ENV_VAR]),
+    });
+  });
+
+  app.put("/api/setup/nautilo-gateway", async (request, reply) => {
+    const sessionUserId = request.sessionUserId;
+    if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });
+    if (!(await viewerCanManageProviderKeys(sessionUserId))) {
+      return reply.code(403).send({ error: "admin only" });
+    }
+    if (managedProviderCredentialRouteIsBlocked("/api/setup/nautilo-gateway")) {
+      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
+    }
+    const parsed = NautiloGatewayBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid Nautilo Gateway URL" });
+    const baseUrl = normalizeManagedGatewayBaseUrl(parsed.data.baseUrl);
+    if (!baseUrl) return reply.code(400).send({ error: "Invalid Nautilo Gateway URL" });
+
+    const before = normalizeManagedGatewayBaseUrl(
+      process.env[MANAGED_GATEWAY_BASE_URL_ENV_VAR],
+    );
+    const result = await transaction({
+      operations: [{ type: "set", key: MANAGED_GATEWAY_BASE_URL_ENV_VAR, value: baseUrl }],
+      healthCheck: "none",
+      overwrite: true,
+      reason: "Nautilo Gateway URL changed in Server admin",
+      actor: "setup-spa",
+    });
+    if (!result.success) {
+      return reply.code(400).send({
+        error: result.error ?? "Nautilo Gateway URL could not be saved",
+      });
+    }
+
+    invalidateRuntimeConfigCache();
+    audit(request, {
+      kind: "server_nautilo_gateway_changed",
+      actorId: sessionUserId,
+      changes: { baseUrl: { before, after: baseUrl } },
+    });
+    return reply.send({ baseUrl });
+  });
+
   app.get("/api/setup/research-provider", async (request, reply) => {
     const sessionUserId = request.sessionUserId;
     if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });

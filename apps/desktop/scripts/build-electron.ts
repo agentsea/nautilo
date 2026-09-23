@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Build the Electron main + preload bundles with build-time constants
- * injected (D057 2a.4 — git SHA for the About dialog).
+ * injected (the git SHA shown in the About dialog).
  *
  * Written as a dedicated script because shell-interpolating `git rev-parse`
  * into an esbuild --define value requires gnarly quote-escaping in
@@ -72,16 +72,16 @@ const sharedOptions = {
     ),
   },
   logLevel: "warning" as const,
-  // D376 R4 — the `[empty-import-meta]` warning is the smoke signal that a
+  // The `[empty-import-meta]` warning is the smoke signal that a
   // CJS-bundled source uses `import.meta` (which esbuild empties → runtime
-  // crash, as in the D373 load bug). Make it a hard build ERROR so it can
+  // crash, as in the historical configuration-load bug). Make it a hard build ERROR so it can
   // never ship silently again. The main bundle defines `import.meta.*` away
   // via mainProcessImportMetaShim below; any remaining occurrence (esp. in a
   // sandboxed preload) fails the build.
   logOverride: { "empty-import-meta": "error" } as const,
 };
 
-// D373 fix — MAIN-PROCESS-ONLY import.meta shim.
+// fix — MAIN-PROCESS-ONLY import.meta shim.
 //
 // The main bundle is CJS (`format: "cjs"` above), where esbuild leaves
 // `import.meta.url` / `import.meta.dirname` EMPTY (the [empty-import-meta]
@@ -128,13 +128,18 @@ await Promise.all([
     entryPoints: [resolve(desktopRoot, "electron/preload.ts")],
     outfile: resolve(desktopRoot, "dist/preload.js"),
   }),
-  // D057-2a.2: first-run picker preload (dedicated, minimal API surface).
+  build({
+    ...sharedOptions,
+    entryPoints: [resolve(desktopRoot, "electron/preload-companion.ts")],
+    outfile: resolve(desktopRoot, "dist/preload-companion.js"),
+  }),
+  // First-run picker preload with a dedicated, minimal API surface.
   build({
     ...sharedOptions,
     entryPoints: [resolve(desktopRoot, "electron/preload-first-run.ts")],
     outfile: resolve(desktopRoot, "dist/preload-first-run.js"),
   }),
-  // D403 (ISSUE-D403) P0: embedded-browser guest <webview> preload for the
+  // Embedded-browser guest <webview> preload for the
   // password autofill layer. Runs SANDBOXED inside the webview guest (same
   // sandbox posture as the other preloads) — must not carry the main-only
   // import.meta shim; the integrity loop below enforces that.
@@ -143,7 +148,7 @@ await Promise.all([
     entryPoints: [resolve(desktopRoot, "electron/passwords/guest-preload.ts")],
     outfile: resolve(desktopRoot, "dist/guest-preload.js"),
   }),
-  // D057-2a.2: first-run picker renderer (React 19 + iife bundle for
+  // First-run picker renderer (React 19 + iife bundle for
   // file:// page, sandboxed in its own BrowserWindow).
   build({
     bundle: true,
@@ -157,14 +162,14 @@ await Promise.all([
     entryPoints: [resolve(desktopRoot, "first-run/index.tsx")],
     outfile: resolve(desktopRoot, "dist/first-run/index.js"),
   }),
-  // D091 Phase 1: onboarding wizard preload (separate surface from
+  // onboarding wizard preload (separate surface from
   // first-run; Phase 2 extends this to ~11 channels for API proxy).
   build({
     ...sharedOptions,
     entryPoints: [resolve(desktopRoot, "electron/preload-onboarding.ts")],
     outfile: resolve(desktopRoot, "dist/preload-onboarding.js"),
   }),
-  // D091 Phase 1: onboarding wizard renderer (React 19 + Three.js
+  // onboarding wizard renderer (React 19 + Three.js
   // orb, iife bundle for file:// page, sandboxed BrowserWindow).
   // Bundle size note: Three.js full-package import adds ~600 KB
   // min; we start with the easy-import variant and measure after
@@ -183,7 +188,7 @@ await Promise.all([
   }),
 ]);
 
-// D376 R3 — preload integrity guard (the PRIMARY preload guard).
+// Preload integrity guard (the primary preload guard).
 //
 // The import.meta shim (mainProcessImportMetaShim) is main-process-ONLY.
 // Preloads run sandboxed (main.ts webPreferences `sandbox: true`), where the
@@ -198,15 +203,16 @@ await Promise.all([
 // `logOverride: empty-import-meta → error` gate, so it is not re-checked here.)
 for (const preloadRel of [
   "dist/preload.js",
+  "dist/preload-companion.js",
   "dist/preload-first-run.js",
   "dist/preload-onboarding.js",
-  // D403 P0 — the embedded-browser guest preload is sandboxed too.
+  // The embedded-browser guest preload is sandboxed too.
   "dist/guest-preload.js",
 ]) {
   const preloadSrc = readFileSync(resolve(desktopRoot, preloadRel), "utf-8");
   if (preloadSrc.includes("__nautiloImportMetaUrl")) {
     throw new Error(
-      `[build-electron] D376 preload-integrity: ${preloadRel} contains the ` +
+      `[build-electron] preload-integrity: ${preloadRel} contains the ` +
         `main-only import.meta shim (__nautiloImportMetaUrl). It runs sandboxed ` +
         `and will crash at load. The shim must stay on the dist/main.js build ` +
         `ONLY — never widen mainProcessImportMetaShim into sharedOptions.`,
@@ -214,7 +220,7 @@ for (const preloadRel of [
   }
 }
 
-// D057-2a.2: first-run HTML with canonical semantic palette injection.
+// First-run HTML with canonical semantic palette injection.
 const firstRunDistDir = resolve(desktopRoot, "dist/first-run");
 mkdirSync(firstRunDistDir, { recursive: true });
 const firstRunHtmlSrc = resolve(desktopRoot, "first-run/index.html");
@@ -232,7 +238,7 @@ writeFileSync(
   ),
 );
 
-// D091 Phase 1 / D233: onboarding HTML with build-time palette injection.
+// onboarding HTML with build-time palette injection.
 const onboardingDistDir = resolve(desktopRoot, "dist/onboarding");
 mkdirSync(onboardingDistDir, { recursive: true });
 const onboardingHtmlSrc = resolve(desktopRoot, "onboarding/index.html");

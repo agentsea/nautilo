@@ -8,6 +8,7 @@
     "./d448-mutation-characterization-coverage.test.ts",
     "./js-toolchain-security-pack.test.ts",
     "./limit-invariants-wiring.test.ts",
+    "./message-delete-callers.test.ts",
     "./official-skill-evaluation-wiring.test.ts",
     "./public-documentation.test.ts",
     "./query-inventory-wiring.test.ts",

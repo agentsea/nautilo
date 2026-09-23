@@ -24,6 +24,7 @@ import {
   GOOGLE_OAUTH_CLIENT_JSON_ENV,
   validateGoogleOAuthClientJsonBase64Env,
 } from "./google-oauth-client-json";
+import { normalizeManagedGatewayBaseUrl } from "./managed-gateway";
 
 export interface ModeDefinition {
   /** Short id matching the env-var name (single registry-wide identifier). */
@@ -247,6 +248,14 @@ export const MODE_REGISTRY: ModeDefinition[] = [
       ["oss_relay", "logto_native", "disabled"].includes(v.trim().toLowerCase())
         ? null
         : "must be one of: oss_relay, logto_native, disabled",
+  },
+  {
+    id: "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    envVar: "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    description: "Nautilo Gateway API root ending in /v1.",
+    validator: (v) => normalizeManagedGatewayBaseUrl(v)
+      ? null
+      : "must be an HTTPS API root ending in /v1 (HTTP is allowed only for localhost QA)",
   },
   {
     id: "NAUTILO_GATEWAY_BASE_URL",

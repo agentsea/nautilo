@@ -8,6 +8,7 @@
  */
 
 import type { FsDirectoryChangedEvent } from "./fs-directory-changed";
+import type { CompanionOwnerAPI } from "../../../desktop/electron/companion-contract";
 import type { ConnectionPresentation as DesktopConnectionPresentation } from "../../../desktop/electron/connection-presentation";
 import type {
   DesktopFilesystemAccessOperation,
@@ -64,11 +65,11 @@ import type {
   MiniAppRecoveryWriteInput,
 } from "../../../desktop/electron/mini-app-draft-recovery-contract";
 
-/** D057 2a.5 — mirror of the main-process MicStatus union. */
+/** mirror of the main-process MicStatus union. */
 export type MicStatus =
   "not-determined" | "granted" | "denied" | "restricted" | "unknown";
 
-/** D516 — renderer-safe, reusable macOS system-permission contract. */
+/** renderer-safe, reusable macOS system-permission contract. */
 export type DesktopSystemPermissionId =
   | "accessibility"
   | "screen-recording"
@@ -119,7 +120,7 @@ export interface DesktopSystemPermissionsAPI {
   onGuidedSetupRequested?: (callback: () => void) => () => void;
 }
 
-/** D458 Wave 7 — safe desktop pairing data; contains no relay credential. */
+/** safe desktop pairing data; contains no relay credential. */
 export interface DesktopRemoteControlReadiness {
   relayReady: boolean;
   relayStatus: string;
@@ -264,7 +265,7 @@ export interface DesktopEncryptionRecoveryAPI {
     () => void;
 }
 
-/** M300 PR 1 — content-free readiness for main-owned foreground crypto. */
+/** content-free readiness for main-owned foreground crypto. */
 export type DesktopForegroundShadowInspection =
   | Readonly<{ status: "ready"; deviceId: string }>
   | Readonly<{
@@ -435,7 +436,7 @@ export interface DesktopRemoteControlAPI {
   revokeController: (bindingId: string) => Promise<{ ok: true }>;
 }
 
-/** D418 — renderer-safe result returned by the desktop grant bridge. */
+/** renderer-safe result returned by the desktop grant bridge. */
 export type DesktopFilesystemGrantsIpcFailureCode =
   | "store_unavailable"
   | "store_corrupt"
@@ -470,7 +471,7 @@ export interface DesktopFilesystemGrantCreateRequest {
 }
 
 /**
- * D418 — narrow human grant-management surface. This deliberately exposes no
+ * narrow human grant-management surface. This deliberately exposes no
  * general local filesystem read/browse operation.
  */
 export interface DesktopFilesystemGrantsAPI {
@@ -508,7 +509,7 @@ export interface DesktopFilesystemGrantsAPI {
 }
 
 /**
- * D418 — Workstation Profile review / activation-preparation bridge result
+ * Workstation Profile review / activation-preparation bridge result
  * codes. Mirrors the preload/main contract. None of these surfaces accept
  * renderer-supplied roots, env, executables, or discovered facts.
  */
@@ -519,7 +520,7 @@ export type WorkstationProfileIpcFailureCode =
   | "store_unavailable"
   | "store_corrupt"
   | "store_instance_mismatch"
-  // D418 — profile-selector activation seam failures.
+  // Profile-selector activation seam failures.
   | "no_relay"
   | "no_user"
   | "no_server"
@@ -544,7 +545,7 @@ export interface DesktopWorkstationProfileCapabilityEntry {
 }
 
 /**
- * D418 — redacted Developer Workstation seed descriptor. Carries identity +
+ * redacted Developer Workstation seed descriptor. Carries identity +
  * bounded env-key NAMES (never values) + capability ids/backends + discovery
  * providers. Root paths, executable paths, and env values never cross here.
  */
@@ -559,7 +560,7 @@ export interface DesktopWorkstationProfileSeedDescriptor {
   capabilities: readonly DesktopWorkstationProfileCapabilityEntry[];
 }
 
-/** D418 — redacted stored-profile summary (no roots, no executables, no env values). */
+/** redacted stored-profile summary (no roots, no executables, no env values). */
 export interface DesktopWorkstationProfileSummary {
   id: string;
   revision: number;
@@ -571,7 +572,7 @@ export interface DesktopWorkstationProfileSummary {
   updatedAt: string;
 }
 
-/** D418 — redacted active-profile summary. Omits subject + grantIds. */
+/** redacted active-profile summary. Omits subject + grantIds. */
 export interface DesktopActiveWorkstationProfileSummary {
   profileId: string;
   profileRevision: number;
@@ -581,7 +582,7 @@ export interface DesktopActiveWorkstationProfileSummary {
   compiledAt: string;
 }
 
-/** D418 C4 — redacted server-authoritative Workstation session selectors. */
+/** redacted server-authoritative Workstation session selectors. */
 export interface DesktopWorkstationServerSessionSummary {
   profileId: string;
   profileRevision: number;
@@ -597,7 +598,7 @@ export interface DesktopWorkstationServerSessionStatus {
   session: DesktopWorkstationServerSessionSummary | null;
 }
 
-/** D418 — seed identity carried alongside an advisory discovery review. */
+/** seed identity carried alongside an advisory discovery review. */
 export interface DesktopWorkstationProfileSeedIdentity {
   id: string;
   revision: number;
@@ -607,7 +608,7 @@ export interface DesktopWorkstationProfileSeedIdentity {
 export type DesktopWorkstationDiscoveryRowStatus =
   "found" | "missing" | "optional";
 
-/** D418 — a single advisory discovery review row (mirrors main-side review). */
+/** a single advisory discovery review row (mirrors main-side review). */
 export interface DesktopWorkstationDiscoveryRow {
   tool: string;
   capabilityId?: string;
@@ -622,7 +623,7 @@ export interface DesktopWorkstationDiscoveryRow {
   note?: string;
 }
 
-/** D418 — human-readable advisory discovery review model. */
+/** human-readable advisory discovery review model. */
 export interface DesktopWorkstationDiscoveryReview {
   generatedAt: string;
   platform: string;
@@ -635,7 +636,7 @@ export interface DesktopWorkstationDiscoveryReview {
 }
 
 /**
- * D418 — narrow Workstation Profile review / activation-preparation surface.
+ * narrow Workstation Profile review / activation-preparation surface.
  * Every method is read-only or advisory-only and takes NO renderer-supplied
  * roots, env, executables, or discovered facts. Electron main materializes
  * the seed and runs discovery itself. This surface never activates a profile,
@@ -672,7 +673,7 @@ export interface DesktopWorkstationProfilesAPI {
     }>
   >;
   /**
-   * D418 — idempotently persist the shipped Developer Workstation seed into
+   * idempotently persist the shipped Developer Workstation seed into
    * this instance's profile store if it is absent. A profile is admin
    * configuration, never authority by itself: this creates no grants and
    * compiles nothing. Main materializes the seed itself; the renderer supplies
@@ -687,7 +688,7 @@ export interface DesktopWorkstationProfilesAPI {
     }>
   >;
   /**
-   * D418 — revoke the active profile session's policy-pack grants and drop the
+   * revoke the active profile session's policy-pack grants and drop the
    * binding. Authority-reducing only; adds no authority. `cleared` is 0 and
    * `skipped` is empty when no profile was active (benign no-op).
    */
@@ -695,14 +696,14 @@ export interface DesktopWorkstationProfilesAPI {
     WorkstationProfileIpcResult<{ cleared: number; skipped: readonly string[] }>
   >;
   /**
-   * D418 — select + activate an EXISTING stored Workstation Profile. The
+   * select + activate an EXISTING stored Workstation Profile. The
    * renderer supplies ONLY the selected profile's id + exact revision + the
    * activating user's OWN fresh PIN; Electron main verifies the stored
    * revision, posts the selectors + relay binding evidence + PIN to the
    * authoritative server `/api/workstation-access/activate-profile` route
-   * (which enforces the `use_workstation` capability gate (B3 —
-   * D418 Commit 1: `control_desktop` is no longer required for activation)
-   * + the user's OWN PIN proof + the authoritative relay binding), and ONLY on a 200 server proof success compiles the stored
+   * (which enforces the `use_workstation` capability gate;
+   * Commit 1: `control_desktop` is no longer required for activation)
+   * the user's OWN PIN proof + the authoritative relay binding), and ONLY on a 200 server proof success compiles the stored
    * profile into live policy-pack / session authority and re-advertises the
    * relay's redacted profile snapshot. The renderer never supplies roots,
    * env, executable rules, grants, subject identity, or a profile payload.
@@ -723,7 +724,7 @@ export interface DesktopWorkstationProfilesAPI {
 }
 
 /**
- * D538 — server-confirmed, process-local permission for one exact Desktop
+ * server-confirmed, process-local permission for one exact Desktop
  * session. `confirmed:false` is deliberately presentation-unavailable, never
  * evidence that uncontained commands are active.
  */
@@ -742,7 +743,7 @@ export interface DesktopUncontainedHostCommandsAPI {
 }
 
 /**
- * D057 2a.4 — native menu actions the renderer can react to. Kept in
+ * native menu actions the renderer can react to. Kept in
  * lock-step with apps/desktop/electron/menu.ts MenuAction.
  */
 export type MenuAction =
@@ -751,24 +752,24 @@ export type MenuAction =
   | "open-settings"
   | "speak"
   | "report-issue"
-  // D077 — panel toggles wired through the native View menu so
+  // Panel toggles wired through the native View menu so
   // keyboard shortcuts (⌘⇧B / ⌘⇧I) work identically to the existing
   // "speak" / "open-settings" flow.
   | "toggle-browser-column"
   | "toggle-context-panel"
-  // D076 Chunk 4 — navigation rail toggle (⌘⇧0).
+  // Navigation rail toggle (⌘⇧0).
   | "toggle-nav-rail"
-  // M055 — Account → Manage devices… (no-op until M056).
+  // Account → Manage devices…
   | "open-account-devices"
   | "open-change-pin"
   | "open-restore-pin";
-// Note: "change-workspace" was a MenuAction under 2a.7 but D075 chunk 2
+// Note: "change-workspace" was a legacy MenuAction, but the current-folder work
 // moved the File menu's folder actions to main-process-direct handlers
 // (createApplicationMenu options), so no renderer dispatch is involved.
-// D079 Phase 1 renamed the push event to `currentFolder:pathChanged`.
+// renamed the push event to `currentFolder:pathChanged`.
 
 /**
- * D079 Phase 1 — shape of the current-folder namespace exposed by the
+ * shape of the current-folder namespace exposed by the
  * preload bridge. The old `workspace` namespace is retained as a
  * deprecated alias (preload-side) but new renderer code should use
  * `currentFolder`.
@@ -780,23 +781,23 @@ interface CurrentFolderAPI {
     currentFolder: string | null;
     relayId: string | null;
   }>;
-  /** D075 chunk 2 — commit a Recent entry (already-validated path). */
+  /** chunk 2 — commit a Recent entry (already-validated path). */
   setPath: (p: string) => Promise<void>;
-  /** D075 chunk 2 — pick + validate + commit in one round-trip.
-   *  Returns committed path, null if cancelled, throws on bad path. */
+  /** chunk 2 — pick + validate + commit in one round-trip.
+   * Returns committed path, null if cancelled, throws on bad path. */
   pickAndCommit: () => Promise<string | null>;
-  /** D075 chunk 2 — recent-current-folders list, most-recent first. */
+  /** chunk 2 — recent-current-folders list, most-recent first. */
   listRecent: () => Promise<string[]>;
-  /** D075 — pre-commit validator for edge paths. */
+  /** pre-commit validator for edge paths. */
   validate: (
     p: string,
   ) => Promise<{ ok: true; resolved: string } | { ok: false; reason: string }>;
-  /** D075 chunk 2 — push notification on any current-folder commit. */
+  /** chunk 2 — push notification on any current-folder commit. */
   onPathChanged: (handler: (path: string) => void) => () => void;
 }
 
 /**
- * D079 Phase 3 — Genie's Workspace (Surface A) namespace. This commit
+ * Genie's Workspace (Surface A) namespace. This commit
  * ships only the read-only `getRoot`. Follow-ups add `setRoot`,
  * `pickAndSetRoot`, `revealInFinder`, `listRecent`, `onRootChanged`.
  * Kept deliberately narrow so consumers don't come to depend on APIs
@@ -826,9 +827,9 @@ export type DesktopAuthNotice = {
 } | null;
 
 /**
- * M055 — Logto auth namespace exposed by the Electron preload
- * bridge. The renderer's `useAuth()` Electron branch (the swap
- * for M054's `ELECTRON_STUB`) reads through this surface.
+ * Logto auth namespace exposed by the Electron preload
+ * bridge. The renderer's `useAuth` Electron branch (the swap
+ * for the browser's `ELECTRON_STUB`) reads through this surface.
  */
 interface DesktopAuthAPI {
   isAuthenticated: () => Promise<boolean>;
@@ -851,11 +852,11 @@ interface DesktopAuthAPI {
     | { ok: true; hasLogto: boolean }
     | { ok: false; hasLogto: false; reason: string }
   >;
-  /** M101 Phase 4 — Logto Account Center in the embedded auth window. */
+  /** Logto Account Center in the embedded auth window. */
   openAccountPage: (
     path: "/account" | "/account/password",
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;
-  /** M106 — open an operator-pasted Logto password-reset URL in the embedded auth window. */
+  /** open an operator-pasted Logto password-reset URL in the embedded auth window. */
   openResetUrl: (
     url: string,
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -865,7 +866,7 @@ interface DesktopAuthAPI {
   ) => () => void;
 }
 
-/** M101 Phase 3 — payload from `nautilo://` custom-protocol links. */
+/** payload from `nautilo://` custom-protocol links. */
 export type DesktopDeepLink = {
   kind: "invite" | "reset-password" | "account";
   payload: Record<string, string>;
@@ -876,19 +877,19 @@ export interface DesktopDeepLinkAPI {
 }
 
 /**
- * D154 — cold-boot shell classification from Electron bootstrap (preload).
+ * cold-boot shell classification from Electron bootstrap (preload).
  * Mirrors `ShellStateOnBoot` in `apps/desktop/electron/preload.ts`.
  */
 export type ShellStateOnBoot =
   "live" | "disconnected" | "wrong-server" | "no-pairing";
 
 /**
- * D154 — async cold-boot / picker IPC surface (preload). Optional on
+ * async cold-boot / picker IPC surface (preload). Optional on
  * `NautiloDesktopAPI` for browser dev and older packaged desktops.
  */
 export type { DesktopConnectionPresentation };
 
-/** M123 — entry in `~/.nautilo/recent-servers.json`. */
+/** entry in `~/.nautilo/recent-servers.json`. */
 export interface RecentServerEntry {
   url: string;
   displayName?: string;
@@ -896,8 +897,8 @@ export interface RecentServerEntry {
 }
 
 /**
- * M161 Phase 3 — enriched entry returned by `servers:list`. Merges recent
- * + live sessions with public `/api/setup/status` profile metadata +
+ * enriched entry returned by `servers:list`. Merges recent
+ * live sessions with public `/api/setup/status` profile metadata +
  * connection state. `active` / `signedIn` come from the live session.
  */
 export interface DesktopServerListEntry {
@@ -974,7 +975,7 @@ export type DesktopServerForgetResult =
     };
 
 /**
- * M123 / Stack 39 Phase 3E + M161 Phase 3 — desktop server switcher IPC
+ * Desktop server switcher IPC
  * surface. `openPicker` (legacy/recovery) relaunches on commit; the
  * Phase 3 `list` / `switchTo` / `add` / `close` / `onChanged` surface
  * switches in-process without relaunch. Optional on older packaged
@@ -984,7 +985,7 @@ export interface DesktopServersAPI {
   openPicker: () => Promise<void>;
   listRecent?: () => Promise<RecentServerEntry[]>;
   /**
-   * M161 Phase 3 — enriched list and explicit profile refresh seam.
+   * enriched list and explicit profile refresh seam.
    * Phase 4 consumption: call on panel open, every 15 seconds while the
    * panel remains open, and after `onChanged`. Main re-fetches public
    * setup status on every call and emits `onChanged` only when fetched
@@ -993,7 +994,7 @@ export interface DesktopServersAPI {
    */
   list?: () => Promise<DesktopServerListResult>;
   onConnectionPresentation?: (cb: (snapshot: DesktopConnectionPresentation) => void) => () => void;
-  /** M161 Phase 3 — in-process switch to an existing session. */
+  /** in-process switch to an existing session. */
   switchTo?: (
     url: string,
     theme?: "light" | "dark" | null,
@@ -1002,13 +1003,13 @@ export interface DesktopServersAPI {
     | { ok: true }
     | { ok: false; reason: "stale" | "offline" | "incompatible" | "identity-changed-again" | "promotion-failed" }
   >;
-  /** M161 Phase 3 — “Connect to server…” picker (no relaunch). */
+  /** “Connect to server…” picker (no relaunch). */
   add?: (theme?: "light" | "dark" | null) => Promise<DesktopServerAddResult>;
-  /** M161 Phase 3 — destroy a session's view (keeps recents + tokens). */
+  /** destroy a session's view (keeps recents + tokens). */
   close?: (url: string) => Promise<DesktopServerSwitchResult>;
-  /** M161 Phase 6.5 — erase a server and all trusted aliases/scoped state. */
+  /** erase a server and all trusted aliases/scoped state. */
   forget?: (url: string) => Promise<DesktopServerForgetResult>;
-  /** M161 Phase 3 — subscribe to switch/add/close/profile/connection changes. */
+  /** subscribe to switch/add/close/profile/connection changes. */
   onChanged?: (cb: () => void) => () => void;
   /**
    * Phase 4 router contract. Subscribe while the Workbench shell is
@@ -1048,10 +1049,10 @@ export interface DesktopBrowserControlAPI {
     appId: string;
   }) => Promise<BrowserControlSnapshot | null>;
   getViews: () => Promise<BrowserControlSnapshot[]>;
-  /** D368 Wave 2 — open the current embedded page in the OS default browser. */
+  /** open the current embedded page in the OS default browser. */
   openExternal: (args: { url: string }) => Promise<void>;
   /**
-   * D368 Wave 2 — embedded-browser download completion pushes (auto-saved to
+   * embedded-browser download completion pushes (auto-saved to
    * the OS Downloads dir by main). Returns an unsubscribe fn.
    */
   onDownload: (cb: (evt: BrowserDownloadEvent) => void) => () => void;
@@ -1094,7 +1095,7 @@ export interface DesktopBrowserResearchIntervention {
   expiresAt: string;
 }
 
-/** D368 Wave 2 — a completed/failed embedded-browser download. */
+/** a completed/failed embedded-browser download. */
 export interface BrowserDownloadEvent {
   /** Electron DownloadItem final state: "completed" | "cancelled" | "interrupted". */
   state: string;
@@ -1103,7 +1104,7 @@ export interface BrowserDownloadEvent {
 }
 
 /**
- * D403 (ISSUE-D403) P3 — embedded-browser password save/autofill bridge types.
+ * P3 — embedded-browser password save/autofill bridge types.
  *
  * SECURITY (R6): mirrors the main-process contract in
  * `apps/desktop/electron/passwords/types.ts`. Kept structurally identical but
@@ -1153,8 +1154,8 @@ export interface PasswordActionResult {
 }
 
 /**
- * D403 P3 — human-only save/autofill bridge (host renderer only). Optional on
- * `NautiloDesktopAPI`: absent in the browser and on pre-D403 desktop builds.
+ * P3 — human-only save/autofill bridge (host renderer only). Optional on
+ * `NautiloDesktopAPI`: absent in the browser and on older desktop builds.
  */
 export interface DesktopPasswordsAPI {
   /** Look up saved matches for an origin (id + username only). */
@@ -1230,7 +1231,7 @@ export interface GoogleWorkspaceAuthStatus {
   reason?: string;
 }
 
-/** M196 — Google Workspace OAuth connect flow (preload + main IPC). */
+/** Google Workspace OAuth connect flow (preload + main IPC). */
 export interface DesktopGoogleWorkspaceAPI {
   authStatus: () => Promise<GoogleWorkspaceAuthStatus>;
   connect: (args: {
@@ -1241,7 +1242,7 @@ export interface DesktopGoogleWorkspaceAPI {
   }) => Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
-/** M180 — desktop jailed fs write result (preload + main IPC). */
+/** desktop jailed fs write result (preload + main IPC). */
 export type FsWriteFileResult =
   | { ok: true; sha256: string; size: number }
   | {
@@ -1251,7 +1252,7 @@ export type FsWriteFileResult =
       message?: string;
     };
 
-/** D448 correlation values only; main derives all Desktop authority itself. */
+/** correlation values only; main derives all Desktop authority itself. */
 export type DesktopEditorSaveWriteOptions = {
   baseSha256?: string | null;
   checkpoint?: boolean;
@@ -1261,7 +1262,7 @@ export type DesktopEditorSaveWriteOptions = {
   baseVersion?: DocumentVersion;
 };
 
-/** D357 Phase 3 — desktop jailed fs.mkdir result (preload + main IPC). */
+/** desktop jailed fs.mkdir result (preload + main IPC). */
 export type FsMkdirResult =
   | { ok: true }
   | {
@@ -1270,7 +1271,7 @@ export type FsMkdirResult =
       message?: string;
     };
 
-/** D357 Phase 3 — desktop jailed fs.rename result (preload + main IPC). */
+/** desktop jailed fs.rename result (preload + main IPC). */
 export type FsRenameResult =
   | { ok: true }
   | {
@@ -1279,7 +1280,7 @@ export type FsRenameResult =
       message?: string;
     };
 
-/** D357 — desktop jailed move-to-OS-trash result (recoverable delete). */
+/** desktop jailed move-to-OS-trash result (recoverable delete). */
 export type FsTrashResult =
   | { ok: true }
   | {
@@ -1295,7 +1296,7 @@ export type TerminalController = "user" | "agent";
 export type TerminalWriteResult =
   { ok: true } | { ok: false; reason: "no-session" | "locked" };
 
-/** D373 / Stack 137 — PTY session info returned by the terminal bridge. */
+/** PTY session info returned by the terminal bridge. */
 export interface TerminalSessionInfo {
   id: string;
   title: string;
@@ -1306,14 +1307,14 @@ export interface TerminalSessionInfo {
   controller: TerminalController;
   /** P2.2b — the agent tried to write while the user holds the lock (pending request). */
   requested: boolean;
-  /** D438 — main-owned per-PTY consent: true once the user has explicitly
-   *  handed this one PTY to Genie. Survives retake for the PTY's lifetime;
-   *  not durable (cleared when the PTY exits or Electron main quits). */
+  /** main-owned per-PTY consent: true once the user has explicitly
+   * handed this one PTY to Genie. Survives retake for the PTY's lifetime;
+   * not durable (cleared when the PTY exits or Electron main quits). */
   agentControlConsented: boolean;
 }
 
 /**
- * D373 — terminal (PTY) work surface bridge. Optional on
+ * terminal (PTY) work surface bridge. Optional on
  * `NautiloDesktopAPI`: absent in the browser and on older desktop builds,
  * so the terminal surface/launcher must feature-detect before use.
  */
@@ -1338,10 +1339,10 @@ export interface DesktopTerminalAPI {
     sessionId: string,
     controller: TerminalController,
   ) => Promise<boolean>;
-  /** D438 — explicit, active-sender-validated grant: records per-PTY consent
-   *  and transfers control to Genie atomically. The only consent-minting
-   *  operation; the one to call from the first-handoff confirmation. Returns
-   *  `false` if the session is gone. */
+  /** explicit, active-sender-validated grant: records per-PTY consent
+   * and transfers control to Genie atomically. The only consent-minting
+   * operation; the one to call from the first-handoff confirmation. Returns
+   * `false` if the session is gone. */
   grantAgentControl: (sessionId: string) => Promise<boolean>;
   /** P2.2b — dismiss a pending agent control request without handing over. */
   clearRequest: (sessionId: string) => Promise<boolean>;
@@ -1356,14 +1357,14 @@ export interface DesktopTerminalAPI {
   onExit: (
     handler: (evt: { sessionId: string; exitCode: number }) => void,
   ) => () => void;
-  /** D373 P2.2b — input-lock owner changed. Returns an unsubscribe fn. */
+  /** P2.2b — input-lock owner changed. Returns an unsubscribe fn. */
   onController: (
     handler: (evt: {
       sessionId: string;
       controller: TerminalController;
     }) => void,
   ) => () => void;
-  /** D373 P2.2b — agent control request raised/cleared. Returns an unsubscribe fn. */
+  /** P2.2b — agent control request raised/cleared. Returns an unsubscribe fn. */
   onRequest: (
     handler: (evt: { sessionId: string; requested: boolean }) => void,
   ) => () => void;
@@ -1399,7 +1400,7 @@ export interface DesktopWorkbenchAPI {
 }
 
 /**
- * D423 4.1.3 — persisted Electron relay identity exposed to the Workbench
+ * persisted Electron relay identity exposed to the Workbench
  * renderer. The renderer reads the relay id that the desktop relay registered
  * at startup; it NEVER generates or accepts a renderer-supplied replacement.
  * `null` when the relay has not been started (the local-file focus ref then
@@ -1426,7 +1427,7 @@ export interface DesktopGitHubCliAPI {
   cancel: () => Promise<void>;
 }
 
-/** D500 — compact, secret-free management state for SSH on this Mac. */
+/** compact, secret-free management state for SSH on this Mac. */
 export interface DesktopStructuredSshStatus {
   state: "unavailable" | "not-enabled" | "enabled";
   reason: string | null;
@@ -1440,7 +1441,7 @@ export interface DesktopStructuredSshAPI {
   disable: () => Promise<DesktopStructuredSshStatus>;
 }
 
-/** D516 — renderer-safe local Computer use management projection. */
+/** renderer-safe local Computer use management projection. */
 export interface DesktopComputerUseStatus {
   state: "unavailable" | "not-enabled" | "enabled";
   reason: string | null;
@@ -1482,7 +1483,7 @@ export interface DesktopWorkstationShellAPI {
   revoke: () => Promise<void>;
 }
 
-/** D453 — renderer-safe state of the optional local Codex connection. */
+/** renderer-safe state of the optional local Codex connection. */
 export type DesktopCodexConnectionState =
   "disabled" | "enabling" | "enabled" | "disabling" | "faulted";
 
@@ -1494,7 +1495,7 @@ export interface DesktopCodexConnectionStatus {
 }
 
 /**
- * D453 — human Connection controls. Each method takes no arguments; Electron
+ * human Connection controls. Each method takes no arguments; Electron
  * main resolves the active session, runtime, auth, and workspace itself.
  */
 export interface DesktopCodexConnectionAPI {
@@ -1515,7 +1516,7 @@ export interface DesktopHermesConnectionAPI {
   disable: () => Promise<DesktopHermesConnectionStatus>;
 }
 
-/** D557 — renderer-safe desired startup posture, never a feature authority. */
+/** renderer-safe desired startup posture, never a feature authority. */
 export interface DesktopReadyToWorkAPI {
   get: () => Promise<ReadyToWorkAggregateStatus>;
   enroll: (input: {
@@ -1544,7 +1545,7 @@ export interface DesktopReadyToWorkAPI {
   onStatusChanged: (handler: (status: ReadyToWorkAggregateStatus) => void) => () => void;
 }
 
-/** M239 — the complete content-free important-arrival IPC payload. */
+/** the complete content-free important-arrival IPC payload. */
 export interface DesktopImportantMessageNotificationInput {
   messageId: string;
   senderDisplayName: string;
@@ -1571,7 +1572,7 @@ export interface DesktopNotificationDeliveryStatus {
   state: "unsupported" | "supported" | "delivery-failed";
 }
 
-/** M239/M240 — narrow macOS delivery, summary, click, and recovery surface. */
+/** narrow macOS delivery, summary, click, and recovery surface. */
 export interface DesktopNotificationsAPI {
   showImportantMessage: (
     input: DesktopImportantMessageNotificationInput,
@@ -1588,7 +1589,7 @@ export interface DesktopNotificationsAPI {
 }
 
 /**
- * D103 — intentionally small renderer projection of the main-process update
+ * intentionally small renderer projection of the main-process update
  * state. It contains presentation data only: no feed URL, release notes,
  * artifact path, provider details, or installation control crosses preload.
  */
@@ -1600,7 +1601,7 @@ export type DesktopUpdateStatus =
   | Readonly<{ kind: "installing"; version: string }>;
 
 /**
- * D103 — optional, renderer-safe update affordance bridge. The main process
+ * optional, renderer-safe update affordance bridge. The main process
  * owns all updater decisions and native dialogs; the renderer can only read a
  * sanitized status and request that main open its native update UI.
  */
@@ -1611,6 +1612,7 @@ export interface DesktopUpdatesAPI {
 }
 
 interface NautiloDesktopAPI {
+  companion?: CompanionOwnerAPI;
   miniAppRecovery?: {
     open: (input: MiniAppRecoveryOpenInput) => Promise<{ handle: string }>;
     read: (handle: string) => Promise<MiniAppRecoveryReadResult>;
@@ -1628,7 +1630,7 @@ interface NautiloDesktopAPI {
       ) => void | Promise<void>,
     ) => () => void;
     onReconnect: (listener: () => void | Promise<void>) => () => void;
-    /** D448 P10: trusted main-process lifecycle for local-file leases. */
+    /** P10: trusted main-process lifecycle for local-file leases. */
     humanEditLeases: {
       register: (
         input: RegisterHumanEditLeaseRequest,
@@ -1651,62 +1653,62 @@ interface NautiloDesktopAPI {
   readonly platform: string;
   readonly electronVersion: string;
   /**
-   * D403 (ISSUE-D403) P0 — built guest `<webview>` preload path (a file:// URL)
+   * P0 — built guest `<webview>` preload path (a file:// URL)
    * for the embedded-browser password autofill layer. Set as the
    * `<webview preload>` attribute on the SaaS surface. Optional/nullable:
-   * absent in the browser and on desktop builds that predate D403.
+   * absent in the browser and on older desktop builds.
    */
   readonly embeddedBrowserGuestPreloadPath?: string | null;
   /**
-   * D154 — sync read of bootstrap-set shell state before workbench load.
-   * Absent in browser and on M097/older Electron builds.
+   * sync read of bootstrap-set shell state before workbench load.
+   * Absent in browser and on /older Electron builds.
    */
   shellStateOnBoot?: () => ShellStateOnBoot;
-  /** D154 — cold-boot picker / recovery IPC. Optional; see `shellStateOnBoot`. */
+  /** cold-boot picker / recovery IPC. Optional; see `shellStateOnBoot`. */
   coldBoot?: DesktopColdBootAPI;
   getVersion: () => Promise<string>;
   workbench?: DesktopWorkbenchAPI;
   openFolder: () => Promise<string | null>;
-  /** D271 — multi-select native file open; returns bytes (base64) to upload. */
+  /** multi-select native file open; returns bytes (base64) to upload. */
   pickFiles: () => Promise<
     Array<{ name: string; sizeBytes: number; base64: string }>
   >;
-  /** M055 — Logto auth bridge. */
+  /** Logto auth bridge. */
   auth: DesktopAuthAPI;
-  /** M123 — in-app server switcher (Electron only). */
+  /** in-app server switcher (Electron only). */
   servers?: DesktopServersAPI;
-  /** M161 Stack 198 — active-session lifecycle (desktop only). */
+  /** active-session lifecycle (desktop only). */
   activeSession?: DesktopActiveSessionAPI;
-  /** M239 — macOS native message delivery and Dock attention. */
+  /** macOS native message delivery and Dock attention. */
   notifications?: DesktopNotificationsAPI;
-  /** D103 — optional on older desktop builds and always absent in the web app. */
+  /** optional on older desktop builds and always absent in the web app. */
   updates?: DesktopUpdatesAPI;
-  /** D336 — SaaS <webview> CDP-adoption bridge. */
+  /** SaaS <webview> CDP-adoption bridge. */
   browserControl?: DesktopBrowserControlAPI;
-  /** D504 — Human controls for one exact challenged anonymous research lease. */
+  /** Human controls for one exact challenged anonymous research lease. */
   browserResearch?: DesktopBrowserResearchAPI;
   /**
-   * D403 — human-only embedded-browser save/autofill bridge (desktop only;
+   * human-only embedded-browser save/autofill bridge (desktop only;
    * feature-detect). No raw password ever crosses this surface.
    */
   passwords?: DesktopPasswordsAPI;
-  /** D345 — configured local runtimes for optional tool integrations. */
+  /** configured local runtimes for optional tool integrations. */
   toolRuntimes?: DesktopToolRuntimesAPI;
-  /** M196 — Google Workspace OAuth connect (desktop only). */
+  /** Google Workspace OAuth connect (desktop only). */
   googleWorkspace?: DesktopGoogleWorkspaceAPI;
-  /** D373 — terminal (PTY) work surface bridge (desktop only; feature-detect). */
+  /** terminal (PTY) work surface bridge (desktop only; feature-detect). */
   terminal?: DesktopTerminalAPI;
-  /** D418 — local Desktop Filesystem Grant administration (desktop only; feature-detect). */
+  /** local Desktop Filesystem Grant administration (desktop only; feature-detect). */
   desktopFilesystemGrants?: DesktopFilesystemGrantsAPI;
   /**
-   * D418 — Workstation Profile review / activation-preparation bridge
+   * Workstation Profile review / activation-preparation bridge
    * (desktop only; feature-detect). Read-only review + seed discovery; never
    * activates. Absent on non-desktop and on builds that predate this bridge.
    */
   workstationProfiles?: DesktopWorkstationProfilesAPI;
-  /** D538 — own-PIN uncontained-host-command session control. */
+  /** own-PIN uncontained-host-command session control. */
   uncontainedHostCommands?: DesktopUncontainedHostCommandsAPI;
-  /** D458 Wave 7 — mobile-control pairing surface (new desktop builds only). */
+  /** mobile-control pairing surface (new desktop builds only). */
   remoteControl?: DesktopRemoteControlAPI;
   /** Main-owned ordinary send path; credentials never enter renderer state. */
   ordinaryChat?: {
@@ -1719,24 +1721,24 @@ interface NautiloDesktopAPI {
   foregroundShadow?: DesktopForegroundShadowAPI;
   /** Main-owned recovery phrase generation and sealed device custody. */
   encryptionRecovery?: DesktopEncryptionRecoveryAPI;
-  /** M101 Phase 3 — `nautilo://` deep links (invite, reset-password, account). */
+  /** `nautilo://` deep links (invite, reset-password, account). */
   deepLink: DesktopDeepLinkAPI;
   /**
-   * D079 — canonical current-folder surface (the user's task-scoped
+   * canonical current-folder surface (the user's task-scoped
    * folder — codebase, design dump, legal archive, etc.). Use this in
    * new code.
    */
   currentFolder: CurrentFolderAPI;
   /**
-   * D079 Phase 3 — Genie's Workspace (Surface A, her persistent
+   * Genie's Workspace (Surface A, her persistent
    * drawer at `~/Documents/Nautilo/` by default). Distinct namespace
    * from `currentFolder` so the two surfaces are never confusable.
    */
   genieWorkspace: GenieWorkspaceAPI;
   /**
-   * D079 — deprecated alias for the current-folder surface. Retained
+   * deprecated alias for the current-folder surface. Retained
    * for one release while consumer code migrates. `useDefault` is NOT
-   * included — the current folder has no default in the D079 model.
+   * included because the current folder has no default.
    */
   workspace: Omit<CurrentFolderAPI, never>;
   relayStatus: {
@@ -1745,11 +1747,11 @@ interface NautiloDesktopAPI {
   };
 
   /**
-   * D423 4.1.3 — persisted Electron relay identity (desktop only; optional on
-   * older builds). Feature-detect via `getDesktopRelayId()` before use.
+   * persisted Electron relay identity (desktop only; optional on
+   * older builds). Feature-detect via `getDesktopRelayId` before use.
    */
   relayIdentity?: DesktopRelayIdentityAPI;
-  /** D431 — opaque, sender-owned local binary-read sessions. */
+  /** opaque, sender-owned local binary-read sessions. */
   binaryRead: {
     open: (
       path: string,
@@ -1773,7 +1775,7 @@ interface NautiloDesktopAPI {
       { ok: true; data: null } | { ok: false; error: { code: string } }
     >;
   };
-  /** D385/D378 — opaque Desktop-local media import/preview capability. */
+  /** opaque Desktop-local media import/preview capability. */
   mediaProxy?: {
     importVideo: (documentPath: string) => Promise<
       | { ok: true; data: { mediaRef: string; label: string; mediaKind?: "video" | "audio" | "image"; durationSec?: number; frameRate?: { numerator: number; denominator: number } } }
@@ -1803,7 +1805,7 @@ interface NautiloDesktopAPI {
     >;
     onProgress: (callback: (event: { requestId: string; progress: unknown }) => void) => () => void;
   };
-  /** D378 — sender-bound native sequence export for Current Folder and Workspace sources. */
+  /** sender-bound native sequence export for Current Folder and Workspace sources. */
   mediaExport?: {
     supportsWorkspacePublication?: true;
     supportsExportSettings?: true;
@@ -1819,21 +1821,21 @@ interface NautiloDesktopAPI {
     cancel: (requestId: string) => Promise<{ ok: true; data: null } | { ok: false; error: { code: string } }>;
     onProgress: (callback: (event: { requestId: string; progress: unknown }) => void) => () => void;
   };
-  /** D486 — host GitHub CLI health and device-flow controls. */
+  /** host GitHub CLI health and device-flow controls. */
   githubCli?: DesktopGitHubCliAPI;
-  /** D500 — Human-only structured SSH setup/revocation (desktop only). */
+  /** Human-only structured SSH setup/revocation (desktop only). */
   structuredSsh?: DesktopStructuredSshAPI;
-  /** D516 — Human-only local Computer use setup/revocation. */
+  /** Human-only local Computer use setup/revocation. */
   computerUse?: DesktopComputerUseAPI;
-  /** D516 — Human-owned macOS permission setup (new Desktop builds only). */
+  /** Human-owned macOS permission setup (new Desktop builds only). */
   systemPermissions?: DesktopSystemPermissionsAPI;
-  /** D486 — human status/revocation for Current Folder workstation consent. */
+  /** human status/revocation for Current Folder workstation consent. */
   workstationShell?: DesktopWorkstationShellAPI;
-  /** D453 — optional on older desktop builds; feature-detect before use. */
+  /** optional on older desktop builds; feature-detect before use. */
   codexConnection?: DesktopCodexConnectionAPI;
-  /** D557 — optional on older desktop builds; durable Hermes owner choice. */
+  /** optional on older desktop builds; durable Hermes owner choice. */
   hermesConnection?: DesktopHermesConnectionAPI;
-  /** D557 — optional on older Desktop builds; no receipt or authority data. */
+  /** optional on older Desktop builds; no receipt or authority data. */
   readyToWork?: DesktopReadyToWorkAPI;
   fs: {
     readDir: (
@@ -1866,11 +1868,11 @@ interface NautiloDesktopAPI {
       content: string,
       opts?: DesktopEditorSaveWriteOptions,
     ) => Promise<FsWriteFileResult>;
-    /** D357 Phase 3 — create a directory inside the allowed root (no implicit parents). */
+    /** create a directory inside the allowed root (no implicit parents). */
     mkdir: (path: string) => Promise<FsMkdirResult>;
-    /** D357 Phase 3 — move/rename a file or directory within the allowed root. */
+    /** move/rename a file or directory within the allowed root. */
     rename: (from: string, to: string) => Promise<FsRenameResult>;
-    /** D357 — move a file or directory to the OS trash (recoverable delete). */
+    /** move a file or directory to the OS trash (recoverable delete). */
     trash: (path: string) => Promise<FsTrashResult>;
   };
   media: {
@@ -1898,7 +1900,7 @@ interface NautiloDesktopAPI {
   };
 
   /**
-   * D057 2a.6.3 — forward renderer-side log calls into the main-process
+   * forward renderer-side log calls into the main-process
    * electron-log pipeline so they land in the platform-standard main.log.
    * Fire-and-forget. Safe to call from hot paths.
    */
@@ -1909,7 +1911,7 @@ interface NautiloDesktopAPI {
   };
 
   /**
-   * D091 Phase 3 — re-trigger the onboarding wizard from workbench
+   * re-trigger the onboarding wizard from workbench
    * Settings. Main hides the workbench window, opens the wizard
    * against the existing profile, restores the workbench afterward,
    * and pushes `onboarding:completed` regardless of whether the
@@ -2016,7 +2018,7 @@ export function initiatingClientSurfaceForWorkbench(args: {
 }
 
 /**
- * M123 — true when the desktop preload exposes the server-switch picker.
+ * true when the desktop preload exposes the server-switch picker.
  * Env-pinned launches hide mismatch recovery in main; this gate is
  * bridge-availability only until main exposes an explicit env-pin flag.
  */
@@ -2025,7 +2027,7 @@ export function canSwitchDesktopServer(): boolean {
 }
 
 /**
- * M161 Phase 3 — true when the desktop preload exposes the in-process
+ * true when the desktop preload exposes the in-process
  * switch surface (`switchTo` / `add` / `close` / `list` / `onChanged`).
  * Used to feature-gate the new servers panel against older builds that
  * only ship the legacy relaunch `openPicker`.
@@ -2043,7 +2045,7 @@ export function canSwitchDesktopServerInProcess(): boolean {
 }
 
 /**
- * D154 — read cold-boot shell classification from the preload bridge.
+ * read cold-boot shell classification from the preload bridge.
  * Returns `null` in browser dev, when `nautiloDesktop` is missing, or when
  * the running desktop build does not expose `shellStateOnBoot`.
  *
@@ -2066,7 +2068,7 @@ export function getShellStateOnBoot(): ShellStateOnBoot | null {
 }
 
 /**
- * D423 4.1.3 — read the persisted Electron relay identity from the preload
+ * read the persisted Electron relay identity from the preload
  * bridge. Returns the relay id, or `null` when not running inside the Electron
  * shell, the preload bridge is missing, the `relayIdentity` namespace is
  * absent (older build), or the relay has not yet been started. The renderer
@@ -2093,7 +2095,7 @@ export async function getDesktopRelayId(): Promise<string | null> {
 }
 
 /**
- * D448 P10 — resolve the optional local human-edit lease bridge at call time,
+ * P10 — resolve the optional local human-edit lease bridge at call time,
  * matching `getDesktopRelayId`'s late-preload/test-safe behavior.
  */
 export function getDesktopLocalHumanEditLeaseAPI():
@@ -2104,7 +2106,7 @@ export function getDesktopLocalHumanEditLeaseAPI():
   return api?.documentMutations.humanEditLeases ?? null;
 }
 /**
- * D154 Phase 2.3 — pure seed for `lastOpenAt` (see `NautiloRuntimeProvider`).
+ * pure seed for `lastOpenAt` (see `NautiloRuntimeProvider`).
  * Mirrors the persisted has-ever-open bit (`getInitialLastOpenAt`) with a
  * cold-boot tiebreaker when Electron reports non-`live` `shellStateOnBoot`.
  */

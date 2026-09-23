@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 
 describe("modern Human request negotiation", () => {
-  test.each(["unsupported", "ineligible", "missing_marker", "wrong_version", "malformed"] as const)(
+  test.each(["unsupported", "ineligible", "missing_marker", "wrong_version", "malformed", "legacy_agent", "legacy_agent_unmarked"] as const)(
     "V2 rejects %s without an ordinary mutation",
     async (failure) => {
       let sends = 0;
@@ -20,10 +20,10 @@ describe("modern Human request negotiation", () => {
           }
           return Promise.resolve({
             responseVersion: 1, status: "planned",
-            ...(failure === "missing_marker" ? {}
+            ...(failure === "missing_marker" || failure === "legacy_agent_unmarked" ? {}
               : { authorizationScheme: "human_ai_readable_v2" as const }),
             planBytesBase64url: failure === "malformed" ? "AQID"
-              : base64url(humanAiReadablePlanBytes()),
+              : base64url(failure.startsWith("legacy_agent") ? sharedAgentPlanBytes() : humanAiReadablePlanBytes()),
           });
         },
         sendRoomMessage: () => {
@@ -1332,5 +1332,38 @@ describe("authorized Human live Shadow Message client", () => {
     expect(state.sends[0]).toMatchObject({ liveShadow: {
       requestVersion: 1, status: "plan_unavailable", reason: "namespace_unavailable",
     } });
+  });
+});
+
+
+describe("room-wide mention negotiation", () => {
+  test.each([1, 2] as const)("version %i rejects an unsupported audience without sending", async (requestVersion) => {
+    let sends = 0;
+    const client = pendingAttentionClient({
+      planLiveShadowRoomMessage: (_roomId, request) => {
+        expect(request.mentionEveryone).toBe(true);
+        return Promise.reject(Object.assign(new Error("invalid_request"), { status: 400 }));
+      },
+      sendRoomMessage: () => { sends++; return Promise.reject(new Error("unexpected send")); },
+    }, { planRequestVersion: requestVersion });
+    expect(client.send(ROOM, {
+      content: "@everyone hello", clientActionSessionId: "everyone-client", mentionEveryone: true,
+      mentionedHumanUserIds: [COORDINATES.userId],
+    })).rejects.toThrow("invalid_request");
+    expect(sends).toBe(0);
+  });
+
+  test("rejects a plan that drops the requested audience before obtaining custody", async () => {
+    let sends = 0;
+    const client = pendingAttentionClient({
+      planLiveShadowRoomMessage: () => Promise.resolve({
+        responseVersion: 1, status: "planned", planBytesBase64url: base64url(humanAiReadablePlanBytes()),
+      }),
+      sendRoomMessage: () => { sends++; return Promise.reject(new Error("unexpected send")); },
+    });
+    expect(client.send(ROOM, {
+      content: "@everyone hello", clientActionSessionId: "everyone-client", mentionEveryone: true,
+    })).rejects.toThrow("Protected message plan is invalid");
+    expect(sends).toBe(0);
   });
 });

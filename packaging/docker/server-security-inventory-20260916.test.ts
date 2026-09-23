@@ -34,6 +34,7 @@ describe("September 16 server scanner inventory", () => {
       expiresAt: "2026-10-01T00:00:00Z",
     });
     expect(fixture.findingTuples).toHaveLength(19);
+    const retiredAdvisories = new Set(["CVE-2026-91724", "CVE-2026-91727"]);
     for (const [scanner, advisoryId, packageName, installedVersion, severity] of fixture.findingTuples) {
       const matches = parsed.exceptions.filter((entry) =>
         entry.advisoryId === advisoryId
@@ -42,7 +43,8 @@ describe("September 16 server scanner inventory", () => {
         && entry.severity === severity
         && entry.observedBy.includes(scanner)
       );
-      expect(matches).toHaveLength(1);
+      expect(matches).toHaveLength(retiredAdvisories.has(advisoryId) ? 0 : 1);
+      if (retiredAdvisories.has(advisoryId)) continue;
       if (advisoryId === "CVE-2026-19499") {
         expect(matches[0]!.reviewedAt).toBe(fixture.decision.reviewedAt);
         expect(matches[0]!.expiresAt).toBe("2026-10-16T00:00:00Z");

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { ServerEvent, ThreadDetailResponse } from "@nautilo/types";
+import { ApiError } from "@nautilo/api-client/browser";
+import type { RoomDetailResponse, RoomMessagesAroundPage, ServerEvent, ThreadDetailResponse } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
 import {
   restoreSessionMessages,
@@ -22,7 +23,12 @@ type ThreadHistoryResponse = {
 
 export interface ThreadRoomApi {
   getThreadDetail(roomId: string): Promise<ThreadDetailResponse>;
+  getRoom(roomId: string): Promise<RoomDetailResponse>;
   readRoomMessages(roomId: string): Promise<ThreadHistoryResponse>;
+  readRoomMessagesAround(options: {
+    roomId: string;
+    messageId: string;
+  }): Promise<RoomMessagesAroundPage>;
   getRoomActiveJobs(roomId: string): Promise<{ jobIds: string[] }>;
   sendRoomMessage(
     roomId: string,
@@ -33,6 +39,7 @@ export interface ThreadRoomApi {
       workspacePath: string | null;
       replyToMessageId?: number;
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
     },
   ): Promise<{ messageId: number | null; jobId: string | null }>;
   stopRoom(roomId: string): Promise<unknown>;
@@ -42,10 +49,77 @@ export interface ThreadRoomApi {
 export interface UseThreadRoomControllerOptions {
   /** Null closes the visual view only; it never stops a child job. */
   roomId: string | null;
+  parentRoomId: string;
+  anchorMessageId: number;
   visible: boolean;
   /** A false→true transition rehydrates canonical HTTP state after reconnect. */
   connected: boolean;
   api?: ThreadRoomApi;
+}
+
+const PROTECTED_THREAD_DETAIL_FENCES = new Set([
+  "Protected Subthread anchor hydration is not supported",
+  "The anchor's ordinary representation is unavailable",
+]);
+
+function isProtectedThreadDetailFence(cause: unknown): boolean {
+  return cause instanceof ApiError
+    && cause.status === 409
+    && PROTECTED_THREAD_DETAIL_FENCES.has(cause.message);
+}
+
+async function loadThreadDetail(
+  api: Pick<ThreadRoomApi, "getRoom" | "getThreadDetail">,
+  messageOperations: Pick<ThreadRoomApi, "readRoomMessagesAround">,
+  subthreadRoomId: string,
+  parentRoomId: string,
+  anchorMessageId: number,
+): Promise<ThreadDetailResponse> {
+  try {
+    return await api.getThreadDetail(subthreadRoomId);
+  } catch (cause) {
+    if (!isProtectedThreadDetailFence(cause)) throw cause;
+  }
+
+  const child = await api.getRoom(subthreadRoomId);
+  if (
+    child.id !== subthreadRoomId
+    || child.parentRoomId !== parentRoomId
+    || child.threadRootMessageId !== anchorMessageId
+  ) {
+    throw new Error("Protected thread coordinates do not match the requested conversation.");
+  }
+  const around = await messageOperations.readRoomMessagesAround({
+    roomId: parentRoomId,
+    messageId: String(anchorMessageId),
+  });
+  const matchingAnchors = around.messages.filter(
+    (message) => message.id === String(anchorMessageId),
+  );
+  if (
+    around.target.messageId !== String(anchorMessageId)
+    || matchingAnchors.length !== 1
+  ) {
+    throw new Error("Protected thread anchor is unavailable.");
+  }
+  const anchor = matchingAnchors[0];
+  if (
+    anchor === undefined
+    || typeof anchor.content !== "string"
+    || ("historyUnavailable" in anchor && anchor.historyUnavailable === true)
+  ) {
+    throw new Error("Protected thread anchor is unavailable.");
+  }
+  return {
+    parentRoomId,
+    subthreadRoomId,
+    anchor,
+    summary: {
+      replyCount: anchor.replyCount ?? 0,
+      lastReplyAt: anchor.lastReplyAt ?? null,
+      summaryRevision: anchor.summaryRevision ?? 0,
+    },
+  };
 }
 
 export interface ThreadRoomController {
@@ -59,6 +133,7 @@ export interface ThreadRoomController {
     options?: {
       replyToMessageId?: number;
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
     },
   ): Promise<boolean>;
   markRead: () => Promise<boolean>;
@@ -80,6 +155,8 @@ function requestId(): string {
  */
 export function useThreadRoomController({
   roomId,
+  parentRoomId,
+  anchorMessageId,
   visible,
   connected,
   api: injectedApi,
@@ -97,7 +174,7 @@ export function useThreadRoomController({
     const epoch = ++hydrationEpoch.current;
     try {
       const [detail, history, jobs] = await Promise.all([
-        api.getThreadDetail(targetRoomId),
+        loadThreadDetail(api, messageOperations, targetRoomId, parentRoomId, anchorMessageId),
         messageOperations.readRoomMessages(targetRoomId),
         api.getRoomActiveJobs(targetRoomId),
       ]);
@@ -114,7 +191,7 @@ export function useThreadRoomController({
       if (epoch !== hydrationEpoch.current) return;
       dispatch({ type: "hydrate.failed", roomId: targetRoomId, error: errorMessage(cause) });
     }
-  }, [api, messageOperations]);
+  }, [anchorMessageId, api, messageOperations, parentRoomId]);
 
   useEffect(() => {
     if (!roomId) {
@@ -146,6 +223,7 @@ export function useThreadRoomController({
     options?: {
       replyToMessageId?: number;
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
     },
   ): Promise<boolean> => {
     const current = stateRef.current;
@@ -181,6 +259,7 @@ export function useThreadRoomController({
         options.mentionedHumanUserIds.length > 0
           ? { mentionedHumanUserIds: options.mentionedHumanUserIds }
           : {}),
+        ...(options?.mentionEveryone ? { mentionEveryone: true } : {}),
       };
       const result = await messageOperations.sendRoomMessage(targetRoomId, body);
       dispatch({

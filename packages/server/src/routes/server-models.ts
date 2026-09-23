@@ -1,7 +1,22 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { getServerSpeechModel, listSpeechModels, getDefaultMediaGenerationModel, listMediaGenerationModels, listResolvedCatalogModels, kickRuntimeModelCatalogRefresh, ModelUnavailableError, NoRunnableModelForRoleError, resolveModelRole, resolveRetainedModels, getProtectedMemoryEmbeddingConfiguration, resolveProviderKey, EmbeddingProviderError } from "@nautilo/agent";
+import {
+  EmbeddingProviderError,
+  getDefaultMediaGenerationModel,
+  getProtectedMemoryEmbeddingConfiguration,
+  getServerSpeechModel,
+  hasRunnableOpenRouterTransport,
+  kickRuntimeModelCatalogRefresh,
+  listMediaGenerationModels,
+  listResolvedCatalogModels,
+  listSpeechModels,
+  ModelUnavailableError,
+  NoRunnableModelForRoleError,
+  resolveModelRole,
+  resolveProviderKey,
+  resolveRetainedModels,
+} from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
 import {
   getServerModelConfig,
@@ -49,7 +64,9 @@ function embeddingModels() {
     const label = provider === "venice" ? "Venice" : provider === "openrouter" ? "OpenRouter" : "OpenAI";
     const modelId = id.slice(id.indexOf(":") + 1);
     return { id, displayName: `${label} — ${modelId} (1,536 dimensions)`,
-      available: resolveProviderKey(provider) !== null };
+      available: provider === "openrouter"
+        ? hasRunnableOpenRouterTransport()
+        : resolveProviderKey(provider) !== null };
   });
 }
 

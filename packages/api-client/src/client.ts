@@ -574,6 +574,7 @@ import type {
   MarkRoomReadRequest,
   MarkRoomReadResponse,
   MessageReadStateDto,
+  MessageAttachmentRef,
   MessageArtifactOpenRef,
   NotificationLevel,
   NotificationPreferencesDto,
@@ -1482,6 +1483,7 @@ const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
+  "nautilo-gateway",
   "gateway",
   "google",
   "fireworks",
@@ -1489,9 +1491,14 @@ const LLM_KEY_IDS = new Set<string>([
 ]);
 
 function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
+  // A masked Gateway key report cannot prove that its separate API root is
+  // usable. Keep this browser-side projection conservative; authoritative
+  // setup readiness comes from config-guard's server-side summary.
   return keys.some(
     (k) =>
-      LLM_KEY_IDS.has(k.id) && (k.status === "present" || k.status === "verified"),
+      k.id !== "nautilo-gateway"
+      && LLM_KEY_IDS.has(k.id)
+      && (k.status === "present" || k.status === "verified"),
   );
 }
 
@@ -5413,8 +5420,10 @@ export class NautiloApiClient {
   }
 
   /**
-   * Uses GET /api/health/keys without provider pings. `hasLlm` matches
-   * config-guard `buildSummary`. The normal session bearer lets the trust
+   * Uses GET /api/health/keys without provider pings. `hasLlm`
+   * conservatively recognizes self-contained provider credentials. Managed
+   * Gateway readiness is derived server-side because it also requires a valid
+   * API root. The normal session bearer lets the trust
    * preHandler resolve the caller's capability. Throws `ApiError` with `.status`
    * so callers (e.g. the settings page) can distinguish 401 (no
    * session) / 403 (lacks `manage_server_settings`) from transport
@@ -5426,6 +5435,25 @@ export class NautiloApiClient {
       defaultErrorPrefix: "GET /api/health/keys",
     });
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
+  }
+
+  /** Read the administrator-visible Nautilo Gateway API root. */
+  async getNautiloGateway(): Promise<{ baseUrl: string | null }> {
+    return this.request({
+      path: "/api/setup/nautilo-gateway",
+      defaultErrorPrefix: "GET /api/setup/nautilo-gateway",
+    });
+  }
+
+  /** Update the Nautilo Gateway API root. */
+  async updateNautiloGateway(baseUrl: string): Promise<{ baseUrl: string }> {
+    return this.request({
+      method: "PUT",
+      path: "/api/setup/nautilo-gateway",
+      auth: "session-fresh",
+      body: { baseUrl },
+      defaultErrorPrefix: "PUT /api/setup/nautilo-gateway",
+    });
   }
 
   /** Read the bounded web-research policy. Requires `read_server_settings`. */
@@ -5477,6 +5505,7 @@ export class NautiloApiClient {
       clientActionSessionId?: string;
       /** picker-authored stable Human recipients. */
       mentionedHumanUserIds?: string[];
+      mentionEveryone?: boolean;
       replyToMessageId?: number;
       attachments?: ChatUploadedAttachmentRef[];
       voiceMode?: boolean;
@@ -9381,6 +9410,7 @@ export class NautiloApiClient {
       sourceUserId?: string;
       authorAgentId?: string;
       authorHarnessId?: string;
+      attachments?: MessageAttachmentRef[];
     }>;
     pageInfo?: {
       hasMoreBefore: boolean;
@@ -9405,6 +9435,7 @@ export class NautiloApiClient {
         createdAt: string;
         editedAt?: string | null;
         editRevision?: number;
+        attachments?: MessageAttachmentRef[];
       }>;
       pageInfo?: {
         hasMoreBefore: boolean;
@@ -9438,6 +9469,7 @@ export class NautiloApiClient {
       sourceUserId?: string;
       authorAgentId?: string;
       authorHarnessId?: string;
+      attachments?: MessageAttachmentRef[];
       artifacts?: MessageArtifactOpenRef[];
     }>;
     pageInfo: {
@@ -9455,6 +9487,7 @@ export class NautiloApiClient {
         options.shadowRead,
       );
       params.set("shadowReadVersion", String(intent.requestVersion));
+      params.set("shadowReadMetadataVersion", "1");
       params.set("shadowReadRequestKey", intent.clientRequestKey);
       if (intent.readerDeviceId !== undefined) {
         params.set("shadowReadDeviceId", intent.readerDeviceId);
@@ -9479,6 +9512,7 @@ export class NautiloApiClient {
         sourceUserId?: string;
         authorAgentId?: string;
         authorHarnessId?: string;
+        attachments?: MessageAttachmentRef[];
         artifacts?: MessageArtifactOpenRef[];
       }>;
       pageInfo: {
@@ -9533,7 +9567,7 @@ export class NautiloApiClient {
     });
     return this.request<RoomHistoryShadowReadResponseV1>({
       method: "POST",
-      path: `/api/rooms/${encodeURIComponent(options.roomId)}/messages/shadow-read`,
+      path: `/api/rooms/${encodeURIComponent(options.roomId)}/messages/shadow-read?shadowReadMetadataVersion=1`,
       auth: "session-fresh",
       body,
       schema: roomHistoryShadowReadResponseV1Schema,
@@ -9561,7 +9595,7 @@ export class NautiloApiClient {
   ): Promise<MessageBackfillSourceResponse> {
     return this.request({
       method: "POST",
-      path: "/api/message-backfill/source",
+      path: "/api/message-backfill/source?shadowReadMetadataVersion=1",
       auth: "session-fresh",
       body: messageBackfillClaimRequestSchema.parse(input),
       schema: messageBackfillSourceResponseSchema,
@@ -9708,14 +9742,26 @@ export class NautiloApiClient {
     if (options.shadowRead !== undefined) {
       const intent = roomHistoryShadowReadIntentV1Schema.parse(options.shadowRead);
       params.set("shadowReadVersion", String(intent.requestVersion));
+      params.set("shadowReadMetadataVersion", "1");
       params.set("shadowReadRequestKey", intent.clientRequestKey);
       if (intent.readerDeviceId !== undefined) params.set("shadowReadDeviceId", intent.readerDeviceId);
     }
     const qs = params.toString();
-    return this.request<RoomMessagesAroundPage & Readonly<{ shadowEncryption?: RoomHistoryShadowReadResponseV1 }>>({
+    const response = await this.request<RoomMessagesAroundPage & Readonly<{ shadowEncryption?: unknown }>>({
       path: `/api/rooms/${encodeURIComponent(options.roomId)}/messages/${encodeURIComponent(options.messageId)}/around${qs ? `?${qs}` : ""}`,
       defaultErrorPrefix: `GET /api/rooms/${options.roomId}/messages/${options.messageId}/around`,
     });
+    const { shadowEncryption, ...ordinary } = response;
+    return {
+      ...ordinary,
+      ...(shadowEncryption === undefined
+        ? {}
+        : {
+          shadowEncryption: roomHistoryShadowReadResponseV1Schema.parse(
+            shadowEncryption,
+          ),
+        }),
+    };
   }
 
   /** list rooms for the signed-in owner (`GET /api/rooms`). */

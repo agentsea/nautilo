@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import {
+  OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY,
+  reconcileCanonicalHumanMessage,
+} from "../../src/adapters/message-new-reconciliation";
+import {
   buildUserBubbleText,
   markMessageSendFailedInList,
   reconcileOptimisticMessageId,
@@ -144,6 +148,100 @@ describe("optimistic outbound user message helpers", () => {
   });
 });
 
+describe("attachment outcomes after live delivery", () => {
+  const image = {
+    attachmentId: "image-id", filename: "screen.png", mimeType: "image/png", sizeBytes: 42,
+  };
+  const queuedAttachments = [
+    attachment("local-image", image.filename, image.attachmentId),
+    attachment("local-file", "notes.txt", "file-id"),
+  ];
+  const attachmentIds = [image.attachmentId, "file-id"];
+  const optimistic = () => textMessage(
+    "user-local",
+    buildUserBubbleText({ text: "caption", queuedAttachments }),
+    { custom: {
+      optimisticAuthoredText: "caption",
+      [OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY]: attachmentIds,
+    } },
+  );
+  const event = {
+    messageId: "42", sourceUserId: "sender", content: "expanded server content",
+    editRevision: 0, attachments: [image],
+  };
+
+  test.each(["reject", "accept"] as const)(
+    "WS-first preserves the HTTP %s outcome for a non-retained file beside an image",
+    (decision) => {
+      const unrelated = textMessage("user-other", "same caption", { custom: {
+        optimisticAuthoredText: "caption",
+        [OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY]: ["other-image", "other-file"],
+      } });
+      const live = reconcileCanonicalHumanMessage([optimistic(), unrelated], event, "sender");
+      expect(live[0]?.id).toBe("42");
+      const outcome = buildUserBubbleText({
+        text: "caption", queuedAttachments,
+        attachmentStatuses: [
+          { id: image.attachmentId, filename: image.filename, decision: "accept" },
+          { id: "file-id", filename: "notes.txt", decision },
+        ],
+      });
+      const updated = updateMessageTextInList(live, "user-local", outcome, attachmentIds);
+      const result = reconcileOptimisticMessageId(updated, "user-local", "42");
+      expect(result).toHaveLength(2);
+      expect(result[0]?.content).toEqual([{ type: "text", text:
+        `📎 Attached: screen.png (ok), notes.txt (${decision === "reject" ? "rejected" : "ok"})\n\ncaption`,
+      }]);
+      expect(result[0]?.metadata?.custom?.messageAttachments).toEqual([image]);
+      expect(result[1]).toBe(unrelated);
+      expect(reconcileCanonicalHumanMessage(result, event, "sender")[0]?.content)
+        .toEqual(result[0]?.content);
+    },
+  );
+
+  test("HTTP-first mixed outcomes survive the later live projection", () => {
+    const outcome = "📎 Attached: screen.png (ok), notes.txt (rejected)\n\ncaption";
+    const updated = updateMessageTextInList([optimistic()], "user-local", outcome, attachmentIds);
+    const rekeyed = reconcileOptimisticMessageId(updated, "user-local", "42");
+    const result = reconcileCanonicalHumanMessage(rekeyed, event, "sender");
+    expect(result).toHaveLength(1);
+    expect(result[0]?.content).toEqual([{ type: "text", text: outcome }]);
+    expect(result[0]?.metadata?.custom?.messageAttachments).toEqual([image]);
+  });
+
+  test("late HTTP outcomes do not restore filenames after an image preview settles", () => {
+    const local = textMessage("user-local", "📎 Attached: screen.png\n\ncaption", { custom: {
+      optimisticAuthoredText: "caption",
+      [OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY]: [image.attachmentId],
+    } });
+    const live = reconcileCanonicalHumanMessage([local], event, "sender");
+    expect(live[0]?.content).toEqual([{ type: "text", text: "caption" }]);
+    expect(updateMessageTextInList(live, "user-local", "📎 Attached: screen.png (ok)", [image.attachmentId]))
+      .toBe(live);
+  });
+
+  test("late HTTP outcomes cannot overwrite edits or protected projections", () => {
+    const live = reconcileCanonicalHumanMessage([optimistic()], event, "sender");
+    for (const guard of [
+      { editRevision: 1 }, { humanMessageVerification: "pending" }, { historyUnavailable: true },
+    ]) {
+      const guarded = [{ ...live[0]!, metadata: { custom: {
+        ...live[0]?.metadata?.custom, ...guard,
+      } } }];
+      expect(updateMessageTextInList(guarded, "user-local", "late summary", attachmentIds))
+        .toBe(guarded);
+    }
+  });
+
+  test("late HTTP outcomes do not target another upload set or repopulate a cleared room", () => {
+    const live = reconcileCanonicalHumanMessage([optimistic()], event, "sender");
+    expect(updateMessageTextInList(live, "user-local", "wrong summary", [image.attachmentId]))
+      .toBe(live);
+    const empty: ThreadMessageLike[] = [];
+    expect(updateMessageTextInList(empty, "user-local", "late summary", attachmentIds)).toBe(empty);
+  });
+});
+
 describe("sendText optimistic ordering (source contract)", () => {
   test("room sends are rejected until the visible transcript is bound to the active room", () => {
     const block = sendTextBlock();
@@ -159,6 +257,15 @@ describe("sendText optimistic ordering (source contract)", () => {
     const roomAwait = block.indexOf("await roomMessageOperations.sendRoomMessage");
     expect(optimisticAdd).toBeGreaterThanOrEqual(0);
     expect(roomAwait).toBeGreaterThan(optimisticAdd);
+  });
+
+  test("the optimistic Human bubble carries the verified viewer id", () => {
+    const block = sendTextBlock();
+    const optimisticAdd = block.indexOf("id: optimisticId");
+    const roomAwait = block.indexOf("await roomMessageOperations.sendRoomMessage");
+    expect(block.slice(optimisticAdd, roomAwait)).toContain(
+      "sourceUserId: auth.viewer.sessionUserId",
+    );
   });
 
   test("legacy /api/chat sends also add the user bubble before awaiting sendMessage", () => {

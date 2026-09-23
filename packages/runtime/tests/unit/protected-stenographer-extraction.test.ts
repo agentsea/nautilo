@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { markManagedGatewayOutcomeUnknown } from "@nautilo/agent";
 import type {
   ProcessorTransformInput,
   ProcessorTransformOutput,
@@ -401,6 +402,59 @@ describe("protected Stenographer extraction", () => {
     });
 
     expect(result).toEqual({ status: "rejected", reason: "receipt_conflict" });
+    expect(publishedPrefixes).toEqual([0]);
+  });
+
+  test("preserves an uncertain managed Gateway outcome as non-replayable", async () => {
+    const state = fixture();
+    const publishedPrefixes: number[] = [];
+    const result = await runProtectedStenographerExtraction({
+      signal: new AbortController().signal,
+      capability: {
+        openInputs: () => Promise.resolve(state.opened),
+        publishOutputs: (outputs) => {
+          publishedPrefixes.push(outputs.length);
+          return Promise.resolve();
+        },
+      },
+      work: {
+        requestId: "request-gateway-unknown",
+        workId: "stenographer-work-gateway-unknown",
+        workIdentityHash: new Uint8Array(32).fill(1),
+        descriptorHash: new Uint8Array(32).fill(2),
+        sourceBindingFingerprint:
+          fingerprintProtectedStenographerSourceBindings(state.bindings),
+        requiresContentRecheck: false,
+        roomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        sourceBatchId: BATCH_ID,
+        rebuildGeneration: 0,
+        fromMessageIdExclusive: 10,
+        throughMessageIdInclusive: 11,
+        extractorVersion: "m241-v1",
+        createdAt: CREATED_AT,
+        bindings: state.bindings,
+        outputSlots: [{
+          eventId: EVENT_ID,
+          objectId: "journal-output-gateway-unknown",
+        }],
+      },
+      resolveParticipantDisplays: () => Promise.resolve([{
+        participantId: "human-alice",
+        displayLabel: "Alice",
+      }]),
+      invokeModel: () => Promise.reject(
+        markManagedGatewayOutcomeUnknown(
+          Object.assign(new Error("Gateway timed out"), { status: 504 }),
+        ),
+      ),
+      publication: publicationPort([], []),
+    });
+
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "provider_outcome_unknown",
+    });
     expect(publishedPrefixes).toEqual([0]);
   });
 

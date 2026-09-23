@@ -37,6 +37,7 @@ function buildApp(options: {
   moderator?: boolean;
   report?: ContentReport;
   deleteFailure?: Error;
+  priorDeletion?: boolean;
 } = {}) {
   const app = Fastify();
   app.decorateRequest("sessionUserId", null);
@@ -62,6 +63,11 @@ function buildApp(options: {
   const deleteMessage = mock(async (_input: {
     roomId: string;
     messageId: number;
+    actorUserId: string;
+    actorId: string | null;
+    source: "room_message" | "content_report";
+    authority: string;
+    reportId?: string;
     logContext?: string;
   }) => {
     if (options.deleteFailure) throw options.deleteFailure;
@@ -75,6 +81,9 @@ function buildApp(options: {
     getReport,
     closeReport,
     deleteMessage,
+    findDeletionReceipt: async () => options.priorDeletion
+      ? { source: "content_report", reportId: REPORT_ID } as Awaited<ReturnType<typeof import("../../src/lib/message-deletion-receipts").findMessageDeletionReceiptByReportId>>
+      : null,
   });
   return { app, createReport, listReports, getReport, closeReport, deleteMessage };
 }
@@ -139,6 +148,12 @@ describe("content report routes", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(deleteMessage.mock.calls[0]?.[0]).toMatchObject({ roomId: ROOM_ID, messageId: 42 });
+    expect(deleteMessage.mock.calls[0]?.[0]).toMatchObject({
+      actorUserId: MODERATOR_ID,
+      source: "content_report",
+      authority: "report_action",
+      reportId: REPORT_ID,
+    });
     expect(closeReport).toHaveBeenCalledTimes(1);
   });
 
@@ -155,6 +170,22 @@ describe("content report routes", () => {
     });
     expect(response.statusCode).toBe(409);
     expect(closeReport).not.toHaveBeenCalled();
+  });
+
+  test("closes a report on retry when a prior delete already committed", async () => {
+    const { app, closeReport } = buildApp({
+      moderator: true,
+      priorDeletion: true,
+      deleteFailure: new MessageDeleteError("not_found"),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/admin/content-reports/${REPORT_ID}/actions`,
+      headers: { "x-test-user": MODERATOR_ID },
+      payload: { action: "delete_message_and_close" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(closeReport).toHaveBeenCalledTimes(1);
   });
 
   test("returns an already-closed report idempotently without repeating actions", async () => {

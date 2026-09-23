@@ -13,7 +13,9 @@ import type {
 } from "@nautilo/types";
 import {
   createTask as runtimeCreateTask,
+  createHumanApiTaskCreationProvenance,
   computeNextFireAt,
+  getPlaintextTaskCreationAdmission,
   jobManager,
   pauseTask,
   unpauseTask,
@@ -262,6 +264,11 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           db: getServerDirectDb(),
           observer: deps.observer,
           invocationAuthority: createAcceptedInvocationAuthority(ownerId),
+          provenance: createHumanApiTaskCreationProvenance({
+            ownerId,
+            requestedParentTaskId: body.parentTaskId ?? null,
+          }),
+          admission: getPlaintextTaskCreationAdmission(),
         },
         input,
       );

@@ -1405,6 +1405,22 @@ async function readCommitted<Result>(
   return handle.transaction(callback, { isolationLevel: "read committed" });
 }
 
+/** Serialize new publication with loss of the exact shared execution authority. */
+async function lockLiveShadowExecutionForPublication(
+  transaction: CanonicalTranscriptTx,
+  lifecycle: ConversationRevisionLifecycle,
+): Promise<boolean> {
+  if (lifecycle.sharedAgentShadowExecutionId === null) return true;
+  const rows = canonicalRows(await transaction.select({
+    state: conversationSharedAgentShadowExecutions.state,
+  }).from(conversationSharedAgentShadowExecutions).where(eq(
+    conversationSharedAgentShadowExecutions.executionId,
+    lifecycle.sharedAgentShadowExecutionId,
+  )).for("update", { of: conversationSharedAgentShadowExecutions }).limit(2));
+  const execution = oneOrNone(rows, "Live Shadow publication execution");
+  return execution !== null && requiredString(execution, "state") === "running";
+}
+
 async function canonicalTransaction<Result>(
   runner: ConversationProductCanonicalTransactionRunner,
   callback: (
@@ -1959,6 +1975,9 @@ export class PostgresConversationProductStore
           ? { status: "replayed" as const, lifecycle }
           : { status: "conflict" as const };
       }
+      if (!await lockLiveShadowExecutionForPublication(transaction, lifecycle)) {
+        return { status: "conflict" as const };
+      }
       const result = await appendCanonicalTranscriptRowsToExistingSessionInTx(
         transaction,
         {
@@ -1987,6 +2006,8 @@ export class PostgresConversationProductStore
             },
           }],
           notificationContext: {
+            ...(input.notificationContext.mentionEveryone === true
+              ? { mentionEveryone: true } : {}),
             mentionedHumanUserIds: [
               ...input.notificationContext.mentionedHumanUserIds,
             ],
@@ -2426,6 +2447,8 @@ export class PostgresConversationProductStore
             },
           }],
           notificationContext: {
+            ...(input.notificationContext.mentionEveryone === true
+              ? { mentionEveryone: true } : {}),
             mentionedHumanUserIds: [
               ...input.notificationContext.mentionedHumanUserIds,
             ],
@@ -3882,6 +3905,11 @@ export class PostgresConversationProductStore
           && lifecycle.disposition !== "mapped"
         )
       ) return "stale";
+
+      if (lifecycle.disposition !== "mapped"
+        && !await lockLiveShadowExecutionForPublication(transaction, lifecycle)) {
+        return "stale";
+      }
 
       if (
         lifecycle.namespaceIdAtAllocation !== input.expectedNamespaceId

@@ -1,0 +1,27 @@
+{
+  "name": "@nautilo/genie-lab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts",
+    "start": "bun run build && electron dist/main.cjs",
+    "test": "bun run test:unit",
+    "test:unit": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@rive-app/react-webgl2": "4.34.3",
+    "electron": "41.10.3",
+    "esbuild": "0.28.2",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "lucide-react": "1.8.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "playwright": "1.59.1",
+    "typescript": "5.9.3"
+  }
+}

@@ -8,6 +8,6 @@
     "outDir": "dist",
     "noEmit": true
   },
-  "include": ["electron/**/*", "scripts/vendor-relay-host.ts", "scripts/verify-packaged-computer-use-host.ts", "scripts/vendor-ffmpeg.ts", "scripts/verify-ffmpeg.ts"],
+  "include": ["electron/**/*", "scripts/vendor-relay-host.ts", "scripts/build-window-presence.ts", "scripts/verify-packaged-computer-use-host.ts", "scripts/vendor-ffmpeg.ts", "scripts/verify-ffmpeg.ts"],
   "exclude": ["node_modules", "dist", "release"]
 }

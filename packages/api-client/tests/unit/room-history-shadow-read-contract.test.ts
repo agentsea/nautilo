@@ -89,6 +89,7 @@ function readySidecar() {
       },
     }],
     signerEvidence: [],
+    terminalExecutions: [],
     acknowledgement: {
       status: "required",
       tokenBase64url: "dG9rZW4",
@@ -115,7 +116,9 @@ describe("Room history Shadow-read HTTP contract", () => {
       intent: { requestVersion: 1, clientRequestKey: "edit:two", readerDeviceId: "device:browser" },
       coordinate: { sessionId: SESSION, messageId: 27, editRevision: 2,
         role: "user", logicalMessageKey: "logical:27" } });
-    expect(seen).toEndWith(`/api/rooms/${ROOM}/messages/shadow-read`);
+    expect(seen).toEndWith(
+      `/api/rooms/${ROOM}/messages/shadow-read?shadowReadMetadataVersion=1`,
+    );
     expect(body).toMatchObject({ coordinate: { editRevision: 2 }, intent: { requestVersion: 1 } });
   });
   test("adds explicit intent to the canonical history page and parses its sidecar", async () => {
@@ -144,9 +147,66 @@ describe("Room history Shadow-read HTTP contract", () => {
       },
     });
     expect(seen).toContain("shadowReadVersion=1");
+    expect(seen).toContain("shadowReadMetadataVersion=1");
     expect(seen).toContain("shadowReadRequestKey=history-page%3Aone");
     expect(seen).toContain("shadowReadDeviceId=device%3Abrowser");
     expect(page.shadowEncryption?.status).toBe("ready");
+  });
+
+  test("opts protected around reads into metadata while ordinary history URLs stay unchanged", async () => {
+    const seen: string[] = [];
+    const fetchImpl: NautiloApiFetch = async (target) => {
+      const url = typeof target === "string"
+        ? target
+        : target instanceof URL ? target.href : target.url;
+      seen.push(url);
+      if (url.includes("/around")) {
+        return json({
+          messages: [],
+          target: { createdAt: "2026-08-23T12:00:00.000Z", messageId: "27" },
+          includedToolCallCompanion: false,
+          hasOlder: false,
+          hasNewer: false,
+          ...(url.includes("shadowReadVersion=1")
+            ? { shadowEncryption: readySidecar() }
+            : {}),
+        });
+      }
+      return json({
+        messages: [],
+        pageInfo: { hasMoreBefore: false, oldestCursor: null },
+      });
+    };
+    const client = new NautiloApiClient("https://nautilo.test", { fetchImpl });
+    client.setToken("token");
+    const intent = {
+      requestVersion: 1 as const,
+      clientRequestKey: "history-around:one",
+      readerDeviceId: "device:browser",
+    };
+
+    await client.getRoomMessagesAround({
+      roomId: ROOM,
+      messageId: "27",
+      shadowRead: intent,
+    });
+    await client.getOlderRoomMessages({
+      roomId: ROOM,
+      beforeId: "27",
+      beforeCreatedAt: "2026-08-23T12:00:00.000Z",
+    });
+    await client.getRoomMessagesAround({ roomId: ROOM, messageId: "27" });
+
+    expect(new URL(seen[0]!).searchParams.get("shadowReadMetadataVersion"))
+      .toBe("1");
+    expect(new URL(seen[0]!).searchParams.get("shadowReadVersion")).toBe("1");
+    expect(new URL(seen[1]!).searchParams.has("shadowReadMetadataVersion"))
+      .toBeFalse();
+    expect(new URL(seen[2]!).searchParams.has("shadowReadMetadataVersion"))
+      .toBeFalse();
+    expect(seen[2]).toBe(
+      `https://nautilo.test/api/rooms/${ROOM}/messages/27/around`,
+    );
   });
 
   test("keeps authority closure and the eligible-record count strict", () => {
@@ -164,6 +224,77 @@ describe("Room history Shadow-read HTTP contract", () => {
       ...value,
       eligibleCount: 2,
     }).success).toBeFalse();
+  });
+
+  test("closes terminal summaries to selected Human inputs and stable execution identities", () => {
+    const value = readySidecar();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 27, executionId: "execution:cancelled", classification: "cancelled" },
+        { messageId: 27, executionId: "execution:lost", classification: "process_lost" },
+      ],
+    }).success).toBeTrue();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 28, executionId: "execution:foreign", classification: "cancelled" },
+      ],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 27, executionId: "execution:same", classification: "cancelled" },
+        { messageId: 27, executionId: "execution:same", classification: "process_lost" },
+      ],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      terminalExecutions: [
+        { messageId: 27, executionId: "execution:bad", classification: "deadline_expired" },
+      ],
+    }).success).toBeFalse();
+  });
+
+  test("keeps plaintext history sidecars unchanged", () => {
+    expect(roomHistoryShadowReadResponseV1Schema.parse({
+      responseVersion: 1,
+      status: "disabled",
+      mode: "plaintext_only",
+    })).toEqual({
+      responseVersion: 1,
+      status: "disabled",
+      mode: "plaintext_only",
+    });
+  });
+
+  test("accepts an optional retained Human signing key only at the exact wire size", () => {
+    const value = readySidecar();
+    const evidence = {
+      kind: "human_ai_readable_live_shadow_request_v2" as const,
+      operationId: "turn:shared-human",
+      planBytesBase64url: "AQ",
+      requestBytesBase64url: "Ag",
+      requestDigestBase64url: DIGEST,
+    };
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      signerEvidence: [{
+        ...evidence,
+        committerDeviceSigningPublicKeyBase64url: DIGEST,
+      }],
+    }).success).toBeTrue();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      signerEvidence: [{
+        ...evidence,
+        committerDeviceSigningPublicKeyBase64url: "A".repeat(42),
+      }],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      signerEvidence: [evidence],
+    }).success).toBeTrue();
   });
 
   test("preserves mixed-class authorities as one combined ready sidecar", () => {

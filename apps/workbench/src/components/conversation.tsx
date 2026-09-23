@@ -1,4 +1,7 @@
-import { MessageTimestamp, messageDayStarts, validMessageSentAt } from "./message-timestamp";
+import { hasVisibleAssistantContent } from "./conversation-visible-content";
+import { UserText } from "./conversation-message-text";
+export { UserText } from "./conversation-message-text";
+import { MessageTimestamp } from "./message-timestamp";
 import {
   createContext,
   useContext,
@@ -12,14 +15,12 @@ import {
   useSyncExternalStore,
   type ComponentProps,
   type DragEvent,
-  type HTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactElement,
   type ReactNode,
   type Ref,
   type RefObject,
-  forwardRef,
 } from "react";
 import {
   ThreadPrimitive,
@@ -36,10 +37,18 @@ import {
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import { useConversationLiveEdgeRecovery } from "../hooks/use-conversation-live-edge-recovery";
 import { MessageEditConflictError } from "@nautilo/api-client/browser";
-import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import remarkGfm from "remark-gfm";
 import { FileText, Mic, Paperclip, SendHorizontal, Loader2, Square, X } from "lucide-react";
 import { HumanMessageContent } from "./human-message-content";
+import {
+  hasKnownHumanMessageAuthor,
+  isCurrentMessageDeleteConfirmation,
+  isOwnHumanMessage,
+  resolveHumanMessageAuthorLabel,
+} from "./message-author";
+import {
+  TerminalExecutionNotices,
+  terminalExecutionsFromMessageMetadata,
+} from "./terminal-execution-notice";
 import {
   createBrowserPageDraftDispatcher,
   type GenieHandoffBridge,
@@ -49,11 +58,14 @@ import { useSpeechRecognition } from "../hooks/use-speech-recognition";
 import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
+import { MessageAttachmentImages } from "./message-attachment-images";
+import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
   SHELL_AGENT_NAME,
   type MessageActionDescriptor,
   type ChatFocusedResourceRef,
+  type MessageAttachmentRef,
 } from "@nautilo/types";
 import { useWsState } from "../hooks/use-ws-state";
 import { MENU_SPEAK_EVENT } from "../hooks/use-desktop-menu";
@@ -81,7 +93,6 @@ import { useTerminalControlRequest } from "./terminal-control-request-context";
 import { ToolCard } from "./tool-card/tool-card";
 import { harnessTaskToolRenderers } from "../modes/rooms/subagents/HarnessTaskToolCard";
 import {
-  TranscriptWindow,
   scheduleFrameWithFallback,
   type TranscriptWindowHandle,
 } from "./transcript-window";
@@ -109,14 +120,13 @@ import {
   selectFirstSurvivingConversationAnchor,
   selectVisibleConversationAnchors,
   shouldScheduleConversationLiveTailScroll,
-  shouldConversationTranscriptFollowTail,
   shouldAutoLoadOlderConversationHistory,
   storeConversationSnapshotForReadyScope,
   transitionConversationViewport,
   type ConversationAnchorCandidate,
   type ConversationViewportMode,
 } from "./conversation-viewport";
-import { deriveTranscriptSync } from "./conversation-transcript-sync";
+import { ConversationTranscriptRows } from "./conversation-transcript-rows";
 import { ReactionStrip } from "../modes/rooms/shape/reactions/ReactionStrip";
 import { useMessageReactions } from "../modes/rooms/shape/reactions/use-message-reactions";
 import { MessageActionRail } from "./message-actions/MessageActionRail";
@@ -153,6 +163,7 @@ import {
   preflightComposerChatAttachment,
   type ComposerChatAttachmentSkip,
 } from "../lib/composer-attachment-preflight";
+import { resolveComposerMessageAttachmentRoomId } from "../lib/composer-message-attachment-authority";
 import { useToast } from "./toast";
 import { AssistantMarkdownTextPrimitive } from "./assistant-markdown-text";
 import {
@@ -212,9 +223,11 @@ import { useNotificationState } from "../notifications/notification-state-contex
 import {
   type PendingRoomReply,
   useRoomComposerDraftStore,
+  useRoomComposerSendPending,
   useRoomPendingReply,
 } from "../contexts/room-composer-draft-context";
 import { useAuth } from "../hooks/use-auth";
+import { CompanionTarget } from "../companion/companion-provider";
 import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
 import { useCan } from "../hooks/use-can";
 import { apiClient } from "../lib/api";
@@ -261,6 +274,11 @@ import { AskUserPicker } from "./composer/AskUserPicker";
 import { ModelSwitcher } from "./composer/ModelSwitcher";
 import { resolveRoomModelAgentTarget } from "./composer/room-model-agent-target";
 import { hasStoppableRoomTask } from "./composer/composer-stop-state";
+import { ComposerSendButton } from "./composer/ComposerSendButton";
+import {
+  ownsSubmittedComposerPresentation,
+  sendIfComposerPresentationCurrent,
+} from "./composer/composer-send-ownership";
 import { useTaskState } from "../contexts/task-state/task-state-context";
 import {
   clearAskUserPicker,
@@ -290,7 +308,7 @@ export type ConversationChromeDensity = "default" | "readerRail";
 
 export interface ConversationProps {
   /**
-   * D110 — `readerRail` enables narrow-rail compact room chrome + padding only in
+   * `readerRail` enables narrow-rail compact room chrome + padding only in
    * the document-reading chat sidecar. Default center chat is unchanged.
    */
   chromeDensity?: ConversationChromeDensity;
@@ -304,18 +322,18 @@ export interface ConversationProps {
 }
 
 /**
- * D193 follow-up (Smoke-3) + D210 — per-room context that carries:
+ * Per-room context that carries:
  *
  *   1. `labels` — map of `userId → displayName` for multi-author message
- *      rendering (D205). Returning `null` from the hook means "viewer is
+ *      rendering. Returning `null` from the hook means "viewer is
  *      the author or label unknown" → fall back to "You:".
- *   2. `members` — full room member list, used by D210's `@`-mention
+ *   2. `members` — full room member list, used by the `@`-mention
  *      picker in the composer. Optional so existing consumers
  *      (`Conversation` rendered outside a shape parent) keep working.
  *
  * The shape parent (`SlackShapeRoom`) and the reader-rail mount
  * (`workbench-shell`) both wrap `<Conversation />` in `MessageAuthorProvider`
- * via the shared `RoomAuthorScope`. D352 also adds a self-source fallback
+ * via the shared `RoomAuthorScope`. This also adds a self-source fallback
  * (`SelfSourcedAuthorScope`) so a `Conversation` mounted with NO provider above
  * it still resolves the active room's roster itself rather than going inert.
  */
@@ -334,7 +352,7 @@ export function MessageAuthorProvider({
   children,
 }: {
   labels: ReadonlyMap<string, string>;
-  /** D210 — full room roster for the composer's @-mention picker. */
+  /** full room roster for the composer's @-mention picker. */
   members?: readonly RoomMemberDto[];
   children: ReactNode;
 }) {
@@ -354,18 +372,18 @@ function useAuthorLabel(sourceUserId: string | undefined): string | null {
   return ctx.labels.get(sourceUserId) ?? null;
 }
 
-/** D210 — used by the composer's mention picker. */
+/** used by the composer's mention picker. */
 function useRoomMembers(): readonly RoomMemberDto[] {
   const ctx = useContext(AuthorContext);
   return ctx?.members ?? [];
 }
 
 /**
- * D352 (B) — self-healing author scope. When `Conversation` is mounted WITHOUT
+ * self-healing author scope. When `Conversation` is mounted WITHOUT
  * a `MessageAuthorProvider` above it (any future bare mount), it sources the
  * active room's roster itself — cached + deduped by `use-room-members`, so no
  * extra round-trip — and provides the same author context the center path gets
- * via `RoomAuthorScope`. When a provider IS present (center chat + the D352
+ * via `RoomAuthorScope`. When a provider IS present (center chat + the
  * reader-rail wrap), this is never rendered and the existing context wins.
  */
 function SelfSourcedAuthorScope({ children }: { children: ReactNode }) {
@@ -380,7 +398,7 @@ function SelfSourcedAuthorScope({ children }: { children: ReactNode }) {
 }
 
 /**
- * D359 (Stack 126, Phase 2) — Telegram-shape inline quote-reply state, shared
+ * Telegram-shape inline quote-reply state, shared
  * between the per-message Reply affordance (sets a pending reply) and the
  * Composer (renders the reply-preview bar + forwards `replyToMessageId` on
  * send). `jumpToMessage` scrolls the quoted parent into view and briefly
@@ -480,7 +498,7 @@ function ConversationViewportBridge({
 }
 
 /**
- * Shares D359 quote-reply state with an alternate Room composer. Subthreads
+ * Shares quote-reply state with an alternate Room composer. Subthreads
  * provide this explicitly because their composer is intentionally not the
  * main Conversation composer.
  */
@@ -522,8 +540,8 @@ function makeReplySnippet(text: string): string {
 /**
  * Resolve a display sender name for an arbitrary thread message (used by the
  * inline quoted strip). Mirrors the bubble's own author resolution: assistant
- * rows resolve via `authorAgentId`, human rows via the peer-label map (falling
- * back to "You" for the viewer, or the roster label for a peer).
+ * rows resolve via `authorAgentId`, human rows via an exact viewer id or the
+ * peer-label map. Missing human authorship remains unknown.
  */
 function resolveThreadMessageSender(
   message: { role?: string; metadata?: unknown },
@@ -553,12 +571,15 @@ function resolveThreadMessageSender(
   }
   const sourceUserId =
     typeof custom?.sourceUserId === "string" ? custom.sourceUserId : undefined;
-  if (!sourceUserId || sourceUserId === ctx.viewerUserId) return "You";
-  return ctx.labels?.get(sourceUserId) ?? "Someone";
+  return resolveHumanMessageAuthorLabel({
+    sourceUserId,
+    viewerUserId: ctx.viewerUserId,
+    labels: ctx.labels,
+  });
 }
 
 /**
- * D359 — Telegram-style inline quoted strip: accent bar + parent author +
+ * Telegram-style inline quoted strip: accent bar + parent author +
  * 1-line snippet, rendered ABOVE the reply body. Tapping it jumps to (and
  * highlights) the quoted parent. When the parent isn't in the loaded thread
  * (deleted or not-yet-paged), renders a non-interactive "(deleted message)".
@@ -626,7 +647,7 @@ function QuotedReplyStrip({
 }
 
 export function Conversation(props: ConversationProps) {
-  // D352 (B) — if no author/member provider wraps this mount, self-source the
+  // if no author/member provider wraps this mount, self-source the
   // roster so mentions/identity/peer-labels work anywhere. Provider presence is
   // fixed per mount (the parent either wraps or not), so this branch is stable
   // across renders and never violates hook order.
@@ -728,7 +749,7 @@ function ConversationBody({
     : 0;
   const roomComposerDrafts = useRoomComposerDraftStore();
   useKnownArtifacts(activeRoomId);
-  // D441 — live peer typing state for the active room, fed into
+  // live peer typing state for the active room, fed into
   // PresenceTypingStrip below. Self-pings never appear here because the
   // server excludes the sender's socket.
   const typingOthers = useTypingOthers(activeRoomId);
@@ -806,7 +827,7 @@ function ConversationBody({
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const viewportApiRef = useRef<ConversationViewportApi | null>(null);
-  // D246 Wave 3 — imperative access to the bounded transcript window so
+  // imperative access to the bounded transcript window so
   // programmatic navigation (quote-reply jump, and any future search / retry /
   // edit target) can materialize an offscreen row before scrolling to it.
   const transcriptHandleRef = useRef<TranscriptWindowHandle>(null);
@@ -931,7 +952,7 @@ function ConversationBody({
       ? transcriptReadyVisit.scopeKey
       : null;
 
-  // D359 (Stack 126) — inline quote-reply state shared with the composer +
+  // inline quote-reply state shared with the composer +
   // message bubbles via ConversationReplyContext.
   const pendingReply = useRoomPendingReply(activeRoomId);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
@@ -1180,7 +1201,7 @@ function ConversationBody({
     [pendingReply, beginReply, cancelReply, jumpToMessage, returnToLatest, awayFromLatest, jumpState, highlightedMessageId],
   );
 
-  /** D106 + D528 — Room restore is an explicit navigation request. */
+  /** Room restore is an explicit navigation request. */
   useLayoutEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -1290,7 +1311,7 @@ function ConversationBody({
 
   const readerRail = chromeDensity === "readerRail";
 
-  /** D110 — narrow reading chat rail only: compact room strip + padding from measured width. */
+  /** narrow reading chat rail only: compact room strip + padding from measured width. */
   useLayoutEffect(() => {
     if (!readerRail) {
       setCompactRoomChrome(false);
@@ -1573,7 +1594,7 @@ function ConversationBody({
   }, []);
   loadOlderHistoryRef.current = handleLoadOlderHistory;
 
-  // M158 — scroll-to-bottom marks the whole room read (the shape-agnostic dot
+  // scroll-to-bottom marks the whole room read (the shape-agnostic dot
   // clearer for the Slack/mixed path: 1:1 user↔agent, single-agent, and group
   // rooms all render through this component).
   const maybeMarkActiveRoomRead = useCallback(() => {
@@ -1876,7 +1897,7 @@ function ConversationBody({
                   </p>
                 ) : null}
                 <p className="max-w-md text-center text-sm text-foreground-muted">
-                  {/* ISSUE-D145 — empty-state copy decision is extracted into
+                  {/* empty-state copy decision is extracted into
                       `pickConversationEmptyCopy` so the bug-locus is
                       greppable + unit-testable. See
                       `lib/conversation-shell-copy.ts`. */}
@@ -1892,7 +1913,7 @@ function ConversationBody({
             </ThreadPrimitive.Empty>
           ) : null}
 
-          {/* D246 Wave 3 — bounded transcript rendering. `ConversationTranscript`
+          {/* bounded transcript rendering. `ConversationTranscript`
               subscribes to the thread messages itself (a leaf) so token-level
               streaming updates don't re-render the whole conversation shell, and
               `TranscriptWindow` mounts only a measured window of rows + the
@@ -1936,14 +1957,14 @@ function ConversationBody({
       ) : null}
       </div>
 
-      {/* D061 Phase 2-client (Chunk 5) — ApprovalAskDock sits between the
+      {/*  (Chunk 5) — ApprovalAskDock sits between the
           scrolling viewport and the composer. Renders null when no
           approval is pending so the composer's border-top still reads
           as a single horizontal divider. When an approval is live, the
           dock appears as a warning-tinted band above the composer,
           keeping history scrollable behind it. */}
       {canInvokeAgents ? <ApprovalAskDock /> : null}
-      {/* D453 — native Codex requests are an inline, owner-private protocol
+      {/* native Codex requests are an inline, owner-private protocol
           surface. Keep them between transcript and composer; they must never
           behave like a toast, overlay, or modal over the user's draft. */}
       {canInvokeAgents ? <CodexRequestDock /> : null}
@@ -1963,7 +1984,7 @@ function ConversationBody({
         composerInset={railNarrow ? "compact" : "default"}
       />
 
-      {/* D375 — Auto-Approve corner toggle. Anchored directly above the
+      {/* Auto-Approve corner toggle. Anchored directly above the
           composer (below the presence strip) so it stays flush and does
           NOT bounce when the "…is thinking" strip appears/disappears. */}
       {canInvokeAgents && !directHumanRoom.isDirectHumanRoom ? <AutoApproveBar /> : null}
@@ -1993,11 +2014,11 @@ function Composer({
   readerFocusedResourceTarget,
 }: {
   assistantName: string;
-  /** D110 — reduce horizontal padding in narrow chat rails */
+  /** reduce horizontal padding in narrow chat rails */
   tightLayout?: boolean;
   /** Exactly two Humans, no Agents: preserve human controls and omit Agent chrome. */
   directHumanRoom?: boolean;
-  /** M297 — server-authored posture for this exact Human pair. */
+  /** server-authored posture for this exact Human pair. */
   directHumanInteractionBlocked?: boolean;
   registerSendToGenieDraftDispatcher?: GenieHandoffBridge["registerBrowserPageDraftDispatcher"];
   readerFocusedResourceTarget?: ReaderFocusedResourceTarget;
@@ -2009,10 +2030,11 @@ function Composer({
   const auth = useAuth();
   const can = useCan();
   const canInvokeAgents = can("invoke_agents");
-  const canWriteArtifacts = can("write_artifacts");
+  const canMentionEveryone = can("manage_rooms");
   const composerText = useComposer((s) => s.text);
   const composerRuntime = useComposerRuntime();
   const browserAttachmentInputRef = useRef<HTMLInputElement>(null);
+  const browserAttachmentPickerRoomIdRef = useRef<string | null>(null);
   useEffect(() => {
     setHasUnsentComposerText(composerText.trim().length > 0);
     return () => setHasUnsentComposerText(false);
@@ -2021,6 +2043,8 @@ function Composer({
   const { response: profileResponse } = useProfile();
   const focus = useRoomFocusContext();
   const activeRoomId = roomNav.activeRoomId;
+  const roomComposerSendPending = useRoomComposerSendPending(activeRoomId);
+  useEffect(() => () => speech.cancelListening(), [activeRoomId, speech.cancelListening]);
   const workspaceArtifacts = useWorkspaceArtifacts();
   const resolveContextualFocusedResources = useCallback(
     async (): Promise<readonly ChatFocusedResourceRef[]> => {
@@ -2050,13 +2074,13 @@ function Composer({
     [activeRoomId, roomTasks],
   );
   const canStopRoomWork = voice.isRunning || roomHasStoppableTask;
-  // D210 — mention picker adapter built from the room roster (provided
+  // mention picker adapter built from the room roster (provided
   // by SlackShapeRoom via MessageAuthorProvider).
   // Outside a shape parent, members is empty → adapter returns no
   // categories → mention popover stays inert. No regression for legacy
   // /chat surfaces.
   const roomMembers = useRoomMembers();
-  // D462: a Room override must be keyed to an exact owned Agent. Other
+  // a Room override must be keyed to an exact owned Agent. Other
   // members' Agents cannot make the viewer's sole owned Agent ambiguous.
   const activeRoomAgentId = useMemo(() => {
     if (!canInvokeAgents) return null;
@@ -2097,11 +2121,12 @@ function Composer({
   const mentionAdapter = useMentionAdapterForRoom(
     mentionableRoomMembers,
     auth.viewer.sessionActorId ?? undefined,
+    canMentionEveryone,
     lastSpokeAtMs,
   );
   const commandAdapter = useCommandAdapter();
   const reply = useConversationReply();
-  // D359 — hitting Reply should drop the cursor straight into the composer so
+  // hitting Reply should drop the cursor straight into the composer so
   // the user can type immediately (Telegram/Slack behavior). assistant-ui only
   // auto-focuses on run-start / thread-switch, so we focus the textarea inside
   // the composer <form> whenever a new reply target is set.
@@ -2214,7 +2239,7 @@ function Composer({
   } | null>(null);
   const composerTextRef = useRef(composerText);
   composerTextRef.current = composerText;
-  // D441/D454 — this is shared with the child-room thread composer. It emits
+  // this is shared with the child-room thread composer. It emits
   // only from native input capture, so programmatic draft restoration remains
   // silent in both surfaces.
   useComposerTypingPing({
@@ -2223,7 +2248,7 @@ function Composer({
     displayName: auth.viewer.label,
   });
 
-  // D459 — the provider owns this envelope across center/reader-rail mounts.
+  // the provider owns this envelope across center/reader-rail mounts.
   // Always adopt provider state on mount. This also clears assistant-ui's
   // shared composer when a presentation remounts after the active Room changed
   // while no Conversation surface was mounted.
@@ -2257,7 +2282,7 @@ function Composer({
     prevRoomForDraftRef.current = next;
   }, [activeRoomId, composerRuntime, roomComposerDrafts]);
 
-  // D057 2a.10 / D059 3.4 — gate send on WS connection. We don't disable
+  // Gate send on WS connection. We don't disable
   // the input itself (user can still type / queue a message mentally)
   // just the button + the assistant-ui Send primitive.
   const ws = useWsState();
@@ -2269,7 +2294,14 @@ function Composer({
     roomReady &&
     voice.roomBindingReady &&
     !directHumanInteractionBlocked;
-  // ISSUE-D145 — composer-disabled tooltip extracted into
+  const messageAttachmentRoomId = resolveComposerMessageAttachmentRoomId({
+    viewer: auth.viewer,
+    activeResolution: roomNav.activeResolution,
+    directHumanInteractionBlocked,
+  });
+  const messageAttachmentRoomIdRef = useRef(messageAttachmentRoomId);
+  messageAttachmentRoomIdRef.current = messageAttachmentRoomId;
+  // composer-disabled tooltip extracted into
   // `pickComposerDisabledTitle` so both `authenticated_disconnected`
   // AND `authenticated_resuming` produce the honest "Server
   // unreachable …" copy (PR #173 review fix: the resuming variant
@@ -2294,7 +2326,7 @@ function Composer({
   useEffect(() => {
     if (!speech.isListening && speech.transcript && speech.transcript !== prevTranscriptRef.current) {
       prevTranscriptRef.current = speech.transcript;
-      // D528 policy: a deliberate local send resumes live-edge following.
+      // Policy: a deliberate local send resumes live-edge following.
       reply?.returnToLatest();
       void resolveContextualFocusedResources().then((contextualFocusedResources) =>
         voice.sendText(speech.transcript, { contextualFocusedResources }),
@@ -2312,7 +2344,7 @@ function Composer({
     }
   }, [speech, voice]);
 
-  // D057 2a.4 — native app menu's "Speak" item (⌘⇧V) dispatches this
+  // native app menu's "Speak" item (⌘⇧V) dispatches this
   // event so the composer's mic toggles without the menu needing to
   // know about speech-recognition internals.
   useEffect(() => {
@@ -2320,8 +2352,6 @@ function Composer({
     window.addEventListener(MENU_SPEAK_EVENT, onMenuSpeak);
     return () => window.removeEventListener(MENU_SPEAK_EVENT, onMenuSpeak);
   }, [handleMicToggle]);
-
-  const showMic = speech.isSupported && !hasText;
 
   const insertEmoji = useCallback(
     (emoji: string) => {
@@ -2331,7 +2361,7 @@ function Composer({
     [composerRuntime],
   );
 
-  // D513 — only the shell-designated reader rail registers the active
+  // only the shell-designated reader rail registers the active
   // editable composer. Advance its ref before React schedules work so two
   // same-tick browser handoffs compose in their original order.
   useEffect(() => {
@@ -2353,7 +2383,7 @@ function Composer({
   }, [composerRuntime, registerSendToGenieDraftDispatcher, roomNav.refreshRooms, roomNav.setActiveRoom]);
 
   // Cursor-style file chips. Drag a file onto the textarea: we add a
-  // metadata-only attachment. The server-side D066 gate reads and scans
+  // metadata-only attachment. The server-side gate reads and scans
   // content on send; the visible textarea stays clean.
   const attachments = useSyncExternalStore(
     subscribeAttachments,
@@ -2366,9 +2396,16 @@ function Composer({
     getFocusedResourcesSnapshot,
     getFocusedResourcesSnapshot,
   );
+  const showMic = speech.isSupported && !hasText
+    && attachments.length === 0 && focusedResources.length === 0;
+
   const focusedResourcesRef = useRef(focusedResources);
   focusedResourcesRef.current = focusedResources;
-  const composerSendInFlightRef = useRef(false);
+  const unboundComposerSendInFlightRef = useRef(false);
+  const [unboundComposerSendPending, setUnboundComposerSendPending] = useState(false);
+  const composerSendPending = activeRoomId
+    ? roomComposerSendPending
+    : unboundComposerSendPending;
   const composerPresentationMountedRef = useRef(false);
   useLayoutEffect(() => {
     composerPresentationMountedRef.current = true;
@@ -2433,19 +2470,24 @@ function Composer({
   /** Bypass assistant-ui Send/Enter when `isRunning && !queue` (external-store defaults queue=false). */
   const canSubmitComposer =
     canSend &&
+    !composerSendPending &&
     (composerText.trim().length > 0 || attachments.length > 0 || focusedResources.length > 0);
 
   const submitComposer = useCallback(async () => {
-    if (!canSubmitComposer || composerSendInFlightRef.current) return;
+    if (!canSubmitComposer) return;
     const submittedRoomId = activeRoomId;
     const providerAttemptId = submittedRoomId
       ? roomComposerDrafts.beginSend(submittedRoomId)
       : null;
     if (submittedRoomId && providerAttemptId === null) return;
-    // D528 policy: only this local intent (never a generic run-start event)
+    if (!submittedRoomId) {
+      if (unboundComposerSendInFlightRef.current) return;
+      unboundComposerSendInFlightRef.current = true;
+      setUnboundComposerSendPending(true);
+    }
+    // Policy: only this local intent (never a generic run-start event)
     // may move a reader from history back to the live edge.
     reply?.returnToLatest();
-    composerSendInFlightRef.current = true;
     const projectedMentions = projectHumanMentionDirectives(
       composerText,
       roomMembers,
@@ -2464,43 +2506,58 @@ function Composer({
     const cleanupComposer = (): void => {
       if (composerCleaned) return;
       composerCleaned = true;
-      // Post-submit cleanup. The `setHasText(false)` step inside the
-      // helper is load-bearing for the mic-button gate (`showMic =
-      // speech.isSupported && !hasText`) — see
-      // `composer-post-submit.ts` module header. Pinned by
-      // `composer-post-submit.test.ts` regression suite; the helper
-      // exists so this never silently regresses again.
-      void applyComposerPostSubmit(
-        { sent: true, activeRoomId: submittedRoomId },
-        {
-          resetComposerRuntime: () => composerRuntime.reset(),
-          resetHasText: setHasText,
-        },
-      );
+      const stillOwnsPresentation = ownsSubmittedComposerPresentation({
+        mounted: composerPresentationMountedRef.current,
+        activeRoomId: activeRoomIdRef.current,
+        submittedRoomId,
+      });
+      if (stillOwnsPresentation) {
+        // Post-submit cleanup. The `setHasText(false)` step inside the
+        // helper is load-bearing for the mic-button gate (`showMic =
+        // speech.isSupported && !hasText`) — see
+        // `composer-post-submit.ts` module header. Pinned by
+        // `composer-post-submit.test.ts` regression suite; the helper
+        // exists so this never silently regresses again.
+        void applyComposerPostSubmit(
+          { sent: true, activeRoomId: submittedRoomId },
+          {
+            resetComposerRuntime: () => composerRuntime.reset(),
+            resetHasText: setHasText,
+          },
+        );
+      }
       if (submittedRoomId) {
         roomComposerDrafts.clear(submittedRoomId);
-        // The focused-resource ref store remains the authority for attachments
-        // and chips; clear only this sent Room's composition snapshot.
-        restoreFocusedResources([]);
-        composerTextRef.current = "";
-        focusedResourcesRef.current = [];
+        if (stillOwnsPresentation) {
+          // The focused-resource ref store remains the authority for attachments
+          // and chips; clear only this sent Room's composition snapshot.
+          restoreFocusedResources([]);
+          composerTextRef.current = "";
+          focusedResourcesRef.current = [];
+        }
       }
     };
     try {
       const contextualFocusedResources = await resolveContextualFocusedResources();
-      const sent = await voice.sendText(text, {
-        // Clear synchronously with the optimistic bubble. Delaying this until
-        // HTTP success lets an old A attempt reset the shared B composer after
-        // a room switch or center/rail remount.
-        onOptimisticUserMessage: cleanupComposer,
-        ...(replyTargetId !== undefined ? { replyToMessageId: replyTargetId } : {}),
-        ...(projectedMentions.mentionedHumanUserIds.length > 0
-          ? {
-              mentionedHumanUserIds:
-                projectedMentions.mentionedHumanUserIds,
-            }
-          : {}),
-        ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
+      const sent = await sendIfComposerPresentationCurrent({
+        isMounted: () => composerPresentationMountedRef.current,
+        getActiveRoomId: () => activeRoomIdRef.current,
+        submittedRoomId,
+        send: () => voice.sendText(text, {
+          // Clear synchronously with the optimistic bubble. Delaying this until
+          // HTTP success lets an old A attempt reset the shared B composer after
+          // a room switch or center/rail remount.
+          onOptimisticUserMessage: cleanupComposer,
+          ...(replyTargetId !== undefined ? { replyToMessageId: replyTargetId } : {}),
+          ...(projectedMentions.mentionedHumanUserIds.length > 0
+            ? {
+                mentionedHumanUserIds:
+                  projectedMentions.mentionedHumanUserIds,
+              }
+            : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
+          ...(contextualFocusedResources.length > 0 ? { contextualFocusedResources } : {}),
+        }),
       });
       if (sent) {
         if (!composerCleaned) cleanupComposer();
@@ -2556,9 +2613,13 @@ function Composer({
         }
       }
     } finally {
-      composerSendInFlightRef.current = false;
       if (submittedRoomId && providerAttemptId !== null) {
         roomComposerDrafts.finishSend(submittedRoomId, providerAttemptId);
+      } else {
+        unboundComposerSendInFlightRef.current = false;
+        if (composerPresentationMountedRef.current) {
+          setUnboundComposerSendPending(false);
+        }
       }
     }
   }, [
@@ -2579,15 +2640,20 @@ function Composer({
     const types = Array.from(e.dataTransfer.types);
     if (
       types.includes(NAUTILO_ARTIFACT_REF_MIME) ||
-      (canWriteArtifacts && types.includes("Files")) ||
+      (messageAttachmentRoomId !== null && types.includes("Files")) ||
       (isDesktop && auth.viewer.isVerified && types.includes(NAUTILO_FILE_REF_MIME))
     ) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
-  }, [auth.viewer.isVerified, canWriteArtifacts]);
+  }, [auth.viewer.isVerified, messageAttachmentRoomId]);
 
-  const queueBrowserComposerFiles = useCallback((files: Iterable<File>) => {
+  const queueBrowserComposerFiles = useCallback((
+    files: Iterable<File>,
+    expectedRoomId?: string,
+  ) => {
+    const uploadRoomId = messageAttachmentRoomIdRef.current;
+    if (!uploadRoomId || (expectedRoomId !== undefined && uploadRoomId !== expectedRoomId)) return;
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of files) {
       const pf = preflightComposerChatAttachment(file.name);
@@ -2609,13 +2675,13 @@ function Composer({
         break;
       }
       setAttachmentError(null);
-      void uploadComposerBlob(id, file, file.name, { roomId: activeRoomId });
+      void uploadComposerBlob(id, file, file.name, { roomId: uploadRoomId });
     }
     if (skipped.length > 0) {
       const { title, message } = formatComposerAttachmentSkipToast(skipped);
       toast.show({ variant: "warning", title, message });
     }
-  }, [activeRoomId, toast]);
+  }, [toast]);
 
   const handleComposerDrop = useCallback(
     (e: DragEvent<HTMLElement>) => {
@@ -2649,7 +2715,7 @@ function Composer({
         return;
       }
       if (e.dataTransfer.files.length > 0) {
-        if (!canWriteArtifacts) return;
+        if (!messageAttachmentRoomIdRef.current) return;
         e.preventDefault();
         queueBrowserComposerFiles(e.dataTransfer.files);
         return;
@@ -2658,7 +2724,7 @@ function Composer({
       if (!auth.viewer.isVerified) return;
       e.preventDefault();
       // Internal Files-pane MIME is metadata-only focus. Deliberately do not
-      // preflight, read bytes, or call either D271 upload helper here.
+      // preflight, read bytes, or call either upload helper here.
       void getDesktopRelayId().then((relayId) => {
         if (!relayId) {
           setAttachmentError("Desktop relay is unavailable; reconnect it before focusing local files.");
@@ -2690,12 +2756,14 @@ function Composer({
         }
       });
     },
-    [auth.viewer.isVerified, canWriteArtifacts, composerRuntime, queueBrowserComposerFiles],
+    [auth.viewer.isVerified, composerRuntime, queueBrowserComposerFiles],
   );
 
   const handlePaperclipClick = useCallback(async () => {
-    if (!canWriteArtifacts) return;
+    const pickerRoomId = messageAttachmentRoomIdRef.current;
+    if (!pickerRoomId) return;
     if (!isDesktop || !desktopAPI) {
+      browserAttachmentPickerRoomIdRef.current = pickerRoomId;
       browserAttachmentInputRef.current?.click();
       return;
     }
@@ -2711,6 +2779,10 @@ function Composer({
       setPickingAttachments(false);
     }
     if (pickedFiles.length === 0) return;
+    if (messageAttachmentRoomIdRef.current !== pickerRoomId) {
+      setAttachmentError("Files were not attached because the active room changed.");
+      return;
+    }
 
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of pickedFiles) {
@@ -2733,16 +2805,26 @@ function Composer({
         break;
       }
       setAttachmentError(null);
-      void uploadComposerAttachment(id, file, { roomId: activeRoomId });
+      void uploadComposerAttachment(id, file, { roomId: pickerRoomId });
     }
     if (skipped.length > 0) {
       const { title, message } = formatComposerAttachmentSkipToast(skipped);
       toast.show({ variant: "warning", title, message });
     }
-  }, [activeRoomId, canWriteArtifacts, toast]);
+  }, [toast]);
 
   const handleBrowserAttachmentChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.currentTarget.files) queueBrowserComposerFiles(e.currentTarget.files);
+    const pickerRoomId = browserAttachmentPickerRoomIdRef.current;
+    browserAttachmentPickerRoomIdRef.current = null;
+    if (
+      e.currentTarget.files &&
+      pickerRoomId &&
+      messageAttachmentRoomIdRef.current === pickerRoomId
+    ) {
+      queueBrowserComposerFiles(e.currentTarget.files, pickerRoomId);
+    } else if (e.currentTarget.files?.length) {
+      setAttachmentError("Files were not attached because the active room changed.");
+    }
     e.currentTarget.value = "";
   }, [queueBrowserComposerFiles]);
 
@@ -2878,7 +2960,7 @@ function Composer({
           aria-label={`Message ${assistantName}`}
           placeholder={speech.isListening ? "Listening…" : `Message ${assistantName}…`}
           className="relative max-h-48 min-h-[1.5rem] w-full overflow-y-auto bg-transparent text-sm leading-relaxed outline-none [&_.aui-lexical-input]:min-h-[1.5rem] [&_.aui-lexical-input]:whitespace-pre-wrap [&_.aui-lexical-input]:break-words [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:text-foreground-disabled"
-          // D057 2a.1 — stable selector hook for browser-column's file-
+          // stable selector hook for browser-column's file-
           // click → paste-into-composer flow. Placeholder-based selectors
           // miss when composer is in "Listening…" state.
           data-nautilo-composer-input
@@ -2893,17 +2975,25 @@ function Composer({
             void submitComposer();
           }}
         />
-        {/* D371 — two-row composer: input row above; control bar below.
-            Left cluster holds the model switcher (D371 R3); right cluster
+        {/* two-row composer: input row above; control bar below.
+            Left cluster holds the model switcher; right cluster
             holds attach / emoji / stop / mic-send. */}
         <div className="flex items-center justify-between gap-2">
           <div data-testid="composer-left-cluster" className="flex items-center gap-2">
             {canInvokeAgents && !directHumanRoom ? (
               <ModelSwitcher roomId={activeRoomId} agentId={activeRoomAgentId} compact={tightLayout} />
             ) : null}
+            {canInvokeAgents && !directHumanRoom ? (
+              <CompanionTarget binding={(() => {
+                const genie = roomMembers.find(member => member.kind === "agent" && member.agentId === activeRoomAgentId);
+                return activeRoomId && genie?.agentId ? {
+                  roomId: activeRoomId, agentId: genie.agentId, botActorId: genie.actorId, name: genie.displayName,
+                } : null;
+              })()} />
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
-        {canWriteArtifacts && (
+        {messageAttachmentRoomId !== null && (
           <>
           <input
             ref={browserAttachmentInputRef}
@@ -2925,7 +3015,7 @@ function Composer({
           </button>
           </>
         )}
-      {/* D278 §9.1 — emoji (functional) + stop. M147: STOP aborts every live
+      {/*  §9.1 — emoji (functional) + stop. STOP aborts every live
           job (main turn + forks) in this room via POST /api/jobs/:id/stop.
           Calls `voice.stopActiveJobs` directly (NOT assistant-ui's cancelRun,
           which mutates the message repository and corrupts our WS-owned list).
@@ -2962,7 +3052,7 @@ function Composer({
           <SendHorizontal className="h-3.5 w-3.5" />
           <span>Send</span>
         </button>
-      ) : showMic ? (
+      ) : showMic && !composerSendPending ? (
         <button
           type="button"
           onClick={handleMicToggle}
@@ -2973,16 +3063,12 @@ function Composer({
           <Mic className="h-4 w-4" />
         </button>
       ) : (
-        <button
-          type="button"
+        <ComposerSendButton
           disabled={!canSubmitComposer}
-          title={sendDisabledTitle}
-          aria-label="Send message"
-          onClick={() => void submitComposer()}
-          className="mb-0.5 shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-[var(--on-primary)] hover:bg-[var(--primary-hover)] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
-        >
-          <SendHorizontal className="h-4 w-4" aria-hidden />
-        </button>
+          pending={composerSendPending}
+          disabledTitle={sendDisabledTitle}
+          onSend={() => void submitComposer()}
+        />
       )}
           </div>
         </div>
@@ -3068,10 +3154,10 @@ function AttachmentChip({ attachment }: { attachment: ComposerAttachment }) {
 }
 
 /**
- * D057 2a.5 — inline banner surfacing mic-permission errors from the
+ * inline banner surfacing mic-permission errors from the
  * desktop TCC preflight. Shows above the composer with an optional
  * "Open System Settings" action on macOS. This is a temporary home:
- * once the workbench toast surface lands (D057 2a.10 / D059 Phase 3)
+ * once the workbench toast surface lands
  * this lifts into the toast container and the inline banner goes away.
  */
 function MicPermissionBanner(props: {
@@ -3113,7 +3199,7 @@ const userMessageComponents: AssistantMessageComponents = {
 
 const assistantComponents: AssistantMessageComponents = {
   Text: AssistantText,
-  // D083 Phase 1 — ToolCard replaces the previous inline ToolCallCard.
+  // ToolCard replaces the previous inline ToolCallCard.
   // Same assistant-ui fallback seam; the new component adds state
   // glyphs, live duration timer, keyboard accessibility, expanded
   // args + result sections, and cross-refs useToolActivity for
@@ -3150,7 +3236,7 @@ type MessageByIdComponents = ComponentProps<
 >["components"];
 
 /**
- * D246 Wave 3 — thread-subscribing leaf that drives {@link TranscriptWindow}.
+ * thread-subscribing leaf that drives {@link TranscriptWindow}.
  *
  * This is intentionally a separate component from `ConversationBody`: it is the
  * only place that subscribes to the thread message list, so streaming token
@@ -3161,7 +3247,7 @@ type MessageByIdComponents = ComponentProps<
  * context (tool cards, reactions, edit/approval state) while keeping provider
  * identity aligned with the id-keyed measured wrapper across contractions.
  *
- * D246 Wave 3 regression fix — the count + per-index keys are sourced from
+ * Regression fix — the count + per-index keys are sourced from
  * assistant-ui's SYNCHRONIZED AUI state (`useAuiState((s) => s.thread.messages)`),
  * mirroring upstream `ThreadPrimitive.Messages` (which subscribes to
  * `useAuiState((s) => s.thread.messages.length)`). The synchronized array IS
@@ -3303,7 +3389,7 @@ export function ConversationTranscript({
   childMessageDeleteEnabled?: boolean;
   /** Enable author-only editing for marked child rows, never the parent anchor. */
   childMessageEditEnabled?: boolean;
-  /** Enable D359 quote-reply only for marked child rows, never the anchor. */
+  /** Enable quote-reply only for marked child rows, never the anchor. */
   childMessageReplyEnabled?: boolean;
   /** Reader-owned follow intent supplied by the viewport shell. */
   followIntent?: boolean;
@@ -3316,29 +3402,11 @@ export function ConversationTranscript({
     messageIds: readonly string[],
   ) => void;
 }): ReactElement {
-  const messages = useAuiState((s) => s.thread.messages);
-  const isRunning = useAuiState((s) => s.thread.isRunning);
-  const followingLiveEdge = shouldConversationTranscriptFollowTail(followIntent);
   useRoomSearchTextHighlight(viewportRef, searchHighlight);
-
-  const { count, keys, latestMessageId } = useMemo(
-    () => deriveTranscriptSync(messages),
-    [messages],
-  );
-  useLayoutEffect(() => {
-    onTranscriptCommit?.(conversationViewportScopeKey(roomId), viewportVisitId ?? 0, keys);
-  }, [keys, onTranscriptCommit, roomId, viewportVisitId]);
-  const getItemKey = useCallback(
-    (index: number): string => keys[index] ?? String(index),
-    [keys],
-  );
-
-  // Stable per-role renderer for Unstable_MessageById. Re-created only when the
-  // author identity / room changes (never per streamed token), so assistant-ui
-  // can keep memoizing each mounted row by stable message id.
   const components = useMemo<MessageByIdComponents>(
     () => ({
       Message: function BoundMessage(): ReactElement {
+        const latestMessageId = useAuiState(s => s.thread.messages.at(-1)?.id ?? null);
         return (
           <Message
             assistantName={assistantName}
@@ -3361,40 +3429,14 @@ export function ConversationTranscript({
       childMessageEditEnabled,
       childMessageReplyEnabled,
       interactiveMessages,
-      latestMessageId,
       reactionMessages,
       roomId,
     ],
   );
 
-  const dayStarts = useMemo(() => messageDayStarts(messages.map((message) => message.metadata.custom?.sentAt)), [messages]);
-  const renderItem = useCallback(
-    (index: number, id: string): ReactNode => {
-      const sentAt = messages[index]?.metadata.custom?.sentAt;
-      const date = validMessageSentAt(sentAt);
-      const showDay = date && dayStarts.has(index);
-      return <>
-        {showDay && <div className="mx-2 my-4 flex items-center gap-3 text-[11px] text-foreground-muted" aria-label="Message date">
-          <span className="h-px flex-1 bg-border" /><time dateTime={date.toISOString()}>{date.toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "long", day: "numeric" })}</time><span className="h-px flex-1 bg-border" />
-        </div>}
-        <ThreadPrimitive.Unstable_MessageById messageId={id} components={components} />
-      </>;
-    },
-    [components, messages, dayStarts],
-  );
-
-  return (
-    <TranscriptWindow
-      count={count}
-      getItemKey={getItemKey}
-      renderItem={renderItem}
-      viewportRef={viewportRef}
-      isRunning={isRunning}
-      followingLiveEdge={followingLiveEdge}
-      resetKey={roomId}
-      handleRef={handleRef}
-    />
-  );
+  return <ConversationTranscriptRows components={components} roomId={roomId} viewportRef={viewportRef}
+    handleRef={handleRef} followIntent={followIntent} viewportVisitId={viewportVisitId}
+    onTranscriptCommit={onTranscriptCommit} />;
 }
 
 function Message({
@@ -3450,11 +3492,8 @@ function Message({
   const replyCount = useMessage(
     (state) => (state.metadata as { custom?: { replyCount?: number } })?.custom?.replyCount ?? 0,
   );
-  // D193 follow-up (Smoke-3) — resolve message author for multi-human
-  // rooms. `sourceUserId` lives in `metadata.custom` and is set by the
-  // runtime adapter when the WS `message.new` event or rehydrated history
-  // carries it (server already plumbs it via D124). Default null = "viewer
-  // is the author OR no peer label available" → render "You:" as before.
+  // Resolve message authorship from the persisted source id. A missing id is
+  // unknown, not evidence that the current viewer authored the message.
   const sourceUserId = useMessage((state) => {
     const c = (state.metadata as { custom?: { sourceUserId?: unknown } })?.custom;
     return typeof c?.sourceUserId === "string" ? c.sourceUserId : undefined;
@@ -3475,7 +3514,7 @@ function Message({
     const c = (state.metadata as { custom?: { sendFailed?: unknown } })?.custom;
     return c?.sendFailed === true;
   });
-  // D424 — a card is rendered only from the server-authored, already
+  // a card is rendered only from the server-authored, already
   // authorized pointer list. In particular, this does not inspect message
   // prose, composer focus state, or the legacy known-file mention registry.
   // The runtime owns the array identity, so returning it from the selector is
@@ -3483,6 +3522,24 @@ function Message({
   // snapshot for every render.
   const artifactOpenRefs = useMessage((state) => {
     return artifactOpenRefsFromMessageMetadata(state.metadata);
+  });
+  const messageAttachmentRefs = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    const value = custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY];
+    return Array.isArray(value) ? value as readonly MessageAttachmentRef[] : undefined;
+  });
+  const humanMessageVerification = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    return typeof custom?.humanMessageVerification === "string"
+      ? custom.humanMessageVerification
+      : undefined;
+  });
+  const historyUnavailable = useMessage((state) => {
+    const custom = (state.metadata as { custom?: Record<string, unknown> })?.custom;
+    return custom?.historyUnavailable === true;
+  });
+  const terminalExecutions = useMessage((state) => {
+    return terminalExecutionsFromMessageMetadata(state.metadata);
   });
   const sendFailureReason = useMessage((state) => {
     const c = (state.metadata as { custom?: { sendFailureReason?: unknown } })?.custom;
@@ -3495,7 +3552,7 @@ function Message({
   const toast = useToast();
   const can = useCan();
   const role = useMessage((state) => state.role);
-  // D359 — inline quote-reply plumbing.
+  // inline quote-reply plumbing.
   const reply = useConversationReply();
   const members = useRoomMembers();
   const authorAgentId = useMessage((state) => {
@@ -3513,7 +3570,7 @@ function Message({
       : null;
   });
   const highlighted = reply?.highlightedMessageId != null && reply.highlightedMessageId === messageId;
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteScope, setConfirmDeleteScope] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState("");
   const [editBaseRevision, setEditBaseRevision] = useState(0);
@@ -3532,18 +3589,39 @@ function Message({
   const focusMessageRoot = useCallback(() => {
     requestAnimationFrame(() => messageRootRef.current?.focus());
   }, []);
-  // ISSUE-M172 §5/§6.6 — client-side affordance gate (advisory per M129; the
+  // Client-side affordance gate (advisory; the
   // server's assertUserCanDeleteMessage is authoritative). Show Delete when it
   // is the caller's own user message, OR the caller holds manage_rooms. Never
   // on agent-authored (role !== "user") rows for non-admins.
   const isOwnUserMessage =
     role === "user" &&
-    (sourceUserId == null || sourceUserId === auth.viewer.sessionUserId);
+    isOwnHumanMessage(sourceUserId, auth.viewer.sessionUserId);
+  const hasKnownHumanAuthor = hasKnownHumanMessageAuthor(role, sourceUserId);
   const canDelete =
-    (interactive || childDeleteEnabled) && (isOwnUserMessage || can("manage_rooms"));
+    (interactive || childDeleteEnabled) &&
+    auth.viewer.isVerified && !auth.viewer.staleWhoami &&
+    hasKnownHumanAuthor &&
+    (isOwnUserMessage || can("manage_rooms"));
+  const currentDeleteScope = JSON.stringify([
+    auth.viewerGeneration,
+    auth.viewer.sessionUserId,
+    auth.viewer.sessionActorId,
+    roomId,
+    messageId,
+  ]);
+  const openDeleteConfirmation = useCallback(() => {
+    if (canDelete && roomId && messageId !== null) {
+      setConfirmDeleteScope(currentDeleteScope);
+    }
+  }, [canDelete, roomId, messageId, currentDeleteScope]);
+  useEffect(() => {
+    if (confirmDeleteScope !== null && !isCurrentMessageDeleteConfirmation(confirmDeleteScope, currentDeleteScope, canDelete)) {
+      setConfirmDeleteScope(null);
+    }
+  }, [confirmDeleteScope, currentDeleteScope, canDelete]);
   const performDelete = useCallback(async () => {
-    setConfirmDelete(false);
-    if (messageId === null || !roomId) return;
+    if (!isCurrentMessageDeleteConfirmation(confirmDeleteScope, currentDeleteScope, canDelete) || messageId === null || !roomId) return;
+    setConfirmDeleteScope(null);
     try {
       await apiClient.deleteRoomMessage(roomId, String(messageId));
       // Removal is applied by the message.deleted WS echo (idempotent).
@@ -3563,14 +3641,9 @@ function Message({
         });
       }
     }
-  }, [messageId, roomId, toast]);
-  // D206 — author identity for the per-message avatar. When the
-  // message has a `sourceUserId` (any peer in a multi-human room),
-  // use that. Otherwise the message is the viewer's own optimistic
-  // bubble or echoed-back send → use the viewer's session userId so
-  // their own avatar shows next to "You:".
-  const authorUserId = sourceUserId ?? auth.viewer.sessionUserId ?? "";
-  const avatarLabel = peerLabel ?? "You";
+  }, [canDelete, confirmDeleteScope, currentDeleteScope, messageId, roomId, toast]);
+  const authorUserId = sourceUserId ?? "";
+  const userAuthorLabel = isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender");
   const { toggleReaction } = useRoomReactions();
   const editRoomMessage = useRoomMessageEdit();
   const {
@@ -3723,7 +3796,7 @@ function Message({
   ]);
   const userEmojiOnly = isEmojiOnlyMessage(userText);
 
-  // D359 — resolve THIS message's author + snippet so replying to it can show
+  // resolve THIS message's author + snippet so replying to it can show
   // "Replying to <sender>" + a 1-line preview. Assistant snippets strip the
   // <result>/<answer> artifact markers like the bubble body does.
   const currentSenderName =
@@ -3737,7 +3810,7 @@ function Message({
           fallbackAvatarSrc: assistantAvatarSrc,
           roomId,
         }).name
-      : (peerLabel ?? "You");
+      : userAuthorLabel;
   const currentSnippet = makeReplySnippet(
     role === "assistant" ? stripAssistantArtifacts(userText) : userText,
   );
@@ -3790,7 +3863,7 @@ function Message({
     [messageId],
   );
 
-  // D367 — "Copy message" copies the FULL message text (all text parts,
+  // "Copy message" copies the FULL message text (all text parts,
   // not the first-part-only snippet). Assistant text is stripped of the
   // `<result>`/`<answer>` scaffold so the clipboard matches the rendered
   // bubble. Empty-after-strip messages expose no copy affordance.
@@ -3831,7 +3904,7 @@ function Message({
           ...(canCopyInSurface ? { onCopy: handleCopyMessage } : {}),
           ...(canEdit ? { onEdit: beginEdit } : {}),
           ...(canDelete && roomId
-            ? { onDelete: () => setConfirmDelete(true) }
+            ? { onDelete: openDeleteConfirmation }
             : {}),
         });
       }
@@ -3845,7 +3918,7 @@ function Message({
         ...(canCopyInSurface ? { onCopy: handleCopyMessage } : {}),
         ...(canEdit ? { onEdit: beginEdit } : {}),
         ...(canDelete && roomId
-          ? { onDelete: () => setConfirmDelete(true) }
+          ? { onDelete: openDeleteConfirmation }
           : {}),
       });
     },
@@ -3858,6 +3931,7 @@ function Message({
       canEdit,
       beginEdit,
       canDelete,
+      openDeleteConfirmation,
       interactive,
       roomId,
     ],
@@ -3917,7 +3991,7 @@ function Message({
       }}
       onCopy={handleCopyMessage}
       onEdit={beginEdit}
-      onDelete={() => setConfirmDelete(true)}
+      onDelete={openDeleteConfirmation}
     />
   );
 
@@ -3940,18 +4014,18 @@ function Message({
         <MessagePrimitive.If user>
           <div className="flex items-start gap-2">
             {authorUserId.length > 0 ? (
-              <UserAvatar userId={authorUserId} size={24} displayName={avatarLabel} />
+              <UserAvatar userId={authorUserId} size={24} displayName={userAuthorLabel} />
             ) : null}
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-x-1.5">
               <span
                 className={
-                  peerLabel !== null
-                    ? "text-xs font-semibold text-foreground-muted"
-                    : "text-xs font-semibold text-label-user"
+                  isOwnUserMessage
+                    ? "text-xs font-semibold text-label-user"
+                    : "text-xs font-semibold text-foreground-muted"
                 }
               >
-                {peerLabel !== null ? peerLabel : "You"}
+                {userAuthorLabel}
               </span>
               <MessageTimestamp />
               </div>
@@ -3960,6 +4034,14 @@ function Message({
                   <QuotedReplyStrip parentId={replyToMessageId} assistantName={assistantName} />
                 </div>
               ) : null}
+              <MessageAttachmentImages
+                attachments={
+                  humanMessageVerification === undefined && !historyUnavailable
+                    ? messageAttachmentRefs
+                    : undefined
+                }
+                roomId={roomId}
+              />
               {editing ? (
                 <div className="mt-1">
                   <textarea
@@ -4043,6 +4125,7 @@ function Message({
                 </>
               )}
               <MessageArtifactOpenCards artifacts={artifactOpenRefs} />
+              <TerminalExecutionNotices summaries={terminalExecutions} />
               {sendFailed ? (
                 <div className="mt-1 text-xs text-foreground-muted">
                   Didn't get through
@@ -4098,13 +4181,13 @@ function Message({
             : {})}
           {...(canCopyInSurface ? { onCopy: handleCopyMessage } : {})}
           {...(canEdit ? { onEdit: beginEdit } : {})}
-          {...(canDelete && roomId ? { onDelete: () => setConfirmDelete(true) } : {})}
+          {...(canDelete && roomId ? { onDelete: openDeleteConfirmation } : {})}
         />
       )}
-      {(interactive || childDeleteEnabled) && confirmDelete && (
+      {(interactive || childDeleteEnabled) && isCurrentMessageDeleteConfirmation(confirmDeleteScope, currentDeleteScope, canDelete) && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={() => setConfirmDelete(false)}
+          onClick={() => setConfirmDeleteScope(null)}
         >
           <div
             className="w-[320px] rounded-lg border border-border bg-background p-4 shadow-xl"
@@ -4118,7 +4201,7 @@ function Message({
               <button
                 type="button"
                 className="rounded px-3 py-1.5 text-sm text-foreground hover:bg-[var(--primary-muted)]"
-                onClick={() => setConfirmDelete(false)}
+                onClick={() => setConfirmDeleteScope(null)}
               >
                 Cancel
               </button>
@@ -4138,7 +4221,7 @@ function Message({
 }
 
 /**
- * D087 UX hotfix — suppress empty assistant bubbles.
+ * suppress empty assistant bubbles.
  *
  * Context: `stripAssistantArtifacts` removes `<result></result>` /
  * `<answer></answer>` / etc. tag markers from Claude's output.
@@ -4170,26 +4253,7 @@ function AssistantBubble({
   interactive?: boolean;
   reactionsEnabled?: boolean;
 }): React.ReactElement | null {
-  const isEmptyAfterStrip = useMessage((state) => {
-    const parts = state.content;
-    if (!Array.isArray(parts) || parts.length === 0) {
-      // No parts yet (streaming) — don't render the bubble until we know
-      // there's something to show. Streaming text parts arrive with
-      // real content the moment the first token lands.
-      return true;
-    }
-    for (const part of parts) {
-      if (!part || typeof part !== "object") continue;
-      const partObj = part as { type?: string; text?: string };
-      // Non-text parts are always meaningful: tool-call cards, files,
-      // sources, etc. If any of those exist, the bubble has content.
-      if (partObj.type !== "text") return false;
-      const raw = typeof partObj.text === "string" ? partObj.text : "";
-      const stripped = stripAssistantArtifacts(raw).trim();
-      if (stripped.length > 0) return false;
-    }
-    return true;
-  });
+  const isEmptyAfterStrip = useMessage(state => !hasVisibleAssistantContent(state.content));
 
   if (isEmptyAfterStrip) return null;
 
@@ -4306,7 +4370,7 @@ function AssistantBubbleInner({
     const c = (state.metadata as { custom?: { authorHarnessId?: unknown } })?.custom;
     return typeof c?.authorHarnessId === "string" ? c.authorHarnessId : undefined;
   });
-  // D570 — ask_peer questions are assistant-authored messages, but their
+  // ask_peer questions are assistant-authored messages, but their
   // document cards use the same server-authorized metadata lane as ordinary
   // human focus sends. Never infer an attachment from the assistant's prose.
   const artifactOpenRefs = useMessage((state) => {
@@ -4321,7 +4385,7 @@ function AssistantBubbleInner({
     fallbackAvatarSrc: avatarSrc,
     roomId,
   });
-  // R4 / D300 — focus the authoring agent when message metadata identifies it.
+  // Focus the authoring agent when message metadata identifies it.
   // Single-agent rooms keep the legacy fallback even when old messages have no
   // `authorAgentId`.
   const soleAgentActorId = useMemo(() => {
@@ -4389,34 +4453,6 @@ function AssistantBubbleInner({
   );
 }
 
-type MarkdownTextContainerProps = HTMLAttributes<HTMLDivElement> & {
-  "data-status"?: string;
-};
-
-const MarkdownTextContainer = forwardRef<HTMLDivElement, MarkdownTextContainerProps>(
-  function MarkdownTextContainer({ "data-status": _status, ...props }, ref) {
-    return <div ref={ref} {...props} />;
-  },
-);
-
-export function UserText() {
-  return (
-    <div className="prose prose-sm max-w-none text-sm dark:prose-invert prose-p:my-0 prose-pre:my-2 prose-ul:my-1 prose-ol:my-1 prose-headings:my-2">
-      <MarkdownTextPrimitive
-        containerComponent={MarkdownTextContainer}
-        remarkPlugins={[remarkGfm]}
-        smooth={false}
-        components={{
-          a: ({ children, ...props }) => (
-            <a {...props} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
-        }}
-      />
-    </div>
-  );
-}
 
 function AssistantText() {
   const knownFiles = useKnownFileRefs();
@@ -4436,7 +4472,7 @@ function AssistantText() {
       .join("\n");
   });
   const emojiOnly = isEmojiOnlyMessage(stripAssistantArtifacts(rawText));
-  // D322 — only auto-linkify once the message has stopped smoothing. Linkifying
+  // only auto-linkify once the message has stopped smoothing. Linkifying
   // mid-stream rewrites already-streamed text (a partial `artifacts/lev…`
   // becomes a full `[…](#nautilo-file:…)` link), which breaks the smooth
   // animation's monotonic-append assumption and re-animates the message once

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * D103 P5.1 / P5.2 / P5.4 / P5.5 — packaged-app smoke harness.
+ * Packaged-app smoke harness for launch, port, log, and preload checks.
  *
- * Scope (D134 rescope) — this harness validates the packaged
+ * This harness validates the packaged
  * **Electron client**: the binary launches, the first-run picker
  * window renders, the preload surface matches the canonical
  * contract, and the main log is redacted. It does NOT spawn or
@@ -20,8 +20,8 @@
  *          `nc -l 3001` blockers and a two-concurrent-instance
  *          variant. Pass criterion: the Electron client survives
  *          regardless of what's bound on those ports — it does
- *          not own them. (Pre-D134 these tests asserted a bundled
- *          server picked an alternate port; that mode is gone.)
+ *          not own them. Earlier tests asserted a bundled
+ *          server picked an alternate port; that mode is gone.
  *   - 5.4  After each launch the harness tails main.log and rejects
  *          token-looking substrings (Bearer / refresh_token / JWT).
  *   - 5.5  When `--cdp` is passed (default ON), attach via Chrome
@@ -70,6 +70,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 // `PRODUCTION.md` §"Preload surface contract" via the orchestrator.
 // =============================================================================
 export const NAUTILO_DESKTOP_SURFACE = [
+  "companion",
   "miniAppRecovery",
   "documentMutations",
   "isDesktop",
@@ -85,7 +86,7 @@ export const NAUTILO_DESKTOP_SURFACE = [
   "pickFiles",
   "currentFolder",
   "genieWorkspace",
-  "workspace", // deprecated alias — D079 Phase 4 removes
+  "workspace", // deprecated alias retained for older renderer builds
   "servers",
   "activeSession",
   "updates",
@@ -124,6 +125,15 @@ export const NAUTILO_DESKTOP_SURFACE = [
   "deepLink",
 ] as const;
 
+export const NAUTILO_COMPANION_OWNER_SURFACE = [
+  "disable",
+  "enable",
+  "onAction",
+  "onClosed",
+  "pickFiles",
+  "publish",
+] as const;
+
 export const NAUTILO_FIRST_RUN_SURFACE = [
   "getConnectTargets",
   "commit",
@@ -147,7 +157,7 @@ interface CliOptions {
 }
 
 function parseCli(argv: string[]): CliOptions {
-  // D376 Phase 3 — unpackaged mode launches the built `dist/main.js`
+  // Unpackaged mode launches the built `dist/main.js`
   // via the local electron binary (`node_modules/.bin/electron
   // dist/main.js`), no electron-builder/.app needed. Select via
   // `--unpackaged` flag or `SMOKE_UNPACKAGED=1` env. The packaged
@@ -178,7 +188,7 @@ function parseCli(argv: string[]): CliOptions {
 // =============================================================================
 // App-executable resolution (macOS-first; sketches for Linux/Windows)
 //
-// D376 Phase 3 — when `unpackaged` is set, the harness resolves the
+// When `unpackaged` is set, the harness resolves the
 // local electron binary (`require("electron")`, which reads
 // `node_modules/electron/path.txt`) and returns *that*; the
 // `dist/main.js` path is threaded separately as `mainJs` through
@@ -383,6 +393,10 @@ interface SurfaceAuditResult {
   reason?: string;
   exposedRoot?: string[];
   desktopKeys?: string[];
+  companionProbe?: {
+    keys: string[];
+    methods: string[];
+  };
   binaryReadProbe?: string[];
   miniAppRecoveryProbe?: {
     methods: string[];
@@ -566,6 +580,32 @@ async function auditPreloadSurface(
       }
     }
 
+    if (keys.includes("companion")) {
+      const companionProbe = (await evaluateExpectedSurface(
+        `({
+          keys: Object.keys(window.nautiloDesktop.companion).sort(),
+          methods: Object.keys(window.nautiloDesktop.companion).sort().map(
+            method => typeof window.nautiloDesktop.companion[method]
+          )
+        })`,
+      )) as { keys: string[]; methods: string[] };
+      result.companionProbe = companionProbe;
+      const mismatch = surfaceContractMismatch(
+        companionProbe.keys,
+        NAUTILO_COMPANION_OWNER_SURFACE,
+      );
+      if (
+        mismatch.undocumented.length > 0 ||
+        mismatch.missing.length > 0 ||
+        companionProbe.methods.some((type) => type !== "function")
+      ) {
+        result.ok = false;
+        result.reason =
+          (result.reason ? result.reason + "; " : "") +
+          `companion owner API mismatch keys=[${companionProbe.keys.join(", ")}], methods=[${companionProbe.methods.join(", ")}]`;
+      }
+    }
+
     if (keys.includes("miniAppRecovery")) {
       const miniAppRecoveryProbe = (await evaluateExpectedSurface(
         `(async () => ({
@@ -649,7 +689,7 @@ interface LaunchOptions {
   bootSeconds: number;
   cdp: boolean;
   cdpPort: number;
-  // D376 Phase 3 — when set, this path is passed as the first arg to
+  // When set, this path is passed as the first arg to
   // the electron CLI (`electron <mainJs> ...`). Used only in
   // unpackaged mode; packaged mode leaves this undefined.
   mainJs?: string;
@@ -669,14 +709,14 @@ async function launchOnce(opts: LaunchOptions): Promise<LaunchResult> {
     ...(opts.cdp ? [`--remote-debugging-port=${opts.cdpPort}`] : []),
     ...(opts.extraArgs ?? []),
   ];
-  // D134 — desktop is a connect-to-server client. Strip dev-mode env
+  // Desktop is a connect-to-server client. Strip dev-mode env
   // that might leak in from the operator's shell so the smoke
   // exercises the packaged boot path deterministically.
   const env = { ...process.env };
   delete env["NAUTILO_FORCE_FIRST_RUN"];
   delete env["NAUTILO_CONNECT_SERVER_URL"];
   if (opts.forceFirstRun) env["NAUTILO_FORCE_FIRST_RUN"] = "1";
-  // D376 — never pop a visible Setup window on the operator's desktop
+  // Never pop a visible Setup window on the operator's desktop
   // during smoke runs. main.ts skips win.show() (+ hides the dock on
   // macOS) when this is set; CDP surface enumeration still works on
   // the hidden window. CI (xvfb) is unaffected either way.
@@ -805,11 +845,11 @@ function summarize(report: CaseReport[]): boolean {
 // =============================================================================
 async function runDefault(opts: CliOptions): Promise<CaseReport[]> {
   const exe = resolveAppExecutable(opts.appPath, opts.unpackaged);
-  // D376 Phase 3 — in unpackaged mode the built `dist/main.js` is
+  // In unpackaged mode the built `dist/main.js` is
   // passed as the first arg to the electron binary; in packaged mode
   // `mainJs` is undefined and the .app executable runs itself.
   const mainJs = opts.unpackaged ? resolve(opts.appPath) : undefined;
-  // D134 — force the first-run picker so the surface audit hits a
+  // Force the first-run picker so the surface audit hits a
   // deterministic CDP target (`window.nautiloFirstRun`). A paired
   // packaged install would instead load the Workbench from its
   // server URL; that path requires an operator-owned server and is
@@ -825,11 +865,11 @@ async function runDefault(opts: CliOptions): Promise<CaseReport[]> {
   });
   const reports: CaseReport[] = [];
 
-  // D376 Phase 3 — boot-survive criterion. The packaged .app stays
+  // The packaged app stays
   // alive for the full boot window (we kill it at Ns). The unpackaged
   // first-run picker, when launched in the background / headless,
   // self-quits cleanly (~4s, exit=0) once the picker window closes —
-  // that is NOT a load crash. The D373-class load crash exits non-zero
+  // that is not a load crash. A load crash exits non-zero
   // at ~0ms before any window opens. So in unpackaged mode we accept
   // either (a) still-running-at-Ns (killed), or (b) a clean exit=0
   // AFTER the boot floor (>= 2000ms = past the load + window-open
@@ -910,6 +950,7 @@ async function runDefault(opts: CliOptions): Promise<CaseReport[]> {
           ? `window=${s.detectedWindow}\n` +
             `exposedRoot=[${s.exposedRoot?.join(", ") ?? ""}]\n` +
             `nautiloDesktop=[${s.desktopKeys?.join(", ") ?? ""}]\n` +
+            `companion=[${s.companionProbe?.keys.join(", ") ?? ""}], methods=[${s.companionProbe?.methods.join(", ") ?? ""}]\n` +
             `miniAppRecovery(open/read/write/close)=[${s.miniAppRecoveryProbe?.methods.join(", ") ?? ""}], invalidReadRejected=${s.miniAppRecoveryProbe?.invalidReadRejected ?? false}\n` +
             `binaryRead(open/read/close)=[${s.binaryReadProbe?.join(", ") ?? ""}]\n` +
             (s.reason ? `reason=${s.reason}` : "")
@@ -941,11 +982,11 @@ async function runPortsMatrix(opts: CliOptions): Promise<CaseReport[]> {
   const mainJs = opts.unpackaged ? resolve(opts.appPath) : undefined;
   const reports: CaseReport[] = [];
 
-  // D134 — the desktop client does not bind any local server ports;
+  // The desktop client does not bind any local server ports;
   // these cases verify the client doesn't *crash* when the ports
   // an operator-bundled server might have used are occupied (a
   // common collision with other dev tools on developer machines).
-  // Pre-D134 these tests asserted the bundled server picked an
+  // Earlier tests asserted the bundled server picked an
   // alternate port; that mode was retired with the rescope.
   const cases: Array<{ name: string; ports: number[] }> = [
     { name: "5.2.a port 3000 occupied — client survives", ports: [3000] },
@@ -975,7 +1016,7 @@ async function runPortsMatrix(opts: CliOptions): Promise<CaseReport[]> {
   }
 
   // 5.2.d — two concurrent desktop instances. Each should boot in
-  // its own user-data-dir; D133 multi-instance work assumes the
+  // its own user-data-dir; the multi-instance contract assumes the
   // packaged client tolerates concurrent launches without crash.
   const cdp1 = opts.cdpPort;
   const cdp2 = opts.cdpPort + 1;

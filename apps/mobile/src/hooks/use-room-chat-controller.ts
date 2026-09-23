@@ -45,7 +45,12 @@ import {
   type RoomOperationToken,
 } from "@/features/room-chat-pane/room-operation-guard";
 import { mayMarkRoomRead } from "@/features/room-chat-pane/viewport-state";
-import { canEditMobileMessage, saveMobileMessageEdit } from "@/features/room-chat-pane/message-edit";
+import {
+  canEditMobileMessage,
+  hasMobileMessageDeleteAuthority,
+  saveMobileMessageEdit,
+} from "@/features/room-chat-pane/message-edit";
+import { decideIdentityReconciliation } from "@/features/room-chat-pane/identity-reconciliation";
 import { prepareRemoteOrdinaryRequestProof } from "@/features/remote/controller-ordinary-proof";
 import {
   descriptorFromPickerAsset,
@@ -68,6 +73,7 @@ import {
   reconcilePersistedHumanMessage,
   removeEmptyStreamingAssistantPlaceholder,
   roomIdFromLaneKey,
+  isSelfUserMessage,
   type AttachmentResolver,
   type ChatItem,
 } from "@/lib/messages";
@@ -238,6 +244,7 @@ export function useRoomChatController({
   const { subscribe, send, recoveryRevision, withClientActionSession } = useRealtime();
   const { viewer, viewerState, status, refreshViewer } = useAuth();
   const canInvokeAgents = viewerCan(viewer, "invoke_agents");
+  const canMentionEveryone = viewerCan(viewer, "manage_rooms");
   const { pendingApprovalForRoom, pendingHostChoiceForRoom } = useAttention();
   const { enabled: autoApproveEnabled } = useAutoApprove();
   const {
@@ -335,6 +342,16 @@ export function useRoomChatController({
   }
   const viewerUserId = viewer?.userId ?? null;
   const roomIdValid = typeof roomId === "string" && roomId.length > 0;
+  const verifiedViewerIdentityScope =
+    activeServer && viewerState === "verified" && viewerUserId && viewerActorId && roomIdValid && roomId
+      ? JSON.stringify([
+          activeServer.id,
+          viewerUserId,
+          viewerActorId,
+          targetViewerEpochRef.current.epoch,
+          roomId,
+        ])
+      : null;
   const viewportScopeKey = activeServer && viewerActorId && roomIdValid && roomId
     ? `${activeServer.id}:${viewerActorId}:${targetViewerEpochRef.current.epoch}:${roomId}`
     : `unavailable:${targetViewerEpochRef.current.epoch}:${roomId ?? "none"}`;
@@ -451,7 +468,9 @@ export function useRoomChatController({
     const userId = viewerUserIdRef.current;
     return serverId && userId ? { serverId, userId } : null;
   }, []);
-  const hadViewerIdentityRef = useRef(viewerActorId != null && viewerUserId != null);
+  const reconciledIdentityScopeRef = useRef<string | null>(null);
+  const verifiedViewerIdentityScopeRef = useRef(verifiedViewerIdentityScope);
+  verifiedViewerIdentityScopeRef.current = verifiedViewerIdentityScope;
   // D408 — room roster for multi-participant sender labels + avatars.
   const [roomMembers, setRoomMembers] = useState<RoomMemberDto[]>([]);
   // Do not briefly render a group conversation as 1:1 while its roster loads:
@@ -809,20 +828,23 @@ export function useRoomChatController({
   }, [activeServer, roomId, roomIdValid]);
 
   useEffect(() => {
+    // The ordinary initial load already reconciles the identity available for
+    // this mount/Room, so the identity effect below must not duplicate it.
+    reconciledIdentityScopeRef.current = verifiedViewerIdentityScopeRef.current;
     void loadInitial();
   }, [loadInitial]);
 
-  // Reconcile history reaction `mine` flags once AuthProvider delivers identity.
-  // Group layout re-evaluates via `viewerUserId` deps on messageGroupings /
-  // resolveSenderChrome without a history refetch.
+  // An identity loss invalidates the prior receipt. The next verified viewer
+  // transition reconciles canonical history once, including same-tab relogin.
   useEffect(() => {
-    const hasIdentity = viewerActorId != null && viewerUserId != null;
-    if (hasIdentity && !hadViewerIdentityRef.current && roomIdValid && activeServer) {
-      hadViewerIdentityRef.current = true;
-      void loadInitial({ background: itemsRef.current.length > 0 });
-    }
-    if (!hasIdentity) hadViewerIdentityRef.current = false;
-  }, [viewerActorId, viewerUserId, roomIdValid, activeServer, loadInitial]);
+    const decision = decideIdentityReconciliation(
+      reconciledIdentityScopeRef.current,
+      verifiedViewerIdentityScope,
+    );
+    reconciledIdentityScopeRef.current = decision.nextScope;
+    if (!decision.shouldReconcile) return;
+    void loadInitial({ background: itemsRef.current.length > 0 });
+  }, [loadInitial, verifiedViewerIdentityScope]);
 
   // ---- Pagination (older messages, prepend) ----
   const loadOlder = useCallback(async () => {
@@ -1395,6 +1417,7 @@ export function useRoomChatController({
           ...(projectedMentions.mentionedHumanUserIds.length > 0
             ? { mentionedHumanUserIds: projectedMentions.mentionedHumanUserIds }
             : {}),
+          ...(projectedMentions.mentionEveryone ? { mentionEveryone: true } : {}),
         };
         const boundMessageBody = withClientActionSession(messageBody);
         const messagePath = `/api/rooms/${encodeURIComponent(roomId)}/messages`;
@@ -1597,10 +1620,11 @@ export function useRoomChatController({
   const canDeleteMessage = useCallback(
     (item: MessageItem): boolean => {
       if (!roomIdValid || !roomId || item.clientId !== undefined || !/^\d+$/.test(item.id)) return false;
-      const ownHuman =
-        item.role === "user" &&
-        (item.sourceUserId == null || (viewerUserId != null && item.sourceUserId === viewerUserId));
-      return ownHuman || viewerCan(viewer, "manage_rooms");
+      return hasMobileMessageDeleteAuthority(
+        item,
+        viewerUserId,
+        viewerCan(viewer, "manage_rooms"),
+      );
     },
     [roomId, roomIdValid, viewer, viewerUserId],
   );
@@ -1759,10 +1783,7 @@ export function useRoomChatController({
       // Self is an ownership decision, not a group-run decision. Streaming
       // assistant rows never become outgoing merely because their grouping
       // metadata has not arrived yet.
-      const isSelf =
-        item.role === "user" &&
-        (item.sourceUserId == null ||
-          (viewerUserId != null && item.sourceUserId === viewerUserId));
+      const isSelf = isSelfUserMessage(item, viewerUserId);
       if (isSelf) {
         return {
           outgoing: true,
@@ -1801,7 +1822,9 @@ export function useRoomChatController({
         return {
           outgoing: false,
           grouped: true,
-          senderName: uid ? (authorLabels.get(uid) ?? "Someone") : "Someone",
+          senderName: uid
+            ? (authorLabels.get(uid) ?? "Unknown sender")
+            : "Unknown sender",
           showSenderName,
           showSenderAvatar,
           senderUserId: uid,
@@ -1856,13 +1879,12 @@ export function useRoomChatController({
   const resolveMessageSenderName = useCallback(
     (item: MessageItem): string => {
       if (item.role === "user") {
-        if (
-          item.sourceUserId == null ||
-          (viewerUserId != null && item.sourceUserId === viewerUserId)
-        ) {
+        if (isSelfUserMessage(item, viewerUserId)) {
           return "You";
         }
-        return authorLabels.get(item.sourceUserId) ?? "Someone";
+        return item.sourceUserId
+          ? authorLabels.get(item.sourceUserId) ?? "Unknown sender"
+          : "Unknown sender";
       }
       if (item.role === "assistant") {
         const author = resolveAgentAuthorLabel({
@@ -1890,7 +1912,7 @@ export function useRoomChatController({
           it.kind === "message" && String(it.id) === String(replyToMessageId),
       );
       if (!original) {
-        return { senderName: "Someone", snippet: "a message" };
+        return { senderName: "Unknown sender", snippet: "a message" };
       }
       return {
         senderName: resolveMessageSenderName(original),
@@ -2057,6 +2079,7 @@ export function useRoomChatController({
     capabilityError,
     contentFilterNotice,
     canInvokeAgents,
+    canMentionEveryone,
     roomApproval,
     roomHostChoice,
     // model selection

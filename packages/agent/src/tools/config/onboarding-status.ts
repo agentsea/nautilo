@@ -78,7 +78,7 @@ Set include_key_health true only if you need live provider verification (slow, u
           rec.push(`${n++}. Add at least one supported chat-provider key (for example OpenRouter, Anthropic, OpenAI, Google, Fireworks, or Venice) via the setup wizard or update_config.`);
         }
         if (!s.hasEmbeddings) {
-          rec.push(`${n++}. Add OPENROUTER_API_KEY, VENICE_API_KEY, or OPENAI_API_KEY for embeddings and memory features.`);
+          rec.push(`${n++}. Add a Nautilo Gateway, OpenRouter, Venice, or OpenAI key for embeddings and memory features.`);
         }
         if (!profile) {
           rec.push(`${n++}. Create a profile: complete /setup in the browser or use manage_profile update.`);

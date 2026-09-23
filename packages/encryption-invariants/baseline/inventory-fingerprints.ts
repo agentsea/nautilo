@@ -6,12 +6,14 @@ export const SOURCE_ALARM_BASELINE = {
 // Reviewed public-browser receipt constraints (0289–0291), scoped media
 // references (0292), content-free Events preferences (0293), and the exact
 // content-access receipt FK-cleanup permissions (0294); see the September 17
-// coverage regression test. No applied migration was edited.
+// coverage regression test. The speech-model selection column remains main's
+// 0295 migration, followed by the execution-input message lookup index at 0296
+// for selected-message interruption summaries. No migration body was edited.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 295,
-  "snapshots": 266,
-  "tip": 294,
-  "sha256": "2b6366e15c5cd2b023bef84e574e8c652867f57e098ae9635fde0e2bcf0b2800"
+  "migrations": 297,
+  "snapshots": 268,
+  "tip": 296,
+  "sha256": "440dbbebb6b46bf5beece0f24f7e97ae2d417ad4081cf7336ea205f89a5cc46c"
 } as const;
 
 /**
@@ -34,13 +36,16 @@ export const MIGRATION_TREE_BASELINE = {
 // recording-transport tests prove it leaves chat policy and feed state alone.
 // Retiring the persona-addressed foreground issuer removes four inserts and
 // four updates; no writer or plaintext exception is added.
+// Protected execution recovery adds one typed lifecycle-only quarantine update.
+// Its exact execution-state and publication guards are covered by the shared-Agent
+// planner and conversation product-store unit suites; it never writes content.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1376,
+  "count": 1377,
   "insert": 466,
-  "update": 721,
+  "update": 722,
   "delete": 172,
   "unresolved": 17,
-  "sha256": "a51a0edda2a847a7d613fbf147ea536c2ab0e6b5f04a0c749e72c354d8a19e7e"
+  "sha256": "9ee70550efead50646cba282ac614fc9786c15fa3930fd88bbbaa9a9125d851a"
 } as const;
 
 /**

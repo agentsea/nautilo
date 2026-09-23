@@ -1156,6 +1156,9 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/runtime/tests/unit/protected-stenographer-work-composition.test.ts -> @nautilo/lattice-crypto/testing",
   "packages/runtime/tests/unit/protected-stenographer-work-composition.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/runtime/tests/unit/stenographer-protected-source-loader.test.ts -> @nautilo/lattice-crypto",
+  // The stream-lifecycle regression fixture constructs a real turn session so
+  // it can prove reservation publication and ordinal ownership end to end.
+  "packages/runtime/tests/unit/live-shadow-agent-runtime.test.ts -> @nautilo/lattice-crypto",
   // M282 — reviewed Browser live-shadow production composition. The Server
   // owns current authority and the Runtime owns the turn-scoped crypto
   // consumer; neither receives device private keys.
@@ -1579,6 +1582,9 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/src/memory/foreground-protected-agent-memory-session.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/memory/protected-agent-scope-close-worker.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/lease-registry.ts -> @nautilo/lattice-bridge",
+  // Task creation consumes bridge-owned payload and authority contracts only;
+  // key custody, crypto storage, and protected persistence remain outside Runtime.
+  "packages/runtime/src/tasks/task-creation-admission.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/src/protected-execution/background-authorization/repository.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/stenographer/postgres-protected-stenographer-work-recovery.ts -> @nautilo/lattice-bridge/server",
@@ -1618,6 +1624,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/tests/unit/protected-stenographer-work-composition.test.ts -> @nautilo/lattice-bridge",
   "packages/runtime/tests/unit/protected-stenographer-work-repository.test.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/tests/unit/stenographer-protected-source-loader.test.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/unit/task-creation-admission.test.ts -> @nautilo/lattice-bridge",
   // M268 — the unified foreground Memory conformance assembler is test-only;
   // production registration remains absent until the transition wave.
   "packages/server/package.json dependency @nautilo/lattice-bridge -> workspace:*",
@@ -2803,9 +2810,9 @@ describe("M226 lattice-crypto current package governance", () => {
     )).toHaveLength(1);
 
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(124);
+    expect(new Set(mutationTargets).size).toBe(125);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(124);
+    expect(eligibleTargets).toHaveLength(125);
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-core.ts");
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-v2.ts");
     expect([...new Set(mutationTargets)].sort()).toEqual(eligibleTargets);

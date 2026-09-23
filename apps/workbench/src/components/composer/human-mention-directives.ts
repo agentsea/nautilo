@@ -5,9 +5,13 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HUMAN_MENTION_DIRECTIVE_RE =
   /@\[human:([0-9a-f-]{36}):([A-Za-z0-9_-]{1,512})\]/gi;
+const EVERYONE_MENTION_DIRECTIVE = "@[everyone]";
+const EVERYONE_MENTION_DIRECTIVE_RE = /@\[everyone\]/g;
 const MAX_HANDLE_LENGTH = 160;
 const PLAINTEXT_HUMAN_MENTION_CANDIDATE_RE =
   /(^|[^A-Za-z0-9_@])@([A-Za-z0-9_]+)(?![A-Za-z0-9_@-]|\.[A-Za-z0-9])/g;
+const PLAINTEXT_EVERYONE_MENTION_RE =
+  /(^|[^A-Za-z0-9_@])@everyone(?![A-Za-z0-9_@-]|\.[A-Za-z0-9])/;
 const MARKDOWN_CODE_RE = /```[\s\S]*?(?:```|$)|`[^`\n]*(?:`|$)/g;
 
 function encodeBase64Url(value: string): string {
@@ -50,6 +54,10 @@ export function serializeHumanMentionDirective(
   return `@[human:${userId}:${encodeBase64Url(handle)}]`;
 }
 
+export function serializeEveryoneMentionDirective(): string {
+  return EVERYONE_MENTION_DIRECTIVE;
+}
+
 export function parseHumanMentionDirective(
   raw: string,
 ): { userId: string; handle: string } | null {
@@ -90,13 +98,29 @@ export function parseHumanMentionDirectiveSegments(
   return segments;
 }
 
+export function parseEveryoneMentionDirectiveSegments(
+  text: string,
+): Unstable_DirectiveSegment[] | null {
+  const segments: Unstable_DirectiveSegment[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(EVERYONE_MENTION_DIRECTIVE_RE)) {
+    const start = match.index ?? 0;
+    if (start > cursor) segments.push({ kind: "text", text: text.slice(cursor, start) });
+    segments.push({ kind: "mention", id: "__room_everyone__", label: "everyone", type: "user" });
+    cursor = start + match[0].length;
+  }
+  if (segments.length === 0) return null;
+  if (cursor < text.length) segments.push({ kind: "text", text: text.slice(cursor) });
+  return segments;
+}
+
 /**
  * Remove draft-only Human mention machinery from text that is leaving the
  * composer. Clipboard text must never expose the stable Human id embedded in
  * a picker directive.
  */
 export function humanMentionDirectivesToPlainText(text: string): string {
-  return text.replace(HUMAN_MENTION_DIRECTIVE_RE, (raw) => {
+  return text.replace(EVERYONE_MENTION_DIRECTIVE_RE, "@everyone").replace(HUMAN_MENTION_DIRECTIVE_RE, (raw) => {
     const parsed = parseHumanMentionDirective(raw);
     return parsed ? `@${parsed.handle}` : raw;
   });
@@ -143,6 +167,7 @@ export function projectHumanMentionDirectives(
 ): {
   text: string;
   mentionedHumanUserIds: string[];
+  mentionEveryone?: boolean;
 } {
   const ids = new Set<string>();
   for (const match of text.matchAll(HUMAN_MENTION_DIRECTIVE_RE)) {
@@ -152,10 +177,12 @@ export function projectHumanMentionDirectives(
   const projected = humanMentionDirectivesToPlainText(text);
 
   const rosterIdsByHandle = uniqueHumanIdsByHandle(members);
-  const plaintextOnly = maskMatches(
-    maskMatches(text, HUMAN_MENTION_DIRECTIVE_RE),
-    MARKDOWN_CODE_RE,
+  const outsideCode = maskMatches(text, MARKDOWN_CODE_RE);
+  const withoutDirectives = maskMatches(
+    maskMatches(outsideCode, HUMAN_MENTION_DIRECTIVE_RE),
+    EVERYONE_MENTION_DIRECTIVE_RE,
   );
+  const plaintextOnly = withoutDirectives;
   for (const match of plaintextOnly.matchAll(
     PLAINTEXT_HUMAN_MENTION_CANDIDATE_RE,
   )) {
@@ -165,5 +192,11 @@ export function projectHumanMentionDirectives(
     if (userId) ids.add(userId);
   }
 
-  return { text: projected, mentionedHumanUserIds: [...ids] };
+  const mentionEveryone = outsideCode.includes(EVERYONE_MENTION_DIRECTIVE)
+    || PLAINTEXT_EVERYONE_MENTION_RE.test(plaintextOnly);
+  return {
+    text: projected,
+    mentionedHumanUserIds: [...ids],
+    ...(mentionEveryone ? { mentionEveryone: true } : {}),
+  };
 }

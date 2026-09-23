@@ -168,7 +168,7 @@ async function fixture(keyClass: "human" | "ai" = "human", role: MessagePayloadV
           roomId: ROOM, namespaceId: NAMESPACE, namespaceAccessRevision: 4, namespaceCurrentGeneration: 1,
           namespaceHeadDigestBase64url: b64(head), domainId: "m313-domain", domainKeyGeneration: 1,
           domainAuthorizationRevision: 2, domainHeadDigestBase64url: b64(head), namespaceBundleRevision: 1,
-          namespaceBundleDigestBase64url: b64(head) }, signerEvidence: [],
+          namespaceBundleDigestBase64url: b64(head) }, signerEvidence: [], terminalExecutions: [],
         acknowledgement: { status: "already_recorded" },
         records: [{ kind: "existing_representation", coordinate,
           ...(missingOrdinary ? { representationMode: "protected-only" as const,

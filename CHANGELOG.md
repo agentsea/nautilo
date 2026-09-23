@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
+  Mobile for users with the `manage_rooms` permission. It addresses current Human
+  members through their existing notification preferences, supports encrypted
+  messages, and leaves Genies quiet unless explicitly addressed.
+
 - Desktop now presents the official Nautilo Community as an explicit first-run,
   Add Server, and Switch Server destination while keeping private servers and
   manual connection available. New members use a stable, revocable community
@@ -22,6 +27,43 @@ changes recorded here. Inclusion does not assert a server deployment, Mobile
 store update, or Desktop/Host installation.
 
 ### Added
+
+- Local internal QA servers can use a separately configured Nautilo Gateway
+  credential for signed OpenRouter chat, background, and embedding routes. The
+  administrator can save the Gateway API URL beside its masked key in Server
+  Admin, existing embedding identity is preserved,
+  media routes still require their direct credentials, and failed Gateway
+  requests are not replayed through retries or paid fallback chains.
+
+- Desktop Float Genie pins a Genie and Room to a dockable orb, waveform, prompt
+  or chat window. It hides while the Workbench is active, appears when working
+  elsewhere without taking focus, and sends text through the existing Room.
+  Activation starts compact, with a visible expand button and a draggable
+  avatar/name header. Chat reuses Room history, transcript rendering and the
+  wrapping Lexical composer. A quiet detach icon beside the Genie portrait
+  replaces the large composer button. Tap-to-record hosted voice, separate
+  Stop talking and Stop task controls, and native-picker attachments reuse
+  the existing runtime owners. Capture starts off; automatic listening remains
+  separate follow-on work.
+  The configured Genie avatar appears in every view; the bubble adds a state
+  ring and offers an abstract-orb alternative.
+  Returning to the main Workbench hides the floating surface even when macOS
+  reports stale visibility during a window or desktop Space transition.
+  Native Space-change notifications also reapply visibility on repeated swipes.
+  Visibility also checks the exact native main window when the panel
+  retains keyboard focus. A visible × attaches Genie again in one click.
+  While recording, compact views keep the active microphone visible for
+  finish-and-send; Escape and the controls menu discard the recording.
+  Stop action stays in a fixed position in every view, enabled throughout
+  unfinished work and grayed out when idle. The bubble matches the portrait frame, activity ring,
+  and separate corner controls used by its compact design.
+  Its corner controls leave transparent space at the window edge so the
+  circular borders render completely.
+  The expanded header stays draggable without a dotted grip beside the avatar.
+
+- Contributor-only floating Genie shell lab with four compact views, screen-edge
+  docking and a Nautilo/Persona visual comparison. Voice states are simulations;
+  microphone access and external runtime requests are disabled in this first lab.
 
 - Routine Jev delegation for connected websites already under direct Genie
   control through Browser Use. It reuses the browser decision loop, verifies
@@ -48,6 +90,38 @@ store update, or Desktop/Host installation.
   anyone else's settings or chat notifications.
 
 ### Fixed
+
+- Screenshot messages now render inline in ordinary Room, thread, and Genie chats as
+  they arrive and after reload, with authenticated downloads and full-size
+  viewing. Accepted image previews replace temporary upload filename labels.
+  Mixed uploads preserve rejection feedback when live delivery arrives first,
+  and attachment lookup failures no longer suppress saved peer messages.
+- Authenticated Guests can attach files to messages in their selected Room,
+  while unresolved and blocked conversations continue to reject uploads.
+- Desktop users can open Servers and connect another server even when their
+  current server does not allow Genie invocation, including Guest accounts.
+- Floating Genie distinguishes Sending from running work, with visible send
+  progress. Speaker × stops talking; the separate square Stop action control
+  remains available while the Genie speaks and works at the same time.
+
+- Room and floating Genie messages summarize recognized legacy attachment
+  envelopes as filenames after history reload. Ambiguous envelopes remain intact.
+
+- Server Admin places the Nautilo Gateway URL and key together at the end of
+  API Keys, following the separate OpenAI-compatible gateway.
+
+- OpenRouter-compatible streaming no longer counts a provider usage receipt
+  twice when the final choice frame also carries cost or cache-write metadata.
+
+- Browser shared-room history verifies retained Human signer evidence for other
+  participants. Cancelled protected turns and graceful shutdown close unpublished
+  reservations and prevent late publication. Pending sends show progress, and
+  authenticated Guests can reach the workspace with their existing permissions.
+
+- Protected history remains compatible with open Browser tabs across server
+  upgrades. Sequential protected tool calls no longer reuse a previously
+  published stream reservation. Capabilityless tools retain their explicitly
+  required PIN approval instead of falling back to ordinary confirmation.
 
 - Speech uses Jessica when no usable voice is configured, preserving explicitly
   assigned Genie voices.

@@ -104,12 +104,20 @@ function b64(value: Uint8Array): string {
   return Buffer.from(value).toString("base64url");
 }
 
-async function fixture() {
+async function fixture(options: Readonly<{
+  foreignMessageSigner?: boolean;
+}> = {}) {
   const crypto = new LatticeCrypto(
     seededRng(275_001),
     { now: () => NOW },
   );
   const signing = crypto.generateSigningKeyPair();
+  const messageSigning = options.foreignMessageSigner === true
+    ? crypto.generateSigningKeyPair()
+    : signing;
+  const messageDeviceId = options.foreignMessageSigner === true
+    ? "device:historical-shared-human"
+    : DEVICE;
   const encryption = await crypto.generateEncryptionKeyPair();
   const profileV2: OpenedClientDeviceProfileV2 = Object.freeze({
     formatVersion: 2,
@@ -192,9 +200,9 @@ async function fixture() {
       aiKey: generationKey,
     },
     device: {
-      deviceId: DEVICE,
+      deviceId: messageDeviceId,
       hostAuthorizationRevision: 7,
-      signingPrivateKey: signing.privateKey,
+      signingPrivateKey: messageSigning.privateKey,
     },
     resolveCurrentAuthorization: () => null,
   });
@@ -399,6 +407,8 @@ async function fixture() {
     protectedMessage,
     record,
     signing,
+    messageSigning,
+    messageDeviceId,
   };
 }
 
@@ -1375,17 +1385,19 @@ describe("M275 Browser Room-history Shadow reader", () => {
     expect(result.records[0]).toMatchObject({ status: "verified", payload: state.payload });
   });
 
-  test.each(([1, 2] as const).flatMap(formatVersion =>
-    (["exact", "message", "namespace", "version"] as const).map(coordinates =>
-      ({ formatVersion, coordinates }))))("authenticates protected-only shared Human input with %j retained coordinates", async ({ formatVersion, coordinates }) => {
-    const state = await fixture();
+  test.each(([1, 2] as const).flatMap(formatVersion => [
+    ...(["exact", "message", "namespace", "version", "missing_key", "wrong_key", "duplicate"] as const)
+      .map(coordinates => ({ formatVersion, coordinates, protectedOnly: true })),
+    { formatVersion, coordinates: "exact" as const, protectedOnly: false },
+  ]))("authenticates shared Human input with %j retained evidence", async ({ formatVersion, coordinates, protectedOnly }) => {
+    const state = await fixture({ foreignMessageSigner: true });
     const operationId = state.record.shadowOperationId;
     const planBytes = encodeHumanAiReadableLiveShadowMessagePlan({
       formatVersion, purpose: "message.human_ai_readable_live_shadow_plan",
       operationId, clientIdempotencyKey: "history-full-shared-human",
       policyRevision: 4, sessionId: SESSION, roomId: ROOM, humanMessageId: 275,
       revision: 0, transcriptOrdinal: 1, role: "user", createdAt: unixTimestamp(NOW),
-      subjectHumanId: humanId(HUMAN), committerDeviceId: cryptoDeviceId(DEVICE),
+      subjectHumanId: humanId(HUMAN), committerDeviceId: cryptoDeviceId(state.messageDeviceId),
       committerDeviceSigningKeyGeneration: 1,
       hostAuthorizationRevision: authorizationRevision(7),
       namespaceId: namespaceId(NAMESPACE), keyClass: "ai",
@@ -1405,7 +1417,7 @@ describe("M275 Browser Room-history Shadow reader", () => {
       operationId, clientIdempotencyKey: "history-full-shared-human",
       policyRevision: 4, sessionId: SESSION, roomId: ROOM, messageId: coordinates === "message" ? 276 : 275,
       revision: 0, transcriptOrdinal: 1, role: "user", createdAt: unixTimestamp(NOW),
-      subjectHumanId: humanId(HUMAN), committerDeviceId: cryptoDeviceId(DEVICE),
+      subjectHumanId: humanId(HUMAN), committerDeviceId: cryptoDeviceId(state.messageDeviceId),
       committerDeviceSigningKeyGeneration: 1,
       hostAuthorizationRevision: authorizationRevision(7),
       namespaceId: namespaceId(coordinates === "namespace" ? "different-namespace" : NAMESPACE), keyClass: "ai",
@@ -1421,32 +1433,50 @@ describe("M275 Browser Room-history Shadow reader", () => {
       encryptedPayloadDigest: state.crypto.hash(Buffer.from(protectedPayload.encryptedPayloadBytesBase64url, "base64url")),
       manifestDigest: state.crypto.hash(Buffer.from(protectedPayload.accessManifestBytesBase64url, "base64url")),
       envelopeDigest: state.crypto.hash(Buffer.from(protectedPayload.namespaceEnvelopeBytesBase64url, "base64url")),
-      committerSigningPublicKey: state.signing.publicKey,
-      committerSigningPrivateKey: state.signing.privateKey,
+      committerSigningPublicKey: state.messageSigning.publicKey,
+      committerSigningPrivateKey: state.messageSigning.privateKey,
     }, formatVersion);
     const { ordinaryPayloadBytesBase64url: _ordinaryBytes,
       ordinarySibling: _ordinarySibling, ...structuralRecord } = state.record;
-    const record: RoomHistoryShadowRecordTransportV1 = {
+    const record: RoomHistoryShadowRecordTransportV1 = protectedOnly ? {
       ...structuralRecord, representationMode: "protected-only" as const,
       shadowOperationFamily: "shared_human" as const,
       selectedSource: { role: "user" as const,
         logicalMessageKey: state.protectedMessage.projection.logicalMessageKey!,
-        sourceUserId: COORDINATES.userId } };
-    const result = await state.createReader().reconcile({
-      ...state.makeInput([record]), signerEvidence: [{
+        sourceUserId: COORDINATES.userId },
+    } : { ...state.record, shadowOperationFamily: "shared_human" as const };
+    const wrongKey = state.crypto.generateSigningKeyPair().publicKey;
+    const evidence = {
         kind: (formatVersion === 2) !== (coordinates === "version")
           ? "human_ai_readable_live_shadow_request_v2" : "human_ai_readable_live_shadow_request_v1",
         operationId,
         planBytesBase64url: b64(planBytes), requestBytesBase64url: b64(request.bytes),
         requestDigestBase64url: b64(request.requestDigest),
-      }],
+        ...(coordinates === "missing_key" ? {} : {
+          committerDeviceSigningPublicKeyBase64url: b64(
+            coordinates === "wrong_key" ? wrongKey : state.messageSigning.publicKey,
+          ),
+        }),
+      } as const;
+    const result = await state.createReader().reconcile({
+      ...state.makeInput([record]),
+      signerEvidence: coordinates === "duplicate" ? [evidence, evidence] : [evidence],
     });
     if (coordinates === "exact") {
       expect(result.records[0]).toMatchObject({ status: "verified",
-        verification: "signed_representation_authenticated", payload: state.payload });
+        verification: protectedOnly
+          ? "signed_representation_authenticated"
+          : "independent_parity",
+        payload: state.payload });
     } else {
       expect(result.verifiedCount).toBe(0);
-      expect(result.records[0]).toMatchObject({ status: "fallback" });
+      expect(result.records[0]).toMatchObject({
+        status: "fallback",
+        ...(coordinates === "missing_key" || coordinates === "wrong_key"
+            || coordinates === "duplicate"
+          ? { reason: "signer_evidence_unavailable" }
+          : {}),
+      });
     }
   });
 

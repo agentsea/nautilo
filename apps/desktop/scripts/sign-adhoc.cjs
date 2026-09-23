@@ -6,6 +6,7 @@ const {
   COMPUTER_USE_HOST_RELATIVE_PATH, COMPUTER_USE_HOST_ENTITLEMENTS, COMPUTER_USE_HOST_IDENTIFIER,
   SCREEN_RECORDING_PERMISSION_RELATIVE_PATH, SCREEN_RECORDING_PERMISSION_ENTITLEMENTS, SCREEN_RECORDING_PERMISSION_IDENTIFIER,
   BROWSER_VISUAL_GROUNDING_RELATIVE_PATH, BROWSER_VISUAL_GROUNDING_ENTITLEMENTS, BROWSER_VISUAL_GROUNDING_IDENTIFIER,
+  WINDOW_PRESENCE_RELATIVE_PATH, WINDOW_PRESENCE_ENTITLEMENTS, WINDOW_PRESENCE_IDENTIFIER,
 } = require("./native-helper-contract.cjs");
 
 function exactOptions(original, entitlements, identifier, label) {
@@ -39,6 +40,9 @@ function wrapOptionsForFile(appPath, originalOptionsForFile, cuaEntitlements = C
   return (filePath) => {
     const original = originalOptionsForFile?.(filePath) ?? null;
     const exactPath = resolve(filePath);
+    if (exactPath === resolve(appPath, WINDOW_PRESENCE_RELATIVE_PATH)) {
+      return exactOptions(original, WINDOW_PRESENCE_ENTITLEMENTS, WINDOW_PRESENCE_IDENTIFIER, "Window presence helper");
+    }
     if (exactPath === exactCuaDriverPath) {
       // A bare Mach-O has no bundle plist identifier. Without this codesign
       // derives a content-dependent identifier, so preserve the stable public identity in contributor builds.

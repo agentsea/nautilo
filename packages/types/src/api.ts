@@ -443,6 +443,8 @@ export interface SendMessageRequest {
   clientActionSessionId?: string | undefined;
   /** M233 — picker-authored stable Human recipients; never inferred from message text. */
   mentionedHumanUserIds?: string[] | undefined;
+  /** Address all current Human members of the Room. */
+  mentionEveryone?: boolean | undefined;
   laneKey?: string | undefined;
   /**
    * M065 — optional explicit room for owner chat. Omitted preserves
@@ -1036,6 +1038,18 @@ export interface MessageArtifactOpenRef {
   basename: string;
   mimeType: string;
   sizeBytes: number;
+}
+
+/**
+ * Content-free durable outcome for one protected Agent execution associated
+ * with a Human history row. The stable execution id distinguishes multi-Agent
+ * outcomes for the same input without making any claim about other mapped
+ * output that may also exist.
+ */
+export interface RoomHistoryTerminalExecutionSummary {
+  messageId: number;
+  executionId: string;
+  classification: "cancelled" | "process_lost";
 }
 
 /** D124 / D300 — row shape for `GET /api/rooms/:id/messages`. */

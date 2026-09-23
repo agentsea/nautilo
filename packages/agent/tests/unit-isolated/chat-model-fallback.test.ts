@@ -18,6 +18,7 @@ import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-po
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
+import { isManagedGatewayOutcomeUnknownError } from "../../src/providers/openrouter-transport";
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
@@ -70,7 +71,8 @@ const TEST_PROVIDER_KEYS = {
   OPENROUTER_API_KEY: "test-openrouter",
 } as const;
 const priorProviderKeys = Object.fromEntries(
-  Object.keys(TEST_PROVIDER_KEYS).map((key) => [key, process.env[key]]),
+  [...Object.keys(TEST_PROVIDER_KEYS), "NAUTILO_MANAGED_GATEWAY_API_KEY", "NAUTILO_MANAGED_GATEWAY_BASE_URL"]
+    .map((key) => [key, process.env[key]]),
 );
 const priorFetch = globalThis.fetch;
 
@@ -189,12 +191,56 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
 
   beforeEach(() => {
     Object.assign(process.env, TEST_PROVIDER_KEYS);
+    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
+    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     policyState = { enabled: false, chain: [] };
     createUniversalModelMock.mockReset();
     markModelInvokeFailureMock.mockReset();
     capturedEvents.length = 0;
     _resetAgentTurnContextsForTests();
     _setFirstTokenTimeoutMsForTests(undefined);
+  });
+
+  test.each([
+    ["401", Object.assign(new Error("gateway private 401 canary"), { status: 401 })],
+    ["402", Object.assign(new Error("gateway private 402 canary"), { status: 402 })],
+    ["429", Object.assign(new Error("gateway private 429 canary"), { status: 429 })],
+    ["502", Object.assign(new Error("gateway private 502 canary"), { status: 502 })],
+    ["timeout", new ProviderTimeoutError(T1, 25)],
+  ])("managed Gateway %s performs one invocation with no same-model retry or fallback hop", async (_kind, failure) => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
+    policyState = { enabled: true, chain: [T1, A, B] };
+    let invokes = 0;
+    createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
+      expect(modelId).toBe(T1);
+      return {
+        bindTools: () => ({
+          invoke: async () => {
+            invokes += 1;
+            throw failure;
+          },
+        }),
+      } as unknown as AuraModel;
+    });
+
+    const thrown: unknown = await invokeChatModelWithFallback(
+      messages,
+      tools,
+      T1,
+      "user-1",
+      "agent-1",
+      null,
+    ).catch((error: unknown) => error);
+
+    expect(isManagedGatewayOutcomeUnknownError(thrown)).toBeTrue();
+    expect((thrown as Error).message).toBe(failure.message);
+    if ("status" in failure) {
+      expect((thrown as { status?: number }).status).toBe(failure.status);
+    }
+    expect(invokes).toBe(1);
+    expect(modelIdsFromCalls()).toEqual([T1]);
+    expect(capturedEvents.filter((event) => event.type === "model.fallback")).toHaveLength(0);
   });
 
   test("unavailable selected model uses only an already-configured eligible fallback", async () => {

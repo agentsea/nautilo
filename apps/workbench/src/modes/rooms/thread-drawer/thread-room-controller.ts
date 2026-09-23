@@ -2,6 +2,7 @@ import {
   isProtectedMessageRealtimeEventV2,
   type ApprovalAskEvent,
   type ApprovalResolvedEvent,
+  type MessageAttachmentRef,
   type ProveItChallengeEvent,
   type ServerEvent,
   type ThreadDetailResponse,
@@ -15,6 +16,7 @@ import {
 import { preserveComputerUseResultForCard } from "../../../components/tool-card/renderers/computer-use";
 import { preserveConnectedAppResultForCard } from "../../../components/tool-card/renderers/connected-app-receipt";
 import { mergeHydratedRoomMessages } from "../../../adapters/room-hydration-reconciliation";
+import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../../../adapters/session-rehydrate";
 import {
   applyActorReaction,
 } from "../shape/reactions/reaction-aggregate";
@@ -38,6 +40,7 @@ export interface ThreadRoomMessage {
   editRevision?: number;
   sourceUserId?: string;
   authorAgentId?: string;
+  attachments?: MessageAttachmentRef[];
   /** D359 — id of the child-row this optimistic/persisted message quotes. */
   replyToMessageId?: number | null;
   /** Local-only id used until the canonical persisted message id is known. */
@@ -317,6 +320,9 @@ function runtimeTextMessage(message: ThreadRoomMessage): ThreadMessageLike {
   if (message.editedAt !== undefined) custom.editedAt = message.editedAt;
   if (message.optimisticRequestId) custom.optimisticRequestId = message.optimisticRequestId;
   if (typeof message.replyToMessageId === "number") custom.replyToMessageId = message.replyToMessageId;
+  if (message.attachments !== undefined) {
+    custom[MESSAGE_ATTACHMENTS_METADATA_KEY] = message.attachments;
+  }
   return {
     id: message.id,
     role: message.role as "user" | "assistant" | "system",
@@ -449,8 +455,11 @@ function applyThreadEvent(
         ...(event.sourceUserId ? { sourceUserId: event.sourceUserId } : {}),
         ...(event.authorAgentId ? { authorAgentId: event.authorAgentId } : {}),
         ...(event.replyToMessageId !== undefined ? { replyToMessageId: event.replyToMessageId } : {}),
+        ...(event.attachments !== undefined ? { attachments: event.attachments } : {}),
       };
       const messages = reconcilePersistedMessage(state.messages, persistedMessage);
+      const reconciledMessage =
+        messages.find((message) => message.id === persistedMessage.id) ?? persistedMessage;
       // The persisted row is authoritative. A final WS row can be longer than
       // the last token chunk, so reconcile by the same author when its content
       // extends the in-flight buffer as well as on exact equality. This keeps
@@ -474,7 +483,7 @@ function applyThreadEvent(
       return {
         ...state,
         messages,
-        runtimeMessages: reconcileRuntimeMessage(state.runtimeMessages, persistedMessage, matchingStream?.id),
+        runtimeMessages: reconcileRuntimeMessage(state.runtimeMessages, reconciledMessage, matchingStream?.id),
         streams,
         // A newly persisted child message means the previous read watermark
         // is stale. The visible-only effect will mark this child again.

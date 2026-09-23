@@ -11,6 +11,10 @@ describe("hasRunnableChatProviderCredentials", () => {
       { OPENAI_API_KEY: "x" },
       { OPENROUTER_API_KEY: "x" },
       {
+        NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+        NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+      },
+      {
         NAUTILO_GATEWAY_API_KEY: "x",
         NAUTILO_GATEWAY_BASE_URL: "https://example.com/v1",
       },
@@ -59,6 +63,38 @@ describe("modelHasRunnableCredentials", () => {
         OPENROUTER_API_KEY: "sk-test",
       }),
     ).toBe(true);
+  });
+
+  test("managed Gateway admits signed OpenRouter routes and malformed config blocks BYOK", () => {
+    expect(modelHasRunnableCredentials("openrouter:anthropic/claude-sonnet-4", {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "http://localhost:4010/v1",
+    })).toBe(true);
+    expect(modelHasRunnableCredentials("openrouter:anthropic/claude-sonnet-4", {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      OPENROUTER_API_KEY: "sk-or-v1-direct-must-not-be-used",
+    })).toBe(false);
+  });
+
+  test("managed Gateway never admits OpenRouter generation and cannot shadow its direct key", () => {
+    const managedOnly = {
+      NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"a".repeat(43)}`,
+      NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
+    };
+    expect(modelHasRunnableCredentials(
+      "openrouter:openai/gpt-5.4-image-2",
+      managedOnly,
+      "generation",
+    )).toBe(false);
+
+    expect(modelHasRunnableCredentials(
+      "openrouter:openai/gpt-5.4-image-2",
+      {
+        NAUTILO_MANAGED_GATEWAY_API_KEY: "malformed-managed-key",
+        OPENROUTER_API_KEY: "sk-or-v1-direct-generation",
+      },
+      "generation",
+    )).toBe(true);
   });
 
   test("gateway requires key and base URL", () => {

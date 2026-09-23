@@ -36,6 +36,7 @@ the repository.
   [security research](security-research.md), and
   [research limits and recovery](security-research-limits.md).
 - **Events:** [quiet events](quiet-events.md).
+- **Local model QA:** [Nautilo Gateway](nautilo-gateway-local-qa.md).
 - **Contributing:** [CI](contributing/ci.md) and the
   [specification template](contributing/spec-template.md).
 

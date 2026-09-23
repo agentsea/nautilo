@@ -464,4 +464,27 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("getKeySummary does not report a managed Gateway key as ready without its API root", async () => {
+    const originalFetch = globalThis.fetch;
+    const c = new NautiloApiClient("http://127.0.0.1:3001");
+    c.setToken("session-bearer-d445");
+    globalThis.fetch = (async () => new Response(JSON.stringify([
+      {
+        id: "nautilo-gateway",
+        envVar: "NAUTILO_MANAGED_GATEWAY_API_KEY",
+        status: "present",
+        masked: "ngw_***",
+      },
+    ]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+    try {
+      const result = await c.getKeySummary();
+      expect(result.hasLlm).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { createAuthorizedHumanLiveShadowMessageClient } from
+  "../../src/client/message/authorized-human-live-shadow-message-client.ts";
+import { createPreparedMutationJournal } from
+  "../../src/client/memory/prepared-mutation-journal.ts";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   LatticeCrypto,
   accessRevision,
@@ -216,7 +220,7 @@ function namespaceAuthority(
 }
 
 describe("M295 Human-peer live Shadow message", () => {
-  test("maps one canonical row and lets an independent recipient open, compare, and acknowledge it", async () => {
+  test.each([false, true])("maps one canonical row and verifies peer receipt (everyone: %s)", async (mentionEveryone) => {
     const crypto = new LatticeCrypto(seededRng(295_900));
     const sender = await createProfile({
       crypto,
@@ -240,6 +244,7 @@ describe("M295 Human-peer live Shadow message", () => {
     const planBytes = encodeHumanPeerLiveShadowMessagePlanV1({
       formatVersion: 1,
       purpose: "message.human_peer_live_shadow_plan",
+      ...(mentionEveryone ? { mentionEveryone: true as const } : {}),
       operationId: OPERATION,
       clientIdempotencyKey: "human_peer_client_m295_live",
       policyRevision: 4,
@@ -433,6 +438,7 @@ describe("M295 Human-peer live Shadow message", () => {
       crypto, now: () => new Date(NOW + 1),
     });
     fullHarness.product.addSession({ sessionId: SESSION, roomId: ROOM, namespaceId: NAMESPACE });
+    const append = spyOn(fullHarness.product, "appendAllocated");
     const full = await admitAndPersistHumanPeerLiveShadowMessage({
       ...dependencies,
       product: fullHarness.product,
@@ -456,6 +462,9 @@ describe("M295 Human-peer live Shadow message", () => {
       } },
     });
     expect(full).not.toHaveProperty("content");
+    expect(append.mock.calls[0]?.[0].notificationContext.mentionEveryone).toBe(mentionEveryone || undefined);
+    expect("mentionEveryone" in full ? full.mentionEveryone : undefined).toBe(mentionEveryone || undefined);
+    append.mockRestore();
     expect(fullHarness.product.peekMessage(MESSAGE_ID)).toMatchObject({ content: null });
 
     const eventDigest = liveShadowDurableEventDigestV1(crypto, {
@@ -934,5 +943,113 @@ describe("M295 Human-peer live Shadow message", () => {
     expect(statements[0]).toContain("in ($1, $2)");
     expect(statements[1]).toContain("update \"conversation_human_peer_shadow_operations\"");
     expect(statements[1]).toContain("\"terminal_reason\" = $2");
+  });
+});
+
+describe("Browser V2 Human-only negotiation", () => {
+  test.each([
+    { full: false, substitutedMarker: false },
+    { full: true, substitutedMarker: false },
+    { full: false, substitutedMarker: true },
+  ])("validates Human-only plan negotiation %j", async ({ full, substitutedMarker }) => {
+    const crypto = new LatticeCrypto(seededRng(741_002));
+    const sender = await createProfile({ crypto, deviceId: SENDER_DEVICE,
+      humanId: SENDER_HUMAN, userId: "60000000-0000-4000-8000-000000000001",
+      hostAuthorizationRevision: 7 });
+    const generationKey = new Uint8Array(32).fill(0x95);
+    const headDigest = new Uint8Array(32).fill(0x31);
+    const publicationDigest = new Uint8Array(32).fill(0x32);
+    const publicationSetDigest = new Uint8Array(32).fill(0x33);
+    const audienceFingerprint = new Uint8Array(32).fill(0x34);
+    const planBytes = encodeHumanPeerLiveShadowMessagePlanV1({
+      formatVersion: 1,
+      purpose: "message.human_peer_live_shadow_plan",
+      operationId: OPERATION,
+      clientIdempotencyKey: "human-peer-negotiation",
+      policyRevision: 4,
+      sessionId: SESSION,
+      roomId: ROOM,
+      humanMessageId: MESSAGE_ID,
+      revision: 0,
+      transcriptOrdinal: 1,
+      role: "user",
+      createdAt: unixTimestamp(NOW),
+      subjectHumanId: humanId(SENDER_HUMAN),
+      committerDeviceId: cryptoDeviceId(SENDER_DEVICE),
+      committerDeviceSigningKeyGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(7),
+      namespaceId: namespaceId(NAMESPACE),
+      keyClass: "human",
+      namespaceAccessRevision: accessRevision(2),
+      namespaceKeyGeneration: namespaceGeneration(3),
+      namespaceHeadDigest: headDigest,
+      namespacePublicationDigest: publicationDigest,
+      namespacePublicationSetDigest: publicationSetDigest,
+      namespaceAudienceFingerprint: audienceFingerprint,
+      attemptCoordinate: "human-peer-negotiation-attempt",
+      issuedAt: unixTimestamp(NOW),
+      deadlineAt: unixTimestamp(NOW + 30_000),
+    });
+    let sent = 0;
+    let journaled = 0;
+    const client = createAuthorizedHumanLiveShadowMessageClient({
+      planRequestVersion: 2, crypto, vault: sender.vault, coordinates: sender.coordinates,
+      namespaceAuthority: namespaceAuthority(generationKey, headDigest, audienceFingerprint),
+      now: () => NOW + 1, normalizeContent: (content) => content,
+      createIdempotencyKey: () => "human-peer-negotiation",
+      ensureJournalAvailable: async () => true,
+      journal: createPreparedMutationJournal({ now: () => NOW + 1, vault: {
+        listIndexes: async () => [],
+        putSealed: async ({ canonicalBody }) => {
+          journaled++;
+          const request: unknown = JSON.parse(new TextDecoder().decode(canonicalBody));
+          expect(request).toMatchObject({ authorizationScheme: "human_peer_v1" });
+          if (full) expect(request).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+          else expect(request).toHaveProperty("ordinaryPayloadBytesBase64url");
+          return "inserted";
+        },
+        withOpenedBody: async () => { throw new Error("not used"); },
+        updateIndex: async () => false, removeExact: async () => false,
+      } }),
+      api: {
+        planLiveShadowRoomMessage: async (_roomId, request) => {
+          expect(request.requestVersion).toBe(2);
+          return { responseVersion: 1, status: "planned",
+            planBytesBase64url: base64url(planBytes),
+            ...(substitutedMarker ? { authorizationScheme: "human_ai_readable_v2" as const } : {}),
+            ...(full ? { representationMode: "full_encryption" as const } : {}) };
+        },
+        sendRoomMessage: async (_roomId, body) => {
+          sent++;
+          expect(journaled).toBe(1);
+          expect("content" in body).toBe(!full);
+          expect(body.liveShadow).toMatchObject({ status: "prepared", authorizationScheme: "human_peer_v1" });
+          const prepared = body.liveShadow;
+          if (prepared?.status !== "prepared") throw new Error("unprotected send");
+          const decode = (bytes: string) => new Uint8Array(Buffer.from(bytes, "base64url"));
+          const admitted = await admitHumanPeerLiveShadowMessage({
+            crypto, contentRepresentation: "full", expectedPlanBytes: planBytes,
+            requestBytes: decode(prepared.signedRequestBytesBase64url),
+            encryptedPayloadBytes: decode(prepared.encryptedPayloadBytesBase64url),
+            manifestBytes: decode(prepared.accessManifestBytesBase64url),
+            envelopeBytes: decode(prepared.namespaceEnvelopeBytesBase64url),
+            now: NOW + 1, resolveCurrentHumanAuthority: () => sender.signingPublicKey.slice(),
+          });
+          expect(admitted).toMatchObject({ contentVerification: "signed_representation_authenticated" });
+          return { messageId: MESSAGE_ID, jobId: "", accepted: true, attachments: [], coalesced: false };
+        },
+      },
+    });
+    const sending = client.send(ROOM, { content: "Human-only negotiation check", clientActionSessionId: "peer-browser" });
+    if (substitutedMarker) {
+      expect(sending).rejects.toThrow("Protected message plan is invalid");
+      expect(journaled).toBe(0);
+      expect(sent).toBe(0);
+    } else {
+      await sending;
+      expect(sent).toBe(1);
+    }
+    generationKey.fill(0);
+    planBytes.fill(0);
   });
 });

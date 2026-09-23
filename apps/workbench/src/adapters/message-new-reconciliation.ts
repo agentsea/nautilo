@@ -1,9 +1,14 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import type { AdvancedVideoWorkcardContinuation, MessageArtifactOpenRef } from "@nautilo/types";
+import type {
+  AdvancedVideoWorkcardContinuation,
+  MessageArtifactOpenRef,
+  MessageAttachmentRef,
+} from "@nautilo/types";
 import {
   advancedVideoWorkcardSummary,
   dedupeMessageArtifactOpenRefs,
   MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY,
+  MESSAGE_ATTACHMENTS_METADATA_KEY,
 } from "./session-rehydrate";
 
 export interface CanonicalHumanMessage {
@@ -16,6 +21,8 @@ export interface CanonicalHumanMessage {
   replyToMessageId?: number;
   /** D424 — server-authored open-card pointers; never inferred from text. */
   artifacts?: MessageArtifactOpenRef[];
+  /** Server-authored retained message attachments for an ordinary projection. */
+  attachments?: MessageAttachmentRef[];
   /** Local receive state only; never put placeholder prose in message content. */
   verificationPending?: boolean;
 }
@@ -78,22 +85,133 @@ function artifactOpenRefsEqual(
   });
 }
 
+function dedupeMessageAttachmentRefs(
+  attachments: readonly MessageAttachmentRef[] | undefined,
+): MessageAttachmentRef[] | undefined {
+  if (attachments === undefined) return undefined;
+  const seen = new Set<string>();
+  return attachments.filter((attachment) => {
+    if (seen.has(attachment.attachmentId)) return false;
+    seen.add(attachment.attachmentId);
+    return true;
+  });
+}
+
+function messageAttachmentRefsEqual(
+  current: unknown,
+  next: readonly MessageAttachmentRef[] | undefined,
+): boolean {
+  if (next === undefined) return true;
+  if (!Array.isArray(current) || current.length !== next.length) return false;
+  return current.every((value, index) => {
+    const candidate = value as Partial<MessageAttachmentRef> | null;
+    const expected = next[index];
+    return candidate !== null &&
+      typeof candidate === "object" &&
+      candidate.attachmentId === expected?.attachmentId &&
+      candidate.filename === expected?.filename &&
+      candidate.mimeType === expected?.mimeType &&
+      candidate.sizeBytes === expected?.sizeBytes;
+  });
+}
+
+const DISPLAYABLE_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+export const OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY = "optimisticAttachmentIds";
+
+function optimisticAttachmentIds(
+  custom: Record<string, unknown>,
+): readonly string[] | undefined {
+  const value = custom[OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY];
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((id): id is string => typeof id === "string" && id.length > 0)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function optimisticAttachmentEventMatches(
+  custom: Record<string, unknown>,
+  attachments: readonly MessageAttachmentRef[] | undefined,
+): boolean {
+  const ids = optimisticAttachmentIds(custom);
+  return ids !== undefined && attachments !== undefined && attachments.some(
+    (attachment) => ids.includes(attachment.attachmentId),
+  );
+}
+
+function canonicalOptimisticImageContent(
+  custom: Record<string, unknown>,
+  message: CanonicalHumanMessage,
+  attachments: readonly MessageAttachmentRef[] | undefined,
+): string | undefined {
+  const ids = optimisticAttachmentIds(custom);
+  const canonicalIds = new Set(attachments?.map((attachment) => attachment.attachmentId));
+  if (
+    message.verificationPending ||
+    custom.humanMessageVerification !== undefined ||
+    typeof custom.optimisticAuthoredText !== "string" ||
+    ids === undefined ||
+    attachments === undefined ||
+    ids.length !== canonicalIds.size ||
+    !ids.every((id) => canonicalIds.has(id)) ||
+    !attachments.every((attachment) =>
+      DISPLAYABLE_IMAGE_MIME_TYPES.has(attachment.mimeType.toLowerCase())
+    )
+  ) {
+    return undefined;
+  }
+  const currentRevision = custom.editRevision;
+  if (
+    typeof currentRevision === "number" &&
+    (typeof message.editRevision !== "number" || message.editRevision < currentRevision)
+  ) {
+    return undefined;
+  }
+  return custom.optimisticAuthoredText.trim().length > 0
+    ? custom.optimisticAuthoredText
+    : "(User attached images.)";
+}
+
 function canonicalMetadata(
   current: { custom?: Record<string, unknown> } | undefined,
   message: CanonicalHumanMessage,
+  consumeOptimisticAuthoredText = false,
 ): { custom: Record<string, unknown> } {
   const artifacts = dedupeMessageArtifactOpenRefs(message.artifacts);
+  const attachments = dedupeMessageAttachmentRefs(message.attachments);
+  const previousCustom = { ...(current?.custom ?? {}) };
+  const currentEditRevision = previousCustom.editRevision;
+  const acceptsIncomingEditRevision =
+    typeof message.editRevision === "number" &&
+    (typeof currentEditRevision !== "number" || message.editRevision >= currentEditRevision);
+  if (message.verificationPending) {
+    delete previousCustom[MESSAGE_ATTACHMENTS_METADATA_KEY];
+  } else if (attachments !== undefined) {
+    previousCustom[MESSAGE_ATTACHMENTS_METADATA_KEY] = attachments;
+  }
+  if (consumeOptimisticAuthoredText) {
+    delete previousCustom.optimisticAuthoredText;
+    delete previousCustom[OPTIMISTIC_ATTACHMENT_IDS_METADATA_KEY];
+  }
   return {
     ...current,
     custom: {
-      ...(current?.custom ?? {}),
+      ...previousCustom,
       sourceUserId: message.sourceUserId,
       ...(message.createdAt ? { sentAt: message.createdAt } : {}),
       ...(message.verificationPending ? { humanMessageVerification: "pending" } : {}),
       ...(message.logicalMessageKey
         ? { logicalMessageKey: message.logicalMessageKey }
         : {}),
-      ...(typeof message.editRevision === "number"
+      ...(acceptsIncomingEditRevision
         ? { editRevision: message.editRevision }
         : {}),
       ...(hasValidReplyToMessageId(message)
@@ -149,12 +267,23 @@ export function reconcileCanonicalHumanMessage(
       custom?: Record<string, unknown>;
     };
     const custom = metadata.custom ?? {};
-    if (message.verificationPending && custom.humanMessageVerification !== undefined) {
+    if (
+      message.verificationPending &&
+      custom.humanMessageVerification !== undefined &&
+      custom[MESSAGE_ATTACHMENTS_METADATA_KEY] === undefined
+    ) {
       return messages;
     }
     const artifacts = dedupeMessageArtifactOpenRefs(message.artifacts);
+    const attachments = dedupeMessageAttachmentRefs(message.attachments);
+    const optimisticImageContent = canonicalOptimisticImageContent(
+      custom,
+      message,
+      attachments,
+    );
     if (
       (!message.verificationPending || custom.humanMessageVerification === "pending") &&
+      (!message.verificationPending || custom[MESSAGE_ATTACHMENTS_METADATA_KEY] === undefined) &&
       custom.sourceUserId === message.sourceUserId &&
       (!message.createdAt || custom.sentAt === message.createdAt) &&
       (!message.logicalMessageKey ||
@@ -166,7 +295,12 @@ export function reconcileCanonicalHumanMessage(
       artifactOpenRefsEqual(
         custom[MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY],
         artifacts,
-      )
+      ) &&
+      messageAttachmentRefsEqual(
+        custom[MESSAGE_ATTACHMENTS_METADATA_KEY],
+        attachments,
+      ) &&
+      optimisticImageContent === undefined
     ) {
       return messages;
     }
@@ -175,7 +309,14 @@ export function reconcileCanonicalHumanMessage(
         ? ({
             ...candidate,
             ...(message.verificationPending ? { content: [{ type: "text" as const, text: "" }] } : {}),
-            metadata: canonicalMetadata(metadata, message),
+            ...(optimisticImageContent !== undefined
+              ? { content: [{ type: "text" as const, text: optimisticImageContent }] }
+              : {}),
+            metadata: canonicalMetadata(
+              metadata,
+              message,
+              optimisticImageContent !== undefined,
+            ),
           } as ThreadMessageLike)
         : candidate,
     );
@@ -196,24 +337,45 @@ export function reconcileCanonicalHumanMessage(
     const metadata = (previous.metadata ?? {}) as {
       custom?: Record<string, unknown>;
     };
+    const custom = metadata.custom ?? {};
+    const attachments = dedupeMessageAttachmentRefs(message.attachments);
+    const optimisticImageContent = canonicalOptimisticImageContent(
+      custom,
+      message,
+      attachments,
+    );
     return [
       ...messages.slice(0, logicalIndex),
       {
         ...previous,
         id: message.messageId,
         role: "user",
-        content: [{ type: "text", text: message.content }],
-        metadata: canonicalMetadata(metadata, message),
+        content: [{
+          type: "text",
+          text: optimisticImageContent ?? message.content,
+        }],
+        metadata: canonicalMetadata(
+          metadata,
+          message,
+          optimisticImageContent !== undefined,
+        ),
       } as ThreadMessageLike,
       ...messages.slice(logicalIndex + 1),
     ];
   }
 
+  const optimisticAttachments = dedupeMessageAttachmentRefs(message.attachments);
   const optimisticIndex = viewerId === message.sourceUserId
     ? [...messages].reverse().findIndex((candidate) =>
         typeof candidate.id === "string" &&
         candidate.id.startsWith("user-") &&
-        messageContainsText(candidate, message.content),
+        (optimisticAttachments !== undefined && optimisticAttachments.length > 0
+          ?
+          optimisticAttachmentEventMatches(
+            ((candidate.metadata ?? {}) as { custom?: Record<string, unknown> }).custom ?? {},
+            optimisticAttachments,
+          )
+          : messageContainsText(candidate, message.content)),
       )
     : -1;
 
@@ -224,12 +386,25 @@ export function reconcileCanonicalHumanMessage(
     const metadata = (previous.metadata ?? {}) as {
       custom?: Record<string, unknown>;
     };
+    const custom = metadata.custom ?? {};
+    const optimisticImageContent = canonicalOptimisticImageContent(
+      custom,
+      message,
+      optimisticAttachments,
+    );
     return [
       ...messages.slice(0, index),
       {
         ...previous,
         id: message.messageId,
-        metadata: canonicalMetadata(metadata, message),
+        ...(optimisticImageContent !== undefined
+          ? { content: [{ type: "text" as const, text: optimisticImageContent }] }
+          : {}),
+        metadata: canonicalMetadata(
+          metadata,
+          message,
+          optimisticImageContent !== undefined,
+        ),
       } as ThreadMessageLike,
       ...messages.slice(index + 1),
     ];
@@ -260,12 +435,16 @@ export function settleHumanMessageVerification(
   if (result.status === "failed" && custom.humanMessageVerification !== "pending") {
     return messages;
   }
+  const {
+    [MESSAGE_ATTACHMENTS_METADATA_KEY]: _ordinaryAttachments,
+    ...protectedCustom
+  } = custom;
   return messages.map((message, i) => i === index ? {
     ...message,
     content: [{ type: "text", text: result.status === "verified" ? result.content : "" }],
     metadata: {
       ...message.metadata,
-      custom: { ...custom, humanMessageVerification: result.status },
+      custom: { ...protectedCustom, humanMessageVerification: result.status },
     },
   } as ThreadMessageLike : message);
 }

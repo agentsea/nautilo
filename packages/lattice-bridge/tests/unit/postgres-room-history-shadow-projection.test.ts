@@ -16,6 +16,7 @@ import {
   namespaceGeneration,
   namespaceId,
   encodeHumanAiReadableLiveShadowMessagePlan,
+  prepareHumanAiReadableLiveShadowMessageRequest,
 } from "@nautilo/lattice-crypto";
 import { seededRng } from "@nautilo/lattice-crypto/testing";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -35,6 +36,7 @@ import {
   createPostgresRoomHistoryShadowProjection,
   createCurrentHumanDomainKeyRoomHistoryAuthorityResolver,
   createCurrentDomainKeyRoomHistoryAuthorityResolver,
+  selectRoomHistoryTerminalExecutions,
   type RoomHistoryDomainKeyV2Authority,
   type RoomHistorySelectedCoordinate,
   type RoomHistoryShadowProjectionRecord,
@@ -310,6 +312,12 @@ async function subject(
   repair?: Readonly<{ manifestBytes: Uint8Array; signerPublicKey: Uint8Array | null }>,
   edited?: Readonly<{ payloadBytes: Uint8Array; manifestBytes: Uint8Array;
     envelopeBytes: Uint8Array; signerPublicKey: Uint8Array; retainedAvailable?: boolean; runtimeRetained?: boolean; sourceRoomId?: string }>,
+  historicalSigner?: Readonly<{
+    publicKey: Uint8Array;
+    headDigestBase64url: string;
+    requests: Array<Record<string, unknown>>;
+    available?: boolean;
+  }>,
 ) {
   const connection = new ScriptedConnection([
     [{ current_user: "nautilo", session_user: "nautilo" }],
@@ -327,11 +335,17 @@ async function subject(
     resolveHumanPeerAuthority: async () => scheme === "human"
       ? ({ status: "ready" as const, authority: {...humanAuthority, roomId: edited?.sourceRoomId ?? humanAuthority.roomId} })
       : ({ status: "unavailable" as const }),
-    resolveHumanEditedRepresentationAuthority: async () => edited === undefined || edited.retainedAvailable === false
+    resolveHumanEditedRepresentationAuthority: async (request) => {
+      historicalSigner?.requests.push({ ...request });
+      return edited === undefined && historicalSigner === undefined
+        || edited?.retainedAvailable === false
+        || historicalSigner?.available === false
       ? ({ status: "unavailable" as const })
-      : ({ status: "ready" as const, headDigestBase64url: DIGEST,
+      : ({ status: "ready" as const,
+          headDigestBase64url: historicalSigner?.headDigestBase64url ?? DIGEST,
           committerDeviceSigningPublicKeyBase64url:
-            Buffer.from(edited.signerPublicKey).toString("base64url") }),
+            Buffer.from(historicalSigner?.publicKey ?? edited!.signerPublicKey).toString("base64url") });
+    },
     ...(edited?.runtimeRetained === undefined ? {} : {
       resolveExistingRetainedGeneration: async (coordinates) => edited.runtimeRetained ? {
         namespaceGeneration: coordinates.generation, accessRevision: coordinates.accessRevision,
@@ -339,6 +353,7 @@ async function subject(
         publicationSetDigestBase64url: DIGEST, audienceFingerprintBase64url: DIGEST,
       } : null,
     }),
+    resolveTerminalExecutions: async () => [],
     crypto: {
       getObject: async (objectId) => {
         cryptoReads.push(`object:${objectId}`);
@@ -368,6 +383,55 @@ async function subject(
 }
 
 describe("M275 selected Room-history Shadow projection", () => {
+  test("maps only selected Human inputs to closed cancellation and process-loss summaries", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [
+        {
+          selection_ordinal: 0,
+          id: 11,
+          execution_id: "execution:cancelled",
+          sequence: 1,
+          state: "fallback",
+          terminal_reason: "agent_agent_input_cancelled",
+        },
+        {
+          selection_ordinal: 0,
+          id: 11,
+          execution_id: "execution:restart",
+          sequence: 2,
+          state: "failed",
+          terminal_reason: "process_lost",
+        },
+      ],
+    ]);
+    const product = await verifyConversationProductPostgresHandle(connection);
+    const result = await selectRoomHistoryTerminalExecutions(product, {
+      roomId: ROOM_ID,
+      selectedCoordinates: [
+        coordinate(11),
+        coordinate(12, { role: "assistant" }),
+      ],
+    });
+
+    expect(result).toEqual([
+      { messageId: 11, executionId: "execution:cancelled", classification: "cancelled" },
+      { messageId: 11, executionId: "execution:restart", classification: "process_lost" },
+    ]);
+    expect(connection.queries[1]?.statement).toContain(
+      'from "conversation_shared_agent_shadow_execution_inputs"',
+    );
+    expect(connection.queries[1]?.statement).toContain(
+      'inner join "conversation_shared_agent_shadow_executions"',
+    );
+    expect(connection.queries[1]?.parameters).toContain(ROOM_ID);
+    expect(connection.queries[1]?.parameters).toContain(SESSION_ID);
+    expect(connection.queries[1]?.parameters).toContain(11);
+    expect(connection.queries[1]?.parameters).not.toContain(12);
+    expect(connection.queries[1]?.parameters).toContain("agent_agent_input_cancelled");
+    expect(connection.queries[1]?.statement).not.toContain("final_causal_event_digest");
+  });
+
   test("inspects verified generation-zero metadata and selects the newest rewrap", async () => {
     const crypto = new LatticeCrypto(seededRng(320_001));
     const signer = crypto.generateSigningKeyPair();
@@ -1099,7 +1163,16 @@ describe("M275 selected Room-history Shadow projection", () => {
     },
   );
 
-  test.each([1, 2] as const)("projects V%s shared foreground Human evidence with its exact version", async (formatVersion) => {
+  test.each([
+    { formatVersion: 1 as const, scenario: "ready" as const },
+    { formatVersion: 2 as const, scenario: "ready" as const },
+    { formatVersion: 2 as const, scenario: "source_mismatch" as const },
+    { formatVersion: 2 as const, scenario: "authority_unavailable" as const },
+    { formatVersion: 2 as const, scenario: "ordinary" as const },
+  ])("projects shared foreground Human evidence with %j authority", async ({ formatVersion, scenario }) => {
+    const crypto = new LatticeCrypto(seededRng(26_001 + formatVersion));
+    const historicalSigner = crypto.generateSigningKeyPair();
+    const historicalDeviceId = "device:historical-shared-human";
     const operationId = "shared-agent-operation-human-26";
     const retainedPlan = encodeHumanAiReadableLiveShadowMessagePlan({
       formatVersion, purpose: "message.human_ai_readable_live_shadow_plan",
@@ -1107,9 +1180,9 @@ describe("M275 selected Room-history Shadow projection", () => {
       policyRevision: 1, sessionId: SESSION_ID, roomId: ROOM_ID,
       humanMessageId: 26, revision: 0, transcriptOrdinal: 1, role: "user",
       createdAt: unixTimestamp(1_800_000_000_000), subjectHumanId: humanId(HUMAN_ID),
-      committerDeviceId: cryptoDeviceId(DEVICE_ID), committerDeviceSigningKeyGeneration: 1,
-      hostAuthorizationRevision: authorizationRevision(1),
-      namespaceId: namespaceId("history-human-namespace"), keyClass: "ai",
+      committerDeviceId: cryptoDeviceId(historicalDeviceId), committerDeviceSigningKeyGeneration: 3,
+      hostAuthorizationRevision: authorizationRevision(8),
+      namespaceId: namespaceId(NAMESPACE_ID), keyClass: "ai",
       namespaceAccessRevision: 1, namespaceKeyGeneration: 1,
       namespaceHeadDigest: new Uint8Array(32).fill(1),
       namespacePublicationDigest: new Uint8Array(32).fill(2),
@@ -1119,7 +1192,34 @@ describe("M275 selected Room-history Shadow projection", () => {
       issuedAt: unixTimestamp(1_800_000_000_000),
       deadlineAt: unixTimestamp(1_800_000_000_000 + (formatVersion === 2 ? 300_000 : 30_000)),
     });
-    const retainedRequest = new Uint8Array([0x32]);
+    const retainedRequest = prepareHumanAiReadableLiveShadowMessageRequest(crypto, {
+      operationId, clientIdempotencyKey: "history-human-evidence",
+      policyRevision: 1, sessionId: SESSION_ID, roomId: ROOM_ID,
+      messageId: 26, revision: 0, transcriptOrdinal: 1, role: "user",
+      createdAt: unixTimestamp(1_800_000_000_000),
+      subjectHumanId: humanId(HUMAN_ID),
+      committerDeviceId: cryptoDeviceId(historicalDeviceId),
+      committerDeviceSigningKeyGeneration: 3,
+      hostAuthorizationRevision: authorizationRevision(8),
+      namespaceId: namespaceId(NAMESPACE_ID), keyClass: "ai",
+      namespaceAccessRevision: accessRevision(1),
+      namespaceKeyGeneration: namespaceGeneration(1),
+      namespaceHeadDigest: new Uint8Array(32).fill(1),
+      namespacePublicationDigest: new Uint8Array(32).fill(2),
+      namespacePublicationSetDigest: new Uint8Array(32).fill(3),
+      namespaceAudienceFingerprint: new Uint8Array(32).fill(4),
+      issuedAt: unixTimestamp(1_800_000_000_000),
+      deadlineAt: unixTimestamp(1_800_000_000_000 + (formatVersion === 2 ? 300_000 : 30_000)),
+      cryptoObjectId: objectId(OBJECT_ID),
+      planDigest: crypto.hash(retainedPlan),
+      plaintextPayloadDigest: new Uint8Array(32).fill(5),
+      encryptedPayloadDigest: new Uint8Array(32).fill(6),
+      manifestDigest: new Uint8Array(32).fill(7),
+      envelopeDigest: new Uint8Array(32).fill(8),
+      committerSigningPublicKey: historicalSigner.publicKey,
+      committerSigningPrivateKey: historicalSigner.privateKey,
+    }, formatVersion);
+    const signerRequests: Array<Record<string, unknown>> = [];
     // The current shared foreground writer records Human input in the ai
     // namespace with this operation family, not the legacy turn family.
     // Ciphertext and access state remain available through the crypto seam.
@@ -1144,10 +1244,11 @@ describe("M275 selected Room-history Shadow projection", () => {
         parity_status: "client_verified",
         // A Full-origin row remains protected-only after policy returns to
         // Shadow. Its retained signed commitment must still be projected.
-        content: null,
+        content: scenario === "ordinary" ? "human 26" : null,
+        source_human_id: scenario === "source_mismatch" ? USER_ID : HUMAN_ID,
         plan_bytes: retainedPlan,
-        human_request_bytes: retainedRequest,
-        human_request_digest: sha256(retainedRequest),
+        human_request_bytes: retainedRequest.bytes,
+        human_request_digest: retainedRequest.requestDigest,
       }),
     ], [{
       shadow_operation_id: operationId,
@@ -1157,7 +1258,12 @@ describe("M275 selected Room-history Shadow projection", () => {
       content: "human 26",
       tool_calls: null,
       tool_name: null,
-    }]]);
+    }]], undefined, "agent", undefined, undefined, {
+      publicKey: historicalSigner.publicKey,
+      headDigestBase64url: Buffer.from(new Uint8Array(32).fill(1)).toString("base64url"),
+      requests: signerRequests,
+      available: scenario !== "authority_unavailable",
+    });
 
     const result = await project({
       subjectUserId: USER_ID,
@@ -1169,13 +1275,17 @@ describe("M275 selected Room-history Shadow projection", () => {
       })],
     });
 
+    if (scenario === "source_mismatch") {
+      expect(result).toMatchObject({ status: "unavailable", reason: "projection_corrupt" });
+      expect(signerRequests).toEqual([]);
+      return;
+    }
     expect(result).toMatchObject({
       status: "ready",
       selectedCount: 1,
       eligibleCount: 1,
       records: [{
         shadowOperationId: operationId,
-        representationMode: "protected-only",
         coordinate: { messageId: 26, role: "user" },
         protectedMessage: {
           protectedPayload: {
@@ -1192,8 +1302,41 @@ describe("M275 selected Room-history Shadow projection", () => {
         kind: formatVersion === 2 ? "human_ai_readable_live_shadow_request_v2"
           : "human_ai_readable_live_shadow_request_v1",
         operationId,
+        ...(scenario === "authority_unavailable" ? {} : {
+          committerDeviceSigningPublicKeyBase64url:
+            Buffer.from(historicalSigner.publicKey).toString("base64url"),
+        }),
       }],
     });
+    expect(signerRequests).toEqual([{
+      subjectHumanId: HUMAN_ID,
+      readerDeviceId: DEVICE_ID,
+      namespaceId: NAMESPACE_ID,
+      keyClass: "ai",
+      generation: 1,
+      accessRevision: 1,
+      authorHumanId: HUMAN_ID,
+      committerDeviceId: historicalDeviceId,
+      committerHostAuthorizationRevision: 8,
+    }]);
+    if (result.status !== "ready") throw new Error("Expected ready projection");
+    const projectedRecord = result.records[0]!;
+    if (scenario === "ordinary") {
+      expect("ordinaryPayloadBytesBase64url" in projectedRecord).toBeTrue();
+    } else {
+      expect(projectedRecord).toMatchObject({ representationMode: "protected-only" });
+    }
+    const projectedEvidence = result.signerEvidence[0]!;
+    if (scenario === "authority_unavailable") {
+      expect("committerDeviceSigningPublicKeyBase64url" in projectedEvidence).toBeFalse();
+    } else {
+      expect("committerDeviceSigningPublicKeyBase64url" in projectedEvidence).toBeTrue();
+      if ("committerDeviceSigningPublicKeyBase64url" in projectedEvidence) {
+        expect(projectedEvidence.committerDeviceSigningPublicKeyBase64url).toBe(
+          Buffer.from(historicalSigner.publicKey).toString("base64url"),
+        );
+      }
+    }
     expect(cryptoReads).toEqual([`object:${OBJECT_ID}`, `access:${OBJECT_ID}`]);
   });
 

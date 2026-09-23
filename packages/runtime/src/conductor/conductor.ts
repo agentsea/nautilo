@@ -147,6 +147,9 @@ export async function routeRoomMessage(
     {
       content: ctx.message.content,
       uiSelectedBotActorId: ctx.message.uiSelectedBotActorId ?? null,
+      ...(ctx.message.mentionEveryone === true
+        ? { mentionEveryone: true }
+        : {}),
     },
     candidates,
     replyTargetActorId,
@@ -164,6 +167,14 @@ export async function routeRoomMessage(
       writeFocus: true,
       reason: source,
     };
+  }
+
+  // Structured @everyone targets the current Human roster. Explicit Genie
+  // addressing above still wins, but the Human-wide intent must never wake a
+  // focused, active, or floor-manager-inferred Genie.
+  if (ctx.message.mentionEveryone === true) {
+    deps.onTrace?.("everyone-mention", {});
+    return { kind: "silent", reason: "human-addressed" };
   }
 
   // 3. EXPLICIT HUMAN @MENTION SUPPRESSION (D454, every mode). This runs after
