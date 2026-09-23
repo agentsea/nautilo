@@ -289,6 +289,65 @@ describe("Job", () => {
     }
   });
 
+  test("protected Task executor failures collapse before every Job sink", async () => {
+    const sentinel = "PROTECTED_TASK_PROVIDER_ERROR_SENTINEL";
+    const persisted: PersistJobPayload[] = [];
+    const updates: unknown[] = [];
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    eventBus.on(listener);
+    try {
+      const job = new Job({
+        ownerId: "o1",
+        requestorId: "r1",
+        laneKey: "task:10000000-0000-4000-8000-000000000001",
+        type: "foreground",
+        input: {
+          taskId: "10000000-0000-4000-8000-000000000001",
+          taskRunId: "20000000-0000-4000-8000-000000000002",
+        },
+        durableInputDisposition: "full",
+        durableInputReference: {
+          kind: "protected_task_run_v1",
+          taskId: "10000000-0000-4000-8000-000000000001",
+          taskRunId: "20000000-0000-4000-8000-000000000002",
+          inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+          resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+          authorizationRequestId: "task-run-authorization:failure-test",
+          policyRevision: 9,
+        },
+        executor: async function* () {
+          yield* ([] as ServerEvent[]);
+          throw new Error(sentinel);
+        },
+        persist: async (payload) => {
+          persisted.push(payload);
+          return "protected-task-failure";
+        },
+        updateStatus: async (...args) => {
+          updates.push(args);
+        },
+      });
+      await job.persist();
+      await job.executeProtectedTask(
+        { message: sentinel },
+        new AbortController().signal,
+      );
+      expect(JSON.stringify({ persisted, updates, events, logs: errorSpy.mock.calls }))
+        .not.toContain(sentinel);
+      expect(events.at(-1)).toMatchObject({
+        type: "job.status",
+        status: "failed",
+        message: "Protected operation failed [MDL007]",
+      });
+      expect(updates.every((update) => (update as unknown[])[2] === undefined)).toBeTrue();
+    } finally {
+      eventBus.off(listener);
+      errorSpy.mockRestore();
+    }
+  });
+
   test("candidate failure uses the Full sink and cannot rewrite an already terminal Job", async () => {
     const updates: JobStatus[] = [];
     const job = new Job({ ownerId: "o1", requestorId: "r1", laneKey: null,
