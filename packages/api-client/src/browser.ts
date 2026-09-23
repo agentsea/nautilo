@@ -1,4 +1,6 @@
 export * from "./schemas/memory-processor-transport";
+export { BACKGROUND_AUTHORIZATION_MAX_REQUEST_WIRE_BYTES } from
+  "./schemas/background-authorization";
 export {
   NautiloApiClient,
   ApiError,
