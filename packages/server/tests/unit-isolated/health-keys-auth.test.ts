@@ -28,10 +28,12 @@ mock.module("@nautilo/config-guard", () => ({
 const getUserCapabilitiesMock = mock(
   async (_userId: string): Promise<string[]> => ["manage_server_settings"],
 );
+const assertServerFundingMock = mock(async (_userId: string, _origin?: string) => {});
 const actualTrust = await import("@nautilo/trust");
 mock.module("@nautilo/trust", () => ({
   ...actualTrust,
   getUserCapabilities: getUserCapabilitiesMock,
+  assertCanUseServerProviderCredentials: assertServerFundingMock,
 }));
 
 import { healthRoutes } from "../../src/routes/health";
@@ -51,6 +53,8 @@ describe("GET /api/health/keys + POST /api/health/keys/validate (D445 Phase 1)",
     getUserCapabilitiesMock.mockImplementation(async () => [
       "manage_server_settings",
     ]);
+    assertServerFundingMock.mockClear();
+    assertServerFundingMock.mockImplementation(async () => {});
   });
 
   afterEach(async () => {
@@ -168,6 +172,29 @@ describe("GET /api/health/keys + POST /api/health/keys/validate (D445 Phase 1)",
       const body = JSON.parse(res.body) as { keys: unknown[]; summary: unknown };
       expect(body.keys).toBeDefined();
       expect(body.summary).toBeDefined();
+      expect(assertServerFundingMock).not.toHaveBeenCalled();
+    });
+
+    test("authenticated loopback Human without funding is rejected before validation", async () => {
+      assertServerFundingMock.mockImplementation(async (humanUserId, origin) => {
+        throw new actualTrust.ServerProviderCredentialsDeniedError(humanUserId, origin);
+      });
+      const res = await makeApp(ADMIN_USER_ID).inject({
+        method: "POST",
+        url: "/api/health/keys/validate",
+        remoteAddress: "127.0.0.1",
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({
+        error: "server_provider_credentials_required",
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+      expect(assertServerFundingMock).toHaveBeenCalledWith(
+        ADMIN_USER_ID,
+        "provider_key_health_validation",
+      );
+      expect(checkMock).not.toHaveBeenCalled();
     });
 
     test("401 for remote unauthenticated caller", async () => {

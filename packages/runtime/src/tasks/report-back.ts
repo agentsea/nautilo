@@ -531,6 +531,7 @@ async function wakeCallingRoom(
       message: note + inspection,
       ownerId: task.ownerId,
       requestorId: task.requestorId,
+      causalHumanUserId: task.requestorId,
       agentId: task.agentId,
       roomId: callingRoomId,
       roomRoster: [],

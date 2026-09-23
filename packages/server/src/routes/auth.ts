@@ -21,9 +21,11 @@ import {
   getLogtoAdminClient,
   verifyLogtoAccessToken,
   type PolicyResolver,
+  AgentInvocationDeniedError,
   createAcceptedInvocationAuthority,
   getPolicyResolver,
   isScopeMemoryEnvelope,
+  toActionCapabilityHttpDenial,
 } from "@nautilo/trust";
 import {
   resumeGraphWithIdentity,
@@ -202,6 +204,8 @@ export interface AuthRouteDeps {
   ) => Promise<ProjectionResumeBinding>;
   /** Test seam for the canonical Agent identity stored on a paused graph. */
   resumeAgentIdForThread?: (threadId: string) => Promise<string | null>;
+  /** Test seam for the causal Human identity stored on a paused graph. */
+  resumeCausalHumanUserIdForThread?: typeof readCausalHumanUserIdForThread;
   /** Policy resolver for resume paths that rebuild guest policy context. */
   policyResolver?: PolicyResolver | null;
   /**
@@ -358,6 +362,8 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
   // their Genie). Conflating those identities corrupts live attribution and
   // protected-runtime reservation even though the durable graph is unchanged.
   const now = deps.now ?? (() => new Date());
+  const readResumeCausalHumanUserId =
+    deps.resumeCausalHumanUserIdForThread ?? readCausalHumanUserIdForThread;
 
   class FullResumeExecutionError extends Error {
     constructor(readonly original: unknown) {
@@ -396,11 +402,22 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
   const connectedWebActionReplyTtlMs = 5 * 60 * 1000;
 
   async function admitForegroundResume(
-    humanUserId: string,
+    causalHumanUserId: string | null,
     roomId: string | undefined,
     agentId: string,
     reply: FastifyReply,
   ) {
+    const humanUserId = causalHumanUserId?.trim() ?? "";
+    if (!humanUserId) {
+      const denial = new AgentInvocationDeniedError({
+        humanUserId: "",
+        origin: "foreground_resume",
+        ...(roomId ? { roomId } : {}),
+        ...(agentId ? { agentId } : {}),
+      });
+      reply.code(403).send(toActionCapabilityHttpDenial(denial));
+      return null;
+    }
     if (!(await requireAgentInvocation(
       {
         humanUserId,
@@ -421,6 +438,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       throw error;
     }
     return {
+      humanUserId,
       invocation: createAcceptedInvocationAuthority(humanUserId),
       maintenance: createMaintenanceAcceptanceAuthority(),
     };
@@ -1108,7 +1126,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           const effectiveLaneKey = laneKey ?? threadId;
           const turnId = await readTurnIdForThread(threadId);
           const causalHumanUserId =
-            await readCausalHumanUserIdForThread(threadId);
+            await readResumeCausalHumanUserId(threadId);
           request.__turnId = turnId;
           const pc = request.policyContext;
           if (!pc) {
@@ -1132,7 +1150,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             envelopeAgentId,
           );
           const accepted = await admitForegroundResume(
-            userId,
+            causalHumanUserId,
             resumeRoom.roomId ?? undefined,
             agentIdForResume,
             reply,
@@ -1184,7 +1202,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
               laneKey: effectiveLaneKey,
               roomId: resumeRoom.roomId ?? "",
               graphThreadId: threadId,
-              humanUserId: userId,
+              humanUserId: accepted.humanUserId,
               turnId,
               authorAgentId: agentId,
             }, (signal) => runProtectedForegroundResume({
@@ -1347,7 +1365,13 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       if (!parked || parked.type !== "connected_web.action_attention") {
         return reply.status(409).send({ error: "connected_web_action_not_parked" });
       }
-      const accepted = await admitForegroundResume(userId, resumeRoom.roomId ?? undefined, agentId, reply);
+      const causalHumanUserId = await readResumeCausalHumanUserId(threadId);
+      const accepted = await admitForegroundResume(
+        causalHumanUserId,
+        resumeRoom.roomId ?? undefined,
+        agentId,
+        reply,
+      );
       if (!accepted) return;
       const claimNow = now().getTime();
       for (const [claim, expiresAt] of connectedWebActionReplyClaims) {
@@ -1439,7 +1463,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             laneKey,
             roomId: resumeRoom.roomId ?? "",
             graphThreadId: threadId,
-            humanUserId: userId,
+            humanUserId: accepted.humanUserId,
             turnId,
             authorAgentId: agentId,
           },
@@ -1693,7 +1717,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       // chat turn that raised the prove_it interrupt.
       const turnId = await readTurnIdForThread(threadId);
       const causalHumanUserId =
-        await readCausalHumanUserIdForThread(threadId);
+        await readResumeCausalHumanUserId(threadId);
       request.__turnId = turnId;
 
       // M125 Phase 2.4 — envelope-derived agentId; 409 on missing.
@@ -1712,7 +1736,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         envelopeAgentId,
       );
       const accepted = await admitForegroundResume(
-        userId,
+        causalHumanUserId,
         resumeRoom.roomId ?? undefined,
         agentIdForResume,
         reply,
@@ -1767,7 +1791,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             laneKey: effectiveLaneKey,
             roomId: resumeRoom.roomId ?? "",
             graphThreadId: threadId,
-            humanUserId: userId,
+            humanUserId: accepted.humanUserId,
             turnId,
             authorAgentId: agentIdForResume,
           }, (signal) => runProtectedForegroundResume({
@@ -1841,8 +1865,9 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         threadId,
         envelopeAgentId,
       );
+      const causalHumanUserId = await readResumeCausalHumanUserId(threadId);
       const accepted = await admitForegroundResume(
-        userId,
+        causalHumanUserId,
         resumeRoom.roomId ?? undefined,
         agentId,
         reply,
@@ -1883,7 +1908,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             laneKey: effectiveLaneKey,
             roomId: resumeRoom.roomId ?? "",
             graphThreadId: threadId,
-            humanUserId: userId,
+            humanUserId: accepted.humanUserId,
             turnId,
             authorAgentId: agentId,
           }, (signal) =>
@@ -2176,7 +2201,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       // resume stream.
       const turnId = await readTurnIdForThread(threadId);
       const causalHumanUserId =
-        await readCausalHumanUserIdForThread(threadId);
+        await readResumeCausalHumanUserId(threadId);
       request.__turnId = turnId;
 
       // M125 Phase 2.4 — envelope-derived agentId; 409 on missing.
@@ -2195,7 +2220,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         envelopeAgentId,
       );
       const accepted = await admitForegroundResume(
-        sessionUserId,
+        causalHumanUserId,
         resumeRoom.roomId ?? undefined,
         agentIdForResume,
         reply,
@@ -2306,7 +2331,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             laneKey: effectiveLaneKey,
             roomId: resumeRoom.roomId ?? "",
             graphThreadId: threadId,
-            humanUserId: sessionUserId,
+            humanUserId: accepted.humanUserId,
             turnId,
             authorAgentId: agentId,
           }, (signal) => runProtectedForegroundResume({
@@ -2648,7 +2673,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
 
       const turnId = await readTurnIdForThread(threadId);
       const causalHumanUserId =
-        await readCausalHumanUserIdForThread(threadId);
+        await readResumeCausalHumanUserId(threadId);
       request.__turnId = turnId;
 
       // M125 Phase 2.4 — envelope-derived agentId; 409 on missing.
@@ -2667,7 +2692,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         envelopeAgentId,
       );
       const accepted = await admitForegroundResume(
-        userId,
+        causalHumanUserId,
         resumeRoom.roomId ?? undefined,
         agentIdForResume,
         reply,
@@ -2720,7 +2745,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             laneKey: effectiveLaneKey,
             roomId: resumeRoom.roomId ?? "",
             graphThreadId: threadId,
-            humanUserId: userId,
+            humanUserId: accepted.humanUserId,
             turnId,
             authorAgentId: agentId,
           }, (signal) => runProtectedForegroundResume({

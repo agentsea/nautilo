@@ -1150,7 +1150,7 @@ export function registerAllTools(
 
   catalog.register({
     name: "check_config",
-    factory: () => createCheckConfigTool(),
+    factory: (ctx) => createCheckConfigTool(ctx),
     category: "administration",
     discoveryCategories: ["settings"],
     trustTier: "standard",

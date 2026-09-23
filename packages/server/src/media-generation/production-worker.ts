@@ -127,6 +127,7 @@ export async function deliverProductionMediaGenerationCompletionWakes(input: {
           message: note,
           ownerId: claim.ownerId,
           requestorId: claim.ownerId,
+          causalHumanUserId: claim.ownerId,
           agentId: claim.initiatingAgentId,
           roomId: claim.roomId,
           roomRoster: [],
