@@ -16,7 +16,7 @@ function sliceBetween(source: string, startText: string, endText: string): strin
 
 describe("native mini-app persistence lifecycle", () => {
   test("preload registers only while a renderer owns a quit handler and catches sync throws", () => {
-    const exposed = sliceBetween(preload, "onPrepareQuit:", "/** D103");
+    const exposed = sliceBetween(preload, "onPrepareQuit:", "updates: updatesAPI");
     expect(exposed).toContain("prepareDesktopQuitListeners.size === 1");
     expect(exposed).toContain('ipcRenderer.send("desktop:lifecycle:register-quit-guard")');
     expect(exposed).toContain("prepareDesktopQuitListeners.size === 0");

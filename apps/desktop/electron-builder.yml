@@ -33,7 +33,7 @@ mac:
   sign: ./scripts/sign-adhoc.cjs
   # Bundled tool runtimes are copied into both arch temp apps before the
   # universal merge. They are selected at runtime via process.arch, not lipo'd.
-  # D373 stack-137 — node-pty (asarUnpack'd above) ships thin per-arch prebuilds
+  # node-pty (asarUnpack'd above) ships thin per-arch prebuilds
   # under prebuilds/darwin-{arm64,x64}/ (pty.node + spawn-helper). Both dirs land
   # in EACH per-arch temp app, so @electron/universal sees single-arch Mach-O
   # binaries that are byte-identical across builds and refuses to lipo them. Like
@@ -44,7 +44,7 @@ mac:
   # during universal merge rather than attempting to lipo them.
   x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-agent-browser,tools-gog,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
   notarize: false
-  # D057 2a.5 + D103 P3.5: user-facing permission strings + Info.plist
+  # user-facing permission strings + Info.plist
   # release metadata. macOS requires permission strings in Info.plist
   # (NOT entitlements.plist) — without them the TCC prompt never
   # appears, even with the matching entitlement granted. Wired via
@@ -61,7 +61,7 @@ mac:
     NSAppleEventsUsageDescription: >-
       Nautilo uses Automation only when an approved Computer use action needs
       to communicate with another app.
-    # D489 — local-server discovery is initiated only by the server picker.
+    # local-server discovery is initiated only by the server picker.
     # This Info.plist declaration is shared by signed and unsigned macOS
     # packages; it is deliberately not an entitlement or a second discovery path.
     NSLocalNetworkUsageDescription: >-
@@ -72,7 +72,7 @@ mac:
     NSHumanReadableCopyright: "Copyright © 2026 Nautilo"
     LSMinimumSystemVersion: "11.0"
   extraResources:
-    # D516 — this Darwin-universal executable must remain mac-only. Keeping the
+    # this Darwin-universal executable must remain mac-only. Keeping the
     # resource mapping under `mac` prevents a stale macOS vendor cache from
     # leaking Cua into Linux/Windows packages, whose build scripts do not vendor it.
     - from: vendor/cua-driver
@@ -91,18 +91,22 @@ mac:
       filter:
         - "nautilo-computer-use-host"
         - "manifest.json"
-    # D565 — Electron consumes Relay only through this private child process.
+    # Electron consumes Relay only through this private child process.
     - from: vendor/relay-host
       to: tools-relay-host
       filter:
         - "nautilo-relay-host.js"
         - "manifest.json"
-    # D516 — source-owned universal helper used only to invoke the host-owned
+    # source-owned universal helper used only to invoke the host-owned
     # CGRequestScreenCaptureAccess API. It is never downloaded at runtime.
     - from: vendor/screen-recording-permission
       to: tools-permissions
       filter:
         - "nautilo-screen-recording-permission"
+    - from: vendor/window-presence
+      to: tools-window-presence
+      filter:
+        - "nautilo-window-presence"
 
 win:
   target:
@@ -120,12 +124,12 @@ asar: true
 # integrity at runtime via the Electron fuse `EnableEmbeddedAsarIntegrityValidation`
 # (flipped on in scripts/flip-fuses.ts → after-pack.cjs, P4.3).
 
-# D373 stack-137 — node-pty, argon2, and Sharp's dynamically-resolved native
+# node-pty, argon2, and Sharp's dynamically-resolved native
 # addon/libvips packages cannot live inside app.asar. electron-builder's
 # implicit smart-unpack is unreliable over Bun's symlinked isolated
 # node_modules layout, so pin them explicitly. node-pty's runtime resolver additionally rewrites
 # `app.asar` → `app.asar.unpacked` for spawn-helper; after-pack.cjs re-asserts
-# +x on that helper. tests/unit/build-output.test.ts guards these pins.
+# executable permission on that helper. tests/unit/build-output.test.ts guards these pins.
 asarUnpack:
   - "**/node_modules/node-pty/**"
   - "**/node_modules/argon2/**"
@@ -135,7 +139,7 @@ asarUnpack:
   - "**/node_modules/@img/sharp-*/**"
   - "**/node_modules/@img/sharp-libvips-*/**"
 
-# D103 P4.3 — flip Electron fuses on every packaged build so production
+# flip Electron fuses on every packaged build so production
 # binaries ship with the locked-in security posture (RunAsNode disabled,
 # NodeOptions/NodeCliInspect disabled, CookieEncryption + asar-integrity
 # runtime check enabled). See scripts/after-pack.cjs and scripts/flip-fuses.ts.
@@ -166,7 +170,7 @@ files:
   - "!**/{*.md,*.markdown}"
   - "!**/{tsconfig.json,tsconfig.*.json}"
 
-# D057 2a.2 — bundle the Bun runtime so the packaged app works on any
+# bundle the Bun runtime so the packaged app works on any
 # Mac whether or not the user has Bun installed. Produced at build time
 # by scripts/vendor-bun.ts (called from the pack/dist npm scripts).
 #
@@ -187,7 +191,7 @@ extraResources:
       - "sharp-darwin-x64/**"
       - "sharp-libvips-darwin-arm64/**"
       - "sharp-libvips-darwin-x64/**"
-  # D336/M195 — provider plugin must be a real file because bundled Bun runs
+  # provider plugin must be a real file because bundled Bun runs
   # outside Electron's ASAR filesystem shim.
   - from: dist/browser-control-provider.js
     to: browser-control-provider.js
@@ -195,7 +199,7 @@ extraResources:
     to: bun
     filter:
       - "**/*"
-  # M195 — vendor agent-browser + gog CLIs (both arches) for universal DMG.
+  # vendor agent-browser + gog CLIs (both arches) for universal DMG.
   # Resolved at runtime by bundledToolPath() (electron/relay.ts).
   - from: vendor/agent-browser
     to: tools-agent-browser
@@ -205,14 +209,14 @@ extraResources:
     to: tools-gog
     filter:
       - "**/*"
-  # Stack 178 — managed LGPL FFmpeg binaries and complete source ship for both macOS arches.
+  # Managed LGPL FFmpeg binaries and complete source ship for both macOS arches.
   # Resolved by electron/ffmpeg-runtime.ts; no PATH/Homebrew fallback exists
   # in production.
   - from: vendor/ffmpeg
     to: tools-ffmpeg
     filter:
       - "**/*"
-  # Stack 173 — universal OpenHue CLI is relay-only and resolves directly at
+  # Universal OpenHue CLI is relay-only and resolves directly at
   # Contents/Resources/tools/openhue. The universal artifact is copied intact;
   # it must not be lipo'd during the universal app merge.
   - from: vendor/openhue
@@ -220,9 +224,9 @@ extraResources:
     filter:
       - "openhue"
       - "LICENSE-openhue.txt"
-  # M206 — vendor OfficeCLI (darwin-arm64 + darwin-x64) for local-zone execution.
+  # vendor OfficeCLI (darwin-arm64 + darwin-x64) for local-zone execution.
   # Resolved at runtime by resolveDesktopOfficeCliPath() (electron/tool-runtime-resolver.ts).
-  # M197 — strict allowlist: canonical darwin runtimes + license/version metadata only.
+  # strict allowlist: canonical darwin runtimes + license/version metadata only.
   # Never bundle OfficeCLI auto-update sidecars (officecli.update / .update.partial).
   - from: vendor/officecli
     to: tools-officecli
@@ -231,7 +235,7 @@ extraResources:
       - "darwin-x64/officecli"
       - "LICENSE-officecli.txt"
       - ".version"
-  # D448 — source-built Darwin apply-patch runtimes remain outside ASAR. The
+  # source-built Darwin apply-patch runtimes remain outside ASAR. The
   # build command records the exact local output hashes before package signing;
   # the signed and notarized bundle is verified separately afterwards.
   - from: vendor/apply-patch
@@ -244,7 +248,7 @@ extraResources:
       - "NOTICE"
       - "UPSTREAM.toml"
       - "THIRD_PARTY_NOTICES.txt"
-  # D446 — official checksum-pinned ripgrep archives, extracted at package time.
+  # official checksum-pinned ripgrep archives, extracted at package time.
   - from: vendor/ripgrep
     to: tools-ripgrep
     filter:

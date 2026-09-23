@@ -1,3 +1,4 @@
+import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
   useCallback,
@@ -8,6 +9,7 @@ import {
   useReducer,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import { createRoomChangeSource, RoomChangeSourceContext, companionHistoryEvents } from "../companion/room-changes";
 import { dedupeThreadMessagesById, newMessageId } from "../lib/message-id";
 import {
   AssistantRuntimeProvider,
@@ -59,6 +61,7 @@ import {
 import { preserveComputerUseResultForCard } from "../components/tool-card/renderers/computer-use";
 import { preserveConnectedAppResultForCard } from "../components/tool-card/renderers/connected-app-receipt";
 import { VoicePlayer } from "./voice-player";
+import { resolveVoiceOwnership } from "./voice-ownership";
 import { apiClient, WS_URL } from "../lib/api";
 import {
   assertCryptoAdmissionAccess,
@@ -2333,6 +2336,7 @@ export function NautiloRuntimeProvider({
   // module or window singleton), so an unmounted/switching drawer cannot
   // receive replayed frames.
   const threadRoomRegistrationRef = useRef<ThreadRoomRegistration | null>(null);
+  const roomChangeSource = useMemo(createRoomChangeSource, []);
   const registerThreadRoom = useCallback((registration: ThreadRoomRegistration) => {
     threadRoomRegistrationRef.current = registration;
     return () => {
@@ -2504,8 +2508,20 @@ export function NautiloRuntimeProvider({
   const visibilityDisconnectSuppressRef = useRef(false);
   const [visibilityHidden, setVisibilityHidden] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [companionVoiceRoom, setCompanionVoiceRoom] = useState<string | null>(null);
+  const companionVoiceRoomRef = useRef<string | null>(null);
+  const voiceRoomRef = useRef<string | null>(null);
+  const voiceOwnership = resolveVoiceOwnership({
+    activeRoomId,
+    activeRoomEnabled: voiceEnabled,
+    companionRoomId: companionVoiceRoom,
+  });
+  const voiceRoom = voiceOwnership.roomId;
+  voiceRoomRef.current = voiceRoom;
+  const voicePlaybackEnabledRef = useRef(false);
+  voicePlaybackEnabledRef.current = voiceOwnership.enabled;
   const [voicePlaying, setVoicePlaying] = useState(false);
-  //  2a.1.11 — rolling activity log consumed by the Activity tab.
+  // Rolling activity log consumed by the Activity tab.
   // We push on tool.start + mutate the matching entry on tool.end, and
   // cap total length so a long session doesn't bloat state.
   const [toolActivity, setToolActivity] = useState<ToolActivityEvent[]>([]);
@@ -3034,7 +3050,13 @@ export function NautiloRuntimeProvider({
     voicePlayerRef.current = new VoicePlayer(
       playing => setVoicePlaying(playing),
       event => wsRef.current?.send(event),
-      () => { voiceEnabledRef.current = false; setVoiceEnabled(false); },
+      () => {
+        voiceEnabledRef.current = false;
+        companionVoiceRoomRef.current = null;
+        voicePlaybackEnabledRef.current = false;
+        setVoiceEnabled(false);
+        setCompanionVoiceRoom(null);
+      },
     );
   }
 
@@ -3581,6 +3603,15 @@ export function NautiloRuntimeProvider({
         return;
       }
       if (!isCryptoAdmissionAllowed()) return;
+      if (event.type === "room_members_changed") roomChangeSource.publish(event.roomId);
+      if (companionHistoryEvents.has(event.type) && "laneKey" in event && typeof event.laneKey === "string") {
+        const changedRoomId = roomIdFromLaneKey(event.laneKey, laneKeyToRoomIdRef.current);
+        if (changedRoomId) roomChangeSource.publish(changedRoomId);
+      }
+      if (event.type === "voice.audio") {
+        if (voicePlaybackEnabledRef.current && event.roomId === voiceRoomRef.current) voicePlayerRef.current?.handleAudioEvent(event);
+        return;
+      }
       if (event.type === "crypto.background_authorization_requested") {
         backgroundAuthorizationWakeRef.current();
         return;
@@ -4135,7 +4166,7 @@ export function NautiloRuntimeProvider({
         return;
       }
 
-      //  R12 — maintenance is global server truth, never room-scoped.
+      // Maintenance is global server truth, never room-scoped.
       // Apply it before the room-routing gate so a future routing change cannot
       // hide the applying snapshot that protects planned replacement reconnects.
       if (event.type === "maintenance.status") {
@@ -4586,7 +4617,7 @@ export function NautiloRuntimeProvider({
             ],
             ...(toolCustom ? { metadata: { custom: toolCustom } } : {}),
           });
-          //  2a.1.11 — push a "running" entry into the activity log.
+          // Push a "running" entry into the activity log.
           // Cap preserves the newest TOOL_ACTIVITY_CAP entries.
           const interventionBindingKey = event.laneKey
             ? `${event.laneKey}\0${event.toolCallId}`
@@ -4638,7 +4669,7 @@ export function NautiloRuntimeProvider({
             const committedMutation = liveAppMutationFromToolEnd(event);
             if (committedMutation) publishLiveAppMutationCommitted(committedMutation);
           }
-          //  2a.1.11 — flip the running entry to ok/error + set end.
+          // Flip the running entry to ok/error and record its end time.
           // also store event.result + resultTruncated
           // so the inline ToolCard's per-tool renderers (run_shell,
           // read_file, grep, etc.) can show actual output instead of
@@ -5013,10 +5044,6 @@ export function NautiloRuntimeProvider({
           break;
         }
 
-        case "voice.audio": {
-          voicePlayerRef.current?.handleAudioEvent(event);
-          break;
-        }
 
         case "identity.challenge": {
           // `event.mode` selects the submit path:
@@ -5407,6 +5434,7 @@ export function NautiloRuntimeProvider({
       applyConnectedWebActionAttention,
       applyConnectedWebActionResumeFailed,
       settleToolsMissingFinalReceipt,
+      roomChangeSource,
     ],
   );
 
@@ -5661,8 +5689,8 @@ export function NautiloRuntimeProvider({
     let openedOnce = false;
     const client = createWsRealtimeClient(WS_URL, {
       onVoiceEvent: (event) => {
-        if (!voiceEnabledRef.current) return;
-        if (event.type === "voice.stream.start" && event.roomId !== activeRoomIdRef.current) return;
+        if (!voicePlaybackEnabledRef.current) return;
+        if (event.type === "voice.stream.start" && event.roomId !== voiceRoomRef.current) return;
         voicePlayerRef.current?.handleStreamEvent(event);
       },
       onEvent: (event) => {
@@ -6568,7 +6596,7 @@ export function NautiloRuntimeProvider({
       // is responding" never clears and Stop reports no-target). Rebuild ONLY
       // the active room's slice of the live-job set from
       // `GET /api/rooms/:id/active-jobs`; other rooms' tracked ids are left
-      // untouched (cross-room isolation, per the issue's MANDATORY req). This
+      // untouched to preserve cross-room isolation. This
       // runs once per real reconnect (the `hadEverBeenOpenRef` gate above).
       if (roomId) {
         try {
@@ -6965,7 +6993,11 @@ export function NautiloRuntimeProvider({
         const activeMiniApp = readActiveMiniApp();
         const liveMiniAppSession = readLiveMiniAppSession();
         const sendExtras = {
-          voiceMode: voiceEnabledRef.current,
+          voiceMode: resolveVoiceOwnership({
+            activeRoomId: activeRoomIdRef.current,
+            activeRoomEnabled: voiceEnabledRef.current,
+            companionRoomId: companionVoiceRoomRef.current,
+          }).activeRoomSendVoiceMode,
           // Carry the Human's ephemeral posture with the turn so trusted-host
           // structured SSH can be admitted before LangGraph parks. Handling
           // the flag only after `approval.ask` would replay earlier tools.
@@ -7152,42 +7184,67 @@ export function NautiloRuntimeProvider({
 
   const toggleVoice = useCallback(() => {
     const next = !voiceEnabled;
+    voiceEnabledRef.current = next;
     setVoiceEnabled(next);
-    voicePlayerRef.current?.setEnabled(next);
-    if (next) {
+    const playbackEnabled = next || companionVoiceRoomRef.current !== null;
+    voicePlaybackEnabledRef.current = playbackEnabled;
+    voicePlayerRef.current?.setEnabled(playbackEnabled);
+    if (playbackEnabled) {
       // Construct + resume the AudioContext while we still have the click
       // gesture's transient activation. If we defer to the first audio
       // chunk (which can arrive seconds later, after the LLM prelude
       // and first-sentence synth), Chromium's autoplay policy blocks
       // ctx.resume() and playback becomes silent.
       void voicePlayerRef.current?.prime();
-    } else {
-      voicePlayerRef.current?.stop();
-      wsRef.current?.send({ type: "voice.listen", version: 1, enabled: false, roomId: null });
     }
   }, [voiceEnabled]);
 
   const stopVoice = useCallback(() => {
     const turnId = voicePlayerRef.current?.currentTurnId();
-    voicePlayerRef.current?.stop();
+    voicePlayerRef.current?.stopTalking();
     wsRef.current?.send({ type: "voice.stop", ...(turnId ? { turnId } : {}) });
   }, []);
 
   useEffect(() => {
     voiceEnabledRef.current = voiceEnabled;
-    voicePlayerRef.current?.setEnabled(voiceEnabled);
-  }, [voiceEnabled]);
+    voicePlaybackEnabledRef.current = voiceOwnership.enabled;
+    voicePlayerRef.current?.setEnabled(voiceOwnership.enabled);
+  }, [voiceEnabled, voiceOwnership.enabled]);
 
   // Navigation changes the local foreground authority immediately. Clear any
   // buffered/playing sentence without aborting server synthesis, because a
   // different client may still be viewing the originating Room.
   useEffect(() => {
     voicePlayerRef.current?.stop();
-  }, [activeRoomId]);
+  }, [voiceRoom]);
 
   useEffect(() => {
-    wsRef.current?.send({ type: "voice.listen", version: 1, enabled: voiceEnabled && Boolean(activeRoomId), roomId: activeRoomId || null });
-  }, [voiceEnabled, activeRoomId, wsState]);
+    wsRef.current?.send({ type: "voice.listen", version: 1, enabled: voiceOwnership.enabled, roomId: voiceOwnership.enabled ? voiceRoom : null });
+  }, [voiceOwnership.enabled, voiceRoom, wsState]);
+
+  const enableCompanionVoice = useCallback((roomId: string) => {
+    if (voiceRoomRef.current !== roomId) voicePlayerRef.current?.stop();
+    companionVoiceRoomRef.current = roomId;
+    voiceRoomRef.current = roomId;
+    voicePlaybackEnabledRef.current = true;
+    setCompanionVoiceRoom(roomId);
+    voicePlayerRef.current?.setEnabled(true);
+    void voicePlayerRef.current?.prime();
+    wsRef.current?.send({ type: "voice.listen", version: 1, enabled: true, roomId });
+  }, []);
+  const releaseCompanionVoice = useCallback((roomId: string) => {
+    if (companionVoiceRoomRef.current !== roomId) return;
+    const turnId = voicePlayerRef.current?.currentTurnId();
+    voicePlayerRef.current?.stopTalking();
+    if (turnId) wsRef.current?.send({ type: "voice.stop", turnId });
+    companionVoiceRoomRef.current = null;
+    setCompanionVoiceRoom(null);
+    voiceRoomRef.current = activeRoomIdRef.current;
+    const restoreActiveRoom = voiceEnabledRef.current && Boolean(activeRoomIdRef.current);
+    voicePlaybackEnabledRef.current = restoreActiveRoom;
+    voicePlayerRef.current?.setEnabled(restoreActiveRoom);
+    wsRef.current?.send({ type: "voice.listen", version: 1, enabled: restoreActiveRoom, roomId: restoreActiveRoom ? activeRoomIdRef.current : null });
+  }, []);
 
   // install only after both canonical renderer owners exist, then ask
   // Desktop for one replay in case its startup event predated this mount.
@@ -7197,12 +7254,15 @@ export function NautiloRuntimeProvider({
     const shouldRestore = !readyToWorkRestoreAttemptedRef.current;
     readyToWorkRestoreAttemptedRef.current = true;
     const adapter = createReadyToWorkRendererOwnerAdapter(readyToWork, {
-      readVoice: () => voicePlayerRef.current?.isEnabled() ?? false,
+      // Ready-to-Work persists the active Room preference, not a companion's
+      // temporary claim on the shared player.
+      readVoice: () => voiceEnabledRef.current,
       setVoice: (enabled) => {
-        voicePlayerRef.current?.setEnabled(enabled);
-        const actual = voicePlayerRef.current?.isEnabled() ?? false;
-        voiceEnabledRef.current = actual;
-        setVoiceEnabled(actual);
+        voiceEnabledRef.current = enabled;
+        setVoiceEnabled(enabled);
+        const playbackEnabled = enabled || companionVoiceRoomRef.current !== null;
+        voicePlaybackEnabledRef.current = playbackEnabled;
+        voicePlayerRef.current?.setEnabled(playbackEnabled);
       },
       primeVoice: () => voicePlayerRef.current?.prime() ?? Promise.resolve(),
       readAutoApprove: () => autoApproveRef.current,
@@ -7978,6 +8038,9 @@ export function NautiloRuntimeProvider({
         value={notificationRuntimeEventSource}
       >
       <RoomMessageOperationsContext.Provider value={roomMessageOperations}>
+      <RoomChangeSourceContext.Provider value={roomChangeSource}>
+      <CompanionVoiceContext.Provider value={{ roomId: voiceRoom, pinnedRoomId: companionVoiceRoom, enabled: voiceOwnership.enabled, playing: voicePlaying,
+        prepare: () => { void voicePlayerRef.current?.prime(); }, enable: enableCompanionVoice, release: releaseCompanionVoice, stopTalking: stopVoice }}>
       <ThreadRoomEventRouterContext.Provider value={threadRoomEventRouter}>
       <ConversationEncryptionPolicyModeContext.Provider value={shadowPolicyMode}>
       <RoomMessageEditContext.Provider value={editRoomMessage}>
@@ -8089,6 +8152,8 @@ export function NautiloRuntimeProvider({
       </RoomMessageEditContext.Provider>
       </ConversationEncryptionPolicyModeContext.Provider>
       </ThreadRoomEventRouterContext.Provider>
+      </CompanionVoiceContext.Provider>
+      </RoomChangeSourceContext.Provider>
       </RoomMessageOperationsContext.Provider>
       </NotificationRuntimeEventSourceContext.Provider>
       </ProtectedRoomAccessContext.Provider>

@@ -4,6 +4,7 @@ import { WorkbenchShell } from "./layouts/workbench-shell";
 import { ActiveRoom } from "./modes/rooms/shape/ActiveRoom";
 import { ContextPanel } from "./components/context-panel";
 import { NautiloRuntimeProvider } from "./adapters/nautilo-runtime";
+import { CompanionProvider } from "./companion/companion-provider";
 import { ToastProvider } from "./components/toast";
 import { BrowserColumnProvider } from "./components/browser-column/browser-column.context";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -38,7 +39,7 @@ import { CryptoDeviceAdmissionGate } from
 import { EncryptionTransitionCard } from
   "./pages/admin/sections/encryption-transition-card";
 
-// M214 Phase 12 — lazy-load management routes so ordinary room chat stays
+// lazy-load management routes so ordinary room chat stays
 // on the eager startup path. Named-export adapters match editor-surface.tsx.
 const SettingsPage = deploymentSafeLazy(() =>
   import("./pages/settings/settings-page").then((m) => ({ default: m.SettingsPage })),
@@ -120,15 +121,15 @@ function DeepLinkMount() {
 }
 
 export function App({ ownerClaimBootstrap }: { readonly ownerClaimBootstrap?: OwnerClaimRouteBootstrap | null } = {}) {
-  // M054 — `/auth/callback` is registered above AuthGate so the
+  // `/auth/callback` is registered above AuthGate so the
   // @logto/react SDK's `useHandleSignInCallback` runs on the
   // post-redirect URL with no auth gating in front of it. AuthGate
   // would otherwise mask the callback render with the SignInScreen
   // and the SDK's token-store step would never fire.
   //
-  // M101 Phase 3 — `/invite/:token` is also outside AuthGate so a cold
-  // deep link is observable before sign-in; M104 owns the full wizard.
-  // D488 — `/claim` is the hosted first-owner equivalent. Its capability is
+  // `/invite/:token` is also outside AuthGate so a cold
+  // deep link is observable before sign-in; the wizard handles acceptance.
+  // `/claim` is the hosted first-owner equivalent. Its capability is
   // in a URL fragment only and is removed before the component does work.
   return (
     <>
@@ -147,7 +148,7 @@ export function App({ ownerClaimBootstrap }: { readonly ownerClaimBootstrap?: Ow
 }
 
 function AppShell() {
-  // D087 UX hotfix — wrap the whole runtime subtree in an error
+  // wrap the whole runtime subtree in an error
   // boundary. Without it, a single throw (assistant-ui's duplicate-
   // message-id guard, a stray render error in a tool card, …)
   // unmounted the app and left the user with a blank gray window.
@@ -165,6 +166,7 @@ function AppShell() {
         <WorkspaceArtifactsProvider>
         <DrawerProvider>
         <NautiloRuntimeProvider>
+        <CompanionProvider>
         <EventFeedProvider>
         <NotificationStateProvider>
         <RoomComposerDraftProvider>
@@ -173,7 +175,7 @@ function AppShell() {
             effects that fire toasts (e.g. prolonged-disconnect). Toasts
             can be triggered from any route below. */}
         <ToastProvider>
-          {/* D079 Phase 3 — Genie's Workspace context (Surface A).
+          {/* Genie's Workspace context (Surface A).
               Root-app state, always available (always-set default on
               desktop, null on web). Sits ABOVE BrowserColumnProvider
               because Workspace is conceptually broader and because
@@ -181,7 +183,7 @@ function AppShell() {
               Workspace outer means the publish order on initial
               mount is deterministic (workspace → currentFolder). */}
           <WorkspaceProvider>
-            {/* D057 2a.1 / D079 Phase 1 rename — BrowserColumn context
+            {/*  /  rename — BrowserColumn context
                 owns the tabbed left column's state (active tab,
                 currentFolderPath, its keyboard shortcut ⌘⇧B). Inside
                 ToastProvider so tab-switch errors / current-folder-change
@@ -197,6 +199,7 @@ function AppShell() {
         </RoomComposerDraftProvider>
         </NotificationStateProvider>
         </EventFeedProvider>
+        </CompanionProvider>
         </NautiloRuntimeProvider>
         </DrawerProvider>
         </WorkspaceArtifactsProvider>
@@ -224,13 +227,13 @@ function AppShell() {
  * about adding RTL/Vitest scaffolding so we don't repeat this.
  */
 function AppRoutes() {
-  // D057 2a.4 — subscribe to native menu actions. No-op in browser.
+  // subscribe to native menu actions. No-op in browser.
   useDesktopMenu();
 
   return (
     <SystemPermissionsStartupGate>
     <Routes>
-      {/* D510 — the wizard keeps auth, profile, and theme providers but avoids
+      {/* the wizard keeps auth, profile, and theme providers but avoids
           the normal Workbench shell so browser Back and direct URLs remain
           ordinary route behavior. Entry points intentionally remain unwired. */}
       <Route path={STABLE_APPLICATION_ROUTES_V1[0].path} element={STABLE_APPLICATION_ROUTES_V1[0].element} />

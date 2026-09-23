@@ -1,30 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { isDesktop, desktopAPI } from "../lib/desktop";
 import { formatSttHttpError } from "../lib/speech-stt-error";
 import { workbenchFetch } from "../lib/admission-fetch";
-
-interface SpeechRecognitionHook {
-  isSupported: boolean;
-  isListening: boolean;
-  isTranscribing: boolean;
-  transcript: string;
-  /**
-   * Most recent mic-permission denial reason from the desktop shell.
-   * `null` while things are working or on browser workbench. Consumers
-   * can surface this as a toast / inline hint alongside an "Open
-   * System Settings" action.
-   */
-  permissionError: string | null;
-  /**
-   * Last server-side STT failure (`/api/stt`). Cleared when a new
-   * recording starts. Distinct from mic TCC / getUserMedia errors.
-   */
-  sttError: string | null;
-  startListening: () => void;
-  stopListening: () => void;
-  warmUp: () => void;
-  coolDown: () => void;
-}
+import { SpeechCapture, type CaptureSnapshot } from "../lib/speech-capture";
 
 /**
  * Desktop-only preflight: resolve TCC mic status, prompt once if never
@@ -66,212 +44,44 @@ async function ensureDesktopMicPermission(): Promise<
   }
 }
 
-async function transcribeViaServer(
-  blob: Blob,
-  onResult: (text: string) => void,
-  onDone: () => void,
-  onSttError: (message: string) => void,
-) {
-  try {
-    const form = new FormData();
-    const ext = blob.type.includes("mp4") ? "m4a" : "webm";
-    form.append("audio", blob, `recording.${ext}`);
-
-    const response = await workbenchFetch("/api/stt", {
-      method: "POST",
-      body: form,
-    });
-
-    if (response.ok) {
-      const data = (await response.json()) as { text?: string };
-      if (typeof data.text === "string" && data.text.length > 0) {
-        onResult(data.text);
-      } else {
-        onSttError("Transcription returned no text.");
-      }
-    } else {
-      const msg = await formatSttHttpError(response);
-      console.error("[speech] STT API error:", response.status, msg);
-      onSttError(msg);
-    }
-  } catch (err) {
-    console.error("[speech] STT error:", err);
-    onSttError(
-      err instanceof Error ? err.message : "Transcription request failed.",
-    );
-  }
-  onDone();
+export function createBrowserSpeechCapture(changed: (state: CaptureSnapshot) => void, result: (text: string) => void) {
+  return new SpeechCapture({
+    permission: async () => {
+      const permission = await ensureDesktopMicPermission();
+      if (!permission.ok) throw new Error(permission.reason);
+    },
+    stream: () => navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }),
+    recorder: stream => {
+      const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg", "audio/mp4"].find(type => MediaRecorder.isTypeSupported(type));
+      return new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    },
+    transcribe: async (blob, signal) => {
+      const form = new FormData();
+      form.append("audio", blob, `recording.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
+      const response = await workbenchFetch("/api/stt", { method: "POST", body: form, signal });
+      if (!response.ok) throw new Error(await formatSttHttpError(response));
+      const data = await response.json() as { text?: string };
+      return data.text ?? "";
+    },
+  }, changed, result);
 }
 
-function checkMediaSupport(): boolean {
-  if (typeof window === "undefined") return false;
-  return typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
-}
-
-function getSupportedMimeType(): string {
-  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg", "audio/mp4"];
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
-  return "audio/webm";
-}
-
-export function useSpeechRecognition(): SpeechRecognitionHook {
-  const [isSupported, setIsSupported] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+export function useSpeechRecognition() {
+  const [snapshot, setSnapshot] = useState<CaptureSnapshot>({ state: "idle", error: null });
   const [transcript, setTranscript] = useState("");
-  const [permissionError, setPermissionError] = useState<string | null>(null);
-  const [sttError, setSttError] = useState<string | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const warmStreamRef = useRef<MediaStream | null>(null);
-
-  useEffect(() => {
-    setIsSupported(checkMediaSupport());
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      mediaRecorderRef.current?.stop();
-      warmStreamRef.current?.getTracks().forEach((t) => t.stop());
-      warmStreamRef.current = null;
-    };
-  }, []);
-
-  const warmUp = useCallback(() => {
-    if (warmStreamRef.current?.active) return;
-    warmStreamRef.current = null;
-    if (!navigator.mediaDevices?.getUserMedia) return;
-
-    // Desktop: only warm if the user has previously granted access.
-    // Otherwise warm-up would trigger the TCC prompt at page load, which
-    // is hostile — we only want to prompt on an explicit mic tap.
-    if (isDesktop && desktopAPI) {
-      void desktopAPI.media.getMicStatus().then((status) => {
-        if (status !== "granted") return;
-        navigator.mediaDevices
-          .getUserMedia({ audio: true })
-          .then((stream) => {
-            warmStreamRef.current = stream;
-          })
-          .catch((err) => {
-            console.warn("[speech] Mic warm-up failed:", err);
-          });
-      });
-      return;
-    }
-
-    navigator.mediaDevices
-      .getUserMedia({ audio: true })
-      .then((stream) => {
-        warmStreamRef.current = stream;
-      })
-      .catch((err) => {
-        console.warn("[speech] Mic warm-up failed:", err);
-      });
-  }, []);
-
-  const coolDown = useCallback(() => {
-    warmStreamRef.current?.getTracks().forEach((t) => t.stop());
-    warmStreamRef.current = null;
-  }, []);
-
-  const startListening = useCallback(() => {
-    setTranscript("");
-    setPermissionError(null);
-    setSttError(null);
-
-    const beginRecording = (stream: MediaStream) => {
-      const recorder = new MediaRecorder(stream, {
-        mimeType: getSupportedMimeType(),
-      });
-      mediaRecorderRef.current = recorder;
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = () => {
-        if (stream !== warmStreamRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-        }
-
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
-        if (blob.size > 0) {
-          setIsListening(false);
-          setIsTranscribing(true);
-          void transcribeViaServer(
-            blob,
-            (text) => setTranscript(text),
-            () => setIsTranscribing(false),
-            (msg) => setSttError(msg),
-          );
-        } else {
-          setIsListening(false);
-        }
-      };
-
-      recorder.start();
-      setIsListening(true);
-    };
-
-    if (warmStreamRef.current?.active) {
-      beginRecording(warmStreamRef.current);
-      return;
-    }
-
-    warmStreamRef.current = null;
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      console.warn("[speech] getUserMedia not available");
-      setPermissionError("Microphone is not available in this browser.");
-      return;
-    }
-
-    // D057 2a.5 — desktop preflight. In a packaged Electron build,
-    // getUserMedia rejects silently if TCC hasn't granted mic access.
-    // Ask macOS explicitly first so we get a real status we can surface.
-    void ensureDesktopMicPermission().then((result) => {
-      if (!result.ok) {
-        setPermissionError(result.reason);
-        return;
-      }
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
-        .then((stream) => {
-          beginRecording(stream);
-        })
-        .catch((err) => {
-          console.error("[speech] Mic access denied:", err);
-          setPermissionError(
-            err instanceof Error
-              ? err.message
-              : "Microphone access was denied.",
-          );
-        });
-    });
-  }, []);
-
-  const stopListening = useCallback(() => {
-    if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
-    } else {
-      setIsListening(false);
-    }
-  }, []);
-
+  const capture = useRef<SpeechCapture | null>(null);
+  if (!capture.current) capture.current = createBrowserSpeechCapture(setSnapshot, setTranscript);
+  const owner = capture.current;
+  useEffect(() => () => owner.cancel(), [owner]);
   return {
-    isSupported,
-    isListening,
-    isTranscribing,
+    isSupported: typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
+    isListening: snapshot.state === "listening" || snapshot.state === "requesting",
+    isTranscribing: snapshot.state === "transcribing",
     transcript,
-    permissionError,
-    sttError,
-    startListening,
-    stopListening,
-    warmUp,
-    coolDown,
+    permissionError: snapshot.errorKind === "transcription" ? null : snapshot.error,
+    sttError: snapshot.errorKind === "transcription" ? snapshot.error : null,
+    startListening: () => { setTranscript(""); void owner.start(); },
+    stopListening: () => owner.getState().state === "requesting" ? owner.cancel() : owner.finish(),
+    cancelListening: owner.cancel,
   };
 }

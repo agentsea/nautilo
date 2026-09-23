@@ -1,5 +1,5 @@
 /**
- * D103 P4.8 — IPC channel-name parity (preload ⊆ main handlers).
+ * IPC channel-name parity (preload ⊆ main handlers).
  *
  * Static-text test that asserts: every channel name string passed to
  * `ipcRenderer.invoke("...")` (or `ipcRenderer.send("...")`) in the
@@ -35,6 +35,7 @@ const PRELOAD_FILES = [
 
 const MAIN_FILES = [
   "electron/main.ts",
+  "electron/companion-window.ts",
   "electron/fs-structural-ipc.ts",
   "electron/terminal-host.ts",
   "electron/passwords/ipc.ts",
@@ -59,7 +60,7 @@ const ONBOARDING_METHOD_CHANNELS = {
   upsertVoiceAssignment: "onboarding:upsert-voice",
 } as const;
 
-/** D403 — handlers in `passwords/ipc.ts` register via `PASSWORDS_CHANNELS.*` refs. */
+/** Handlers in `passwords/ipc.ts` register via `PASSWORDS_CHANNELS.*` refs. */
 const PASSWORDS_CHANNEL_LITERAL_PATTERN = /:\s*"(passwords:[^"]+)"/g;
 
 function extractChannels(file: string, pattern: RegExp): string[] {
@@ -74,7 +75,7 @@ function extractChannels(file: string, pattern: RegExp): string[] {
   return out;
 }
 
-describe("IPC channel-name parity (D103 P4.8)", () => {
+describe("IPC channel-name parity", () => {
   const preloadChannels = new Set<string>();
   for (const f of PRELOAD_FILES) {
     for (const ch of extractChannels(f, RENDERER_PATTERN)) preloadChannels.add(ch);
@@ -109,14 +110,14 @@ describe("IPC channel-name parity (D103 P4.8)", () => {
     expect(orphans).toEqual([]);
   });
 
-  test("D431 binary-read session channels remain a complete preload/main contract", () => {
+  test("binary-read session channels remain a complete preload/main contract", () => {
     for (const channel of ["binaryRead:open", "binaryRead:read", "binaryRead:close"]) {
       expect(preloadChannels.has(channel)).toBe(true);
       expect(mainChannels.has(channel)).toBe(true);
     }
   });
 
-  test("D431 binary-read IPC returns typed result envelopes rather than cloned Errors", () => {
+  test("binary-read IPC returns typed result envelopes rather than cloned Errors", () => {
     const main = normalizeStaticSource(
       readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8"),
     );
@@ -128,7 +129,7 @@ describe("IPC channel-name parity (D103 P4.8)", () => {
     expect(preload).toContain("error: { code: BinaryReadSessionErrorCode }");
   });
 
-  test("D510 onboarding preload is type-checked against the shared UI port", () => {
+  test("onboarding preload is type-checked against the shared UI port", () => {
     const preload = readFileSync(join(desktopRoot, "electron/preload-onboarding.ts"), "utf-8");
     const main = readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8");
 
@@ -142,7 +143,7 @@ describe("IPC channel-name parity (D103 P4.8)", () => {
     expect(main).not.toContain("interface WizardProfileSnapshot {");
   });
 
-  test("D510 every shared onboarding RPC has one reviewed preload channel and main handler", () => {
+  test("every shared onboarding RPC has one reviewed preload channel and main handler", () => {
     const preload = readFileSync(join(desktopRoot, "electron/preload-onboarding.ts"), "utf-8");
     const main = normalizeStaticSource(
       readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8"),
@@ -158,7 +159,7 @@ describe("IPC channel-name parity (D103 P4.8)", () => {
     expect(preload).toContain('ipcRenderer.on("onboarding:avatar-generation-event", listener)');
   });
 
-  test("D510 malformed or unavailable onboarding inputs return structured envelopes", () => {
+  test("malformed or unavailable onboarding inputs return structured envelopes", () => {
     const main = readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8");
 
     // main.ts is intentionally not imported in Bun unit tests because Electron
@@ -180,6 +181,19 @@ describe("IPC channel-name parity (D103 P4.8)", () => {
     }
     expect(main).toContain('return ipcErr("sender mismatch")');
     expect(main).toContain("return { ok: false, error: msg };");
+  });
+
+  test("companion owner handlers are registered and sender-gated in their narrow module", () => {
+    const companion = normalizeStaticSource(
+      readFileSync(join(desktopRoot, "electron/companion-window.ts"), "utf-8"),
+    );
+    for (const channel of ["enable", "pick-files", "disable", "publish"]) {
+      const start = companion.indexOf(`ipcMain.handle("companion:${channel}"`);
+      expect(start).toBeGreaterThan(-1);
+      const next = companion.indexOf("ipcMain.handle(", start + 1);
+      const handler = companion.slice(start, next === -1 ? undefined : next);
+      expect(handler).toContain("this.requireOwner(event)");
+    }
   });
 
   test("snapshot the preload channel set so renames surface in code review", () => {

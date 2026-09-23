@@ -10,6 +10,10 @@ affiliated with, sponsored by, or endorsed by any listed project.
 
 ## How this inventory is bounded and verified
 
+The contributor-only [floating Genie lab](dev/tools/genie-lab/NOTICE.md) evaluates
+Vercel AI Elements Persona and Rive. Those assets are outside the production
+release closure; their development provenance is recorded with the lab.
+
 Release paths, rather than the development checkout, define this notice.
 
 | Release path | Authoritative checked-in closure | What is distributed |
@@ -312,7 +316,7 @@ SOFTWARE.
 
 The package includes an optional equation-rendering asset,
 `mathjax-stix2.js`. Workbench deliberately does not import
-`@silurus/ooxml/math`, so that asset is not emitted by the ordinary D431
+`@silurus/ooxml/math`, so that asset is not emitted by the ordinary document-preview
 build; its notice is retained here because it is part of the published package
 closure.
 

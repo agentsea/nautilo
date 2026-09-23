@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call, @typescript-eslint/await-thenable, @typescript-eslint/prefer-promise-reject-errors -- This source-contract test deliberately evaluates isolated main-process seams and controlled promise fixtures. */
 /**
- * D514 Phase 0 — static contract for the privileged cold-boot boundary.
+ * Static contract for the privileged cold-boot boundary.
  * Browser-shell tests are intentionally source-level: importing Electron's
  * main module would boot the app. The delay fixture in preflight-url.test.ts
  * exercises the same URL-probe envelope with real controlled timers.
@@ -229,7 +229,7 @@ function menuProjectionKey(
   ].join("|");
 }
 
-describe("D514 — cold boot has one main-owned reachability authority", () => {
+describe("cold boot has one main-owned reachability authority", () => {
   test("host resizing follows the active view after recovery replacement and server switching", () => {
     const main = read("electron", "main.ts");
     const start = main.indexOf("  const resizeActiveView = (): void => {");
@@ -443,7 +443,8 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
   test("local shell infrastructure is created before waiting on health, queues links before release, and builds unresolved menu", () => {
     const main = read("electron", "main.ts");
     const bootStart = main.indexOf("const bootSession = serverSessions.ensure(serverUrl)");
-    const bootEnd = main.indexOf("// M161 Phase 3 — wire the registry", bootStart);
+    const bootEnd = main.indexOf("function resumeQuitAfterPersistence", bootStart);
+    expect(bootEnd).toBeGreaterThan(bootStart);
     const boot = main.slice(bootStart, bootEnd);
 
     expect(main).toContain('runColdBootLaunchGate,');
@@ -480,7 +481,8 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
   test("markerless legacy connect config receives only a local authority guard before cold-boot network work", () => {
     const main = read("electron", "main.ts");
     const connectStart = main.indexOf('if (cfg.mode === "connect")');
-    const connectEnd = main.indexOf("// M161 Phase 1", connectStart);
+    const connectEnd = main.indexOf("const bootSession = serverSessions.ensure(serverUrl)", connectStart);
+    expect(connectEnd).toBeGreaterThan(connectStart);
     const connect = main.slice(connectStart, connectEnd);
     const bootStart = main.indexOf("const bootSession = serverSessions.ensure(serverUrl)");
     const gateStart = main.indexOf("await runColdBootLaunchGate({", bootStart);
@@ -627,7 +629,8 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
     const helperEnd = main.indexOf("function workbenchBackgroundColor", helperStart);
     const helper = main.slice(helperStart, helperEnd);
     const createWindowStart = main.indexOf("function createWindow(");
-    const createWindowEnd = main.indexOf("// ---------------------------------------------------------------------------\n// M161 Phase 3", createWindowStart);
+    const createWindowEnd = main.indexOf("function constructServerSessionView", createWindowStart);
+    expect(createWindowEnd).toBeGreaterThan(createWindowStart);
     const createWindow = main.slice(createWindowStart, createWindowEnd);
 
     expect(helper).toContain("errorCode === -3");
@@ -729,7 +732,8 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
     const transitionEnd = main.indexOf("/** Phase 1 compatibility seam", transitionStart);
     const transition = main.slice(transitionStart, transitionEnd);
     const rebuildStart = main.indexOf("function rebuildApplicationMenu");
-    const rebuildEnd = main.indexOf("/**\n * D055", rebuildStart);
+    const rebuildEnd = main.indexOf("function loadWindowState", rebuildStart);
+    expect(rebuildEnd).toBeGreaterThan(rebuildStart);
     const rebuild = main.slice(rebuildStart, rebuildEnd);
 
     expect(main).toContain('if (!active) return "no-active-server"');
@@ -741,7 +745,9 @@ describe("D514 — cold boot has one main-owned reachability authority", () => {
     expect(transition).toContain("activeMenuAuthProjectionKey() === renderedMenuAuthProjectionKey");
     expect(transition).toContain("rebuildApplicationMenu()");
     expect(rebuild).toContain("renderedMenuAuthProjectionKey = activeMenuAuthProjectionKey()");
-    expect(main).toMatch(/serverSessions\.onChange\(\(\) => \{\s*refreshMenuForActiveServerTransition\(\)/);
+    expect(main).toMatch(
+      /serverSessions\.onChange\(\(\) => \{\s*companionWindows\.reconcile\(\);\s*refreshMenuForActiveServerTransition\(\)/,
+    );
   });
 
   test("A-ready → B-unresolved → B-ready and single-server → no-active each require a new projection", () => {
