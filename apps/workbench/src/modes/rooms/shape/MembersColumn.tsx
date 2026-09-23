@@ -6,7 +6,7 @@ import { sortMembersByTalking } from "./members-panel-model";
 import { MemberFocusAvatar } from "./MemberFocusAvatar";
 
 /**
- * D278 §4.5.1 / §4.7.4 — compact members column (the ~48px thin column in the
+ * Compact members column (the ~48px thin column in the
  * artifact-open multi-user layout). The *compact mode* of the members panel:
  * same shared core (`MemberFocusAvatar` + `useRoomFocus` + sort) as the full
  * drawer, just a narrower shell.
@@ -44,7 +44,7 @@ export function MembersColumn({
       data-testid="members-column"
     >
       {visible.map((m) => (
-        <MemberFocusAvatar key={m.actorId} member={m} focus={focus} size="sm" />
+        <MemberFocusAvatar key={m.actorId} member={m} focus={focus} size="sm" roomId={roomId} />
       ))}
       {overflow > 0 ? (
         <button

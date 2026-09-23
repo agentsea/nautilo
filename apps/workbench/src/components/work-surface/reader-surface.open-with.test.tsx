@@ -193,6 +193,25 @@ describe("ReaderSurface app-open actions", () => {
     await waitFor(() => expect(previewLoad).toHaveBeenCalledTimes(2));
   });
 
+  test("keeps the current document visible while a new artifact revision loads", async () => {
+    let finishRefresh: ((result: { kind: "ready"; data: {} }) => void) | undefined;
+    previewLoad.mockImplementationOnce(async () => ({ kind: "ready", data: {} }));
+    previewLoad.mockImplementationOnce(() => new Promise((resolve) => {
+      finishRefresh = resolve;
+    }));
+    const view = render(<ReaderSurface file={artifactTarget} onClose={() => {}} />);
+    await waitFor(() => expect(view.getByTestId("preview")).toBeTruthy());
+
+    view.rerender(
+      <ReaderSurface file={{ ...artifactTarget, reloadToken: 2 }} onClose={() => {}} />,
+    );
+    await waitFor(() => expect(previewLoad).toHaveBeenCalledTimes(2));
+    expect(view.getByTestId("preview")).toBeTruthy();
+
+    finishRefresh?.({ kind: "ready", data: {} });
+    await waitFor(() => expect(view.getByTestId("preview")).toBeTruthy());
+  });
+
   test("shows primary Open in app for HTML artifact with spreadsheet manifest", async () => {
     installedAppsState = { kind: "ready", apps: [sheetsApp] };
     associationContent = `<script type="application/vnd.nautilo.document+json" id="manifest">{"documentType":"spreadsheet","editor":"wafflebase","payloadId":"wafflebase-spreadsheet","payloadFormat":"application/vnd.wafflebase.spreadsheet+json","version":"1.0"}</script>`;

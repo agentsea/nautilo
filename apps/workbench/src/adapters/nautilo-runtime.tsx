@@ -2356,6 +2356,7 @@ export function NautiloRuntimeProvider({
   // `POST /api/jobs/:id/stop`. Populated on `job.dispatched` (forks emit it
   // too), pruned on terminal `job.status`.
   const liveJobIdsRef = useRef(new Set<string>());
+  const jobLifecycleRevisionRef = useRef(0);
   /** Coalesce owner-private identity reads for duplicate terminal frames. */
   const pendingToolJobReconciliationIdsRef = useRef(new Set<string>());
   // Stop can be clicked while a room send only has the coalescer's
@@ -4330,6 +4331,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "job.dispatched": {
+          jobLifecycleRevisionRef.current += 1;
           setTurnStopStatus((current) =>
             current.state === "stopped"
               ? { state: "idle", attemptId: current.attemptId }
@@ -4876,6 +4878,7 @@ export function NautiloRuntimeProvider({
         }
 
         case "job.status": {
+          jobLifecycleRevisionRef.current += 1;
           const terminalStatus =
             event.status === "completed" || event.status === "failed" ||
             event.status === "cancelled" || event.status === "timed_out"
@@ -5888,7 +5891,7 @@ export function NautiloRuntimeProvider({
       setDeepResearchStatus(null);
       clearAgentStreamingVisibleOutput();
       lastStreamLaneKeyRef.current = null;
-      setIsRunning(false);
+      setIsRunning(hasLiveJobForActiveRoom());
       setShowPinDialog(false);
       setShowApprovalDialog(false);
       dispatchCurrentApprovalLifecycle({ kind: "hide" });
@@ -6131,11 +6134,39 @@ export function NautiloRuntimeProvider({
     clearAgentStreamingVisibleOutput,
     dispatchCurrentApprovalLifecycle,
     flush,
+    hasLiveJobForActiveRoom,
     roomHydrationRetry,
     roomMessageOperations,
     serverOrigin,
     viewerKey,
   ]);
+
+  // Opening an already-running Room may have no new dispatch frame to restore
+  // the composer Stop state. Read the active jobs on Room selection as well as
+  // on reconnect. A live lifecycle frame wins over an older HTTP snapshot.
+  useEffect(() => {
+    if (!activeRoomId || !admissionReady) return;
+    const roomId = activeRoomId;
+    const lifecycleRevision = jobLifecycleRevisionRef.current;
+    let cancelled = false;
+    void apiClient.getRoomActiveJobs(roomId).then(({ jobIds }) => {
+      if (cancelled || activeRoomIdRef.current !== roomId ||
+        jobLifecycleRevisionRef.current !== lifecycleRevision) return;
+      const serverLive = new Set(jobIds);
+      for (const id of liveJobIdsRef.current) {
+        if (jobIdToRoomIdRef.current.get(id) === roomId && !serverLive.has(id)) {
+          liveJobIdsRef.current.delete(id);
+        }
+      }
+      for (const id of jobIds) {
+        liveJobIdsRef.current.add(id);
+        jobIdToRoomIdRef.current.set(id, roomId);
+      }
+      trimBoundedStringMap(jobIdToRoomIdRef.current, liveJobIdsRef.current);
+      setIsRunning(hasLiveJobForActiveRoom());
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeRoomId, admissionReady, auth.viewerGeneration, hasLiveJobForActiveRoom, serverOrigin]);
 
   // The durable checkpoint remains the approval authority after hydration or
   // reconnect. Replay only through the ordinary ServerEvent router, and only
@@ -7127,10 +7158,9 @@ export function NautiloRuntimeProvider({
         if (pending.jobId !== null) {
           setIsRunning(true);
         } else if (rid) {
-          // Belt-and-suspenders: if some prior turn left isRunning true
-          // (rapid send-while-thinking edge case), make sure the new
-          // suppressed send doesn't leave it true.
-          setIsRunning(false);
+          // A group-room send may return no job id while earlier jobs in this
+          // room are still active. Keep Stop available for those jobs.
+          setIsRunning(hasLiveJobForActiveRoom());
         }
 
         // The bubble in history shows what the user authored — their
@@ -7162,7 +7192,7 @@ export function NautiloRuntimeProvider({
           roomMessageSendFailureReason(err),
         );
         clearAgentStreamingVisibleOutput();
-        setIsRunning(false);
+        setIsRunning(hasLiveJobForActiveRoom());
         return false;
       }
     },
@@ -7171,6 +7201,7 @@ export function NautiloRuntimeProvider({
       auth.viewer.isVerified,
       auth.viewer.sessionUserId,
       clearAgentStreamingVisibleOutput,
+      hasLiveJobForActiveRoom,
       markMessageSendFailed,
       roomMessageOperations,
       reconcileMessageId,

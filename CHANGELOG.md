@@ -22,6 +22,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   The floating chat now shares the Room-panel live message reducer: outgoing
   messages appear immediately, replies stream into the transcript, and history
   refreshes preserve live messages instead of replacing them.
+- Keep the compact Genie and members rail visible beside document chat in group
+  Rooms. Stop remains available while another job in the Room is still active,
+  and document previews retain their last readable version during refresh.
 
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
   Mobile for users with the `manage_rooms` permission. It addresses current Human

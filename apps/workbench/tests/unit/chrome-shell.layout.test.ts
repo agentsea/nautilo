@@ -1,9 +1,9 @@
 /**
- * Matrix tests for buildGridCols() + friends (D077 Phase 3).
+ * Matrix tests for buildGridCols() and related layout helpers.
  *
  * Every combination of (rail × browser-visible × browser-collapsed ×
- * context-collapsed × bp) has its expected output locked. If D076
- * adds rooms as a real column or D075 gains per-workspace sizes, the
+ * context-collapsed × bp) has its expected output locked. If the shell
+ * adds another column or gains per-workspace sizes, the
  * matrix grows and the test is the first place those expectations are
  * asserted. No runtime CSS; pure string assertions.
  */
@@ -66,6 +66,26 @@ describe("buildGridCols — mobile / tablet collapses to 1fr", () => {
 });
 
 describe("buildGridCols — desktop matrix", () => {
+  test("document chat and members rail remain independent trailing columns", () => {
+    expect(buildGridCols({
+      ...base,
+      railVisible: true,
+      browserVisible: true,
+      readerChatSidecarLayout: true,
+      readerMembersWidthPx: 48,
+    })).toBe(
+      `${RAIL_WIDTH_PX}px var(--nautilo-browser-width-px, ${BROWSER_DEFAULT_PX}px) minmax(0, 1fr) minmax(0, var(--nautilo-context-width-px, ${CONTEXT_DEFAULT_PX}px)) 48px`,
+    );
+    expect(buildGridCols({
+      ...base,
+      contextCollapsed: true,
+      readerChatSidecarLayout: true,
+      readerMembersWidthPx: 48,
+    })).toBe("minmax(0, 1fr) 48px");
+    expect(buildContextDividerRight(48)).toBe(
+      `calc(var(--nautilo-context-width-px, ${CONTEXT_DEFAULT_PX}px) + 48px - ${DIVIDER_HIT_HALF_PX}px)`,
+    );
+  });
   test("no rail + no browser → main + context", () => {
     const cols = buildGridCols(base);
     expect(cols).toBe(
@@ -175,7 +195,7 @@ describe("buildGridCols — desktop matrix", () => {
   });
 });
 
-describe("buildGridCols — reader chat sidecar (D110)", () => {
+describe("buildGridCols — reader chat sidecar", () => {
   test("uses minmax tracks when readerChatSidecarLayout is true", () => {
     expect(
       buildGridCols({
@@ -287,15 +307,15 @@ describe("clamp functions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Scroll-boundary regression — D083 Phase 2a + 2026-04-24 follow-up.
+// Scroll-boundary regression.
 //
-// Original D083 2a symptom: focusing the right-hand context panel and
+// Original symptom: focusing the right-hand context panel and
 // scrolling caused the WHOLE page to scroll (chrome pushed off-screen)
 // because the shell root + grid container had `overflow: visible`,
 // letting a wheel event bubble up to <html>/<body> and scroll the
 // document.
 //
-// Second symptom (2026-04-24 D090 live-verify): clicking Accept on a
+// Second symptom: clicking Accept on a
 // DiffView that had been brought into view via `scrollIntoView()` —
 // which the MCP harness does when expanding a tool card — would nudge
 // the GRID container's `scrollTop` to ~198px. That left the entire
@@ -310,7 +330,7 @@ describe("clamp functions", () => {
 // Combined fix: `overflow-clip` on both SHELL_ROOT_CLASSES AND
 // SHELL_GRID_CLASSES. `overflow-clip` clips rendering AND marks the
 // element as non-scrollable — `scrollTop` writes are ignored, so
-// neither wheel-bubble (D083 2a) nor descendant `scrollIntoView()`
+// neither wheel-bubble nor descendant `scrollIntoView()`
 // (2026-04-24) can relocate the shell. Inner containers that
 // legitimately scroll (chat viewport, context aside) still own their
 // own `overflow-y-auto` and scroll internally.
@@ -322,7 +342,7 @@ describe("clamp functions", () => {
 // failure mode.
 // ---------------------------------------------------------------------------
 
-describe("shell scroll-boundary classes (D083 Phase 2a + 2026-04-24 regression)", () => {
+describe("shell scroll-boundary classes", () => {
   test("SHELL_ROOT_CLASSES pins the shell to the viewport with overflow-clip", () => {
     expect(SHELL_ROOT_CLASSES).toContain("h-dvh");
     expect(SHELL_ROOT_CLASSES).toContain("overflow-clip");
@@ -330,7 +350,7 @@ describe("shell scroll-boundary classes (D083 Phase 2a + 2026-04-24 regression)"
     //   - `overflow-hidden` allows scrollIntoView to nudge scrollTop
     //     (2026-04-24 regression) and must be excluded.
     //   - `overflow-auto` / `overflow-scroll` / `overflow-visible` are
-    //     the original D083 2a failure modes.
+    //     the original failure modes.
     expect(SHELL_ROOT_CLASSES).not.toContain("overflow-hidden");
     expect(SHELL_ROOT_CLASSES).not.toContain("overflow-auto");
     expect(SHELL_ROOT_CLASSES).not.toContain("overflow-scroll");
@@ -388,7 +408,7 @@ describe("shell scroll-boundary classes (D083 Phase 2a + 2026-04-24 regression)"
 // either the shell wiring OR the positional helpers fails here first.
 // ---------------------------------------------------------------------------
 
-describe("divider positional math (D077 / 2026-04-22 live-verify)", () => {
+describe("divider positional math", () => {
   test("browser divider left includes the rail offset when the rail is visible", () => {
     const left = buildBrowserDividerLeft(RAIL_WIDTH_PX);
     expect(left).toContain(`${RAIL_WIDTH_PX}px`);
