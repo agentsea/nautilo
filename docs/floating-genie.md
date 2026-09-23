@@ -40,8 +40,8 @@ starting network observers or recovery actions.
 The mic starts off. Tap **Record a voice message**, speak, then tap again to
 finish and send through the existing hosted transcription endpoint. The bubble
 or waveform also starts/finishes recording; while Genie is speaking, tapping it
-stops her speech instead. A separate **Mute and discard recording** control
-stops hardware capture and cancels pending transcription. This prototype is
+stops her speech instead. **Escape** or **Mute microphone / discard recording**
+in the controls menu stops hardware capture and cancels pending transcription. This prototype is
 turn-by-turn: automatic speech detection, wake phrases and addressee classification
 are follow-on work.
 
@@ -57,8 +57,10 @@ envelope from historical adapter output; it does not establish attachment identi
 
 **Stop talking** (speaker ×) immediately clears local playback and suppresses later audio
 from that turn, while work continues. **Stop action** separately uses the existing cancellation endpoint
-for the pinned Room, including queued work. Its square button appears during work
-in compact and expanded views and is always available in the controls menu.
+for the pinned Room, including queued work. Its square button stays visible at a
+fixed position in every view, grayed out when idle. It remains enabled throughout
+unfinished Room work, including gaps between tool calls, and is temporarily
+disabled while cancellation is pending. It is also available in the controls menu.
 Both controls remain available when Genie is speaking and working simultaneously.
 Prompt and chat label the square **Stop action**; compact views use distinct
 speaker and square icons. Stopping work does not implicitly silence playback.
