@@ -49,7 +49,7 @@ describe("Debian 13 security update and exception retirement", () => {
       }
     }
     expect(fixed).toBe(27); // 28 old decisions: one advisory had two scanner severity identities.
-    expect(current.exceptions).toHaveLength(249);
+    expect(current.exceptions).toHaveLength(253);
     expect(bootstrap.exceptions).toHaveLength(2);
     expect(bootstrap.exceptions[0]).toMatchObject({ advisoryId: "CVE-2026-5435", installedVersion: "2.41-12+deb13u4" });
   });
@@ -59,6 +59,8 @@ describe("Debian 13 security update and exception retirement", () => {
       .split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split(" ") as [string, string]));
     expect(floors.size).toBe(7);
     for (const entry of current.exceptions) {
+      // This historical September 13 review predates the separately tested X11 findings.
+      if (entry.advisoryId === "CVE-2026-88806" || entry.advisoryId === "CVE-2026-88807") continue;
       const p = review.packages.find((p) => p.package === entry.packageName)!;
       const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
         ? "153.0.8010.52-1~deb13u1"
