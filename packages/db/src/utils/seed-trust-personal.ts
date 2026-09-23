@@ -216,7 +216,7 @@ const ROLE_SEEDS: RoleSeed[] = [
 // Group seeds — canonical server-wide Groups (one per ladder Role).
 // Only `owners` is seeded with a member (the bootstrap claimer).
 //
-// D418 Wave 2 / Stack 193 — the canonical ladder Groups are
+// The canonical ladder Groups are
 // platform/system-managed authorization objects (is_system=true,
 // owner_id=NULL), exactly like the ladder Roles (`roles.is_system`).
 // They are independent of any Human account lifecycle: deleting a
@@ -289,8 +289,7 @@ const OWNER_BOOT_CHANNELS = ["tui", "electron", "workbench"] as const;
  *   `actors.id`)
  * - canonical capabilities (M128 catalogue + later approved additions)
  * - canonical ladder Roles (`owner`, `admin`, `superuser`, `member`,
- *   `contributor`, `community`, `guest`) — M043 collapsed per-`group_type`
- *   duplicates; the Community funding boundary later added a seventh rung
+ *   `contributor`, `community`, `guest`), with Community as the seventh rung
  * - Role → capability mappings
  * - canonical Groups, each mapped to one ladder Role via the
  *   `group_roles` junction (M131; was the 1:1 `groups.role_id` pre-M131)
