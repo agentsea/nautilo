@@ -47,17 +47,46 @@ export type RuntimeDomainCompressedLiveShadowSessionCapabilityDescription =
     readonly authorizationDigest: Uint8Array;
   }>;
 
+export type TaskRuntimeDomainCompressedLiveShadowSessionCapabilityDescription =
+  Readonly<{
+    readonly authorizationId: string;
+    readonly subjectHumanId: string;
+    readonly issuingDeviceId: string;
+    readonly recipientKind: "nautilo_task_runtime";
+    readonly taskRunId: string;
+    readonly authorizationEpisodeId: string;
+    readonly sourceRoomId: string;
+    readonly recipientKeyId: string;
+    readonly policyRevision: number;
+    readonly hostAuthorizationRevision: number;
+    readonly namespaceIds: readonly string[];
+    readonly grantDomainIds: readonly string[];
+    readonly issuedAt: number;
+    readonly expiresAt: number;
+    readonly authorizationDigest: Uint8Array;
+  }>;
+
 export type DomainCompressedLiveShadowSessionCapabilityDescription =
   | LegacyDomainCompressedLiveShadowSessionCapabilityDescription
   | RuntimeDomainCompressedLiveShadowSessionCapabilityDescription;
 
+type AnyDomainCompressedLiveShadowSessionCapabilityDescription =
+  | DomainCompressedLiveShadowSessionCapabilityDescription
+  | TaskRuntimeDomainCompressedLiveShadowSessionCapabilityDescription;
+
 type State = Readonly<{
-  readonly description: DomainCompressedLiveShadowSessionCapabilityDescription;
+  readonly description: AnyDomainCompressedLiveShadowSessionCapabilityDescription;
   readonly entries:
     readonly DeviceWrappedDomainAgentForegroundAuthorizationSecretEntry[];
 }>;
 
 const states = new WeakMap<object, State>();
+
+function portableIdentity(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && new TextEncoder().encode(value).length <= 256;
+}
 
 function canonicalIds(values: readonly string[]): readonly string[] {
   if (
@@ -93,7 +122,7 @@ function destroyEntries(
 
 export function createDomainCompressedLiveShadowSessionCapability(
   input: Readonly<{
-    description: DomainCompressedLiveShadowSessionCapabilityDescription;
+    description: AnyDomainCompressedLiveShadowSessionCapabilityDescription;
     entries:
       readonly DeviceWrappedDomainAgentForegroundAuthorizationSecretEntry[];
   }>,
@@ -109,6 +138,19 @@ export function createDomainCompressedLiveShadowSessionCapability(
       entry.grantDomainId !== grantDomainIds[index]
     )
   ) throw new TypeError("Domain-compressed foreground session is invalid");
+  if (
+    "recipientKind" in input.description
+    && input.description.recipientKind === "nautilo_task_runtime"
+    && (
+      !portableIdentity(input.description.authorizationId)
+      || !portableIdentity(input.description.subjectHumanId)
+      || !portableIdentity(input.description.issuingDeviceId)
+      || !portableIdentity(input.description.taskRunId)
+      || !portableIdentity(input.description.authorizationEpisodeId)
+      || !portableIdentity(input.description.sourceRoomId)
+      || !portableIdentity(input.description.recipientKeyId)
+    )
+  ) throw new TypeError("Domain-compressed Task Runtime session is invalid");
   const capability = Object.freeze({
     authorizationId: input.description.authorizationId,
     expiresAt: input.description.expiresAt,
@@ -129,7 +171,30 @@ export function inspectDomainCompressedLiveShadowSessionCapability(
   capability: DomainCompressedLiveShadowSessionCapability,
 ): DomainCompressedLiveShadowSessionCapabilityDescription | null {
   const state = states.get(capability);
-  if (state === undefined) return null;
+  if (
+    state === undefined
+    || (
+      "recipientKind" in state.description
+      && state.description.recipientKind === "nautilo_task_runtime"
+    )
+  ) return null;
+  return Object.freeze({
+    ...state.description,
+    namespaceIds: Object.freeze([...state.description.namespaceIds]),
+    grantDomainIds: Object.freeze([...state.description.grantDomainIds]),
+    authorizationDigest: state.description.authorizationDigest.slice(),
+  });
+}
+
+export function inspectTaskRuntimeDomainCompressedLiveShadowSessionCapability(
+  capability: DomainCompressedLiveShadowSessionCapability,
+): TaskRuntimeDomainCompressedLiveShadowSessionCapabilityDescription | null {
+  const state = states.get(capability);
+  if (
+    state === undefined
+    || !("recipientKind" in state.description)
+    || state.description.recipientKind !== "nautilo_task_runtime"
+  ) return null;
   return Object.freeze({
     ...state.description,
     namespaceIds: Object.freeze([...state.description.namespaceIds]),

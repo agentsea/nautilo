@@ -11,11 +11,14 @@ import {
   FOREGROUND_AUTHORIZATION_IDLE_LIMIT_MS,
   FOREGROUND_AUTHORIZATION_MAX_CHILD_VIEWS,
   FOREGROUND_AUTHORIZATION_MAX_SESSIONS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   ForegroundAuthorizationSessionRegistry,
   foregroundAuthorizationChildWorkDescriptorDigest,
   type ForegroundAuthorizationBinding,
   type ForegroundAuthorizationContentPort,
   type ForegroundAuthorizationNamespaceSetPort,
+  type ForegroundAuthorizationCapabilityDescription,
+  type TaskRuntimeAuthorizationBinding,
 } from "../../src/protected-execution/foreground-authorization-session";
 import type { ProtectedInvocationCapabilityPort } from "../../src/protected-execution/lease-registry";
 
@@ -40,6 +43,20 @@ function binding(
     humanId: "human-alice",
     issuingDeviceId: "device-alice",
     recipientAgentId: "agent-genie",
+    ...overrides,
+  });
+}
+
+function taskRuntimeBinding(
+  overrides: Partial<TaskRuntimeAuthorizationBinding> = {},
+): TaskRuntimeAuthorizationBinding {
+  return Object.freeze({
+    humanId: "human-alice",
+    issuingDeviceId: "device-alice",
+    recipientKind: "nautilo_task_runtime",
+    taskRunId: "task-run-a",
+    authorizationEpisodeId: "task-episode-a",
+    sourceRoomId: "room-source-a",
     ...overrides,
   });
 }
@@ -317,6 +334,95 @@ function namespaceSetPort(options: Readonly<{
 }
 
 describe("M237 foreground authorization session registry", () => {
+  test("binds Task Runtime sessions to one exact occurrence and authorization episode", () => {
+    type TaskCapability = Readonly<{
+      description: ForegroundAuthorizationCapabilityDescription;
+    }>;
+    let now = NOW;
+    const destroyed: TaskCapability[] = [];
+    const capability = Object.freeze({
+      description: Object.freeze({
+        authorizationId: "task-authorization-a",
+        issuedAt: NOW,
+        expiresAt: NOW + 4 * 60 * 60 * 1_000,
+        issuingHumanId: "human-alice",
+        issuingDeviceId: "device-alice",
+        recipientKind: "nautilo_task_runtime" as const,
+        taskRunId: "task-run-a",
+        authorizationEpisodeId: "task-episode-a",
+        sourceRoomId: "room-source-a",
+        recipientKeyId: "task-runtime-key-a",
+        namespaceIds: Object.freeze(["namespace-a"]),
+        domainIds: Object.freeze(["domain-a"]),
+      }),
+    });
+    const registry = new ForegroundAuthorizationSessionRegistry<TaskCapability>({
+      capabilityPort: {
+        inspect: (candidate) => candidate === capability
+          ? candidate.description
+          : null,
+        destroy: (candidate) => {
+          destroyed.push(candidate);
+        },
+      },
+      now: () => now,
+      createSessionId: () => "task-session-a",
+      createViewId: () => "task-view-a",
+      createLeaseId: () => "task-lease-a",
+      startSweep: false,
+    });
+    const registered = registry.register({
+      capability,
+      authenticatedBinding: taskRuntimeBinding(),
+      allowedOperations: Object.freeze(["decrypt"]),
+    });
+    expect(registered.status).toBe("registered");
+    if (registered.status !== "registered") return;
+
+    for (const authenticatedBinding of [
+      taskRuntimeBinding({ taskRunId: "task-run-b" }),
+      taskRuntimeBinding({ authorizationEpisodeId: "task-episode-b" }),
+      taskRuntimeBinding({ sourceRoomId: "room-source-b" }),
+      taskRuntimeBinding({ humanId: "human-mallory" }),
+      taskRuntimeBinding({ issuingDeviceId: "device-mallory" }),
+      binding({ recipientAgentId: "agent-genie" }),
+    ]) {
+      expect(registry.resolve({
+        sessionId: registered.sessionId,
+        authenticatedBinding,
+      })).toEqual({
+        status: "unavailable",
+        reason: "binding_mismatch",
+      });
+    }
+    expect(destroyed).toEqual([]);
+    expect(registry.leaseOperation({
+      view: registered.rootView,
+      entrypointId: "foreground.main",
+      operation: "decrypt",
+      namespaceId: "namespace-a",
+      domainId: "domain-a",
+    })).toEqual({
+      status: "unavailable",
+      reason: "operation_scope_widened",
+    });
+
+    now = NOW + TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS - 1;
+    expect(registry.resolve({
+      sessionId: registered.sessionId,
+      authenticatedBinding: taskRuntimeBinding(),
+    }).status).toBe("resolved");
+    now = NOW + TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS;
+    expect(registry.resolve({
+      sessionId: registered.sessionId,
+      authenticatedBinding: taskRuntimeBinding(),
+    })).toEqual({
+      status: "unavailable",
+      reason: "session_expired",
+    });
+    expect(destroyed).toEqual([capability]);
+  });
+
   test("reuses one opaque recipient session across one-shot operation leases", async () => {
     const state = fixture();
     const session = register(state);

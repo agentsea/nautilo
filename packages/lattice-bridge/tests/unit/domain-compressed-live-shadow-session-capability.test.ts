@@ -5,6 +5,7 @@ import {
   createDomainCompressedLiveShadowSessionCapability,
   destroyDomainCompressedLiveShadowSessionCapability,
   inspectDomainCompressedLiveShadowSessionCapability,
+  inspectTaskRuntimeDomainCompressedLiveShadowSessionCapability,
   withDomainCompressedLiveShadowSessionCapabilityEntries,
 } from "../../src/server/message/domain-compressed-live-shadow-session-capability.ts";
 
@@ -78,6 +79,43 @@ describe("Domain-compressed live Shadow session capability", () => {
       .toBeFalse();
     expect(inspected === null ? true : "agentRuntimeGeneration" in inspected)
       .toBeFalse();
+
+    destroyDomainCompressedLiveShadowSessionCapability(capability);
+  });
+
+  test("retains an exact Task Runtime authorization episode binding", () => {
+    const capability = createDomainCompressedLiveShadowSessionCapability({
+      description: {
+        authorizationId: "task-authorization",
+        subjectHumanId: "human-1",
+        issuingDeviceId: "device-1",
+        recipientKind: "nautilo_task_runtime",
+        taskRunId: "task-run-1",
+        authorizationEpisodeId: "task-episode-1",
+        sourceRoomId: "room-source-1",
+        recipientKeyId: "task-runtime-key-1",
+        policyRevision: 1,
+        hostAuthorizationRevision: 1,
+        namespaceIds: description.namespaceIds,
+        grantDomainIds: description.grantDomainIds,
+        issuedAt: 1_000,
+        expiresAt: 301_000,
+        authorizationDigest: new Uint8Array(32).fill(8),
+      },
+      entries,
+    });
+
+    expect(inspectDomainCompressedLiveShadowSessionCapability(capability))
+      .toBeNull();
+    expect(inspectTaskRuntimeDomainCompressedLiveShadowSessionCapability(capability))
+      .toMatchObject({
+        recipientKind: "nautilo_task_runtime",
+        taskRunId: "task-run-1",
+        authorizationEpisodeId: "task-episode-1",
+        sourceRoomId: "room-source-1",
+        subjectHumanId: "human-1",
+        issuingDeviceId: "device-1",
+      });
 
     destroyDomainCompressedLiveShadowSessionCapability(capability);
   });
