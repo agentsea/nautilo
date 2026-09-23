@@ -8,6 +8,10 @@ import {
 type InvocationOptions = Parameters<ChatOpenAICompletions["invocationParams"]>[0];
 type InvocationExtra = Parameters<ChatOpenAICompletions["invocationParams"]>[1];
 
+export function isDirectGpt6Model(modelId: string): boolean {
+  return /^openai:gpt-6-(astra|sol|luna)$/.test(modelId);
+}
+
 /**
  * The installed LangChain release recognizes GPT-5 and o-series reasoning
  * models, but not GPT-6. OpenAI rejects `max_tokens` for GPT-6 and requires
@@ -29,8 +33,21 @@ export class OpenAIGpt6Completions extends ChatOpenAICompletions {
   }
 }
 
-/** Preserve provider usage that LangChain's non-streaming Responses converter omits. */
+/** Preserve usage and scoped request fields omitted by the installed Responses adapter. */
 export class OpenAIUsageResponses extends ChatOpenAIResponses {
+  override invocationParams(
+    options?: Parameters<ChatOpenAIResponses["invocationParams"]>[0],
+  ): ReturnType<ChatOpenAIResponses["invocationParams"]> {
+    const params = super.invocationParams(options);
+    // The installed serializer handles named choices but drops these standard
+    // string choices. Keep the caller's tool policy on direct GPT-6 requests.
+    if (isDirectGpt6Model(`openai:${this.model}`)
+      && (options?.tool_choice === "auto" || options?.tool_choice === "none" || options?.tool_choice === "required")) {
+      params.tool_choice = options.tool_choice;
+    }
+    return params;
+  }
+
   override async _generate(
     messages: Parameters<ChatOpenAIResponses["_generate"]>[0],
     options: Parameters<ChatOpenAIResponses["_generate"]>[1],

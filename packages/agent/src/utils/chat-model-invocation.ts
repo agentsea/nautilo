@@ -18,6 +18,8 @@ import { ProviderTimeoutError, formatProviderError, isProviderTimeoutError, isSa
 import { getModelById } from "../config/assistant-models";
 import { ModelUnavailableError, resolveRetainedModels } from "../config/eligible-models";
 import { createUniversalModel } from "../providers/universal";
+import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
+import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
 import {
   managedGatewayKeyIsPresent,
@@ -394,6 +396,7 @@ async function invokeForegroundAttemptWithUsageContext(
   controls: ResolvedForegroundModelControls | undefined,
   serving: ResolvedFireworksKimiK3ServingProfile | undefined,
   reasoningOutput: boolean,
+  useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
 ): Promise<AIMessage> {
@@ -408,7 +411,11 @@ async function invokeForegroundAttemptWithUsageContext(
     attemptPolicyOptions,
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
   );
-  if (!controls) return invoke();
+  const directGpt6Responses = useOpenAIResponsesApi && isDirectGpt6Model(modelId);
+  if (!controls && !directGpt6Responses) return invoke();
+  const effectiveReasoningEffort = directGpt6Responses
+    ? controls?.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+    : controls?.reasoningEffort === undefined ? undefined : reasoningOutput ? controls.reasoningEffort : "off";
   const parent = getUsageContext();
   return runWithUsageContext({
     callType: parent?.callType ?? "chat",
@@ -416,10 +423,10 @@ async function invokeForegroundAttemptWithUsageContext(
     roomId: parent?.roomId ?? null,
     ...(parent?.metadata ? { metadata: parent.metadata } : {}),
     modelControl: {
-      canonicalModelId: controls.canonicalModelId,
-      effectiveModelId: serving?.effectiveModelId ?? controls.canonicalModelId,
-      ...(controls.reasoningEffort === undefined ? {} : { requestedReasoningEffort: controls.reasoningEffort }),
-      ...(controls.reasoningEffort === undefined ? {} : { effectiveReasoningEffort: reasoningOutput ? controls.reasoningEffort : "off" }),
+      canonicalModelId: controls?.canonicalModelId ?? modelId,
+      effectiveModelId: serving?.effectiveModelId ?? modelId,
+      ...(controls?.reasoningEffort === undefined ? {} : { requestedReasoningEffort: controls.reasoningEffort }),
+      ...(effectiveReasoningEffort === undefined ? {} : { effectiveReasoningEffort }),
       ...(serving === undefined ? {} : { servingProfileId: serving.profileId }),
       ...(serving === undefined ? {} : { servingSelector: servingSelectorForUsage(serving) }),
     },
@@ -805,6 +812,7 @@ export async function invokeChatModelWithFallback(
         controls,
         serving,
         reasoningOutput,
+        invokeOptions?.useOpenAIResponsesApi === true,
         managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
         {
           ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
@@ -851,7 +859,8 @@ export async function invokeChatModelWithFallback(
         markModelInvokeFailure(currentModelId, classified.message);
       }
 
-      if (planChatModelInvokeRetry(classified, disableReasoningOutput) === "retry_same_model_no_reasoning") {
+      if (!(invokeOptions?.useOpenAIResponsesApi === true && isDirectGpt6Model(currentModelId))
+        && planChatModelInvokeRetry(classified, disableReasoningOutput) === "retry_same_model_no_reasoning") {
         log(
           `[nautilo/agent] Thinking config rejected for ${currentModelId}; retrying once with reasoning disabled`,
         );

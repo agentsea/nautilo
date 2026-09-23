@@ -4,7 +4,7 @@
  * the bun process and would otherwise break later test imports.
  */
 /**
- * D141 P2.0 — unit tests for `invokeChatModelWithFallback` with policy,
+ * unit tests for `invokeChatModelWithFallback` with policy,
  * factory, model-health, provider, and database boundaries mocked.
  */
 
@@ -23,6 +23,7 @@ import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/typ
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
+import { getUsageContext } from "../../src/usage/usage-context";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
@@ -39,8 +40,9 @@ const A = "anthropic:claude-sonnet-4-6";
 const B = "openai:gpt-5.5-2026-04-23";
 const C = "google:gemini-2.5-pro";
 const X = "openai:gpt-5.6-sol";
+const G6 = "openai:gpt-6-astra";
 const F = "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
-// D370 vision-skip tests — T1/T2 are real catalog IDs that
+// vision-skip tests — T1/T2 are real catalog IDs that
 // `modelSupportsInput(_, "image")` returns false for (OpenRouter Kimi
 // K2.6 and GLM 5.2 are text-only under the current signed catalog).
 // V is vision-capable (Anthropic).
@@ -157,7 +159,7 @@ let invokeChatModelWithFallback: (
     reasoningOverrides?: Record<string, boolean>;
     useOpenAIResponsesApi?: boolean;
     resolveForegroundControls?: (modelId: string) => { canonicalModelId: string; reasoningEffort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; servingProfileId?: string } | undefined;
-    /** D429 Phase 4 — strict / no-chain mode suppresses every cross-model hop. */
+    /** strict / no-chain mode suppresses every cross-model hop. */
     modelFallbackMode?: "agent_chain" | "none";
     sameModelRetryMode?: "none" | "short";
     providerTimeoutMs?: number;
@@ -167,7 +169,7 @@ let invokeChatModelWithFallback: (
   },
 ) => Promise<{ response: AIMessage; modelUsed: string }>;
 
-// D141 P3 — captured `model.fallback` events for the per-test sink.
+// captured `model.fallback` events for the per-test sink.
 const capturedEvents: ServerEvent[] = [];
 
 let _setFirstTokenTimeoutMsForTests: (ms: number | undefined) => void;
@@ -195,7 +197,7 @@ afterAll(() => {
   }
 });
 
-describe("invokeChatModelWithFallback (D141 chain)", () => {
+describe("invokeChatModelWithFallback (chain)", () => {
   const messages = [new HumanMessage("hi")];
   const tools: StructuredTool[] = [];
 
@@ -529,7 +531,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(modelIdsFromCalls()).toEqual([A, B, C]);
   });
 
-  test("6. chain [A,B,C], request X not in chain, X errors → D370 implicit-head walks to chain[0]=A, then B succeeds", async () => {
+  test("6. chain [A,B,C], request X not in chain, X errors → implicit-head walks to chain[0]=A, then B succeeds", async () => {
     policyState = { enabled: true, chain: [A, B, C] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
       if (modelId === X || modelId === A) {
@@ -553,7 +555,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
 
     const out = await invokeChatModelWithFallback(messages, tools, X, "user-1", "agent-1", null);
     expect(out.modelUsed).toBe(B);
-    // X is attempt #1 (selected). X fails → D370 implicit-head walks the
+    // X is attempt #1 (selected). X fails → implicit-head walks the
     // full user chain from index 0: A (fails) → B (succeeds). X is never
     // re-attempted because it is not a chain entry; A and B are walked
     // in chain order.
@@ -587,7 +589,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(modelIdsFromCalls()).toEqual([A, B]);
   });
 
-  test("D334: OpenAI fallback hop receives Responses opt-in when reasoning is enabled", async () => {
+  test("OpenAI fallback hop receives Responses opt-in when reasoning is enabled", async () => {
     policyState = { enabled: true, chain: [A, B] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
       if (modelId === A) {
@@ -630,7 +632,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(options[1]?.["useOpenAIResponsesApi"]).toBe(true);
   });
 
-  test("D334: per-model reasoning override false disables OpenAI Responses eligibility on fallback hop", async () => {
+  test("per-model reasoning override false disables OpenAI Responses eligibility on fallback hop", async () => {
     policyState = { enabled: true, chain: [A, B] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
       if (modelId === A) {
@@ -674,7 +676,75 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(options[1]?.["useOpenAIResponsesApi"]).toBe(true);
   });
 
-  // D141 P3 — hop event emission (LD-8 privacy posture verified inline).
+  test("direct GPT-6 Responses reports the sent default or explicit effort with output hidden", async () => {
+    const observed: Array<NonNullable<ReturnType<typeof getUsageContext>>["modelControl"]> = [];
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        observed.push(getUsageContext()?.modelControl);
+        return new AIMessage("ok");
+      } }),
+    }) as unknown as AuraModel);
+
+    await invokeChatModelWithFallback(messages, tools, G6, "user-1", "agent-1", null, undefined, {
+      modelFallbackMode: "none", sameModelRetryMode: "none",
+      useOpenAIResponsesApi: true, reasoningOutput: false,
+    });
+    await invokeChatModelWithFallback(messages, tools, G6, "user-1", "agent-1", null, undefined, {
+      modelFallbackMode: "none", sameModelRetryMode: "none",
+      useOpenAIResponsesApi: true, reasoningOutput: false,
+      resolveForegroundControls: (modelId) => ({ canonicalModelId: modelId, reasoningEffort: "high" }),
+    });
+
+    expect(modelOptionsFromCalls()).toMatchObject([
+      { useOpenAIResponsesApi: true, reasoningOutput: false },
+      { useOpenAIResponsesApi: true, reasoningOutput: false, reasoningEffort: "high" },
+    ]);
+    expect(observed).toEqual([
+      { canonicalModelId: G6, effectiveModelId: G6, effectiveReasoningEffort: "medium" },
+      { canonicalModelId: G6, effectiveModelId: G6, requestedReasoningEffort: "high", effectiveReasoningEffort: "high" },
+    ]);
+  });
+
+  test("direct GPT-6 Responses reasoning rejection does not retry with reasoning disabled", async () => {
+    const rejection = Object.assign(new Error("Invalid request: unsupported reasoning_effort"), { status: 400 });
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => { throw rejection; } }),
+    }) as unknown as AuraModel);
+
+    const thrown = await invokeChatModelWithFallback(messages, tools, G6, "user-1", "agent-1", null, undefined, {
+      modelFallbackMode: "none", sameModelRetryMode: "none",
+      useOpenAIResponsesApi: true, reasoningOutput: false,
+    }).catch((error: unknown) => error);
+
+    expect(thrown).toBe(rejection);
+    expect(modelIdsFromCalls()).toEqual([G6]);
+    expect(modelOptionsFromCalls()[0]?.["useOpenAIResponsesApi"]).toBe(true);
+  });
+
+  test("configured fallback recomputes direct GPT-6 Responses options in both directions", async () => {
+    for (const chain of [[A, G6], [G6, A]] as const) {
+      policyState = { enabled: true, chain: [...chain] };
+      createUniversalModelMock.mockReset();
+      createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => ({
+        bindTools: () => ({ invoke: async () => {
+          if (modelId === chain[0]) throw TOKEN_LIMIT_ERR;
+          return new AIMessage("fallback-ok");
+        } }),
+      }) as unknown as AuraModel);
+      const out = await invokeChatModelWithFallback(messages, tools, chain[0], "user-1", "agent-1", null, undefined, {
+        useOpenAIResponsesApi: true, reasoningOutput: false,
+        sameModelRetryMode: "none",
+      });
+      expect(out.modelUsed).toBe(chain[1]);
+      expect(modelIdsFromCalls()).toEqual([...chain]);
+      expect(modelOptionsFromCalls()).toMatchObject([
+        { useOpenAIResponsesApi: true, reasoningOutput: false },
+        { useOpenAIResponsesApi: true, reasoningOutput: false },
+      ]);
+    }
+  });
+
+  // hop event emission (privacy posture verified inline).
 
   const ROOM_LANE = "room:11111111-1111-4111-8111-111111111111";
 
@@ -840,11 +910,11 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     );
   });
 
-  // D264 — automatic fallback only before assistant-visible output.
+  // automatic fallback only before assistant-visible output.
 
-  const TURN = "turn-d264-fallback-gate";
+  const TURN = "turn-visible-output-fallback-gate";
 
-  test("D264.1: zero visible output — timeout on primary still falls back", async () => {
+  test("zero visible output — timeout on primary still falls back", async () => {
     policyState = { enabled: true, chain: [A, B] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
       if (modelId === A) {
@@ -870,9 +940,9 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(modelIdsFromCalls()).toEqual([A, B]);
   });
 
-  test("D264.2: after visible output — timeout does not walk to next model", async () => {
+  test("after visible output — timeout does not walk to next model", async () => {
     policyState = { enabled: true, chain: [A, B] };
-    // D421 Phase 4.2 — visible output is read from the per-agent slot
+    // visible output is read from the per-agent slot
     // (`turnContextKey(humanTurnId, agentId)`), so seed it there.
     getOrCreateAgentTurnContextByKey(turnContextKey(TURN, "agent-1")).assistantVisibleOutput = true;
 
@@ -901,7 +971,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(hops).toHaveLength(0);
   });
 
-  test("D264.3: stream chunks on turn context prevent first-token cutoff; invoke completes on primary", async () => {
+  test("stream chunks on turn context prevent first-token cutoff; invoke completes on primary", async () => {
     _setFirstTokenTimeoutMsForTests(80);
     policyState = { enabled: true, chain: [A, B] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
@@ -931,7 +1001,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(modelIdsFromCalls()).toEqual([A]);
   });
 
-  test("D563: a synchronous provider throw clears its bound attempt sink", async () => {
+  test("a synchronous provider throw clears its bound attempt sink", async () => {
     const syncFailure = new Error("synchronous provider failure");
     createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
       bindTools: () => ({
@@ -952,7 +1022,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(getOrCreateAgentTurnContextByKey(turnContextKey(TURN, "agent-1")).modelAttemptProgressSink).toBeUndefined();
   });
 
-  test("D563: every same-model retry and fallback invocation gets a distinct exact attempt ID", async () => {
+  test("every same-model retry and fallback invocation gets a distinct exact attempt ID", async () => {
     policyState = { enabled: true, chain: [A, B] };
     const attempts: Array<{ modelId: string; attemptId: unknown }> = [];
     let aCalls = 0;
@@ -981,7 +1051,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(new Set(attempts.map((attempt) => attempt.attemptId)).size).toBe(3);
   });
 
-  // D370 implicit-head — the selected model is always attempt #1; a
+  // implicit-head — the selected model is always attempt #1; a
   // recoverable failure walks the FULL user chain from the top even
   // when the selected model isn't a member of the chain. Dedupe guards
   // against re-attempting the originally-selected model during the walk.
@@ -992,7 +1062,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     }),
   ];
 
-  test("D370.1: selected not in chain + recoverable error → walk advances to chain[0] and onward; model.fallback hop fires", async () => {
+  test("selected not in chain + recoverable error → walk advances to chain[0] and onward; model.fallback hop fires", async () => {
     policyState = { enabled: true, chain: [A, B, C] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
       if (modelId === X || modelId === A) {
@@ -1029,9 +1099,9 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(hops[1]).toMatchObject({ from: A, to: B, reason: "context_exceeded" });
   });
 
-  test("D370.2: selected appears in chain → not re-attempted (dedupe guard fires on duplicate chain entry)", async () => {
+  test("selected appears in chain → not re-attempted (dedupe guard fires on duplicate chain entry)", async () => {
     // Chain has A twice. Selected A fails → walk forward. Without the
-    // D370 dedupe guard, the second A (at index 2) would be
+    // dedupe guard, the second A (at index 2) would be
     // re-attempted. With it, we skip to C.
     policyState = { enabled: true, chain: [A, B, A, C] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
@@ -1061,7 +1131,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(modelIdsFromCalls()).toEqual([A, B, C]);
   });
 
-  test("D370.3: enabled=false AND empty-chain → no fallback (unchanged)", async () => {
+  test("enabled=false AND empty-chain → no fallback (unchanged)", async () => {
     // Combined guard: both disable conditions collapse to undefined.
     policyState = { enabled: false, chain: [] };
     createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
@@ -1087,7 +1157,7 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(capturedEvents.filter((e) => e.type === "model.fallback")).toHaveLength(0);
   });
 
-  test("D370.4: vision thread, head IN chain → text-only chain entries skipped, vision-capable head reached", async () => {
+  test("vision thread, head IN chain → text-only chain entries skipped, vision-capable head reached", async () => {
     // Selected T1 (text-only) IS in the chain at index 0. Thread has
     // images → vision-skip preflight fires for T1 → walk from idx+1=1.
     // T2 at index 1 is text-only → skipped by the vision guard. V at
@@ -1123,9 +1193,9 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     expect(modelIdsFromCalls()).toEqual([V]);
   });
 
-  test("D370.5: vision thread, head OUT of chain → implicit-head walk skips text-only chain entries, reaches vision-capable one", async () => {
+  test("vision thread, head OUT of chain → implicit-head walk skips text-only chain entries, reaches vision-capable one", async () => {
     // Selected T1 (text-only) is NOT in the chain. Thread has images →
-    // vision-skip preflight fires for T1 → D370 implicit-head starts
+    // vision-skip preflight fires for T1 → implicit-head starts
     // the walk at chain[0]. T2 at index 0 is text-only → skipped by
     // the vision guard. V at index 1 is vision-capable → used.
     policyState = { enabled: true, chain: [T2, V] };
@@ -1155,16 +1225,16 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
   });
 });
 
-// D429 Phase 4 — strict / no-chain mode. An exact Task `model_id` pin MUST NOT
+// strict / no-chain mode. An exact Task `model_id` pin MUST NOT
 // silently execute another model. `modelFallbackMode: "none"` suppresses every
 // cross-model hop (provider error, context preflight, vision incompatibility,
 // capability error) while preserving bounded same-model short retries.
 // Foreground / non-exact callers stay on `"agent_chain"` (default) and retain
 // the existing fallback chain — covered by regression tests below.
-describe("invokeChatModelWithFallback — D429 Phase 4 strict mode", () => {
+describe("invokeChatModelWithFallback — strict mode", () => {
   const messages = [new HumanMessage("hi")];
   const tools: StructuredTool[] = [];
-  // D370 vision-skip path: T1 is text-only (real catalog capability); an
+  // vision-skip path: T1 is text-only (real catalog capability); an
   // image-bearing thread triggers the vision-skip preflight.
   const IMAGE_MESSAGES = [
     new HumanMessage({
@@ -1597,7 +1667,7 @@ describe("invokeChatModelWithFallback — D429 Phase 4 strict mode", () => {
   });
 });
 
-describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => {
+describe("invokeChatModelWithFallback — remote-only rows", () => {
   const messages = [new HumanMessage("hi")];
   const tools: StructuredTool[] = [];
 
@@ -1713,7 +1783,7 @@ describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => 
       abortRequested: true, safeToFallback: true, ...overrides });
   }
 
-  test("D581: safe idle timeout retries the exact GLM with original inputs and a fresh attempt", async () => {
+  test("safe idle timeout retries the exact GLM with original inputs and a fresh attempt", async () => {
     policyState = { enabled: true, chain: [B] };
     const attempts: unknown[] = [];
     const inputs: BaseMessage[][] = [];
@@ -1734,7 +1804,7 @@ describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => 
     expect(capturedEvents.filter(e => e.type === "model.fallback")).toHaveLength(0);
   });
 
-  test("D581: actual supervisor timeout aborts the old request before the same-model retry", async () => {
+  test("actual supervisor timeout aborts the old request before the same-model retry", async () => {
     _setFirstTokenTimeoutMsForTests(30);
     let attempts = 0;
     let oldRequestAborted = false;
@@ -1759,7 +1829,7 @@ describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => 
     expect(attempts).toBe(2);
   });
 
-  test("D581: safe timeout exhaustion is bounded to two same-model attempts", async () => {
+  test("safe timeout exhaustion is bounded to two same-model attempts", async () => {
     policyState = { enabled: true, chain: [B] };
     let attempts = 0;
     const failure = safeTimeout();
@@ -1778,7 +1848,7 @@ describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => 
     ["unsafe outcome", safeTimeout({ safeToFallback: false })],
     ["not aborted", safeTimeout({ abortRequested: false })],
     ["unknown provenance", new ProviderTimeoutError(GLM, 180_000)],
-  ] as const) test(`D581: timeout with ${label} is not replayed`, async () => {
+  ] as const) test(`timeout with ${label} is not replayed`, async () => {
     let attempts = 0;
     createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({ bindTools: () => ({
       invoke: async () => { attempts++; throw failure; },
@@ -1789,7 +1859,7 @@ describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => 
     expect(attempts).toBe(1);
   });
 
-  test("D581: cancelling during timeout backoff prevents another request", async () => {
+  test("cancelling during timeout backoff prevents another request", async () => {
     const controller = new AbortController();
     const cancelled = new Error("caller stopped research");
     let attempts = 0;
@@ -1808,7 +1878,7 @@ describe("invokeChatModelWithFallback — D429 Phase 7 remote-only rows", () => 
 
 });
 
-describe("invokeChatModelWithFallback — D462 foreground controls", () => {
+describe("invokeChatModelWithFallback — foreground controls", () => {
   const messages = [new HumanMessage("hi")];
   const tools: StructuredTool[] = [];
   beforeEach(() => { policyState = { enabled: false, chain: [] }; createUniversalModelMock.mockReset(); _resetAgentTurnContextsForTests(); });

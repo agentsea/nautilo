@@ -76,7 +76,7 @@ function getBaseUrl(modelId: string, cfg: Configuration): string | undefined {
 export async function createModel(
   modelId: string,
   cfg: Configuration,
-  options?: { maxTokens?: number | undefined },
+  options?: { maxTokens?: number | undefined; useOpenAIResponsesApi?: boolean | undefined },
 ): Promise<ChatModel> {
   await assertDeepResearchServerFunding("deep_research_model");
   const apiKey = getApiKey(modelId, cfg);
@@ -86,5 +86,8 @@ export async function createModel(
   if (baseUrl) opts["baseURL"] = baseUrl;
   if (cfg.anthropic_long_context_beta) opts["anthropicLongContextBeta"] = true;
   if (options?.maxTokens !== undefined) opts["maxTokens"] = options.maxTokens;
+  if (options?.useOpenAIResponsesApi !== undefined) {
+    opts["useOpenAIResponsesApi"] = options.useOpenAIResponsesApi;
+  }
   return guardPaidModel(await createUniversalModel(modelId, opts));
 }

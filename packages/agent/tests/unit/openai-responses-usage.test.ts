@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { DynamicStructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
 import { OpenAIUsageResponses } from "../../src/providers/openai-compat";
+import { createEvaluationModel } from "../../src/providers/model-evaluation";
+import { resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
+import { activateModelCatalogForTests } from "../helpers/activate-model-catalog";
 import { extractUsageFromLLMResult } from "../../src/usage/usage-callback";
 import { projectPreparedMessagesForModelCache } from "../../src/utils/model-context-cache";
 
@@ -173,5 +178,123 @@ describe("OpenAI Responses usage preservation", () => {
     expect(extracted(firstMessage)).toMatchObject({ inputTokens: 101, outputTokens: 11 });
     expect(secondMessage.content).toMatchObject([{ type: "text", text: "second" }]);
     expect(extracted(secondMessage)).toMatchObject({ inputTokens: 202, outputTokens: 12 });
+  });
+});
+
+describe("direct GPT-6 Responses function continuation", () => {
+  const models = ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"] as const;
+  beforeAll(async () => { await activateModelCatalogForTests(models); });
+  afterAll(() => resetRuntimeModelCatalog());
+  const tool = new DynamicStructuredTool({
+    name: "read_fixture",
+    description: "Read a synthetic fixture by key.",
+    schema: z.object({ key: z.string() }),
+    func: async ({ key }) => `fixture:${key}`,
+  });
+
+  for (const modelId of models) {
+    test(`${modelId} sends two real serialized Responses requests with the same tool ID`, async () => {
+      const originalFetch = globalThis.fetch;
+      const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+      const providerUsage = usage();
+      const callId = `call_${modelId.slice("openai:".length).replaceAll("-", "_")}`;
+      const effort = modelId === "openai:gpt-6-sol" ? "high" : "medium";
+      globalThis.fetch = (async (input, init) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        const path = new URL(request.url).pathname;
+        const body = JSON.parse(await request.text()) as Record<string, unknown>;
+        requests.push({ path, body });
+        if (path !== "/v1/responses" || requests.length > 2) {
+          throw new Error(`Unexpected provider request: ${path}`);
+        }
+        const first = requests.length === 1;
+        const response = first ? {
+          id: "resp_tool",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: modelId.slice("openai:".length),
+          output: [
+            { type: "reasoning", id: "rs_tool", summary: [] },
+            { type: "function_call", id: "fc_tool", call_id: callId, name: tool.name, arguments: JSON.stringify({ key: "safe" }), status: "completed" },
+          ],
+          output_text: "",
+          usage: providerUsage,
+        } : textResponse("final", providerUsage, "The fixture is fixture:safe.");
+        return new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+
+      try {
+        const model = await createEvaluationModel(modelId, {
+          apiKey: "synthetic-key",
+          maxTokens: 256,
+          reasoningOutput: false,
+          ...(modelId === "openai:gpt-6-astra" ? {} : { reasoningEffort: effort }),
+          useOpenAIResponsesApi: true,
+        });
+        const prompt = new HumanMessage("Read fixture safe, then report its value.");
+        const first = await model.bindTools!([tool], { tool_choice: "required" }).invoke([prompt]) as AIMessage;
+        expect(first.tool_calls).toMatchObject([{ id: callId, name: tool.name, args: { key: "safe" } }]);
+        expect(first.response_metadata["usage"]).toEqual(providerUsage);
+        const toolResult = await tool.invoke(first.tool_calls![0]!);
+        expect(ToolMessage.isInstance(toolResult)).toBe(true);
+        const final = await model.bindTools!([tool], { tool_choice: "auto" }).invoke([
+          prompt,
+          first,
+          toolResult as ToolMessage,
+        ]) as AIMessage;
+
+        expect(requests.map(({ path }) => path)).toEqual(["/v1/responses", "/v1/responses"]);
+        expect(requests.map(({ body }) => body["reasoning"])).toEqual([{ effort }, { effort }]);
+        for (const { body } of requests) {
+          expect(body["model"]).toBe(modelId.slice("openai:".length));
+          expect(body["tools"]).toEqual(expect.arrayContaining([expect.objectContaining({ name: tool.name })]));
+        }
+        expect(requests[0]!.body["tool_choice"]).toBe("required");
+        expect(requests[1]!.body["tool_choice"]).toBe("auto");
+        expect(requests[1]!.body["tool_choice"]).toBe("auto");
+        const continuation = requests[1]!.body["input"] as Array<Record<string, unknown>>;
+        expect(continuation.some(item => item["type"] === "reasoning" && item["id"] === "rs_tool")).toBe(true);
+        expect(continuation.some(item => item["type"] === "function_call" && item["call_id"] === callId)).toBe(true);
+        expect(continuation.some(item => item["type"] === "function_call_output"
+          && item["call_id"] === callId && item["output"] === "fixture:safe")).toBe(true);
+        expect(final.text).toContain("fixture:safe");
+        expect(final.response_metadata["usage"]).toEqual(providerUsage);
+        expect(extracted(final)).toMatchObject({ inputTokens: 100, outputTokens: 7, reasoningTokens: 3 });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  }
+
+  test("an explicit Sol off effort and empty tools retain Responses", async () => {
+    const originalFetch = globalThis.fetch;
+    let path = "";
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (input, init) => {
+      const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+      path = new URL(request.url).pathname;
+      body = JSON.parse(await request.text()) as Record<string, unknown>;
+      return new Response(JSON.stringify(textResponse("off", usage(), "done")), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const model = await createEvaluationModel("openai:gpt-6-sol", {
+        apiKey: "synthetic-key", maxTokens: 256, reasoningOutput: false,
+        reasoningEffort: "off", useOpenAIResponsesApi: true,
+      });
+      await model.bindTools!([], { tool_choice: "none" }).invoke([new HumanMessage("Say done.")]);
+      expect(path).toBe("/v1/responses");
+      expect(body["reasoning"]).toEqual({ effort: "none" });
+      expect(body["tool_choice"]).toBe("none");
+      expect(body).not.toHaveProperty("tools");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

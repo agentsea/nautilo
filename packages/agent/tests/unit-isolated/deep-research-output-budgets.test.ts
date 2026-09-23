@@ -119,7 +119,7 @@ beforeEach(() => {
 });
 
 test("router forwards an explicit output budget and preserves omitted legacy behavior", async () => {
-  await withServerFunding(() => createModel(MODEL, configuration, { maxTokens: 7_777 }));
+  await withServerFunding(() => createModel(MODEL, configuration, { maxTokens: 7_777, useOpenAIResponsesApi: true }));
   await withServerFunding(() => createModel(MODEL, configuration, { maxTokens: undefined }));
   await withServerFunding(() => createModel(MODEL, configuration));
 
@@ -131,6 +131,9 @@ test("router forwards an explicit output budget and preserves omitted legacy beh
   expect(factoryCalls[1]!.options).not.toHaveProperty("maxTokens");
   expect(factoryCalls[2]!.options).not.toHaveProperty("maxTokens");
   expect(fundingAssertion).toHaveBeenCalledTimes(3);
+  expect(factoryCalls[0]!.options["useOpenAIResponsesApi"]).toBe(true);
+  expect(factoryCalls[1]!.options).not.toHaveProperty("useOpenAIResponsesApi");
+  expect(factoryCalls[2]!.options).not.toHaveProperty("useOpenAIResponsesApi");
 });
 
 test("researcher and compression use their distinct budgets when model IDs match", async () => {
@@ -145,9 +148,10 @@ test("researcher and compression use their distinct budgets when model IDs match
   expect(factoryCalls.map((call) => ({
     modelId: call.modelId,
     maxTokens: call.options["maxTokens"],
+    useOpenAIResponsesApi: call.options["useOpenAIResponsesApi"],
   }))).toEqual([
-    { modelId: MODEL, maxTokens: 1_111 },
-    { modelId: MODEL, maxTokens: 2_222 },
+    { modelId: MODEL, maxTokens: 1_111, useOpenAIResponsesApi: true },
+    { modelId: MODEL, maxTokens: 2_222, useOpenAIResponsesApi: undefined },
   ]);
   expect(fundingAssertion).toHaveBeenCalledTimes(4);
 });
@@ -164,9 +168,10 @@ test("clarification and final synthesis use their role budgets when model IDs ma
   expect(factoryCalls.map((call) => ({
     modelId: call.modelId,
     maxTokens: call.options["maxTokens"],
+    useOpenAIResponsesApi: call.options["useOpenAIResponsesApi"],
   }))).toEqual([
-    { modelId: MODEL, maxTokens: 1_111 },
-    { modelId: MODEL, maxTokens: 3_333 },
+    { modelId: MODEL, maxTokens: 1_111, useOpenAIResponsesApi: undefined },
+    { modelId: MODEL, maxTokens: 3_333, useOpenAIResponsesApi: undefined },
   ]);
   expect(fundingAssertion).toHaveBeenCalledTimes(4);
 });

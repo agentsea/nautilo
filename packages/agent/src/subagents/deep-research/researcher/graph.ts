@@ -82,6 +82,7 @@ async function researcher(
     systemPrompt = `${systemPrompt}\n\n${sysLines.join("\n")}`;
     const model = await createModel(cfg.research_model, cfg, {
       maxTokens: cfg.research_model_max_tokens,
+      useOpenAIResponsesApi: true,
     });
 
     const callbacks = config?.callbacks;

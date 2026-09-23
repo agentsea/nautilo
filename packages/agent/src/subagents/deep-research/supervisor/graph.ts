@@ -53,6 +53,7 @@ function createSupervisorNode(cfg: Configuration) {
 
       const model: ChatModel = await createModel(cfg.supervisor_model, cfg, {
         maxTokens: cfg.supervisor_model_max_tokens,
+        useOpenAIResponsesApi: true,
       });
       const tools = [conductResearchTool, researchCompleteTool, thinkTool];
 

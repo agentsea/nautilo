@@ -18,7 +18,7 @@ afterEach(() => {
   while (restores.length > 0) restores.pop()?.();
 });
 
-describe("deep-research caps (D274)", () => {
+describe("deep-research caps", () => {
   test("supervisor rejects exhausted retries without changing accumulated messages", async () => {
     const existing = [{ role: "user" as const, content: "prior plan step" }];
     const cause = new Error("supervisor.invoke attempt 3/3 timed out after 60000ms");
@@ -48,7 +48,7 @@ describe("deep-research caps (D274)", () => {
     expect(spModel).toHaveBeenCalledWith(
       "test:supervisor",
       expect.objectContaining({ supervisor_model_max_tokens: 4321 }),
-      { maxTokens: 4321 },
+      { maxTokens: 4321, useOpenAIResponsesApi: true },
     );
     expect(existing).toEqual([{ role: "user", content: "prior plan step" }]);
   });

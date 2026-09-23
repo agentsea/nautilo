@@ -12,7 +12,7 @@ import { wrapAnthropicModelForToolSchemas } from "./anthropic-schema";
 import { resolveFireworksKimiK3ServingProfile } from "./serving-profile";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
-import { OpenAIGpt6Completions, OpenAIUsageResponses } from "./openai-compat";
+import { isDirectGpt6Model, OpenAIGpt6Completions, OpenAIUsageResponses } from "./openai-compat";
 import {
   VeniceChatOpenAICompletions,
   wrapVeniceModelForToolSchemas,
@@ -28,7 +28,7 @@ const MIN_REASONING_HEADROOM_TOKENS = 2048;
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14" as const;
 
 /** Default reasoning effort when the operator hasn't set one. */
-const DEFAULT_REASONING_EFFORT = "medium" as const;
+export const DEFAULT_REASONING_EFFORT = "medium" as const;
 
 const OPAQUE_ROOM_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -117,9 +117,8 @@ function providerFromModelId(modelId: string): string | undefined {
 /**
  * OpenAI-only transport policy: direct `openai:*` reasoning models use
  * the Responses API only when explicitly opted in. Timeout budgets for
- * model-attempt liveness policy is independent of this selection — both Chat
- * Completions and Responses paths share the same reasoning-capability gate for
- * effort/headroom.
+ * model-attempt liveness policy are independent of this selection. Direct
+ * GPT-6 opt-ins preserve reasoning independently of output visibility/headroom.
  */
 export function shouldUseOpenAIResponsesApi(
   options: CreateModelOptions,
@@ -133,7 +132,7 @@ export function shouldUseOpenAIResponsesApi(
     return true;
   }
   if (options.useOpenAIResponsesApi !== true) return false;
-  return reasoningRequested(options, maxTokens);
+  return isDirectGpt6Model(options.modelId) || reasoningRequested(options, maxTokens);
 }
 
 function openAICompatibleReasoningModelKwargs(
@@ -260,8 +259,13 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   if (options.callbacks) base["callbacks"] = options.callbacks;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (useResponsesApi) {
-    if (reasoningRequested(options, maxTokens)) {
+    const directGpt6 = isDirectGpt6Model(options.modelId);
+    if (directGpt6 || reasoningRequested(options, maxTokens)) {
       const requestedEffort = requestedReasoningEffort(options);
+      if (directGpt6 && (requestedEffort === "minimal"
+        || (options.modelId === "openai:gpt-6-astra" && requestedEffort === "off"))) {
+        throw new Error(`Reasoning effort "${requestedEffort}" is not supported by ${options.modelId}.`);
+      }
       const effort = requestedEffort === "off" ? "none" : requestedEffort;
       if (requestedEffort !== "off") {
         assertProviderReasoningEffort("openai-responses", requestedEffort);
@@ -276,6 +280,15 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
       // final request. Only the cache mode is added here.
       base["modelKwargs"] = {
         prompt_cache_options: { mode: "implicit" },
+      };
+    }
+    if (directGpt6) {
+      // LangChain's installed reasoning-model classifier predates GPT-6 and
+      // drops its top-level reasoning field. The existing Responses serializer
+      // forwards modelKwargs unchanged, including after bindTools/withConfig.
+      base["modelKwargs"] = {
+        ...(base["modelKwargs"] as Record<string, unknown> | undefined),
+        reasoning: base["reasoning"],
       };
     }
   } else {

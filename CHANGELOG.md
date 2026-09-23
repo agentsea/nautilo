@@ -43,6 +43,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Workbench/Desktop and Mobile. Status uses authenticated chat connections and
   app activity; failed reads show unavailable. Multiple connected devices are
   combined, and Agent controls retain their existing behavior.
+- Preserve reasoning for direct GPT-6 Astra, Sol, and Luna tool calls through
+  the existing Responses integration, including research and memory helpers.
+  Hidden reasoning output no longer disables effort or changes their transport.
 
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
   Mobile for users with the `manage_rooms` permission. It addresses current Human

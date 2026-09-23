@@ -177,7 +177,7 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
     }),
   ];
   const model = input.createModel === undefined
-    ? await createUniversalModel(input.modelId) as ReviewModel
+    ? await createUniversalModel(input.modelId, { useOpenAIResponsesApi: true }) as ReviewModel
     : await input.createModel(input.modelId);
   const modelWithTools = model.bindTools?.(tools) ?? model;
   const messages = input.inputs.flatMap((entry, index) =>
