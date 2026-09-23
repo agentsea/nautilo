@@ -26,15 +26,16 @@ const relayObservation = {
 
 describe("browser visual observation", () => {
   test("deterministically turns local OCR and borders into validated targets and snapshot text", () => {
-    const first = browserVisualObservationFromRelay(relayObservation);
-    const second = browserVisualObservationFromRelay(relayObservation);
+    const first = browserVisualObservationFromRelay({ ...relayObservation, keyboardFocus: "page" });
+    const second = browserVisualObservationFromRelay({ ...relayObservation, keyboardFocus: "page" });
     expect(first).toEqual(second);
     expect(first).toMatchObject({
       pageUrl: "https://gym.example/room",
       browserSessionId: "browser-1",
       observationId: "visual-1",
-      visual: { viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 } },
+      visual: { viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 }, keyboardFocus: "page" },
     });
+    expect(first.snapshot).toContain('keyboard_focus "page"');
     expect(first.snapshot).toContain('visible_text "Apple"');
     expect(first.snapshot).toContain("visual_ref=v1");
     expect(first.snapshot).toContain("middle-left area");
@@ -48,6 +49,8 @@ describe("browser visual observation", () => {
   });
 
   test("rejects observations and target registries outside their exact image", () => {
+    expect(() => browserVisualObservationFromRelay({ ...relayObservation, keyboardFocus: "typing-secret" }))
+      .toThrow();
     expect(() => browserVisualObservationFromRelay({
       ...relayObservation,
       extraction: { ...relayObservation.extraction,
@@ -75,6 +78,7 @@ describe("browser visual observation", () => {
         ...relayObservation.extraction,
         text: [{ text: "7", box: { x: 325, y: 195, width: 20, height: 24 }, confidence: 0.98 }],
         rectangles: boxes,
+        appearances: boxes.map((box) => ({ box, flatFill: true })),
         contours: [],
         contourCount: 0,
         layouts: boxes.map((box, index) => ({
@@ -91,6 +95,9 @@ describe("browser visual observation", () => {
       },
     });
     expect(observation.snapshot).toContain('visual_group "grid-1" [kind=grid, rows=2, columns=3, items=6]');
+    expect(observation.snapshot).toContain('grid item "visually blank"');
+    expect(observation.visual.targets.find(({ name }) => name === "visually blank")?.sources)
+      .toContain("flat-fill");
     expect(observation.snapshot).toContain("group=grid-1, row=2, column=3");
     expect(observation.visual.targets.find(({ name }) => name === "7")).toMatchObject({
       role: "grid item",

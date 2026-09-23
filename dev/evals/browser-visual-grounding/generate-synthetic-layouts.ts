@@ -5,9 +5,9 @@ import sharp from "sharp";
 
 const outputDirectory = path.join(import.meta.dir, "synthetic-layouts");
 
-function cell(x: number, y: number, width: number, height: number, label: string): string {
+function cell(x: number, y: number, width: number, height: number, label: string, fontSize = 38): string {
   return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="8" fill="#ede9df" stroke="#5f5a52" stroke-width="4"/>`
-    + (label ? `<text x="${x + width / 2}" y="${y + height / 2 + 12}" text-anchor="middle" font-family="Arial" font-size="38" font-weight="700" fill="#38342f">${label}</text>` : "");
+    + (label ? `<text x="${x + width / 2}" y="${y + height / 2 + (fontSize === 38 ? 12 : fontSize * 0.32)}" text-anchor="middle" font-family="Arial" font-size="${fontSize}" font-weight="700" fill="#38342f">${label}</text>` : "");
 }
 
 function gridSvg(options: {
@@ -21,6 +21,7 @@ function gridSvg(options: {
   readonly cellHeight: number;
   readonly gap: number;
   readonly labels: Readonly<Record<number, string>>;
+  readonly fontSize?: number;
 }): string {
   const cells = Array.from({ length: options.rows * options.columns }, (_, index) => {
     const row = Math.floor(index / options.columns);
@@ -31,6 +32,7 @@ function gridSvg(options: {
       options.cellWidth,
       options.cellHeight,
       options.labels[index] ?? "",
+      options.fontSize,
     );
   }).join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${options.width}" height="${options.height}">
@@ -41,6 +43,22 @@ function gridSvg(options: {
 }
 
 const fixtures = [
+  {
+    name: "grid-4x4-occupancy.png",
+    svg: gridSvg({
+      width: 1_000,
+      height: 800,
+      rows: 4,
+      columns: 4,
+      originX: 140,
+      originY: 130,
+      cellWidth: 150,
+      cellHeight: 140,
+      gap: 26,
+      labels: { 7: "4", 10: "4" },
+      fontSize: 64,
+    }),
+  },
   {
     name: "grid-3x5.png",
     svg: gridSvg({

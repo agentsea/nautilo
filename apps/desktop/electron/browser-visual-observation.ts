@@ -28,6 +28,11 @@ export interface BrowserVisualTextObservation {
   readonly confidence: number;
 }
 
+export interface BrowserVisualRegionAppearance {
+  readonly box: BrowserVisualBox;
+  readonly flatFill: boolean;
+}
+
 export interface BrowserVisualExtraction {
   readonly recognitionMode: "hybrid";
   readonly durationMs: number;
@@ -36,10 +41,14 @@ export interface BrowserVisualExtraction {
   readonly cropRequestCount: number;
   readonly text: readonly BrowserVisualTextObservation[];
   readonly rectangles: readonly BrowserVisualBox[];
+  readonly appearances: readonly BrowserVisualRegionAppearance[];
   readonly contours: readonly BrowserVisualBox[];
   readonly contourCount: number;
   readonly layouts: readonly BrowserVisualLayoutMembership[];
 }
+
+/** Semantic keyboard-focus class captured without element text or geometry. */
+export type BrowserKeyboardFocusStatus = "page" | "canvas" | "editable" | "other" | "unknown";
 
 export interface BrowserVisualObservationEnvelope {
   readonly version: 1;
@@ -52,6 +61,7 @@ export interface BrowserVisualObservationEnvelope {
     readonly cssHeight: number;
     readonly dpr: number;
   };
+  readonly keyboardFocus: BrowserKeyboardFocusStatus;
   readonly extraction: BrowserVisualExtraction;
 }
 
@@ -66,6 +76,7 @@ export interface BrowserVisualObservationBinding {
   readonly dpr: number;
   readonly xScale: number;
   readonly yScale: number;
+  readonly keyboardFocus: BrowserKeyboardFocusStatus;
 }
 
 /** Relay-internal target selected from a visual observation. Never model-visible. */
@@ -382,15 +393,19 @@ function browserVisualTargetsFromExtraction(
     ...extraction.contours.map((box) => ({ box, confidence: 0.5, source: "contour" as const })),
   ]);
   const layoutByBox = new Map(extraction.layouts.map((layout) => [boxKey(layout.box), layout]));
+  const appearanceByBox = new Map(extraction.appearances.map((appearance) =>
+    [boxKey(appearance.box), appearance]));
   const regionTargets: BrowserVisualGroundedTarget[] = regions.map((region) => {
     const enclosed = text.filter((item) => containsPoint(region.box, boxCenter(item.box), 4));
     const nearby = text.filter((item) => !enclosed.includes(item))
       .sort((left, right) => distance(region.box, left.box) - distance(region.box, right.box))
       .slice(0, 3);
-    const name = enclosed.sort(readingOrder).map((item) => item.text).join(" ").trim()
-      || "unlabelled visual region";
+    const label = enclosed.sort(readingOrder).map((item) => item.text).join(" ").trim();
     const location = categoricalPosition(boxCenter(region.box), image);
     const layout = layoutWithoutBox(layoutByBox.get(boxKey(region.box)));
+    const visuallyBlank = !label && layout?.kind === "grid"
+      && appearanceByBox.get(boxKey(region.box))?.flatFill === true;
+    const name = label || (visuallyBlank ? "visually blank" : "unlabelled visual region");
     const structuralContext = layoutContext(layout);
     return Object.freeze({
       role: layout === undefined ? "visual region" : `${layout.kind} item`,
@@ -399,7 +414,8 @@ function browserVisualTargetsFromExtraction(
       context: [structuralContext, nearby.length
         ? `${location}; near ${nearby.map((item) => item.text).join(" | ")}`
         : `${location}; ${region.source} region`].filter(Boolean).join("; "),
-      sources: Object.freeze(name === "unlabelled visual region" ? [region.source] : [region.source, "ocr"]),
+      sources: Object.freeze(label ? [region.source, "ocr"]
+        : visuallyBlank ? [region.source, "flat-fill"] : [region.source]),
       confidence: region.confidence,
       ...(layout === undefined ? {} : { layout: Object.freeze(layout) }),
       point: Object.freeze(boxCenter(region.box)),
@@ -518,7 +534,7 @@ export function parseBrowserVisualGroundingOutput(
   const result = record(decoded, "result");
   exactKeys(result, [
     "imagePath", "recognitionMode", "width", "height", "durationMs", "globalDurationMs",
-    "cropDurationMs", "cropRequestCount", "text", "rectangles", "contours", "contourCount",
+    "cropDurationMs", "cropRequestCount", "text", "rectangles", "appearances", "contours", "contourCount",
   ], "result");
   if (typeof result["imagePath"] !== "string" || resolve(result["imagePath"]) !== resolve(expectedImagePath)) {
     throw new Error("browser visual helper returned an unexpected image path");
@@ -531,8 +547,10 @@ export function parseBrowserVisualGroundingOutput(
   }
   const rawText = result["text"];
   const rawRectangles = result["rectangles"];
+  const rawAppearances = result["appearances"];
   const rawContours = result["contours"];
-  if (!Array.isArray(rawText) || !Array.isArray(rawRectangles) || !Array.isArray(rawContours)) {
+  if (!Array.isArray(rawText) || !Array.isArray(rawRectangles)
+    || !Array.isArray(rawAppearances) || !Array.isArray(rawContours)) {
     throw new Error("browser visual helper returned an invalid observation set");
   }
   const text = rawText.map((value, index): BrowserVisualTextObservation => {
@@ -547,6 +565,21 @@ export function parseBrowserVisualGroundingOutput(
     return { text: textValue, confidence, box: parseBox(observation["box"], width, height, `text[${index}].box`) };
   });
   const rectangles = rawRectangles.map((value, index) => parseBox(value, width, height, `rectangles[${index}]`));
+  if (rawAppearances.length !== rectangles.length) {
+    throw new Error("browser visual helper returned inconsistent rectangle appearances");
+  }
+  const appearances = rawAppearances.map((value, index): BrowserVisualRegionAppearance => {
+    const appearance = record(value, `appearances[${index}]`);
+    exactKeys(appearance, ["box", "flatFill"], `appearances[${index}]`);
+    const box = parseBox(appearance["box"], width, height, `appearances[${index}].box`);
+    if (JSON.stringify(box) !== JSON.stringify(rectangles[index])) {
+      throw new Error(`browser visual helper returned inconsistent appearances[${index}].box`);
+    }
+    if (typeof appearance["flatFill"] !== "boolean") {
+      throw new Error(`browser visual helper returned invalid appearances[${index}].flatFill`);
+    }
+    return { box, flatFill: appearance["flatFill"] };
+  });
   return Object.freeze({
     recognitionMode: "hybrid",
     durationMs: finiteNumber(result["durationMs"], "durationMs"),
@@ -555,6 +588,7 @@ export function parseBrowserVisualGroundingOutput(
     cropRequestCount: integer(result["cropRequestCount"], "cropRequestCount"),
     text,
     rectangles,
+    appearances,
     contours: rawContours.map((value, index) => parseBox(value, width, height, `contours[${index}]`)),
     contourCount: integer(result["contourCount"], "contourCount"),
     layouts: inferBrowserVisualLayouts({ rectangles, image: { width, height } }),

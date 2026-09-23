@@ -24,6 +24,32 @@ async function extract(name: string) {
 }
 
 describe("synthetic browser visual layouts through Apple Vision", () => {
+  nativeTest("distinguishes labelled cells from flat blank interiors in a 4 by 4 grid", async () => {
+    const extraction = await extract("grid-4x4-occupancy.png");
+    const group = extraction.layouts.filter(({ groupId }) => groupId === "grid-1");
+    expect(group).toHaveLength(16);
+    const observation = browserVisualObservationFromRelay({
+      version: 1,
+      pageUrl: "https://synthetic.invalid/layout",
+      browserSessionId: "synthetic-browser",
+      observationId: "synthetic-grid-4x4",
+      image: { width: 1_000, height: 800 },
+      viewport: { cssWidth: 500, cssHeight: 400, dpr: 2 },
+      keyboardFocus: "page",
+      extraction,
+    });
+    const cells = observation.visual.targets.filter((target) => target.layout?.groupId === "grid-1");
+    expect(cells.filter((target) => target.name === "visually blank").length).toBeGreaterThanOrEqual(12);
+    // Apple's OCR can miss standalone synthetic digits, but their visible
+    // contrast must never be described as a blank cell.
+    expect(cells.some((target) => target.name !== "visually blank"
+      && target.layout?.row === 2 && target.layout.column === 4)).toBe(true);
+    expect(cells.some((target) => target.name !== "visually blank"
+      && target.layout?.row === 3 && target.layout.column === 3)).toBe(true);
+    expect(observation.snapshot).toContain('keyboard_focus "page"');
+    expect(observation.snapshot).toContain('grid item "visually blank"');
+  });
+
   nativeTest("finds a 3 by 5 grid from screenshot pixels", async () => {
     const extraction = await extract("grid-3x5.png");
     const group = extraction.layouts.filter(({ groupId }) => groupId === "grid-1");

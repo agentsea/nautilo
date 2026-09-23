@@ -24,6 +24,7 @@ import {
 import type { BrowserPageSnapshotStore } from "../browser-page-snapshot-store.ts";
 import { browserObservationSettleExpression } from "../browser-observation-settle.ts";
 import type {
+  BrowserKeyboardFocusStatus,
   BrowserVisualObservationBinding,
   BrowserVisualObservationEnvelope,
   BrowserVisualExtraction,
@@ -41,6 +42,24 @@ import {
 } from "./router.ts";
 
 const BROWSER_EXEC_TIMEOUT_MS = 30_000;
+const BROWSER_KEYBOARD_FOCUS_STATUSES = new Set<BrowserKeyboardFocusStatus>([
+  "page", "canvas", "editable", "other", "unknown",
+]);
+
+const BROWSER_VIEWPORT_EXPRESSION = `(() => {
+  let active = document.activeElement;
+  while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
+    active = active.shadowRoot.activeElement;
+  }
+  let focus = "unknown";
+  if (active === document.body || active === document.documentElement) focus = "page";
+  else if (active instanceof HTMLCanvasElement) focus = "canvas";
+  else if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+    || active instanceof HTMLSelectElement || (active instanceof HTMLElement && active.isContentEditable)) focus = "editable";
+  else if (active instanceof HTMLIFrameElement) focus = "unknown";
+  else if (active instanceof Element) focus = "other";
+  return {w: innerWidth, h: innerHeight, dpr: devicePixelRatio, url: location.href, focus};
+})()`;
 
 export interface InteractiveBrowserExecOptions {
   readonly timeout: number;
@@ -396,14 +415,21 @@ export function createInteractiveBrowserDispatchHandler(
       readonly cssHeight: number;
       readonly dpr: number;
       readonly pageUrl: string | null;
+      readonly keyboardFocus: BrowserKeyboardFocusStatus;
     }> => {
       const { stdout } = await ports.exec(binary, [
         ...browserArgvPrefix(configPath, session),
         "eval",
-        "({w:innerWidth,h:innerHeight,dpr:devicePixelRatio,url:location.href})",
+        BROWSER_VIEWPORT_EXPRESSION,
       ], { timeout: BROWSER_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024, ...(signal ? { signal } : {}) });
       assertLive();
-      const parsed = JSON.parse(stdout.trim()) as { readonly w?: unknown; readonly h?: unknown; readonly dpr?: unknown; readonly url?: unknown };
+      const parsed = JSON.parse(stdout.trim()) as {
+        readonly w?: unknown;
+        readonly h?: unknown;
+        readonly dpr?: unknown;
+        readonly url?: unknown;
+        readonly focus?: unknown;
+      };
       const cssWidth = typeof parsed.w === "number" && Number.isFinite(parsed.w) && parsed.w > 0 ? parsed.w : 0;
       const cssHeight = typeof parsed.h === "number" && Number.isFinite(parsed.h) && parsed.h > 0 ? parsed.h : 0;
       const dpr = typeof parsed.dpr === "number" && Number.isFinite(parsed.dpr) && parsed.dpr > 0 ? parsed.dpr : 1;
@@ -411,7 +437,11 @@ export function createInteractiveBrowserDispatchHandler(
       try {
         if (typeof parsed.url === "string") pageUrl = new URL(parsed.url).href;
       } catch { /* invalid page URL remains unavailable */ }
-      return { cssWidth, cssHeight, dpr, pageUrl };
+      const keyboardFocus = typeof parsed.focus === "string"
+        && BROWSER_KEYBOARD_FOCUS_STATUSES.has(parsed.focus as BrowserKeyboardFocusStatus)
+        ? parsed.focus as BrowserKeyboardFocusStatus
+        : "unknown";
+      return { cssWidth, cssHeight, dpr, pageUrl, keyboardFocus };
     };
 
     const readSnapshot = async (): Promise<BrowserObservation> => {
@@ -448,6 +478,7 @@ export function createInteractiveBrowserDispatchHandler(
       readonly cssHeight: number;
       readonly dpr: number;
       readonly pageUrl: string;
+      readonly keyboardFocus: BrowserKeyboardFocusStatus;
     } | null> => {
       if (boundVisualObservation === null) return null;
       try {
@@ -456,11 +487,13 @@ export function createInteractiveBrowserDispatchHandler(
           || viewport.pageUrl !== boundVisualObservation.pageUrl
           || viewport.cssWidth !== boundVisualObservation.cssWidth
           || viewport.cssHeight !== boundVisualObservation.cssHeight
-          || viewport.dpr !== boundVisualObservation.dpr) {
+          || viewport.dpr !== boundVisualObservation.dpr
+          || (request.toolName === "browser_press"
+            && viewport.keyboardFocus !== boundVisualObservation.keyboardFocus)) {
           ports.deleteVisualObservation(session);
           throw new BrowserDispatchFailure(
             "browser_observation_stale",
-            "The browser page or viewport changed since the visual decision. Take a fresh screenshot; the proposed action was not executed.",
+            "The browser page, viewport or keyboard focus changed since the visual decision. Take a fresh screenshot; the proposed action was not executed.",
           );
         }
         return { ...viewport, pageUrl: viewport.pageUrl };
@@ -671,7 +704,13 @@ export function createInteractiveBrowserDispatchHandler(
         });
         const png = ports.readCapturePng(capturePath);
         const { width: imageWidth, height: imageHeight } = ports.captureDimensions(png);
-        let css = { w: 0, h: 0, dpr: 1, pageUrl: null as string | null };
+        let css = {
+          w: 0,
+          h: 0,
+          dpr: 1,
+          pageUrl: null as string | null,
+          keyboardFocus: "unknown" as BrowserKeyboardFocusStatus,
+        };
         let scale = { x: 1, y: 1 };
         try {
           const viewport = await readViewport();
@@ -680,6 +719,7 @@ export function createInteractiveBrowserDispatchHandler(
             h: viewport.cssHeight,
             dpr: viewport.dpr,
             pageUrl: viewport.pageUrl,
+            keyboardFocus: viewport.keyboardFocus,
           };
           scale = {
             x: css.w > 0 ? imageWidth / css.w : 1,
@@ -715,6 +755,7 @@ export function createInteractiveBrowserDispatchHandler(
             observationId,
             image: { width: imageWidth, height: imageHeight },
             viewport: { cssWidth: css.w, cssHeight: css.h, dpr: css.dpr },
+            keyboardFocus: css.keyboardFocus,
             extraction,
           };
           visualBinding = {
@@ -728,6 +769,7 @@ export function createInteractiveBrowserDispatchHandler(
             dpr: css.dpr,
             xScale: scale.x,
             yScale: scale.y,
+            keyboardFocus: css.keyboardFocus,
           };
         }
         const result = ports.visionFromPng(

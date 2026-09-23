@@ -40,6 +40,7 @@ const visualLayoutSemanticSchema = z.object({
 });
 
 const visualLayoutMembershipSchema = visualLayoutSemanticSchema.safeExtend({ box: visualBoxSchema });
+const visualKeyboardFocusSchema = z.enum(["page", "canvas", "editable", "other", "unknown"]);
 
 /** Trusted Desktop result for one locally-extracted embedded-browser screenshot. */
 const relayBrowserVisualObservationSchema = z.object({
@@ -53,6 +54,7 @@ const relayBrowserVisualObservationSchema = z.object({
     cssHeight: z.number().positive(),
     dpr: z.number().positive(),
   }).strict(),
+  keyboardFocus: visualKeyboardFocusSchema.optional(),
   extraction: z.object({
     recognitionMode: z.enum(["fast", "accurate", "hybrid"]),
     durationMs: z.number().nonnegative(),
@@ -61,6 +63,7 @@ const relayBrowserVisualObservationSchema = z.object({
     cropRequestCount: nonnegativeInteger,
     text: z.array(rawTextObservationSchema),
     rectangles: z.array(visualBoxSchema),
+    appearances: z.array(z.object({ box: visualBoxSchema, flatFill: z.boolean() }).strict()).optional(),
     contours: z.array(visualBoxSchema),
     contourCount: nonnegativeInteger,
     layouts: z.array(visualLayoutMembershipSchema).optional(),
@@ -91,6 +94,7 @@ export const browserVisualObservationSchema = z.object({
     cssHeight: z.number().positive(),
     dpr: z.number().positive(),
   }).strict(),
+  keyboardFocus: visualKeyboardFocusSchema.optional(),
   targets: z.array(browserVisualTargetSchema),
 }).strict().superRefine((visual, ctx) => {
   const refs = new Set<string>();
@@ -255,16 +259,20 @@ export function browserVisualObservationFromRelay(raw: unknown): {
     ...parsed.extraction.contours.map((box) => ({ box, confidence: 0.5, source: "contour" as const })),
   ]);
   const layoutByBox = new Map((parsed.extraction.layouts ?? []).map((layout) => [boxKey(layout.box), layout]));
+  const appearanceByBox = new Map((parsed.extraction.appearances ?? []).map((appearance) =>
+    [boxKey(appearance.box), appearance]));
   const regionTargets = regions.map((region) => {
     const enclosed = text.filter((item) => containsPoint(region.box, boxCenter(item.box), 4));
     const nearby = text.filter((item) => !enclosed.includes(item))
       .sort((left, right) => distance(region.box, left.box) - distance(region.box, right.box))
       .slice(0, 3);
-    const name = enclosed.sort(readingOrder).map((item) => item.text).join(" ").trim()
-      || "unlabelled visual region";
+    const label = enclosed.sort(readingOrder).map((item) => item.text).join(" ").trim();
     const center = boxCenter(region.box);
     const location = categoricalPosition(center, image);
     const layout = layoutWithoutBox(layoutByBox.get(boxKey(region.box)));
+    const visuallyBlank = !label && layout?.kind === "grid"
+      && appearanceByBox.get(boxKey(region.box))?.flatFill === true;
+    const name = label || (visuallyBlank ? "visually blank" : "unlabelled visual region");
     const structuralContext = layoutContext(layout);
     return {
       role: layout === undefined ? "visual region" : `${layout.kind} item`,
@@ -276,7 +284,8 @@ export function browserVisualObservationFromRelay(raw: unknown): {
         ? `${location}; near ${nearby.map((item) => item.text).join(" | ")}`
         : `${location}; ${region.source} region`].filter(Boolean).join("; "),
       box: region.box,
-      sources: name === "unlabelled visual region" ? [region.source] : [region.source, "ocr"],
+      sources: label ? [region.source, "ocr"]
+        : visuallyBlank ? [region.source, "flat-fill"] : [region.source],
       confidence: region.confidence,
       ...(layout === undefined ? {} : { layout }),
     };
@@ -316,6 +325,7 @@ export function browserVisualObservationFromRelay(raw: unknown): {
       cssHeight: parsed.viewport.cssHeight,
       dpr: parsed.viewport.dpr,
     },
+    ...(parsed.keyboardFocus === undefined ? {} : { keyboardFocus: parsed.keyboardFocus }),
     targets,
   });
   const visibleText = text.map((item) => item.text).filter((value, index, all) => all.indexOf(value) === index);
@@ -324,6 +334,7 @@ export function browserVisualObservationFromRelay(raw: unknown): {
     .map((target) => [target.layout!.groupId, target.layout!])).values()];
   const snapshot = [
     "- visual viewport",
+    ...(parsed.keyboardFocus === undefined ? [] : [`  - keyboard_focus ${quoted(parsed.keyboardFocus)}`]),
     `  - summary ${quoted(summary)}`,
     ...visibleText.map((value) => `  - visible_text ${quoted(value)}`),
     ...groups.map((group) => `  - visual_group ${quoted(group.groupId)} [kind=${group.kind}, rows=${group.rows}, columns=${group.columns}, items=${group.itemCount}]`),

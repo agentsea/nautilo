@@ -58,7 +58,7 @@ function ports(
     captureDimensions: () => ({ width: 1000, height: 800 }),
     extractVisualObservation: async () => ({
       recognitionMode: "hybrid", durationMs: 1, globalDurationMs: 1, cropDurationMs: 0,
-      cropRequestCount: 0, text: [], rectangles: [], contours: [], contourCount: 0,
+      cropRequestCount: 0, text: [], rectangles: [], appearances: [], contours: [], contourCount: 0,
     }),
     visionFromPng: (_path, text) => ({ status: "ok", result: { text } }),
     ...overrides,
@@ -98,6 +98,7 @@ function visualExtraction(
     cropRequestCount: 0,
     text: text.map((item) => ({ ...item, confidence: 1 })),
     rectangles: [],
+    appearances: [],
     contours: [],
     contourCount: 0,
     layouts: [],
@@ -164,11 +165,11 @@ describe("createInteractiveBrowserDispatchHandler", () => {
   test("adds local extraction only for server-owned visual screenshot requests", async () => {
     let extractionCalls = 0;
     let published: unknown;
-    let storedObservationId: string | undefined;
+    let storedBinding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
     const handler = createInteractiveBrowserDispatchHandler(ports({
       exec: async (_binary, argv) => ({
         stdout: argv.includes("eval")
-          ? JSON.stringify({ w: 500, h: 200, dpr: 2, url: "https://example.com/canvas" })
+          ? JSON.stringify({ w: 500, h: 200, dpr: 2, url: "https://example.com/canvas", focus: "canvas" })
           : "",
       }),
       readCapturePng: () => Buffer.from("stable-png"),
@@ -179,10 +180,10 @@ describe("createInteractiveBrowserDispatchHandler", () => {
           recognitionMode: "hybrid", durationMs: 4, globalDurationMs: 3, cropDurationMs: 1,
           cropRequestCount: 1,
           text: [{ text: "Eight", confidence: 1, box: { x: 100, y: 120, width: 40, height: 20 } }],
-          rectangles: [], contours: [], contourCount: 0,
+          rectangles: [], appearances: [], contours: [], contourCount: 0,
         };
       },
-      setVisualObservation: (_session, binding) => { storedObservationId = binding.observationId; },
+      setVisualObservation: (_session, binding) => { storedBinding = binding; },
       visionFromPng: (_path, _text, visualObservation) => {
         published = visualObservation;
         return { status: "ok", result: { kind: "browser_screenshot_vision", visualObservation } };
@@ -199,9 +200,13 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       browserSessionId: "browser-session",
       image: { width: 1000, height: 600 },
       viewport: { cssWidth: 500, cssHeight: 200, dpr: 2 },
+      keyboardFocus: "canvas",
       extraction: { recognitionMode: "hybrid", text: [{ text: "Eight" }] },
     });
-    expect(storedObservationId).toBe((published as { observationId: string }).observationId);
+    expect(storedBinding).toMatchObject({
+      observationId: (published as { observationId: string }).observationId,
+      keyboardFocus: "canvas",
+    });
 
     await handler({ request: request("browser_screenshot"), signal: undefined, guard });
     expect(extractionCalls).toBe(1);
@@ -621,6 +626,63 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       }), signal: undefined, guard,
     })).toMatchObject({ result: { status: "ok" } });
     expect(screenshotCommands).toBe(2);
+  });
+
+  test("rejects a visual press when semantic keyboard focus changed", async () => {
+    let binding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
+    let viewportReads = 0;
+    let keyCommands = 0;
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      getVisualObservation: () => binding,
+      setVisualObservation: (_session, value) => { binding = value; },
+      deleteVisualObservation: () => { binding = undefined; },
+      exec: async (_binary, argv) => {
+        if (argv.includes("eval")) {
+          viewportReads += 1;
+          return {
+            stdout: JSON.stringify({
+              w: 500,
+              h: 300,
+              dpr: 2,
+              url: "https://example.com/canvas",
+              focus: viewportReads === 1 ? "canvas" : "page",
+            }),
+          };
+        }
+        if (argv.includes("press")) keyCommands += 1;
+        return { stdout: "ok" };
+      },
+      readCapturePng: () => Buffer.from("stable-frame"),
+      captureDimensions: () => ({ width: 1000, height: 600 }),
+      extractVisualObservation: async () => visualExtraction([]),
+      visionFromPng: (_path, _text, visualObservation) => ({
+        status: "ok", result: { kind: "browser_screenshot_vision", visualObservation },
+      }),
+    }));
+
+    const observation = await handler({
+      request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+    });
+    const observationId = ((observation.result as {
+      result: { visualObservation: { observationId: string } };
+    }).result.visualObservation.observationId);
+
+    const press = await handler({
+      request: request("browser_press", {
+        key: "ArrowDown",
+        _requiredSession: "browser-session",
+        _requiredObservationId: observationId,
+      }), signal: undefined, guard,
+    });
+    expect(press).toMatchObject({
+      result: {
+        status: "error",
+        errorCode: "browser_observation_stale",
+      },
+    });
+    expect((press.result as { error: string }).error).toContain("keyboard focus changed");
+    expect(keyCommands).toBe(0);
+    expect(binding).toBeUndefined();
   });
 
   test("declines nonmatches and handles an unknown browser-class request", async () => {

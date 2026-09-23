@@ -19,6 +19,7 @@ function helperOutput(overrides: Record<string, unknown> = {}): string {
     cropRequestCount: 1,
     text: [{ text: "Canvas choice", confidence: 0.9, box: { x: 100, y: 80, width: 120, height: 30 } }],
     rectangles: [{ x: 90, y: 70, width: 160, height: 60 }],
+    appearances: [{ box: { x: 90, y: 70, width: 160, height: 60 }, flatFill: false }],
     contours: [{ x: 110, y: 90, width: 20, height: 20 }],
     contourCount: 3,
     ...overrides,
@@ -53,6 +54,7 @@ describe("browser visual observation helper boundary", () => {
       recognitionMode: "hybrid",
       cropRequestCount: 1,
       text: [{ text: "Canvas choice", box: { x: 100, y: 80, width: 120, height: 30 } }],
+      appearances: [{ flatFill: false }],
     });
     expect(parsed).not.toHaveProperty("imagePath");
   });
@@ -64,6 +66,10 @@ describe("browser visual observation helper boundary", () => {
     expect(() => parseBrowserVisualGroundingOutput(
       helperOutput({ width: 999 }), "/owned/capture.png", { width: 1000, height: 600 },
     )).toThrow(/dimensions/);
+    expect(() => parseBrowserVisualGroundingOutput(
+      helperOutput({ appearances: [{ box: { x: 91, y: 70, width: 160, height: 60 }, flatFill: true }] }),
+      "/owned/capture.png", { width: 1000, height: 600 },
+    )).toThrow(/inconsistent/);
     expect(() => parseBrowserVisualGroundingOutput(
       " ".repeat(BROWSER_VISUAL_GROUNDING_OUTPUT_MAX_BYTES + 1),
       "/owned/capture.png",
@@ -118,7 +124,7 @@ describe("browser visual observation helper boundary", () => {
       version: 1,
       visualRef: "v6",
       role: "grid item",
-      name: "unlabelled visual region",
+      name: "visually blank",
       interaction: "unknown",
       context: "old frame",
       sources: ["rectangle"],
@@ -134,6 +140,7 @@ describe("browser visual observation helper boundary", () => {
       cropRequestCount: 0,
       text: [],
       rectangles,
+      appearances: rectangles.map((box) => ({ box, flatFill: true })),
       contours: [],
       contourCount: 0,
       layouts,

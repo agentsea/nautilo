@@ -36,6 +36,14 @@ also applies accurate crop OCR adaptively to unresolved leaf-sized regions,
 rather than assuming a fixed browser-control pixel size. It does not call a
 generative or vision-language model.
 
+For a detected grid, the macOS helper also samples each rectangle's interior
+pixels. A grid cell with no OCR label and a nearly uniform interior is
+described as `visually blank`; a textured or contrasting cell remains
+unlabelled. Missing OCR alone never proves blankness. The browser's current
+keyboard-focus class (`page`, `canvas`, `editable`, `other`, or `unknown`) joins
+the coordinate-free state. Before a selected key press, Desktop verifies that
+the focus class has not changed since the screenshot.
+
 Raw contours are diagnostic evidence, not Jev candidates. Glyphs, shadows and
 nested borders make an unfiltered contour inventory both enormous and
 misleading. This harness records raw counts and supplies Jev only filtered,
@@ -147,10 +155,27 @@ bun run --cwd apps/desktop compile:browser-visual-grounding
 bun test dev/evals/browser-visual-grounding/synthetic-layouts.test.ts
 ```
 
-The fixtures deliberately cover a 3×5 grid, a separately scaled 2×3 grid,
-and independent horizontal and vertical repeated controls. They exercise the
+The fixtures deliberately cover a 4×4 grid with blank and marked cells, a 3×5
+grid, a separately scaled 2×3 grid, and independent horizontal and vertical
+repeated controls. They exercise the
 actual Apple Vision helper, deterministic layout inference, and the final
 coordinate-free observation rendered for Jev.
+
+The live synthetic keyboard probe makes no browser move:
+
+```sh
+bun dev/evals/browser-visual-grounding/run-keyboard-choice.ts page full blanks
+bun dev/evals/browser-visual-grounding/run-keyboard-choice.ts editable full blanks
+```
+
+In the 2026-09-23 probe, Jev selected `needs_visual_evidence` with 14 cells
+described only as `unlabelled visual region`, even after focus and key choices
+were supplied. With the same 67 choices but those flat, unlabelled cells
+described as `visually blank`, Jev selected `ArrowRight` in one call (451 ms).
+When the focus class was `editable`, it instead deferred (649 ms). This shows
+why occupancy and focus evidence matter separately from detecting the grid's
+geometry. The synthetic probe is a decision test, not proof of live browser
+execution.
 
 ## Initial eight-case extraction result
 

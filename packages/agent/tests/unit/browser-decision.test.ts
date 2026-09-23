@@ -7,6 +7,7 @@ import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
 import type { NautiloState } from "../../src/agent/state";
 import {
   browserDecisionCandidates,
+  browserDecisionChoiceInput,
   browserDecisionDriverCall,
   browserDecisionHandoffContent,
   browserDecisionHandoffMessage,
@@ -745,6 +746,46 @@ describe("browser decision policy", () => {
     expect(built.candidates.some(({ call }) => call?.name === "browser_mouse")).toBe(false);
   });
 
+  test("puts planned page keys ahead of visual clicks and gives Jev focus and grid evidence", () => {
+    const keyboardPlan = browserDecisionPlanSchema.parse({
+      goal: "Choose one move from the visible grid",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "click_observed" }, ...["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]
+        .map((key) => ({ kind: "press" as const, key }))],
+    });
+    const targets = Array.from({ length: 16 }, (_, index) => ({
+      visualRef: `v${index + 1}`,
+      role: "grid item",
+      name: index === 7 || index === 10 ? "4" : "unlabelled visual region",
+      interaction: "unknown" as const,
+      x: 100 + index % 4 * 100,
+      y: 100 + Math.floor(index / 4) * 100,
+      context: "repeated square",
+      layout: { groupId: "grid-1", kind: "grid" as const, ordinal: index + 1, itemCount: 16,
+        row: Math.floor(index / 4) + 1, column: index % 4 + 1, rows: 4, columns: 4 },
+    }));
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      keyboardFocus: "page", targets,
+    } });
+    const built = browserDecisionCandidates(keyboardPlan, visualObservation, 255);
+    if (built.reason !== null) throw new Error(`expected visual candidates: ${built.reason}`);
+    expect(built.candidates.slice(0, 4).map(({ call }) => call?.name))
+      .toEqual(["browser_press", "browser_press", "browser_press", "browser_press"]);
+    expect(built.candidates.some(({ call }) => call?.name === "browser_mouse")).toBe(true);
+    expect(built.candidates.find(({ id }) => id === "needs_visual_evidence")?.description)
+      .toContain("absent or ambiguous in this screenshot-derived state");
+    const input = browserDecisionChoiceInput({
+      modelId: JEV_ID, signal: new AbortController().signal, plan: keyboardPlan,
+      observation: visualObservation, candidates: built.candidates,
+    });
+    const snapshot = String((input.state as Record<string, unknown>)["snapshot"]);
+    expect(snapshot).toContain('keyboard_focus "page"');
+    expect(snapshot).toContain('visual_group "grid-1" [kind=grid, rows=4, columns=4, items=16]');
+    expect(snapshot).toContain('grid item "4" [visual_ref=v8, interaction=unknown, location="center area", group=grid-1, row=2, column=4]');
+    expect(snapshot).not.toMatch(/image_width|image_height|imageX|imageY|x:\s*\d|y:\s*\d/u);
+  });
+
   test("offers exact explicit append text as an atomic visual focus-and-type action", () => {
     const exactText = "5 Reasons Foxes Are Cool\n1. Foxes are clever.";
     const visualPlan = browserDecisionPlanSchema.parse({
@@ -1449,6 +1490,16 @@ describe("sustained browser recovery", () => {
     expect(content).toContain("no screenshot or coordinate command");
     expect(content).toContain("do not switch to the unrelated embedded browser");
     expect(content).not.toContain("Inspect a screenshot");
+  });
+
+  test("visual handoff says the screenshot was already captured", () => {
+    const content = browserDecisionHandoffContent("needs_visual_evidence", undefined,
+      decision({ observation: observation({ refs: {}, visual: {
+        viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+        targets: [],
+      } }) }));
+    expect(content).toContain("The screenshot was already captured");
+    expect(content).not.toContain("text observation");
   });
 
   function round(previous: BrowserDecisionState, kind: string, args: Record<string, unknown>, next: BrowserDecisionObservation): BrowserDecisionState {

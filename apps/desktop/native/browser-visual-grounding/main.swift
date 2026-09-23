@@ -15,6 +15,11 @@ struct TextObservation: Codable {
     let confidence: Float
 }
 
+struct RegionAppearance: Codable {
+    let box: Box
+    let flatFill: Bool
+}
+
 struct Result: Codable {
     let imagePath: String
     let recognitionMode: String
@@ -26,6 +31,7 @@ struct Result: Codable {
     let cropRequestCount: Int
     let text: [TextObservation]
     let rectangles: [Box]
+    let appearances: [RegionAppearance]
     let contours: [Box]
     let contourCount: Int
 }
@@ -51,6 +57,38 @@ func containsCenter(_ outer: Box, _ inner: Box) -> Bool {
 func mappedCropBox(_ normalized: CGRect, cropX: Int, cropY: Int, cropWidth: Int, cropHeight: Int) -> Box {
     let local = imageBox(normalized, width: cropWidth, height: cropHeight)
     return Box(x: cropX + local.x, y: cropY + local.y, width: local.width, height: local.height)
+}
+
+// Sample the interior, away from borders and rounded corners. A low channel
+// range establishes that the visible cell is flat; it does not infer meaning
+// from missing OCR or assume any particular site, colour, or grid size.
+func regionAppearance(_ box: Box, bitmap: NSBitmapImageRep) -> RegionAppearance {
+    let insetX = max(3, Int(Double(box.width) * 0.2))
+    let insetY = max(3, Int(Double(box.height) * 0.2))
+    let sampleWidth = box.width - insetX * 2
+    let sampleHeight = box.height - insetY * 2
+    guard sampleWidth >= 12 && sampleHeight >= 12 else {
+        return RegionAppearance(box: box, flatFill: false)
+    }
+    var minimum = [CGFloat](repeating: 1, count: 3)
+    var maximum = [CGFloat](repeating: 0, count: 3)
+    var sampled = 0
+    for row in 0..<17 {
+        for column in 0..<17 {
+            let x = box.x + insetX + Int(Double(column) * Double(sampleWidth - 1) / 16)
+            let y = box.y + insetY + Int(Double(row) * Double(sampleHeight - 1) / 16)
+            guard x >= 0 && x < bitmap.pixelsWide && y >= 0 && y < bitmap.pixelsHigh,
+                  let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+            let channels = [color.redComponent, color.greenComponent, color.blueComponent]
+            for index in 0..<3 {
+                minimum[index] = min(minimum[index], channels[index])
+                maximum[index] = max(maximum[index], channels[index])
+            }
+            sampled += 1
+        }
+    }
+    let flat = sampled >= 256 && (0..<3).allSatisfy { maximum[$0] - minimum[$0] <= 0.07 }
+    return RegionAppearance(box: box, flatFill: flat)
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -105,6 +143,7 @@ var text = (textRequest.results ?? []).compactMap { observation -> TextObservati
 let rectangles = (rectangleRequest.results ?? []).map {
     imageBox($0.boundingBox, width: width, height: height)
 }
+let appearances = rectangles.map { regionAppearance($0, bitmap: bitmap) }
 let contourObservation = contourRequest.results?.first
 var contours: [Box] = []
 if let contourObservation {
@@ -196,6 +235,7 @@ let result = Result(
     cropRequestCount: cropRequestCount,
     text: text,
     rectangles: rectangles,
+    appearances: appearances,
     contours: contours,
     contourCount: contourObservation?.contourCount ?? 0
 )
