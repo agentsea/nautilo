@@ -1,5 +1,6 @@
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { browserObservationFromResult, type BrowserDecisionObservation } from "../../graph/browser-decision";
+import { isImageContentBlock } from "../../utils/message-modalities";
 
 function liveObservation(message: BaseMessage): BrowserDecisionObservation | null {
   if (!ToolMessage.isInstance(message) || !["browser_snapshot", "browser_open", "browser_back", "browser_forward", "browser_reload", "control_connected_web_operation"].includes(message.name ?? "")
@@ -43,11 +44,22 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
   const observations = new Map<number, BrowserDecisionObservation>();
   const callCounts = new Map<string, number>();
   const historicalCalls = new Map<string, string>();
+  let latestScreenshotImage: { messageIndex: number; blockIndex: number } | null = null;
   for (const message of messages) {
     if (ToolMessage.isInstance(message)) callCounts.set(message.tool_call_id, (callCounts.get(message.tool_call_id) ?? 0) + 1);
     if (AIMessage.isInstance(message)) for (const call of message.tool_calls ?? []) {
       if (call.id && ["browser_snapshot", "control_connected_web_operation"].includes(call.name) && typeof call.args["historyToolCallId"] === "string") {
         historicalCalls.set(call.id, call.args["historyToolCallId"]);
+      }
+    }
+  }
+  for (let messageIndex = messages.length - 1; messageIndex >= 0 && latestScreenshotImage === null; messageIndex--) {
+    const message = messages[messageIndex]!;
+    if (!ToolMessage.isInstance(message) || message.name !== "browser_screenshot" || !Array.isArray(message.content)) continue;
+    for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex--) {
+      if (isImageContentBlock(message.content[blockIndex])) {
+        latestScreenshotImage = { messageIndex, blockIndex };
+        break;
       }
     }
   }
@@ -77,6 +89,28 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
     }
   }
   const projected = messages.map((message, index) => {
+    if (ToolMessage.isInstance(message) && message.name === "browser_screenshot" && Array.isArray(message.content)
+      && message.content.some(isImageContentBlock)) {
+      if (callCounts.get(message.tool_call_id) === 1) originals.set(message.tool_call_id, message);
+      if (index === latestScreenshotImage?.messageIndex
+        && message.content.filter(isImageContentBlock).length === 1) return message;
+      const content = index === latestScreenshotImage?.messageIndex
+        ? message.content.filter((block, blockIndex) => !isImageContentBlock(block)
+          || blockIndex === latestScreenshotImage?.blockIndex)
+        : JSON.stringify({ version: 1, historical: true, screenshotOmitted: true,
+          sourceToolCallId: message.tool_call_id,
+          notice: "Older browser screenshot omitted from this prompt. Only the latest browser screenshot is visible; its canonical result remains in this conversation." });
+      return new ToolMessage({
+        content,
+        tool_call_id: message.tool_call_id,
+        ...(message.name === undefined ? {} : { name: message.name }),
+        ...(message.id === undefined ? {} : { id: message.id }),
+        ...(message.status === undefined ? {} : { status: message.status }),
+        additional_kwargs: message.additional_kwargs,
+        response_metadata: message.response_metadata,
+        ...(message.artifact === undefined ? {} : { artifact: message.artifact as unknown }),
+      });
+    }
     if (!ToolMessage.isInstance(message) || callCounts.get(message.tool_call_id) !== 1) return message;
     const observation = observations.get(index);
     const historicalSource = historicalCalls.get(message.tool_call_id);

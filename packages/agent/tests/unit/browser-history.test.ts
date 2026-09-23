@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { processHistory } from "../../src/utils/history-manager";
 import { projectBrowserHistory, readBrowserHistory } from "../../src/tools/browser/browser-history";
+import { projectOpenAIMultimodalToolResults } from "../../src/nodes/pre-model";
+import { isImageContentBlock } from "../../src/utils/message-modalities";
 
 function observation(session: string, ordinal: number, snapshot = `snapshot-${ordinal}`) {
   return JSON.stringify({
@@ -35,6 +37,55 @@ function compacted(message: BaseMessage): Record<string, unknown> | null {
 }
 
 describe("browser history provider projection", () => {
+  test("sends only the latest browser screenshot image to Genie while retaining canonical results", () => {
+    const screenshot = (id: string) => new ToolMessage({
+      name: "browser_screenshot", tool_call_id: id, status: "success",
+      content: [
+        { type: "text", text: `Visual state for ${id}: ${"tile ".repeat(1_000)}` },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${id}` } },
+      ],
+    });
+    const first = screenshot("first");
+    const second = screenshot("second");
+    const latest = screenshot("latest");
+    const call = (id: string) => new AIMessage({
+      content: "", tool_calls: [{ id, name: "browser_screenshot", args: {} }],
+    });
+    const messages = [new HumanMessage("Play the board"), call("first"), first,
+      call("second"), second, call("latest"), latest];
+
+    const processed = processHistory(messages, {
+      validationEnabled: true, pruningEnabled: true, tokenBudgetFraction: 0.9,
+      windowKeepRecent: 100, modelId: "openai:gpt-5.6-sol",
+    });
+    const providerMessages = projectOpenAIMultimodalToolResults(processed.messages, "openai:gpt-5.6-sol");
+    const images = providerMessages.flatMap((message) => Array.isArray(message.content)
+      ? message.content.filter(isImageContentBlock) : []);
+    expect(images).toHaveLength(1);
+    expect(images[0]).toEqual({ type: "image_url", image_url: { url: "data:image/png;base64,latest" } });
+    expect((processed.messages[2] as ToolMessage).content).toContain("screenshotOmitted");
+    expect((processed.messages[4] as ToolMessage).content).toContain("screenshotOmitted");
+    expect(JSON.stringify(providerMessages)).not.toContain("Visual state for first");
+    expect(JSON.stringify(providerMessages)).not.toContain("Visual state for second");
+    expect(processed.canonicalMessages?.[2]).toBe(first);
+    expect(processed.canonicalMessages?.[4]).toBe(second);
+    expect(processed.canonicalMessages?.[6]).toBe(latest);
+    expect(first.content).toEqual(screenshot("first").content);
+  });
+
+  test("keeps only the final image block when a screenshot contains several", () => {
+    const result = new ToolMessage({ name: "browser_screenshot", tool_call_id: "multi", status: "success",
+      content: [{ type: "image_url", image_url: { url: "data:image/png;base64,older" } },
+        { type: "text", text: "Current state" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,newer" } }] });
+    const projected = projectBrowserHistory([result]);
+    expect((projected.messages[0] as ToolMessage).content).toEqual([
+      { type: "text", text: "Current state" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,newer" } },
+    ]);
+    expect(projected.originals.get("multi")).toBe(result);
+  });
+
   test("retains baseline/current per session and compacts older snapshots deterministically", () => {
     const oldA = snapshot("a-1", "session-a", 1, observation("session-a", 1, "x".repeat(10_000)));
     const baselineA = snapshot("a-2", "session-a", 2);
