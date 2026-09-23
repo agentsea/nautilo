@@ -305,6 +305,14 @@
       "command": "bun test --bail=1 --timeout 60000 tests/unit/human-memory-content-embedding-request-v1.test.ts tests/unit/human-memory-deletion-v1.test.ts tests/unit/human-memory-exact-access-request-v1.test.ts tests/property/human-memory-content-embedding-request-v1.property.test.ts"
     },
     {
+      "name": "human-task-publication",
+      "tier": "critical",
+      "mutate": [
+        "src/task/publication-request-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-task-publication-request-v1.test.ts"
+    },
+    {
       "name": "human-recovery",
       "tier": "critical",
       "mutate": [

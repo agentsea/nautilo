@@ -785,6 +785,33 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     typeOnly: true,
   },
   ...([
+    ["prepareHumanTaskPublicationRequestV1", "prepareHumanTaskPublicationRequest"],
+    ["verifyHumanTaskPublicationRequestV1", "verifyHumanTaskPublicationRequest"],
+    ["verifyHumanTaskPublicationRequestExactReplayV1", "verifyHumanTaskPublicationRequestExactReplay"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./task/publication-request-v1.ts", imported, exported, typeOnly: false,
+  })),
+  ...([
+    ["HumanTaskPublicationRequestV1", "HumanTaskPublicationRequest"],
+    ["PrepareHumanTaskPublicationRequestInputV1", "PrepareHumanTaskPublicationRequestInput"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./task/publication-request-v1.ts", imported, exported, typeOnly: true,
+  })),
+  ...[
+    "HUMAN_TASK_PUBLICATION_REQUEST_DOMAIN_V1",
+    "HUMAN_TASK_PUBLICATION_REQUEST_MAX_TTL_MS_V1",
+    "decodeHumanTaskPublicationRequestV1",
+    "encodeHumanTaskPublicationRequestV1",
+    "humanTaskPublicationRequestSigningBytesV1",
+  ].map((exported) => ({
+    source: "./task/publication-request-v1.ts", imported: exported, exported, typeOnly: false,
+  })),
+  {
+    source: "./task/publication-request-v1.ts",
+    imported: "HumanTaskPublicationRequestUnsignedV1",
+    exported: "HumanTaskPublicationRequestUnsignedV1", typeOnly: true,
+  },
+  ...([
     ["prepareHumanArtifactPublicationRequestV1", "prepareHumanArtifactPublicationRequest"],
     ["verifyHumanArtifactPublicationRequestV1", "verifyHumanArtifactPublicationRequest"],
   ] as const).map(([imported, exported]) => ({

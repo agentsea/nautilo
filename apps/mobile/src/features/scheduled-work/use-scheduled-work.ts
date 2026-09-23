@@ -11,6 +11,7 @@ import {
   type ScheduledWorkFailure,
 } from "./scheduled-work-state";
 import { useTaskWorkScope } from "@/features/task-work/use-task-work-scope";
+import { isMissingTaskContentProjection } from "@/features/task-work/task-content-mobile";
 
 /** Binds scheduled-work data to the active verified owner and nothing else. */
 export function useScheduledWork({
@@ -56,11 +57,23 @@ export function useScheduledWork({
   const api = useMemo<ScheduledWorkApi>(() => ({
     async list(requestScope) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");
-      return getApiClient(server.serverUrl).listActiveTasks();
+      const client = getApiClient(server.serverUrl);
+      try {
+        return [...await client.listTaskContentV1()];
+      } catch (error) {
+        if (!isMissingTaskContentProjection(error)) throw error;
+        return client.listActiveTasks();
+      }
     },
     async detail(requestScope, id) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");
-      return getApiClient(server.serverUrl).getTask(id);
+      const client = getApiClient(server.serverUrl);
+      try {
+        return await client.getTaskContentV1(id);
+      } catch (error) {
+        if (!isMissingTaskContentProjection(error)) throw error;
+        return client.getTask(id);
+      }
     },
     async pause(requestScope, id) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");

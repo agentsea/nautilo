@@ -199,7 +199,7 @@ describe("PostgresTaskContentProductStore", () => {
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       { contains: 'from "tasks"', rows: [{
-        owner_id: HUMAN_ID, task_status: "pending",
+        owner_id: HUMAN_ID, task_status: "pending", fire_lock_id: null,
         content_namespace_id: NAMESPACE_ID,
         content_revision: 1, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
@@ -241,6 +241,23 @@ describe("PostgresTaskContentProductStore", () => {
     expect((await runSetup.store.reserveRevision(reservation(run))).status).toBe("reserved");
   });
 
+  test("refuses a definition update while an occurrence owns the fire lock", async () => {
+    const coordinate = definition(2);
+    const { store } = await setup([
+      ...emptyOperations,
+      { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      { contains: 'from "tasks"', rows: [{
+        owner_id: HUMAN_ID, task_status: "pending", fire_lock_id: RUN_ID,
+        content_namespace_id: NAMESPACE_ID,
+        content_revision: 1, content_representation: "protected",
+        crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
+        crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+        crypto_mapping_state: "verified",
+      }] },
+    ]);
+    expect((await store.reserveRevision(reservation(coordinate))).status).toBe("stale");
+  });
+
   test("accepts only exact operation replay and rejects stale authority", async () => {
     const coordinate = definition();
     const row = lifecycleRow(coordinate, { kind: "definition" });
@@ -262,6 +279,43 @@ describe("PostgresTaskContentProductStore", () => {
     const staleSetup = await setup(emptyOperations, stale);
     expect((await staleSetup.store.reserveRevision(reservation(coordinate))).status).toBe("stale");
     expect(staleSetup.connection.isolations).toEqual(["serializable"]);
+  });
+
+  test("looks up one durable operation without reconstructing its original plan", async () => {
+    const coordinate = definition();
+    const row = lifecycleRow(coordinate, { kind: "definition" });
+    const found = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
+      { contains: 'from "tasks"', rows: [] },
+    ]);
+    expect(await found.store.getRevisionByOperation({
+      operationId: "operation:definition:1",
+    })).toMatchObject({
+      status: "found",
+      state: { lifecycle: { coordinate } },
+    });
+
+    const missing = await setup(emptyOperations);
+    expect(await missing.store.getRevisionByOperation({
+      operationId: "operation:definition:1",
+    })).toEqual({ status: "missing" });
+
+    const conflict = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [row] },
+    ]);
+    expect(await conflict.store.getRevisionByOperation({
+      operationId: "operation:definition:1",
+    })).toEqual({ status: "conflict" });
+
+    const unavailable = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
+    ], null);
+    expect(await unavailable.store.getRevisionByOperation({
+      operationId: "operation:definition:1",
+    })).toEqual({ status: "authority_unavailable" });
   });
 
   test("completes and maps a definition with exact authority and product CAS", async () => {

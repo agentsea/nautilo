@@ -32,6 +32,8 @@ import type {
   InitiatingClientSurfaceV1,
   LiveShadowMessageRealtimeEventV1,
   FullEncryptionMessageRealtimeContentEventV2,
+  TaskOperationRequestV1,
+  TaskOperationResponseV1,
 } from "@nautilo/types";
 import type { AtomicDocumentMutationEventBatch } from "@nautilo/document-mutations";
 import type {
@@ -327,6 +329,9 @@ export interface DesktopForegroundShadowAPI {
     messageId: string,
     body: Readonly<{ content: string; expectedRevision: number }>,
   ): Promise<Readonly<{ content: string; editRevision: number }>>;
+  task?: {
+    operateV1(request: TaskOperationRequestV1): Promise<TaskOperationResponseV1>;
+  };
   recoverPending(): Promise<number>;
   /** Added after initial foreground Shadow support; feature-detect older shells. */
   recoverRoomPendingAttention?(input: Readonly<{

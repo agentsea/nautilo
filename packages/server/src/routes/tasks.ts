@@ -5,12 +5,21 @@ import type {
   TaskCreatePayload,
   TaskCreateResponse,
   TaskDetail,
+  TaskContentSummaryV1,
+  TaskContentDetailV1,
+  TaskDefinitionContentV1,
+  TaskRunSummaryV1,
   TaskLifecycleResponse,
   TaskRunSummary,
   TaskSummary,
   TaskUpdatePayload,
   ServerEvent,
 } from "@nautilo/types";
+import {
+  ClassifiedDataOperationError,
+  deriveTaskContentCryptoObjectIdV1,
+  type EncryptionDataOperationOwner,
+} from "@nautilo/lattice-bridge";
 import {
   createTask as runtimeCreateTask,
   createHumanApiTaskCreationProvenance,
@@ -28,6 +37,7 @@ import {
 import {
   and,
   eq,
+  inArray,
   getTaskById,
   getTaskByIdWithMutationVersion,
   getTaskRuns,
@@ -35,6 +45,7 @@ import {
   listTasksForOwner,
   listAwaitingTaskRunsForOwner,
   profiles,
+  taskDefinitionCryptoRevisions,
   updateTaskIfCurrent,
   type NewTask,
   getOwnerAgentDisplayNamesByAgentId,
@@ -63,6 +74,54 @@ interface TasksRoutesDeps {
   observer: { kick(): void };
   /** Exact native custody hook; resolves only after a locally owned Stop is contained. */
   prepareStopTask?: (taskId: string) => Promise<boolean>;
+  contentOwner: EncryptionDataOperationOwner;
+}
+
+async function readOrdinaryTaskProjection(
+  owner: EncryptionDataOperationOwner,
+  reply: FastifyReply,
+  read: () => Promise<Readonly<{ status: number; body: unknown }>>,
+): Promise<FastifyReply> {
+  try {
+    const selected = await owner.read<
+      Readonly<{ status: number; body: unknown }>,
+      Readonly<{ status: number; body: unknown }>,
+      Readonly<{ status: number; body: unknown }>
+    >({
+      ordinary: read,
+      protected: () => Promise.reject(
+        new ClassifiedDataOperationError(
+          "key_waiting",
+          "Protected Task reads require an exact ciphertext read composition",
+        ),
+      ),
+      consumeOrdinary: (value) => value,
+      consumeProtected: (value) => value,
+    });
+    return reply.status(selected.value.status).send(selected.value.body);
+  } catch (error) {
+    if (error instanceof ClassifiedDataOperationError
+      && error.failureClass === "key_waiting") {
+      return reply.status(409).send({ error: "task_content_unavailable" });
+    }
+    throw error;
+  }
+}
+
+async function runOrdinaryTaskMutation<Result>(
+  owner: EncryptionDataOperationOwner,
+  reply: FastifyReply,
+  mutate: () => Promise<Result>,
+): Promise<Result | FastifyReply> {
+  try {
+    return await owner.runMutation({ ordinary: mutate });
+  } catch (error) {
+    if (error instanceof ClassifiedDataOperationError
+      && error.failureClass === "unsupported") {
+      return reply.status(409).send({ error: "task_content_requires_current_client" });
+    }
+    throw error;
+  }
 }
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -95,6 +154,7 @@ type TaskSummarySource = Pick<
   | "status"
   | "preset"
   | "metadata"
+  | "contentRepresentation"
   | "prompt"
   | "scheduleKind"
   | "cron"
@@ -107,6 +167,9 @@ type TaskSummarySourceWithTiming = TaskSummarySource & {
 };
 
 export function toTaskSummary(task: TaskSummarySourceWithTiming): TaskSummary {
+  if (task.contentRepresentation === "protected") {
+    throw new TypeError("Protected Task content requires the current client projection");
+  }
   return {
     id: task.id,
     parentTaskId: task.parentTaskId,
@@ -146,6 +209,116 @@ export function toOwnerVisibleTaskSummary(
   };
 }
 
+type PendingTaskDefinitionReason = "waiting_for_authorization" | "integrity_failure";
+
+async function pendingInitialTaskDefinitions(
+  db: ReturnType<typeof getServerDirectDb>,
+  ownerId: string,
+  rows: readonly Task[],
+): Promise<ReadonlyMap<string, PendingTaskDefinitionReason>> {
+  const candidates = rows.filter((task) =>
+    task.contentRepresentation === "ordinary"
+    && task.contentRevision === 0
+    && task.prompt === ""
+  );
+  if (candidates.length === 0) return new Map();
+  const revisions = await db.select({
+    taskId: taskDefinitionCryptoRevisions.taskId,
+    disposition: taskDefinitionCryptoRevisions.disposition,
+  }).from(taskDefinitionCryptoRevisions).where(and(
+    inArray(taskDefinitionCryptoRevisions.taskId, candidates.map((task) => task.id)),
+    eq(taskDefinitionCryptoRevisions.requesterHumanId, ownerId),
+    eq(taskDefinitionCryptoRevisions.contentRevision, 1),
+  ));
+  return new Map(revisions.map((revision) => [
+    revision.taskId,
+    revision.disposition === "active" || revision.disposition === "mapped"
+      ? "waiting_for_authorization" : "integrity_failure",
+  ]));
+}
+
+function taskDefinitionContentV1(
+  task: Task,
+  pendingReason?: PendingTaskDefinitionReason,
+): TaskDefinitionContentV1 {
+  if (pendingReason !== undefined) {
+    return { dtoVersion: 1, status: "unavailable", reason: pendingReason };
+  }
+  if (task.contentRepresentation === "ordinary") {
+    return {
+      dtoVersion: 1,
+      status: "ordinary",
+      prompt: task.prompt,
+      expectedOutput: task.expectedOutput,
+      lastError: task.lastError,
+    };
+  }
+  if (
+    task.contentRevision < 1
+    || task.contentNamespaceId === null
+    || task.cryptoObjectId !== deriveTaskContentCryptoObjectIdV1({
+      kind: "definition", taskId: task.id, contentRevision: task.contentRevision,
+    })
+  ) {
+    return { dtoVersion: 1, status: "unavailable", reason: "integrity_failure" };
+  }
+  if (task.cryptoMappingState !== "verified") {
+    return { dtoVersion: 1, status: "unavailable", reason: "authority_changed" };
+  }
+  return {
+    dtoVersion: 1,
+    status: "protected",
+    objectId: task.cryptoObjectId,
+    contentRevision: task.contentRevision,
+    cryptoAccessRevision: task.cryptoAccessRevision,
+  };
+}
+
+export function toTaskContentSummaryV1(
+  task: Task,
+  enrichment: {
+    readonly agentName: string | null;
+    readonly lastModelId: string | null;
+    readonly canResumeResearch?: boolean;
+    readonly pendingDefinitionReason?: PendingTaskDefinitionReason;
+  },
+): TaskContentSummaryV1 {
+  const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason);
+  const preparation = definition.status === "ordinary"
+    ? readTaskPreparation(task.metadata?.["preparation"])
+    : null;
+  return {
+    id: task.id,
+    parentTaskId: task.parentTaskId,
+    depth: task.depth,
+    status: task.status,
+    preset: task.preset,
+    harnessId: taskHarnessId(task.metadata),
+    ...(preparation ? { preparation } : {}),
+    ...(definition.status === "ordinary" && enrichment.canResumeResearch === true
+      ? { canResumeResearch: true } : {}),
+    scheduleKind: task.scheduleKind,
+    cron: task.cron,
+    nextFireAt: toIso(task.nextFireAt),
+    callingRoomId: task.callingRoomId,
+    agentId: task.agentId,
+    agentName: enrichment.agentName,
+    targetRoomId: task.targetRoomId,
+    createdAt: task.createdAt.toISOString(),
+    updatedAt: task.updatedAt.toISOString(),
+    requestedModelId: task.requestedModelId,
+    lastModelId: enrichment.lastModelId,
+    content: definition.status === "ordinary"
+      ? {
+        dtoVersion: 1,
+        status: "ordinary",
+        promptPreview: definition.prompt.slice(0, 80),
+        lastError: definition.lastError,
+      }
+      : definition,
+  };
+}
+
 function taskHarnessId(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
   const execution = (metadata as Record<string, unknown>)["execution"];
@@ -169,6 +342,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         .status(400)
         .send({ error: "no_agent_in_context", message: "No agent in context." });
     }
+
+    return runOrdinaryTaskMutation(deps.contentOwner, reply, async () => {
 
     const body = request.body ?? ({} as TaskCreatePayload);
     if (!body.prompt) {
@@ -296,9 +471,12 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       nextFireAt: toIso(result.nextFireAt),
     };
     return reply.status(201).send(response);
+    });
   });
 
   app.get<{ Querystring: ListTasksQuery }>("/api/tasks", async (request, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    reply.header("Vary", "Authorization");
     const ownerId =
       request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     if (!ownerId) {
@@ -336,21 +514,163 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
               }
             : {}),
         };
+    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
+    const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
+    if (tasks.some((task) => task.contentRepresentation === "protected"
+      || pendingDefinitions.has(task.id))) {
+      return { status: 409, body: { error: "task_content_requires_current_client" } };
+    }
     const taskIds = tasks.map((t) => t.id);
     const agentIds = tasks.map((t) => t.agentId);
     const [lastModels, agentNames] = await Promise.all([
       getLatestRunModelByTask(db, taskIds),
       getOwnerAgentDisplayNamesByAgentId(db, ownerId, agentIds),
     ]);
-    return reply.send(
+    return { status: 200, body:
       await Promise.all(tasks.map(async (t) => toOwnerVisibleTaskSummary(t, {
         agentName: agentNames.get(t.agentId) ?? null,
         lastModelId: lastModels.get(t.id) ?? null,
         canResumeResearch: await canResumeSecurityResearchContextFailure(db, t),
-      }))),
-    );
+      }))) };
+    });
+  });
+
+  app.get<{ Querystring: ListTasksQuery }>("/api/tasks/content-v1", async (request, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    reply.header("Vary", "Authorization");
+    const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
+    if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
+    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
+
+    const { status, includeTerminal, recentTerminalLimit } = request.query;
+    const requestedTerminalLimit = Number(recentTerminalLimit);
+    const terminalLimit = Number.isFinite(requestedTerminalLimit)
+      ? requestedTerminalLimit : undefined;
+    const isTerminalStatus = status === "completed" || status === "cancelled" || status === "errored";
+    const opts = status
+      ? {
+          status: status as NonNullable<NewTask["status"]>,
+          ...(isTerminalStatus ? {
+            includeRecentTerminal: true,
+            ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
+          } : {}),
+        }
+      : {
+          includeTerminal: includeTerminal === true || String(includeTerminal) === "true",
+          ...(includeTerminal === true || String(includeTerminal) === "true" ? {
+            includeRecentTerminal: true,
+            ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
+          } : {}),
+        };
+    const db = getServerDirectDb();
+    const tasks = await listTasksForOwner(db, ownerId, opts);
+    const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
+    const [lastModels, agentNames] = await Promise.all([
+      getLatestRunModelByTask(db, tasks.map((task) => task.id)),
+      getOwnerAgentDisplayNamesByAgentId(db, ownerId, tasks.map((task) => task.agentId)),
+    ]);
+    return { status: 200, body: await Promise.all(tasks.map(async (task) =>
+      toTaskContentSummaryV1(task, {
+        agentName: agentNames.get(task.agentId) ?? null,
+        lastModelId: lastModels.get(task.id) ?? null,
+        canResumeResearch: task.contentRepresentation === "ordinary"
+          && await canResumeSecurityResearchContextFailure(db, task),
+        ...(pendingDefinitions.has(task.id)
+          ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
+          : {}),
+      })
+    )) };
+    });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/tasks/:id/content-v1", async (request, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    reply.header("Vary", "Authorization");
+    const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
+    if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
+    if (!isUuidString(request.params.id)) {
+      return reply.status(404).send({ error: "Task not found" });
+    }
+    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
+    const db = getServerDirectDb();
+    const task = await getTaskById(db, request.params.id);
+    if (!task || task.ownerId !== ownerId) {
+      return { status: 404, body: { error: "Task not found" } };
+    }
+    const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, [task]);
+
+    const [runs, agentNames] = await Promise.all([
+      getTaskRuns(db, task.id),
+      getOwnerAgentDisplayNamesByAgentId(db, ownerId, [task.agentId]),
+    ]);
+    const { content, ...lifecycle } = toTaskContentSummaryV1(task, {
+      agentName: agentNames.get(task.agentId) ?? null,
+      lastModelId: runs.at(-1)?.modelId ?? null,
+      canResumeResearch: task.contentRepresentation === "ordinary"
+        && await canResumeSecurityResearchContextFailure(db, task),
+      ...(pendingDefinitions.has(task.id)
+        ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
+        : {}),
+    });
+    const runSummaries: TaskRunSummaryV1[] = await Promise.all(runs.map(async (run) => {
+      const ordinary = content.status === "ordinary"
+        && run.resultRepresentation === "ordinary";
+      const transcript = ordinary ? await getRunAgentTranscript({
+        includeToolPresentation: true,
+        ownerId,
+        graphThreadId: run.graphThreadId,
+        agentId: task.agentId,
+        startedAt: run.startedAt ?? null,
+        completedAt: run.completedAt ?? null,
+      }) : [];
+      return {
+        id: run.id,
+        status: run.status,
+        modelId: run.modelId,
+        startedAt: toIso(run.startedAt),
+        completedAt: toIso(run.completedAt),
+        content: ordinary ? {
+          dtoVersion: 1,
+          status: "ordinary",
+          resultText: run.resultText,
+          lastError: run.lastError,
+          transcript: transcript.map((message) => ({
+            role: message.role,
+            content: message.content,
+            toolName: message.toolName,
+            toolCalls: message.toolCalls,
+            ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+            ...(message.toolStatus ? { toolStatus: message.toolStatus } : {}),
+            createdAt: toIso(message.createdAt) ?? new Date(0).toISOString(),
+          })),
+        } : { dtoVersion: 1, status: "unavailable", reason: "unsupported_client" },
+      };
+    }));
+    const detail: TaskContentDetailV1 = {
+      task: {
+        ...lifecycle,
+        cron: task.cron,
+        runAt: toIso(task.runAt),
+        timezone: task.timezone,
+        targetChat: task.targetChat,
+        resultDelivery: task.resultDelivery,
+        useScope: task.useScope,
+        scopeId: task.scopeId,
+        toolsMode: task.toolsMode,
+        toolsWhitelist: task.toolsWhitelist,
+        selectionProfile: task.selectionProfile,
+        selectionSpec: task.selectionSpec,
+        requestedModelId: task.requestedModelId,
+        createdAt: task.createdAt.toISOString(),
+        updatedAt: task.updatedAt.toISOString(),
+      },
+      definition: content.status === "ordinary" ? taskDefinitionContentV1(task) : content,
+      runs: runSummaries,
+    };
+    return { status: 200, body: detail };
+    });
   });
 
   /**
@@ -421,6 +741,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
   });
 
   app.get<{ Params: { id: string } }>("/api/tasks/:id", async (request, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    reply.header("Vary", "Authorization");
     const ownerId =
       request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     if (!ownerId) {
@@ -430,16 +752,24 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     if (!isUuidString(request.params.id)) {
       return reply.code(404).send({ error: "Task not found" });
     }
+    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
     const db = getServerDirectDb();
     const task = await getTaskById(db, request.params.id);
     if (!task || task.ownerId !== ownerId) {
-      return reply.status(404).send({ error: "Task not found" });
+      return { status: 404, body: { error: "Task not found" } };
+    }
+    const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, [task]);
+    if (task.contentRepresentation === "protected" || pendingDefinitions.has(task.id)) {
+      return { status: 409, body: { error: "task_content_requires_current_client" } };
     }
 
     const [runs, agentNames] = await Promise.all([
       getTaskRuns(db, task.id),
       getOwnerAgentDisplayNamesByAgentId(db, ownerId, [task.agentId]),
     ]);
+    if (runs.some((run) => run.resultRepresentation === "protected")) {
+      return { status: 409, body: { error: "task_content_requires_current_client" } };
+    }
     const runSummaries: TaskRunSummary[] = await Promise.all(
       runs.map(async (run: TaskRun): Promise<TaskRunSummary> => {
         const base: TaskRunSummary = {
@@ -504,7 +834,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       },
       runs: runSummaries,
     };
-    return reply.send(detail);
+    return { status: 200, body: detail };
+    });
   });
 
   app.patch<{ Params: { id: string }; Body: TaskUpdatePayload }>(
@@ -515,6 +846,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       if (!ownerId) {
         return reply.status(401).send({ error: "Authentication required" });
       }
+
+      return runOrdinaryTaskMutation(deps.contentOwner, reply, async () => {
 
       const body = request.body ?? ({} as TaskUpdatePayload);
       const reject = rejectNotYetWiredTaskParams(
@@ -528,6 +861,9 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       const task = await getTaskByIdWithMutationVersion(db, request.params.id);
       if (!task || task.ownerId !== ownerId) {
         return reply.status(404).send({ error: "Task not found" });
+      }
+      if (task.contentRepresentation === "protected") {
+        return reply.status(409).send({ error: "task_content_requires_current_client" });
       }
       if (task.status !== "pending" && task.status !== "paused") {
         return reply.status(409).send({
@@ -672,6 +1008,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       }
       return reply.send({ ...toTaskSummary(updated),
         ...(await canResumeSecurityResearchContextFailure(db, updated) ? { canResumeResearch: true } : {}),
+      });
       });
     },
   );

@@ -12,7 +12,6 @@ import {
 } from "../../../adapters/runtime-contexts";
 import { useTaskState } from "../../../contexts/task-state/task-state-context";
 import { useAuth } from "../../../hooks/use-auth";
-import { apiClient } from "../../../lib/api";
 import { HarnessActivityFeed } from "./HarnessActivityFeed";
 import {
   harnessPresentation,
@@ -20,6 +19,14 @@ import {
   type HarnessPresentation,
 } from "./harness-presentation";
 import { isToolRow } from "./transcript-vm";
+import { taskContentViewerScopeKey } from "./task-content-viewer-scope";
+import { createWorkbenchDataOperationOwner } from
+  "../../../lib/encryption-data-operation-policy";
+import {
+  createWorkbenchProtectedHumanTaskController,
+  readWorkbenchTaskForViewer,
+  type WorkbenchProtectedHumanTaskController,
+} from "../../../lib/protected-human-task-controller";
 import { useSubagentTranscript } from "./use-subagent-transcript";
 import { ScrollableTaskTranscript } from "./VirtualTranscriptRows";
 import {
@@ -146,26 +153,79 @@ function HarnessExecutionToolCard({
   const { busyIds, lastSuccessfulAtMs, stopTask, taskMap } = useTaskState();
   const auth = useAuth();
   const encryptionPolicyMode = useConversationEncryptionPolicyMode();
-  const [durableDetail, setDurableDetail] = useState<TaskDetail | null>(null);
+  const [scopedDetail, setScopedDetail] = useState<{ scopeKey: string; detail: TaskDetail } | null>(null);
+  const [scopedProtected, setScopedProtected] = useState<{
+    scopeKey: string;
+    opened: Awaited<ReturnType<WorkbenchProtectedHumanTaskController["open"]>>;
+  } | null>(null);
   const [stopRequested, setStopRequested] = useState(false);
   const [stopError, setStopError] = useState(false);
   const entry = list.find((item) => item.taskId === taskResult.taskId);
   const liveCanonicalStatus = taskMap[taskResult.taskId]?.status;
-  useEffect(() => {
-    let current = true;
-    setDurableDetail(null);
-    void apiClient.getTask(taskResult.taskId).then(
-      (detail) => { if (current) setDurableDetail(detail); },
-      () => { /* The owner-scoped receipt fallback remains available. */ },
-    );
-    return () => { current = false; };
-  }, [entry?.status, entry?.terminalAtMs, liveCanonicalStatus, taskResult.taskId]);
-  const researchProgress = entry ? entry.researchProgress
-    : (taskMap[taskResult.taskId] ?? durableDetail?.task)?.preparation?.research;
-  const canonicalStatus = liveCanonicalStatus ?? durableDetail?.task.status;
-  const taskStatus = canonicalStatus ?? entry?.status ?? taskResult.status;
   const serverOrigin = typeof window === "undefined" ? "" : window.location.origin;
   const viewerId = auth.viewer.sessionUserId ?? "";
+  const contentScopeKey = taskContentViewerScopeKey({
+    serverOrigin,
+    viewerGeneration: auth.viewerGeneration,
+    viewerId,
+    actorId: auth.viewer.sessionActorId,
+    viewerVerified: auth.viewer.isVerified,
+    policyMode: encryptionPolicyMode,
+  });
+  const durableDetail = scopedDetail?.scopeKey === contentScopeKey ? scopedDetail.detail : null;
+  const protectedOwner = useMemo(() => createWorkbenchDataOperationOwner(), []);
+  const protectedController = useMemo(() => {
+    if (
+      encryptionPolicyMode === "plaintext_only"
+      || !auth.viewer.isVerified
+      || auth.viewer.sessionUserId === null
+      || auth.viewer.sessionActorId === null
+      || serverOrigin.length === 0
+    ) return undefined;
+    return createWorkbenchProtectedHumanTaskController({
+      owner: protectedOwner,
+      serverScope: serverOrigin,
+      userId: auth.viewer.sessionUserId,
+      humanActorId: auth.viewer.sessionActorId,
+    });
+  }, [
+    auth.viewer.isVerified,
+    auth.viewer.sessionActorId,
+    auth.viewer.sessionUserId,
+    encryptionPolicyMode,
+    protectedOwner,
+    serverOrigin,
+  ]);
+  const protectedOpened = scopedProtected?.scopeKey === contentScopeKey
+    ? scopedProtected.opened : null;
+  useEffect(() => {
+    let current = true;
+    setScopedDetail(null);
+    setScopedProtected(null);
+    if (!auth.viewer.isVerified) return () => { current = false; };
+    void readWorkbenchTaskForViewer({
+      mode: encryptionPolicyMode,
+      taskId: taskResult.taskId,
+      protectedController,
+    }).then(
+      (read) => {
+        if (!current) return;
+        if (read.representation === "ordinary") {
+          setScopedDetail({ scopeKey: contentScopeKey, detail: read.detail });
+        } else {
+          setScopedProtected({ scopeKey: contentScopeKey, opened: read.opened });
+        }
+      },
+      () => { /* Recovery UI below remains available. */ },
+    );
+    return () => { current = false; };
+  }, [auth.viewer.isVerified, contentScopeKey, encryptionPolicyMode, entry?.status,
+    entry?.terminalAtMs, liveCanonicalStatus, protectedController, taskResult.taskId]);
+  const researchProgress = entry ? entry.researchProgress
+    : (taskMap[taskResult.taskId] ?? durableDetail?.task)?.preparation?.research;
+  const canonicalStatus = liveCanonicalStatus ?? protectedOpened?.task.status
+    ?? durableDetail?.task.status;
+  const taskStatus = canonicalStatus ?? entry?.status ?? taskResult.status;
   const recoveryScopeKey = `${serverOrigin}\0${auth.viewerGeneration}\0${viewerId}\0${taskResult.taskId}`;
   const showContentAccessRecovery = shouldShowTaskContentAccessRecovery({
     mode: encryptionPolicyMode,
@@ -177,7 +237,7 @@ function HarnessExecutionToolCard({
   const failureOutcome = harnessTaskFailureOutcome(presentation, durableDetail, canonicalStatus);
   const { messages, error } = useSubagentTranscript(taskResult.taskId, { enabled: true });
   const transcriptTools = messages.filter(isToolRow);
-  const lastLiveActivity = useRef<readonly TaskHarnessActivity[]>([]);
+  const lastLiveActivity = useRef<{ scopeKey: string; activity: readonly TaskHarnessActivity[] } | null>(null);
   // Durable Task truth wins over a lagging process-local activity overlay.
   // Stoppable work includes parked Tasks; only actual running work gets a
   // spinner or live transcript following. Paused/awaiting canonical status
@@ -194,19 +254,22 @@ function HarnessExecutionToolCard({
         ...(taskToolEvent?.result ? { result: taskToolEvent.result } : {}),
       }
     : taskToolEvent;
-  if ((entry?.harnessActivity.length ?? 0) > 0) {
-    lastLiveActivity.current = entry!.harnessActivity;
+  const entryActivity = entry?.harnessActivity;
+  if (entryActivity && entryActivity.length > 0) {
+    lastLiveActivity.current = { scopeKey: contentScopeKey, activity: entryActivity };
   }
-  const activitySource = (entry?.harnessActivity.length ?? 0) > 0
-    ? entry!.harnessActivity
-    : lastLiveActivity.current;
   const visibleActivity = useMemo(
-    () => settleHarnessActivity(
-      activitySource,
-      !active ? canonicalStatus : undefined,
-      entry?.terminalAtMs ?? taskToolEvent?.endedAt,
-    ),
-    [active, activitySource, canonicalStatus, entry?.terminalAtMs, taskToolEvent?.endedAt],
+    () => {
+      const activitySource = entryActivity && entryActivity.length > 0
+        ? entryActivity
+        : lastLiveActivity.current?.scopeKey === contentScopeKey ? lastLiveActivity.current.activity : [];
+      return settleHarnessActivity(
+        activitySource,
+        !active ? canonicalStatus : undefined,
+        entry?.terminalAtMs ?? taskToolEvent?.endedAt,
+      );
+    },
+    [active, entryActivity, contentScopeKey, canonicalStatus, entry?.terminalAtMs, taskToolEvent?.endedAt],
   );
 
   return (
@@ -283,6 +346,21 @@ function HarnessExecutionToolCard({
               scopeKey={recoveryScopeKey}
               discoveryGeneration={lastSuccessfulAtMs ?? 0}
             />
+          ) : null}
+
+          {protectedOpened?.content.status === "protected" ? (
+            <div className="rounded bg-background px-2 py-1.5 text-xs text-foreground-muted"
+              data-testid="harness-protected-task-definition">
+              <p className="font-medium text-foreground">Protected task</p>
+              <p className="whitespace-pre-wrap break-words">
+                {protectedOpened.content.payload.prompt}
+              </p>
+              {protectedOpened.content.payload.expectedOutput ? (
+                <p className="mt-1 whitespace-pre-wrap break-words">
+                  Expected: {protectedOpened.content.payload.expectedOutput}
+                </p>
+              ) : null}
+            </div>
           ) : null}
 
           {failureOutcome ? (

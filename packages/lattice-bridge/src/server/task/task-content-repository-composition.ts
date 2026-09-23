@@ -13,6 +13,7 @@ import type {
   TaskContentPayloadV1,
   TaskContentRepository,
 } from "../../task/task-content-repository.ts";
+import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../task/task-content-prepared-revision.ts";
 import {
   ClassifiedDataOperationError,
   type DataOperationPublicationContext,
@@ -58,7 +59,41 @@ export type DurableTaskContentPublicationResult<ProductResult> = Readonly<{
   protectedRevision: Awaited<ReturnType<TaskContentRepository["completeRevision"]>> | null;
 }>;
 
+type PreparedTaskContentPublicationCommonV1 = Readonly<{
+  owner: EncryptionDataOperationOwner;
+  operationId: string;
+  requestDigest: Uint8Array;
+  authority: TaskContentAuthorityV1;
+  operationalMetadata: Parameters<
+    TaskContentRepository["reserveRevision"]
+  >[0]["operationalMetadata"];
+  prepared: PreparedTaskContentCryptoRevisionV1;
+}>;
+
+export type ProtectedPreparedTaskContentPublicationV1<ProductResult> =
+  PreparedTaskContentPublicationCommonV1 & Readonly<{
+    representation: "protected";
+    publishProduct(
+      context: DataOperationPublicationContext,
+    ): Promise<ProductResult>;
+  }>;
+
+export type DualPreparedTaskContentPublicationV1<ProductResult> =
+  PreparedTaskContentPublicationCommonV1 & Readonly<{
+    representation: "dual";
+    ordinaryContent: TaskContentPayloadV1;
+    publishProduct(
+      content: TaskContentPayloadV1,
+      context: DataOperationPublicationContext,
+    ): Promise<ProductResult>;
+  }>;
+
+export type PreparedTaskContentPublicationV1<ProductResult> =
+  | ProtectedPreparedTaskContentPublicationV1<ProductResult>
+  | DualPreparedTaskContentPublicationV1<ProductResult>;
+
 export interface DurableTaskContentRepositoryV1<ProductResult> {
+  lookupPreparedReplay: TaskContentRepository["lookupPreparedReplay"];
   mutate(input: Readonly<{
     owner: EncryptionDataOperationOwner;
     content: TaskContentPayloadV1;
@@ -69,6 +104,14 @@ export interface DurableTaskContentRepositoryV1<ProductResult> {
       TaskContentRepository["reserveRevision"]
     >[0]["operationalMetadata"];
   }>): Promise<DurableTaskContentPublicationResult<ProductResult>>;
+  /**
+   * Accepts an authenticated device-prepared revision. Protected publication
+   * keeps plaintext out of the server; dual publication carries its separately
+   * authenticated canonical ordinary sibling to the product callback.
+   */
+  publishPrepared(
+    input: PreparedTaskContentPublicationV1<ProductResult>,
+  ): Promise<DurableTaskContentPublicationResult<ProductResult>>;
   read(input: Readonly<{
     owner: EncryptionDataOperationOwner;
     coordinate: TaskContentCoordinateV1;
@@ -87,6 +130,10 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
   content: DurableTaskContentPortsV1<ProductResult>;
 }>): DurableTaskContentRepositoryV1<ProductResult> {
   const repository: DurableTaskContentRepositoryV1<ProductResult> = {
+    lookupPreparedReplay: (
+      request: Parameters<TaskContentRepository["lookupPreparedReplay"]>[0],
+    ) => input.protectedRepository.lookupPreparedReplay(request),
+
     async mutate(request: Parameters<DurableTaskContentRepositoryV1<ProductResult>["mutate"]>[0]) {
       return mutateTaskContentV1({
         owner: request.owner,
@@ -132,6 +179,49 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
           },
         },
       });
+    },
+
+    async publishPrepared(request: Parameters<DurableTaskContentRepositoryV1<ProductResult>["publishPrepared"]>[0]) {
+      const publish = async (
+        context: DataOperationPublicationContext,
+      ): Promise<DurableTaskContentPublicationResult<ProductResult>> => {
+        readPreparedTaskContentCryptoRevisionSnapshotV1(request.prepared);
+        const reservation = await input.protectedRepository.reserveRevision({
+          operationId: request.operationId,
+          requestDigest: request.requestDigest,
+          representation: request.representation,
+          authority: request.authority,
+          prepared: request.prepared,
+          operationalMetadata: request.operationalMetadata,
+        });
+        if (reservation.status === "stale") {
+          throw new ClassifiedDataOperationError(
+            "stale",
+            "Task content reservation is stale",
+          );
+        }
+        if (reservation.status === "conflict") {
+          throw new ClassifiedDataOperationError(
+            "integrity",
+            "Task content reservation conflicts with durable state",
+          );
+        }
+        const product = request.representation === "dual"
+          ? await request.publishProduct(request.ordinaryContent, context)
+          : await request.publishProduct(context);
+        const protectedRevision = await input.protectedRepository.completeRevision({
+          coordinate: request.prepared.coordinate,
+          prepared: request.prepared,
+        });
+        return Object.freeze({
+          product,
+          representation: request.representation,
+          protectedRevision,
+        });
+      };
+      return request.owner.runMutation(request.representation === "dual"
+        ? { dual: publish }
+        : { protected: publish });
     },
 
     read(request: Parameters<DurableTaskContentRepositoryV1<ProductResult>["read"]>[0]) {

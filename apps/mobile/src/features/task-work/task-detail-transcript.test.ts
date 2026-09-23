@@ -12,7 +12,8 @@ test("Task transcript uses an inert virtualized native surface", () => {
 });
 
 test("Task transcript is latest-run-only and honest about unavailable bytes", () => {
-  expect(source).toContain("taskDetailTranscriptToPresentation(detail)");
+  expect(source).toContain("mobileTaskTranscript(detail)");
+  expect(source).toContain("MOBILE_PROTECTED_TASK_DETAIL");
   expect(source).toContain("No transcript is available for this run.");
   expect(source).toContain("No runs yet.");
   expect(source).not.toMatch(/complete history|all runs|summary|source count/i);

@@ -152,8 +152,8 @@ describe("M229 mutation governance", () => {
     const eligible = deriveMutationSourceInventory(
       new URL("../..", import.meta.url).pathname,
     );
-    expect(parsed.scopes).toHaveLength(28);
-    expect(eligible).toHaveLength(125);
+    expect(parsed.scopes).toHaveLength(29);
+    expect(eligible).toHaveLength(126);
     expect(parsed.scopes.filter((scope) =>
       scope.name.startsWith("background-")
     ).map((scope) => ({

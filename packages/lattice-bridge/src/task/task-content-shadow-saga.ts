@@ -336,6 +336,55 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   }
 
   return Object.freeze({
+    async lookupPreparedReplay(
+      request: Parameters<TaskContentRepository["lookupPreparedReplay"]>[0],
+    ) {
+      if (
+        typeof request.operationId !== "string"
+        || !PORTABLE_ID.test(request.operationId)
+        || new TextEncoder().encode(request.operationId).length > 128
+        || !(request.requestDigest instanceof Uint8Array)
+        || request.requestDigest.length !== 32
+        || (request.representation !== "protected"
+          && request.representation !== "dual")
+      ) throw new TypeError("Task prepared replay lookup is invalid");
+      const found = await input.product.getRevisionByOperation({
+        operationId: request.operationId,
+      });
+      if (found.status !== "found") return Object.freeze({ status: "unavailable" as const });
+      const state = found.state;
+      assertState(state);
+      const currentAuthorityFingerprint = fingerprintTaskContentAuthorityV1(
+        state.authority,
+      );
+      if (
+        state.lifecycle.operationId !== request.operationId
+        || !sameBytes(state.lifecycle.requestDigest, request.requestDigest)
+        || state.lifecycle.representation !== request.representation
+        || !sameTaskContentCoordinateV1(
+          state.lifecycle.coordinate,
+          request.coordinate,
+        )
+        || state.lifecycle.cryptoObjectId
+          !== deriveTaskContentCryptoObjectIdV1(request.coordinate)
+        || state.lifecycle.requesterHumanId
+          !== request.requesterHumanId
+        || state.lifecycle.namespaceId !== request.namespaceId
+        || !sameBytes(
+          state.lifecycle.authorityFingerprint,
+          currentAuthorityFingerprint,
+        )
+        || !authorityMatches(state)
+        || (state.lifecycle.disposition !== "active"
+          && state.lifecycle.disposition !== "mapped")
+      ) return Object.freeze({ status: "unavailable" as const });
+      if (state.lifecycle.disposition === "mapped") assertMappedState(state);
+      return Object.freeze({
+        status: "exact" as const,
+        authority: Object.freeze({ ...state.authority }),
+      });
+    },
+
     async reserveRevision(
       request: Parameters<TaskContentRepository["reserveRevision"]>[0],
     ) {

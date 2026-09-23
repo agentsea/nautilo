@@ -293,6 +293,9 @@ export async function dispatchTaskRun(
   task: Task,
   deps: DispatchTaskRunDeps,
 ): Promise<DispatchTaskRunResult> {
+  if (task.contentRepresentation === "protected" || task.contentRepresentation === "dual") {
+    throw new TypeError("Protected Task execution is unavailable");
+  }
   const { db, jobManager } = deps;
   const resolver = deps.resolver ?? getPolicyResolver();
   // M254 R6 — a durable Task never carries creation-time authority. Re-read

@@ -7,7 +7,8 @@ import {
   taskPresentationActivityText,
   type TaskPresentationStatus,
 } from "@nautilo/types";
-import type { ServerEvent, TaskSummary } from "@nautilo/types";
+import type { ServerEvent } from "@nautilo/types";
+import type { MobileTaskSummary as TaskSummary } from "./task-content-mobile";
 
 import type { TaskWorkScope } from "./use-task-work-scope";
 export type { TaskWorkScope } from "./use-task-work-scope";

@@ -331,6 +331,12 @@ export interface TaskContentProductStorePort {
   getRevision(
     coordinate: TaskContentCoordinateV1,
   ): Promise<TaskContentRevisionStateV1 | null>;
+  getRevisionByOperation(input: Readonly<{
+    operationId: string;
+  }>): Promise<
+    | Readonly<{ status: "found"; state: TaskContentRevisionStateV1 }>
+    | Readonly<{ status: "missing" | "conflict" | "authority_unavailable" }>
+  >;
   markCryptoComplete(input: Readonly<{
     coordinate: TaskContentCoordinateV1;
     cryptoObjectId: string;
@@ -406,6 +412,17 @@ export interface TaskContentRepository {
         cryptoObjectId: string;
       }>
     | Readonly<{ status: "conflict" | "stale" }>
+  >;
+  lookupPreparedReplay(input: Readonly<{
+    operationId: string;
+    requestDigest: Uint8Array;
+    representation: "protected" | "dual";
+    coordinate: TaskDefinitionContentCoordinateV1;
+    requesterHumanId: string;
+    namespaceId: string;
+  }>): Promise<
+    | Readonly<{ status: "exact"; authority: TaskContentAuthorityV1 }>
+    | Readonly<{ status: "unavailable" }>
   >;
   completeRevision(input: Readonly<{
     coordinate: TaskContentCoordinateV1;

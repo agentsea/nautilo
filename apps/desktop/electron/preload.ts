@@ -37,6 +37,8 @@ import type {
   RegisterHumanEditLeaseRequest,
   ReleaseHumanEditLeaseRequest,
   RenewHumanEditLeaseRequest,
+  TaskOperationRequestV1,
+  TaskOperationResponseV1,
   UpdateHumanEditLeaseRequest,
 } from "@nautilo/types";
 import { validateAtomicDocumentMutationEventBatchEnvelope } from "@nautilo/document-mutations";
@@ -1985,6 +1987,11 @@ const readyToWorkAPI = {
  * events, and receives only display projections or content-free status.
  */
 const foregroundShadowAPI = {
+  task: {
+    operateV1: (request: TaskOperationRequestV1) =>
+      ipcRenderer.invoke("foregroundShadow:task:operateV1", request) as
+        Promise<TaskOperationResponseV1>,
+  },
   inspect: () =>
     ipcRenderer.invoke(
       "foregroundShadow:inspect",

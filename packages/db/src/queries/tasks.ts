@@ -1516,6 +1516,7 @@ export async function claimDueTasks(
       .where(
         and(
           eq(tasks.status, "pending"),
+          eq(tasks.contentRepresentation, "ordinary"),
           lte(tasks.nextFireAt, now),
           isNull(tasks.fireLockId),
         ),
