@@ -1537,6 +1537,190 @@ export async function claimDueTasks(
 }
 
 /**
+ * Claim only due Tasks whose protected representation is complete and current.
+ * Plain scheduling keeps its independent `claimDueTasks` path.
+ */
+export async function claimDueProtectedTasks(
+  db: DirectDatabase,
+  now: Date,
+  batch: number,
+): Promise<Task[]> {
+  if (batch <= 0) return [];
+  return db.transaction(async (tx) => {
+    const due = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.status, "pending"),
+          inArray(tasks.contentRepresentation, ["dual", "protected"]),
+          eq(tasks.cryptoMappingState, "verified"),
+          lte(tasks.nextFireAt, now),
+          isNull(tasks.fireLockId),
+        ),
+      )
+      .orderBy(asc(tasks.nextFireAt), asc(tasks.id))
+      .limit(batch)
+      .for("update", { skipLocked: true });
+
+    if (due.length === 0) return [];
+    const ids = due.map((row) => row.id);
+    return tx
+      .update(tasks)
+      .set({ fireLockId: sql`gen_random_uuid()`, fireLockedAt: now })
+      .where(inArray(tasks.id, ids))
+      .returning();
+  });
+}
+
+export type PrepareClaimedProtectedTaskOccurrenceInput = Readonly<{
+  taskId: string;
+  fireLockId: string;
+  contentRepresentation: "dual" | "protected";
+  contentNamespaceId: string;
+  contentRevision: number;
+  cryptoObjectId: string;
+  cryptoRequiredNamespaceFingerprint: Uint8Array;
+  scheduledFor: Date;
+  taskRunId: string;
+  graphThreadId: string;
+  /** Required only for cron and must advance beyond the claimed instant. */
+  cronNextFireAt?: Date;
+}>;
+
+export type PrepareClaimedProtectedTaskOccurrenceResult =
+  | Readonly<{ status: "prepared"; task: Task; run: TaskRun }>
+  | Readonly<{ status: "stale" }>;
+
+export type ProtectedAwaitingTaskRunCursor = Readonly<{
+  taskRunId: string;
+}>;
+
+/**
+ * Discover content-free protected occurrences that still need authorization.
+ * Each row is keyed by its durable TaskRun identity so separate cron fires do
+ * not collapse into one Task-level request. Terminal and explicitly parked
+ * parent Tasks are excluded; a running parent may still have another cron
+ * occurrence waiting for its own grant.
+ */
+export async function listProtectedAwaitingTaskRunsForAuthorization(
+  db: DirectDatabase,
+  batch: number,
+  after?: ProtectedAwaitingTaskRunCursor,
+): Promise<Array<{ task: Task; run: TaskRun }>> {
+  if (batch <= 0) return [];
+  return db
+    .select({ task: tasks, run: taskRuns })
+    .from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .where(and(
+      eq(taskRuns.status, "awaiting"),
+      inArray(tasks.status, ["pending", "awaiting", "running"]),
+      inArray(tasks.contentRepresentation, ["dual", "protected"]),
+      eq(tasks.cryptoMappingState, "verified"),
+      after ? gt(taskRuns.id, after.taskRunId) : undefined,
+    ))
+    .orderBy(asc(taskRuns.id))
+    .limit(batch);
+}
+
+/**
+ * Consume one exact protected fire-lock into one content-free awaiting run.
+ * The Task schedule and occurrence row commit together, so a stale observer
+ * cannot create a second run after another observer advances the Task.
+ */
+export async function prepareClaimedProtectedTaskOccurrence(
+  db: DirectDatabase,
+  input: PrepareClaimedProtectedTaskOccurrenceInput,
+): Promise<PrepareClaimedProtectedTaskOccurrenceResult> {
+  if (
+    !(input.scheduledFor instanceof Date)
+    || !Number.isFinite(input.scheduledFor.getTime())
+    || !(input.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || input.cryptoRequiredNamespaceFingerprint.length !== 32
+  ) {
+    throw new TypeError("Protected Task occurrence binding is malformed");
+  }
+  return db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(tasks)
+      .where(and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.status, "pending"),
+        eq(tasks.fireLockId, input.fireLockId),
+        eq(tasks.contentRepresentation, input.contentRepresentation),
+        eq(tasks.cryptoMappingState, "verified"),
+        eq(tasks.contentNamespaceId, input.contentNamespaceId),
+        eq(tasks.contentRevision, input.contentRevision),
+        eq(tasks.cryptoObjectId, input.cryptoObjectId),
+        eq(
+          tasks.cryptoRequiredNamespaceFingerprint,
+          input.cryptoRequiredNamespaceFingerprint,
+        ),
+        eq(tasks.nextFireAt, input.scheduledFor),
+      ))
+      .limit(1)
+      .for("update");
+    if (!task) return { status: "stale" } as const;
+
+    const isCron = task.scheduleKind === "cron";
+    if (
+      isCron
+        ? !(input.cronNextFireAt instanceof Date)
+          || !Number.isFinite(input.cronNextFireAt.getTime())
+          || input.cronNextFireAt.getTime() <= input.scheduledFor.getTime()
+        : input.cronNextFireAt !== undefined
+    ) {
+      throw new TypeError("Protected Task occurrence schedule advance is invalid");
+    }
+
+    const [run] = await tx
+      .insert(taskRuns)
+      .values({
+        id: input.taskRunId,
+        taskId: task.id,
+        graphThreadId: input.graphThreadId,
+        status: "awaiting",
+        modelId: null,
+        resultText: null,
+      })
+      .returning();
+    if (!run) throw new Error("Protected Task occurrence insert returned no row");
+
+    const [updatedTask] = await tx
+      .update(tasks)
+      .set(isCron
+        ? {
+            status: "pending",
+            nextFireAt: input.cronNextFireAt!,
+            lastFiredAt: input.scheduledFor,
+            fireLockId: null,
+            fireLockedAt: null,
+            updatedAt: new Date(),
+          }
+        : {
+            status: "awaiting",
+            nextFireAt: null,
+            lastFiredAt: input.scheduledFor,
+            fireLockId: null,
+            fireLockedAt: null,
+            updatedAt: new Date(),
+          })
+      .where(and(
+        eq(tasks.id, task.id),
+        eq(tasks.status, "pending"),
+        eq(tasks.fireLockId, input.fireLockId),
+      ))
+      .returning();
+    if (!updatedTask) {
+      throw new Error("Protected Task occurrence lost its locked Task");
+    }
+    return { status: "prepared", task: updatedTask, run } as const;
+  });
+}
+
+/**
  * Clear fire-locks older than `olderThan` (stale-lock recovery — an
  * observer crashed mid-claim). Returns the number of rows cleared.
  */
