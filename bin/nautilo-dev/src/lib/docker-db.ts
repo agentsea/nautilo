@@ -370,6 +370,7 @@ export const DATA_TABLES = [
   "public.session_notifications",
   "public.server_context_config",
   "public.server_model_config",
+  "public.server_provider_policy",
   "public.server_profile",
   // M274 — server transition policy, bounded aggregate telemetry, cumulative
   // epoch totals, and unconsumed one-shot observation admissions. These rows

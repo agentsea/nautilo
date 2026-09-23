@@ -61,6 +61,8 @@ operate, package, or release the public source tree.
 - [`docs/relay-host-ownership.md`](docs/relay-host-ownership.md) — relay
   transport, Desktop-session, CUA Host, fixed-handler, process-cache, and
   Electron-authority ownership.
+- [`docs/server-provider-policy.md`](docs/server-provider-policy.md) — default-off
+  administrator control for future personal provider credentials.
 - [`docs/background-authorization-transport.md`](docs/background-authorization-transport.md)
 - [`docs/encryption-data-operation-ownership.md`](docs/encryption-data-operation-ownership.md)
 - [`docs/mobile-time-and-workspace-sharing.md`](docs/mobile-time-and-workspace-sharing.md)

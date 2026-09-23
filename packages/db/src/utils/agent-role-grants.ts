@@ -7,6 +7,8 @@ const TARGET_DB = "nautilo";
 export const SENSITIVE_TABLES = [
   "feed_events",
   "feed_recipients",
+  // Server-wide provider admission is owned by the product control plane.
+  "server_provider_policy",
   "credentials",
   "recovery_codes",
   "logto_account_security",

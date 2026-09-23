@@ -259,6 +259,7 @@ import { setupStatusRoutes } from "./routes/setup-status";
 import { serverIconRoutes } from "./routes/server-icon";
 import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
+import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
 import { messageBackfillRoutes } from "./routes/message-backfill";
@@ -2947,6 +2948,7 @@ export async function createApp(options?: CreateAppOptions) {
       await reflectionSleepController.setEnabled(config.reflectionSleepEnabled);
     },
   });
+  serverProviderPolicyRoutes(app);
   encryptionTransitionRoutes(app, {
     publishPolicyChanged: publishEncryptionPolicyChanged,
     maintenanceController: publishingMaintenanceController,

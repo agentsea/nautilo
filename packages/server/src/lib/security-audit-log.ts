@@ -523,6 +523,13 @@ export interface ServerModelConfigChangedAuditEvent extends CommonAuditFields {
   readonly changes?: Readonly<Record<string, unknown>>;
 }
 
+/** Administrator changed whether personal provider credentials may be used. */
+export interface ServerProviderPolicyChangedAuditEvent extends CommonAuditFields {
+  readonly kind: "server_provider_policy_changed";
+  readonly previous: boolean;
+  readonly effective: boolean;
+}
+
 /** D537 — admin changed non-secret server identity or icon settings. */
 export interface ServerProfileChangedAuditEvent extends CommonAuditFields {
   readonly kind: "server_profile_changed";
@@ -840,6 +847,7 @@ export type SecurityAuditEvent =
   | RecoveryRelayCodeUnmatchedAuditEvent
   | UserDeletedAuditEvent
   | ServerModelConfigChangedAuditEvent
+  | ServerProviderPolicyChangedAuditEvent
   | EncryptionTransitionPolicyChangedAuditEvent
   | EncryptionTransitionPolicyChangeRequestedAuditEvent
   | ServerProfileChangedAuditEvent
