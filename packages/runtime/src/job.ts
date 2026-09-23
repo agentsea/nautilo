@@ -199,6 +199,28 @@ export class Job {
   }
 
   async execute(authorizationSignal?: AbortSignal): Promise<void> {
+    return this.executeWithInput(this.config.input, authorizationSignal);
+  }
+
+  /**
+   * Execute one protected Task Job with content reconstructed inside its live
+   * authorization callback. The durable/in-memory scheduling input remains
+   * content-free; only the executor receives `input`.
+   */
+  async executeProtectedTask(
+    input: Record<string, unknown>,
+    authorizationSignal?: AbortSignal,
+  ): Promise<void> {
+    if (this.config.durableInputReference?.kind !== "protected_task_run_v1") {
+      throw new TypeError("Protected Task execution requires its durable Job reference");
+    }
+    return this.executeWithInput(input, authorizationSignal);
+  }
+
+  private async executeWithInput(
+    executorInput: Record<string, unknown>,
+    authorizationSignal?: AbortSignal,
+  ): Promise<void> {
     if (!this._id) throw new Error("Must call persist() before execute()");
 
     this.abortController = new AbortController();
@@ -233,14 +255,14 @@ export class Job {
       // jobs with a turnId but without their own wrap (future job
       // sources, internal tooling). Jobs without an inbound turnId
       // (legacy callers, background jobs) fall through unchanged.
-      const turnIdRaw = this.config.input["turnId"];
+      const turnIdRaw = executorInput["turnId"];
       const turnId =
         typeof turnIdRaw === "string" && turnIdRaw ? turnIdRaw : undefined;
 
       if (turnId) {
-        await runWithTurn(turnId, () => this.runExecutor());
+        await runWithTurn(turnId, () => this.runExecutor(executorInput));
       } else {
-        await this.runExecutor();
+        await this.runExecutor(executorInput);
       }
     } finally {
       this.abortController.signal.removeEventListener("abort", failProtectedCancellation);
@@ -260,7 +282,7 @@ export class Job {
    * Precondition: `execute()` has already assigned `_id` (via
    * `persist()`) and `abortController` (via the `new` above).
    */
-  private async runExecutor(): Promise<void> {
+  private async runExecutor(executorInput: Record<string, unknown>): Promise<void> {
     const id = this._id;
     const abortController = this.abortController;
     if (!id || !abortController) {
@@ -287,7 +309,7 @@ export class Job {
         try {
           abortController.signal.throwIfAborted();
           const events = this.config.executor(
-            this.config.input,
+            executorInput,
             id,
             this.config.laneKey,
             abortController.signal,
@@ -296,7 +318,12 @@ export class Job {
           for await (const event of events) {
             if (this._status === "cancelled") return;
             setContextPreparationNotice(false);
-            eventBus.emit(event);
+            // Protected Task provider/model output must enter its protected
+            // result publisher. Generic executor events are not a reviewed
+            // content sink, so this foundation drops them fail-closed.
+            if (this.config.durableInputReference?.kind !== "protected_task_run_v1") {
+              eventBus.emit(event);
+            }
           }
           setContextPreparationNotice(false);
           break;
