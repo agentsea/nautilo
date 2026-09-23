@@ -1077,6 +1077,10 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/api-client/package.json dependency @nautilo/lattice-crypto -> workspace:*",
   "packages/api-client/src/schemas/human-memory-read-observation.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/src/schemas/protected-memory.ts -> @nautilo/lattice-crypto/wire-limits",
+  // Prepared Task transport schemas consume only provider-free wire ceilings;
+  // neither the production schema nor its boundary test performs crypto.
+  "packages/api-client/src/schemas/protected-task.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/api-client/tests/unit/protected-task-schema.test.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/tests/unit/human-memory-read-observation.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/api-client/tests/unit/protected-memory-schema.test.ts -> @nautilo/lattice-crypto/wire",
   // M320 — foreground Domain Memory Runtime owns invocation-scoped plaintext

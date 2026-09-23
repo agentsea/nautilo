@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto";
+import { LATTICE_LIMITS } from "@nautilo/lattice-crypto/wire-limits";
 
 import {
   protectedTaskPreparedCreateRequestV1Schema,

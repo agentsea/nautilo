@@ -1,5 +1,5 @@
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto";
 import {
+  LATTICE_LIMITS,
   MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5,
 } from "@nautilo/lattice-crypto/wire-limits";
 import { z } from "zod";
