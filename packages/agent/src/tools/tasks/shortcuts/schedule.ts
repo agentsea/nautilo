@@ -71,6 +71,7 @@ export function createScheduleTool(context?: unknown) {
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot schedule task: missing owner or agent context.";
       }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       const selectionError = validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
@@ -114,7 +115,7 @@ export function createScheduleTool(context?: unknown) {
       const rt = getTaskToolRuntime();
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
-        requestorId: ctx.ownerId,
+        requestorId: ctx.causalHumanUserId,
         agentId: ctx.agentId,
         prompt: args.message,
         preset: "schedule",
@@ -128,7 +129,7 @@ export function createScheduleTool(context?: unknown) {
         awaitResponse: false,
         toolsMode: "auto",
         callingRoomId: ctx.roomId || null,
-        targetUserIds: [ctx.ownerId],
+        targetUserIds: [ctx.causalHumanUserId],
         depth: 0,
         ...(args.model_selection !== undefined
           ? { selectionProfile: args.model_selection }

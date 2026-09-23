@@ -1,12 +1,15 @@
 /** Actual agent-node schema binding with an isolated model; no provider, database, or tool execution. */
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { ToolCatalog, clearToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import type { NautiloState } from "../../src/agent/state";
-import { agentNode } from "../../src/nodes/agent";
 import type { ChatModel } from "../../src/providers/types";
 import { __setStubModelForTests } from "../../src/providers/universal";
 import { registerAllTools } from "../../src/tools/register-all";
+
+const trust = await import("@nautilo/trust");
+spyOn(trust, "assertCanUseServerProviderCredentials").mockResolvedValue(undefined);
+const { agentNode } = await import("../../src/nodes/agent");
 
 const MODEL = "anthropic:claude-sonnet-4-6";
 const previousTestMode = process.env["NAUTILO_TEST_MODE"];

@@ -11,9 +11,11 @@ const access = {
 };
 const catalogue = { capabilities: [], roles: [
   { id: "member-role", slug: "member", label: "Member", isSystem: true, capabilitySlugs: [], groupCount: 1 },
+  { id: "community-role", slug: "community", label: "Community", isSystem: true, capabilitySlugs: [], groupCount: 1 },
   { id: "mobile-role", slug: "mobile", label: "Mobile", isSystem: false, capabilitySlugs: ["control_home"], groupCount: 1 },
 ], groups: [
   { id: "members", type: "members", label: "Members", isSystem: true, ownerId: null, roleSlugs: ["member"], memberCount: 1 },
+  { id: "communities", type: "communities", label: "Communities", isSystem: true, ownerId: null, roleSlugs: ["community"], memberCount: 0 },
   { id: "mobile", type: "custom:mobile", label: "Mobile", isSystem: false, ownerId: "owner", roleSlugs: ["mobile"], memberCount: 0 },
 ] };
 
@@ -56,5 +58,13 @@ describe("ManageAccessDrawer", () => {
     const mobile = view.getByText("Mobile").closest("label");
     expect((mobile?.querySelector("input") as HTMLInputElement).disabled).toBeTrue();
     expect(view.getByText(/Requires the target Group bundle: control_home/)).toBeTruthy();
+  });
+
+  test("shows Community but disables adding a non-member", () => {
+    reapplyHappyDomGlobals();
+    const view = render(<ManageAccessDrawer access={access} catalogue={catalogue} viewerCapabilities={["manage_members"]} canCreateSharedAccessExisting={false} canCreateSharedAccessNew={false} onClose={() => undefined} onReview={() => undefined} onCreateSharedAccess={() => undefined} />);
+    const communities = view.getByText("Communities").closest("label");
+    expect((communities?.querySelector("input") as HTMLInputElement).disabled).toBeTrue();
+    expect(view.getByText(/Community enrollment is unavailable/)).toBeTruthy();
   });
 });

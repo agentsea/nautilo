@@ -137,9 +137,9 @@ function combinedActualCost(
   };
 }
 async function recordRunCost(options: ConnectedWebAccountActionRuntimeOptions, actor: ConnectedWebAccountReadRuntimeActor, runId: string, operation: "hosted_action" | "hosted_action_observation", total: string | null, now: () => Date): Promise<void> {
-  if (!options.recordProviderCost) return;
+  if (!options.recordProviderCost || !actor.causalHumanUserId) return;
   const value = total === null ? NaN : Number(total);
-  try { await options.recordProviderCost({ occurredAt: now(), userId: actor.userId, roomId: actor.roomId, agentId: actor.agentId, provider: "browser_use", operation, actualCostUsd: Number.isFinite(value) && value >= 0 ? total!.trim() : null, evidenceState: Number.isFinite(value) && value >= 0 ? "actual" : "unknown", idempotencyKey: createHash("sha256").update(`browser_use\0${operation}\0${runId}`).digest("hex") }); } catch { /* accounting never changes action truth */ }
+  try { await options.recordProviderCost({ occurredAt: now(), userId: actor.causalHumanUserId, roomId: actor.roomId, agentId: actor.agentId, provider: "browser_use", operation, actualCostUsd: Number.isFinite(value) && value >= 0 ? total!.trim() : null, evidenceState: Number.isFinite(value) && value >= 0 ? "actual" : "unknown", idempotencyKey: createHash("sha256").update(`browser_use\0${operation}\0${runId}`).digest("hex") }); } catch { /* accounting never changes action truth */ }
 }
 
 function safePrior(operation: ConnectedWebActionOperation, account: ConnectedWebAccount): ConnectedWebAccountActionResult {

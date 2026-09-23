@@ -8,6 +8,8 @@ import { emitProfileUpdated } from "./emit-profile-updated";
 
 interface RegenerateSoulContext {
   ownerId?: string;
+  /** Exact Human who caused this turn; provider funding follows this subject. */
+  causalHumanUserId?: string;
   /** M132 — the Agent this profile describes; threaded from the turn's tool context envelope. */
   agentId?: string;
 }
@@ -77,7 +79,12 @@ Overrides let you experiment without changing stored profile fields until apply.
             };
         const merged = mergeSoulInput(base, overrides);
 
-        const soulFile = await generateSoulFile(merged);
+        if (!context?.causalHumanUserId) {
+          return "regenerate_soul failed: no Human in context.";
+        }
+        const soulFile = await generateSoulFile(merged, undefined, {
+          humanUserId: context.causalHumanUserId,
+        });
 
         if (action === "preview") {
           const snippet = soulFile.slice(0, 500);

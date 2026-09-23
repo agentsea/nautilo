@@ -63,7 +63,17 @@ export function accessOverview(access: EffectiveAccess): AccessOverview {
 }
 
 export function roleLabel(highestRole: string | null): string {
-  return highestRole ?? "No role granted";
+  if (highestRole === null) return "No role granted";
+  const canonicalLabels: Readonly<Record<string, string>> = {
+    owner: "Owner",
+    admin: "Admin",
+    superuser: "Superuser",
+    member: "Member",
+    contributor: "Contributor",
+    community: "Community",
+    guest: "Guest",
+  };
+  return canonicalLabels[highestRole] ?? highestRole;
 }
 
 export function capabilityStatusLabel(capability: AccessCapability): string {

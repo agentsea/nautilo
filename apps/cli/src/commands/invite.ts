@@ -105,7 +105,7 @@ async function promptRole(): Promise<RoleChoice> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const line = (
       await readLine(
-        "Server Group role for the invitee [owner / admin / superuser / member / contributor / guest]: ",
+        "Server Group role for the invitee [owner / admin / superuser / member / contributor / guest] (Community enrollment is not available yet): ",
       )
     )
       .trim()
@@ -187,7 +187,7 @@ const createModule: CommandModule = {
       .option("role", {
         type: "string",
         choices: ROLE_CHOICES,
-        describe: "Canonical server Group role slug for the invitee (required)",
+        describe: "Role for enrollment; Community is unavailable until personal-key chat launches",
       })
       .option("room", {
         type: "string",

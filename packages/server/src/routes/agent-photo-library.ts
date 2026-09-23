@@ -21,7 +21,12 @@ import { hasCompleteOwnedAvatarMedia, readStrictOwnedAvatarMedia } from "../phot
 import { requirePairingPepper } from "../remote-control/pairing-secrets";
 import { AGENT_AVATAR_PRESET_IDS } from "@nautilo/types";
 import { requestIsVersioned, setMediaCacheHeaders } from "./_helpers/avatar";
-import { findPersonalAgentsForUser } from "@nautilo/trust";
+import {
+  assertCanUseServerProviderCredentials,
+  findPersonalAgentsForUser,
+  ServerProviderCredentialsDeniedError,
+  toActionCapabilityHttpDenial,
+} from "@nautilo/trust";
 import { eq, nautiloInstanceIdentity, type AgentPhotoSelectionOrigin, type DirectDatabase } from "@nautilo/db";
 import {
   composeAvatarPrompt,
@@ -60,6 +65,7 @@ export interface AgentPhotoLibraryRouteDeps {
   readonly getDefaultImageModel?: typeof getDefaultImageModel;
   readonly resolveProviderKey?: typeof resolveProviderKey;
   readonly composeAvatarPrompt?: typeof composeAvatarPrompt;
+  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }
 
 function operationIdFrom(request: FastifyRequest): string | null {
@@ -120,6 +126,9 @@ function statusFor(error: AgentPhotoLibraryError): number {
 }
 
 function sendLibraryError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof ServerProviderCredentialsDeniedError) {
+    return reply.code(403).send(toActionCapabilityHttpDenial(error));
+  }
   if (error instanceof AgentPhotoLibraryError) {
     return reply.code(statusFor(error)).send(errorEnvelope(
       error.code,
@@ -231,6 +240,8 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
   const getImageModel = deps.getDefaultImageModel ?? getDefaultImageModel;
   const providerKey = deps.resolveProviderKey ?? resolveProviderKey;
   const avatarPrompt = deps.composeAvatarPrompt ?? composeAvatarPrompt;
+  const assertServerFunding = deps.assertCanUseServerProviderCredentials
+    ?? assertCanUseServerProviderCredentials;
   const readMedia = deps.readMedia ?? readStrictOwnedAvatarMedia;
   let cursorCodec: PhotoLibraryCursorCodec | null = deps.cursorCodec ?? null;
   const codec = (): PhotoLibraryCursorCodec => {
@@ -274,6 +285,7 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
     prompt: string;
     count: number;
   }) => {
+    await assertServerFunding(input.authority.ownerUserId, "agent_photo_generation");
     const policy = getImageModel();
     const openaiKey =
       providerKey("openai", { ownerId: input.authority.ownerUserId }) ?? "";

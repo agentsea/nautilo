@@ -22,11 +22,18 @@ import { isManagedGatewayOutcomeUnknownError } from "../../src/providers/openrou
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
+import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
+
+const actualTrust = await import("@nautilo/trust");
+const fundingAdmission = mock(async (_userId: string, _origin?: string) => undefined);
+mock.module("@nautilo/trust", () => ({ ...actualTrust,
+  assertCanUseServerProviderCredentials: fundingAdmission,
+}));
 
 const A = "anthropic:claude-sonnet-4-6";
 const B = "openai:gpt-5.5-2026-04-23";
@@ -145,6 +152,7 @@ let invokeChatModelWithFallback: (
   laneKey: string | null,
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
+    fundingHumanUserId?: string;
     reasoningOutput?: boolean;
     reasoningOverrides?: Record<string, boolean>;
     useOpenAIResponsesApi?: boolean;
@@ -167,7 +175,9 @@ let isPreparedContextExceededError: (error: unknown) => boolean;
 
 beforeAll(async () => {
   const mod = await import("../../src/utils/chat-model-invocation");
-  invokeChatModelWithFallback = mod.invokeChatModelWithFallback;
+  invokeChatModelWithFallback = (messages, tools, initialModelId, userId, agentId, laneKey, invocationConfig, invokeOptions) =>
+    mod.invokeChatModelWithFallback(messages, tools, initialModelId, userId, agentId, laneKey,
+      invocationConfig, { fundingHumanUserId: userId, ...invokeOptions });
   _setFirstTokenTimeoutMsForTests = mod._setFirstTokenTimeoutMsForTests;
   isPreparedContextExceededError = mod.isPreparedContextExceededError;
   // Wire a capturing sink so emitAgentEvent fans out to capturedEvents.
@@ -195,10 +205,52 @@ describe("invokeChatModelWithFallback (D141 chain)", () => {
     delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     policyState = { enabled: false, chain: [] };
     createUniversalModelMock.mockReset();
+    fundingAdmission.mockReset();
+    fundingAdmission.mockImplementation(async () => undefined);
     markModelInvokeFailureMock.mockReset();
     capturedEvents.length = 0;
     _resetAgentTurnContextsForTests();
     _setFirstTokenTimeoutMsForTests(undefined);
+  });
+
+  test("revoked server funding stops a fallback before another provider is created", async () => {
+    policyState = { enabled: true, chain: [A, B] };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => { throw TOKEN_LIMIT_ERR; } }),
+    }) as unknown as AuraModel);
+    fundingAdmission.mockImplementationOnce(async () => undefined);
+    fundingAdmission.mockImplementationOnce(async () => {
+      throw new actualTrust.ServerProviderCredentialsDeniedError("user-1", "chat_model");
+    });
+
+    const error = await invokeChatModelWithFallback(messages, tools, A, "owner-1", "agent-1", null,
+      undefined, { fundingHumanUserId: "user-1" })
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(actualTrust.ServerProviderCredentialsDeniedError);
+    expect(modelIdsFromCalls()).toEqual([A]);
+    expect(fundingAdmission).toHaveBeenCalledTimes(2);
+    expect(fundingAdmission.mock.calls.map((call) => call[0])).toEqual(["user-1", "user-1"]);
+  });
+
+  test("an admitted legacy Task resume funds from its recorded requestor", async () => {
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => new AIMessage("ok") }),
+    }) as unknown as AuraModel);
+    await runWithTaskCausalHuman("task-requestor", () => invokeChatModelWithFallback(
+      messages, tools, A, "agent-owner", "agent-1", null, undefined,
+      { fundingHumanUserId: "" },
+    ));
+    expect(fundingAdmission.mock.calls[0]?.[0]).toBe("task-requestor");
+  });
+
+  test("missing causal Human returns a typed denial before capability lookup or model dispatch", async () => {
+    const error = await invokeChatModelWithFallback(messages, tools, A, "owner-1", "agent-1", null,
+      undefined, { fundingHumanUserId: "" })
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(actualTrust.ServerProviderCredentialsDeniedError);
+    expect(error).toMatchObject({ code: "server_provider_credentials_required", humanUserId: "" });
+    expect(fundingAdmission).not.toHaveBeenCalled();
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 
   test.each([

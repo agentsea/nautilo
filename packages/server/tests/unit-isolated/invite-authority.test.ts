@@ -15,10 +15,12 @@ describe("self-service invitation authority", () => {
     expect(inviteRoleAllowed(selfService, "member")).toBeTrue();
     expect(inviteRoleAllowed(selfService, "contributor")).toBeTrue();
     expect(inviteRoleAllowed(selfService, "guest")).toBeTrue();
+    expect(inviteRoleAllowed(selfService, "community")).toBeFalse();
     expect(inviteRoleAllowed(selfService, "superuser")).toBeFalse();
     expect(inviteRoleAllowed(selfService, "admin")).toBeFalse();
     expect(inviteRoleAllowed(selfService, "owner")).toBeFalse();
     expect(inviteRoleAllowed(admin, "owner")).toBeTrue();
+    expect(inviteRoleAllowed(admin, "community")).toBeFalse();
   });
 
   test("permits only caller-owned rooms unless manage_rooms is held", () => {

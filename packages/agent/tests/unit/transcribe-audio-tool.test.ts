@@ -9,11 +9,13 @@ import {
 import type { TranscriptionProvider } from "@nautilo/attachments";
 import { BLOCKED_CONTENT_USER_MESSAGE } from "@nautilo/security";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 let baseDir: string;
 let workspaceRoot: string;
 let currentFolder: string;
 let artifactPath: string;
+const CAUSAL_HUMAN_USER_ID = "00000000-0000-0000-0000-0000000000b0";
 
 beforeAll(async () => {
   baseDir = await fsp.mkdtemp(path.join(os.tmpdir(), "nautilo-transcribe-audio-"));
@@ -31,12 +33,43 @@ afterAll(async () => {
 });
 
 describe("transcribe_audio tool", () => {
+  test("denies before transcription provider dispatch when server funding was revoked", async () => {
+    const transcribe = mock(async () => ({
+      text: "must not run",
+      provider: "test",
+      model: "fake",
+    }));
+    const envelope = namespaceEnvelope();
+    const tool = createTranscribeAudioTool({
+      workspacePath: workspaceRoot,
+      currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
+      memoryAccessEnvelope: envelope,
+      transcriptionProvider: { id: "test", available: async () => true, transcribe },
+    }, {
+      ...artifactDeps(),
+      assertCanUseServerProviderCredentials: async (humanUserId) => {
+        expect(humanUserId).toBe(CAUSAL_HUMAN_USER_ID);
+        throw new ServerProviderCredentialsDeniedError(CAUSAL_HUMAN_USER_ID, "audio_transcription");
+      },
+    });
+
+    const denial = await tool.invoke({ path: "meeting.wav", zone: "workspace" })
+      .catch((error: unknown) => error);
+    expect(denial).toMatchObject({
+      code: "server_provider_credentials_required",
+      humanUserId: CAUSAL_HUMAN_USER_ID,
+    });
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+
   test("validates through the attachment gate before requiring a provider", async () => {
     const executableArtifactPath = path.join(baseDir, "server-artifacts", "payload");
     await fsp.writeFile(executableArtifactPath, new Uint8Array([0x4d, 0x5a, 0x90, 0x00]));
     const tool = createTranscribeAudioTool({
       workspacePath: workspaceRoot,
       currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
       memoryAccessEnvelope: namespaceEnvelope(),
     }, artifactDeps(executableArtifactPath));
 
@@ -59,6 +92,7 @@ describe("transcribe_audio tool", () => {
     const tool = createTranscribeAudioTool({
       workspacePath: workspaceRoot,
       currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
       memoryAccessEnvelope: namespaceEnvelope(),
       transcriptionProvider: unavailableProvider,
     }, artifactDeps());
@@ -84,6 +118,7 @@ describe("transcribe_audio tool", () => {
     const tool = createTranscribeAudioTool({
       workspacePath: workspaceRoot,
       currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
       memoryAccessEnvelope: namespaceEnvelope(),
       transcriptionProvider: provider,
     }, artifactDeps());
@@ -116,9 +151,13 @@ describe("transcribe_audio tool", () => {
     const tool = createTranscribeAudioTool({
       workspacePath: path.join(baseDir, "client-workspace-that-is-not-server-readable"),
       currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
       memoryAccessEnvelope: namespaceEnvelope(),
       transcriptionProvider: provider,
-    }, { resolveWorkspaceAudio });
+    }, {
+      resolveWorkspaceAudio,
+      assertCanUseServerProviderCredentials: async () => {},
+    });
 
     const result = await tool.invoke({ path: "audio/meeting.wav", zone: "workspace" });
 
@@ -143,7 +182,8 @@ describe("transcribe_audio tool", () => {
       const tool = createTranscribeAudioTool({
         workspacePath: workspaceRoot,
         currentFolder,
-        memoryAccessEnvelope: namespaceEnvelope(),
+        causalHumanUserId: CAUSAL_HUMAN_USER_ID,
+      memoryAccessEnvelope: namespaceEnvelope(),
         transcriptionProvider: { id: "test", available: async () => true, transcribe },
       }, { resolveWorkspaceAudio });
 
@@ -170,6 +210,7 @@ describe("transcribe_audio tool", () => {
     const tool = createTranscribeAudioTool({
       workspacePath: workspaceRoot,
       currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
       memoryAccessEnvelope: namespaceEnvelope(),
       transcriptionProvider: { id: "test", available: async () => true, transcribe },
     }, {
@@ -189,6 +230,7 @@ describe("transcribe_audio tool", () => {
     const tool = createTranscribeAudioTool({
       workspacePath: workspaceRoot,
       currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
       memoryAccessEnvelope: namespaceEnvelope(),
       transcriptionProvider: { id: "test", available: async () => true, transcribe },
     }, artifactDeps());
@@ -220,6 +262,7 @@ function artifactDeps(physicalPath = artifactPath): TranscribeAudioToolDeps {
       physicalPath,
       logicalPath,
     }),
+    assertCanUseServerProviderCredentials: async () => {},
   };
 }
 

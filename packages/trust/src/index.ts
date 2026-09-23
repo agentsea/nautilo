@@ -130,6 +130,9 @@ export {
 export {
   CAP_MANAGE_SERVER_SECURITY,
   CAP_INVOKE_AGENTS,
+  CAP_INVOKE_OTHER_AGENTS,
+  CAP_USE_PERSONAL_PROVIDER_CREDENTIALS,
+  CAP_USE_SERVER_PROVIDER_CREDENTIALS,
   CAP_WRITE_ARTIFACTS,
   CAP_APPROVE_SPENDING,
   CAP_MANAGE_BILLING,
@@ -321,6 +324,7 @@ export {
   type InvitableRoomRow,
   // M068 / M128 — agent / room membership management
   listAgentUsers,
+  findAgentOwnerUserId,
   findUserAgentRoleSlug,
   findUserHighestRoleSlug,
   findAgentUserByNormalizedHandle,
@@ -457,6 +461,7 @@ export {
 // M246/M254 — shared action-Capability admission and accepted-work authority.
 export {
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   assertCanWriteArtifacts,
   createAcceptedInvocationAuthority,
   assertAcceptedInvocationAuthoritySubject,
@@ -465,12 +470,15 @@ export {
   toActionCapabilityDenialDiagnostic,
   ActionCapabilityDeniedError,
   AgentInvocationDeniedError,
+  AgentInvocationTargetUnavailableError,
+  ServerProviderCredentialsDeniedError,
   ArtifactWriteDeniedError,
   type AcceptedInvocationAuthority,
   type AgentInvocationOrigin,
   type AgentInvocationAdmissionInput,
   type ArtifactWriteAdmissionInput,
   type ActionCapabilityAdmissionDeps,
+  type ServerProviderCredentialOrigin,
   type ActionCapabilityDenialCode,
   type ActionCapabilityHttpDenial,
   type ActionCapabilityDenialDiagnostic,

@@ -9,9 +9,11 @@ import {
 } from "../../src/config/model-catalog/runtime-catalog";
 import {
   ChoiceRequestError,
-  invokeOpenRouterChoice,
+  invokeOpenRouterChoice as invokeOpenRouterChoiceRaw,
   type OpenRouterChoiceInput,
 } from "../../src/providers/openrouter-choice";
+import type { DecisionDependencies } from "../../src/providers/decision-transport";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { resetVeniceCatalogCacheModuleForTests } from "../../src/config/venice-catalog-cache";
 import { recordLlmUsage, type RecordUsageInput } from "../../src/usage/record-usage";
 import { runWithUsageContext } from "../../src/usage/usage-context";
@@ -20,6 +22,18 @@ const JEV_ID = "openrouter:typesafe/jev-1.13";
 const API_KEY = "openrouter-test-key-canary";
 const PRIVATE_CANARY = "private-state-instructions-canary";
 const ROOM_ID = "11111111-1111-4111-8111-111111111111";
+const FUNDING_HUMAN_USER_ID = "22222222-2222-4222-8222-222222222222";
+
+function invokeOpenRouterChoice(
+  request: OpenRouterChoiceInput,
+  dependencies: DecisionDependencies = {},
+) {
+  return invokeOpenRouterChoiceRaw(request, {
+    fundingHumanUserId: FUNDING_HUMAN_USER_ID,
+    assertCanUseServerProviderCredentials: async () => {},
+    ...dependencies,
+  });
+}
 
 function input(overrides: Partial<OpenRouterChoiceInput> = {}): OpenRouterChoiceInput {
   return {
@@ -316,6 +330,30 @@ describe("invokeOpenRouterChoice", () => {
       }) as unknown as typeof fetch,
     }));
     expectSafeFailure(error, { code: "missing_credentials", status: null, retryable: false });
+    expect(fetchCalls).toBe(0);
+  });
+
+  test("missing causal Human fails closed before funding lookup or provider fetch", async () => {
+    let fundingChecks = 0;
+    let fetchCalls = 0;
+    const error = await invokeOpenRouterChoiceRaw(input(), {
+      apiKey: API_KEY,
+      fundingHumanUserId: "",
+      assertCanUseServerProviderCredentials: async () => {
+        fundingChecks += 1;
+      },
+      fetch: (async () => {
+        fetchCalls += 1;
+        return Response.json(successPayload());
+      }) as unknown as typeof fetch,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ServerProviderCredentialsDeniedError);
+    expect(error).toMatchObject({
+      code: "server_provider_credentials_required",
+      humanUserId: "",
+      origin: "decision_model",
+    });
+    expect(fundingChecks).toBe(0);
     expect(fetchCalls).toBe(0);
   });
 

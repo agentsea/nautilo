@@ -50,6 +50,8 @@ const taskDeps = (db: DirectDatabase) => ({
     ownerId: "11111111-1111-1111-1111-111111111111",
   }),
   admission: getPlaintextTaskCreationAdmission(),
+  assertInvocation: async () => {},
+  assertServerFunding: async () => {},
 });
 
 describe("computeNextFireAt (M146)", () => {

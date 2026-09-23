@@ -19,6 +19,7 @@ import {
   getRelayRegistry,
 } from "@nautilo/agent";
 import {
+  assertCanInvokeAgent,
   envelopeReadableNamespaces,
   envelopeWritableNamespaces,
   loadUserTimezone,
@@ -270,6 +271,12 @@ export async function executeAgentMediatedRoomMessage(args: {
   const laneKey = args.canonicalLaneKey ?? ctxLaneKey ?? args.clientLaneKey ?? "app:default";
 
   const roomId = args.canonicalRoomId ?? request.memoryEnvelope?.roomId ?? "";
+  await (args.deps.assertInvocation ?? assertCanInvokeAgent)({
+    humanUserId: sessionUserId,
+    origin: "room_message",
+    agentId,
+    ...(roomId ? { roomId } : {}),
+  });
 
   const graphThreadId =
     args.canonicalGraphThreadId ?? request.policyContext?.graphThreadId ?? laneKey;

@@ -4,6 +4,7 @@ import { searchSessions } from "../../store/session-store";
 import { fromRuntimeConfig } from "@nautilo/config";
 interface SessionSearchContext {
   ownerId?: string;
+  causalHumanUserId?: string;
   personaId?: string;
   currentThreadId?: string;
 }
@@ -28,6 +29,7 @@ Returns summarized results grouped by session, not raw transcript dumps.`,
         const config = fromRuntimeConfig();
         const results = await searchSessions({
           ownerId: context?.ownerId ?? "00000000-0000-0000-0000-000000000000",
+          humanUserId: context?.causalHumanUserId ?? "",
           personaId: context?.personaId ?? "owner",
           query,
           limit: limit ?? config.nautilo_session_search_limit,

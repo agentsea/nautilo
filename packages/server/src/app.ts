@@ -2774,11 +2774,12 @@ export async function createApp(options?: CreateAppOptions) {
         (await service.isConnected(scope)) ? service.providerId : null));
       return providerIds.filter((providerId): providerId is NonNullable<typeof providerId> => providerId !== null);
     },
-    execute: (input) => {
+    execute: async (input) => {
       const service = connectedAppServices.find((candidate) => candidate.providerId === input.providerId);
       if (!service) throw new Error("CONNECTED_APP_PROVIDER_NOT_FOUND");
       return service.execute({
         scope: { userId: input.userId, namespaceId: input.namespaceId },
+        causalHumanUserId: input.causalHumanUserId,
         operationId: input.operationId,
         effect: input.effect,
         args: input.input,

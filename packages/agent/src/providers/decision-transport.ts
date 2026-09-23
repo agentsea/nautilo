@@ -5,6 +5,12 @@ import { resolveProviderKey } from "../resolve-provider-key";
 import { recordLlmUsage } from "../usage/record-usage";
 import { getUsageContext } from "../usage/usage-context";
 import { ChoiceRequestError } from "./choice";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+  type ServerProviderCredentialOrigin,
+} from "@nautilo/trust";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 
 import { decisionStateSchema, decisionQuestionsSchema, type DecisionInput, type DecisionReceipt, type DecisionQuestion } from "./decision";
 import { isSupportedChoiceProvider } from "./choice-provider-support";
@@ -13,7 +19,10 @@ export interface DecisionDependencies {
   readonly apiKey?: string;
   readonly fetch?: typeof fetch;
   readonly recordUsage?: typeof recordLlmUsage;
+  readonly fundingHumanUserId?: string;
+  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }
+const DECISION_FUNDING_ORIGIN: ServerProviderCredentialOrigin = "decision_model";
 const TRANSPORTS = {
   openrouter: { endpoint: "https://openrouter.ai/api/alpha/decisions", envKey: "OPENROUTER_API_KEY" },
   typesafe: { endpoint: "https://api.typesafe.ai/v1/systemone", envKey: "TYPESAFE_API_KEY" },
@@ -114,6 +123,16 @@ export async function requestDecisions(
   } catch {
     throw new ChoiceRequestError("invalid_request");
   }
+  assertNotCancelled(input.signal);
+  const fundingHumanUserId = causalHumanForExecution(deps.fundingHumanUserId);
+  if (!fundingHumanUserId) {
+    throw new ServerProviderCredentialsDeniedError("", DECISION_FUNDING_ORIGIN);
+  }
+  await (deps.assertCanUseServerProviderCredentials
+    ?? assertCanUseServerProviderCredentials)(
+      fundingHumanUserId,
+      DECISION_FUNDING_ORIGIN,
+    );
   assertNotCancelled(input.signal);
   let response: Response;
   try {

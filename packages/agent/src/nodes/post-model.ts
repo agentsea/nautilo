@@ -4,6 +4,7 @@ import type { ToolCall } from "@langchain/core/messages/tool";
 import { interrupt, task } from "@langchain/langgraph";
 import { randomUUID } from "node:crypto";
 import type { NautiloState } from "../agent/state";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import type { PolicyResolver, ToolAccessDecision } from "@nautilo/trust";
 import { getToolCatalog } from "@nautilo/catalog";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
@@ -1211,7 +1212,7 @@ export function createPostModelNode(
     if (mediaEntries.length > 0) {
       if (
         mediaEntries.length !== 1 || askBatch.length !== 1 ||
-        !state.userId || !state.roomId || !state.agentId
+        !causalHumanForExecution(state.causalHumanUserId) || !state.roomId || !state.agentId
       ) {
         for (let i = askBatch.length - 1; i >= 0; i--) {
           if (isMediaGenerationToolCall(askBatch[i]!.tc)) {
@@ -1235,7 +1236,7 @@ export function createPostModelNode(
         } else {
           try {
             const result = await prepareMediaGenerationApproval({
-              actor: { userId: state.userId, roomId: state.roomId, agentId: state.agentId },
+              actor: { userId: causalHumanForExecution(state.causalHumanUserId), roomId: state.roomId, agentId: state.agentId },
               intent: entry.tc.args,
               toolName: entry.tc.name === "generate_music" ? "generate_music" : "generate_video",
               approvalId,

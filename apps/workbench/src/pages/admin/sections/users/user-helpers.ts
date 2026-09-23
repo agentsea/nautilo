@@ -44,16 +44,18 @@ const ROLE_LADDER_RANK: Record<string, number> = {
   superuser: 2,
   member: 3,
   contributor: 4,
-  guest: 5,
+  community: 5,
+  guest: 6,
 };
 
-/** The six canonical server groups, highest-privilege first. */
+/** The canonical server groups, highest-privilege first. */
 const CANONICAL_GROUP_TYPES = [
   "owners",
   "admins",
   "superusers",
   "members",
   "contributors",
+  "communities",
   "guests",
 ] as const;
 
@@ -119,7 +121,7 @@ export function groupRoleSlug(group: GroupRow): string {
 }
 
 /**
- * The canonical six groups, ordered highest-privilege first. Filters out any
+ * The canonical groups, ordered highest-privilege first. Filters out any
  * non-canonical rows so the membership matrix only ever shows the fixed ladder.
  */
 export function orderedCanonicalGroups(groups: GroupRow[]): GroupRow[] {

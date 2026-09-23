@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   DeepResearchUnavailableError,
   configureRuntimeModelCatalog,
+  getUsageContext,
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "@nautilo/agent";
@@ -10,8 +11,10 @@ import type { ServerEvent } from "@nautilo/types";
 import {
   deliverDeepResearchReport,
   DeepResearchSearchUnavailableError,
+  _setDeepResearchReportStreamForTests,
   deepResearchExecutor,
   resolveDeepResearchExecutorConfiguration,
+  streamDeepResearchReport,
 } from "../../src/executors/deep-research-executor";
 
 const modelIds = [
@@ -77,7 +80,31 @@ describe("M293 background Deep Research admission", () => {
     await hydrateRuntimeModelCatalog();
   });
 
-  afterEach(() => resetRuntimeModelCatalog());
+  afterEach(() => {
+    _setDeepResearchReportStreamForTests(null);
+    resetRuntimeModelCatalog();
+  });
+
+  test("runs every report stream step as the exact initiating Human", async () => {
+    const observedUserIds: Array<string | null | undefined> = [];
+    _setDeepResearchReportStreamForTests(async function* () {
+      observedUserIds.push(getUsageContext()?.userId);
+      yield { phase: "researching" };
+      observedUserIds.push(getUsageContext()?.userId);
+      return "report";
+    });
+
+    const stream = streamDeepResearchReport(
+      {},
+      "job-deep-research",
+      new AbortController().signal,
+      "human-deep-research",
+    );
+    expect(await stream.next()).toEqual({ done: false, value: { phase: "researching" } });
+    expect(await stream.next()).toEqual({ done: true, value: "report" });
+
+    expect(observedUserIds).toEqual(["human-deep-research", "human-deep-research"]);
+  });
 
   test("rehydrates and revalidates the exact admitted OpenRouter plan", () => {
     const configuration = resolveDeepResearchExecutorConfiguration(

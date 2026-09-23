@@ -65,6 +65,7 @@ async function dispatch(overrides: Partial<Task> = {}) {
     db: {} as DirectDatabase,
     resolver: { buildEnvelope: async () => envelope } as unknown as PolicyResolver,
     assertInvocation: async () => {},
+    assertServerFunding: async () => {},
     jobManager: { createForegroundJob: async (_owner, _requestor, _lane, input) => {
       jobs.push(input);
       return { id: "job-model-fixture", virtualJobId: "job-model-fixture" };

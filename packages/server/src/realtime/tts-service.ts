@@ -10,6 +10,7 @@ import { voiceDelivery, type VoiceAudience } from "./voice-delivery";
 import { SpeechCapacity } from "./speech-capacity";
 import { dialogueSpeechResponse, type DialogueSpeechRequest } from "./dialogue-speech";
 import { safelyRecordProviderCost, type ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 
 const VOICE_SETTINGS = { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 };
 // Jessica is used only when the Genie has no usable voice assignment.
@@ -30,6 +31,10 @@ export interface TtsServiceDependencies {
   fetch(input: string, init: RequestInit): Promise<Response>;
   dialogue(request: DialogueSpeechRequest): Promise<Response>;
   apiKey(): string | undefined;
+  assertCanUseServerProviderCredentials(
+    humanUserId: string,
+    origin?: string,
+  ): Promise<void>;
   record(receipt: ServerProviderCostReceipt): Promise<void>;
   observe(metric: { streamId: string; stage: "admitted" | "first_audio" | "network_end" | "playback_end" | "aborted"; elapsedMs: number; audioBytes: number }): void;
 }
@@ -54,6 +59,7 @@ export class TtsService {
       fetch: (...args) => fetch(...args),
       dialogue: dialogueSpeechResponse,
       apiKey: () => process.env["ELEVENLABS_API_KEY"]?.trim(),
+      assertCanUseServerProviderCredentials,
       record: safelyRecordProviderCost,
       observe: metric => log(`[speech] ${JSON.stringify(metric)}`),
       ...deps,
@@ -230,6 +236,11 @@ export class TtsService {
     let release: (() => void) | undefined;
     try {
       release = await this.capacity.acquire(turn.abort.signal);
+      if (turn.abort.signal.aborted) return;
+      await this.deps.assertCanUseServerProviderCredentials(
+        turn.userId,
+        "realtime_text_to_speech",
+      );
       if (turn.abort.signal.aborted) return;
       submitted = true;
       const response = model.speech.transport === "elevenlabs-dialogue-http"

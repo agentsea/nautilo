@@ -1,7 +1,7 @@
 import { beforeEach, expect, mock, test } from "bun:test";
 import type { DirectDatabase, Task, TaskRun, PersistedJobRecord } from "@nautilo/db";
 import type { OrdinaryContentAccessRecoveryCoordinate } from "@nautilo/agent";
-import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import { createAcceptedInvocationAuthority, ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { createMaintenanceAcceptanceAuthority } from "../../src/maintenance-controller";
 import { InMemoryLaneLock } from "../../src/lane-lock";
 
@@ -52,7 +52,8 @@ const db = { select: () => ({ from: (table: unknown) => {
 } }) } as unknown as DirectDatabase;
 const lock = new InMemoryLaneLock();
 const admission = mock(async () => {});
-const deps = { db, lock, assertInvocation: admission,
+const funding = mock(async () => {});
+const deps = { db, lock, assertInvocation: admission, assertServerFunding: funding,
   actorForOwner: async () => ({ id: "actor" } as NonNullable<Awaited<ReturnType<typeof import("@nautilo/trust")["findActorByOwnerId"]>>>),
   graph: { ordinaryContentAccessForState: () => ({ mode: "plaintext_only" as const }) },
   manager: { hasTaskContentAccessRecoveryWorker: () => liveWorker,
@@ -68,7 +69,15 @@ beforeEach(() => {
     targetChat: "last_dm", status: "awaiting", metadata: {}, scheduleKind: "now" } as Task;
   run = { id: "run", taskId: "task", status: "awaiting", graphThreadId: "thread", jobId: "original-job" } as TaskRun;
   available = true; advance = undefined; reparked = false; liveWorker = false; originalStatus = "failed";
-  for (const fn of [read, resume, completed, failure, transitions, admission, repair]) fn.mockClear();
+  for (const fn of [read, resume, completed, failure, transitions, admission, funding, repair]) fn.mockClear();
+  funding.mockImplementation(async () => {});
+});
+
+test("revoked funding stops recovery before reading the checkpoint or resuming the provider", async () => {
+  funding.mockImplementation(async () => { throw new ServerProviderCredentialsDeniedError("human"); });
+  expect(discoverTaskContentAccessRecovery("task", "human", deps)).rejects.toBeInstanceOf(ServerProviderCredentialsDeniedError);
+  expect(read).not.toHaveBeenCalled();
+  expect(resume).not.toHaveBeenCalled();
 });
 
 test("restart discovery uses exact durable TaskRun and no public command/token", async () => {

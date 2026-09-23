@@ -11,7 +11,11 @@ import {
   type DirectDatabase,
 } from "@nautilo/db";
 import { parseDesktopAutomationOpaqueId } from "@nautilo/types";
-import type { BrowserUseCloudAdapter } from "../browser-use/browser-use-cloud";
+import {
+  canUseBrowserUseServerFunding,
+  type BrowserUseCloudAdapter,
+  type BrowserUseServerFundingAdmission,
+} from "../browser-use/browser-use-cloud";
 import {
   createConnectedWebAccountReadServerRuntime,
   type ConnectedWebAccountReadPolicy,
@@ -151,6 +155,7 @@ export interface ConnectedWebAccountReadProductionRuntimeOptions {
   readonly policy: ConnectedWebAccountReadPolicy;
   /** Null before server listen; only the listener may load durable secret material. */
   readonly secrets: () => ConnectedWebOperationSecrets | null;
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 /** Workspace remains on the existing terminal artifact-custody path. */
@@ -177,6 +182,7 @@ export function createConnectedWebAccountReadProductionRuntime(
     provider: options.provider,
     policy: { maxCostUsd: options.policy.maxCostUsd },
     secrets: options.secrets,
+    ...(options.assertServerFunding === undefined ? {} : { assertServerFunding: options.assertServerFunding }),
   });
   // Workspace import still completes only in the established synchronous
   // custody path. Do not return an active receipt until terminal artifact
@@ -196,9 +202,17 @@ export function createConnectedWebAccountReadProductionRuntime(
     listAvailable: (actor) => asynchronousText.listAvailable(actor),
     publicAvailable: () => options.provider.health().kind === "available" && options.secrets() !== null,
     readPublic: (actor, input) => asynchronousText.readPublic!(actor, input),
-    read: (actor, input) => input.intent === "task" || usesAsyncConnectedWebReadAdmission(input.delivery)
-      ? asynchronousText.read(actor, input)
-      : synchronousWorkspace.read(actor, input),
+    read: async (actor, input) => {
+      if (input.intent === "task" || usesAsyncConnectedWebReadAdmission(input.delivery)) {
+        return asynchronousText.read(actor, input);
+      }
+      if (!await canUseBrowserUseServerFunding(
+        actor.causalHumanUserId ?? "",
+        "connected_web_workspace_read",
+        options.assertServerFunding,
+      )) return { ok: false, code: "unavailable", recovery: "none" };
+      return synchronousWorkspace.read(actor, input);
+    },
   };
 }
 
@@ -207,13 +221,14 @@ export interface ConnectedWebAccountActionProductionRuntimeOptions {
   readonly store: ConnectedWebAccountStore;
   readonly provider: BrowserUseCloudAdapter;
   readonly policy: ConnectedWebAccountActionPolicy;
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 /** Reuses the exact Phase 1 owned-Genie + private-Room admission facts. */
 export function createConnectedWebAccountActionProductionRuntime(
   options: ConnectedWebAccountActionProductionRuntimeOptions,
 ): ConnectedWebAccountActionServerRuntime {
-  return createConnectedWebAccountActionServerRuntime({
+  const runtime = createConnectedWebAccountActionServerRuntime({
     facts: {
     hasExactOwnedGenie: (input) => hasExactOwnedConnectedWebGenie(options.db, input),
       isOwnersPersonalPrivateRoom: (input) => isOwnersPersonalConnectedWebPrivateRoom(options.db, input),
@@ -230,6 +245,17 @@ export function createConnectedWebAccountActionProductionRuntime(
     policy: options.policy,
     recordProviderCost: (input) => insertProviderCostEventWith(options.db, input),
   });
+  const unavailable = { ok: false, code: "unavailable", recovery: "none" } as const;
+  return {
+    listAvailable: (actor) => runtime.listAvailable(actor),
+    act: async (actor, input) => await canUseBrowserUseServerFunding(
+      actor.causalHumanUserId ?? "", "connected_web_action", options.assertServerFunding,
+    ) ? runtime.act(actor, input) : unavailable,
+    resumeAfterAuthentication: async (actor, input) => await canUseBrowserUseServerFunding(
+      actor.causalHumanUserId ?? "", "connected_web_action_resume", options.assertServerFunding,
+    ) ? runtime.resumeAfterAuthentication(actor, input) : unavailable,
+    cancelAuthentication: (actor, input) => runtime.cancelAuthentication(actor, input),
+  };
 }
 
 export interface ConnectedWebOperationManagementProductionRuntimeOptions {
@@ -239,13 +265,14 @@ export interface ConnectedWebOperationManagementProductionRuntimeOptions {
   readonly secrets: ConnectedWebOperationManagementSecrets;
   readonly continuationModel: string;
   readonly direct?: ConnectedWebOperationDirectRuntime;
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 /** Reuses the exact current DB authority facts used by website reads/actions. */
 export function createConnectedWebOperationManagementProductionRuntime(
   options: ConnectedWebOperationManagementProductionRuntimeOptions,
 ): ConnectedWebOperationToolRuntime {
-  return createConnectedWebOperationManagementServerRuntime({
+  const runtime = createConnectedWebOperationManagementServerRuntime({
     facts: {
       canResearchPublic: (actor: ConnectedWebAccountReadRuntimeActor, toolName?: "browse_web" | "run_website_task") => canResearchPublicWebsite(options.db, actor, toolName),
     hasExactOwnedGenie: (input) => hasExactOwnedConnectedWebGenie(options.db, input),
@@ -257,4 +284,13 @@ export function createConnectedWebOperationManagementProductionRuntime(
     continuationModel: options.continuationModel,
     ...(options.direct === undefined ? {} : { direct: options.direct }),
   });
+  return {
+    manage: async (actor, input) => input.operation !== "steer" || await canUseBrowserUseServerFunding(
+      actor.causalHumanUserId ?? "",
+      "connected_web_operation_steer",
+      options.assertServerFunding,
+    )
+      ? runtime.manage(actor, input)
+      : { ok: false, code: "unavailable", recovery: "none" },
+  };
 }

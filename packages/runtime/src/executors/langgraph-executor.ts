@@ -845,6 +845,7 @@ export async function* langgraphExecutor(
   // use the model too, so they deliberately run after Message, Journal,
   // Reflection, and Memory context has passed the Strict gate above.
   const visionSummaryBlocks = await maybeSummarizeImagesWithVisionFallback({
+    humanUserId: causalHumanUserId ?? "",
     mainModelId: modelId,
     images: multimodalImages,
     signal,

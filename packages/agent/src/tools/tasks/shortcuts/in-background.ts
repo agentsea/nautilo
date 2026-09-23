@@ -85,6 +85,7 @@ export function createInBackgroundTool(context?: unknown) {
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start background task: missing owner or agent context.";
       }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       const rt = getTaskToolRuntime();
       const lineage = await resolveTaskToolCreateLineage({
         ownerId: ctx.ownerId,
@@ -106,7 +107,7 @@ export function createInBackgroundTool(context?: unknown) {
         }
         const input: TaskToolHarnessCreateInput = {
           ownerId: ctx.ownerId,
-          requestorId: ctx.ownerId,
+          requestorId: ctx.causalHumanUserId,
           agentId: ctx.agentId,
           prompt: args.brief,
           preset: "in_background",
@@ -158,7 +159,7 @@ export function createInBackgroundTool(context?: unknown) {
       if (selectionError) return selectionError;
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
-        requestorId: ctx.ownerId,
+        requestorId: ctx.causalHumanUserId,
         agentId: ctx.agentId,
         prompt: args.brief,
         preset: "in_background",
@@ -168,7 +169,7 @@ export function createInBackgroundTool(context?: unknown) {
         resultDelivery: args.result_delivery ?? "raw_and_wake",
         awaitResponse: false,
         callingRoomId: ctx.roomId || null,
-        targetUserIds: [ctx.ownerId],
+        targetUserIds: [ctx.causalHumanUserId],
         ...(lineage.parentTaskId ? { parentTaskId: lineage.parentTaskId } : {}),
         depth: lineage.depth,
         ...(args.model_selection !== undefined

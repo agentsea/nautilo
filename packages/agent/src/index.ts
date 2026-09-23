@@ -163,6 +163,7 @@ export {
   getCurrentInitiatingClientSurface,
   runWithInitiatingClientSurface,
 } from "./runtime/initiating-client-surface-context";
+export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
 export {
   runScopeSubagentUntilPause,
   extractTaskProgressFromStreamEvent,

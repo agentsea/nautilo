@@ -11,6 +11,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { voicePreviewPathForCustomText } from "@nautilo/voice";
 import type { ViewerRole } from "@nautilo/types";
 import type { VoiceCatalogPersistentCache } from "../../src/routes/voices";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import {
   FakeVoiceCatalogCache,
   multilingualOnlyVoice,
@@ -106,12 +107,23 @@ describe("voice catalog routes", () => {
 
   function createVoicesRouteApp(
     catalogCache: VoiceCatalogPersistentCache | null,
-    input: { viewerRole?: ViewerRole; sessionUserId?: string | null } = {},
+    input: {
+      viewerRole?: ViewerRole;
+      sessionUserId?: string | null;
+      serverFunding?: boolean;
+    } = {},
   ): FastifyInstance {
     const app = Fastify({ logger: false });
     app.decorateRequest("policyContext", null);
     app.decorateRequest("sessionUserId", null);
-    voiceRoutes(app, { catalogCache });
+    voiceRoutes(app, {
+      catalogCache,
+      assertCanUseServerProviderCredentials: async (humanUserId) => {
+        if (input.serverFunding === false) {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, "voice_test");
+        }
+      },
+    });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = input.sessionUserId === undefined ? "ordinary-user" : input.sessionUserId;
       request.policyContext = {
@@ -316,6 +328,30 @@ describe("voice catalog routes", () => {
       expect(body.cachedAt).toBeNull();
       expect(res.body).not.toContain("test-provider-secret");
       expect(res.body).not.toContain("upstream account detail");
+    } finally {
+      if (previousKey !== undefined) process.env["ELEVENLABS_API_KEY"] = previousKey;
+      else delete process.env["ELEVENLABS_API_KEY"];
+    }
+  });
+
+  test("GET /api/voices denies provider hydration before dispatch without server funding", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    let providerCalls = 0;
+    try {
+      process.env["ELEVENLABS_API_KEY"] = "test-provider-key";
+      globalThis.fetch = Object.assign(async () => {
+        providerCalls += 1;
+        return new Response("unexpected", { status: 500 });
+      }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+      const app = createVoicesRouteApp(null, { viewerRole: "owner", serverFunding: false });
+      const res = await app.inject({ method: "GET", url: "/api/voices", remoteAddress: "203.0.113.10" });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({
+        error: "server_provider_credentials_required",
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+      expect(providerCalls).toBe(0);
     } finally {
       if (previousKey !== undefined) process.env["ELEVENLABS_API_KEY"] = previousKey;
       else delete process.env["ELEVENLABS_API_KEY"];

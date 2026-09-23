@@ -6,6 +6,8 @@ import {
   createToolProviderCostRecorder,
 } from "../../../usage/provider-cost-recorder";
 import { estimateProviderToolCostUsd } from "@nautilo/db";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import { assertDeepResearchServerFunding } from "../shared/funding";
 
 export type SearchProvider = "tavily" | "openai" | "anthropic" | "duckduckgo" | "exa" | "none";
 
@@ -35,6 +37,7 @@ export function buildSearchTool(cfg: Configuration, _callbacks?: unknown[]): Sea
 function buildTavilySearch(cfg: Configuration): SearchTool {
   return async (query: string): Promise<SearchResults> => {
     try {
+      await assertDeepResearchServerFunding("deep_research_tavily");
       const tavilyModule = await import("@langchain/tavily");
       const TavilySearchCtor = (tavilyModule as Record<string, unknown>)["TavilySearch"] as
         | (new (c: Record<string, unknown>) => { invoke: (input: unknown) => Promise<unknown> })
@@ -69,7 +72,8 @@ function buildTavilySearch(cfg: Configuration): SearchTool {
         });
       }
       return { provider: "tavily", query, items: parseTavilyResults(rawResults) };
-    } catch {
+    } catch (error) {
+      if (error instanceof ServerProviderCredentialsDeniedError) throw error;
       return { provider: "tavily", query, items: [] };
     }
   };

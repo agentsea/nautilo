@@ -7,6 +7,7 @@ import type {
   BrowserUseResult,
 } from "../browser-use/browser-use-cloud";
 import { createHash } from "node:crypto";
+import { isUuidString } from "@nautilo/trust";
 import { connectedWebActivityFromEvents } from "./activity-ledger";
 import { connectedWebRunCost } from "./operation-cost";
 import type {
@@ -215,9 +216,10 @@ function parseSealedReadIntent(operation: ConnectedWebOperation, raw: string | n
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const intent = value as Record<string, unknown>;
   const keys = Object.keys(intent).filter((key) => key !== "voiceMode" && !(operation.accountId === null && key === "targetUrl")).sort();
-  const expected = ["delivery", "deliveryId", "kind", "lane", "origin", "request", "threadId", "turnId", "version"];
+  const expected = ["delivery", "deliveryId", "fundingHumanUserId", "kind", "lane", "origin", "request", "threadId", "turnId", "version"];
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])
-    || intent["version"] !== 1 || (intent["kind"] !== "run_website_task" && intent["kind"] !== (operation.accountId === null ? "browse_web" : "read_connected_web_account")) || intent["delivery"] !== "text"
+    || intent["version"] !== 2 || typeof intent["fundingHumanUserId"] !== "string" || !isUuidString(intent["fundingHumanUserId"])
+    || (intent["kind"] !== "run_website_task" && intent["kind"] !== (operation.accountId === null ? "browse_web" : "read_connected_web_account")) || intent["delivery"] !== "text"
     || typeof intent["origin"] !== "string" || intent["origin"].trim().length === 0
     || typeof intent["request"] !== "string" || intent["request"].trim().length === 0
     || intent["deliveryId"] !== operation.deliveryId || intent["threadId"] !== operation.initiatingThreadId

@@ -8,6 +8,9 @@ import { MAX_SUBAGENT_DEPTH } from "@nautilo/agent";
 import { nextCronOccurrence } from "./cron";
 import {
   assertAcceptedInvocationAuthoritySubject,
+  assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
+  type AgentInvocationAdmissionInput,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
@@ -32,6 +35,9 @@ export interface CreateTaskDeps {
   provenance: TaskCreationProvenance;
   /** Lattice-selected admission. Plain uses the inert ordinary port. */
   admission: TaskCreationAdmissionPort<unknown>;
+  /** Fresh exact-target RBAC check before a durable Task is created. */
+  assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
 }
 
 /**
@@ -92,6 +98,16 @@ export async function createTask(
   }
   assertAcceptedInvocationAuthoritySubject(invocationAuthority, input.requestorId);
   assertTaskCreationProvenance(deps.provenance, input.ownerId);
+  await (deps.assertInvocation ?? assertCanInvokeAgent)({
+    humanUserId: input.requestorId,
+    origin: "task_create",
+    agentId: input.agentId,
+    ...(input.targetRoomId ? { roomId: input.targetRoomId } : {}),
+  });
+  await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+    input.requestorId,
+    "task_create",
+  );
 
   const admission = await deps.admission.admit({
     db: deps.db,

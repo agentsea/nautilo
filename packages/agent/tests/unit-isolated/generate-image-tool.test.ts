@@ -14,6 +14,7 @@ import { setWorkspaceArtifactCreatedSink } from "../../src/tools/file/artifact-s
 // inner fn with a stub conn (the test mocks `insertArtifact` /
 // `attachArtifactToNamespace` directly on `@nautilo/db`).
 const MOCK_CONN = {} as never;
+const CAUSAL_HUMAN_USER_ID = "40000000-0000-4000-8000-000000000004";
 
 let artifactsRoot: string;
 let nautiloArtifactsBackup: string | undefined;
@@ -59,6 +60,8 @@ beforeEach(() => {
   restores.push(() => spTrust.mockRestore());
   const spWrite = spyOn(trust, "assertCanWriteArtifacts").mockResolvedValue();
   restores.push(() => spWrite.mockRestore());
+  const spFunding = spyOn(trust, "assertCanUseServerProviderCredentials").mockResolvedValue();
+  restores.push(() => spFunding.mockRestore());
 });
 
 afterEach(() => {
@@ -80,6 +83,36 @@ afterEach(() => {
 });
 
 describe("generate_image tool", () => {
+  test("denies before image provider dispatch when the initiating Human lacks server funding", async () => {
+    const generate = mock(async () => ({
+      bytes: [Buffer.from("must-not-run")],
+      model: "gpt-image-2",
+      mime: "image/png",
+    }));
+    mock.module("../../src/image-gen/index.ts", () => ({ generateImages: generate }));
+    process.env["VENICE_API_KEY"] = "vk-test";
+    const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
+    const tool = createGenerateImageTool(
+      { memoryAccessEnvelope: mkEnvelope(), causalHumanUserId: CAUSAL_HUMAN_USER_ID },
+      {
+        assertCanUseServerProviderCredentials: async (humanUserId) => {
+          expect(humanUserId).toBe(CAUSAL_HUMAN_USER_ID);
+          throw new trust.ServerProviderCredentialsDeniedError(
+            CAUSAL_HUMAN_USER_ID,
+            "image_generation",
+          );
+        },
+      },
+    );
+
+    const denial = await tool.invoke({ prompt: "must not spend" }).catch((error: unknown) => error);
+    expect(denial).toMatchObject({
+      code: "server_provider_credentials_required",
+      humanUserId: CAUSAL_HUMAN_USER_ID,
+    });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   test("default args call the catalog-selected Venice adapter with gpt-image-2", async () => {
     const calls: unknown[][] = [];
     mock.module("../../src/image-gen/index.ts", () => ({
@@ -102,7 +135,7 @@ describe("generate_image tool", () => {
     restores.push(() => spAttach.mockRestore());
 
     const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
-    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope() });
+    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope(), causalHumanUserId: CAUSAL_HUMAN_USER_ID });
     const out = await tool.invoke({ prompt: "a red circle" });
     expect(typeof out).toBe("string");
     const parsed = JSON.parse(out) as {
@@ -151,7 +184,7 @@ describe("generate_image tool", () => {
     restores.push(() => spAttach.mockRestore());
 
     const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
-    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope() });
+    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope(), causalHumanUserId: CAUSAL_HUMAN_USER_ID });
     const out = await tool.invoke({
       prompt: "an infinite city",
       model: "venice:seedream-v5-pro",
@@ -196,7 +229,7 @@ describe("generate_image tool", () => {
     const creationFacts: unknown[] = [];
     setWorkspaceArtifactCreatedSink((fact) => { creationFacts.push(fact); });
     const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
-    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope() });
+    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope(), causalHumanUserId: CAUSAL_HUMAN_USER_ID });
     const out = await tool.invoke({ prompt: "triptych", count: 3, filename: "panel" });
     const parsed = JSON.parse(out) as {
       images?: Array<{ artifactId: string; path: string; bytes: number }>;
@@ -241,7 +274,7 @@ describe("generate_image tool", () => {
     for (const key of IMAGE_PROVIDER_KEYS) delete process.env[key];
 
     const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
-    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope() });
+    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope(), causalHumanUserId: CAUSAL_HUMAN_USER_ID });
     const out = await tool.invoke({ prompt: "x" });
     expect(out).toBe("Error: No configured, credentialed image-generation model is runnable.");
   });
@@ -265,7 +298,7 @@ describe("generate_image tool", () => {
       writableNamespaces: [],
       toolPolicy: {},
     };
-    const tool = createGenerateImageTool({ memoryAccessEnvelope: badEnvelope });
+    const tool = createGenerateImageTool({ memoryAccessEnvelope: badEnvelope, causalHumanUserId: CAUSAL_HUMAN_USER_ID });
     const out = await tool.invoke({ prompt: "x" });
     expect(out).toContain("no writable namespace for new workspace artifacts");
   });

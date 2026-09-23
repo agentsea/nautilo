@@ -10,6 +10,7 @@ import { taskReadResponseByteBudget, estimateTokenCount } from "../utils/history
 import type { HumanMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { NautiloState } from "../agent/state";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { fromRuntimeConfig } from "@nautilo/config";
 import {
   getCachedServerModelConfigRow,
@@ -113,6 +114,7 @@ export async function agentNode(
   const toolContext = {
     ...await ordinaryContentAccessToolContextForState(state, ordinaryContentAccessForState),
     ownerId: state.userId,
+    causalHumanUserId: causalHumanForExecution(state.causalHumanUserId),
     personaId: state.personaId,
     currentThreadId: state.currentThreadId,
     actorRole: state.actorRole,
@@ -241,7 +243,7 @@ export async function agentNode(
   const { response, modelUsed } = await runWithUsageContext(
     {
       callType: usageCallType,
-      userId: state.userId ?? null,
+      userId: causalHumanForExecution(state.causalHumanUserId) || null,
       roomId: state.roomId ?? null,
       metadata: {
         ...(state.agentId ? { agentId: state.agentId } : {}),
@@ -260,6 +262,7 @@ export async function agentNode(
         fallbackLaneKey,
         invocationConfig,
         {
+          fundingHumanUserId: state.causalHumanUserId ?? "",
           reasoningOverrides,
           useOpenAIResponsesApi: true,
           modelFallbackMode: state.modelFallbackMode ?? "agent_chain",

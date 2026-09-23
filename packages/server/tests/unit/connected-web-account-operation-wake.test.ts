@@ -6,6 +6,18 @@ import {
   deliverConnectedWebOperationWakes,
 } from "../../src/connected-web-accounts/operation-wake";
 
+const authorizedWake = {
+  assertInvocation: async () => {},
+  assertServerFunding: async () => {},
+  secrets: { unsealIntent: () => JSON.stringify({
+    version: 2, kind: "read_connected_web_account",
+    fundingHumanUserId: "77777777-7777-4777-8777-777777777777",
+    deliveryId: "delivery-1",
+    threadId: "room:55555555-5555-4555-8555-555555555555:bot:44444444-4444-4444-8444-444444444444",
+    lane: "room:55555555-5555-4555-8555-555555555555:user:22222222-2222-4222-8222-222222222222:bot:44444444-4444-4444-8444-444444444444",
+  }) },
+};
+
 const operation: ConnectedWebOperation = {
   id: "11111111-1111-4111-8111-111111111111",
   ownerUserId: "22222222-2222-4222-8222-222222222222",
@@ -16,7 +28,7 @@ const operation: ConnectedWebOperation = {
   initiatingLane: "room:55555555-5555-4555-8555-555555555555:user:22222222-2222-4222-8222-222222222222:bot:44444444-4444-4444-8444-444444444444",
   deliveryId: "delivery-1",
   requestDigest: "a".repeat(64),
-  sealedIntent: "sealed:v1:not-visible",
+  sealedIntent: "sealed:v2:not-visible",
   actionOperationId: null,
   effectIdempotencyKey: null,
   driver: "hosted",
@@ -48,6 +60,7 @@ describe("D568 exact initiating-Genie operation wakes", () => {
     const acceptedInputs: Record<string, unknown>[] = [];
     const completed: Record<string, unknown>[] = [];
     const result = await deliverConnectedWebOperationWakes({
+      ...authorizedWake,
       db: {} as never,
       workerId: "wake-worker",
       now: () => new Date("2030-01-01T00:00:02.000Z"),
@@ -78,7 +91,7 @@ describe("D568 exact initiating-Genie operation wakes", () => {
     expect(acceptedInputs).toHaveLength(1);
     expect(acceptedInputs[0]).toMatchObject({
       ownerId: operation.ownerUserId,
-      requestorId: operation.ownerUserId,
+      requestorId: "77777777-7777-4777-8777-777777777777",
       agentId: operation.initiatingAgentId,
       roomId: operation.initiatingRoomId,
       graphThreadId: operation.initiatingThreadId,
@@ -97,7 +110,7 @@ describe("D568 exact initiating-Genie operation wakes", () => {
     expect(acceptedInputs[0]?.["message"]).toContain("call skip with no target_handle");
     expect(acceptedInputs[0]?.["message"]).toContain("Inspect the latest evidence and take any needed control action");
     expect(acceptedInputs[0]?.["message"]).toContain("Do not start another read");
-    expect(safe).not.toMatch(/sealed:v1|sealed:run|profile|provider|https?:\/\/|cdp|cookie|intent/iu);
+    expect(safe).not.toMatch(/sealed:v2|sealed:run|profile|provider|https?:\/\/|cdp|cookie|intent/iu);
   });
 
   test("is explicitly at-least-once if acceptance succeeds but durable completion loses the race", async () => {
@@ -115,9 +128,11 @@ describe("D568 exact initiating-Genie operation wakes", () => {
       release: async () => true,
     };
     const first = await deliverConnectedWebOperationWakes({
+      ...authorizedWake,
       db: {} as never, workerId: "wake-worker", resolveEnvelope: async () => ({ fresh: true }), jobs, operations,
     });
     const retry = await deliverConnectedWebOperationWakes({
+      ...authorizedWake,
       db: {} as never, workerId: "wake-worker", resolveEnvelope: async () => ({ fresh: true }), jobs, operations,
     });
     expect(first).toEqual({ claimed: 1, accepted: 1, delivered: 0 });
@@ -131,6 +146,7 @@ describe("D568 exact initiating-Genie operation wakes", () => {
   test("releases the exact claimed fingerprint when foreground acceptance fails", async () => {
     const released: Record<string, unknown>[] = [];
     const result = await deliverConnectedWebOperationWakes({
+      ...authorizedWake,
       db: {} as never,
       workerId: "wake-worker",
       now: () => new Date("2030-01-01T00:00:03.000Z"),
@@ -158,6 +174,7 @@ test("queued progress is discarded before invoking the Genie when completion sup
     expected: operation,
     load: async () => ({ ...operation, lifecycle: "terminal", wakeFingerprint: "completed" }),
     resolveEnvelope: async () => { throw new Error("stale wake must not execute"); },
+    secrets: authorizedWake.secrets,
     execute: async function* (input) { calls.push(input); yield* []; },
   });
   const events = [];
@@ -173,10 +190,10 @@ test("a current wake refreshes authority and restores only the sealed initiating
     const executor = createConnectedWebOperationWakeExecutor({
       expected: operation, load: async () => current,
       resolveEnvelope: async () => ({ fresh: true }),
-      secrets: { unsealIntent: ({ context }) => { expect(context.ownerUserId).toBe(operation.ownerUserId); return JSON.stringify({ version: 1, kind: "read_connected_web_account", voiceMode }); } },
+      secrets: { unsealIntent: ({ context }) => { expect(context.ownerUserId).toBe(operation.ownerUserId); return JSON.stringify({ ...JSON.parse(authorizedWake.secrets.unsealIntent()), voiceMode }); } },
       execute: async function* (input) { calls.push(input); yield* []; },
     });
-    for await (const _event of executor({ voiceMode: true, memoryAccessEnvelope: { stale: true } }, "job", operation.initiatingLane, new AbortController().signal)) { /* drain */ }
+    for await (const _event of executor({ requestorId: "77777777-7777-4777-8777-777777777777", voiceMode: true, memoryAccessEnvelope: { stale: true } }, "job", operation.initiatingLane, new AbortController().signal)) { /* drain */ }
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ voiceMode: voiceMode === true, memoryAccessEnvelope: { fresh: true } });
     expect(calls[0]?.["message"]).toContain("Latest safe status.");

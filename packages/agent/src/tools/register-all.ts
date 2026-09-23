@@ -1277,7 +1277,7 @@ export function registerAllTools(
 
   catalog.register({
     name: "find_voice",
-    factory: () => createFindVoiceTool(),
+    factory: (ctx) => createFindVoiceTool(ctx),
     category: "media",
     discoveryCategories: ["settings"],
     trustTier: "standard",
@@ -1289,7 +1289,7 @@ export function registerAllTools(
 
   catalog.register({
     name: "audition_voices",
-    factory: () => createAuditionVoicesTool(),
+    factory: (ctx) => createAuditionVoicesTool(ctx),
     category: "media",
     discoveryCategories: ["settings"],
     trustTier: "standard",
@@ -1323,7 +1323,7 @@ export function registerAllTools(
     tags: ["audio", "transcription", "stt", "voice"],
     requiresApproval: true,
     approvalLevel: "confirm",
-    requiredCapabilities: ["use_transcription"],
+    requiredCapabilities: ["use_transcription", "use_server_provider_credentials"],
     resultScanPolicy: "on-suspicious",
   });
 
@@ -1368,7 +1368,7 @@ export function registerAllTools(
     impact: "low",
     exposure: "discoverable",
     tags: ["image", "generate", "media"],
-    requiredCapabilities: ["use_image_generation"],
+    requiredCapabilities: ["use_image_generation", "use_server_provider_credentials"],
     resultScanPolicy: "never",
   });
 
@@ -1384,7 +1384,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "destructive",
     exposure: "discoverable",
-    requiredCapabilities: ["use_media_generation"],
+    requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
     requiresApproval: true,
     approvalLevel: "prove_it",
     tags: [
@@ -1402,7 +1402,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "destructive",
     exposure: "discoverable",
-    requiredCapabilities: ["use_media_generation"],
+    requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
     requiresApproval: true,
     approvalLevel: "prove_it",
     tags: ["audio", "music", "generate", "media", "paid", "venice"],
@@ -1459,7 +1459,7 @@ export function registerAllTools(
     tags: ["soul", "personality", "identity"],
     requiresApproval: true,
     approvalLevel: "confirm",
-    requiredCapabilities: ["manage_agents"],
+    requiredCapabilities: ["manage_agents", "use_server_provider_credentials"],
     resultScanPolicy: "never",
   });
 
@@ -1572,6 +1572,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "low",
     exposure: "discoverable",
+    requiredCapabilities: ["use_server_provider_credentials"],
     tags: ["classification", "scoring", "decisions", "models"],
     isAvailable: options.decisionModelsAvailable ?? (() => listResolvedCatalogModels().some((row) => row.workload === "decision" && row.availability === "selectable")),
     unavailableReason: "Configure a supported decision provider key and enable a decision model.",
@@ -1882,7 +1883,7 @@ export function registerAllTools(
     tags: ["research", "deep", "analysis", "web"],
     requiresApproval: true,
     approvalLevel: "confirm",
-    requiredCapabilities: ["use_research_tools"],
+    requiredCapabilities: ["use_research_tools", "use_server_provider_credentials"],
     resultScanPolicy: "never",
   });
 

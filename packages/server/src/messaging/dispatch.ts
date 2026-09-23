@@ -43,7 +43,9 @@ import { log } from "@nautilo/logger";
 import type { RoomDetailPayload } from "@nautilo/trust";
 import {
   AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   createAcceptedInvocationAuthority,
   findReplyTargetAgentActorId,
   findRoomAgentResponseModes,
@@ -469,6 +471,7 @@ type GroupRoomConductorAfterPersistArgs = {
   acceptanceAuthority?: MaintenanceAcceptanceAuthority;
   /** M254 — Human invocation admission for this accepted Room turn. */
   invocationAuthority: AcceptedInvocationAuthority;
+  assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   /** D513 — same process-local registry that created the opaque handle. */
   clientActionBindingRegistry?: ReturnType<typeof getClientActionBindingRegistry>;
   /** One reservation's private surface context; never enters routing items or persistence. */
@@ -808,6 +811,8 @@ export async function dispatchRoomMessageSend(
     maintenanceGate?: MaintenanceGate;
     /** M254 — injected only by hermetic route tests. */
     assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
+    /** Injected by hermetic route tests; production reads current Human RBAC. */
+    assertCanUseServerProviderCredentials?: (humanUserId: string, origin?: string) => Promise<void>;
     /**
      * When true (POST `/api/chat` alias only): success responses use HTTP **202** for
      * every branch (including human-only) and JSON matches deprecated `SendMessageResponse`
@@ -1232,6 +1237,64 @@ export async function dispatchRoomMessageSend(
       });
     }
 
+    // This release has no personal credential route. A Human without server
+    // funding authority may still post ordinary mixed-Room history, but no
+    // Conductor or Genie may spend the instance's provider credentials.
+    try {
+      await (opts.assertCanUseServerProviderCredentials ?? assertCanUseServerProviderCredentials)(
+        sessionUserId,
+        "room_message",
+      );
+    } catch (err) {
+      if (!(err instanceof ServerProviderCredentialsDeniedError)) throw err;
+      if ((isDm && !audienceOnlyDm) || hasExplicitAgentTarget) {
+        return reply.code(403).send(toActionCapabilityHttpDenial(err));
+      }
+      return dispatchHumanOnlyRoomMessage(request, reply, {
+        detail,
+        chatDeps,
+        alias,
+        sessionUserId,
+        ...(content === undefined ? {} : { content }),
+        attachmentRefs,
+        mentionedHumanUserIds,
+        mentionEveryone,
+        workspaceArtifactExternalIds,
+        ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
+        ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
+        liveShadow: opts.body.liveShadow,
+      });
+    }
+
+    // Explicitly addressed Genies are known before persistence. Reject a
+    // foreign target here so the caller receives a small HTTP denial and no
+    // Human message is accepted as an Agent request that cannot run.
+    if (!isDm) {
+      const explicitTargets = agentMembers.filter((member) =>
+        member.agentId && (
+          member.actorId === uiSelectedBotActorId
+          || member.actorId === replyTargetActorId
+          || (typeof contentRaw === "string"
+            && typeof member.handle === "string"
+            && member.handle.length > 0
+            && parseAgentMentions(contentRaw, member.handle).hasMention)
+        ));
+      for (const target of explicitTargets) {
+        if (!target.agentId) continue;
+        try {
+          await (opts.assertCanInvokeAgent ?? assertCanInvokeAgent)({
+            humanUserId: sessionUserId,
+            origin: "room_message",
+            roomId: detail.id,
+            agentId: target.agentId,
+          });
+        } catch (err) {
+          if (!(err instanceof AgentInvocationDeniedError)) throw err;
+          return reply.code(403).send(toActionCapabilityHttpDenial(err));
+        }
+      }
+    }
+
     // Invocation Capability and maintenance are independent entrance gates.
     // Mint both opaque authorities only after both current decisions succeed.
     let acceptanceAuthority: MaintenanceAcceptanceAuthority;
@@ -1281,6 +1344,7 @@ export async function dispatchRoomMessageSend(
         // begins after this boundary check cannot reject the accepted turn.
         acceptanceAuthority,
         invocationAuthority,
+        ...(opts.assertCanInvokeAgent ? { assertCanInvokeAgent: opts.assertCanInvokeAgent } : {}),
       });
     }
 
@@ -1293,6 +1357,17 @@ export async function dispatchRoomMessageSend(
         error: "internal_error",
         detail: "agent-mediated room had no resolvable agent member id",
       });
+    }
+    try {
+      await (opts.assertCanInvokeAgent ?? assertCanInvokeAgent)({
+        humanUserId: sessionUserId,
+        origin: "room_message",
+        roomId: detail.id,
+        agentId: canonicalAgentId,
+      });
+    } catch (err) {
+      if (!(err instanceof AgentInvocationDeniedError)) throw err;
+      return reply.code(403).send(toActionCapabilityHttpDenial(err));
     }
     const canonicalLaneKey = `room:${detail.id}`;
     const canonicalRoomRoster = await chatDeps.loadRoomRoster(detail.id);
@@ -2054,6 +2129,9 @@ export async function dispatchRoomMessageSend(
           })
         : await runAgentMessage();
     } catch (err) {
+      if (err instanceof AgentInvocationDeniedError) {
+        return reply.code(403).send(toActionCapabilityHttpDenial(err));
+      }
       if (err instanceof AgentMediatedSendError) {
         return reply
           .code(err.httpStatus)
@@ -2733,6 +2811,7 @@ async function dispatchGroupRoomMessage(
     acceptanceAuthority?: MaintenanceAcceptanceAuthority;
     /** M254 — Human invocation admission for this accepted Room turn. */
     invocationAuthority: AcceptedInvocationAuthority;
+    assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   clientActionSessionId?: unknown;
     liveShadow?: unknown;
   },
@@ -3179,6 +3258,7 @@ async function dispatchGroupRoomMessage(
     // D420 — carry the HTTP-boundary acceptance authority through the async wake.
     ...(opts.acceptanceAuthority ? { acceptanceAuthority: opts.acceptanceAuthority } : {}),
     invocationAuthority: opts.invocationAuthority,
+    ...(opts.assertCanInvokeAgent ? { assertCanInvokeAgent: opts.assertCanInvokeAgent } : {}),
     ...(clientActionBindingHandle ? { clientActionBindingRegistry } : {}),
     ...(foregroundTurnCoalescingContext ? { foregroundTurnCoalescingContext } : {}),
     ...(typeof opts.clientActionSessionId === "string"
@@ -3901,7 +3981,7 @@ async function runGroupRoomConductorAfterPersist(
       state: "settled",
     });
 
-    const wokenBots =
+    let wokenBots =
       decision.kind === "wake"
         ? decision.botActorIds
             .map((actorId) => {
@@ -3910,6 +3990,40 @@ async function runGroupRoomConductorAfterPersist(
             })
             .filter((x): x is { actorId: string; agentId: string } => x !== null)
         : [];
+
+    // Routing chooses a candidate; current Human authority decides which
+    // exact Genies may actually be woken. A prior turn-level token is not a
+    // grant to address every Agent in a mixed Room.
+    const admittedBots: typeof wokenBots = [];
+    let deniedBotCount = 0;
+    for (const bot of wokenBots) {
+      try {
+        await (args.assertCanInvokeAgent ?? assertCanInvokeAgent)({
+          humanUserId: sessionUserId,
+          origin: "room_message",
+          roomId: detail.id,
+          agentId: bot.agentId,
+        });
+        admittedBots.push(bot);
+      } catch (error) {
+        if (!(error instanceof AgentInvocationDeniedError)) throw error;
+        deniedBotCount++;
+      }
+    }
+    wokenBots = admittedBots;
+    if (deniedBotCount > 0) {
+      emitConductorDecisionReceipt({
+        detail,
+        sessionUserId,
+        sessionActorId,
+        persistedHuman,
+        outcome: {
+          outcome: "silent",
+          reasonCode: "silent_agent_not_authorized",
+          displayReason: "You cannot ask that Genie to respond here.",
+        },
+      });
+    }
 
     if (
       protectedConductorSucceeded
@@ -4288,6 +4402,12 @@ async function runGroupRoomConductorAfterPersist(
           loadActiveSilence: () =>
             loadActiveSilenceForRoom(getSharedDirectDb(), detail.id, new Date()),
           enqueueTarget: async (target, original, continuation) => {
+            await (args.assertCanInvokeAgent ?? assertCanInvokeAgent)({
+              humanUserId: sessionUserId,
+              origin: "room_message",
+              roomId: detail.id,
+              agentId: target.agentId,
+            });
             const targetLane =
               `room:${detail.id}:user:${sessionActorId}:bot:${target.agentId}`;
             const [targetRoster, targetEnvelope] = await Promise.all([

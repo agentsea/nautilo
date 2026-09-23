@@ -45,6 +45,7 @@ describe("requiredCapabilities on catalog entries", () => {
     ["mini_app", "manage_server_operations"],
     ["run_deep_research", "use_research_tools"],
     ["transcribe_audio", "use_transcription"],
+    ["evaluate_decisions", "use_server_provider_credentials"],
     ["hue_lights", "control_home"],
     ["in_private_namespace", "invoke_agents"],
     ["ask_peer", "invoke_agents"],

@@ -1,7 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Readable } from "node:stream";
 import { z } from "zod";
-import { envelopeWritableNamespaces } from "@nautilo/trust";
+import {
+  ServerProviderCredentialsDeniedError,
+  assertCanUseServerProviderCredentials,
+  envelopeWritableNamespaces,
+} from "@nautilo/trust";
 import { getUserCapabilities } from "@nautilo/trust";
 import {
   ConnectedAppDisconnectResponseSchema,
@@ -52,6 +56,9 @@ async function sendSafely(
     if (error instanceof ConnectedAppResultMediaError) {
       return reply.code(error.status).send({ error: error.code });
     }
+    if (error instanceof ServerProviderCredentialsDeniedError) {
+      return reply.code(403).send({ error: error.code });
+    }
     throw error;
   }
 }
@@ -62,6 +69,7 @@ export function connectedAppsRoutes(
   serviceOrServices: ConnectedAppService | readonly ConnectedAppService[] | (() => readonly ConnectedAppService[]),
   options: {
     getCapabilities?: typeof getUserCapabilities;
+    assertServerFunding?: typeof assertCanUseServerProviderCredentials;
     resultPresenter?: ConnectedAppResultPresenter;
   } = {},
 ): void {
@@ -77,6 +85,11 @@ export function connectedAppsRoutes(
     return service;
   };
   const resolveCapabilities = options.getCapabilities ?? getUserCapabilities;
+  const requireHostedFunding = async (service: ConnectedAppService, userId: string, origin: string): Promise<void> => {
+    if (service.usesHostedDriver) {
+      await (options.assertServerFunding ?? assertCanUseServerProviderCredentials)(userId, origin);
+    }
+  };
   const canManage = async (request: FastifyRequest): Promise<boolean> => {
     if (!request.sessionUserId) throw new ConnectedAppServiceError("authentication_required", 401);
     return (await resolveCapabilities(request.sessionUserId)).includes("manage_connection_providers");
@@ -153,8 +166,11 @@ export function connectedAppsRoutes(
     sendSafely(reply, async () => {
       const parsed = ProviderParamsSchema.safeParse(request.params);
       if (!parsed.success) throw new ConnectedAppServiceError("connected_app_provider_not_found", 404);
+      const service = serviceFor(parsed.data.providerId);
+      const actorScope = scope(request);
+      await requireHostedFunding(service, actorScope.userId, "connected_app_oauth_start");
       return ConnectedAppOAuthStartResponseSchema.parse(
-        await serviceFor(parsed.data.providerId).startOauth(scope(request)),
+        await service.startOauth(actorScope),
       );
     }));
 
@@ -163,8 +179,11 @@ export function connectedAppsRoutes(
     async (request, reply) => sendSafely(reply, async () => {
       const parsed = ProviderAttemptParamsSchema.safeParse(request.params);
       if (!parsed.success) throw new ConnectedAppServiceError("connected_app_attempt_not_found", 404);
+      const service = serviceFor(parsed.data.providerId);
+      const actorScope = scope(request);
+      await requireHostedFunding(service, actorScope.userId, "connected_app_oauth_inspect");
       return ConnectedAppOAuthAttemptResponseSchema.parse(
-        await serviceFor(parsed.data.providerId).inspectAttempt(scope(request), parsed.data.attemptId),
+        await service.inspectAttempt(actorScope, parsed.data.attemptId),
       );
     }),
   );

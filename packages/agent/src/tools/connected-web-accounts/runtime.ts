@@ -24,6 +24,8 @@ export interface ConnectedWebAccountReadToolActorContext {
   readonly voiceMode?: boolean;
   /** Authenticated Human who owns the personal connected account. */
   readonly userId: string;
+  /** Human who initiated this provider-funded turn; distinct from account custody. */
+  readonly causalHumanUserId?: string;
   /** Current Genie. The server re-checks that it is owned by userId. */
   readonly agentId: string;
   /** Current foreground Room; server verifies it is the owner's personal Room. */

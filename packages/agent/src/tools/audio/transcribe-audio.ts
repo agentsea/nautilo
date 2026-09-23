@@ -12,7 +12,11 @@ import {
   type AttachmentPathValidationResult,
   type TranscriptionProvider,
 } from "@nautilo/attachments";
-import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+  type MemoryAccessEnvelope,
+} from "@nautilo/trust";
 import {
   envelopeFactsForArtifacts,
   resolveWorkspaceArtifact,
@@ -23,6 +27,7 @@ type TranscribeAudioContext = {
   currentFolder: string;
   workspacePath: string;
   memoryAccessEnvelope: MemoryAccessEnvelope | null;
+  causalHumanUserId: string;
   transcriptionProvider?: TranscriptionProvider | undefined;
 };
 
@@ -35,6 +40,7 @@ export type TranscribeAudioToolDeps = {
     logicalPath: string,
     envelope: MemoryAccessEnvelope,
   ) => Promise<WorkspaceAudioResolution>;
+  assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 };
 
 const transcribeAudioSchema = z.object({
@@ -52,6 +58,9 @@ function contextFromUnknown(ctx: unknown): TranscribeAudioContext {
     memoryAccessEnvelope: c["memoryAccessEnvelope"] && typeof c["memoryAccessEnvelope"] === "object"
       ? c["memoryAccessEnvelope"] as MemoryAccessEnvelope
       : null,
+    causalHumanUserId: typeof c["causalHumanUserId"] === "string"
+      ? c["causalHumanUserId"].trim()
+      : "",
     transcriptionProvider: isTranscriptionProvider(c["transcriptionProvider"])
       ? c["transcriptionProvider"]
       : createConfiguredTranscriptionProvider() ?? undefined,
@@ -185,10 +194,22 @@ export function createTranscribeAudioTool(
         sizeBytes: envelope.sizeBytes,
         bytes,
       };
+      const provider = toolCtx.transcriptionProvider;
+      if (!provider || !(await provider.available())) {
+        return "Error: No transcription provider configured";
+      }
+      if (!toolCtx.causalHumanUserId) {
+        throw new ServerProviderCredentialsDeniedError("", "audio_transcription");
+      }
+      await (deps.assertCanUseServerProviderCredentials
+        ?? assertCanUseServerProviderCredentials)(
+          toolCtx.causalHumanUserId,
+          "audio_transcription",
+        );
       const result = await attachmentAudioToTranscriptBlock(
         byteEnvelope,
         classification,
-        toolCtx.transcriptionProvider,
+        provider,
         {
           ...(language !== undefined ? { language } : {}),
           ...(timestamps !== undefined ? { timestamps } : {}),

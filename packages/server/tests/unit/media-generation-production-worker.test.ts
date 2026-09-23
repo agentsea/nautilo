@@ -278,6 +278,8 @@ describe("D525 production media worker", () => {
     let completed = 0;
     let released = 0;
     const result = await deliverProductionMediaGenerationCompletionWakes({
+      assertInvocation: async () => {},
+      assertServerFunding: async () => {},
       db: {} as never,
       now: () => new Date("2030-01-01T00:00:01.000Z"),
       resolveEnvelope: async () => ({ safe: "envelope" }),

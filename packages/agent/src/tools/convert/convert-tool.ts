@@ -15,7 +15,7 @@ import {
   convert as cloudConvert,
 } from "@nautilo/cloudconvert";
 import { getCurrentTurnId, log } from "@nautilo/logger";
-import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import { assertCanUseServerProviderCredentials, ServerProviderCredentialsDeniedError, type MemoryAccessEnvelope } from "@nautilo/trust";
 import {
   envelopeFactsForArtifacts,
   resolveWorkspaceArtifact,
@@ -72,6 +72,7 @@ function buildConvertToolDescription(cloudConfigured: boolean): string {
 
 interface ConvertToolContext {
   ownerId: string;
+  causalHumanUserId: string;
   currentFolder: string;
   workspacePath: string;
   activeModelId: string;
@@ -86,6 +87,7 @@ export interface ConvertToolDeps {
   markdownToPdfBuffer?: typeof markdownToPdfBuffer;
   markdownToDocxBuffer?: typeof markdownToDocxBuffer;
   recordProviderCost?: ProviderCostRecorder;
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
 }
 
 function contextFromUnknown(ctx: unknown): ConvertToolContext {
@@ -97,6 +99,7 @@ function contextFromUnknown(ctx: unknown): ConvertToolContext {
       : null;
   return {
     ownerId: typeof c["ownerId"] === "string" ? c["ownerId"] : "",
+    causalHumanUserId: typeof c["causalHumanUserId"] === "string" ? c["causalHumanUserId"].trim() : "",
     currentFolder: typeof c["currentFolder"] === "string" ? c["currentFolder"] : "",
     workspacePath: typeof c["workspacePath"] === "string" ? c["workspacePath"] : "",
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
@@ -602,6 +605,13 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
 
       let generatedBytes: Buffer;
       try {
+        if (backend === "cloud") {
+          if (!toolCtx.causalHumanUserId) throw new ServerProviderCredentialsDeniedError("", "cloud_conversion");
+          await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+            toolCtx.causalHumanUserId,
+            "cloud_conversion",
+          );
+        }
         generatedBytes =
           backend === "local"
             ? await runLocalConversion(source.inputFormat, outputFormat, source.bytes, deps)

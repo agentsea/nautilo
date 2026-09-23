@@ -3,6 +3,8 @@ import { setConfigOverrides } from "@nautilo/config";
 import { scanContent } from "@nautilo/security";
 import { maybeSummarizeImagesWithVisionFallback } from "../../src/chat/vision-fallback";
 import { resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
+import { __setStubModelForTests } from "../../src/providers/universal";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 const tinyPng: import("@nautilo/types").ChatMultimodalImagePart = {
   type: "image",
@@ -22,9 +24,14 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
 
   afterEach(() => {
     setConfigOverrides({});
+    if (process.env["NAUTILO_TEST_MODE"] === "stub") {
+      __setStubModelForTests(null);
+    }
+    delete process.env["NAUTILO_TEST_MODE"];
   });
   test("returns empty when there are no images", async () => {
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
       images: [],
       fallbackModelId: "anthropic:claude-sonnet-4-6",
@@ -35,6 +42,7 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
 
   test("returns empty when the main model already supports vision", async () => {
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "anthropic:claude-sonnet-4-6",
       images: [tinyPng],
       fallbackModelId: "anthropic:claude-sonnet-4-6",
@@ -46,6 +54,7 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
   test("does not enter fallback selection for signed-catalog MiniMax M3 Preview", async () => {
     resetRuntimeModelCatalog();
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "venice:minimax-m3-preview",
       images: [tinyPng],
       fallbackModelId: "anthropic:claude-sonnet-4-6",
@@ -56,6 +65,7 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
 
   test("returns empty when policy is unsupported (default path)", async () => {
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
       images: [tinyPng],
       fallbackModelId: "",
@@ -66,6 +76,7 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
 
   test("vision_summary uses built-in candidates and explains when none are runnable", async () => {
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
       images: [tinyPng],
       textOnlyImagePolicy: "vision_summary",
@@ -79,6 +90,7 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
 
   test("vision_summary skips non-vision candidates and surfaces credential gap", async () => {
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
       images: [tinyPng],
       textOnlyImagePolicy: "vision_summary",
@@ -91,6 +103,7 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
 
   test("vision_summary with vision ids but no API keys yields credential message", async () => {
     const r = await maybeSummarizeImagesWithVisionFallback({
+      humanUserId: "user-1",
       mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
       images: [tinyPng],
       textOnlyImagePolicy: "vision_summary",
@@ -99,6 +112,62 @@ describe("maybeSummarizeImagesWithVisionFallback", () => {
     });
     expect(r).toHaveLength(1);
     expect(r[0]).toContain("No vision-capable model with configured API credentials");
+  });
+
+  test("fails closed before auxiliary dispatch when the Human identity is missing", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    let invoked = false;
+    __setStubModelForTests({
+      async invoke() {
+        invoked = true;
+        return { content: "summary" };
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await maybeSummarizeImagesWithVisionFallback({
+        humanUserId: "",
+        mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
+        images: [tinyPng],
+        fallbackModelId: "anthropic:claude-sonnet-4-6",
+        textOnlyImagePolicy: "vision_summary",
+        env: { ANTHROPIC_API_KEY: "test-key" },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServerProviderCredentialsDeniedError);
+    expect(invoked).toBeFalse();
+  });
+
+  test("fresh-checks revoked server funding before auxiliary dispatch", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    let invoked = false;
+    __setStubModelForTests({
+      async invoke() {
+        invoked = true;
+        return { content: "summary" };
+      },
+    });
+    let caught: unknown;
+    try {
+      await maybeSummarizeImagesWithVisionFallback({
+        humanUserId: "user-1",
+        mainModelId: "fireworks:accounts/fireworks/models/kimi-k2p5",
+        images: [tinyPng],
+        fallbackModelId: "anthropic:claude-sonnet-4-6",
+        textOnlyImagePolicy: "vision_summary",
+        env: { ANTHROPIC_API_KEY: "test-key" },
+        assertServerProviderCredentials: async (humanUserId, origin) => {
+          throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServerProviderCredentialsDeniedError);
+    expect(invoked).toBeFalse();
   });
 });
 

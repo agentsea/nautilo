@@ -18,6 +18,8 @@ import {
   type ConnectedAppStore,
 } from "../../src/connected-apps/service";
 import { connectedAppProviderDefinitions } from "../../src/connected-apps/providers";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import type { ServerProviderCostReceipt } from "../../src/costs/provider-cost-recorder";
 
 const PROVIDERS = Object.fromEntries(
   connectedAppProviderDefinitions(BUNDLED_CONNECTION_PROVIDER_CATALOG).map((provider) => [provider.id, provider]),
@@ -125,6 +127,39 @@ async function addConnectedLocalProfile(
     status: "connected",
     connectedAccountId: `account-${scope.namespaceId}`,
     providerConfigId: `${providerId}-local-config`,
+    connectionName: `connection-${scope.namespaceId}`,
+    providerUserId: scope.userId,
+    providerWorkspaceIdentity: `workspace-${scope.namespaceId}`,
+    providerUserKind: "user",
+    accountUsername: "member",
+    accountDisplayName: "Member",
+    accountEmail: "member@example.com",
+    accountAvatarUrl: null,
+    accountWorkspaceName: "Workspace",
+    driverCredentialRefId: null,
+    driverCredentialNamespaceId: null,
+    driverCredentialAgentId: null,
+    driverCredentialRecordId: null,
+    lastErrorCode: null,
+    connectedAt: now,
+    lastVerifiedAt: now,
+  });
+}
+
+async function addConnectedHostedProfile(
+  store: ConnectedAppStore,
+  scope: ConnectedAppScope,
+  providerId: "notion" = "notion",
+): Promise<void> {
+  const now = new Date();
+  await store.upsertProfile({
+    userId: scope.userId,
+    namespaceId: scope.namespaceId,
+    providerId,
+    driverKind: "oomol_hosted",
+    status: "connected",
+    connectedAccountId: `account-${scope.namespaceId}`,
+    providerConfigId: `${providerId}-hosted-config`,
     connectionName: `connection-${scope.namespaceId}`,
     providerUserId: scope.userId,
     providerWorkspaceIdentity: `workspace-${scope.namespaceId}`,
@@ -420,6 +455,11 @@ describe("D456 connected-app service", () => {
       "oomol_hosted",
       null,
       PROVIDERS["slack"]!,
+      null,
+      {
+        assertExecutionFunding: async () => {},
+        recordProviderCost: async () => {},
+      },
     );
 
     const started = await service.startOauth(scope);
@@ -436,6 +476,7 @@ describe("D456 connected-app service", () => {
 
     const listed = await service.execute({
       scope,
+      causalHumanUserId: scope.userId,
       operationId: "slack.list_conversations",
       effect: "read",
       args: {},
@@ -444,6 +485,7 @@ describe("D456 connected-app service", () => {
 
     const posted = await service.execute({
       scope,
+      causalHumanUserId: scope.userId,
       operationId: "slack.post_message",
       effect: "write",
       args: { channelId: "C123", text: "Nautilo connection test" },
@@ -827,6 +869,79 @@ describe("D456 connected-app service", () => {
     });
   });
 
+  test("rechecks hosted funding before reconciliation and attributes primary cost to the causal Human", async () => {
+    const store = memoryStore();
+    const scope = {
+      userId: "11111111-1111-4111-8111-111111111111",
+      namespaceId: "22222222-2222-4222-8222-222222222222",
+    };
+    const causalHumanUserId = "99999999-9999-4999-8999-999999999999";
+    await addConnectedHostedProfile(store, scope);
+    const hostedExecute = mock(async () => ({
+      data: {
+        object: "page",
+        id: "page-A",
+        created_time: "2026-08-28T00:00:00.000Z",
+        last_edited_time: "2026-08-28T00:00:00.000Z",
+        parent: { workspace: true },
+        properties: {},
+        url: "https://notion.so/page-A",
+        is_archived: false,
+        in_trash: false,
+      },
+      executionId: "primary-execution-A",
+    }));
+    const hostedDriver = { execute: hostedExecute } as unknown as OomolHostedConnectedAppDriver;
+    const fundingSubjects: string[] = [];
+    const costs: ServerProviderCostReceipt[] = [];
+    const service = new ConnectedAppService(
+      store,
+      { catalog: BUNDLED_CONNECTION_PROVIDER_CATALOG, source: "bundled", reason: null },
+      "http://127.0.0.1:3001",
+      hostedDriver,
+      "oomol_hosted",
+      null,
+      PROVIDERS["notion"]!,
+      null,
+      {
+        assertExecutionFunding: async ({ causalHumanUserId: subject }) => {
+          fundingSubjects.push(subject);
+          if (fundingSubjects.length > 1) {
+            throw new ServerProviderCredentialsDeniedError(subject, "connected_app_execute");
+          }
+        },
+        recordProviderCost: async (receipt) => { costs.push(receipt); },
+      },
+    );
+
+    const receipt = await service.execute({
+      scope,
+      causalHumanUserId,
+      operationId: "notion.create_page",
+      effect: "write",
+      args: {
+        parent: { workspace: true },
+        properties: {
+          title: { title: [{ type: "text", text: { content: "Funding revocation" } }] },
+        },
+      },
+    });
+
+    expect(hostedExecute).toHaveBeenCalledTimes(1);
+    expect(fundingSubjects).toEqual([causalHumanUserId, causalHumanUserId]);
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({
+      userId: causalHumanUserId,
+      identity: "oomol:connected-app:primary-execution-A",
+    });
+    expect(receipt.reconciliation).toEqual({
+      status: "unconfirmed",
+      operationId: "notion.retrieve_page",
+      executionId: null,
+      errorCode: "server_provider_credentials_required",
+    });
+  });
+
   test("persists only durable handles, resumes after reconstruction, and admits exact actions", async () => {
     const store = memoryStore();
     const gateway = hostedGateway();
@@ -846,7 +961,11 @@ describe("D456 connected-app service", () => {
     expect((await first.list(scope))[0]).toMatchObject({ status: "connecting", attemptId: ATTEMPT_ID });
 
     const afterRestart = new ConnectedAppService(
-      store, catalog, "http://127.0.0.1:3001", driver, "oomol_hosted", null, PROVIDERS["notion"]!,
+      store, catalog, "http://127.0.0.1:3001", driver, "oomol_hosted", null, PROVIDERS["notion"]!, null,
+      {
+        assertExecutionFunding: async () => {},
+        recordProviderCost: async () => {},
+      },
     );
     const [firstInspection, overlappingInspection] = await Promise.all([
       afterRestart.inspectAttempt(scope, ATTEMPT_ID),
@@ -873,7 +992,8 @@ describe("D456 connected-app service", () => {
     }).catch((cause: unknown) => cause);
     expect(unsupported).toMatchObject({ code: "connected_app_operation_not_admitted", status: 403 });
     const receipt = await afterRestart.execute({
-      scope, operationId: "notion.search", effect: "read", args: { query: "pilot" },
+      scope, causalHumanUserId: scope.userId,
+      operationId: "notion.search", effect: "read", args: { query: "pilot" },
     });
     expect(receipt).toMatchObject({
       providerId: "notion", operationId: "notion.search", executionId: "execution-A",
@@ -884,13 +1004,15 @@ describe("D456 connected-app service", () => {
 
     gateway.setSearchDrift(true);
     const drift = await afterRestart.execute({
-      scope, operationId: "notion.search", effect: "read", args: { query: "pilot" },
+      scope, causalHumanUserId: scope.userId,
+      operationId: "notion.search", effect: "read", args: { query: "pilot" },
     }).catch((cause: unknown) => cause);
     expect(drift).toMatchObject({ code: "connected_app_output_schema_drift", status: 502 });
     gateway.setSearchDrift(false);
 
     const writeReceipt = await afterRestart.execute({
       scope,
+      causalHumanUserId: scope.userId,
       operationId: "notion.create_page",
       effect: "write",
       args: {
@@ -917,6 +1039,7 @@ describe("D456 connected-app service", () => {
     gateway.setCreateDrift(true);
     const driftedWrite = await afterRestart.execute({
       scope,
+      causalHumanUserId: scope.userId,
       operationId: "notion.create_page",
       effect: "write",
       args: {
@@ -942,6 +1065,7 @@ describe("D456 connected-app service", () => {
     gateway.setWriteDispatchFailure(true);
     const unknownWrite = await afterRestart.execute({
       scope,
+      causalHumanUserId: scope.userId,
       operationId: "notion.create_page",
       effect: "write",
       args: {

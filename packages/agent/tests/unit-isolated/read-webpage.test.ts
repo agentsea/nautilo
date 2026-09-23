@@ -74,6 +74,24 @@ describe("read-webpage", () => {
     expect(r2.error).toContain("Blocked URL");
   });
 
+  test("Tavily extraction denial stops before the provider fetch", async () => {
+    const fetchImpl = mock(async () => new Response("{}"));
+    const denied = new Error("funding_denied");
+    const fetchPage = buildReadWebpageFetcher({
+      apiKey: "test-key",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      beforeTavilyDispatch: async () => { throw denied; },
+    });
+    let failure: unknown;
+    try {
+      await fetchPage("https://example.org/article");
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBe(denied);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test("propagates a parent deadline into Tavily extract and skips Browser fallback", async () => {
     const controller = new AbortController();
     let upstreamSignal: AbortSignal | null | undefined;
@@ -83,6 +101,10 @@ describe("read-webpage", () => {
       fetchImpl: (async (_input, init) => {
         upstreamSignal = init?.signal;
         return new Promise<Response>((_resolve, reject) => {
+          if (upstreamSignal?.aborted) {
+            reject(new Error("extract aborted"));
+            return;
+          }
           upstreamSignal?.addEventListener("abort", () => reject(new Error("extract aborted")), { once: true });
         });
       }) as typeof fetch,

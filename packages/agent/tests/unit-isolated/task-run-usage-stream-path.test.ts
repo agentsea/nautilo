@@ -59,6 +59,7 @@ const savedEnv: Record<string, string | undefined> = {};
 let savedFetch: typeof globalThis.fetch | undefined;
 
 const SYNTHETIC_USAGE = { input_tokens: 12, output_tokens: 6, total_tokens: 18 };
+const CAUSAL_HUMAN_USER_ID = "human-1";
 
 function chunkWithUsage(usage: Record<string, number>): AIMessageChunk {
   const message = new AIMessageChunk("done");
@@ -124,6 +125,9 @@ beforeAll(async () => {
   const realTrust = await import("@nautilo/trust");
   mock.module("@nautilo/trust", () => ({
     ...realTrust,
+    assertCanUseServerProviderCredentials: async (humanUserId: string) => {
+      expect(humanUserId).toBe(CAUSAL_HUMAN_USER_ID);
+    },
     getPolicyResolver: () => ({
       resolveContext: async () => {
         throw new Error("not used in hermetic subagent graph test");
@@ -198,6 +202,7 @@ const baseOpts = {
   parentThreadId: "parent-thread",
   parentTurnId: "turn-1",
   parentOwnerId: "owner-1",
+  causalHumanUserId: CAUSAL_HUMAN_USER_ID,
   brief: "complete the background task",
   subEnvelope,
   actorRole: "owner" as const,
@@ -227,7 +232,7 @@ describe("task-run usage through scope subagent stream (ISSUE-M217)", () => {
     expect(usageCalls[0]).toMatchObject({
       model: "openai:gpt-5.6-luna",
       callType: "subagent",
-      userId: "owner-1",
+      userId: CAUSAL_HUMAN_USER_ID,
       roomId: null,
       inputTokens: 12,
       outputTokens: 6,
@@ -246,7 +251,7 @@ describe("task-run usage through scope subagent stream (ISSUE-M217)", () => {
     expect(usageCalls[0]).toMatchObject({
       model: "anthropic:claude-sonnet-4-6",
       callType: "subagent",
-      userId: "owner-1",
+      userId: CAUSAL_HUMAN_USER_ID,
       roomId: null,
       inputTokens: 12,
       outputTokens: 6,

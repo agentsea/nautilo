@@ -1,16 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { AmbiguousAgentOwnerError } from "../../src/queries";
 import {
   AgentInvocationDeniedError,
+  AgentInvocationTargetUnavailableError,
   ArtifactWriteDeniedError,
+  ServerProviderCredentialsDeniedError,
   assertAcceptedInvocationAuthoritySubject,
   assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
   assertCanWriteArtifacts,
   createAcceptedInvocationAuthority,
   getAcceptedInvocationAuthoritySubject,
   toActionCapabilityDenialDiagnostic,
   toActionCapabilityHttpDenial,
+  toAgentInvocationTargetUnavailableHttpDenial,
   type AcceptedInvocationAuthority,
   type ActionCapabilityAdmissionDeps,
   type AgentInvocationOrigin,
@@ -29,15 +34,34 @@ const AGENT_INVOCATION_ORIGINS = [
 
 function capabilityDeps(
   resultForCall: (call: number, humanUserId: string) => string[],
-): ActionCapabilityAdmissionDeps & { readonly calls: string[] } {
+  ownerForAgent: (agentId: string) => string | null = () => null,
+): ActionCapabilityAdmissionDeps & {
+  readonly calls: string[];
+  readonly ownerCalls: string[];
+} {
   const calls: string[] = [];
+  const ownerCalls: string[] = [];
   return {
     calls,
+    ownerCalls,
     getUserCapabilities: async (humanUserId) => {
       calls.push(humanUserId);
       return resultForCall(calls.length, humanUserId);
     },
+    findAgentOwnerUserId: async (agentId) => {
+      ownerCalls.push(agentId);
+      return ownerForAgent(agentId);
+    },
   };
+}
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected promise to reject");
 }
 
 describe("M246 dormant action-Capability admission", () => {
@@ -94,6 +118,221 @@ describe("M246 dormant action-Capability admission", () => {
       "user-changing-authority",
       "user-changing-authority",
     ]);
+  });
+
+  test("keeps a no-target assertion as the base pre-routing check", async () => {
+    const deps = capabilityDeps(() => ["invoke_agents"]);
+
+    expect(await assertCanInvokeAgent(
+      { humanUserId: "human-1", origin: "room_message" },
+      deps,
+    )).toBeUndefined();
+
+    expect(deps.calls).toEqual(["human-1"]);
+    expect(deps.ownerCalls).toEqual([]);
+  });
+
+  test("allows an exact Genie owned by the initiating Human", async () => {
+    const deps = capabilityDeps(
+      () => ["invoke_agents"],
+      (agentId) => agentId === "agent-own" ? "human-1" : null,
+    );
+
+    expect(await assertCanInvokeAgent(
+      {
+        humanUserId: "human-1",
+        origin: "room_message",
+        agentId: "agent-own",
+      },
+      deps,
+    )).toBeUndefined();
+
+    expect(deps.ownerCalls).toEqual(["agent-own"]);
+  });
+
+  test("requires invoke_other_agents for a foreign exact Genie", async () => {
+    const deps = capabilityDeps(
+      () => ["invoke_agents"],
+      () => "human-2",
+    );
+    const input = {
+      humanUserId: "human-1",
+      origin: "task_dispatch",
+      roomId: "room-1",
+      agentId: "agent-foreign",
+    } as const;
+
+    expect(await rejectionOf(assertCanInvokeAgent(input, deps))).toMatchObject({
+      name: "AgentInvocationDeniedError",
+      message: "invoke_other_agents_required",
+      code: "invoke_other_agents_required",
+      capability: "invoke_other_agents",
+      humanUserId: "human-1",
+      roomId: "room-1",
+      agentId: "agent-foreign",
+    });
+  });
+
+  test("allows a foreign exact Genie through additive effective authority", async () => {
+    const deps = capabilityDeps(
+      () => ["invoke_agents", "invoke_other_agents"],
+      () => "human-2",
+    );
+
+    expect(await assertCanInvokeAgent(
+      {
+        humanUserId: "human-1",
+        origin: "foreground_resume",
+        agentId: "agent-foreign",
+      },
+      deps,
+    )).toBeUndefined();
+  });
+
+  test("denies an unresolved exact target regardless of cross-Genie authority", async () => {
+    for (const capabilities of [
+      ["invoke_agents"],
+      ["invoke_agents", "invoke_other_agents"],
+    ]) {
+      const deps = capabilityDeps(() => capabilities, () => null);
+      const input = {
+        humanUserId: "human-1",
+        origin: "task_create",
+        agentId: "agent-missing",
+      } as const;
+
+      let denial: AgentInvocationTargetUnavailableError | undefined;
+      try {
+        await assertCanInvokeAgent(input, deps);
+      } catch (error) {
+        expect(error).toBeInstanceOf(AgentInvocationTargetUnavailableError);
+        expect(error).toBeInstanceOf(AgentInvocationDeniedError);
+        denial = error as AgentInvocationTargetUnavailableError;
+      }
+      expect(denial).toMatchObject({
+        code: "agent_target_unavailable",
+        humanUserId: "human-1",
+        agentId: "agent-missing",
+      });
+      expect(toAgentInvocationTargetUnavailableHttpDenial(denial!)).toEqual({
+        error: "agent_target_unavailable",
+        code: "agent_target_unavailable",
+      });
+      expect(toActionCapabilityHttpDenial(denial!)).toEqual({
+        error: "agent_target_unavailable",
+        code: "agent_target_unavailable",
+        capability: "invoke_agents",
+      });
+    }
+  });
+
+  test("checks base authority before resolving exact Genie ownership", async () => {
+    const deps = capabilityDeps(() => [], () => "human-1");
+
+    expect(await rejectionOf(assertCanInvokeAgent(
+      {
+        humanUserId: "human-1",
+        origin: "room_message",
+        agentId: "agent-own",
+      },
+      deps,
+    ))).toMatchObject({ code: "invoke_agents_required" });
+
+    expect(deps.ownerCalls).toEqual([]);
+  });
+
+  test("propagates ownership lookup failures instead of mapping them to absence", async () => {
+    const deps = capabilityDeps(() => ["invoke_agents"]);
+    deps.findAgentOwnerUserId = async () => {
+      throw new Error("owner lookup failed");
+    };
+
+    expect(await rejectionOf(assertCanInvokeAgent(
+      {
+        humanUserId: "human-1",
+        origin: "room_message",
+        agentId: "agent-1",
+      },
+      deps,
+    ))).toEqual(new Error("owner lookup failed"));
+  });
+
+  test("maps ambiguous exact Genie ownership to the stable target-unavailable denial", async () => {
+    const deps = capabilityDeps(() => ["invoke_agents", "invoke_other_agents"]);
+    deps.findAgentOwnerUserId = async () => { throw new AmbiguousAgentOwnerError(); };
+    expect(await rejectionOf(assertCanInvokeAgent({
+      humanUserId: "human-1", origin: "room_message", agentId: "agent-1",
+    }, deps))).toMatchObject({ code: "agent_target_unavailable" });
+  });
+
+  test("denies a missing initiating Human before any capability or Genie lookup", async () => {
+    const deps = capabilityDeps(() => ["invoke_agents", "use_server_provider_credentials"], () => "owner-1");
+    expect(await rejectionOf(assertCanInvokeAgent({
+      humanUserId: "", origin: "room_message", agentId: "agent-1",
+    }, deps))).toMatchObject({ code: "invoke_agents_required", humanUserId: "" });
+    expect(await rejectionOf(assertCanUseServerProviderCredentials("", "chat_model", deps)))
+      .toMatchObject({ code: "server_provider_credentials_required", humanUserId: "" });
+    expect(deps.calls).toEqual([]);
+    expect(deps.ownerCalls).toEqual([]);
+  });
+
+  test("allows current server-provider credential authority", async () => {
+    const deps = capabilityDeps(() => ["use_server_provider_credentials"]);
+
+    expect(await assertCanUseServerProviderCredentials(
+      "human-1",
+      "foreground_model",
+      deps,
+    )).toBeUndefined();
+    expect(deps.calls).toEqual(["human-1"]);
+    expect(deps.ownerCalls).toEqual([]);
+  });
+
+  test("returns a stable denial when server-provider credential authority is absent", async () => {
+    const deps = capabilityDeps(() => ["invoke_agents"]);
+    let denial: ServerProviderCredentialsDeniedError | undefined;
+
+    try {
+      await assertCanUseServerProviderCredentials(
+        "human-1",
+        "task_model",
+        deps,
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerProviderCredentialsDeniedError);
+      denial = error as ServerProviderCredentialsDeniedError;
+    }
+
+    expect(denial).toMatchObject({
+      message: "server_provider_credentials_required",
+      code: "server_provider_credentials_required",
+      capability: "use_server_provider_credentials",
+      humanUserId: "human-1",
+      origin: "task_model",
+    });
+    expect(toActionCapabilityHttpDenial(denial!)).toEqual({
+      error: "server_provider_credentials_required",
+      code: "server_provider_credentials_required",
+      capability: "use_server_provider_credentials",
+    });
+  });
+
+  test("re-reads server-provider credential authority for every dispatch", async () => {
+    const deps = capabilityDeps((call) =>
+      call === 1 ? ["use_server_provider_credentials"] : [],
+    );
+
+    expect(await assertCanUseServerProviderCredentials(
+      "human-changing",
+      undefined,
+      deps,
+    )).toBeUndefined();
+    expect(await rejectionOf(assertCanUseServerProviderCredentials(
+      "human-changing",
+      undefined,
+      deps,
+    ))).toMatchObject({ code: "server_provider_credentials_required" });
+    expect(deps.calls).toEqual(["human-changing", "human-changing"]);
   });
 
   test("throws the exact typed Agent denial and maps stable content-free output", async () => {
@@ -288,6 +527,7 @@ function productionFilesMatching(pattern: RegExp): string[] {
 
 test("M254 invocation admission and authority mint sites stay mechanically inventoried", () => {
   expect(productionFilesMatching(INVOCATION_ADMISSION_PATTERN)).toEqual([
+    "packages/runtime/src/tasks/report-back.ts",
     "packages/server/src/messaging/await-resume.ts",
     "packages/trust/src/action-capability-admission.ts",
   ]);

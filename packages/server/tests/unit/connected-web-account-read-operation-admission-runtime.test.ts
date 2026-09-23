@@ -45,7 +45,7 @@ function admitted(): ConnectedWebOperation {
 
 function actor(overrides: Record<string, unknown> = {}) {
   return {
-    userId: OWNER, agentId: AGENT, roomId: ROOM, callingRoomId: null, memoryAccessEnvelope: {} as never,
+    userId: OWNER, causalHumanUserId: OWNER, agentId: AGENT, roomId: ROOM, callingRoomId: null, memoryAccessEnvelope: {} as never,
     toolCallId: "tool-1", currentThreadId: "thread-1", turnId: "turn-1", laneKey: "foreground:room",
     ...overrides,
   };
@@ -59,6 +59,7 @@ function setup(input: {
   readonly reuse?: boolean;
   readonly public?: boolean;
   readonly publicAuthorized?: boolean;
+  readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
 } = {}) {
   const admissions: unknown[] = [];
   const activations: unknown[] = [];
@@ -101,6 +102,7 @@ function setup(input: {
       cancelHostedReadRun: async () => ({ runId: "run-private", status: "cancelled" as const }),
     },
     secrets: () => secrets,
+    assertServerFunding: input.assertServerFunding ?? (async () => undefined),
     policy: { maxCostUsd: 2 },
     clock: { now: () => NOW },
     createReservationToken: () => "reservation-1",
@@ -186,6 +188,22 @@ describe("D568 async read admission", () => {
     expect(fixture.activations).toHaveLength(1);
     expect(JSON.stringify(fixture.admissions)).not.toContain("List my projects");
     expect((fixture.activations[0] as { sealedProviderRefs: { runRef: string } }).sealedProviderRefs.runRef).toStartWith("cwo1.");
+  });
+
+  test("checks current Human server funding before durable admission or provider creation", async () => {
+    const checks: unknown[] = [];
+    const fixture = setup({
+      assertServerFunding: async (...input) => {
+        checks.push(input);
+        throw new Error("server_provider_credentials_required");
+      },
+    });
+    expect(await fixture.runtime.read(actor(), {
+      account: "Nebius", request: "List my projects", delivery: "text",
+    })).toEqual({ ok: false, code: "unavailable", recovery: "none" });
+    expect(checks).toEqual([[OWNER, "connected_web_read"]]);
+    expect(fixture.admissions).toHaveLength(0);
+    expect(fixture.creates).toHaveLength(0);
   });
 
   test("returns the same existing active operation for an exact delivery without a second provider run", async () => {

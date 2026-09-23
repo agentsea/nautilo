@@ -89,6 +89,29 @@ beforeEach(() => {
 });
 
 describe("convert local zone routing (M206)", () => {
+  test("cloud conversion rejects missing server-funding authority before provider dispatch", async () => {
+    let providerCalls = 0;
+    let fundingSubject = "";
+    const tool = createConvertTool(
+      { ownerId: OWNER, causalHumanUserId: "calling-human", agentId: "agent-1", currentFolder, workspacePath: "/tmp/ws", memoryAccessEnvelope: null },
+      {
+        isCloudConvertConfigured: () => true,
+        assertServerFunding: async (humanUserId) => { fundingSubject = humanUserId; throw new Error("server_provider_credentials_required"); },
+        cloudConvert: async () => { providerCalls++; return Buffer.from("pdf"); },
+      },
+    );
+    const out = String(await tool.invoke({
+      markdown: "# Hi",
+      format: "pdf",
+      destinationPath: "report.pdf",
+      destinationZone: "workspace",
+      backend: "cloud",
+    }));
+    expect(out).toContain("server_provider_credentials_required");
+    expect(fundingSubject).toBe("calling-human");
+    expect(providerCalls).toBe(0);
+  });
+
   test("local md source + local pdf dest uses one relay convert op (no server bytes)", async () => {
     const tool = createConvertTool({
       ownerId: OWNER,

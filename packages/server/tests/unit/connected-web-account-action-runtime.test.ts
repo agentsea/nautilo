@@ -9,7 +9,7 @@ const account = {
   origin: "https://console.nebius.com", status: "connected" as const,
   lastVerifiedAt: null, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
 };
-const actor = { userId: "user", agentId: "agent", roomId: "room", callingRoomId: null, memoryAccessEnvelope: {} as never };
+const actor = { userId: "user", causalHumanUserId: "calling-human", agentId: "agent", roomId: "room", callingRoomId: null, memoryAccessEnvelope: {} as never };
 const input = { account: "Nebius", action: "save_item" as const, target: "my named item", deliveryId: "tool-call-1" };
 const postcondition = "The named item my named item is saved, bookmarked, or favorited in this connected account.";
 const parkedRequestDigest = createHash("sha256").update(JSON.stringify({ accountId: account.id, action: "save_item", target: input.target, postcondition })).digest("hex");
@@ -35,7 +35,7 @@ interface ActionRuntimeOverrides {
 }
 
 function runtime(overrides: ActionRuntimeOverrides = {}) {
-  const calls = { create: 0, reserve: 0, release: 0, complete: 0, cancel: 0, authenticationCancellationReceipt: null as unknown, finish: [] as string[], events: [] as string[], budgets: [] as number[], cost: [] as Array<{ operation: string; total: string | null }> };
+  const calls = { create: 0, reserve: 0, release: 0, complete: 0, cancel: 0, authenticationCancellationReceipt: null as unknown, finish: [] as string[], events: [] as string[], budgets: [] as number[], cost: [] as Array<{ operation: string; total: string | null }>, costUsers: [] as string[] };
   const providerResults = overrides.providerResults ?? [
     JSON.stringify({ outcome: "action_attempted", action: "save_item", target: input.target, origin: account.origin }),
     JSON.stringify({ outcome: "postcondition", observed: true, postcondition, origin: account.origin }),
@@ -94,7 +94,7 @@ function runtime(overrides: ActionRuntimeOverrides = {}) {
     policy: { maxCostUsd: 1, pollIntervalMs: 1 },
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.sleep ? { sleep: overrides.sleep } : {}),
-    recordProviderCost: async ({ operation, actualCostUsd }) => { calls.cost.push({ operation, total: actualCostUsd }); },
+    recordProviderCost: async ({ operation, actualCostUsd, userId }) => { calls.cost.push({ operation, total: actualCostUsd }); calls.costUsers.push(userId); },
   });
   return { value, calls };
 }
@@ -229,6 +229,7 @@ describe("connected website save action", () => {
       { operation: "hosted_action", total: "0.1" },
       { operation: "hosted_action_observation", total: "0.2" },
     ]);
+    expect(subject.calls.costUsers).toEqual(["calling-human", "calling-human"]);
   });
 
   test("returns unknown combined cost when either hosted cost is not actual", async () => {

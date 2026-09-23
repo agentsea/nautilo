@@ -28,6 +28,10 @@ import {
   humanPairIsBlocked,
   loadRoomRoster,
   createAcceptedInvocationAuthority,
+  AgentInvocationDeniedError,
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+  toActionCapabilityHttpDenial,
   type MemoryAccessEnvelope,
 } from "@nautilo/trust";
 import { and, db, eq, getSharedDirectDb, sessionMessages, sessions } from "@nautilo/db";
@@ -107,6 +111,7 @@ export interface ChatRoutesDeps {
   ) => Promise<CreateForegroundJobResult>;
   loadRoomRoster: typeof loadRoomRoster;
   assertInvocation?: AssertCanInvokeAgent;
+  assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
   buildEnvelopeForRoom?: (
     actorId: string,
     laneKey: string,
@@ -271,6 +276,8 @@ export function chatRoutes(
         },
         getRoomDetailForMember,
         chatDeps: deps,
+        ...(deps.assertInvocation ? { assertCanInvokeAgent: deps.assertInvocation } : {}),
+        ...(deps.assertServerFunding ? { assertCanUseServerProviderCredentials: deps.assertServerFunding } : {}),
         aliasHttpContract: true,
         ...(deps.humanPairIsBlocked
           ? { humanPairIsBlocked: deps.humanPairIsBlocked }
@@ -288,6 +295,12 @@ export function chatRoutes(
       ))
     ) {
       return;
+    }
+    try {
+      await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(humanUserId, "room_message");
+    } catch (error) {
+      if (!(error instanceof ServerProviderCredentialsDeniedError)) throw error;
+      return reply.code(403).send(toActionCapabilityHttpDenial(error));
     }
     let maintenanceAuthority: MaintenanceAcceptanceAuthority;
     try {
@@ -324,6 +337,9 @@ export function chatRoutes(
         clientActionSessionId: request.body.clientActionSessionId,
       });
     } catch (err) {
+      if (err instanceof AgentInvocationDeniedError) {
+        return reply.code(403).send(toActionCapabilityHttpDenial(err));
+      }
       if (err instanceof AgentMediatedSendError) {
         return reply
           .code(err.httpStatus)

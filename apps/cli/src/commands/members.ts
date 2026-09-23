@@ -1153,7 +1153,7 @@ function inviteBuilder(deps: MembersCommandDependencies): (yargs: Argv) => Argv 
       command: "$0",
       describe: "Create a one-use member invite with a deliberate secret handoff.",
       builder: (child) => child
-        .option("role", { type: "string", choices: ROLE_CHOICES, default: "member" })
+        .option("role", { type: "string", choices: ROLE_CHOICES, default: "member", describe: "Role for enrollment; Community is unavailable until personal-key chat launches" })
         .option("max-uses", { type: "number", default: 1, demandOption: true })
         .option("expires-in", { type: "string", describe: "Optional duration such as 7d; omitted uses current no-expiry policy" })
         .option("display-name", { type: "string" })
@@ -1263,7 +1263,7 @@ export function createMembersModule(
           .option("handle", { type: "string", demandOption: true })
           .option("display-name", { type: "string", demandOption: true })
           .option("email", { type: "string" })
-          .option("role", { type: "string", choices: ROLE_CHOICES, default: "member" })
+          .option("role", { type: "string", choices: ROLE_CHOICES, default: "member", describe: "Role for enrollment; Community is unavailable until personal-key chat launches" })
           .option("handoff-file", { type: "string", demandOption: true, describe: "New absolute owner-only JSON destination" })
           .option("idempotency-key", { type: "string", describe: "Stable retry key; generated when omitted" })
           .option("format", { type: "string", choices: ["human", "json"] as const, default: "human" }),
@@ -1276,7 +1276,7 @@ export function createMembersModule(
           .option("handle", { type: "string", demandOption: true })
           .option("display-name", { type: "string", demandOption: true })
           .option("email", { type: "string" })
-          .option("role", { type: "string", choices: ROLE_CHOICES, default: "member" })
+          .option("role", { type: "string", choices: ROLE_CHOICES, default: "member", describe: "Role for enrollment; Community is unavailable until personal-key chat launches" })
           .option("credential-file", { type: "string", demandOption: true, describe: "Existing absolute mode-0600 JSON credential source" })
           .option("idempotency-key", { type: "string", describe: "Stable retry key for a missing-account recreation" })
           .option("format", { type: "string", choices: ["human", "json"] as const, default: "human" }),
