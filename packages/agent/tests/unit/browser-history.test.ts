@@ -86,6 +86,32 @@ describe("browser history provider projection", () => {
     expect(projected.originals.get("multi")).toBe(result);
   });
 
+  test("does not present an older ordinary image after a newer delegated screenshot observation", () => {
+    const ordinary = new ToolMessage({
+      name: "browser_screenshot", tool_call_id: "ordinary", status: "success",
+      content: [
+        { type: "text", text: "Older ordinary screenshot" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,stale-before-delegation" } },
+      ],
+    });
+    const delegated = new ToolMessage({
+      name: "browser_screenshot", tool_call_id: "delegated", status: "success",
+      content: observation("session", 2),
+    });
+    const messages = [
+      new AIMessage({ content: "", tool_calls: [{ id: "ordinary", name: "browser_screenshot", args: {} }] }),
+      ordinary,
+      new AIMessage({ content: "", tool_calls: [{ id: "delegated", name: "browser_screenshot",
+        args: { decisionPlan: { goal: "Choose the requested item" } } }] }),
+      delegated,
+    ];
+
+    const projected = projectBrowserHistory(messages).messages;
+    expect(JSON.stringify(projected)).not.toContain("data:image/png;base64,stale-before-delegation");
+    expect((projected[1] as ToolMessage).content).toContain("screenshotOmitted");
+    expect(projected[3]).toBe(delegated);
+  });
+
   test("retains baseline/current per session and compacts older snapshots deterministically", () => {
     const oldA = snapshot("a-1", "session-a", 1, observation("session-a", 1, "x".repeat(10_000)));
     const baselineA = snapshot("a-2", "session-a", 2);

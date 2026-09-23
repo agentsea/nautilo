@@ -165,6 +165,8 @@ describe("createInteractiveBrowserDispatchHandler", () => {
   test("adds local extraction only for server-owned visual screenshot requests", async () => {
     let extractionCalls = 0;
     let published: unknown;
+    let pngPackagingCalls = 0;
+    const removedCaptures: string[] = [];
     let storedBinding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
     const handler = createInteractiveBrowserDispatchHandler(ports({
       exec: async (_binary, argv) => ({
@@ -184,16 +186,25 @@ describe("createInteractiveBrowserDispatchHandler", () => {
         };
       },
       setVisualObservation: (_session, binding) => { storedBinding = binding; },
+      removeCapture: (path) => { removedCaptures.push(path); },
       visionFromPng: (_path, _text, visualObservation) => {
-        published = visualObservation;
+        pngPackagingCalls += 1;
         return { status: "ok", result: { kind: "browser_screenshot_vision", visualObservation } };
       },
     }));
 
-    expect(((await handler({
+    const delegated = (await handler({
       request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
-    })) as { result: RelayDispatchResult }).result.status).toBe("ok");
+    })) as { result: RelayDispatchResult };
+    expect(delegated.result.status).toBe("ok");
+    expect(delegated.result).toMatchObject({
+      result: { kind: "browser_visual_observation" },
+    });
+    expect(JSON.stringify(delegated.result)).not.toContain("base64");
+    published = delegated.result.status === "ok"
+      ? (delegated.result.result as { visualObservation: unknown }).visualObservation : undefined;
     expect(extractionCalls).toBe(1);
+    expect(pngPackagingCalls).toBe(0);
     expect(published).toMatchObject({
       version: 1,
       pageUrl: "https://example.com/canvas",
@@ -207,9 +218,31 @@ describe("createInteractiveBrowserDispatchHandler", () => {
       observationId: (published as { observationId: string }).observationId,
       keyboardFocus: "canvas",
     });
+    expect(removedCaptures).toEqual(["/owned/browser-shot.png"]);
 
     await handler({ request: request("browser_screenshot"), signal: undefined, guard });
     expect(extractionCalls).toBe(1);
+    expect(pngPackagingCalls).toBe(1);
+    expect(removedCaptures).toEqual(["/owned/browser-shot.png"]);
+  });
+
+  test("removes a delegated screenshot when local visual extraction fails", async () => {
+    const removedCaptures: string[] = [];
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      exec: async (_binary, argv) => ({
+        stdout: argv.includes("eval")
+          ? JSON.stringify({ w: 500, h: 200, dpr: 2, url: "https://example.com/canvas" })
+          : "",
+      }),
+      extractVisualObservation: async () => { throw new Error("extractor unavailable"); },
+      removeCapture: (path) => { removedCaptures.push(path); },
+    }));
+
+    const result = await handler({
+      request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+    });
+    expect(result.result.status).toBe("error");
+    expect(removedCaptures).toEqual(["/owned/browser-shot.png"]);
   });
 
   test("revalidates a one-shot visual observation and uses independent x/y scales", async () => {
@@ -254,7 +287,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
     expect(clicked).toMatchObject({ result: { status: "ok", result: "Clicked resolved visual target v1" } });
     expect(executions.some((argv) => argv.slice(-3).join(" ") === "move 100 50")).toBe(true);
     expect(binding).toBeUndefined();
-    expect(removedRecaptures).toBe(1);
+    expect(removedRecaptures).toBe(2);
   });
 
   test("atomically focuses and types from a fresh visual observation", async () => {
@@ -300,7 +333,7 @@ describe("createInteractiveBrowserDispatchHandler", () => {
     expect(executions.some((argv) => argv.slice(-3).join(" ") === "move 100 50")).toBe(true);
     expect(executions.some((argv) => argv.slice(-3).join(" ") === "keyboard inserttext canvas\ntext 🐚")).toBe(true);
     expect(binding).toBeUndefined();
-    expect(removedRecaptures).toBe(1);
+    expect(removedRecaptures).toBe(2);
 
     const replacement = await handler({
       request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,

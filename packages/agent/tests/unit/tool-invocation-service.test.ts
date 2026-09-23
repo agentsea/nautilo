@@ -1441,7 +1441,7 @@ describe("structured SSH uncertain dispatch outcome", () => {
 });
 
 describe("Nautilo tool invocation service", () => {
-  test("privately requests local visual extraction while preserving the screenshot result", async () => {
+  test("keeps delegated visual observations text-only while ordinary screenshots retain pixels", async () => {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);
     initToolCatalog(catalog);
@@ -1456,29 +1456,32 @@ describe("Nautilo tool invocation service", () => {
       isRelayHeartbeatFresh: () => true,
       dispatch: async (_relayId, request) => {
         dispatched.push(request.args);
+        const visualObservation = {
+          version: 1,
+          pageUrl: "https://example.com/canvas",
+          browserSessionId: "browser-1",
+          observationId: "visual-1",
+          image: { width: 800, height: 600 },
+          viewport: { cssWidth: 400, cssHeight: 300, dpr: 2 },
+          extraction: {
+            recognitionMode: "hybrid",
+            durationMs: 80,
+            globalDurationMs: 60,
+            cropDurationMs: 20,
+            cropRequestCount: 1,
+            text: [{ text: "Apple", box: { x: 100, y: 200, width: 80, height: 30 }, confidence: 0.95 }],
+            rectangles: [{ x: 90, y: 190, width: 120, height: 60 }],
+            contours: [],
+            contourCount: 0,
+          },
+        };
+        if (request.args["_visualObservation"] === true) {
+          return { status: "ok", result: { kind: "browser_visual_observation", visualObservation } };
+        }
         return { status: "ok", result: {
           kind: "browser_screenshot_vision",
           text: "Browser screenshot captured",
           image: { mime: "image/png", base64: "AA==" },
-          visualObservation: {
-            version: 1,
-            pageUrl: "https://example.com/canvas",
-            browserSessionId: "browser-1",
-            observationId: "visual-1",
-            image: { width: 800, height: 600 },
-            viewport: { cssWidth: 400, cssHeight: 300, dpr: 2 },
-            extraction: {
-              recognitionMode: "hybrid",
-              durationMs: 80,
-              globalDurationMs: 60,
-              cropDurationMs: 20,
-              cropRequestCount: 1,
-              text: [{ text: "Apple", box: { x: 100, y: 200, width: 80, height: 30 }, confidence: 0.95 }],
-              rectangles: [{ x: 90, y: 190, width: 120, height: 60 }],
-              contours: [],
-              contourCount: 0,
-            },
-          },
         } };
       },
     });
@@ -1500,12 +1503,58 @@ describe("Nautilo tool invocation service", () => {
     ).invoke(screenshot);
     expect(result.status).toBe("success");
     expect(dispatched).toEqual([{ _visualObservation: true }]);
-    expect(Array.isArray(result.content)).toBe(true);
-    const text = Array.isArray(result.content)
-      ? (result.content.find((block) => block && typeof block === "object" && (block as { type?: unknown }).type === "text") as { text?: unknown } | undefined)?.text
-      : null;
-    const envelope = JSON.parse(String(text)) as { observation: { visual?: { targets: Array<{ name: string }> } } };
+    expect(typeof result.content).toBe("string");
+    expect(JSON.stringify(result.content)).not.toContain("data:image");
+    if (typeof result.content !== "string") throw new Error("delegated screenshot must be text-only");
+    const envelope = JSON.parse(result.content) as { observation: { visual?: { targets: Array<{ name: string }> } } };
     expect(envelope.observation.visual?.targets.some((target) => target.name === "Apple")).toBe(true);
+
+    const reobserve = call("browser_screenshot", {});
+    const reobserveState = state({
+      messages: [new AIMessage({ content: "", tool_calls: [{ id: reobserve.callId,
+        name: reobserve.toolName, args: reobserve.args, type: "tool_call" }] })],
+      browserDecision: {
+        turnId: "turn", modelId: "openrouter:typesafe/jev-1.13", phase: "waiting", reason: null,
+        plan: browserDecisionPlanSchema.parse(decisionPlan), observation: envelope.observation as never,
+        pending: { call: { id: reobserve.callId, name: reobserve.toolName, args: reobserve.args },
+          browserSessionId: "browser-1", observationId: null },
+        recovery: { interventionLimit: 2, consecutiveEvents: 0, interventionAt: 2,
+          progressSeen: [], assessNextObservation: false },
+      },
+      relayCapabilities: { canControlBrowser: true, control_browser: true },
+      requiredHostRelays: { [reobserve.callId]: "relay-1" },
+      trustedExecutionEntrypoint: "foreground.main",
+      verifiedOrdinaryOrigin: { kind: "local_electron", userId: "owner", actorId: "owner", relayId: "relay-1",
+        desktopSessionId: "desktop-1", pairingGeneration: "pairing-1", requestId: "request-reobserve" },
+    });
+    const reobserved = await createNautiloToolInvocationSession(
+      createServerToolInvocationContext(reobserveState, () => ({ status: "allowed" })),
+    ).invoke(reobserve);
+    expect(reobserved.status).toBe("success");
+    expect(typeof reobserved.content).toBe("string");
+    expect(JSON.stringify(reobserved.content)).not.toContain("data:image");
+
+    const ordinary = call("browser_screenshot", {});
+    const ordinaryState = state({
+      messages: [new AIMessage({ content: "", tool_calls: [{ id: ordinary.callId,
+        name: ordinary.toolName, args: ordinary.args, type: "tool_call" }] })],
+      relayCapabilities: { canControlBrowser: true, control_browser: true },
+      requiredHostRelays: { [ordinary.callId]: "relay-1" },
+      trustedExecutionEntrypoint: "foreground.main",
+      verifiedOrdinaryOrigin: { kind: "local_electron", userId: "owner", actorId: "owner", relayId: "relay-1",
+        desktopSessionId: "desktop-1", pairingGeneration: "pairing-1", requestId: "request-ordinary" },
+    });
+    const ordinaryResult = await createNautiloToolInvocationSession(
+      createServerToolInvocationContext(ordinaryState, () => ({ status: "allowed" })),
+    ).invoke(ordinary);
+    expect(ordinaryResult.status).toBe("success");
+    expect(Array.isArray(ordinaryResult.content)).toBe(true);
+    expect(JSON.stringify(ordinaryResult.content)).toContain("data:image/png;base64,AA==");
+    expect(dispatched).toEqual([
+      { _visualObservation: true },
+      { _requiredSession: "browser-1", _visualObservation: true },
+      {},
+    ]);
   });
 
   test("recovers an exact top-level browser plan and rejects ambiguous shapes without a plain-read fallback", async () => {

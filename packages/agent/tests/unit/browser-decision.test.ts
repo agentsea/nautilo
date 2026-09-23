@@ -1492,13 +1492,16 @@ describe("sustained browser recovery", () => {
     expect(content).not.toContain("Inspect a screenshot");
   });
 
-  test("visual handoff says the screenshot was already captured", () => {
+  test("visual handoff asks Genie for a fresh screenshot only when pixels are needed", () => {
     const content = browserDecisionHandoffContent("needs_visual_evidence", undefined,
       decision({ observation: observation({ refs: {}, visual: {
         viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
         targets: [],
       } }) }));
-    expect(content).toContain("The screenshot was already captured");
+    expect(content).toContain("fresh");
+    expect(content).toContain("browser_screenshot");
+    expect(content).toContain("pixels");
+    expect(content).not.toContain("already captured");
     expect(content).not.toContain("text observation");
   });
 

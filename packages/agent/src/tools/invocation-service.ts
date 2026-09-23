@@ -2321,6 +2321,14 @@ function isRelayVisionResult(
   return typeof img["base64"] === "string" && typeof img["mime"] === "string";
 }
 
+function isRelayBrowserVisualObservationResult(
+  value: unknown,
+): value is { kind: "browser_visual_observation"; visualObservation: unknown } {
+  return value !== null && typeof value === "object" &&
+    (value as Record<string, unknown>)["kind"] === "browser_visual_observation" &&
+    "visualObservation" in value;
+}
+
 function relayVisionResultHeader(
   kind: "browser_screenshot_vision" | "computer_observation_vision" | "computer_use_host_vision",
   bytes: number,
@@ -4519,27 +4527,36 @@ async function executeViaRelayRaw(
       };
     }
 
-    if (isRelayVisionResult(result.result)) {
-      const { kind, image } = result.result;
-      let { text } = result.result;
-      if (expectsBrowserVisualObservation) {
-        try {
-          const visual = browserVisualObservationFromRelay(result.result.visualObservation);
-          const observation = browserDecisionObservationSchema.parse({
-            version: 1,
-            snapshot: visual.snapshot,
-            refs: {},
-            pageUrl: visual.pageUrl,
-            browserSessionId: visual.browserSessionId,
-            observationId: visual.observationId,
-            visual: visual.visual,
-          });
-          text = JSON.stringify({ instruction: text, observation });
-        } catch {
-          return { ok: false, errorMessage: "Error: browser_screenshot returned an invalid local visual observation.",
-            browserFailure: "browser_observation_invalid" };
+    if (expectsBrowserVisualObservation) {
+      try {
+        if (!isRelayBrowserVisualObservationResult(result.result) && !isRelayVisionResult(result.result)) {
+          throw new Error("Missing visual observation");
         }
+        const visual = browserVisualObservationFromRelay(result.result.visualObservation);
+        const observation = browserDecisionObservationSchema.parse({
+          version: 1,
+          snapshot: visual.snapshot,
+          refs: {},
+          pageUrl: visual.pageUrl,
+          browserSessionId: visual.browserSessionId,
+          observationId: visual.observationId,
+          visual: visual.visual,
+        });
+        return {
+          ok: true,
+          rawContent: JSON.stringify({
+            instruction: "Delegated screenshot processed locally. Raw pixels are not retained; use the extracted observation for decisions and take a fresh ordinary screenshot if Genie later needs pixels.",
+            observation,
+          }),
+        };
+      } catch {
+        return { ok: false, errorMessage: "Error: browser_screenshot returned an invalid local visual observation.",
+          browserFailure: "browser_observation_invalid" };
       }
+    }
+
+    if (isRelayVisionResult(result.result)) {
+      const { kind, image, text } = result.result;
       return {
         ok: true,
         multimodal: { kind, text, image: { mime: image.mime, base64: image.base64 } },

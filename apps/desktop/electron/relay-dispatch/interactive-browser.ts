@@ -771,6 +771,11 @@ export function createInteractiveBrowserDispatchHandler(
             yScale: scale.y,
             keyboardFocus: css.keyboardFocus,
           };
+          ports.setVisualObservation(session, visualBinding);
+          return {
+            handled: true,
+            result: { status: "ok", result: { kind: "browser_visual_observation", visualObservation } },
+          };
         }
         const result = ports.visionFromPng(
           capturePath,
@@ -779,7 +784,6 @@ export function createInteractiveBrowserDispatchHandler(
             scaleLine,
           visualObservation,
         );
-        if (result.status === "ok" && visualBinding) ports.setVisualObservation(session, visualBinding);
         return {
           handled: true,
           result,
@@ -789,6 +793,10 @@ export function createInteractiveBrowserDispatchHandler(
           handled: true,
           result: browserExecError(request, error, ports.binaryInstallHint),
         };
+      } finally {
+        // Jev captures need a file only while the local extractor reads it.
+        // Do not leave delegated screenshots on disk for age-based pruning.
+        if (request.args["_visualObservation"] === true) ports.removeCapture(capturePath);
       }
     }
 

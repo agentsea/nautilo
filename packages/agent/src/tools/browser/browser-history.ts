@@ -53,15 +53,20 @@ export function projectBrowserHistory(messages: BaseMessage[]): {
       }
     }
   }
-  for (let messageIndex = messages.length - 1; messageIndex >= 0 && latestScreenshotImage === null; messageIndex--) {
+  // The newest screenshot is authoritative even when a delegated Jev capture
+  // retained only its extracted text. Never show an older image as current.
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
     const message = messages[messageIndex]!;
-    if (!ToolMessage.isInstance(message) || message.name !== "browser_screenshot" || !Array.isArray(message.content)) continue;
-    for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex--) {
-      if (isImageContentBlock(message.content[blockIndex])) {
-        latestScreenshotImage = { messageIndex, blockIndex };
-        break;
+    if (!ToolMessage.isInstance(message) || message.name !== "browser_screenshot") continue;
+    if (Array.isArray(message.content)) {
+      for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex--) {
+        if (isImageContentBlock(message.content[blockIndex])) {
+          latestScreenshotImage = { messageIndex, blockIndex };
+          break;
+        }
       }
     }
+    break;
   }
   const current = new Set<string>();
   const baseline = new Set<string>();

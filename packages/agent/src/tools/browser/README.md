@@ -50,8 +50,12 @@ Genie may instead start the same decision episode with a singleton
 regions locally, the server renders a task-independent textual observation,
 and Jev chooses among bound image-coordinate clicks and vertical scrolling.
 The PNG is not included in Jev's request. Every selected action consumes its
-visual observation and is followed by a fresh screenshot. This prototype does
-not offer visual typing; plans requiring visually grounded text input return to
+visual observation and is followed by a fresh screenshot. The Desktop deletes
+each delegated capture file after local extraction and sends only the visual
+observation to the server. Graph history retains no delegated PNG bytes. If
+Genie needs to inspect pixels on handoff, it takes a fresh ordinary
+`browser_screenshot` without a `decisionPlan`. This prototype does not offer
+visual typing; plans requiring visually grounded text input return to
 the Genie. Connected Browser Use continues to share the decision graph but does
 not yet expose screenshot-coordinate capture or execution.
 
