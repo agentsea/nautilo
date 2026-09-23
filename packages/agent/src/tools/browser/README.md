@@ -59,6 +59,12 @@ visual typing; plans requiring visually grounded text input return to
 the Genie. Connected Browser Use continues to share the decision graph but does
 not yet expose screenshot-coordinate capture or execution.
 
+After a screenshot-grounded action attempt, Jev receives the current semantic
+snapshot, the last action receipt, and the preceding semantic snapshot when its
+exact prior observation is still in the delegated episode. The preceding state
+is historical only: its target IDs and pixel geometry are not sent or offered
+as executable choices. No extra image or graph-state copy is retained.
+
 Exact role/name action templates remain available for narrower delegation. Reusable action
 templates also support `press` (any key or combination accepted by the ordinary
 tool), `hover`, `double_click`, `scroll_into_view`, `select`, `set_checked`,

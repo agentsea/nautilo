@@ -1659,6 +1659,62 @@ describe("browser decision node", () => {
     expect(reobserve.browserDecision?.pending?.observationId).toBeNull();
   });
 
+  test("gives Jev the previous visual state without stale target ids or image geometry", async () => {
+    const viewport = { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 };
+    const layout = { groupId: "grid-1", kind: "grid" as const, ordinal: 8, itemCount: 16,
+      row: 2, column: 4, rows: 4, columns: 4 };
+    const previous = observation({ observationId: "before-choice", refs: {}, visual: {
+      viewport, keyboardFocus: "page", targets: [{ visualRef: "v77", role: "grid item", name: "2",
+        interaction: "unknown", x: 700, y: 250, context: "old tile", layout }],
+    } });
+    const current = observation({ observationId: "after-choice", refs: {}, visual: {
+      viewport, keyboardFocus: "page", targets: [{ visualRef: "v1", role: "grid item", name: "4",
+        interaction: "unknown", x: 700, y: 250, context: "merged tile", layout }],
+    } });
+    const visualPlan = browserDecisionPlanSchema.parse({ goal: "Keep playing the visible grid",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "press", key: "ArrowRight" }] });
+    const priorChoice = { toolCallId: "press-right", description: "Press ArrowRight",
+      beforeObservationId: previous.observationId, afterObservationId: current.observationId,
+      execution: "executed" as const };
+    const planned = call("visual-plan", "browser_screenshot", { decisionPlan: visualPlan });
+    const pressed = call("press-right", "browser_press", { key: "ArrowRight" });
+    const fresh = call("fresh-screenshot", "browser_screenshot", {});
+    let choiceState: Record<string, unknown> | null = null;
+    const node = createBrowserDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
+      choiceState = input.state as Record<string, unknown>;
+      return { selectedId: "reobserve", requestedModelId: JEV_ID, resolvedModelId: JEV_ID,
+        usage: { inputTokens: 5, outputTokens: 1, actualCostUsd: 0 } };
+    } });
+    await node(state({
+      browserDecision: decision({ plan: visualPlan, observation: current, lastAction: priorChoice }),
+      messages: [
+        new AIMessage({ content: "", tool_calls: [planned] }),
+        successfulResult(planned, JSON.stringify({ observation: previous })),
+        new AIMessage({ content: "", tool_calls: [pressed], additional_kwargs: {
+          nautilo_browser_decision: { operation: "choice", action: priorChoice.description },
+        } }),
+        successfulResult(pressed, "pressed"),
+        new AIMessage({ content: "", tool_calls: [fresh], additional_kwargs: {
+          nautilo_browser_decision: { operation: "reobserve" },
+        } }),
+        successfulResult(fresh, JSON.stringify({ observation: current })),
+      ],
+    }), { signal: new AbortController().signal });
+    expect(choiceState).not.toBeNull();
+    const historical = String(choiceState?.["previousSnapshot"]);
+    expect(historical).toContain('grid item "2" [interaction=unknown, location="middle-right area", group=grid-1, row=2, column=4]');
+    expect(historical).not.toContain("visual_ref=");
+    expect(historical).not.toMatch(/\b(?:imageX|imageY|imageWidth|imageHeight|x|y)=/u);
+    expect(choiceState?.["lastAction"]).toMatchObject({ description: "Press ArrowRight", execution: "executed" });
+    expect(String(choiceState?.["snapshot"])).toContain('grid item "4" [visual_ref=v1');
+
+    const unpaired = browserDecisionChoiceInput({ modelId: JEV_ID, signal: new AbortController().signal,
+      plan: visualPlan, observation: current, previousObservation: previous, candidates: [],
+      lastAction: { ...priorChoice, afterObservationId: "another-screenshot" } });
+    expect(unpaired.state).not.toHaveProperty("previousSnapshot");
+  });
+
   test("selects exact visual append typing and binds it to the screenshot observation", async () => {
     const exactText = "Foxes — curious 🦊\nSecond line";
     const visualObservation = observation({ refs: {}, visual: {

@@ -16,6 +16,7 @@ import {
   browserDecisionCandidates,
   browserDecisionAdditionalInstructions,
   browserDecisionChoiceInput,
+  browserObservationFromResult,
   browserDecisionDriverCall,
   browserDecisionHandoffMessage,
   currentBrowserDecision,
@@ -123,6 +124,19 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
         }
       }
       const episodeMessages = planIndex < 0 ? [] : state.messages.slice(planIndex + 1);
+      let previousObservation: typeof observation | undefined;
+      if (observation.visual && decision.lastAction?.afterObservationId === observation.observationId) {
+        for (let index = episodeMessages.length - 1; index >= 0; index--) {
+          const message = episodeMessages[index];
+          if (!ToolMessage.isInstance(message) || message.name !== "browser_screenshot") continue;
+          const prior = browserObservationFromResult(message.name, message.content);
+          if (prior?.visual && prior.browserSessionId === observation.browserSessionId
+            && prior.observationId === decision.lastAction.beforeObservationId) {
+            previousObservation = prior;
+            break;
+          }
+        }
+      }
       const recentActions = episodeMessages.flatMap((message) => {
         if (!AIMessage.isInstance(message)) return [];
         const receipt = message.additional_kwargs["nautilo_browser_decision"] as Record<string, unknown> | undefined;
@@ -163,6 +177,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           signal: runSignal,
           plan: decision.plan,
           observation,
+          ...(previousObservation === undefined ? {} : { previousObservation }),
           candidates,
           recentActions,
           lastAction: decision.lastAction,

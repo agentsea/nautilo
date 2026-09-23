@@ -284,6 +284,7 @@ const VISUAL_DECISION_INSTRUCTIONS =
   "visual_type candidates atomically focus the selected semantic target and type the exact Genie-supplied value into the resulting page focus. " +
   "A successful append-only visual_type intent is offered at most once in a delegated episode; use the fresh screenshot to verify it or choose a different remaining action, never to append the same value again. " +
   "scroll_up and scroll_down are ordinary browser_scroll operations and must be followed by a fresh screenshot before choosing newly visible content. " +
+  "When previousSnapshot is present, it is the visual state before lastAction, not a source of current targets. Compare it with snapshot to judge what changed; only current choices and visual_ref values can be acted on. " +
   "Do not choose needs_visual_evidence merely because targets use visual_ref or because the original screenshot is unavailable to you: the structured state is your visual evidence. " +
   "Choose needs_visual_evidence only when the required target is still absent or ambiguous. Choose needs_input only when required text is absent from the executable visual_type choices.";
 
@@ -383,7 +384,7 @@ function semanticVisualTarget(target: BrowserVisualTarget, visual: BrowserVisual
   };
 }
 
-function browserVisualSemanticSnapshot(visual: BrowserVisualObservation): string {
+function browserVisualSemanticSnapshot(visual: BrowserVisualObservation, historical = false): string {
   const groups = [...new Map(visual.targets.filter((target) => target.layout !== undefined)
     .map((target) => [target.layout!.groupId, target.layout!])).values()];
   return [
@@ -395,7 +396,8 @@ function browserVisualSemanticSnapshot(visual: BrowserVisualObservation): string
       const structure = semantic.layout === undefined
         ? ""
         : `, group=${semantic.layout.groupId}, row=${semantic.layout.row}, column=${semantic.layout.column}`;
-      return `  - ${semantic.role} ${JSON.stringify(semantic.name)} [visual_ref=${semantic.visualRef}, interaction=${semantic.interaction}, location=${JSON.stringify(semantic.location)}${structure}] context=${JSON.stringify(semantic.context)}`;
+      const reference = historical ? "" : `visual_ref=${semantic.visualRef}, `;
+      return `  - ${semantic.role} ${JSON.stringify(semantic.name)} [${reference}interaction=${semantic.interaction}, location=${JSON.stringify(semantic.location)}${structure}] context=${JSON.stringify(semantic.context)}`;
     }),
   ].join("\n");
 }
@@ -448,6 +450,7 @@ export interface BrowserDecisionChoiceInputOptions {
   readonly tenantContext?: ChoiceInput["tenantContext"];
   readonly plan: BrowserDecisionPlan;
   readonly observation: BrowserDecisionObservation;
+  readonly previousObservation?: BrowserDecisionObservation;
   readonly candidates: readonly BrowserDecisionCandidate[];
   readonly recentActions?: readonly unknown[];
   readonly lastAction?: BrowserDecisionState["lastAction"];
@@ -471,6 +474,12 @@ function bindBrowserDecisionPlanToObservation(
 /** Build the exact semantic Choice request shared by the live node and evals. */
 export function browserDecisionChoiceInput(options: BrowserDecisionChoiceInputOptions): ChoiceInput {
   const { plan, observation } = options;
+  const previous = options.previousObservation;
+  const previousSnapshot = observation.visual && previous?.visual && options.lastAction
+    && previous.browserSessionId === observation.browserSessionId
+    && previous.observationId === options.lastAction.beforeObservationId
+    && observation.observationId === options.lastAction.afterObservationId
+    ? browserVisualSemanticSnapshot(previous.visual, true) : null;
   const semanticRecentActions = observation.visual
     ? sanitizeVisualReceiptValue(options.recentActions) as readonly unknown[] | undefined
     : options.recentActions;
@@ -488,6 +497,7 @@ export function browserDecisionChoiceInput(options: BrowserDecisionChoiceInputOp
     // does not substitute action counts for observed control values.
     state: {
       ...(semanticRecentActions?.length ? { recentActions: semanticRecentActions } : {}),
+      ...(previousSnapshot === null ? {} : { previousSnapshot }),
       ...(semanticLastAction ? { lastAction: {
         description: semanticLastAction.description,
         execution: semanticLastAction.execution,
