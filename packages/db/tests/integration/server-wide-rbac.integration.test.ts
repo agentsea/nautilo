@@ -200,20 +200,61 @@ describe("D556 retired capability reconciliation", () => {
 });
 
 describe("custom Role funding compatibility reconciliation", () => {
-  test("widens every historical paid entrance idempotently without inferring personal-key authority or moving Guest memberships", async () => {
+  test("widens historical entrances idempotently and preserves effective custom-Group, union, Guest, and Community boundaries", async () => {
     const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const ownerRows = await sql<{ id: string }[]>`
+    const userRows = await sql<{ id: string; name: string }[]>`
       INSERT INTO users (name, email, handle)
-      VALUES (${`funding-seed-${suffix}`}, ${`funding-seed-${suffix}@t`}, ${`fs${suffix.slice(-6)}`})
-      RETURNING id
+      VALUES
+        (${`funding-seed-${suffix}`}, ${`funding-seed-${suffix}@t`}, ${`fs${suffix.slice(-6)}`}),
+        (${`funding-effective-${suffix}`}, ${`funding-effective-${suffix}@t`}, ${`fe${suffix.slice(-6)}`}),
+        (${`funding-union-${suffix}`}, ${`funding-union-${suffix}@t`}, ${`fu${suffix.slice(-6)}`}),
+        (${`funding-guest-${suffix}`}, ${`funding-guest-${suffix}@t`}, ${`fg${suffix.slice(-6)}`})
+      RETURNING id, name
     `;
-    const ownerId = ownerRows[0]!.id;
+    const userIdByName = new Map(userRows.map((row) => [row.name, row.id]));
+    const ownerId = userIdByName.get(`funding-seed-${suffix}`)!;
+    const effectiveUserId = userIdByName.get(`funding-effective-${suffix}`)!;
+    const unionUserId = userIdByName.get(`funding-union-${suffix}`)!;
+    const guestUserId = userIdByName.get(`funding-guest-${suffix}`)!;
+    const fixtureUserIds = [ownerId, effectiveUserId, unionUserId, guestUserId];
     const sourceSlugs = Object.keys(CUSTOM_ROLE_COMPATIBILITY_GRANTS);
     const roleSlugs = [
       ...sourceSlugs.map((source) => `compat-${source}-${suffix}`),
       `compat-both-${suffix}`,
       `compat-neither-${suffix}`,
     ];
+    const customGroupTypes = [
+      `compat-effective-${suffix}`,
+      `compat-union-a-${suffix}`,
+      `compat-union-b-${suffix}`,
+    ];
+
+    const customRoleGrantSnapshot = async (): Promise<readonly string[]> => {
+      const rows = await sql<{ role_slug: string; capability_slug: string }[]>`
+        SELECT roles.slug AS role_slug, capabilities.slug AS capability_slug
+        FROM role_capabilities
+        INNER JOIN roles ON roles.id = role_capabilities.role_id
+        INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+        WHERE roles.slug = ANY(${roleSlugs as unknown as string[]})
+        ORDER BY roles.slug, capabilities.slug
+      `;
+      return rows.map((row) => `${row.role_slug}:${row.capability_slug}`);
+    };
+
+    const effectiveCapabilities = async (userId: string): Promise<readonly string[]> => {
+      const rows = await sql<{ slug: string }[]>`
+        SELECT DISTINCT capabilities.slug
+        FROM group_members
+        INNER JOIN "groups" ON "groups".id = group_members.group_id
+        INNER JOIN group_roles ON group_roles.group_id = "groups".id
+        INNER JOIN roles ON roles.id = group_roles.role_id
+        INNER JOIN role_capabilities ON role_capabilities.role_id = roles.id
+        INNER JOIN capabilities ON capabilities.id = role_capabilities.capability_id
+        WHERE group_members.user_id = ${userId}
+        ORDER BY capabilities.slug
+      `;
+      return rows.map((row) => row.slug);
+    };
 
     try {
       await seedTrustPersonal(ownerId, `Funding seed ${suffix}`);
@@ -247,17 +288,58 @@ describe("custom Role funding compatibility reconciliation", () => {
           AND capabilities.slug = 'write_artifacts'
       `;
 
+      for (const groupType of customGroupTypes) {
+        await sql`
+          INSERT INTO "groups" (owner_id, type, label, trust_preset)
+          VALUES (${ownerId}, ${groupType}, ${groupType}, 'personal')
+        `;
+      }
+      const customGroupRolePairs: ReadonlyArray<readonly [string, string]> = [
+        [customGroupTypes[0]!, `compat-use_project_content-${suffix}`],
+        [customGroupTypes[1]!, `compat-invoke_agents-${suffix}`],
+        [customGroupTypes[2]!, `compat-neither-${suffix}`],
+      ];
+      for (const [groupType, roleSlug] of customGroupRolePairs) {
+        await sql`
+          INSERT INTO group_roles (group_id, role_id)
+          SELECT "groups".id, roles.id
+          FROM "groups", roles
+          WHERE "groups".type = ${groupType} AND roles.slug = ${roleSlug}
+        `;
+      }
+      await sql`
+        INSERT INTO group_members (group_id, user_id)
+        SELECT id, ${effectiveUserId} FROM "groups" WHERE type = ${customGroupTypes[0]!}
+      `;
+      await sql`
+        INSERT INTO group_members (group_id, user_id)
+        SELECT id, ${unionUserId} FROM "groups"
+        WHERE type = ANY(${customGroupTypes.slice(1) as unknown as string[]})
+      `;
+
       const guestGroupRows = await sql<{ id: string }[]>`
         SELECT id FROM "groups" WHERE type = 'guests' LIMIT 1
       `;
       await sql`
         INSERT INTO group_members (group_id, user_id)
-        VALUES (${guestGroupRows[0]!.id}, ${ownerId})
+        VALUES (${guestGroupRows[0]!.id}, ${guestUserId})
         ON CONFLICT (group_id, user_id) DO NOTHING
       `;
 
       await seedTrustPersonal(ownerId, `Funding seed ${suffix}`);
+      const firstGrantSnapshot = await customRoleGrantSnapshot();
+      const firstEffectiveSnapshot = {
+        effective: await effectiveCapabilities(effectiveUserId),
+        union: await effectiveCapabilities(unionUserId),
+        guest: await effectiveCapabilities(guestUserId),
+      };
       await seedTrustPersonal(ownerId, `Funding seed ${suffix}`);
+      expect(await customRoleGrantSnapshot()).toEqual(firstGrantSnapshot);
+      expect({
+        effective: await effectiveCapabilities(effectiveUserId),
+        union: await effectiveCapabilities(unionUserId),
+        guest: await effectiveCapabilities(guestUserId),
+      }).toEqual(firstEffectiveSnapshot);
 
       for (const sourceSlug of sourceSlugs) {
         const rows = await sql<{ slug: string }[]>`
@@ -301,25 +383,55 @@ describe("custom Role funding compatibility reconciliation", () => {
       `;
       expect(neitherRows.map((row) => row.slug)).toEqual(["write_artifacts"]);
 
+      expect(firstEffectiveSnapshot.effective).toEqual([
+        "use_project_content",
+        "use_server_provider_credentials",
+      ]);
+      expect(firstEffectiveSnapshot.union).toEqual([
+        "invoke_agents",
+        "invoke_other_agents",
+        "use_server_provider_credentials",
+        "write_artifacts",
+      ]);
+      expect(firstEffectiveSnapshot.guest).toEqual([]);
+
       const membershipRows = await sql<{ type: string }[]>`
         SELECT "groups".type
         FROM group_members
         INNER JOIN "groups" ON "groups".id = group_members.group_id
-        WHERE group_members.user_id = ${ownerId}
+        WHERE group_members.user_id = ${guestUserId}
           AND "groups".type IN ('guests', 'communities')
         ORDER BY "groups".type
       `;
       expect(membershipRows.map((row) => row.type)).toEqual(["guests"]);
+      const communityFixtureMemberships = await sql<{ count: number }[]>`
+        SELECT count(*)::int AS count
+        FROM group_members
+        INNER JOIN "groups" ON "groups".id = group_members.group_id
+        WHERE "groups".type = 'communities'
+          AND group_members.user_id = ANY(${fixtureUserIds as unknown as string[]})
+      `;
+      expect(communityFixtureMemberships[0]?.count).toBe(0);
     } finally {
+      await sql`
+        DELETE FROM group_members
+        WHERE user_id = ANY(${fixtureUserIds as unknown as string[]})
+      `;
+      await sql`
+        DELETE FROM group_roles
+        WHERE group_id IN (
+          SELECT id FROM "groups" WHERE type = ANY(${customGroupTypes as unknown as string[]})
+        )
+      `;
+      await sql`DELETE FROM "groups" WHERE type = ANY(${customGroupTypes as unknown as string[]})`;
       await sql`
         DELETE FROM role_capabilities
         WHERE role_id IN (SELECT id FROM roles WHERE slug = ANY(${roleSlugs as unknown as string[]}))
       `;
       await sql`DELETE FROM roles WHERE slug = ANY(${roleSlugs as unknown as string[]})`;
-      await sql`DELETE FROM group_members WHERE user_id = ${ownerId}`;
-      await sql`DELETE FROM channel_identities WHERE user_id = ${ownerId}`;
-      await sql`DELETE FROM actors WHERE owner_id = ${ownerId}`;
-      await sql`DELETE FROM users WHERE id = ${ownerId}`;
+      await sql`DELETE FROM channel_identities WHERE user_id = ANY(${fixtureUserIds as unknown as string[]})`;
+      await sql`DELETE FROM actors WHERE owner_id = ANY(${fixtureUserIds as unknown as string[]})`;
+      await sql`DELETE FROM users WHERE id = ANY(${fixtureUserIds as unknown as string[]})`;
     }
   }, 60_000);
 });
