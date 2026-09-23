@@ -27,27 +27,17 @@ import {
 } from "@nautilo/agent";
 import {
   getPolicyResolver,
-  buildWideEnvelopeForSpeaker,
-  buildEnvelopeForTargetUsers,
-  createScopeMemoryEnvelopeWithOrigin,
-  createScope,
-  getRoomWithAccess,
-  findActorByOwnerId,
   assertCanInvokeAgent,
   assertCanUseServerProviderCredentials,
   AgentInvocationDeniedError,
   ServerProviderCredentialsDeniedError,
   createAcceptedInvocationAuthority,
   envelopeReadableNamespaces,
-  isNamespaceMemoryEnvelope,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
-import type { TargetUserRef } from "@nautilo/trust";
 import type {
   PolicyResolver,
   MemoryAccessEnvelope,
-  ScopeMemoryEnvelope,
-  ScopeMemoryEnvelopeWithOrigin,
 } from "@nautilo/trust";
 import { log } from "@nautilo/logger";
 import type { ChatArtifactRef, ResolvedFocusedResource } from "@nautilo/types";
@@ -75,6 +65,12 @@ import {
   resolveTaskReturnBinding,
   restoreTaskReturnBindingFromCheckpoint,
 } from "./task-return-binding";
+import { resolveTaskMemoryEnvelope } from "./resolve-task-memory-envelope";
+
+export {
+  selectTaskEnvelopeMode,
+  type TaskEnvelopeMode,
+} from "./resolve-task-memory-envelope";
 
 const WRITER_REVIEW_VERIFICATION_CONTINUATION = [
   "A prior run of this same Task completed a Human-accepted canonical Writer save.",
@@ -188,9 +184,6 @@ export type DispatchTaskRunResult =
  * the report-back ping surfaces the message; this is preferable to silently
  * running with a degraded (empty) tool set.
  */
-/** The three memory-envelope variants the dispatch seam can build (M144). */
-export type TaskEnvelopeMode = "scope" | "wide" | "namespace";
-
 /**
  * Read the server-authored Artifact handoff marker produced only by the
  * `ask_peer` shortcut. Generic Task metadata never gains sharing semantics.
@@ -232,12 +225,6 @@ function readArtifactAwareAskPeerRefs(task: Task): ChatArtifactRef[] {
  * INSIDE the `namespace` branch (M165) to derive the run's namespace envelope —
  * it does not select the mode.
  */
-export function selectTaskEnvelopeMode(task: Task): TaskEnvelopeMode {
-  if (task.useScope) return "scope";
-  if (task.preset === "in_private_namespace") return "wide";
-  return "namespace";
-}
-
 export function resolveToolWhitelist(
   task: Task,
   envelope: MemoryAccessEnvelope,
@@ -436,181 +423,16 @@ export async function dispatchTaskRun(
   // member, so they pass RLS and keep their room linkage.
   const sessionRoomId = task.targetChat === "orphan" ? "" : roomId;
 
-  // 2. Memory envelope (SEAM(phase3) — M144).
-  //
-  // The basic namespace envelope is built first regardless: besides being the
-  // default (in_background / generic `task create`), it is the seam's source
-  // of the resolved `ownerId` + `toolPolicy` (and a fallback `actorId`) the
-  // scope/wide variants need — the resolver already does the actor + capability
-  // lookup internally for `buildEnvelope`, so we do not invent a second path.
-  //
-  // Discriminator (issue R2 refinement / S3): both `in_background` and
-  // `in_private_namespace` are requester-only, so the wide branch keys on
-  // `task.useScope` → scope; else `preset === "in_private_namespace"` → wide;
-  // else → namespace. NOT on `target_user_ids` (which would mis-scope every
-  // requester-only background task).
+  // 2. Resolve the run's Memory envelope through the single Task resolver.
   const laneKey = `task:${task.id}`;
-  // `buildEnvelope` resolves the capability subject via `findActorById(actorId)`
-  // — it expects the requestor's USER ACTOR id, not the `users.id`. `tasks.
-  // requestor_id` is a `users.id`, so translate here; passing the user id
-  // directly makes `findActorById` miss, `getUserCapabilities` get skipped, and
-  // the envelope fall back to the GUEST toolPolicy (every capability-gated tool
-  // forbidden — e.g. a `search_memory` whitelist rejected at dispatch).
-  const requestorActor = await findActorByOwnerId(task.requestorId);
-  const baseEnvelope = await resolver.buildEnvelope(
-    requestorActor?.id ?? task.requestorId,
+  const { envelope } = await resolveTaskMemoryEnvelope({
+    task,
+    db,
+    resolver,
     laneKey,
-    task.agentId,
     sessionRoomId,
-  );
-
-  let envelope: MemoryAccessEnvelope = baseEnvelope;
-  const envelopeMode = selectTaskEnvelopeMode(task);
-
-  if (envelopeMode === "scope") {
-    // M084 parity — scope-memory run with a strict tool whitelist.
-    const actorId = requestorActor?.id ?? baseEnvelope.actorId;
-    let scopeId = task.scopeId;
-    if (!scopeId) {
-      // Mint an ephemeral scope (reuse createScope verbatim) and persist it
-      // back so a later re-dispatch (cron / unpause) reuses the same scope.
-      const scope = await createScope({
-        parentAgentId: task.agentId,
-        speakerUserId: task.requestorId,
-        name: `task:${task.id}`,
-        purpose: task.prompt.slice(0, 200),
-      });
-      if ("error" in scope) {
-        throw new Error(
-          `dispatchTaskRun: createScope failed for task ${task.id}: ${scope.error}`,
-        );
-      }
-      scopeId = scope.scopeId;
-      await updateTask(db, task.id, { scopeId });
-    }
-    const canInheritOrigin = baseEnvelope.memoryMode === "namespace"
-      && baseEnvelope.writableNamespaces.length === 1
-      && (baseEnvelope.writableNamespaces[0]?.trim().length ?? 0) > 0;
-    envelope = canInheritOrigin
-      ? createScopeMemoryEnvelopeWithOrigin(baseEnvelope, scopeId)
-      : {
-          memoryMode: "scope",
-          ownerId: baseEnvelope.ownerId,
-          actorId,
-          agentId: task.agentId,
-          roomId: baseEnvelope.roomId,
-          scopeId,
-          toolPolicy: baseEnvelope.toolPolicy,
-        } satisfies ScopeMemoryEnvelope | ScopeMemoryEnvelopeWithOrigin;
-  } else if (envelopeMode === "wide") {
-    // M137 parity — wide excursion into the speaker's OWN private namespace.
-    const speakerActorId = requestorActor?.id ?? baseEnvelope.actorId;
-    // bring_back (R4): default true. When set, the calling room's namespace
-    // becomes the primary write target so a found artifact/memory can be
-    // written back into it.
-    const bringBack = task.metadata["bringBack"] !== false;
-    let returnRoomNamespaceId: string | undefined;
-    if (bringBack && task.callingRoomId) {
-      const callingRoom = await getRoomWithAccess(task.callingRoomId);
-      returnRoomNamespaceId = callingRoom?.namespaceId;
-    }
-    const wide = await buildWideEnvelopeForSpeaker({
-      speakerActorId,
-      speakerUserId: task.requestorId,
-      agentId: task.agentId,
-      toolPolicy: baseEnvelope.toolPolicy,
-      ...(returnRoomNamespaceId ? { returnRoomNamespaceId } : {}),
-    });
-    if (wide.ok) {
-      // The transcript stays in the orphan/NULL-session thread (hidden, M142
-      // behavior); only the memory scope widens to the private namespace. We
-      // deliberately keep M142's orphan room/thread rather than swapping to
-      // `wide.privateRoomId`, so orphan memoization + the hidden subagent
-      // thread are preserved while reads/writes use the wide envelope.
-      envelope = wide.envelope;
-    } else {
-      log(
-        `[task-dispatch] wide envelope unavailable for task=${task.id} (${wide.reason}); falling back to namespace envelope`,
-      );
-    }
-  } else if (requestorActor) {
-    // M165 — namespace mode: derive the run's namespace from the TARGET-USERS
-    // set (requester auto-included), NOT from the transcript room
-    // (`sessionRoomId`). This is the `subagents-concept.md` rule — when
-    // `use_scope` is false the namespace is "who the task is about". It fixes
-    // the `in_background` empty-namespace bug (target users `[requester]` →
-    // requester's own namespace) and routes `ask_peer` (target users
-    // `[requester, peer]`) to the requester+peer shared namespace rather than
-    // the agent↔peer DM. `target_chat` stays orthogonal (transcript only).
-    //
-    // `awaitTask` carries the freshest `target_user_ids` (the `ask_peer` peer is
-    // appended by `resolveDm` during this dispatch). `requestorActor` is the
-    // user-kind actor; without it we fall back to the base (room-derived)
-    // envelope rather than feeding a `users.id` into the actor-keyed subset rule.
-    const targetUserIds = Array.from(
-      new Set([task.requestorId, ...awaitTask.targetUserIds].filter(Boolean)),
-    );
-    const targetUsers: TargetUserRef[] = [];
-    for (const uid of targetUserIds) {
-      if (uid === task.requestorId) {
-        targetUsers.push({ userId: uid, actorId: requestorActor.id });
-        continue;
-      }
-      const peerActor = await findActorByOwnerId(uid);
-      if (peerActor) targetUsers.push({ userId: uid, actorId: peerActor.id });
-    }
-    const derived = await buildEnvelopeForTargetUsers({
-      requester: { userId: task.requestorId, actorId: requestorActor.id },
-      targetUsers,
-      agentId: task.agentId,
-      toolPolicy: baseEnvelope.toolPolicy,
-      mintLabel: `Task ${task.id.slice(0, 8)} namespace`,
-    });
-    if (derived.ok) {
-      envelope = derived.envelope;
-    } else {
-      // D574 — a Human may invoke a foreign-owned Agent in a Room. A
-      // requester-only background Task normally writes to the requester's
-      // Agent-scoped private namespace, but that private Room correctly does
-      // not exist for a foreign Agent. The old fallback used the orphan
-      // transcript envelope (`sessionRoomId === ""`), leaving no writable
-      // namespace: security_scan could not write its canonical report
-      // Artifact and the Task failed after doing the work.
-      //
-      // In that one exact case, reuse the already-authorized calling Room.
-      // The policy resolver rechecks the requester + selected Agent + Room;
-      // we never mint a private Room, never borrow the Agent owner's
-      // namespace, and never widen a multi-Human target-set Task.
-      const requesterOnly = targetUserIds.length === 1
-        && targetUserIds[0] === task.requestorId;
-      let usedCallingRoom = false;
-      if (requesterOnly && task.callingRoomId) {
-        const callingRoomEnvelope = await resolver.buildEnvelope(
-          requestorActor.id,
-          laneKey,
-          task.agentId,
-          task.callingRoomId,
-        );
-        if (
-          isNamespaceMemoryEnvelope(callingRoomEnvelope)
-          && callingRoomEnvelope.roomId === task.callingRoomId
-          && callingRoomEnvelope.writableNamespaces.length > 0
-        ) {
-          envelope = callingRoomEnvelope;
-          usedCallingRoom = true;
-          log(
-            `[task-dispatch] target-users envelope unavailable for task=${task.id} (${derived.reason}); using authorized calling-room namespace`,
-          );
-        }
-      }
-      if (!usedCallingRoom) {
-        log(
-          `[task-dispatch] target-users envelope unavailable for task=${task.id} (${derived.reason}); falling back to base namespace envelope`,
-        );
-      }
-    }
-  }
-  // else (no requestorActor): basic room-derived namespace envelope.
+    targetUserIds: awaitTask.targetUserIds,
+  });
 
   // D570 — `ask_peer` may carry an exact Artifact handoff prepared by the
   // shortcut. Re-resolve every external id through the freshly built
