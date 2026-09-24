@@ -9,6 +9,7 @@ import {
 } from "@nautilo/agent";
 import type {
   ListRoomsResponse,
+  RoomPresenceResponse,
   CreateRoomRequest,
   RenameRoomRequest,
   SetRoomVisibilityRequest,
@@ -108,6 +109,7 @@ import {
 import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/security-audit-log";
 import { sendAvatar } from "./_helpers/avatar";
 import {
+  readHumanPresence,
   refreshRoomSubscriptionsForUser,
   convergeHumanRoomCatalogs,
   publishRoomCatalogChanged,
@@ -139,7 +141,7 @@ import {
 } from "@nautilo/api-client";
 
 /**
- * M259 — Room participation is location authority, not Memory authority.
+ * Room participation is location authority, not Memory authority.
  * These routes separately prove exact Actor membership through their query;
  * this predicate only rejects anonymous/invalid-bearer callers before that
  * membership lookup. Never reintroduce a Role or `read_memories` proxy here.
@@ -148,7 +150,7 @@ function viewerIsAuthenticatedHuman(userId: string | null | undefined): boolean 
   return typeof userId === "string" && userId.length > 0;
 }
 
-/** D279 Phase 3.6 — precise expiry: finalize rows + push WS (timer callback). */
+/** Precise expiry: finalize rows + push WS (timer callback). */
 async function handleRoomSilenceExpiry(roomId: string): Promise<void> {
   const db = getSharedDirectDb();
   try {
@@ -184,7 +186,7 @@ export type RoomsRouteService = {
   /** Optional authorization seam for focused route tests. */
   userHasCapability?: typeof userHasCapability;
   assertCanInvokeAgent?: AssertCanInvokeAgent;
-  /** M297 — injected so route tests stay database-free. */
+  /** Injected so route tests stay database-free. */
   humanPairIsBlocked?: (firstUserId: string, secondUserId: string) => Promise<boolean>;
   listRoomsForActor: (actorId: string) => Promise<RoomSummaryRow[]>;
   getRoomDetailForMember: (
@@ -209,7 +211,7 @@ export type RoomsRouteService = {
   renamePrivateRoomForOwner: typeof renamePrivateRoomForOwner;
   listManageableRoomsForUser: typeof listManageableRoomsForUser;
   getRoomDetailForManager: typeof getRoomDetailForManager;
-  /** M124 — public rooms. Optional so hermetic route unit tests can omit them. */
+  /** Public rooms. Optional so hermetic route unit tests can omit them. */
   listDiscoverableRoomsForUser?: typeof listDiscoverableRoomsForUser;
   joinOpenRoom?: typeof joinOpenRoom;
   createOpenRoom?: typeof createOpenRoom;
@@ -219,9 +221,9 @@ export type RoomsRouteService = {
   findOrCreateHumanOnlyDirectRoom?: typeof findOrCreateHumanOnlyDirectRoom;
   /** Optional so focused route fixtures can inject exact Human resolution. */
   findActorByOwnerId?: typeof findActorByOwnerId;
-  /** M121 — message-in-room check for reaction routes. Optional for hermetic unit-test mocks. */
+  /** Message-in-room check for reaction routes. Optional for hermetic unit-test mocks. */
   isMessageInRoom?: (args: { messageId: number; roomId: string }) => Promise<boolean>;
-  /** M314 — content-free protected membership wake-up; optional in fixtures. */
+  /** Content-free protected membership wake-up; optional in fixtures. */
   resolveProtectedRecipientSyncNamespace?: (
     roomId: string,
   ) => Promise<string | null>;
@@ -377,7 +379,7 @@ function toListResponse(rows: RoomSummaryRow[]): ListRoomsResponse {
       kind: r.kind,
       parentRoomId: r.parentRoomId,
       threadRootMessageId: r.threadRootMessageId,
-      // D246 Wave 2 — fold the compact roster projection through only when the
+      // Fold the compact roster projection through only when the
       // producer populated it (`listRoomsForActor` and manageable catalogues
       // do; discoverable producers intentionally do not).
       ...(r.roster ? { roster: r.roster } : {}),
@@ -394,7 +396,7 @@ function isStrictPersonalAgentRoom(row: RoomSummaryRow, viewerActorId: string): 
   );
 }
 
-/** M259 — deterministic server-owned ranking for the public landing fallback. */
+/** Deterministic server-owned ranking for the public landing fallback. */
 export function pickLargestLandingOpenRoom(rows: RoomSummaryRow[]): RoomSummaryRow | null {
   return [...rows].sort((left, right) => {
     const countOrder = right.memberCount - left.memberCount;
@@ -521,7 +523,7 @@ export function roomsRoutes(
     // Successful catalogue convergence still precedes realtime publication.
     return await publish();
   };
-  /** M068 — rooms the caller may manage members for (admin: all; else owned). */
+  /** Rooms the caller may manage members for (admin: all; else owned). */
   app.get("/api/rooms/manageable", async (request, reply) => {
     const userId = request.sessionUserId;
     // Match `GET /api/rooms` guest semantics: no signed-in user → empty list, not 401.
@@ -539,7 +541,7 @@ export function roomsRoutes(
     return reply.send(toListResponse(rows));
   });
 
-  /** M068 — room roster for members UI when caller manages the room (admin or owner). */
+  /** room roster for members UI when caller manages the room (admin or owner). */
   app.get<{ Params: { id: string } }>("/api/rooms/:id/manage-detail", async (request, reply) => {
     const userId = request.sessionUserId;
     if (!userId) {
@@ -578,7 +580,7 @@ export function roomsRoutes(
   });
 
   /**
-   * M259 — resolve a safe initial Room without delegating public-Room ranking
+   * resolve a safe initial Room without delegating public-Room ranking
    * or administrator choice to the client. Existing exact membership wins;
    * otherwise the largest eligible open Room is joined idempotently, then a
    * Human-only DM with the canonical active Server owner is resolved/created.
@@ -720,9 +722,9 @@ export function roomsRoutes(
     return reply.send(detail);
   });
 
-  // M122 — mark every visible message in a room as read for the caller, up to an
+  // mark every visible message in a room as read for the caller, up to an
   // optional `upToMessageId`. Idempotent; 404s for non-members. Publishes a
-  // canonical viewer-private notification delta only when rows flipped (D196).
+  // canonical viewer-private notification delta only when rows changed.
   app.post<{
     Params: { roomId: string };
     Body: { upToMessageId?: number };
@@ -767,7 +769,7 @@ export function roomsRoutes(
           recipientUserIds: [userId],
         }).catch((err) => {
           warn(
-            `[rooms] M122 unread publish failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+            `[rooms] unread publish failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
           );
         });
       }
@@ -776,7 +778,7 @@ export function roomsRoutes(
     },
   );
 
-  // D279 Phase 3.5 / D190 — room silence windows (mute + deaf).
+  // Room silence windows (mute + deaf).
   app.get<{ Params: { roomId: string } }>(
     "/api/rooms/:roomId/silence",
     async (request, reply) => {
@@ -931,7 +933,7 @@ export function roomsRoutes(
     },
   );
 
-  // M124 (MR5) — server-wide public-room directory. Any authenticated user
+  // server-wide public-room directory. Any authenticated user
   // can browse; gate is purely "signed in" (`sessionUserId != null`).
   // Deliberately does NOT consult `policyContext.actorRole` — that's the
   // per-Agent relationship axis, which is the wrong axis for Server-level
@@ -946,11 +948,11 @@ export function roomsRoutes(
     return reply.send(toListResponse(rows));
   });
 
-  // M124 (MR6) — self-join an open room. Any authenticated user; does NOT
+  // self-join an open room. Any authenticated user; does NOT
   // consult `policyContext.actorRole`. Idempotent: re-joining returns the
   // same 200 detail with no duplicate parent publish/audit. A rejoin may
   // still repair historical child-membership drift and publish only those
-  // real child changes (D196 watchpoint).
+  // real child changes.
   app.post<{ Params: { id: string } }>("/api/rooms/:id/join", async (request, reply) => {
     const sessionUserId = request.sessionUserId;
     const actorId = request.sessionActorId;
@@ -1032,6 +1034,27 @@ export function roomsRoutes(
     }
     return reply.send(detail);
   });
+
+  app.get<{ Params: { id: string }; Reply: RoomPresenceResponse | { error: string } }>(
+    "/api/rooms/:id/presence",
+    async (request, reply) => {
+      // Presence is transient and viewer-authorized; never reuse a cached roster snapshot.
+      reply.header("Cache-Control", "no-store");
+      const actorId = request.sessionActorId;
+      const roomId = request.params.id;
+      if (!viewerIsAuthenticatedHuman(request.sessionUserId) || !actorId || !isUuidString(roomId)) {
+        return reply.code(404).send({ error: "Not found" });
+      }
+      const detail = await service.getRoomDetailForMember(roomId, actorId);
+      if (!detail) return reply.code(404).send({ error: "Not found" });
+      const humans = detail.members.filter((member) => member.kind === "user");
+      const presence = readHumanPresence(humans.map((member) => member.actorId));
+      return reply.send({ members: humans.map((member) => ({
+        actorId: member.actorId,
+        status: presence.get(member.actorId) ?? "offline",
+      })) });
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/rooms/:id", async (request, reply) => {
     if (!viewerIsAuthenticatedHuman(request.sessionUserId)) {
@@ -1228,7 +1251,7 @@ export function roomsRoutes(
     }
   });
 
-  // D287 — soft-archive a room (hide from lists; retain data). Manager-only;
+  // soft-archive a room (hide from lists; retain data). Manager-only;
   // does NOT trip the self-leave `room_owner_last_admin` guard.
   app.post<{ Params: { id: string } }>("/api/rooms/:id/archive", async (request, reply) => {
     const userId = request.sessionUserId;
@@ -1271,7 +1294,7 @@ export function roomsRoutes(
     return reply.send({ ok: true });
   });
 
-  // D287 — restore a soft-archived room to member lists / discovery.
+  // restore a soft-archived room to member lists / discovery.
   app.post<{ Params: { id: string } }>("/api/rooms/:id/unarchive", async (request, reply) => {
     const userId = request.sessionUserId;
     if (!userId) {
@@ -1313,8 +1336,8 @@ export function roomsRoutes(
     return reply.send({ ok: true });
   });
 
-  // D194 — flip room visibility (open ↔ group). Gated on `manage_rooms`
-  // (same axis as M124 public-room creation); room ownership alone is not
+  // flip room visibility (open ↔ group). Gated on `manage_rooms`
+  // (same axis as public-room creation); room ownership alone is not
   // sufficient.
   app.post<{ Params: { id: string }; Body: SetRoomVisibilityRequest }>(
     "/api/rooms/:id/visibility",
@@ -1365,7 +1388,7 @@ export function roomsRoutes(
     },
   );
 
-  // D302 P5b — persistent smart-routing policy (`advanced` | `standard`).
+  // persistent smart-routing policy (`advanced` | `standard`).
   app.post<{ Params: { id: string }; Body: SetRoomConductorModeRequest }>(
     "/api/rooms/:id/conductor-mode",
     async (request, reply) => {
@@ -1419,7 +1442,7 @@ export function roomsRoutes(
       if (!isUuidString(roomId)) {
         return reply.code(400).send({ error: "invalid room id" });
       }
-      // M128 — was hard-gated on `actorRole === "owner"` (legacy
+      // was hard-gated on `actorRole === "owner"` (legacy
       // single-tenant semantics). Now: admin OR `manage_rooms` cap
       // OR per-room ownership (rooms.owner_id). Members renaming
       // their own rooms work; non-owner Members cannot rename
@@ -1456,20 +1479,20 @@ export function roomsRoutes(
   );
 
   app.post<{ Body: CreateRoomRequest }>("/api/rooms", async (request, reply) => {
-    // M128 unify (2026-05-29) — replaces the legacy
+    // Room creation replaces the legacy
     // `actorRole IN {owner, household, teammate}` gate (which broke
-    // every member/superuser/contributor caller post-M128 because
+    // every member/superuser/contributor caller after the role migration because
     // those slugs don't resolve any more).
     //
-    // Two-tier authz aligned with the user's directive:
-    //   * No-explicit-members ("self + my Genie" personal room):
-    //     authentication is enough; downstream `createRoomForOwner`
-    //     uses the caller's own personal Agent. No capability gate.
-    //   * Explicit-members (multi-actor / cross-Human room):
-    //     requires `manage_rooms` capability OR server admin.
-    //     `createRoomFromMembers` further enforces that the caller
-    //     is one of the listed members + that every other member is
-    //     reachable.
+    // Two-tier authz aligned with the capability model:
+    // * No-explicit-members ("self + my Genie" personal room):
+    // authentication is enough; downstream `createRoomForOwner`
+    // uses the caller's own personal Agent. No capability gate.
+    // * Explicit-members (multi-actor / cross-Human room):
+    // requires `manage_rooms` capability OR server admin.
+    // `createRoomFromMembers` further enforces that the caller
+    // is one of the listed members + that every other member is
+    // reachable.
     const sessionUserId = request.sessionUserId;
     const actorId = request.sessionActorId;
     if (!sessionUserId || !actorId) {
@@ -1519,7 +1542,7 @@ export function roomsRoutes(
         error: `${requestedPersonalAgentId ? "personalAgentId" : "directHumanUserId"} requires a private room`,
       });
     }
-    // M124 / D473 — public-room creation is always gated by `manage_rooms`.
+    // public-room creation is always gated by `manage_rooms`.
     // An omitted roster remains the creator-only public room. A supplied
     // roster follows the same entity/reachability rules as private/group
     // creation and must explicitly include the creator exactly once.
@@ -1669,13 +1692,13 @@ export function roomsRoutes(
     }
     const explicitMembers = Array.isArray(rawMembers) ? rawMembers : null;
     if (explicitMembers && explicitMembers.length > 0) {
-      // D543 — ordinary shared Room creation gates on `create_rooms`;
+      // ordinary shared Room creation gates on `create_rooms`;
       // solo "me + my Genie" rooms (the no-explicit-members branch below)
       // intentionally do NOT need it. The reachability bypass
       // (`isAdmin` → `assertCanCreateRoomMembers` skips the share-a-room
       // check) is the higher server-admin tier `manage_members` (the
-      // issue's lowercase "admin"); a `manage_rooms`-only superuser still
-      // has member reachability enforced. Pre-D219 this was the
+      // server administrator); a `manage_rooms`-only superuser still
+      // has member reachability enforced. Previously this was the
       // `server_role='admin'` bypass.
       const caps = await getUserCapabilities(sessionUserId);
       if (!caps.includes("create_rooms") && !caps.includes("manage_rooms")) {
@@ -1736,8 +1759,8 @@ export function roomsRoutes(
       }
     }
 
-    // M125 Phase 1.2: the no-explicit-members "New chat" path uses the
-    // CALLER'S own primary agent (deterministic owned[0] after Phase 0)
+    // the no-explicit-members "New chat" path uses the
+    // CALLER'S own primary agent (the canonical primary owned agent)
     // instead of borrowing the bootstrap default. Without this, every
     // non-operator user's new room landed the operator's agent as the
     // sole agent member.
@@ -2012,7 +2035,7 @@ export function roomsRoutes(
     return reply.send({ agents });
   });
 
-  // D193 follow-up — directory of humans visible to the caller. Powers the
+  // directory of humans visible to the caller. Powers the
   // "New conversation" picker so admins can bootstrap a first shared room
   // with users they don't yet share any room with. Non-admins get the
   // room-roster union (same scope as the previous client-side fan-out).
@@ -2030,7 +2053,7 @@ export function roomsRoutes(
     return reply.send({ users });
   });
 
-  // D187 (Stack 129) — unified, recency-ranked directory search for the
+  // unified, recency-ranked directory search for the
   // "New conversation" member picker. Searches humans + agents in one call
   // so the client no longer loads the whole directory. See
   // `searchDirectory` in @nautilo/trust for scoping + recency derivation.
@@ -2087,7 +2110,7 @@ export function roomsRoutes(
         return reply.code(400).send({ error: "invalid id" });
       }
 
-      // M124 (MR8) — self-leave. When the caller removes their OWN actor we
+      // self-leave. When the caller removes their OWN actor we
       // skip `assertCallerCanManageRoom` (you don't need manage rights to
       // leave). Guard: the room creator (`rooms.owner_id === sessionUserId`)
       // is blocked with 409 `room_owner_last_admin` until another admin
@@ -2275,19 +2298,19 @@ export function roomsRoutes(
   );
 
   /**
-   * D128 / D194 C2 — patch a room member's agent mode OR human room-role.
+   * patch a room member's agent mode OR human room-role.
    *
    * Body (exactly one field):
-   *   - `{ agentResponseMode: "active" | "mention_only" | "observe" }` — agent rows
-   *   - `{ roomRole: "admin" | "member" }` — user rows
+   * - `{ agentResponseMode: "active" | "mention_only" | "observe" }` — agent rows
+   * - `{ roomRole: "admin" | "member" }` — user rows
    *
    * Manager-only (owner / server-admin) per the existing manage-rooms RBAC.
    *
    * 4xx semantics:
-   *   - 400 invalid id / invalid body
-   *   - 401 not signed in
-   *   - 403 caller cannot manage this room
-   *   - 404 (room, actor) row not found OR actor kind mismatch
+   * - 400 invalid id / invalid body
+   * - 401 not signed in
+   * - 403 caller cannot manage this room
+   * - 404 (room, actor) row not found OR actor kind mismatch
    */
   app.patch<{ Params: { id: string; actorId: string }; Body: UpdateRoomMemberRequest }>(
     "/api/rooms/:id/members/:actorId",
@@ -2383,7 +2406,7 @@ export function roomsRoutes(
   );
 
   /**
-   * M134 Phase 4 — the requesting user's active focus links in this room.
+   * the requesting user's active focus links in this room.
    * Private to the requester (other members never see your foci). Includes
    * `focusId` (the DELETE route is keyed by it). Calls the lazy expiry sweep.
    */
@@ -2430,7 +2453,7 @@ export function roomsRoutes(
   );
 
   /**
-   * M134 Phase 4 — open (or extend) a focus on a bot via the UI, no message
+   * open (or extend) a focus on a bot via the UI, no message
    * sent. `source: "ui"`. Body `{ botActorId }` must be an agent member.
    */
   app.post<{ Params: { id: string }; Body: { botActorId?: string } }>(
@@ -2514,7 +2537,7 @@ export function roomsRoutes(
   );
 
   /**
-   * M134 Phase 4 — explicitly clear one of the requester's focus links.
+   * explicitly clear one of the requester's focus links.
    */
   app.delete<{ Params: { id: string; focusId: string } }>(
     "/api/rooms/:id/focus/:focusId",
@@ -2560,7 +2583,7 @@ export function roomsRoutes(
     "/api/rooms/:roomId/messages",
     liveShadowLargeRequestRouteOptions,
     async (request, reply) => {
-      // M254 — Guests intentionally hold no Capabilities, but a Guest seated
+      // Guests intentionally hold no Capabilities, but a Guest seated
       // in the canonical guests Group is still a verified room participant.
       // Keep unseated/no-Role callers on the non-leaking 404 path, then let
       // exact Room membership and invocation admission decide the send.
@@ -2580,7 +2603,7 @@ export function roomsRoutes(
         path: `/api/rooms/${encodeURIComponent(request.params.roomId)}/messages`,
         body: request.body,
       });
-      // D566 — origin proof is optional provenance for later host-scoped work,
+      // origin proof is optional provenance for later host-scoped work,
       // not authority to send an authenticated Room message. A stale, revoked,
       // malformed, or replayed proof therefore contributes no origin. The
       // host-scoped path still fails closed because only a verified origin is
@@ -2681,7 +2704,7 @@ export function roomsRoutes(
     },
   );
 
-  // M230 — edit one logical Human turn with optimistic concurrency.
+  // edit one logical Human turn with optimistic concurrency.
   app.post<{
     Params: { roomId: string; messageId: string };
     Body: unknown;
@@ -2833,7 +2856,7 @@ export function roomsRoutes(
     },
   );
 
-  // ISSUE-M172 — hard-delete a single room message. Sibling of the reaction
+  // hard-delete a single room message. Sibling of the reaction
   // DELETE route so it carries `roomId` for the room-lane WS emit. The row is
   // physically removed; CASCADE/SET-NULL FKs clean up reactions, recipient
   // read-state, quote-reply links, and focus/subthread anchors. A message that

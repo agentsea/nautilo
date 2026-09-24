@@ -38,7 +38,7 @@ import {
 } from "@nautilo/types";
 import type { RuntimePolicyContext } from "@nautilo/trust";
 import { listRoomsForActor as defaultListRoomsForActor } from "@nautilo/trust";
-import { addClient, publishTypingPing, trackHumanSocketAdmission, type WsClientMeta } from "../realtime/ws-publisher";
+import { addClient, recordClientPing, publishTypingPing, trackHumanSocketAdmission, type WsClientMeta } from "../realtime/ws-publisher";
 import { getClientActionBindingRegistry } from "../realtime/client-action-binding-registry";
 import { getTtsService } from "../realtime/tts-service";
 import { voiceDelivery } from "../realtime/voice-delivery";
@@ -243,7 +243,7 @@ export function handleWsConnection(
 
   socket.on("message", (raw: RawData) => {
     if (state === "closed" || socket.readyState !== socket.OPEN) return;
-    let parsed: { type?: unknown; token?: unknown; initiatingClientSurface?: unknown; voiceProtocol?: unknown; turnId?: unknown };
+    let parsed: { type?: unknown; token?: unknown; initiatingClientSurface?: unknown; voiceProtocol?: unknown; turnId?: unknown; idle?: unknown };
     try {
       parsed = JSON.parse(rawDataToString(raw)) as {
         type?: unknown;
@@ -272,6 +272,7 @@ export function handleWsConnection(
     // anything else is ignored).
     const msgType = parsed.type;
     if (msgType === "ping") {
+      recordClientPing(socket, parsed.idle);
       if (socket.readyState === socket.OPEN) {
         socket.send(
           JSON.stringify({ type: "pong", timestamp: Date.now() }),

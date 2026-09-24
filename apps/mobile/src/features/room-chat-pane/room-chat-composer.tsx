@@ -1,4 +1,4 @@
-// D424 Phase 4.1 — shared chat composer strip. Consumes a `RoomChatController`
+// Shared chat composer strip. Consumes a `RoomChatController`
 // and renders the transcript-adjacent controls: auto-approve/stop-note bar,
 // approval card, typing indicator, routing receipt, inline reply preview, and
 // the composer primitive with model + voice + attachment controls.
@@ -29,6 +29,7 @@ import { HostChoiceCard } from "@/components/host-choice-card";
 import { StoppedNote } from "@/components/stopped-note";
 import { AskUserPicker } from "@/features/room-chat-pane/ask-user-picker";
 import { mobileMentionCandidates } from "@/features/room-chat-pane/human-mentions";
+import { recordMobileHumanActivity } from "@/lib/human-activity";
 import type { RoomChatController, RoomChatComposerCapabilities } from "@/hooks/use-room-chat-controller";
 import { useAppTheme } from "@/providers/theme";
 import type { AppTheme } from "@/theme/tokens";
@@ -156,7 +157,10 @@ export function RoomChatComposer({
       <Composer
         onSend={c.handleSend}
         value={c.draftText}
-        onChangeText={c.setDraftText}
+        onChangeText={(text) => {
+          recordMobileHumanActivity();
+          c.setDraftText(text);
+        }}
         onDiscardDraft={c.discardDraft}
         serverUrl={c.serverUrl}
         disabled={c.sending || interactionDisabled || c.directHumanInteractionBlocked}

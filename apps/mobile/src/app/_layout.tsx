@@ -15,6 +15,7 @@ import { isExactTaskId } from "@/features/task-work/task-detail-state";
 import { rootTaskAttentionPlacement } from "@/features/task-work/task-attention-placement";
 import { mobileUserAgreementDestination } from "@/features/user-agreement/admission";
 import { roomIdFromLaneKey } from "@/lib/messages";
+import { observeMobileTouchStart } from "@/lib/human-activity";
 import { authGateNavigationTarget } from "@/lib/auth-gate-navigation";
 import { authGateDestination } from "@/lib/session-expiry";
 import { AttentionProvider, useAttention } from "@/providers/attention";
@@ -32,18 +33,7 @@ import { AppThemeProvider, useAppTheme } from "@/providers/theme";
 import { UserAgreementProvider, useUserAgreement } from "@/providers/user-agreement";
 import { VoiceProvider } from "@/providers/voice";
 
-// D369 root layout. Phase 1 ServerRegistry + Phase 2 Auth + Phase 3 Realtime
-// providers; Phase 4 mounted global deep-link routing + DisconnectBanner.
-// D468 replaces that hook with one root-owned inbound coordinator for URLs and
-// notification responses, so OAuth remains the only callback owner.
-// (inside RealtimeProvider so the banner can read connectionState). Phase 7
-// adds AttentionProvider (approvals + PIN challenges, needs `subscribe`)
-// inside RealtimeProvider, plus the global attention bar + PinModal in
-// RootShell so they overlay the navigator. D382 adds AutoApproveProvider
-// (session-scoped ask-tier auto-approve) wrapping AttentionProvider so the
-// attention handler can read `enabled`. D383 Stage 1 registers the chat stack
-// (AppBar headers live in app/chat/_layout.tsx). D401 adds VoiceProvider
-// (session TTS playback, needs `subscribe`/`send`) inside RealtimeProvider.
+// Root layout owns shared providers, inbound navigation, and global overlays.
 // Provider nesting, inside-out:
 // ServerRegistry → PushLifecycle → Auth → ArtifactEvents → Realtime →
 // InboundIntent → Voice → AutoApprove → Attention → Theme/Stack.
@@ -95,7 +85,7 @@ function AttentionOverlay() {
   return <AttentionBar message={message} onPress={onPress} compact={isTaskApproval} />;
 }
 
-// D398 / D465 — one canonical auth gate for every protected route. Wait for
+// one canonical auth gate for every protected route. Wait for
 // both providers to hydrate, then derive the destination from current state;
 // do not depend on having observed a prior signed-in → signed-out transition.
 function useAuthGate() {
@@ -212,7 +202,9 @@ export default function RootLayout() {
                                 <AutoApproveProvider>
                                   <AttentionProvider>
                                     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-                                      <RootShell />
+                                      <View style={{ flex: 1 }} onStartShouldSetResponderCapture={observeMobileTouchStart}>
+                                        <RootShell />
+                                      </View>
                                       <StatusBar style="auto" />
                                     </ThemeProvider>
                                   </AttentionProvider>
