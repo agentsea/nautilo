@@ -793,7 +793,9 @@ function parseWindows(
       layer,
       zIndex: zIndex as number | null,
       onScreen,
-      appWindowCandidate: semanticTitle !== undefined && bounds.width > 0 && bounds.height > 0
+      // A title is presentation, not window identity. Located untitled windows
+      // remain candidates; their accessibility/input readiness is checked later.
+      appWindowCandidate: bounds.width > 0 && bounds.height > 0
         && isLocatedWindowSurface(onScreen, onCurrentSpace, spaceIds as readonly unknown[] | null),
     });
   }
@@ -853,7 +855,7 @@ function parseLaunchWindows(value: unknown, pid: number, returnedName: string): 
     windows.push({
       windowId, pid: windowPid, appName: returnedName, title, bounds, layer,
       zIndex: window["z_index"] as number, onScreen: window["is_on_screen"],
-      appWindowCandidate: semanticTitle !== undefined && bounds.width > 0 && bounds.height > 0
+      appWindowCandidate: bounds.width > 0 && bounds.height > 0
         && isLocatedWindowSurface(
           window["is_on_screen"],
           window["on_current_space"],
@@ -3196,13 +3198,9 @@ export class CuaComputerUseAdapter {
       const coverage: ComputerUseObservationCoverage | null = apps.uninspectedApplications > 0 || windows.uninspectedWindows > 0
         ? { uninspectedApplications: apps.uninspectedApplications, knownUninspectedWindows: windows.uninspectedWindows, windowCountExact: windows.uninspectedWindows === 0 }
         : null;
-      // `list_windows` is complete raw layer-zero WindowServer inventory. It
-      // legitimately contains positive-size, titleless helper surfaces (ten
-      // each for Spotify and Chrome in CUA-LAB-0101), which are useful private
-      // discovery evidence but are not truthful user-facing windows. Apply the
-      // same conservative admission boundary as app-scoped observation before
-      // minting semantic targets; the full raw set remains accounted for by
-      // the checked parse and coverage calculation above.
+      // Raw layer-zero inventory includes unlocated retained/helper surfaces.
+      // Use the same geometry/location evidence as app-scoped discovery, never
+      // a title or size heuristic. A candidate is not proof of input readiness.
       const semanticWindows = windows.windows.filter((window) => window.appWindowCandidate);
       const omitted = Math.max(0, semanticWindows.length - limit);
       const targets: readonly { readonly evidence: ComputerUseTargetEvidence; readonly providerTarget: ComputerUseProviderTarget }[] = [
@@ -4718,8 +4716,8 @@ export class CuaComputerUseAdapter {
           if (post === null) this.invalidateMalformedProvider();
           break;
         }
-        // A browser window legitimately creates several untitled layer-zero
-        // helper surfaces. Only titled positive-size ordinary candidates are
+        // Window creation can also produce unlocated layer-zero helper surfaces.
+        // Only located positive-size candidates are
         // semantic windows; retain the raw complete set solely as the checked
         // provider envelope and compare the ordinary candidate sets here.
         appeared = post.windows.filter((window) => window.appWindowCandidate && !baselineIds.has(window.windowId));

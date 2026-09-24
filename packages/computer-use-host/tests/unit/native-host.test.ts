@@ -5,8 +5,10 @@ import { NATIVE_COMPATIBILITY_SCHEMAS } from "@nautilo/computer-use-contracts/na
 
 import type { CuaCheckedContextPort, CuaMainLifecycle } from "../../src/native-cua-lifecycle.ts";
 import { createNativeCuaHost } from "../../src/native-host.ts";
+import * as nativeRuntime from "../../src/native-runtime.ts";
+import { createNativeComputerUseScopeFactory } from "../../src/native-contract-runtime.ts";
 import { COMPUTER_USE_HOST_VERSION } from "../../src/version.ts";
-import classificationReview from "../../reviews/0.1.24.json";
+import classificationReview from "../../reviews/0.1.25.json";
 
 function checkedPort(): CuaCheckedContextPort {
   return {
@@ -98,6 +100,30 @@ test("native Host publishes nothing when its owned driver is unhealthy", async (
     createLifecycle: () => lifecycle,
   })).rejects.toThrow("Host-owned Cua driver did not pass its local readiness check");
   expect(shutdown).toHaveBeenCalledTimes(1);
+});
+
+test("production Host defaults to the native input monitor rather than the inert adapter baseline", async () => {
+  const port = checkedPort();
+  const lifecycle = {
+    startup: async () => ({ lifecycle: "healthy" as const }), checkedContextPort: () => port,
+    subscribeCheckedGenerationInvalidation: () => () => undefined, shutdown: async () => undefined,
+  } as unknown as CuaMainLifecycle;
+  // Stub the OS reader itself: no real HID access, and no injected adapter seam
+  // that could accidentally leave the production default unwired.
+  const monitor = spyOn(nativeRuntime, "readMacosHidIdleNanoseconds").mockRejectedValue(new Error("fixture unreadable"));
+  const runtime = await createNativeCuaHost({ driverPath: "/fixture/cua-driver", runtimeRoot: "/fixture/runtime",
+    hostBundleId: "org.example.fixture", createLifecycle: () => lifecycle });
+  try {
+    const scope = createNativeComputerUseScopeFactory(runtime)({ authorityLeaseId: "fixture-lease", authorityGeneration: 1 });
+    const observed = await runtime.adapter.observe({ scope, operation: "desktop_state" });
+    expect(monitor).toHaveBeenCalled();
+    expect(port.callContextTool).not.toHaveBeenCalled();
+    expect(observed).toMatchObject({ ok: false, outcome: { providerCondition: "unknown" } });
+    expect(observed).not.toMatchObject({ outcome: { externalInterference: "user_input" } });
+  } finally {
+    monitor.mockRestore();
+    await runtime.shutdown();
+  }
 });
 
 test("native Host refuses a checked port that cannot drain dispatched requests", async () => {

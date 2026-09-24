@@ -75,11 +75,14 @@ function rawWindowRow(options: Readonly<{
   width: number;
   height: number;
   onScreen?: boolean;
+  located?: boolean;
 }>) {
   return {
     window_id: options.windowId, pid: options.pid ?? 77, app_name: options.appName, title: options.title,
     bounds: { x: 1, y: 2, width: options.width, height: options.height }, layer: 0, z_index: options.windowId,
-    is_on_screen: options.onScreen ?? false, current_space_id: 1, on_current_space: false, space_ids: [2],
+    is_on_screen: options.onScreen ?? false, current_space_id: 1,
+    on_current_space: options.located === false ? null : false,
+    space_ids: options.located === false ? null : [2],
   };
 }
 
@@ -449,10 +452,10 @@ describe("Cua semantic adapter foundation", () => {
   test("admits only the ordinary Spotify candidate from raw launch/list inventory and keeps helpers private", async () => {
     const rows = [
       rawWindowRow({ windowId: 610, appName: "Spotify", title: "Spotify Premium", width: 1200, height: 800 }),
-      rawWindowRow({ windowId: 611, appName: "Spotify", title: "", width: 1512, height: 33 }),
-      rawWindowRow({ windowId: 612, appName: "Spotify", title: " ", width: 1512, height: 32 }),
-      rawWindowRow({ windowId: 613, appName: "Spotify", title: "", width: 500, height: 500 }),
-      rawWindowRow({ windowId: 614, appName: "Spotify", title: "", width: 64, height: 64 }),
+      rawWindowRow({ windowId: 611, appName: "Spotify", title: "", width: 1512, height: 33, located: false }),
+      rawWindowRow({ windowId: 612, appName: "Spotify", title: " ", width: 1512, height: 32, located: false }),
+      rawWindowRow({ windowId: 613, appName: "Spotify", title: "", width: 500, height: 500, located: false }),
+      rawWindowRow({ windowId: 614, appName: "Spotify", title: "", width: 64, height: 64, located: false }),
       rawWindowRow({ windowId: 615, appName: "Spotify", title: "helper", width: 0, height: 0 }),
       rawWindowRow({ windowId: 616, appName: "Spotify", title: "overlay", width: 0, height: 32 }),
     ];
@@ -483,10 +486,10 @@ describe("Cua semantic adapter foundation", () => {
   test("joins Proton launch rows by exact pid and bundle authority rather than display-label punctuation", async () => {
     const rows = [
       rawWindowRow({ windowId: 680, appName: "ProtonVPN", title: "Proton VPN", width: 340, height: 632 }),
-      rawWindowRow({ windowId: 681, appName: "ProtonVPN", title: "", width: 1512, height: 33 }),
-      rawWindowRow({ windowId: 682, appName: "ProtonVPN", title: "", width: 500, height: 500 }),
+      rawWindowRow({ windowId: 681, appName: "ProtonVPN", title: "", width: 1512, height: 33, located: false }),
+      rawWindowRow({ windowId: 682, appName: "ProtonVPN", title: "", width: 500, height: 500, located: false }),
       rawWindowRow({ windowId: 683, appName: "ProtonVPN", title: "helper", width: 0, height: 0 }),
-      rawWindowRow({ windowId: 684, appName: "ProtonVPN", title: "", width: 64, height: 64 }),
+      rawWindowRow({ windowId: 684, appName: "ProtonVPN", title: "", width: 64, height: 64, located: false }),
       rawWindowRow({ windowId: 685, appName: "ProtonVPN", title: "overlay", width: 0, height: 32 }),
     ];
     const checked = port([
@@ -503,7 +506,7 @@ describe("Cua semantic adapter foundation", () => {
     expect(JSON.stringify(launched)).not.toMatch(/ProtonVPN|ch\.protonvpn|helper|overlay|window_id/i);
   });
 
-  test("locks the captured cross-app raw-inventory cardinalities without filtering off-Space candidates", async () => {
+  test("filters unlocated helper fixtures without filtering off-Space candidates", async () => {
     const families = [
       { name: "Firefox", bundleId: "org.mozilla.firefox", raw: 9, candidates: 2 },
       { name: "TextEdit", bundleId: "com.apple.TextEdit", raw: 9, candidates: 4 },
@@ -520,6 +523,7 @@ describe("Cua semantic adapter foundation", () => {
         width: index < family.candidates ? 900 : index % 2 === 0 ? 1512 : 0,
         height: index < family.candidates ? 700 : index % 2 === 0 ? 33 : 0,
         onScreen: false,
+        located: index < family.candidates,
       }));
       const checked = port([
         installedApps([{ pid: 0, name: family.name, bundle_id: family.bundleId, active: false, running: false }]),
@@ -541,9 +545,42 @@ describe("Cua semantic adapter foundation", () => {
     }
   });
 
+  test("preserves untitled off-Space windows in launch, app discovery and desktop discovery", async () => {
+    const rows = [
+      rawWindowRow({ windowId: 500, appName: "Sketchpad", title: "", width: 960, height: 720 }),
+      rawWindowRow({ windowId: 501, appName: "Sketchpad", title: "", width: 1440, height: 33, located: false }),
+    ];
+    const apps = installedApps([{ pid: 77, name: "Sketchpad", bundle_id: "org.example.sketchpad", active: false, running: true }]);
+    const checked = port([apps, launchWithRawWindows("org.example.sketchpad", "Sketchpad", rows), apps, listedRawWindows(rows),
+      apps, listedRawWindows(rows), exactWindowState(77, 500, true)]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value });
+    const launched = await subject.launchApp({ scope, operation: { kind: "launch_app", app: { name: "Sketchpad" } } });
+    if (!launched.ok || !launched.receipt.app.target) throw new Error("expected launched app");
+    expect(launched.receipt).toMatchObject({ windowSelection: "unique", window: { reference: expect.any(String) } });
+    const appWindows = await subject.observeApplicationWindows({ scope, target: launched.receipt.app.target });
+    expect(appWindows).toMatchObject({ ok: true, observation: { discovered: 1, candidates: [{ evidence: { windowLabel: "Untitled window" } }] } });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    expect(desktop).toMatchObject({ ok: true, observation: { discovered: 1, targets: [{ evidence: { windowLabel: "Untitled window" } }] } });
+    expect(checked.calls.every(call => ["list_apps", "launch_app", "list_windows"].includes(call.name))).toBe(true);
+    if (!desktop.ok) throw new Error("expected window discovery");
+    const observed = await subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target });
+    expect(observed).toMatchObject({ ok: true, observation: { degraded: true, outcome: { recovery: ["focus_target"] } } });
+  });
+
+  test("does not hide located untitled surfaces by label or arbitrary size", async () => {
+    const rows = [
+      rawWindowRow({ windowId: 500, appName: "Sketchpad", title: "", width: 960, height: 720 }),
+      rawWindowRow({ windowId: 501, appName: "Sketchpad", title: " ", width: 64, height: 33 }),
+    ];
+    const checked = port([installedApps([{ pid: 77, name: "Sketchpad", bundle_id: "org.example.sketchpad", active: false, running: true }]),
+      launchWithRawWindows("org.example.sketchpad", "Sketchpad", rows)]);
+    const launched = await new CuaComputerUseAdapter({ port: checked.value }).launchApp({ scope, operation: { kind: "launch_app", app: { name: "Sketchpad" } } });
+    expect(launched).toMatchObject({ ok: true, receipt: { windowSelection: "ambiguous", window: null } });
+  });
+
   test("retains app authority when raw helpers contain no semantic window candidate", async () => {
     const rows = [
-      rawWindowRow({ windowId: 801, appName: "Helper App", title: "", width: 1512, height: 33 }),
+      rawWindowRow({ windowId: 801, appName: "Helper App", title: "", width: 1512, height: 33, located: false }),
       rawWindowRow({ windowId: 802, appName: "Helper App", title: "helper", width: 0, height: 0 }),
     ];
     const checked = port([
@@ -1622,7 +1659,7 @@ describe("Cua semantic adapter foundation", () => {
       result({ apps: [{ pid: 42, name: "Nautilo", bundle_id: "com.nautilo.desktop", active: true, running: true }] }),
       result({
         windows: [
-          rawWindowRow({ windowId: 990, pid: 42, appName: "Nautilo", title: "", width: 500, height: 500, onScreen: false }),
+          rawWindowRow({ windowId: 990, pid: 42, appName: "Nautilo", title: "", width: 500, height: 500, onScreen: false, located: false }),
           rawWindowRow({ windowId: 991, pid: 42, appName: "Nautilo", title: "Connections", width: 800, height: 600, onScreen: false }),
         ],
         current_space_id: 1,
@@ -5939,7 +5976,8 @@ describe("Cua semantic adapter foundation", () => {
   test("creates a Chrome window through the caller's exact native menu path and unique set difference", async () => {
     const existing = { window_id: 700, pid: 88, app_name: "Google Chrome", title: "New Tab", bounds: { x: 1, y: 2, width: 800, height: 600 }, layer: 0, z_index: 0, is_on_screen: true, current_space_id: 1, on_current_space: true, space_ids: [1] };
     const appeared = { ...existing, window_id: 701, z_index: 1 };
-    const helper = { ...existing, window_id: 702, title: "", bounds: { x: 0, y: 0, width: 800, height: 33 }, z_index: 2 };
+    const helper = { ...existing, window_id: 702, title: "", bounds: { x: 0, y: 0, width: 800, height: 33 }, z_index: 2,
+      is_on_screen: false, on_current_space: null, space_ids: null };
     const checked = port([
       result({ windows: [existing, helper], current_space_id: 1 }),
       result({ effect: "unverifiable", route: "accessibility", delivery: { mode: "foreground" } }),
