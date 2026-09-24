@@ -48,6 +48,9 @@ const EXCLUDED_PREFIXES = [
   "packages/limit-invariants/",
   "packages/query-invariants/baseline/",
   "packages/encryption-invariants/baseline/",
+  // Visual eval reports are ignored run output, not authored fixtures or
+  // source policy. Keep the sibling cases and extractor code in the scan.
+  "dev/evals/browser-visual-grounding/.results/",
   // This exact prefix is the generated Wafflebase engine closure. Its pinned
   // upstream source and built files are hash-verified separately; all authored
   // spreadsheet siblings remain in the limit inventory. Like dist directories,
@@ -664,6 +667,14 @@ function scanJson(path: string, content: string): Candidate[] {
   }
   const owner = ownerFor(path);
   const results: Candidate[] = [];
+  const isVisualEvaluationMeasurement = (keys: readonly string[], key: string): boolean =>
+    (path.startsWith("dev/evals/browser-visual-grounding/cases/")
+      && path.endsWith("/case.json")
+      && key === "captureDurationMs")
+    || (path === "dev/evals/browser-visual-grounding/visual-oracles.json"
+      && keys.at(-2) === "expectedTarget"
+      && keys.at(-1) === "region"
+      && (key === "xMax" || key === "yMax"));
   const walk = (value: unknown, keys: readonly string[]): void => {
     if (Array.isArray(value)) {
       value.forEach((item, index) => {
@@ -678,7 +689,8 @@ function scanJson(path: string, content: string): Candidate[] {
     if (value && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
         const resolved = primitiveValue(child);
-        if (isSuspiciousName(key) && resolved?.numeric !== undefined) {
+        if (isSuspiciousName(key) && resolved?.numeric !== undefined
+          && !isVisualEvaluationMeasurement(keys, key)) {
           const effect = effectForName(key);
           results.push(candidate({
             path,

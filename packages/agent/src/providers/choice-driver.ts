@@ -1,6 +1,6 @@
 import { resolveCatalogModel } from "../config/resolved-catalog";
 import { invokeProviderChoice } from "./provider-choice";
-import { decisionProvider } from "./decision-transport";
+import { decisionProvider, type DecisionDependencies } from "./decision-transport";
 import {
   ChoiceRequestError,
   type ChoiceDriver,
@@ -9,15 +9,21 @@ import {
 } from "./choice";
 
 /** Remote metadata cannot install a provider transport. */
-export function resolveChoiceDriver(provider: string): ChoiceDriver | null {
+export function resolveChoiceDriver(
+  provider: string,
+  deps: DecisionDependencies = {},
+): ChoiceDriver | null {
   const supported = decisionProvider(provider);
-  return supported ? { invoke: (input) => invokeProviderChoice(supported, input) } : null;
+  return supported ? { invoke: (input) => invokeProviderChoice(supported, input, deps) } : null;
 }
 
 /** Resolve current catalog authority and dispatch through an implemented Choice adapter. */
-export async function invokeChoice(input: ChoiceInput): Promise<ChoiceResult> {
+export async function invokeChoice(
+  input: ChoiceInput,
+  deps: DecisionDependencies = {},
+): Promise<ChoiceResult> {
   const row = resolveCatalogModel(input.modelId);
-  const driver = resolveChoiceDriver(row.provider);
+  const driver = resolveChoiceDriver(row.provider, deps);
   if (!driver
     || row.workload !== "decision"
     || !row.decision?.operations.includes("choice")) {

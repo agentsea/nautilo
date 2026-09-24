@@ -42,7 +42,7 @@ mac:
   # Sharp's darwin native addons and libvips payload are selected by
   # process.arch. Keep both thin payload trees as runtime-selected files
   # during universal merge rather than attempting to lipo them.
-  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-agent-browser,tools-gog,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
+  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-browser-vision,tools-agent-browser,tools-gog,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
   notarize: false
   # user-facing permission strings + Info.plist
   # release metadata. macOS requires permission strings in Info.plist
@@ -103,6 +103,14 @@ mac:
       to: tools-permissions
       filter:
         - "nautilo-screen-recording-permission"
+    # Source-owned Apple Vision extractor. It consumes only Desktop-owned PNGs
+    # and needs no Screen Recording or Automation entitlement.
+    - from: vendor/browser-visual-grounding
+      to: tools-browser-vision
+      filter:
+        - "nautilo-browser-visual-grounding"
+    # Source-owned universal helper used to inspect the foreground window
+    # without granting Electron additional native entitlements.
     - from: vendor/window-presence
       to: tools-window-presence
       filter:

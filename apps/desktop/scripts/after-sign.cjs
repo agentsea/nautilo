@@ -12,6 +12,7 @@ const {
   SCREEN_RECORDING_PERMISSION_IDENTIFIER: EXPECTED_SCREEN_RECORDING_PERMISSION_IDENTIFIER,
 } = require("./native-helper-contract.cjs");
 const { COMPUTER_USE_HOST_IDENTIFIER: EXPECTED_COMPUTER_USE_HOST_IDENTIFIER } = require("./native-helper-contract.cjs");
+const { BROWSER_VISUAL_GROUNDING_IDENTIFIER: EXPECTED_BROWSER_VISUAL_GROUNDING_IDENTIFIER } = require("./native-helper-contract.cjs");
 const { WINDOW_PRESENCE_IDENTIFIER: EXPECTED_WINDOW_PRESENCE_IDENTIFIER } = require("./native-helper-contract.cjs");
 
 const EXPECTED_NAUTILO_IDENTIFIER = "com.nautilo.desktop";
@@ -119,6 +120,21 @@ function assertComputerUseHostMatchesNautiloIdentity(hostIdentity, appIdentity, 
     if (hostIdentity.authorities.length !== 0 || appIdentity.authorities.length !== 0) throw new Error("[after-sign] ad-hoc Computer Use Host signature must not advertise certificate authorities");
   } else if (!hostIdentity.authorities[0]?.startsWith("Developer ID Application:") || JSON.stringify(hostIdentity.authorities) !== JSON.stringify(appIdentity.authorities)) {
     throw new Error("[after-sign] Computer Use Host certificate authority chain must match enclosing Nautilo.app");
+  }
+  if (expectedTeam !== undefined && appIdentity.teamIdentifier !== expectedTeam) throw new Error(`[after-sign] Nautilo app TeamIdentifier must be ${expectedTeam}; found ${appIdentity.teamIdentifier ?? "none"}`);
+}
+
+function assertBrowserVisualGroundingMatchesNautiloIdentity(helperIdentity, appIdentity, expectedTeam) {
+  if (helperIdentity.identifier !== EXPECTED_BROWSER_VISUAL_GROUNDING_IDENTIFIER) {
+    throw new Error(`[after-sign] Browser visual grounding helper must retain codesign identifier ${EXPECTED_BROWSER_VISUAL_GROUNDING_IDENTIFIER}; found ${helperIdentity.identifier ?? "none"}`);
+  }
+  if (appIdentity.identifier !== EXPECTED_NAUTILO_IDENTIFIER || helperIdentity.teamIdentifier !== appIdentity.teamIdentifier) {
+    throw new Error("[after-sign] Browser visual grounding helper identity must match enclosing Nautilo.app");
+  }
+  if (helperIdentity.teamIdentifier === null) {
+    if (helperIdentity.authorities.length !== 0 || appIdentity.authorities.length !== 0) throw new Error("[after-sign] ad-hoc Browser visual grounding helper signature must not advertise certificate authorities");
+  } else if (!helperIdentity.authorities[0]?.startsWith("Developer ID Application:") || JSON.stringify(helperIdentity.authorities) !== JSON.stringify(appIdentity.authorities)) {
+    throw new Error("[after-sign] Browser visual grounding helper certificate authority chain must match enclosing Nautilo.app");
   }
   if (expectedTeam !== undefined && appIdentity.teamIdentifier !== expectedTeam) throw new Error(`[after-sign] Nautilo app TeamIdentifier must be ${expectedTeam}; found ${appIdentity.teamIdentifier ?? "none"}`);
 }
@@ -275,6 +291,14 @@ function assertPackagedComputerUseHostSignature(bundlePath) {
   inspectExactEntitlements(hostPath, {}, "Computer Use Host");
 }
 
+function assertPackagedBrowserVisualGroundingSignature(bundlePath) {
+  const helperPath = join(bundlePath, "Contents", "Resources", "tools-browser-vision", "nautilo-browser-visual-grounding");
+  if (!existsSync(helperPath)) throw new Error(`[after-sign] missing packaged Browser visual grounding helper at ${helperPath}`);
+  execFileSync("codesign", ["--verify", "--strict", "--verbose=4", helperPath], { stdio: "inherit" });
+  assertBrowserVisualGroundingMatchesNautiloIdentity(inspectCodesignIdentity(helperPath), inspectCodesignIdentity(bundlePath), process.env.APPLE_TEAM_ID);
+  inspectExactEntitlements(helperPath, {}, "Browser visual grounding helper");
+}
+
 function assertPackagedWindowPresenceSignature(bundlePath) {
   const helperPath = join(bundlePath, "Contents", "Resources", "tools-window-presence", "nautilo-window-presence");
   if (!existsSync(helperPath)) throw new Error(`[after-sign] missing packaged Window presence helper at ${helperPath}`);
@@ -293,10 +317,12 @@ exports.assertCuaDriverMatchesNautiloIdentity = assertCuaDriverMatchesNautiloIde
 exports.assertExactCuaDriverEntitlements = assertExactCuaDriverEntitlements;
 exports.assertScreenRecordingPermissionMatchesNautiloIdentity = assertScreenRecordingPermissionMatchesNautiloIdentity;
 exports.assertComputerUseHostMatchesNautiloIdentity = assertComputerUseHostMatchesNautiloIdentity;
+exports.assertBrowserVisualGroundingMatchesNautiloIdentity = assertBrowserVisualGroundingMatchesNautiloIdentity;
 exports.assertWindowPresenceMatchesNautiloIdentity = assertWindowPresenceMatchesNautiloIdentity;
 exports.assertExactScreenRecordingPermissionEntitlements = assertExactScreenRecordingPermissionEntitlements;
 exports.assertExactWindowPresenceEntitlements = assertExactWindowPresenceEntitlements;
 exports.assertPackagedScreenRecordingPermissionSignature = assertPackagedScreenRecordingPermissionSignature;
+exports.assertPackagedBrowserVisualGroundingSignature = assertPackagedBrowserVisualGroundingSignature;
 exports.assertPackagedWindowPresenceSignature = assertPackagedWindowPresenceSignature;
 
 /**
@@ -316,6 +342,7 @@ exports.default = async function afterSign(context) {
   assertPackagedCuaDriverSignature(bundlePath);
   assertPackagedScreenRecordingPermissionSignature(bundlePath);
   assertPackagedComputerUseHostSignature(bundlePath);
+  assertPackagedBrowserVisualGroundingSignature(bundlePath);
   assertPackagedWindowPresenceSignature(bundlePath);
   if (process.env.APPLE_TEAM_ID) {
     // Run the production loader against the final recursively signed bytes.

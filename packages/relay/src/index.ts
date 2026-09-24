@@ -551,11 +551,14 @@ export {
   agentBrowserCdpArgv,
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
+  agentBrowserKeyboardInsertTextArgv,
   agentBrowserViewportEvalArgv,
   browserCdpArgvPrefix,
   browserArgvPrefix,
   browserImageCoordsToCss,
+  parseAgentBrowserSnapshot,
   BROWSER_EMPTY_DOM_TEXT_HINT,
+  type ParsedAgentBrowserSnapshot,
   type BrowserToolName,
 } from "./browser";
 export {

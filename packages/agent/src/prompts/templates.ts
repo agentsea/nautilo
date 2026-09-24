@@ -79,7 +79,14 @@ You have access to ${tools.length} tools:
     prompt += EMBEDDED_BROWSER;
     const snapshot = tools.find((tool) => tool.name === "browser_snapshot");
     if (snapshot?.schema instanceof z.ZodObject && Object.hasOwn(snapshot.schema.shape, "decisionPlan")) {
-      prompt += "\nA routine decision model is available. After fresh evidence, default to browser_snapshot with decisionPlan for complete routine outcomes. Use ordinary controls when judgment or visual grounding is needed.\n";
+      const screenshot = tools.find((tool) => tool.name === "browser_screenshot");
+      const visualDelegation = screenshot?.schema instanceof z.ZodObject
+        && Object.hasOwn(screenshot.schema.shape, "decisionPlan");
+      prompt += "\nA routine decision model is available. After fresh evidence, use browser_snapshot with decisionPlan when the accessibility tree identifies the controls. " +
+        (visualDelegation
+          ? "When canvas or pixels are authoritative, inspect browser_screenshot and delegate the remaining click/scroll outcome with browser_screenshot decisionPlan. Never send both delegation calls together. "
+          : "Use ordinary controls when visual grounding is needed. ") +
+        "The Genie chooses the evidence modality and independently verifies the result.\n";
     }
   }
 
@@ -88,7 +95,7 @@ You have access to ${tools.length} tools:
     prompt += "\nFor a connected website under direct control, delegate through control_connected_web_operation with command:{kind:'snapshot'} and decisionPlan. Retain its operationId and expectedControlEpoch; never switch browser authority. Hosted and public operations keep their existing management path.\n";
   }
 
-  if (tools.some((tool) => ["browser_snapshot", "control_connected_web_operation"].includes(tool.name)
+  if (tools.some((tool) => ["browser_snapshot", "browser_screenshot", "control_connected_web_operation"].includes(tool.name)
     && tool.schema instanceof z.ZodObject && Object.hasOwn(tool.schema.shape, "decisionPlan"))) {
     prompt += "\n" + browserDecisionPlanningGuidance + "\n";
   }

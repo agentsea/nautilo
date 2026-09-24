@@ -1,0 +1,51 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e5]
+    - heading "Room #11: Navigation Tabs" [level=1, ref=e2]
+    - paragraph
+      - StaticText "To reveal the code word, navigate through the tabs and find all three hidden clues."
+      - LineBreak "\n"
+      - StaticText "Each clue is marked with a special icon ⭐. When you find a clue, click the \"Find Clue\" button next to it to mark it as found."
+      - LineBreak "\n"
+      - StaticText "After finding and marking all three clues, click \"Check Clues\" to reveal the code word at the bottom of the page."
+    - generic
+      - tablist "Navigation tabs"
+        - tab "ABOUT" [ref=e7]
+        - tab "PRODUCTS" [ref=e8]
+          - StaticText "PRODUCTS"
+        - tab "USER PROFILE" [selected, ref=e9]
+          - StaticText "USER PROFILE"
+        - tab "SETTINGS" [ref=e10]
+        - tab "DOCUMENTATION" [ref=e11]
+    - tabpanel
+      - heading "User Profile" [level=6, ref=e6]
+      - list
+        - listitem [level=1]
+          - StaticText "Name"
+          - paragraph
+            - StaticText "Jane Doe"
+        - separator
+        - listitem [level=1]
+          - StaticText "Email"
+          - paragraph
+            - StaticText "jane.doe@example.com"
+        - separator
+        - listitem [level=1]
+          - paragraph
+            - StaticText "Subscription Status⭐ "
+            - strong
+              - StaticText "Clue #2:"
+            - StaticText " \"requires exploring\""
+            - button "FIND CLUE" [ref=e12]
+          - paragraph
+            - StaticText "Premium (Active)"
+    - button "CHECK CLUES" [ref=e3]
+      - StaticText "CHECK CLUES"
+    - button "RESET PUZZLE" [ref=e4]
+    - paragraph
+      - StaticText "Clues found:"
+    - StaticText "1"
+    - StaticText "2"
+    - StaticText "3"
+    - paragraph
+      - StaticText "Find all three clues to reveal the code word!"

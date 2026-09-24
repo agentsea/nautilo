@@ -37,6 +37,8 @@ export type DirectBrowserRouterSource = "saved_profile" | "hosted_session";
 
 export interface DirectBrowserRouterAdmission {
   readonly ownerUserId: string;
+  /** Trusted Human funding identity, distinct from the connected-account owner. */
+  readonly fundingHumanUserId: string;
   readonly accountId: string;
   readonly operationId: string;
   readonly expectedControlEpoch: number;
@@ -157,6 +159,7 @@ function isProviderFailure(value: unknown): value is BrowserUseProviderFailure {
 
 function validAdmission(input: DirectBrowserRouterAdmission): boolean {
   return input.ownerUserId.length > 0
+    && input.fundingHumanUserId.trim().length > 0
     && input.accountId.length > 0
     && input.operationId.length > 0
     && Number.isSafeInteger(input.expectedControlEpoch)
@@ -259,6 +262,93 @@ function requestedOpenStaysAtOrigin(command: DirectBrowserControlCommand, origin
   try { return new URL(url).origin === origin; } catch { return false; }
 }
 
+type DecisionRef = { readonly role: string; readonly name: string };
+
+interface BoundDecisionObservation {
+  readonly id: string;
+  readonly snapshot: string;
+  readonly refs: Readonly<Record<string, DecisionRef>>;
+  readonly pageUrl: string;
+}
+
+const DECISION_REF_ARGUMENTS: Readonly<Partial<Record<DirectBrowserControlCommand["toolName"], readonly string[]>>> = {
+  browser_click: ["ref"],
+  browser_type: ["ref"],
+  browser_press: ["ref"],
+  browser_hover: ["ref"],
+  browser_double_click: ["ref"],
+  browser_drag: ["from", "to"],
+  browser_select: ["ref"],
+  browser_set_checked: ["ref"],
+  browser_scroll_into_view: ["ref"],
+  browser_wait: ["ref"],
+  browser_read: ["ref"],
+  browser_get: ["ref"],
+};
+
+function normalizedDecisionRef(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.startsWith("@") ? value.slice(1) : value;
+  return /^e\d+$/u.test(normalized) ? normalized : null;
+}
+
+function normalizedSemanticText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function sameSemanticTarget(left: DecisionRef, right: DecisionRef): boolean {
+  return normalizedSemanticText(left.role) === normalizedSemanticText(right.role)
+    && normalizedSemanticText(left.name) === normalizedSemanticText(right.name);
+}
+
+function sameSemanticRefMap(
+  left: Readonly<Record<string, DecisionRef>>,
+  right: Readonly<Record<string, DecisionRef>>,
+): boolean {
+  const leftEntries = Object.entries(left);
+  const rightKeys = Object.keys(right);
+  return leftEntries.length === rightKeys.length
+    && leftEntries.every(([refId, target]) => right[refId] !== undefined && sameSemanticTarget(target, right[refId]));
+}
+
+/**
+ * Rebinds each unambiguous target to its one fresh semantic match. Duplicate
+ * labels cannot establish element identity after a page change, even when the
+ * generated ref numbers happen to be unchanged.
+ */
+function rebindDecisionCommand(
+  command: DirectBrowserControlCommand,
+  bound: BoundDecisionObservation,
+  fresh: { readonly snapshot: string; readonly refs: Readonly<Record<string, DecisionRef>> },
+): DirectBrowserControlCommand | null {
+  const argumentNames = DECISION_REF_ARGUMENTS[command.toolName] ?? [];
+  const observationUnchanged = bound.snapshot === fresh.snapshot && sameSemanticRefMap(bound.refs, fresh.refs);
+  let reboundArgs: Record<string, unknown> | null = null;
+  for (const argumentName of argumentNames) {
+    const supplied = command.args[argumentName];
+    // browser_press, browser_wait and browser_get may intentionally be
+    // page-level commands with no target reference.
+    if (supplied === undefined) continue;
+    const boundRefId = normalizedDecisionRef(supplied);
+    const boundTarget = boundRefId === null ? undefined : bound.refs[boundRefId];
+    if (!boundTarget) return null;
+    const boundMatches = Object.entries(bound.refs).filter(([, target]) => sameSemanticTarget(boundTarget, target));
+    const freshMatches = Object.entries(fresh.refs).filter(([, target]) => sameSemanticTarget(boundTarget, target));
+    if (boundMatches.length > 1 || freshMatches.length > 1) {
+      // Identical labels may belong to different rows after a same-URL
+      // re-render. Only the exact unchanged observation preserves the ref.
+      if (!observationUnchanged) return null;
+      reboundArgs ??= { ...command.args };
+      reboundArgs[argumentName] = `@${boundRefId}`;
+      continue;
+    }
+    if (freshMatches.length !== 1) return null;
+    reboundArgs ??= { ...command.args };
+    reboundArgs[argumentName] = `@${freshMatches[0]![0]}`;
+  }
+  return reboundArgs === null ? command : { ...command, args: reboundArgs };
+}
+
 function truncateUtf8(value: string, maximumBytes: number): { readonly text: string; readonly truncated: boolean } {
   if (Buffer.byteLength(value, "utf8") <= maximumBytes) return { text: value, truncated: false };
   let retainedBytes = 0;
@@ -308,7 +398,7 @@ export class DirectBrowserRouterLease {
   private cleanup: Promise<DirectBrowserRouterCleanupResult> | null = null;
   private hasFreshSnapshot = false;
   private readonly decisionSessionId = randomUUID();
-  private decisionObservation: { readonly id: string; readonly fingerprint: string } | null = null;
+  private decisionObservation: BoundDecisionObservation | null = null;
 
   constructor(
     private readonly admission: DirectBrowserRouterAdmission,
@@ -416,9 +506,8 @@ export class DirectBrowserRouterLease {
         browserSessionId: this.decisionSessionId,
         observationId: randomUUID(),
       };
-      const fingerprint = createHash("sha256").update(JSON.stringify({ snapshot: observation.snapshot,
-        refs: observation.refs, pageUrl: observation.pageUrl })).digest("hex");
-      this.decisionObservation = { id: observation.observationId, fingerprint };
+      this.decisionObservation = { id: observation.observationId, snapshot: observation.snapshot,
+        refs: observation.refs, pageUrl: observation.pageUrl };
       this.hasFreshSnapshot = true;
       return observation;
     } catch (error) {
@@ -440,6 +529,10 @@ export class DirectBrowserRouterLease {
     if (!this.decisionObservation || this.decisionObservation.id !== observationId) {
       throw new DirectBrowserRouterError("observation_stale");
     }
+    const boundObservation = this.decisionObservation;
+    // Consume the observation before refreshing. A refresh or transport
+    // failure never grants replay authority over a later browser state.
+    this.decisionObservation = null;
     this.hasFreshSnapshot = false;
     try {
       await this.currentBinding();
@@ -456,20 +549,19 @@ export class DirectBrowserRouterLease {
         ? error.detail : undefined;
       throw new DirectBrowserRouterError("observation_invalid", undefined, detail);
     });
-    const fingerprint = createHash("sha256").update(JSON.stringify({ snapshot: refreshed.observation.snapshot,
-      refs: refreshed.observation.refs, pageUrl: refreshed.pageUrl })).digest("hex");
-    if (fingerprint !== this.decisionObservation.fingerprint) {
-      this.decisionObservation = null;
-      this.hasFreshSnapshot = false;
+    if (refreshed.pageUrl !== boundObservation.pageUrl) {
       throw new DirectBrowserRouterError("observation_stale");
     }
-    this.decisionObservation = null;
+    const reboundCommand = rebindDecisionCommand(command, boundObservation, refreshed.observation);
+    if (!reboundCommand) {
+      throw new DirectBrowserRouterError("observation_stale");
+    }
     this.hasFreshSnapshot = false;
     if (signal?.aborted) throw new DirectBrowserRouterError("cancelled");
     try {
       await this.currentBinding();
-      if (!requestedOpenStaysAtOrigin(command, this.bindingOrigin)) throw new DirectBrowserRouterError("origin_not_allowed");
-      return await this.control.invoke(command, signal);
+      if (!requestedOpenStaysAtOrigin(reboundCommand, this.bindingOrigin)) throw new DirectBrowserRouterError("origin_not_allowed");
+      return await this.control.invoke(reboundCommand, signal);
     } catch (error) {
       await this.close();
       if (error instanceof DirectBrowserRouterError) throw error;
@@ -560,7 +652,7 @@ export class DirectBrowserRouter {
   private async startOrAttach(input: DirectBrowserRouterAdmission, binding: ConnectedWebAccountBinding, operation: ConnectedWebOperation): Promise<BrowserUseBrowserSession & { readonly cdpUrl: string }> {
     if (input.source === "saved_profile") {
       if (!await canUseBrowserUseServerFunding(
-        input.ownerUserId,
+        input.fundingHumanUserId,
         "connected_web_direct_browser",
         this.deps.assertServerFunding,
       )) throw new DirectBrowserRouterError("unavailable");

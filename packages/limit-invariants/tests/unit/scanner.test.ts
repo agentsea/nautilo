@@ -22,6 +22,34 @@ async function fixture(files: Record<string, string>): Promise<string> {
 }
 
 describe("deterministic limit scanner", () => {
+  test("excludes ignored visual-eval run reports but scans authored cases and extractor code", async () => {
+    const root = await fixture({
+      "dev/evals/browser-visual-grounding/.results/run.json": JSON.stringify({ maxChoices: 255 }),
+      "dev/evals/browser-visual-grounding/cases/example/case.json": JSON.stringify({ maxChoices: 12 }),
+      "dev/evals/browser-visual-grounding/classic-grounding.ts": "export const MAX_REGION_CANDIDATES = 80;",
+    });
+    const observations = await scanRepository(root, { sourceRoots: ["dev"] });
+    expect(observations.map((item) => item.path)).toEqual([
+      "dev/evals/browser-visual-grounding/cases/example/case.json",
+      "dev/evals/browser-visual-grounding/classic-grounding.ts",
+    ]);
+  });
+
+  test("does not mistake captured timings and oracle coordinates for policy ceilings", async () => {
+    const root = await fixture({
+      "dev/evals/browser-visual-grounding/cases/example/case.json": JSON.stringify({
+        captureDurationMs: 45,
+        maxChoices: 12,
+      }),
+      "dev/evals/browser-visual-grounding/visual-oracles.json": JSON.stringify({
+        cases: [{ expectedTarget: { region: { xMin: 1, xMax: 120, yMin: 2, yMax: 130 } } }],
+        maxChoices: 6,
+      }),
+    });
+    const observations = await scanRepository(root, { sourceRoots: ["dev"] });
+    expect(observations.map((item) => item.detector)).toEqual(["json:maxChoices", "json:maxChoices"]);
+  });
+
   test("excludes only the mini-app build cache while scanning authored app siblings", async () => {
     const root = await fixture({
       "packages/first-party-apps/.cache/video/hash/main.js": "const payloadLimit = 42;",

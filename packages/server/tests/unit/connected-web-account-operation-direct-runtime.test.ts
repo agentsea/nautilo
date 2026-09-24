@@ -5,6 +5,7 @@ import type { DirectBrowserRouterLease } from "../../src/connected-web-accounts/
 import type { ConnectedWebOperation } from "../../src/connected-web-accounts/store";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
+const HUMAN = "66666666-6666-4666-8666-666666666666";
 const ACCOUNT = "22222222-2222-4222-8222-222222222222";
 const AGENT = "33333333-3333-4333-8333-333333333333";
 const ROOM = "44444444-4444-4444-8444-444444444444";
@@ -18,9 +19,20 @@ function operation(overrides: Partial<ConnectedWebOperation> = {}): ConnectedWeb
     ...overrides } as ConnectedWebOperation;
 }
 function actor(overrides: Partial<ConnectedWebOperationToolActorContext> = {}): ConnectedWebOperationToolActorContext {
-  return { userId: OWNER, agentId: AGENT, roomId: ROOM, callingRoomId: null, memoryAccessEnvelope: {} as never,
+  return { userId: OWNER, causalHumanUserId: HUMAN, agentId: AGENT, roomId: ROOM, callingRoomId: null, memoryAccessEnvelope: {} as never,
     toolCallId: "call", currentThreadId: "thread", turnId: "turn", laneKey: "lane", ...overrides };
 }
+
+test("direct takeover requires a causal Human before opening a funded browser", async () => {
+  let acquisitions = 0;
+  const runtime = new ConnectedWebOperationDirectRuntime({ authorizeOperation: () => true,
+    facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
+    store: { getOperationForOwner: async () => operation(), recordDirectOperationActivity: async () => true },
+    router: { acquire: async () => { acquisitions++; throw new Error("must not acquire"); } } as never,
+  });
+  expect(await runtime.takeControl(actor({ causalHumanUserId: "" }), { operationId: OP, expectedControlEpoch: 7 })).toBeNull();
+  expect(acquisitions).toBe(0);
+});
 
 test("direct control rechecks operation authority before opening or issuing commands", async () => {
   let admitted = true;
@@ -99,6 +111,7 @@ test("direct runtime authorizes exactly, reuses one lease serially, and never si
   expect(await runtime.takeControl(actor(), { operationId: OP, expectedControlEpoch: 7 })).toMatchObject({ driver: "direct", controlEpoch: 8 });
   expect(acquisitions).toEqual([expect.objectContaining({
     ownerUserId: OWNER,
+    fundingHumanUserId: HUMAN,
     accountId: ACCOUNT,
     operationId: OP,
     expectedControlEpoch: 7,

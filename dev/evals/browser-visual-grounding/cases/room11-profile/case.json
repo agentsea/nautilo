@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "id": "room11-profile",
+  "description": "AgentSea Gym room 11 profile state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room11",
+  "capturedAt": "2026-09-21T07:42:03.095Z",
+  "captureDurationMs": 94,
+  "evidencePairWindowMs": 66,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e10": {
+      "role": "tab",
+      "name": "SETTINGS"
+    },
+    "e11": {
+      "role": "tab",
+      "name": "DOCUMENTATION"
+    },
+    "e12": {
+      "role": "button",
+      "name": "FIND CLUE"
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room #11: Navigation Tabs"
+    },
+    "e3": {
+      "role": "button",
+      "name": "CHECK CLUES"
+    },
+    "e4": {
+      "role": "button",
+      "name": "RESET PUZZLE"
+    },
+    "e5": {
+      "role": "link",
+      "name": "Back to Home"
+    },
+    "e6": {
+      "role": "heading",
+      "name": "User Profile"
+    },
+    "e7": {
+      "role": "tab",
+      "name": "ABOUT"
+    },
+    "e8": {
+      "role": "tab",
+      "name": "PRODUCTS"
+    },
+    "e9": {
+      "role": "tab",
+      "name": "USER PROFILE"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 1896,
+    "sha256": "10fc8d3693fdf36a5126578fad040787512158963e6180bf1a75bbb91d0320bd"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 133778,
+    "sha256": "8e376563660a8cea748a96cce30747cf13638916db636bc46b12ab46fe74bc47"
+  }
+}

@@ -4,6 +4,7 @@ import {
   agentBrowserSnapshotJsonArgv,
   agentBrowserMouseClickArgvs,
   agentBrowserScrollArgvs,
+  agentBrowserKeyboardInsertTextArgv,
   agentBrowserViewportEvalArgv,
   browserImageCoordsToCss,
   BROWSER_EMPTY_DOM_TEXT_HINT,
@@ -11,9 +12,44 @@ import {
   browserCdpArgvPrefix,
   browserArgvPrefix,
   browserToolMayMutate,
+  parseAgentBrowserSnapshot,
   isBrowserTool,
   BROWSER_TOOLS,
 } from "./browser";
+
+describe("parseAgentBrowserSnapshot", () => {
+  it("parses and sorts the same structured envelope used by browser_snapshot", () => {
+    const parsed = parseAgentBrowserSnapshot(JSON.stringify({
+      success: true,
+      data: {
+        origin: "https://example.com/path",
+        snapshot: "- button \"Continue\" [ref=e2]",
+        refs: {
+          e2: { role: "button", name: "Continue" },
+          e1: { role: "heading", name: "Example" },
+        },
+      },
+    }));
+
+    expect(parsed).toEqual({
+      pageUrl: "https://example.com/path",
+      snapshot: "- button \"Continue\" [ref=e2]",
+      refs: {
+        e1: { role: "heading", name: "Example" },
+        e2: { role: "button", name: "Continue" },
+      },
+    });
+  });
+
+  it("rejects incomplete or malformed envelopes", () => {
+    expect(() => parseAgentBrowserSnapshot("{}"))
+      .toThrow("Invalid agent-browser snapshot envelope");
+    expect(() => parseAgentBrowserSnapshot(JSON.stringify({
+      success: true,
+      data: { origin: "https://example.com", snapshot: "", refs: { nope: {} } },
+    }))).toThrow("Invalid agent-browser reference");
+  });
+});
 
 describe(" agentBrowserArgv — argv mapping", () => {
   const cfgPath = "/tmp/agent-browser-provider.json";
@@ -103,6 +139,18 @@ describe(" agentBrowserArgv — argv mapping", () => {
         session,
       ),
     ).toEqual([...prefix, "type", "@e5", "hello"]);
+  });
+
+  it("builds selector-free keyboard typing only through the explicit helper", () => {
+    expect(agentBrowserKeyboardInsertTextArgv(cfgPath, session, "exact visual text")).toEqual([
+      ...prefix,
+      "keyboard",
+      "inserttext",
+      "exact visual text",
+    ]);
+    expect(() => agentBrowserKeyboardInsertTextArgv(cfgPath, session, "")).toThrow(
+      /browser_type requires a non-empty string `text`/,
+    );
   });
 
   it("browser_press maps key to press verb", () => {

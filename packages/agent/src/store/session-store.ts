@@ -281,9 +281,16 @@ export interface AppendTranscriptResult {
 
 /** Match live quiet-supervision presentation while retaining the exact tool audit. */
 export function transcriptMetadataForMessage(message: BaseMessage, options: AppendTranscriptOptions): Record<string, unknown> | null {
-  const metadata = options.internalToolMetadata && (
+  let metadata = options.internalToolMetadata && (
     message instanceof ToolMessage || (AIMessage.isInstance(message) && message.tool_calls?.length)
   ) ? options.internalToolMetadata : options.metadata ?? null;
+  if (message instanceof ToolMessage
+    && message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
+    metadata = {
+      ...(metadata ?? {}),
+      nautilo_browser_decision_observation: true,
+    };
+  }
   return withTranscriptToolPresentation(message, metadata);
 }
 
@@ -1337,6 +1344,24 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
  */
 export function visibleTranscriptContent(message: BaseMessage): string {
   if (message instanceof ToolMessage) {
+    if (message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
+      let receipt: Record<string, unknown> = {};
+      if (message.name === "control_connected_web_operation" && typeof message.content === "string") {
+        try {
+          const parsed = JSON.parse(message.content) as Record<string, unknown>;
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const { observation: _observation, ...rest } = parsed;
+            receipt = rest;
+          }
+        } catch { /* The server-authored observation marker requires a parsed result. */ }
+      }
+      return JSON.stringify({
+        ...receipt,
+        version: 1,
+        delegatedObservationOmitted: true,
+        notice: "Internal browser-decision observation omitted from the durable transcript.",
+      });
+    }
     const durableComputerResult = durableComputerResultText(message);
     if (durableComputerResult !== null) return durableComputerResult;
   }
