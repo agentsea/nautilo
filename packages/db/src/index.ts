@@ -404,6 +404,7 @@ export {
   getServerProviderPolicy,
   upsertServerProviderPolicy,
   type ResolvedServerProviderPolicy,
+  type ServerProviderPolicyChange,
   type ServerProviderPolicyDb,
 } from "./utils/server-provider-policy-queries";
 export {

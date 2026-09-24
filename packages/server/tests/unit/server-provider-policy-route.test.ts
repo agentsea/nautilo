@@ -149,14 +149,22 @@ describe("server-provider-policy route", () => {
     let stored = false;
     const writes: boolean[] = [];
     const events: Record<string, unknown>[] = [];
+    let unprotectedReads = 0;
     const call = routeHarness({
       getCapabilities: async () => ["manage_server_settings"],
       getDb: () => ({}) as never,
-      getPolicy: async () => ({ allowPersonalProviderKeys: stored }),
+      getPolicy: async () => {
+        unprotectedReads += 1;
+        return { allowPersonalProviderKeys: stored };
+      },
       upsertPolicy: async (_db, next) => {
         writes.push(next.allowPersonalProviderKeys);
+        const previous = stored;
         stored = next.allowPersonalProviderKeys;
-        return { allowPersonalProviderKeys: stored };
+        return {
+          previous: { allowPersonalProviderKeys: previous },
+          effective: { allowPersonalProviderKeys: stored },
+        };
       },
       auditEvent: (_request, event) => { events.push(event); },
     });
@@ -166,6 +174,7 @@ describe("server-provider-policy route", () => {
     expect(await call("POST", { ...request, body: { allowPersonalProviderKeys: false } }))
       .toEqual({ status: 200, body: { allowPersonalProviderKeys: false } });
     expect(writes).toEqual([true, false]);
+    expect(unprotectedReads).toBe(0);
     expect(events).toEqual([
       {
         kind: "server_provider_policy_changed",

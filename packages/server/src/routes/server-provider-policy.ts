@@ -110,12 +110,9 @@ export function serverProviderPolicyRoutes(
 
     const persisted = await (async () => {
       try {
-        const db = getDb();
-        const previous = await getPolicy(db);
-        const effective = await upsertPolicy(db, {
+        return await upsertPolicy(getDb(), {
           allowPersonalProviderKeys: parsed.allowPersonalProviderKeys,
         });
-        return { previous, effective };
       } catch {
         warn("[server-provider-policy] policy storage unavailable");
         return null;
