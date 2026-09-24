@@ -41,6 +41,11 @@ export interface PublicCheckDependencies {
   readonly fetch?: typeof fetch;
 }
 
+export interface InvariantInventory {
+  readonly scan: (root: string) => Promise<readonly Pick<LimitObservation, "locator" | "fingerprint">[]>;
+  readonly reviewContext: string;
+}
+
 async function git(sourceRoot: string, args: readonly string[]): Promise<string> {
   try {
     const result = await execFileAsync("git", ["-C", sourceRoot, ...args], {
@@ -67,8 +72,8 @@ async function archiveRevision(sourceRoot: string, revision: string, destination
   }
 }
 
-function inventoryByLocator(observations: readonly LimitObservation[]): Map<string, LimitObservation> {
-  const indexed = new Map<string, LimitObservation>();
+function inventoryByLocator(observations: readonly Pick<LimitObservation, "locator" | "fingerprint">[]): Map<string, Pick<LimitObservation, "locator" | "fingerprint">> {
+  const indexed = new Map<string, Pick<LimitObservation, "locator" | "fingerprint">>();
   for (const observation of observations) {
     if (indexed.has(observation.locator)) throw new Error("Limit scan returned duplicate locators.");
     indexed.set(observation.locator, observation);
@@ -109,6 +114,7 @@ async function requireExactHeadReview(
   head: string,
   token: string,
   fetchImpl: typeof fetch,
+  reviewContext: string,
 ): Promise<void> {
   const matching: CommitStatus[] = [];
   for (let page = 1; ; page += 1) {
@@ -135,16 +141,16 @@ async function requireExactHeadReview(
       throw new Error(`GitHub status lookup returned malformed status items for exact HEAD ${head}.`);
     }
     const pageStatuses = payload;
-    matching.push(...pageStatuses.filter((status) => typeof status.context === "string" && status.context.toLowerCase() === REVIEW_CONTEXT));
+    matching.push(...pageStatuses.filter((status) => typeof status.context === "string" && status.context.toLowerCase() === reviewContext));
     if (pageStatuses.length < 100) break;
   }
   const latest = latestStatus(matching);
-  if (!latest) throw new Error(`Missing ${REVIEW_CONTEXT} status on exact HEAD ${head}.`);
+  if (!latest) throw new Error(`Missing ${reviewContext} status on exact HEAD ${head}.`);
   if (!statusBelongsToHead(latest, repository, head)) {
-    throw new Error(`${REVIEW_CONTEXT} status does not belong to exact HEAD ${head}.`);
+    throw new Error(`${reviewContext} status does not belong to exact HEAD ${head}.`);
   }
   if (latest.state !== "success") {
-    throw new Error(`Latest ${REVIEW_CONTEXT} status on exact HEAD ${head} is ${String(latest.state)}.`);
+    throw new Error(`Latest ${reviewContext} status on exact HEAD ${head} is ${String(latest.state)}.`);
   }
 }
 
@@ -152,6 +158,19 @@ export async function runPublicLimitCheck(
   options: PublicCheckOptions,
   dependencies: PublicCheckDependencies = {},
 ): Promise<PublicCheckResult> {
+  return runPublicInvariantCheck(options, {
+    scan: (root) => scanRepository(root, { lanes: ["primary"] }),
+    reviewContext: REVIEW_CONTEXT,
+  }, dependencies);
+}
+
+/** Shared exact-commit transport; each invariant owner supplies its scanner. */
+export async function runPublicInvariantCheck(
+  options: PublicCheckOptions,
+  inventory: InvariantInventory,
+  dependencies: PublicCheckDependencies = {},
+): Promise<PublicCheckResult> {
+  if (!/^[a-z][a-z-]+$/u.test(inventory.reviewContext)) throw new Error("Invalid review status context.");
   if (!FULL_SHA.test(options.base) || !FULL_SHA.test(options.head)) {
     throw new Error("--base and --head must be explicit lowercase 40-character commit SHAs.");
   }
@@ -175,8 +194,8 @@ export async function runPublicLimitCheck(
     await archiveRevision(sourceRoot, options.base, baseRoot);
     await archiveRevision(sourceRoot, options.head, headRoot);
     const [baseObservations, headObservations] = await Promise.all([
-      scanRepository(baseRoot, { lanes: ["primary"] }),
-      scanRepository(headRoot, { lanes: ["primary"] }),
+      inventory.scan(baseRoot),
+      inventory.scan(headRoot),
     ]);
     const base = inventoryByLocator(baseObservations);
     const head = inventoryByLocator(headObservations);
@@ -198,6 +217,7 @@ export async function runPublicLimitCheck(
           options.head,
           options.token,
           dependencies.fetch ?? globalThis.fetch,
+          inventory.reviewContext,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : "GitHub status lookup failed.";
@@ -218,7 +238,7 @@ export async function runPublicLimitCheck(
   }
 }
 
-function parseArguments(args: readonly string[]): Omit<PublicCheckOptions, "sourceRoot" | "token"> {
+export function parseArguments(args: readonly string[]): Omit<PublicCheckOptions, "sourceRoot" | "token"> {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];

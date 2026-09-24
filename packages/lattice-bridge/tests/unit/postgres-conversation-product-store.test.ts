@@ -1811,6 +1811,7 @@ describe("Postgres conversation product store", () => {
       { operation: "execute", result: [current] },
       { operation: "select", result: [{ roomId: ROOM_ID }] },
       { operation: "execute", result: [] },
+      { operation: "select", result: [] }, // No child Room is anchored by this message.
       {
         operation: "select",
         result: [{
@@ -1825,7 +1826,6 @@ describe("Postgres conversation product store", () => {
           subthreadRoomId: null,
         }],
       },
-      { operation: "select", result: [] },
       { operation: "delete", result: [] },
       { operation: "update", result: [] },
       { operation: "select", result: [] },
