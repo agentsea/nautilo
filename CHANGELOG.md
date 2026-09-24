@@ -7,6 +7,16 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Scheduled reminders now tell the background Genie that its final answer
+  returns to the original conversation. A redundant request to message the
+  requester without waiting for a reply receives corrective feedback before
+  peer-message approval, so existing saved reminders can finish through their
+  normal Task report-back route. Task dispatch retains the requesting Human
+  through Job coalescing, and a Task wake no longer claims its synthetic input
+  was a Human-authored turn when saving the reply. The scheduled run's internal
+  answer stays out of live Room events and Room history, leaving one visible
+  reminder from the normal wake.
+
 - Floating Genie reuses the Room's Stop talking pill above the chat and compact
   prompt inputs. Streaming replies remain stoppable through buffering and
   sentence gaps, independently of Stop action. The floating composer now shows

@@ -379,6 +379,10 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       // M150 — presence-gated relay tools + Task-run relay-drop semantics.
       relayCapabilities,
       taskRun: true,
+      // The scheduled wake is the visible delivery. Keep the execution
+      // transcript internal even when it shares the calling Room.
+      deferAssistantOutputToReportBack:
+        str(input, "preset") === "schedule" && str(input, "resultDelivery") === "wake",
       // D500 — task runs carry an explicit non-foreground provenance stamp.
       trustedExecutionEntrypoint: "background.task",
       // D429 Phase 4 — strict / no-chain mode for an exact Task `model_id` pin.

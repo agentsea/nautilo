@@ -596,6 +596,8 @@ export type RunScopeSubagentOpts = {
    * in-chat scope runs.
    */
   taskRun?: boolean;
+  /** Scheduled wake delivery owns the visible assistant message. */
+  deferAssistantOutputToReportBack?: boolean;
   /** only task-run-executor may supply the background-task stamp. */
   trustedExecutionEntrypoint?: "background.task";
   /**
@@ -909,7 +911,8 @@ async function runScopeSubagentUntilPauseInternal(
   const savedFingerprints = new Set<string>();
   const progressTap = createTaskProgressTap(opts);
   const tokenStream =
-    opts.taskRun && opts.roomId && opts.subEnvelope.agentId && opts.parentTurnId
+    opts.taskRun && !opts.deferAssistantOutputToReportBack
+      && opts.roomId && opts.subEnvelope.agentId && opts.parentTurnId
       ? new ScopeSubagentTokenStream({
           laneKey: `room:${opts.roomId}`,
           authorAgentId: opts.subEnvelope.agentId,
@@ -948,6 +951,9 @@ async function runScopeSubagentUntilPauseInternal(
           roomId: opts.roomId,
           humanTurnId: opts.parentTurnId,
           parentThreadId: opts.parentThreadId,
+          ...(opts.deferAssistantOutputToReportBack
+            ? { deferAssistantOutputToReportBack: true }
+            : {}),
           ...(opts.scopeId !== undefined ? { scopeId: opts.scopeId } : {}),
           ...(assistantMessageKey ? { assistantMessageKey } : {}),
           ...(opts.assistantArtifactExternalIds?.length
@@ -1027,6 +1033,7 @@ async function persistSubagentBatch(
     roomId: string;
     humanTurnId: string;
     parentThreadId: string;
+    deferAssistantOutputToReportBack?: boolean;
     scopeId?: string;
     assistantMessageKey?: string;
     assistantArtifactExternalIds?: readonly string[];
@@ -1054,6 +1061,9 @@ async function persistSubagentBatch(
       humanTurnId: meta.humanTurnId,
       transcriptOrigin: "subagent",
       parentThreadId: meta.parentThreadId,
+      ...(meta.deferAssistantOutputToReportBack
+        ? { metadata: { originatedBy: "scheduled_task_internal" } }
+        : {}),
       ...(meta.scopeId !== undefined ? { scopeId: meta.scopeId } : {}),
     },
   );
@@ -1114,6 +1124,7 @@ async function persistSubagentBatch(
           );
         }
       }
+      if (meta.deferAssistantOutputToReportBack) continue;
       emitAgentEvent({
         type: "message.new",
         laneKey: `room:${meta.roomId}`,
