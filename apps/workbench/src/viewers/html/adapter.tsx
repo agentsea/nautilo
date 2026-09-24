@@ -75,13 +75,16 @@ export const htmlViewerAdapter: ViewerAdapter = {
       if (typeof file.mimeType !== "string" || file.mimeType.length === 0) {
         return { kind: "error", message: "Invalid file target." };
       }
+      if (file.sizeBytes !== undefined && file.sizeBytes > HTML_VIEWER_MAX_BYTES) {
+        return { kind: "too_large", sizeBytes: file.sizeBytes, maxBytes: HTML_VIEWER_MAX_BYTES };
+      }
       const blob = await loadArtifactViewerBlob(file, ctx, HTML_VIEWER_MAX_BYTES);
       if (blob.size > HTML_VIEWER_MAX_BYTES) {
         return { kind: "too_large", sizeBytes: blob.size, maxBytes: HTML_VIEWER_MAX_BYTES };
       }
       const htmlContent = await blob.text();
       const srcDoc = buildHtmlSrcdoc(htmlContent);
-      // D121-P3 — state bridge is artifact-scoped. We bind the
+      // The state bridge is artifact-scoped. We bind the
       // artifact's internal row id (matches what the bridge passes
       // to apiClient.getArtifactState / setArtifactState — the
       // server resolves to the external artifactId internally).

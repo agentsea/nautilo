@@ -1,5 +1,5 @@
 /**
- * Workbench shell grid-template-columns builder (D077 Phase 3).
+ * Workbench shell grid-template-columns builder.
  *
  * Pure helper that returns the CSS grid-template-columns string for the
  * workbench shell given the current layout inputs. Lives here (not
@@ -10,7 +10,7 @@
  *     unit-tested once; callers stop playing class-string Tetris on
  *     every chrome change.
  *
- *   - D076 (rail) and D077 (resize/collapse) + any future chrome
+ *   - The rail, panel resize and collapse, and any future chrome
  *     addition all need to call this same function. One source of truth
  *     means adding a column in the future is a diff of this file plus
  *     a diff of its test, not a grep-and-replace across shell code.
@@ -46,7 +46,7 @@ export const BROWSER_MAX_PX = 480;
 export const BROWSER_COLLAPSE_SNAP_PX = 140;
 
 /**
- * D278 §4.7.4 — fixed width of the group-room Members panel's compact "rail"
+ * Fixed width of the group-room Members panel's compact "rail"
  * state (avatar-only column). Matches the nav rail's 48px so the two narrow
  * columns read as siblings. Not resizable; the rail is a discrete ladder
  * step, not a drag target.
@@ -60,10 +60,10 @@ export const CONTEXT_MAX_PX = 480;
 export const CONTEXT_COLLAPSE_SNAP_PX = 180;
 
 /**
- * Workbench footer height (D096).
+ * Workbench footer height.
  *
  * Slim, editor-style status bar. Non-collapsible by design: connection
- * state and (D097) security posture are operational state that should
+ * state and security posture are operational state that should
  * stay visible while users hide/show the larger panels.
  */
 export const FOOTER_HEIGHT_PX = 32;
@@ -74,10 +74,10 @@ export const FOOTER_HEIGHT_PX = 32;
 
 export interface GridColsInput {
   bp: Breakpoint;
-  /** Nav rail visible (D076). `false` hides the 48px column entirely. */
+  /** Nav rail visible. `false` hides the 48px column entirely. */
   railVisible: boolean;
   /**
-   * Browser column mounted at all. Post-D079 Phase 1 the column is
+   * Browser column mounted at all. On desktop the column is
    * always mounted at the desktop breakpoint so the current-folder
    * picker is reachable even when no folder is open.
    */
@@ -97,11 +97,13 @@ export interface GridColsInput {
   /** Use a fixed trailing width instead of the persisted context-panel CSS var. */
   contextFixedWidth?: boolean;
   /**
-   * D110 — document reading mode: the right column is a narrow chat rail. Use
+   * Document reading mode: the right column is a narrow chat rail. Use
    * `minmax(0, …)` on the main and context tracks so the grid never overflows the
    * viewport. Omit in normal mode so center + Agent panel keep classic sizing.
    */
   readerChatSidecarLayout?: boolean;
+  /** Independent members track to the right of document chat. */
+  readerMembersWidthPx?: number;
 }
 
 /**
@@ -115,7 +117,7 @@ export interface GridColsInput {
  *
  *   - Mobile / tablet → single column, everything else hidden; matches
  *     the existing `grid-cols-[1fr]` pattern.
- *   - Desktop → rail? + browser? + main (1fr) + context?, where each optional
+ *   - Desktop → rail? + browser? + main (1fr) + context? + reader members?, where each optional
  *     column is gated on its visible+!collapsed flags.
  *   - The main track is always `minmax(0, 1fr)` so fixed leading columns
  *     cannot push it past the viewport; reader-sidecar layout applies the
@@ -162,6 +164,10 @@ export function buildGridCols(input: GridColsInput): string {
         : `var(--nautilo-context-width-px, ${contextDefault}px)`,
       );
     }
+  }
+
+  if (input.readerMembersWidthPx !== undefined) {
+    parts.push(`${input.readerMembersWidthPx}px`);
   }
 
   return parts.join(" ");
@@ -229,11 +235,12 @@ export function buildBrowserDividerLeft(railOffsetPx: number): string {
 
 /**
  * Build the `right:` CSS value for the CONTEXT divider's absolute
- * position. The context column sits at the right edge; no rail offset
- * needed (the rail is on the opposite side).
+ * position. The context column sits before any independent members rail;
+ * the navigation rail is on the opposite side.
  */
-export function buildContextDividerRight(): string {
-  return `calc(var(--nautilo-context-width-px, ${CONTEXT_DEFAULT_PX}px) - ${DIVIDER_HIT_HALF_PX}px)`;
+export function buildContextDividerRight(trailingWidthPx = 0): string {
+  const trailing = trailingWidthPx > 0 ? ` + ${trailingWidthPx}px` : "";
+  return `calc(var(--nautilo-context-width-px, ${CONTEXT_DEFAULT_PX}px)${trailing} - ${DIVIDER_HIT_HALF_PX}px)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +292,7 @@ export const SHELL_GRID_CLASSES =
   "relative grid min-h-0 w-full flex-1 overflow-clip";
 
 /**
- * ClassName for the workbench footer auto-row (D096).
+ * ClassName for the workbench footer auto-row.
  *
  * Mounted below SHELL_GRID_CLASSES as a sibling row in the flex-column
  * shell. `shrink-0` keeps the 1fr grid from squeezing it; `border-t`

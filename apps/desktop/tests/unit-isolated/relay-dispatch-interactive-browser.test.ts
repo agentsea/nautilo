@@ -290,6 +290,63 @@ describe("createInteractiveBrowserDispatchHandler", () => {
     expect(removedRecaptures).toBe(2);
   });
 
+  test("rejects a visual click after the embedded browser viewport resizes", async () => {
+    let binding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
+    let viewportWidth = 500;
+    const executions: string[][] = [];
+    const targetBox = { x: 140, y: 135, width: 120, height: 30 };
+    const handler = createInteractiveBrowserDispatchHandler(ports({
+      getVisualObservation: () => binding,
+      setVisualObservation: (_session, value) => { binding = value; },
+      deleteVisualObservation: () => { binding = undefined; },
+      exec: async (_binary, argv) => {
+        executions.push(argv);
+        return { stdout: argv.includes("eval")
+          ? JSON.stringify({ w: viewportWidth, h: 300, dpr: 2, url: "https://example.com/canvas" }) : "" };
+      },
+      readCapturePng: () => Buffer.from("current-browser-pixels"),
+      captureDimensions: () => ({ width: viewportWidth * 2, height: 600 }),
+      extractVisualObservation: async () => visualExtraction([{ text: "Canvas choice", box: targetBox }]),
+      visionFromPng: (_path, _text, visualObservation) => ({
+        status: "ok", result: { kind: "browser_screenshot_vision", visualObservation },
+      }),
+    }));
+    const screenshot = async () => {
+      const captured = await handler({
+        request: request("browser_screenshot", { _visualObservation: true }), signal: undefined, guard,
+      });
+      const result = captured.result.status === "ok" ? captured.result.result as {
+        visualObservation: { observationId: string };
+      } : null;
+      return result!.visualObservation.observationId;
+    };
+    const click = (id: string) => handler({
+      request: request("browser_mouse", {
+        x: 200, y: 150, space: "image",
+        _visualTarget: opaqueVisualTarget(targetBox),
+        _requiredSession: "browser-session", _requiredObservationId: id,
+      }),
+      signal: undefined, guard,
+    });
+
+    const oldObservationId = await screenshot();
+    viewportWidth = 452; // A newly opened group-room members rail narrows the browser surface.
+    executions.splice(0);
+    expect(await click(oldObservationId)).toMatchObject({
+      result: { status: "error", errorCode: "browser_observation_stale" },
+    });
+    expect(executions.some((argv) => argv.includes("mouse"))).toBe(false);
+    expect(binding).toBeUndefined();
+
+    const currentObservationId = await screenshot();
+    executions.splice(0);
+    expect(await click(currentObservationId)).toMatchObject({
+      result: { status: "ok", result: "Clicked resolved visual target v1" },
+    });
+    expect(executions.some((argv) => argv.includes("mouse"))).toBe(true);
+    expect(binding).toBeUndefined();
+  });
+
   test("atomically focuses and types from a fresh visual observation", async () => {
     let binding: import("../../electron/browser-visual-observation.ts").BrowserVisualObservationBinding | undefined;
     const executions: string[][] = [];
