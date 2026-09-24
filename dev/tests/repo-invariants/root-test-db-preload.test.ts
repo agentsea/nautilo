@@ -37,7 +37,7 @@ describe("repository-root test DB preload", () => {
     ) as { scripts?: Record<string, string> };
 
     expect(rootPackage.scripts?.["lint:unused"]).toBe(
-      "NAUTILO_DRIZZLE_OFFLINE=1 knip --cache --no-progress",
+      "NODE_OPTIONS=--max-old-space-size=6144 NAUTILO_DRIZZLE_OFFLINE=1 knip --cache --no-progress",
     );
   });
 

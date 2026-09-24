@@ -54,6 +54,9 @@ run_gate() {
       run_cmd lint-unused bun run lint:unused
       ;;
     typecheck)
+      # Match the CI typecheck step for local gates and their mini-app checks.
+      export NODE_OPTIONS=--max-old-space-size=5120
+      export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"
       run_cmd typecheck bun run typecheck -- --affected
       # First-party mini-apps are sandbox bundles outside Turbo's workspace glob.
       # Keep Video's editor and behavioral fixtures in the qualification gate.
