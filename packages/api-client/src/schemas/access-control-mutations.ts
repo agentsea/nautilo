@@ -44,6 +44,11 @@ export const accessControlOperationSchema = z.discriminatedUnion("kind", [
     label: z.string().min(1),
   }),
   z.object({
+    kind: z.literal("group.set_moderation_scopes"),
+    groupId: z.string().uuid(),
+    roomIds: z.array(z.string().uuid()),
+  }),
+  z.object({
     kind: z.literal("group.set_roles"),
     groupId: z.string().min(1),
     roleSlugs: stringList,

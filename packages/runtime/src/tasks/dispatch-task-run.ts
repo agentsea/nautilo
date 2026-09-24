@@ -306,6 +306,7 @@ export async function dispatchTaskRun(
     await (deps.assertInvocation ?? assertCanInvokeAgent)({
       humanUserId: task.requestorId,
       origin: "task_dispatch",
+      taskId: task.id,
       agentId: task.agentId,
       ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
     });
@@ -346,7 +347,7 @@ export async function dispatchTaskRun(
   // subsequent task-run writes so a drain that begins before Job creation
   // cannot reject the second gate and strand a running task_run with no Job.
   const acceptanceAuthority = createMaintenanceAcceptanceAuthority();
-  const invocationAuthority = createAcceptedInvocationAuthority(task.requestorId);
+  const invocationAuthority = createAcceptedInvocationAuthority(task.requestorId, { originTaskId: task.id });
   if (!resolver) {
     throw new Error("dispatchTaskRun: no PolicyResolver configured (initPolicyResolver not called)");
   }

@@ -15,6 +15,7 @@ const UNAVAILABLE_PAGE = `<!doctype html>
 
 export type PublicJoinRouteOptions = Readonly<{
   inviteToken?: string | undefined;
+  isEnrollmentOpen?: () => Promise<boolean>;
 }>;
 
 export function publicJoinInviteToken(value: string | undefined): string | null {
@@ -33,7 +34,11 @@ export function publicJoinRoutes(app: FastifyInstance, options: PublicJoinRouteO
     reply.header("cache-control", "no-store");
     reply.header("referrer-policy", "no-referrer");
     reply.header("x-robots-tag", "noindex, nofollow");
-    if (inviteToken === null) {
+    let open = false;
+    if (inviteToken !== null && options.isEnrollmentOpen) {
+      try { open = await options.isEnrollmentOpen(); } catch { /* Unavailable authority cannot open enrollment. */ }
+    }
+    if (inviteToken === null || !open) {
       return reply.code(503).type("text/html; charset=utf-8").send(UNAVAILABLE_PAGE);
     }
     return reply.redirect(`/redeem/${encodeURIComponent(inviteToken)}`, 302);

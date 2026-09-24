@@ -19,7 +19,7 @@ test("Record access targets use the audience predicate without requiring the tar
       expect(parameters[Number(accessPredicate![1]) - 1]).toBe("access");
       // An access target remains subject to the same audience containment,
       // top-level, archive, and public-boundary constraints as other targets.
-      expect(statement).toContain('"rooms"."human_actor_ids" @> ARRAY[');
+      expect(statement).toContain('public.moderation_effective_humans("rooms"."human_actor_ids", "rooms"."id") @>');
       expect(statement).toContain('"rooms"."parent_room_id" is null');
       expect(statement).toContain('"rooms"."archived_at" is null');
       expect(parameters).toContain("open");

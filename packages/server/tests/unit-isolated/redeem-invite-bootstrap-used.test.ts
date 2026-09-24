@@ -166,6 +166,9 @@ function getSharedDirectDb() {
 beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb,
+    serverAdmission: { userId: "userId" },
+    moderationAccessAllowedSql: () => ({}),
+    sql: () => ({}),
     hasClaimedOwner: async () => false,
     inviteRedemptions,
     invites,
@@ -201,6 +204,9 @@ beforeAll(() => {
   }));
 
   mock.module("@nautilo/trust", () => ({
+    prepareModerationEnrollmentInTx: async () => 0,
+    completeModerationEnrollmentInTx: async () => 0,
+    ModerationError: class extends Error {},
     hashPin: async () => "hashed-pin",
     generateRecoveryCodesInTx: async () => ["rc1", "rc2"],
     findLocalUserByHandle: async () => null,

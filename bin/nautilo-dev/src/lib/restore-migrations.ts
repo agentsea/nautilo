@@ -123,6 +123,25 @@ export interface DumpRow {
  * breaks restore from older snapshots.
  */
 export const RESTORE_MIGRATIONS: RestoreMigration[] = [
+  {
+    table: "public.server_moderation_policy",
+    skipCopy: true,
+    reason: "Restore saved moderation and joining policy over the migration-seeded singleton.",
+    postRestore: ({ psqlExec, dumpRowsFor }) => {
+      const rows = dumpRowsFor("public.server_moderation_policy");
+      if (rows.length === 0) return; // Older snapshots retain the migration default.
+      if (rows.length !== 1) throw new Error("Expected one Server moderation policy row");
+      const row = rows[0]!;
+      const index = indexOf(row.columns);
+      const columns = ["singleton", "enabled", "joins_paused", "approval_required", "revision", "updated_by", "updated_at"];
+      const values = columns.map((column) => pgValue(row.values[index(column)]));
+      psqlExec(`INSERT INTO public.server_moderation_policy (${columns.join(", ")})
+        VALUES (${values.join(", ")}) ON CONFLICT (singleton) DO UPDATE SET
+        enabled = EXCLUDED.enabled, joins_paused = EXCLUDED.joins_paused,
+        approval_required = EXCLUDED.approval_required, revision = EXCLUDED.revision,
+        updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at;`);
+    },
+  },
   // -----------------------------------------------------------------------
   // M043 — Actors/Agents/Groups/Roles/Humans
   //

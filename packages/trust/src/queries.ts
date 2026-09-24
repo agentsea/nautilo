@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertRoomMembershipNotBannedInTx, lockMembershipHumanInTx, roomMembershipIsBannedInTx } from "./moderation-membership";
 import {
   eq,
   and,
@@ -13,6 +14,9 @@ import {
   ilike,
   notLike,
   getSharedDirectDb,
+  moderationAccessAllowedSql,
+  moderationEffectiveHumanActorIdsSql,
+  moderationBanAbsentSql,
   agentDb,
   getSharedDirectAgentDb,
   type Database,
@@ -436,7 +440,7 @@ export async function findUserByChannelIdentity(
  * rows only) so foreign-origin stubs for federated Humans don't leak
  * into `acct:<handle>@<local>` WebFinger resolution. An incoming
  * WebFinger request for `acct:alice@<local>` must only match a local
- * Human named `alice` — never a foreign stub `@alice@remote.com` that
+ * Human named `alice` — never a foreign stub that
  * happens to share the local-part handle.
  */
 export async function findActorByHandle(
@@ -563,17 +567,31 @@ export async function findHandleOwner(
 // get the Room's Namespace id + human-member set; take a human-set,
 // get every Room-NS whose human-set is a superset.
 
+/** Subtract current Human sanctions without changing Agent membership authority. */
+function roomActorModerationAllowedSql(actorId: string, roomId: SQL): SQL<boolean> {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM actors AS moderation_room_actor
+    WHERE moderation_room_actor.id = ${actorId}
+      AND (moderation_room_actor.kind = 'agent'
+        OR (moderation_room_actor.kind = 'user'
+          AND ${moderationAccessAllowedSql(sql`moderation_room_actor.owner_id`, roomId)}))
+  )`;
+}
+
 /**
- * M044/M227 — fetch a Room's Namespace id + denormalized human-member set
+ * M044/M227 — fetch a Room's Namespace id + effective human-member set
  * and derive whether its top-level Namespace boundary is public. Subthreads
  * inherit the boundary because the projection checks every Room backed by the
  * same Namespace.
  *
  * Returns `null` when the room doesn't exist (defensive — the resolver
- * falls back to the empty-envelope path).
+ * falls back to the empty-envelope path). When rebuilding a Human envelope,
+ * supply requesterActorId to require current membership and moderation access
+ * in this same read. Omitting it is an audience lookup, not requester admission.
  */
 export async function getRoomWithAccess(
   roomId: string,
+  requesterActorId?: string,
 ): Promise<{
   namespaceId: string;
   humanActorIds: string[];
@@ -585,7 +603,9 @@ export async function getRoomWithAccess(
   const [row] = await db
     .select({
       namespaceId: boundary.sourceRoom.namespaceId,
-      humanActorIds: boundary.sourceRoom.humanActorIds,
+      humanActorIds: moderationEffectiveHumanActorIdsSql(
+        sql`${boundary.sourceRoom.humanActorIds}`, sql`${boundary.sourceRoom.id}`,
+      ),
       publicBoundaryRoomId: boundary.publicBoundaryRoomId,
     })
     .from(boundary.sourceRoom)
@@ -593,7 +613,17 @@ export async function getRoomWithAccess(
       boundary.publicBoundaryRoom,
       boundary.publicBoundaryJoin,
     )
-    .where(eq(boundary.sourceRoom.id, roomId))
+    .where(and(
+      eq(boundary.sourceRoom.id, roomId),
+      requesterActorId === undefined ? undefined : sql`EXISTS (
+        SELECT 1 FROM room_members AS requester_membership
+        JOIN actors AS requester_actor ON requester_actor.id = requester_membership.actor_id
+        JOIN users AS requester_user ON requester_user.id = requester_actor.owner_id
+        WHERE requester_user.disabled_at IS NULL AND requester_membership.room_id = ${boundary.sourceRoom.id}
+          AND requester_actor.id = ${requesterActorId} AND requester_actor.kind = 'user'
+          AND ${moderationAccessAllowedSql(sql`requester_actor.owner_id`, sql`${boundary.sourceRoom.id}`)}
+      )`,
+    ))
     .limit(1);
   if (!row) return null;
   return {
@@ -829,9 +859,12 @@ export async function findReadableNamespacesForSubset(
   const rows = await db
     .select({ namespaceId: rooms.namespaceId })
     .from(rooms)
-    .where(namespaceSubsetPredicate(
-      humanActorIds,
-      sourcePolicy.isPublicNamespaceBoundary,
+    .where(and(
+      namespaceSubsetPredicate(humanActorIds, sourcePolicy.isPublicNamespaceBoundary),
+      // Stored membership still owns the subset rule. Effective recipients must
+      // also contain every source Human; a retained roster cannot readmit one.
+      sql`${moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`)}
+        @> ${sql.param(humanActorIds)}::uuid[]`,
     ));
   return [...new Set(rows.map((r) => r.namespaceId))];
 }
@@ -1290,7 +1323,8 @@ export async function findDefaultRoomForActor(
       ),
     )
     .where(
-      and(eq(rooms.type, "private"), inArray(rooms.id, agentMemberRoomIds)),
+      and(eq(rooms.type, "private"), inArray(rooms.id, agentMemberRoomIds),
+        roomActorModerationAllowedSql(actorId, sql`${rooms.id}`)),
     );
 
   return pickDefaultRoomFromPrivateMemberCandidates(candidates);
@@ -1314,6 +1348,7 @@ export async function findRoomIdByGraphThreadIdForOwner(
       and(
         eq(rooms.ownerId, ownerUserId),
         eq(rooms.graphThreadId, graphThreadId),
+        moderationAccessAllowedSql(sql`${ownerUserId}::uuid`, sql`${rooms.id}`),
       ),
     )
     .limit(1);
@@ -1342,7 +1377,8 @@ export async function findRoomIdByGraphThreadIdForUser(
       roomMembers,
       and(eq(roomMembers.roomId, rooms.id), eq(roomMembers.actorId, userActor.id)),
     )
-    .where(eq(rooms.graphThreadId, graphThreadId))
+    .where(and(eq(rooms.graphThreadId, graphThreadId),
+      moderationAccessAllowedSql(sql`${sessionUserId}::uuid`, sql`${rooms.id}`)))
     .limit(1);
   return row?.id ?? null;
 }
@@ -1390,7 +1426,8 @@ export async function findRoomForUserAndAgentMembers(
         eq(roomMembers.actorId, userActorId),
       ),
     )
-    .where(and(eq(rooms.id, roomId), inArray(rooms.id, agentMemberRoomIds)))
+    .where(and(eq(rooms.id, roomId), inArray(rooms.id, agentMemberRoomIds),
+      roomActorModerationAllowedSql(userActorId, sql`${rooms.id}`)))
     .limit(1);
   return row ?? null;
 }
@@ -1420,7 +1457,8 @@ export async function findRoomForUserMember(
         eq(roomMembers.actorId, userActorId),
       ),
     )
-    .where(eq(rooms.id, roomId))
+    .where(and(eq(rooms.id, roomId),
+      roomActorModerationAllowedSql(userActorId, sql`${rooms.id}`)))
     .limit(1);
   return row ?? null;
 }
@@ -1560,7 +1598,7 @@ export async function listRoomsForActor(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       parentRoomId: rooms.parentRoomId,
-      threadRootMessageId: rooms.threadRootMessageId,
+      threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
     .from(rooms)
     .innerJoin(
@@ -1573,6 +1611,7 @@ export async function listRoomsForActor(
     .where(
       and(
         isNull(rooms.archivedAt),
+        roomActorModerationAllowedSql(actorId, sql`${rooms.id}`),
         notInArray(
           rooms.kind,
           includeSubthreads ? ["task", "access"] : ["task", "access", "subthread"],
@@ -1741,7 +1780,7 @@ export async function listManageableRoomsForUser(
     createdAt: rooms.createdAt,
     kind: rooms.kind,
     parentRoomId: rooms.parentRoomId,
-    threadRootMessageId: rooms.threadRootMessageId,
+    threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
   };
   // M157 — `task` (internal transcript holders) and `subthread` (nested,
   // not independently manageable — REL-RMS-RMS) must never appear in the
@@ -1919,7 +1958,7 @@ export async function getRoomDetailForMember(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       parentRoomId: rooms.parentRoomId,
-      threadRootMessageId: rooms.threadRootMessageId,
+      threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
     })
     .from(rooms)
@@ -1964,7 +2003,7 @@ export async function getRoomDetailForManager(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       parentRoomId: rooms.parentRoomId,
-      threadRootMessageId: rooms.threadRootMessageId,
+      threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
     })
     .from(rooms)
@@ -2490,14 +2529,15 @@ export async function listDiscoverableRoomsForUser(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       parentRoomId: rooms.parentRoomId,
-      threadRootMessageId: rooms.threadRootMessageId,
+      threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
     .from(rooms)
     .innerJoin(users, eq(users.id, rooms.ownerId))
     // M157 — `kind='open'` already excludes internal `task` rooms and nested
     // `subthread` rooms; no extra guard needed here.
     .where(
-      and(eq(rooms.kind, "open"), isNull(users.server), isNull(rooms.archivedAt)),
+      and(eq(rooms.kind, "open"), isNull(users.server), isNull(rooms.archivedAt),
+        moderationBanAbsentSql(sql`${userId}`, sql`${rooms.id}`)),
     )
     .orderBy(desc(rooms.createdAt));
 
@@ -2603,6 +2643,7 @@ async function inheritOpenParentMemberIntoSubthreadsInTx(
       roomRole: roomMembers.roomRole,
       agentResponseMode: roomMembers.agentResponseMode,
       kind: actors.kind,
+      ownerId: actors.ownerId,
       displayName: actors.displayName,
     })
     .from(roomMembers)
@@ -2624,6 +2665,8 @@ async function inheritOpenParentMemberIntoSubthreadsInTx(
         and(
           eq(rooms.parentRoomId, parentRoomId),
           eq(rooms.kind, "subthread"),
+          ...(parentMembership.kind === "user"
+            ? [moderationBanAbsentSql(sql`${parentMembership.ownerId}`, sql`${rooms.id}`)] : []),
         ),
       )
   ).sort((a, b) => a.id.localeCompare(b.id));
@@ -2631,6 +2674,7 @@ async function inheritOpenParentMemberIntoSubthreadsInTx(
   const repairedRoomIds: string[] = [];
   for (const child of childRooms) {
     await acquireRoomWriteLock(tx, child.id);
+    if (parentMembership.kind === "user" && await roomMembershipIsBannedInTx(tx, actorId, child.id)) continue;
     const [existing] = await tx
       .select({ actorId: roomMembers.actorId })
       .from(roomMembers)
@@ -2726,7 +2770,9 @@ export async function joinOpenRoom(params: {
   const { actorId, roomId } = params;
   const db = getSharedDirectDb();
   return await db.transaction(async (tx) => {
+    await lockMembershipHumanInTx(tx, params.userId);
     await acquireRoomWriteLock(tx, roomId);
+    await assertRoomMembershipNotBannedInTx(tx, actorId, roomId);
 
     const [room] = await tx
       .select({ id: rooms.id, kind: rooms.kind })
@@ -3126,6 +3172,7 @@ export async function resolveInviteLandingRoomInTx(
     if (!target) return null;
 
     await acquireRoomWriteLock(tx, target.id);
+    await assertRoomMembershipNotBannedInTx(tx, params.inviteeActorId, target.id);
 
     const insertedMembership = await tx
       .insert(roomMembers)
@@ -3162,6 +3209,7 @@ export async function resolveInviteLandingRoomInTx(
     .where(
       and(
         eq(rooms.kind, "open"),
+        moderationBanAbsentSql(sql`${params.inviteeUserId}`, sql`${rooms.id}`),
         isNull(rooms.archivedAt),
         isNull(users.server),
       ),
@@ -3172,6 +3220,7 @@ export async function resolveInviteLandingRoomInTx(
 
   if (openRoom) {
     await acquireRoomWriteLock(tx, openRoom.id);
+    await assertRoomMembershipNotBannedInTx(tx, params.inviteeActorId, openRoom.id);
     const insertedMembership = await tx
       .insert(roomMembers)
       .values({
@@ -3440,6 +3489,7 @@ export async function getSubthreadDetailForMemberWithDb(
   db: Pick<Database, "select">,
   subthreadRoomId: string,
   requesterActorId: string,
+  tombstoneOnly = false,
 ): Promise<SubthreadDetailPayload | null> {
   if (!subthreadRoomId || !requesterActorId) return null;
   const [child] = await db
@@ -3448,6 +3498,11 @@ export async function getSubthreadDetailForMemberWithDb(
       kind: rooms.kind,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: rooms.threadRootMessageId,
+      deletedRoot: rooms.deletedThreadRootMessageId,
+      deletedReplyCount: rooms.deletedThreadReplyCount,
+      deletedLastReplyAt: rooms.deletedThreadLastReplyAt,
+      deletedRevision: rooms.deletedThreadSummaryRevision,
+      createdAt: rooms.createdAt,
     })
     .from(rooms)
     .innerJoin(
@@ -3463,11 +3518,20 @@ export async function getSubthreadDetailForMemberWithDb(
     !child ||
     child.kind !== "subthread" ||
     !child.parentRoomId ||
-    child.threadRootMessageId == null
+    (child.threadRootMessageId == null && child.deletedRoot == null)
   ) {
     return null;
   }
 
+  if (child.threadRootMessageId === null && child.deletedRoot !== null) {
+    const summary = { replyCount: child.deletedReplyCount, lastReplyAt: child.deletedLastReplyAt, summaryRevision: child.deletedRevision };
+    return { parentRoomId: child.parentRoomId, subthreadRoomId: child.id, summary,
+      anchor: { id: child.deletedRoot, role: "system", content: "Message removed by moderation", toolCalls: null, toolName: null,
+        createdAt: child.createdAt, editedAt: null, editRevision: 0, fingerprint: null, replyToMessageId: null,
+        sourceUserId: "", authorAgentId: null, ...summary },
+    };
+  }
+  if (tombstoneOnly) return null;
   const [anchor] = await db
     .select({
       id: sessionMessages.id,
@@ -3490,7 +3554,7 @@ export async function getSubthreadDetailForMemberWithDb(
     .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
     .where(
       and(
-        eq(sessionMessages.id, child.threadRootMessageId),
+        eq(sessionMessages.id, child.threadRootMessageId!),
         eq(sessions.roomId, child.parentRoomId),
       ),
     )
@@ -3526,7 +3590,7 @@ export async function createSubthreadRoom(
     .from(rooms)
     .where(
       and(
-        eq(rooms.threadRootMessageId, input.anchorMessageId),
+        sql`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId}) = ${input.anchorMessageId}`,
         eq(rooms.kind, "subthread"),
       ),
     )
@@ -3673,7 +3737,7 @@ export async function createSubthreadRoom(
       .from(rooms)
       .where(
         and(
-          eq(rooms.threadRootMessageId, input.anchorMessageId),
+          sql`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId}) = ${input.anchorMessageId}`,
           eq(rooms.kind, "subthread"),
         ),
       )
@@ -3727,14 +3791,14 @@ export async function listSubthreadsForRoom(
     .select({
       id: rooms.id,
       parentRoomId: rooms.parentRoomId,
-      anchorMessageId: rooms.threadRootMessageId,
+      anchorMessageId: sql<number>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       label: rooms.label,
-      replyCount: sessionMessages.replyCount,
-      lastReplyAt: sessionMessages.lastReplyAt,
+      replyCount: sql<number>`COALESCE(${sessionMessages.replyCount}, ${rooms.deletedThreadReplyCount})`,
+      lastReplyAt: sql<Date | null>`COALESCE(${sessionMessages.lastReplyAt}, ${rooms.deletedThreadLastReplyAt})`,
       createdAt: rooms.createdAt,
     })
     .from(rooms)
-    .innerJoin(
+    .leftJoin(
       sessionMessages,
       eq(sessionMessages.id, rooms.threadRootMessageId),
     )
@@ -3747,7 +3811,7 @@ export async function listSubthreadsForRoom(
   return rows.map((r) => ({
     id: r.id,
     parentRoomId: r.parentRoomId!,
-    anchorMessageId: r.anchorMessageId!,
+    anchorMessageId: r.anchorMessageId,
     label: r.label,
     replyCount: r.replyCount,
     lastReplyAt: isoFromDbTimestamp(r.lastReplyAt as Date | string | null),
@@ -4996,6 +5060,7 @@ export async function addRoomMember(
     let kind: "user" | "agent";
 
     if ("userId" in target) {
+      await lockMembershipHumanInTx(tx, target.userId);
       const [row] = await tx
         .select({ id: actors.id })
         .from(actors)
@@ -5033,6 +5098,7 @@ export async function addRoomMember(
       throw new Error(`addRoomMember: unknown room ${roomId}`);
     }
     assertRoomAllowsDirectMembershipMutation(roomMeta.kind);
+    if (kind === "user") await assertRoomMembershipNotBannedInTx(tx, actorId, roomId);
 
     if (roomMeta.kind === "subthread" && roomMeta.parentRoomId) {
       const [inParent] = await tx
@@ -5098,12 +5164,14 @@ export async function addRoomMember(
         .select({ id: rooms.id })
         .from(rooms)
         .where(
-          and(eq(rooms.parentRoomId, roomId), eq(rooms.kind, "subthread")),
+          and(eq(rooms.parentRoomId, roomId), eq(rooms.kind, "subthread"),
+            ...("userId" in target ? [moderationBanAbsentSql(sql`${target.userId}`, sql`${rooms.id}`)] : [])),
         )).sort((a, b) => a.id.localeCompare(b.id));
       for (const { id: childId } of childRooms) {
         // Parent is already locked; lock propagated child Rooms in stable id
         // order before mutating each membership.
         await acquireRoomWriteLock(tx, childId);
+        if (kind === "user" && await roomMembershipIsBannedInTx(tx, actorId, childId)) continue;
         const [exChild] = await tx
           .select({ actorId: roomMembers.actorId })
           .from(roomMembers)
@@ -5177,140 +5245,152 @@ export async function removeRoomMember(
   membershipMessageId?: number;
   humanMembershipTransitions?: readonly HumanRoomMembershipTransitionFact[];
 }> {
-  const db = getSharedDirectDb();
-  return await db.transaction(async (tx) => {
-    // M219 — lock before reading/mutating membership or appending the
-    // membership system row. Journal reconciliation will use this same
-    // transaction boundary.
-    await acquireRoomWriteLock(tx, roomId);
+  return getSharedDirectDb().transaction((tx) => removeRoomMemberInTx(tx, roomId, actorId, opts));
+}
 
-    const [roomRow] = await tx
-      .select({ ownerId: rooms.ownerId, kind: rooms.kind })
-      .from(rooms)
-      .where(eq(rooms.id, roomId))
-      .limit(1);
-    if (!roomRow) {
-      throw new Error(`removeRoomMember: unknown room ${roomId}`);
+/** Share canonical removal and its journal/recipient facts with moderation. */
+export async function removeRoomMemberInTx(
+  tx: InviteSeedTx,
+  roomId: string,
+  actorId: string,
+  opts: { allowOrphanBypass?: boolean },
+): Promise<{
+  kind: "user" | "agent";
+  membershipEvent?: RoomMembershipSystemEventPayload;
+  membershipMessageId?: number;
+  humanMembershipTransitions?: readonly HumanRoomMembershipTransitionFact[];
+}> {
+  // M219 — lock before reading/mutating membership or appending the
+  // membership system row. Journal reconciliation will use this same
+  // transaction boundary.
+  await acquireRoomWriteLock(tx, roomId);
+
+  const [roomRow] = await tx
+    .select({ ownerId: rooms.ownerId, kind: rooms.kind })
+    .from(rooms)
+    .where(eq(rooms.id, roomId))
+    .limit(1);
+  if (!roomRow) {
+    throw new Error(`removeRoomMember: unknown room ${roomId}`);
+  }
+  assertRoomAllowsDirectMembershipMutation(roomRow.kind);
+
+  const [mem] = await tx
+    .select({ actorId: roomMembers.actorId })
+    .from(roomMembers)
+    .where(and(eq(roomMembers.roomId, roomId), eq(roomMembers.actorId, actorId)))
+    .limit(1);
+  if (!mem) {
+    throw new Error(`removeRoomMember: actor ${actorId} is not in room ${roomId}`);
+  }
+
+  const ownerActor = await tx
+    .select({ id: actors.id })
+    .from(actors)
+    .where(and(eq(actors.ownerId, roomRow.ownerId), eq(actors.kind, "user")))
+    .limit(1);
+
+  if (
+    ownerActor[0]?.id === actorId &&
+    !opts.allowOrphanBypass
+  ) {
+    throw new MembershipOpError("room_owner");
+  }
+
+  const [actorRow] = await tx
+    .select({ kind: actors.kind })
+    .from(actors)
+    .where(eq(actors.id, actorId))
+    .limit(1);
+  if (!actorRow) {
+    throw new Error(`removeRoomMember: unknown actor ${actorId}`);
+  }
+  const kind: "user" | "agent" = actorRow.kind === "agent" ? "agent" : "user";
+
+  const displayName = await resolveActorDisplayNameInTx(tx, actorId);
+
+  const childRooms = await tx
+    .select({ id: rooms.id })
+    .from(rooms)
+    .where(and(eq(rooms.parentRoomId, roomId), eq(rooms.kind, "subthread")));
+  if (childRooms.length > 0) {
+    const childIds = childRooms.map((c) => c.id).sort();
+    for (const childId of childIds) {
+      // Parent is already locked; lock child Rooms deterministically before
+      // the cascade delete and journal reconciliation.
+      await acquireRoomWriteLock(tx, childId);
     }
-    assertRoomAllowsDirectMembershipMutation(roomRow.kind);
-
-    const [mem] = await tx
-      .select({ actorId: roomMembers.actorId })
-      .from(roomMembers)
-      .where(and(eq(roomMembers.roomId, roomId), eq(roomMembers.actorId, actorId)))
-      .limit(1);
-    if (!mem) {
-      throw new Error(`removeRoomMember: actor ${actorId} is not in room ${roomId}`);
-    }
-
-    const ownerActor = await tx
-      .select({ id: actors.id })
-      .from(actors)
-      .where(and(eq(actors.ownerId, roomRow.ownerId), eq(actors.kind, "user")))
-      .limit(1);
-
-    if (
-      ownerActor[0]?.id === actorId &&
-      !opts.allowOrphanBypass
-    ) {
-      throw new MembershipOpError("room_owner");
-    }
-
-    const [actorRow] = await tx
-      .select({ kind: actors.kind })
-      .from(actors)
-      .where(eq(actors.id, actorId))
-      .limit(1);
-    if (!actorRow) {
-      throw new Error(`removeRoomMember: unknown actor ${actorId}`);
-    }
-    const kind: "user" | "agent" = actorRow.kind === "agent" ? "agent" : "user";
-
-    const displayName = await resolveActorDisplayNameInTx(tx, actorId);
-
-    const childRooms = await tx
-      .select({ id: rooms.id })
-      .from(rooms)
-      .where(and(eq(rooms.parentRoomId, roomId), eq(rooms.kind, "subthread")));
-    if (childRooms.length > 0) {
-      const childIds = childRooms.map((c) => c.id).sort();
-      for (const childId of childIds) {
-        // Parent is already locked; lock child Rooms deterministically before
-        // the cascade delete and journal reconciliation.
-        await acquireRoomWriteLock(tx, childId);
-      }
-      await tx
-        .delete(roomMembers)
-        .where(
-          and(eq(roomMembers.actorId, actorId), inArray(roomMembers.roomId, childIds)),
-        );
-      if (kind === "user") {
-        for (const cid of childIds) {
-          await updateRoomHumanActorsInTx(tx, cid);
-        }
-      }
-      if (kind === "agent" && roomRow.kind !== "subthread") {
-        await invalidateSubthreadResponders(tx, {
-          subthreadRoomIds: childIds,
-          botActorId: actorId,
-          reason: "parent_membership_removed",
-          now: new Date(),
-        });
-      }
-    }
-
-    const previousHumanSnapshot = kind === "user"
-        && roomRow.kind !== "subthread"
-      ? await loadRoomHumanAuthoritySnapshotInTx(tx, roomId)
-      : null;
-
     await tx
       .delete(roomMembers)
-      .where(and(eq(roomMembers.roomId, roomId), eq(roomMembers.actorId, actorId)));
-
+      .where(
+        and(eq(roomMembers.actorId, actorId), inArray(roomMembers.roomId, childIds)),
+      );
     if (kind === "user") {
-      await updateRoomHumanActorsInTx(tx, roomId);
+      for (const cid of childIds) {
+        await updateRoomHumanActorsInTx(tx, cid);
+      }
     }
-
-    let membershipMessageId: number | undefined;
-    let membershipEvent: RoomMembershipSystemEventPayload | undefined;
-    if (roomRow.kind !== "subthread") {
-      membershipEvent = {
-        kind: "member_removed",
-        actorId,
-        actorKind: kind,
-        displayName,
-      };
-      membershipMessageId = await appendRoomMembershipSystemMessagesInTx(tx, roomId, membershipEvent);
+    if (kind === "agent" && roomRow.kind !== "subthread") {
+      await invalidateSubthreadResponders(tx, {
+        subthreadRoomIds: childIds,
+        botActorId: actorId,
+        reason: "parent_membership_removed",
+        now: new Date(),
+      });
     }
+  }
 
-    await reconcileRoomJournalMembershipInTx(tx, [
-      roomId,
-      ...childRooms.map((child) => child.id),
-    ]);
+  const previousHumanSnapshot = kind === "user"
+      && roomRow.kind !== "subthread"
+    ? await loadRoomHumanAuthoritySnapshotInTx(tx, roomId)
+    : null;
 
-    const currentHumanSnapshot = previousHumanSnapshot === null
-      ? null
-      : await loadRoomHumanAuthoritySnapshotInTx(tx, roomId);
-    const humanMembershipTransitions = previousHumanSnapshot !== null
-        && currentHumanSnapshot !== null
-      ? [Object.freeze({
-        kind: "human_remove" as const,
-        targetHumanActorId: actorId,
-        previous: previousHumanSnapshot,
-        current: currentHumanSnapshot,
-      })]
-      : [];
+  await tx
+    .delete(roomMembers)
+    .where(and(eq(roomMembers.roomId, roomId), eq(roomMembers.actorId, actorId)));
 
-    return {
-      kind,
-      ...(membershipEvent ? { membershipEvent } : {}),
-      ...(membershipMessageId === undefined ? {} : { membershipMessageId }),
-      ...(humanMembershipTransitions.length > 0
-        ? { humanMembershipTransitions: Object.freeze(humanMembershipTransitions) }
-        : {}),
+  if (kind === "user") {
+    await updateRoomHumanActorsInTx(tx, roomId);
+  }
+
+  let membershipMessageId: number | undefined;
+  let membershipEvent: RoomMembershipSystemEventPayload | undefined;
+  if (roomRow.kind !== "subthread") {
+    membershipEvent = {
+      kind: "member_removed",
+      actorId,
+      actorKind: kind,
+      displayName,
     };
-  });
+    membershipMessageId = await appendRoomMembershipSystemMessagesInTx(tx, roomId, membershipEvent);
+  }
+
+  await reconcileRoomJournalMembershipInTx(tx, [
+    roomId,
+    ...childRooms.map((child) => child.id),
+  ]);
+
+  const currentHumanSnapshot = previousHumanSnapshot === null
+    ? null
+    : await loadRoomHumanAuthoritySnapshotInTx(tx, roomId);
+  const humanMembershipTransitions = previousHumanSnapshot !== null
+      && currentHumanSnapshot !== null
+    ? [Object.freeze({
+      kind: "human_remove" as const,
+      targetHumanActorId: actorId,
+      previous: previousHumanSnapshot,
+      current: currentHumanSnapshot,
+    })]
+    : [];
+
+  return {
+    kind,
+    ...(membershipEvent ? { membershipEvent } : {}),
+    ...(membershipMessageId === undefined ? {} : { membershipMessageId }),
+    ...(humanMembershipTransitions.length > 0
+      ? { humanMembershipTransitions: Object.freeze(humanMembershipTransitions) }
+      : {}),
+  };
 }
 
 export type CreateRoomMemberInput = { kind: "user" | "agent"; id: string };
@@ -6273,6 +6353,7 @@ export async function resolveCanonicalPrincipalByLogtoSub(
     .select({
       userId: users.id,
       disabledAt: users.disabledAt,
+      serverAccessAllowed: moderationAccessAllowedSql(sql`${users.id}`),
       handle: users.handle,
       displayName: users.name,
       server: users.server,
@@ -6349,6 +6430,7 @@ export async function resolveCanonicalPrincipalByLogtoSub(
     logtoSub,
     userId: identityRow.userId,
     disabledAt: identityRow.disabledAt,
+    serverAccessAllowed: identityRow.serverAccessAllowed,
     actorId,
     actorDisplayName,
     handle: identityRow.handle,

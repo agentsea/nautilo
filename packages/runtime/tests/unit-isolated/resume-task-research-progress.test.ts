@@ -32,6 +32,7 @@ mock.module("../../src/tasks/report-back", () => ({
   SAFE_BACKGROUND_TASK_FAILURE_RESULT: "Task failed",
 }));
 const { runTaskApprovalResume } = await import("../../src/tasks/resume-task-approval");
+const { JobManager } = await import("../../src/job-manager");
 const taskId = "10000000-0000-4000-8000-000000000001";
 const runId = "10000000-0000-4000-8000-000000000002";
 const research = { unitsTotal: 8, unitsCompleted: 2, unitsPending: 6, filesTotal: 80, filesAssigned: 40 };
@@ -57,6 +58,7 @@ async function resume(preparation: unknown) {
     }, { db: {} as DirectDatabase,
       assertInvocation: async () => {},
       assertServerFunding: async () => {},
+      jobManager: new JobManager({ checkInvocationAccess: async ({ humanUserId }) => humanUserId === "owner" }),
     });
   } finally { eventBus.off(listen); }
   expect(failure).not.toHaveBeenCalled();

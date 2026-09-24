@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { unzipSync } from "fflate";
 import type { OutgoingHttpHeaders } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import type { Artifact, ArtifactListKeyset } from "@nautilo/db";
-import { ArtifactWriteDeniedError } from "@nautilo/trust";
+import { ArtifactWriteDeniedError, type NamespaceMemoryEnvelope } from "@nautilo/trust";
 import type { ServerEvent } from "@nautilo/types";
 import {
   PRIVATE_NO_STORE_CACHE_CONTROL,
@@ -751,5 +752,106 @@ describe("PUT /api/workspace/artifacts/:id/state/:key recovery transport", () =>
       capability: "write_artifacts",
     });
     expect(setArtifactState).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("current Artifact download authority", () => {
+  const DOWNLOAD_ENVELOPE = {
+    ...ENVELOPE_A,
+    readableNamespaces: [...ENVELOPE_A.readableNamespaces],
+    writableNamespaces: [...ENVELOPE_A.writableNamespaces],
+    mutableNamespaces: [...ENVELOPE_A.mutableNamespaces],
+    toolPolicy: {},
+  } satisfies NamespaceMemoryEnvelope;
+  async function withDownload(run: (bytes: Buffer) => Promise<void>): Promise<void> {
+    const root = await mkdtemp(join(tmpdir(), "artifact-download-"));
+    const bytes = Buffer.alloc(256 * 1024, 65);
+    const path = join(root, "file.txt");
+    await writeFile(path, bytes);
+    findArtifactByInternalIdForNamespaces.mockImplementation(async () => ({
+      id: "download-row", artifactId: "download-artifact", path: "file.txt",
+      mimeType: "text/plain", size: bytes.length, storageUri: `file://${path}`,
+      revision: 1, createdAt: new Date(), updatedAt: new Date(), deletedAt: null,
+    }));
+    try { await run(bytes); } finally { await rm(root, { recursive: true, force: true }); }
+  }
+
+  test("full and range downloads retain ordinary byte semantics after current checks", async () => {
+    await withDownload(async bytes => {
+      const app = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, { buildCurrentEnvelope: async () => DOWNLOAD_ENVELOPE });
+      const full = await app.inject({ url: "/api/workspace/artifacts/download-row/bytes" });
+      expect(full.statusCode).toBe(200);
+      expect(full.rawPayload).toEqual(bytes);
+      const range = await app.inject({ url: "/api/workspace/artifacts/download-row/bytes", headers: { range: "bytes=7-23" } });
+      expect(range.statusCode).toBe(206);
+      expect(range.rawPayload).toEqual(bytes.subarray(7, 24));
+      expect(range.headers["content-range"]).toBe(`bytes 7-23/${bytes.length}`);
+      const archive = await app.inject({ method: "POST", url: "/api/workspace/artifacts/export", payload: { ids: ["download-row"] } });
+      expect(archive.statusCode).toBe(200);
+      expect(Buffer.from(unzipSync(archive.rawPayload)["file.txt"]!).equals(bytes)).toBe(true);
+    });
+  });
+
+  test("withdrawal before publication rejects bytes without committing success headers", async () => {
+    await withDownload(async () => {
+      const app = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, { buildCurrentEnvelope: async () => ({ ...DOWNLOAD_ENVELOPE, readableNamespaces: [] }) });
+      const result = await app.inject({ url: "/api/workspace/artifacts/download-row/bytes" });
+      expect(result.statusCode).toBe(403);
+      expect(result.json()).toMatchObject({ code: "artifact_access_withdrawn" });
+      expect(result.headers["content-type"]).toContain("application/json");
+    });
+  });
+
+  test("a streaming withdrawal aborts the response instead of delivering the remaining bytes", async () => {
+    await withDownload(async () => {
+      let checks = 0;
+      const app = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, {
+        buildCurrentEnvelope: async () => ++checks < 3 ? DOWNLOAD_ENVELOPE : { ...DOWNLOAD_ENVELOPE, readableNamespaces: [] },
+      });
+      await Promise.resolve(expect(Promise.resolve(app.inject({ url: "/api/workspace/artifacts/download-row/bytes" }))).rejects.toThrow());
+      expect(checks).toBe(3);
+    });
+  });
+
+  test("ZIP publication rechecks after file reads and sends no archive after withdrawal", async () => {
+    await withDownload(async () => {
+      let checks = 0;
+      const app = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, {
+        buildCurrentEnvelope: async () => ++checks === 1 ? DOWNLOAD_ENVELOPE : { ...DOWNLOAD_ENVELOPE, readableNamespaces: [] },
+      });
+      const result = await app.inject({ method: "POST", url: "/api/workspace/artifacts/export", payload: { ids: ["download-row"] } });
+      expect(result.statusCode).toBe(403);
+      expect(result.headers["content-type"]).toContain("application/json");
+      expect(checks).toBe(2);
+    });
+  });
+
+  test("a different Human envelope cannot substitute for the requesting Human", async () => {
+    await withDownload(async () => {
+      const app = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, { buildCurrentEnvelope: async () => ({ ...DOWNLOAD_ENVELOPE, ownerId: "another-human" }) });
+      expect((await app.inject({ url: "/api/workspace/artifacts/download-row/bytes" })).statusCode).toBe(403);
+    });
+  });
+
+  test("missing or failed current-authority composition cannot use the old envelope", async () => {
+    await withDownload(async () => {
+      const missing = await makeApp();
+      expect((await missing.inject({ url: "/api/workspace/artifacts/download-row/bytes" })).statusCode).toBe(503);
+      const failed = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, { buildCurrentEnvelope: async () => { throw new Error("Unavailable"); } });
+      expect((await failed.inject({ url: "/api/workspace/artifacts/download-row/bytes" })).statusCode).toBe(503);
+    });
+  });
+
+  test("detaching the Artifact after admission denies delivery even if the Room stays readable", async () => {
+    await withDownload(async () => {
+      const app = await makeApp(DOWNLOAD_ENVELOPE, async () => {}, {
+        buildCurrentEnvelope: async () => {
+          findArtifactByInternalIdForNamespaces.mockImplementation(async () => null);
+          return DOWNLOAD_ENVELOPE;
+        },
+      });
+      expect((await app.inject({ url: "/api/workspace/artifacts/download-row/bytes" })).statusCode).toBe(403);
+    });
   });
 });

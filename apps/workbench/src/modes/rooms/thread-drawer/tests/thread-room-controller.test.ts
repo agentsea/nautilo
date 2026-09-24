@@ -618,3 +618,14 @@ describe("threadRoomReducer", () => {
     });
   });
 });
+
+
+test("parent deletion clears the open thread anchor without losing replies or accepting a late edit", () => {
+  const initial = ready();
+  const deleted = threadRoomReducer(initial, { type: "event.received", event: { type: "message.deleted", laneKey: "room:parent-a", messageId: 42 } });
+  expect(deleted.anchor?.content).toBe("Message removed by moderation");
+  expect(deleted.detail?.anchor.content).toBe("Message removed by moderation");
+  expect(deleted.messages).toEqual(initial.messages);
+  const edited = threadRoomReducer(deleted, { type: "event.received", event: { type: "message.updated", laneKey: "room:parent-a", logicalMessageKey: "row:42", content: "Old content", editRevision: 99, editedAt: new Date().toISOString() } });
+  expect(edited.anchor?.content).toBe("Message removed by moderation");
+});

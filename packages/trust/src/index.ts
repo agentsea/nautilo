@@ -1,3 +1,10 @@
+export { recoverModerationEffects, type ModerationEffects } from "./moderation-coordinator";
+export { applyModeration, inspectModerationPerson, readModerationReceipt, type ModerationDelivery } from "./moderation-coordinator";
+export { getServerModerationPerson, searchServerModerationPeople } from "./moderation-person";
+export { applicantEnrollmentReview, listEnrollmentReviews, decideEnrollmentReview } from "./enrollment-review";
+export { prepareModerationEnrollmentInTx, completeModerationEnrollmentInTx } from "./moderation-enrollment";
+export { readServerModerationPolicy, updateServerModerationPolicy, assertServerEnrollmentOpenInTx } from "./moderation-settings";
+export { ModerationError } from "./moderation-policy";
 export type {
   PolicyResolver,
   ResolveContextFromPrincipalInput,
@@ -466,6 +473,9 @@ export {
   createAcceptedInvocationAuthority,
   assertAcceptedInvocationAuthoritySubject,
   getAcceptedInvocationAuthoritySubject,
+  getAcceptedInvocationAuthorityOrigin,
+  bindAcceptedInvocationAuthorityOrigin,
+  isInvocationAccessAllowed,
   toActionCapabilityHttpDenial,
   toActionCapabilityDenialDiagnostic,
   ActionCapabilityDeniedError,

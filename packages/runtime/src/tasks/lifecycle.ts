@@ -248,6 +248,7 @@ export async function unpauseTask(
 export async function stopTask(
   deps: TaskLifecycleDeps,
   taskId: string,
+  expectedInvocation?: { humanUserId: string; taskRunId: string },
 ): Promise<TaskLifecycleResult> {
   const { db, jobManager } = deps;
   // The canonical Writer save has already claimed this exact Task proposal.
@@ -270,9 +271,13 @@ export async function stopTask(
     taskPatch: { cancelledAt: new Date() },
     runStatus: "cancelled",
     blockPendingWriterWorkspaceAcceptance: true,
+    ...(expectedInvocation ? { expectedInvocation, runId: expectedInvocation.taskRunId } : {}),
   });
   const task = transition.task;
   if (!task) return { ok: false, status: "not_found", message: "Task not found." };
+  if (transition.outcome === "authority_changed") {
+    return { ok: false, status: "authority_changed", message: "Task invocation changed." };
+  }
   if (transition.outcome === "writer_review_pending") {
     return {
       ok: false,

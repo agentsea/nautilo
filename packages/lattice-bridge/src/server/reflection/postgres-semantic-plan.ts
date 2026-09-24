@@ -7,6 +7,7 @@ import {
   reflectionRecordPayloadRepresentations, reflectionRecordSemanticWork, reflectionRecords,
   rooms, type PostgresJsBridgeConnection,
 } from "@nautilo/db";
+import {sql, moderationEffectiveHumanActorIdsSql} from "@nautilo/db";
 import {assertPortableId, type LatticeCrypto} from "@nautilo/lattice-crypto";
 import {
   BACKGROUND_REFLECTION_MAX_NAMESPACES_V2, REFLECTION_BACKGROUND_MAX_INPUTS_V2, REFLECTION_BACKGROUND_MAX_OUTPUT_NAMESPACES_V2, type BackgroundNamespaceAuthorityV2,
@@ -176,7 +177,7 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
   if (blockedLeaf.length !== 0) return null;
   const roomNamespaces = sorted([...namespaceIds, ...leaves]);
   if (roomNamespaces.length > BACKGROUND_REFLECTION_MAX_NAMESPACES_V2) return null;
-  const query = cryptoTypedDb.select({id: rooms.id, namespaceId: rooms.namespaceId, humanActorIds: rooms.humanActorIds,
+  const query = cryptoTypedDb.select({id: rooms.id, namespaceId: rooms.namespaceId, humanActorIds: rooms.humanActorIds, effective_human_actor_ids: moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`).as("effective_human_actor_ids"),
     kind: rooms.kind, archivedAt: rooms.archivedAt}).from(rooms)
     .where(and(inArray(rooms.namespaceId, roomNamespaces), isNull(rooms.parentRoomId))).orderBy(asc(rooms.id));
   const roomRows = await executeTypedCryptoQuery(input.product, input.lock === true ? query.for("update") : query);
@@ -186,22 +187,22 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
   for (const record of recordAudiences) {
     const current = advanceAuthorityAlternatives({leaves: record.leaves.map(leaf => {
       const room = byNamespace.get(leaf)!;
-      return {terminalAuthorityLeafHandle: leaf, alternatives: [{humanRefs: sorted(room.human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
+      return {terminalAuthorityLeafHandle: leaf, alternatives: [{humanRefs: sorted(room.effective_human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
     }), budget: {maxOperations: record.leaves.length * 2}});
     const selected = byNamespace.get(record.namespaceId)!;
     if (current.status !== "complete" || current.outcome.kind !== "available" || current.outcome.alternatives.length !== 1
-      || selected.kind !== "access" || JSON.stringify(sorted(selected.human_actor_ids)) !== JSON.stringify(current.outcome.alternatives[0]!.humanRefs)
+      || selected.kind !== "access" || JSON.stringify(sorted(selected.effective_human_actor_ids)) !== JSON.stringify(current.outcome.alternatives[0]!.humanRefs)
       || record.includesPublicBoundary !== current.outcome.alternatives[0]!.includesPublicBoundary) return null;
   }
   const authority = advanceAuthorityAlternatives({leaves: leaves.map(leaf => {
     const room = byNamespace.get(leaf)!;
-    return {terminalAuthorityLeafHandle: leaf, alternatives: [{humanRefs: sorted(room.human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
+    return {terminalAuthorityLeafHandle: leaf, alternatives: [{humanRefs: sorted(room.effective_human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
   }), budget: {maxOperations: leaves.length * 2}});
   if (authority.status !== "complete" || authority.outcome.kind !== "available" || authority.outcome.alternatives.length !== 1) return null;
   const audience = authority.outcome.alternatives[0]!;
   for (const output of c.outputNamespaceIds) {
     const room = byNamespace.get(output)!;
-    if (room.kind !== "access" || JSON.stringify(sorted(room.human_actor_ids)) !== JSON.stringify(audience.humanRefs)) return null;
+    if (room.kind !== "access" || JSON.stringify(sorted(room.effective_human_actor_ids)) !== JSON.stringify(audience.humanRefs)) return null;
   }
   const canonical = new TextEncoder().encode(JSON.stringify([
     "nautilo/reflection/semantic-source/v2", c.recordRef, c.claimGeneration, claim.stage, facts,
@@ -269,7 +270,20 @@ export async function withPostgresReflectionSemanticSourcePlan<Value>(input: Rea
       const domains = new PostgresDomainKeyAuthorityRepository(input.restricted, input.crypto, input.serverScope);
       for (const coordinate of initial.namespaceRooms) {
         const current = await domains.inspectForegroundNamespaceAuthority({namespaceId: coordinate.namespaceId, keyClass: "ai"});
-        if (current.status !== "ready") {missingNamespace = coordinate; keyWaiting = current.reason === "namespace_bundle_unavailable"; return null;}
+        const authorityRows = await executeTypedCryptoQuery(product, cryptoTypedDb
+          .select({ revision: rooms.namespaceAccessRevision }).from(rooms)
+          .where(and(eq(rooms.id, coordinate.roomId), eq(rooms.namespaceId, coordinate.namespaceId))));
+        if (current.status !== "ready" || authorityRows.length !== 1
+          || authorityRows[0]!.namespace_access_revision !== current.namespaceAccessRevision) {
+          if (current.status === "ready") {
+            for (const digest of [current.namespaceHeadDigest, current.namespacePublicationDigest,
+              current.namespacePublicationSetDigest, current.namespaceAudienceFingerprint,
+              current.domainHeadDigest, current.bundleDigest]) digest.fill(0);
+          }
+          missingNamespace = coordinate;
+          keyWaiting = current.status === "ready" || current.reason === "namespace_bundle_unavailable";
+          return null;
+        }
         namespaces.push({serverId: input.serverScope, roomId: coordinate.roomId, namespaceId: coordinate.namespaceId,
           namespaceAccessRevision: current.namespaceAccessRevision, namespaceKeyGeneration: current.namespaceKeyGeneration,
           namespaceHeadDigest: current.namespaceHeadDigest, domainId: current.domainId, domainKeyGeneration: current.domainKeyGeneration,

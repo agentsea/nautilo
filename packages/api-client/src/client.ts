@@ -1,5 +1,8 @@
 import type { CheckSummary, KeyReport, TransactionDetail } from "@nautilo/config-guard";
 import { z } from "zod";
+import type { ModerationCommand, ServerModerationPolicy } from "@nautilo/types";
+import { moderationPolicySchema, moderationPolicyUpdateSchema, moderationPersonSchema, moderationReceiptSchema,
+  enrollmentStatusSchema, enrollmentPageSchema, moderationPeopleSchema } from "./schemas/moderation";
 import {
   eventFeedErrorResponseSchema,
   eventFeedListOptionsSchema,
@@ -3429,6 +3432,61 @@ const GET_SINGLE_FLIGHT_REPR_HEADERS = [
 ] as const;
 
 export class NautiloApiClient {
+  private moderationErrors = {
+    400: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(400, body, "invalid_request"),
+    401: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(401, body, "authentication_required"),
+    403: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(403, body, "forbidden_scope"),
+    404: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(404, body, "target_unavailable"),
+    409: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(409, body, "stale_revision"),
+    429: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(429, body, "rate_limited"),
+    503: (body: Parameters<typeof ownerClaimServerError>[1]) => ownerClaimServerError(503, body, "moderation_unavailable"),
+  };
+
+  async getModerationPolicy() {
+    return this.request({ path: "/api/moderation/policy", schema: moderationPolicySchema, statusErrors: this.moderationErrors });
+  }
+
+  async updateModerationPolicy(input: ServerModerationPolicy) {
+    return this.request({ method: "PUT", path: "/api/moderation/policy", body: input, schema: moderationPolicyUpdateSchema, statusErrors: this.moderationErrors });
+  }
+
+  async getModerationPerson(target: { userId: string } | { handle: string }) {
+    return this.request({ path: `/api/moderation/person?${new URLSearchParams(target).toString()}`, schema: moderationPersonSchema, statusErrors: this.moderationErrors });
+  }
+
+  async applyModeration(command: ModerationCommand) {
+    return this.request({ method: "POST", path: "/api/moderation/actions", body: command, schema: moderationReceiptSchema, statusErrors: this.moderationErrors });
+  }
+
+  async getModerationReceipt(operationId: string) {
+    return this.request({ path: `/api/moderation/actions/${encodeURIComponent(operationId)}`, schema: moderationReceiptSchema, statusErrors: this.moderationErrors });
+  }
+
+  async searchModerationPeople(search: string, after?: string, activeOnly?: boolean) {
+    const query = new URLSearchParams({ search });
+    if (after) query.set("after", after);
+    if (activeOnly !== undefined) query.set("activeOnly", String(activeOnly));
+    return this.request({ path: `/api/moderation/people?${query.toString()}`, schema: moderationPeopleSchema, statusErrors: this.moderationErrors });
+  }
+
+  async listEnrollmentReviews(after?: { inviteId: string; userId: string }, search?: string) {
+    const query = after ? `?${new URLSearchParams({ afterInviteId: after.inviteId, afterUserId: after.userId }).toString()}` : "";
+    const filter = search ? `${query ? "&" : "?"}${new URLSearchParams({ search }).toString()}` : "";
+    return this.request({ path: `/api/moderation/enrollment${query}${filter}`, schema: enrollmentPageSchema, statusErrors: this.moderationErrors });
+  }
+
+  async decideEnrollmentReview(input: { inviteId: string; userId: string; revision: number; decision: "approved" | "rejected" }) {
+    return this.request({ method: "POST", path: "/api/moderation/enrollment/decision", body: input,
+      schema: z.object({ ok: z.literal(true), auditRecorded: z.boolean() }), statusErrors: this.moderationErrors });
+  }
+
+  async getEnrollmentReview(token: string) {
+    return this.request({ path: `/api/invites/${encodeURIComponent(token)}/enrollment-review`, schema: enrollmentStatusSchema, statusErrors: this.moderationErrors });
+  }
+
+  async submitEnrollmentReview(token: string, message: string) {
+    return this.request({ method: "POST", path: `/api/invites/${encodeURIComponent(token)}/enrollment-review`, body: { message }, schema: enrollmentStatusSchema, statusErrors: this.moderationErrors });
+  }
   private token: string | null = null;
   private tokenProvider: (() => Promise<string | null>) | null = null;
   private unauthorizedResponseHandler: UnauthorizedResponseHandler | null = null;
@@ -11137,6 +11195,7 @@ export class NautiloApiClient {
       statusErrors: {
         400: (body) => ownerClaimServerError(400, body, "invalid_profile"),
         401: (body) => ownerClaimServerError(401, body, "authentication_required"),
+        403: (body) => ownerClaimServerError(403, body, "enrollment_review_required"),
         404: (body) => ownerClaimServerError(404, body, "not_found"),
         409: (body) => ownerClaimServerError(409, body, "not_bound"),
         410: (body) => ownerClaimServerError(410, body, "used_up"),

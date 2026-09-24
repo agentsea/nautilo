@@ -57,10 +57,10 @@ describe("Postgres Human Memory Namespace authority resolver", () => {
         return [{ subject_user_id: USER }] as unknown as readonly Row[];
       }
       if (statement.includes("m298_namespace_key_human_ai_readable_source_room")) {
-        return [{ source_room_id: ROOM, source_kind: "open", source_parent_room_id: null,
+        return [{ source_room_id: ROOM, source_access_allowed: true, source_kind: "open", source_parent_room_id: null,
           source_archived_at: null, room_id: ROOM, namespace_id: NAMESPACE,
           kind: "open", parent_room_id: null, archived_at: null,
-          namespace_access_revision: 2, human_actor_ids: [HUMAN],
+          namespace_access_revision: 2, human_actor_ids: [HUMAN], effective_human_actor_ids: [HUMAN],
           subject_user_id: USER }] as unknown as readonly Row[];
       }
       if (statement.includes("m298_namespace_key_human_ai_readable_authority_members")) {
@@ -94,11 +94,11 @@ describe("Postgres Human Memory Namespace authority resolver", () => {
         return [{ subject_user_id: USER }] as unknown as readonly Row[];
       }
       if (statement.includes("m298_namespace_key_human_ai_readable_source_room")) {
-        return [{ source_room_id: ROOM, source_kind: "access",
+        return [{ source_room_id: ROOM, source_access_allowed: true, source_kind: "access",
           source_parent_room_id: null, source_archived_at: null,
           room_id: ROOM, namespace_id: NAMESPACE, kind: "access",
           parent_room_id: null, archived_at: null,
-          namespace_access_revision: 2, human_actor_ids: [HUMAN] }] as unknown as readonly Row[];
+          namespace_access_revision: 2, human_actor_ids: [HUMAN], effective_human_actor_ids: [HUMAN] }] as unknown as readonly Row[];
       }
       if (statement.includes("m298_namespace_key_human_ai_readable_authority_members")) {
         return [{ actor_id: HUMAN, kind: "user", agent_id: null }] as unknown as readonly Row[];

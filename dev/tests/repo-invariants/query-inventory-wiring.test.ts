@@ -10,7 +10,7 @@ async function read(relativePath: string): Promise<string> {
 
 type Workflow = {
   jobs: Record<string, {
-    steps?: Array<{ name?: string; run?: string }>;
+    steps?: Array<{ name?: string; run?: string; env?: Record<string, string> }>;
   }>;
 };
 
@@ -30,13 +30,13 @@ type Lefthook = {
 };
 
 describe("query inventory enforcement wiring", () => {
-  test("uses the same unconditional blocking gate before pushes and in CI", async () => {
+  test("requires strict private review locally and exact-commit review in public CI", async () => {
     const gates = await read("dev/scripts/ci-gates.sh");
     const hooks = Bun.YAML.parse(await read("lefthook.yml")) as Lefthook;
     const workflow = Bun.YAML.parse(await read(".github/workflows/ci.yml")) as Workflow;
 
     expect(gates).toMatch(
-      /query-inventory\)\s+run_cmd query-inventory bun run db:query-inventory:check\s+;;/,
+      /query-inventory\)\s+if \[\[ "\$\{GITHUB_ACTIONS:-\}" == "true" \]\]; then\s+run_cmd query-inventory bun run --cwd packages\/query-invariants check:ci --base "\$\{LIMIT_REVIEW_BASE:\?exact base required\}" --head "\$\{LIMIT_REVIEW_HEAD:\?exact head required\}" --repository "\$\{GITHUB_REPOSITORY:\?repository required\}"\s+else\s+run_cmd query-inventory bun run db:query-inventory:check\s+fi\s+;;/,
     );
     expect(gates).toMatch(
       /lint\)\s+run_gate lint-eslint\s+run_gate test-invariants\s+run_gate query-inventory\s+run_gate limit-invariants\s+run_gate lint-unused\s+;;/,
@@ -51,6 +51,11 @@ describe("query inventory enforcement wiring", () => {
     expect(hooks["pre-commit"]?.commands?.["query-inventory"]).toBeUndefined();
     expect(workflow.jobs["lint"]?.steps).toContainEqual({
       name: "Query inventory",
+      env: {
+        GITHUB_TOKEN: "${{ github.token }}",
+        LIMIT_REVIEW_BASE: "${{ github.event.pull_request.base.sha }}",
+        LIMIT_REVIEW_HEAD: "${{ github.event.pull_request.head.sha }}",
+      },
       run: "bash dev/scripts/ci-gates.sh query-inventory",
     });
   });

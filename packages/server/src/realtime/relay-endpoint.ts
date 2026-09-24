@@ -48,6 +48,7 @@ import {
   RELAY_TOKEN_AUTH_CLOSE_CODE,
 } from "@nautilo/relay";
 import { validateRelayToken } from "./relay-token";
+import { getRelayTokenStore } from "../lib/relay-token-store";
 import { getToolCatalog } from "@nautilo/catalog";
 import { getServerDirectDb } from "../lib/server-direct-db";
 import {
@@ -281,6 +282,8 @@ export interface RelaySocketLike {
 
 /** Subset of `InMemoryRelayRegistry` the register handler calls. */
 export interface RelayRegistryLike {
+  unregisterConnection(relayId: string, send: (msg: unknown) => void): Promise<void>;
+  getUserId(relayId: string): string | null;
   register(
     relayId: string,
     userId: string,
@@ -343,7 +346,8 @@ export interface HandleRegisterResult {
     | "rejected-no-token"
     | "rejected-invalid-token"
     | "version-mismatch"
-    | "internal-error";
+    | "internal-error"
+    | "connection-closed";
   readonly effectiveUserId?: string;
   readonly protocolVersion?: number;
   readonly capabilities?: RelayCapabilities;
@@ -427,6 +431,7 @@ export async function handleRelayRegister(
     minimum: RELAY_MIN_SUPPORTED_PROTOCOL_VERSION,
     maximum: RELAY_PROTOCOL_VERSION,
   },
+  onRegistered?: (result: HandleRegisterResult) => void,
 ): Promise<HandleRegisterResult> {
   const claimedVersion = (msg as { protocolVersion: unknown }).protocolVersion;
   const negotiatedVersion = negotiateRelayProtocolVersion(msg, protocolPolicy);
@@ -503,46 +508,81 @@ export async function handleRelayRegister(
     }
   };
 
-  await registry.register(
-    msg.relayId,
-    effectiveUserId,
-    negotiatedCapabilities,
-    send,
-    negotiatedVersion,
-    msg.desktopSessionId,
-    msg.capabilityRevision,
-    pairingGeneration,
-  );
+  const register = async (): Promise<HandleRegisterResult> => {
+    if (socket.readyState !== socket.OPEN) return { outcome: "connection-closed" };
+    const existingUser = registry.getUserId(msg.relayId);
+    if (existingUser !== null && existingUser !== effectiveUserId) {
+      socket.close(RELAY_TOKEN_AUTH_CLOSE_CODE, "Relay identity unavailable");
+      return { outcome: "rejected-invalid-token" };
+    }
+    try {
+      await registry.register(
+        msg.relayId,
+        effectiveUserId,
+        negotiatedCapabilities,
+        send,
+        negotiatedVersion,
+        msg.desktopSessionId,
+        msg.capabilityRevision,
+        pairingGeneration,
+      );
 
-  if (socket.readyState === socket.OPEN) {
-    const v8Ack = negotiatedVersion >= CODEX_RELAY_PROTOCOL_VERSION
-      ? (registry as unknown as RelayCodexRegistryLike).getV8Acknowledgement?.(msg.relayId)
-      : null;
-    socket.send(JSON.stringify(v8Ack
-      ? {
-          type: "relay:registered",
-          relayId: msg.relayId,
-          protocolVersion: negotiatedVersion,
-          relaySessionId: v8Ack.relaySessionId,
-          pairingGenerationRef: v8Ack.pairingGenerationRef,
-          selectedProtocolVersion: negotiatedVersion,
-        }
-      : {
-          type: "relay:registered",
-          relayId: msg.relayId,
-          protocolVersion: negotiatedVersion,
-        }));
-  }
-  log(
-    `[relay] Connected: ${msg.relayId} (${negotiatedCapabilities.profile}) for ${effectiveUserId} at relay protocol v${negotiatedVersion}` +
-      (validated ? " [token-validated]" : ""),
-  );
-  return {
-    outcome: "registered",
-    effectiveUserId,
-    protocolVersion: negotiatedVersion,
-    capabilities: negotiatedCapabilities,
+      if (socket.readyState !== socket.OPEN) {
+        await registry.unregisterConnection(msg.relayId, send);
+        return { outcome: "connection-closed" };
+      }
+      onRegistered?.({ outcome: "registered", effectiveUserId,
+        protocolVersion: negotiatedVersion, capabilities: negotiatedCapabilities });
+      if (socket.readyState === socket.OPEN) {
+        const v8Ack = negotiatedVersion >= CODEX_RELAY_PROTOCOL_VERSION
+          ? (registry as unknown as RelayCodexRegistryLike).getV8Acknowledgement?.(msg.relayId)
+          : null;
+        socket.send(JSON.stringify(v8Ack
+          ? {
+              type: "relay:registered",
+              relayId: msg.relayId,
+              protocolVersion: negotiatedVersion,
+              relaySessionId: v8Ack.relaySessionId,
+              pairingGenerationRef: v8Ack.pairingGenerationRef,
+              selectedProtocolVersion: negotiatedVersion,
+            }
+          : {
+              type: "relay:registered",
+              relayId: msg.relayId,
+              protocolVersion: negotiatedVersion,
+            }));
+      }
+      log(
+        `[relay] Connected: ${msg.relayId} (${negotiatedCapabilities.profile}) for ${effectiveUserId} at relay protocol v${negotiatedVersion}` +
+          (validated ? " [token-validated]" : ""),
+      );
+      return {
+        outcome: "registered",
+        effectiveUserId,
+        protocolVersion: negotiatedVersion,
+        capabilities: negotiatedCapabilities,
+      };
+    } catch (error) {
+      await registry.unregisterConnection(msg.relayId, send);
+      throw error;
+    }
   };
+  const tokenStore = getRelayTokenStore();
+  let result: HandleRegisterResult | null;
+  try {
+    result = tokenStore.withRegistrationAdmission === undefined ? null : await tokenStore.withRegistrationAdmission({ id: validated.tokenId,
+      userId: validated.userId, actorId: validated.actorId }, register);
+  } catch (error) {
+    await registry.unregisterConnection(msg.relayId, send);
+    throw error;
+  }
+  if (result !== null) return result;
+  if (socket.readyState === socket.OPEN) {
+    socket.send(JSON.stringify({ type: "relay:error", message: "Relay admission withdrawn",
+      code: RELAY_AUTHENTICATION_REQUIRED_ERROR_CODE }));
+    socket.close(RELAY_TOKEN_AUTH_CLOSE_CODE, "Relay admission withdrawn");
+  }
+  return { outcome: "rejected-invalid-token" };
 }
 
 /**
@@ -924,6 +964,7 @@ export function relayRoutes(
     // register. Capability updates are accepted only for this user.
     let registeredUserId: string | null = null;
     let registeredProtocolVersion: number | null = null;
+    let registrationStarted = false;
     // D384 Phase 5 — serverNames this relay has advertised MCP tools for, so
     // we can unregister them from the catalog on disconnect/close.
     const advertisedMcpServers = new Set<string>();
@@ -972,6 +1013,7 @@ export function relayRoutes(
     };
 
     socket.on("message", (raw: RawData) => {
+      if (socket.readyState !== socket.OPEN) return;
       const parsed = parseRelayEndpointClientMessage(rawDataToString(raw));
       if (!parsed.ok) {
         socket.send(JSON.stringify({ type: "relay:error", message: parsed.error }));
@@ -983,13 +1025,21 @@ export function relayRoutes(
       switch (msg.type) {
         case "relay:register": {
           const relayId = msg.relayId;
-          void handleRelayRegister(socket, msg, registry, configuredRelayProtocolPolicy())
+          if (registrationStarted) {
+            socket.close(1002, "Relay already registering or registered");
+            break;
+          }
+          registrationStarted = true;
+          void handleRelayRegister(socket, msg, registry, configuredRelayProtocolPolicy(), result => {
+            registeredRelayId = relayId;
+            registeredUserId = result.effectiveUserId ?? null;
+            registeredProtocolVersion = result.protocolVersion ?? null;
+            const previous = socketMap.get(relayId);
+            socketMap.set(relayId, socket);
+            if (previous !== undefined && previous !== socket) previous.close(1000, "Relay connection replaced");
+          })
             .then((result) => {
               if (result.outcome === "registered" && socket.readyState === socket.OPEN) {
-                registeredRelayId = relayId;
-                registeredUserId = result.effectiveUserId ?? null;
-                registeredProtocolVersion = result.protocolVersion ?? null;
-                socketMap.set(relayId, socket);
                 if (registeredUserId !== null) {
                   publishClaudeConnectionContextAfterAck({
                     acknowledged: true,
@@ -1007,6 +1057,7 @@ export function relayRoutes(
               warn(
                 `[relay] register handler errored: ${err instanceof Error ? err.message : String(err)}`,
               );
+              socket.close(1011, "Relay registration unavailable");
             });
           break;
         }

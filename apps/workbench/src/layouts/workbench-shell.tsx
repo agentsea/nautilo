@@ -38,6 +38,7 @@ import { ServersPanel } from "../modes/servers/ServersPanel";
 import { useBrowserColumn } from "../components/browser-column/browser-column.context";
 import { Footer } from "../components/footer/footer";
 import { NavigationRail, RoomRail, ArtifactsRail, AppsRail, WebRail } from "../components/navigation-rail";
+import { CompactNavigation } from "../components/navigation-rail/compact-navigation";
 import { ServersRail } from "../components/navigation-rail/ServersRail";
 import {
   artifactsIconState,
@@ -1822,6 +1823,8 @@ export function WorkbenchShell() {
         <main className="grid min-w-0 grid-rows-[48px_1fr] overflow-hidden">
           <header className="flex items-center justify-between border-b border-border px-4">
             <div className="flex items-center gap-2">
+              {!showRail && <CompactNavigation verified={auth.viewer.isVerified} onHome={goHome}
+                onAction={id => { if (id === "open-terminal") requestOpenTerminal(); }} />}
               <button
                 type="button"
                 onClick={goHome}

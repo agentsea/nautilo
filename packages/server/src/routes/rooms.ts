@@ -49,6 +49,7 @@ import {
   findActorById,
   findActorByOwnerId,
   MembershipOpError,
+  ModerationError,
   findPersonalAgentsForUser,
   assertCanCreateRoomMembers,
   CreateRoomReachabilityError,
@@ -237,6 +238,10 @@ async function getFencedSubthreadDetailForMember(
     const policy = await acquireEncryptionConsumptionFence(tx);
     if (policy.mode === "encrypted_only"
       || (policy.mode === "shadow_encryption" && policy.shadowBehavior === "strict")) {
+      // A deleted anchor has no protected body. Its content-free placeholder
+      // can be returned without attempting an ordinary history read.
+      const tombstone = await getSubthreadDetailForMemberWithDb(tx, subthreadRoomId, requesterActorId, true);
+      if (tombstone) return { status: "available" as const, detail: tombstone };
       return { status: "unsupported_protected_policy" as const };
     }
     return {
@@ -596,7 +601,15 @@ export function roomsRoutes(
     if (existing) {
       if (existing.kind === "open") {
         const join = service.joinOpenRoom ?? joinOpenRoom;
-        const joined = await join({ userId, actorId, roomId: existing.id });
+        let joined: Awaited<ReturnType<typeof joinOpenRoom>>;
+        try {
+          joined = await join({ userId, actorId, roomId: existing.id });
+        } catch (e) {
+          if (e instanceof ModerationError && e.code === "active_ban") {
+            return reply.code(403).send({ code: "active_ban" });
+          }
+          throw e;
+        }
         if (joined.membershipEvent && joined.membershipMessageId !== undefined) {
           await produceMembershipEvent({
             type: "room.member_joined",
@@ -640,7 +653,15 @@ export function roomsRoutes(
     const publicRoom = pickLargestLandingOpenRoom(await listOpen(userId));
     if (publicRoom) {
       const join = service.joinOpenRoom ?? joinOpenRoom;
-      const joined = await join({ userId, actorId, roomId: publicRoom.id });
+      let joined: Awaited<ReturnType<typeof joinOpenRoom>>;
+      try {
+        joined = await join({ userId, actorId, roomId: publicRoom.id });
+      } catch (e) {
+        if (e instanceof ModerationError && e.code === "active_ban") {
+          return reply.code(403).send({ code: "active_ban" });
+        }
+        throw e;
+      }
       if (joined.membershipEvent && joined.membershipMessageId !== undefined) {
         await produceMembershipEvent({
           type: "room.member_joined",
@@ -955,6 +976,9 @@ export function roomsRoutes(
         repairedSubthreadEvent,
       } = await join({ userId: sessionUserId, actorId, roomId }));
     } catch (e) {
+      if (e instanceof ModerationError && e.code === "active_ban") {
+        return reply.code(403).send({ code: "active_ban" });
+      }
       if (e instanceof MembershipOpError && e.opCode === "not_open") {
         return reply.code(403).send({ code: "not_open" });
       }
@@ -1875,6 +1899,9 @@ export function roomsRoutes(
               },
         });
       } catch (e) {
+        if (e instanceof ModerationError && e.code === "active_ban") {
+          return reply.code(403).send({ code: "active_ban" });
+        }
         if (e instanceof MembershipOpError && e.opCode === "already_member") {
           return reply.code(409).send({ code: "already_member" });
         }

@@ -129,3 +129,16 @@ describe("M164 authorizeTaskApprovalResume", () => {
     });
   });
 });
+
+
+test("a withdrawn responder gets the access denial without mislabeling its retained grant", async () => {
+  const result = await authorizeTaskApprovalResume(
+    { taskId: "task-1", threadId: "subagent:thread-1", sessionUserId: "owner-1" },
+    { db: fakeDb({ task: task({ requestorId: "other-human" }), run: run() }),
+      assertInvocation: async input => {
+        if (input.humanUserId === "owner-1") throw new AgentInvocationDeniedError(input, "invocation_access_withdrawn");
+      }, assertServerFunding: async () => {} },
+  );
+  expect(result).toMatchObject({ ok: false, status: 403,
+    error: "invocation_access_withdrawn", code: "invocation_access_withdrawn" });
+});

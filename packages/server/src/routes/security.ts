@@ -193,6 +193,9 @@ function resolvePostureAccessSummary(
 }
 
 const AUDIT_EVENT_KINDS: ReadonlySet<SecurityAuditEventKind> = new Set([
+  "moderation_action",
+  "moderation_policy_changed",
+  "enrollment_review_decided",
   "posture_changed",
   "capability_check_failed",
   "pin_check_failed",

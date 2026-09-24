@@ -9,6 +9,7 @@ import {
   ensureDatabase,
   seedTrustPersonal,
   users,
+  serverAdmission,
   actors,
   agents,
   credentials,
@@ -287,13 +288,14 @@ export async function seatPeerUser(
     .insert(users)
     .values({
       name: `${opts.suiteName}-${opts.groupType}-peer`,
-      email: `${handle}@test.local`,
+      email: null,
       handle,
       externalId,
       server: null,
     })
     .returning({ id: users.id });
   if (!user) throw new Error("seatPeerUser: user insert failed");
+  await db.insert(serverAdmission).values({ userId: user.id, admitted: true });
 
   const [actor] = await db
     .insert(actors)
@@ -388,7 +390,9 @@ export async function setupOwnerAppFixture(
   // direct-connection overrides for the scratch target, so ad-hoc root-level
   // invocation cannot inherit `default` / a poisoned `DB_CONNECTION_STRING`
   // and silently write to an operator-owned database.
+  const autohealDisabled = process.env["NAUTILO_TEST_DB_AUTOHEAL"] === "0";
   bootstrapTestDbInstance();
+  if (autohealDisabled) process.env["NAUTILO_TEST_DB_AUTOHEAL"] = "0";
   const ownerPin = opts.ownerPin ?? "847291";
   await installFixtureLogtoVerifier();
   await ensureDatabase();
@@ -400,7 +404,7 @@ export async function setupOwnerAppFixture(
     .insert(users)
     .values({
       name: `${opts.suiteName}-owner`,
-      email: `${opts.suiteName}-${Date.now()}@test.local`,
+      email: null,
       handle: ownerHandle,
       // D219 — `serverRole` retired; owner authority comes from the
       // `owners`-Group membership seeded below.
@@ -408,6 +412,7 @@ export async function setupOwnerAppFixture(
     })
     .returning({ id: users.id });
   if (!user) throw new Error("Failed to create test user");
+  await db.insert(serverAdmission).values({ userId: user.id, admitted: true });
   const ownerId = user.id;
 
   const [actor] = await db

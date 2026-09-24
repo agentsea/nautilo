@@ -17,6 +17,7 @@ const registration: ThreadRoomRegistration = {
   roomId: "child-a",
   parentRoomId: "parent-a",
   anchorLogicalMessageKey: "row:10",
+  anchorMessageId: "10",
   ingestEvent: () => {},
   ownsJobId: (jobId) => jobId === "child-job",
 };
@@ -103,4 +104,10 @@ describe("thread-room event routing", () => {
     expect(shouldPublishThreadRoomFocusEvent(registration, mismatchedLane, resolveRoom)).toBe(false);
     expect(shouldRouteEventToThreadRoom(registration, child, resolveRoom)).toBe(false);
   });
+});
+
+
+test("routes deletion only for the displayed parent anchor", () => {
+  expect(shouldRouteEventToThreadRoom(registration, { type: "message.deleted", laneKey: "room:parent-a", messageId: 10 }, resolveRoom)).toBe(true);
+  expect(shouldRouteEventToThreadRoom(registration, { type: "message.deleted", laneKey: "room:parent-a", messageId: 11 }, resolveRoom)).toBe(false);
 });

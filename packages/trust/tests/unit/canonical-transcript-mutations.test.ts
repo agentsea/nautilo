@@ -809,6 +809,7 @@ describe("canonical hard-delete transaction seam", () => {
     const script = new ScriptedTransaction([
       { operation: "select", result: [{ roomId: "room-1" }] },
       { operation: "execute", result: [] }, // canonical Room write lock
+      { operation: "select", result: [] }, // child Room coordinate precedes message row lock
       {
         operation: "select",
         result: [{
@@ -823,7 +824,6 @@ describe("canonical hard-delete transaction seam", () => {
           subthreadRoomId: null,
         }],
       },
-      { operation: "select", result: [] }, // anchor refusal
       { operation: "delete", result: [] },
       { operation: "update", result: [] },
     ]);
@@ -843,8 +843,8 @@ describe("canonical hard-delete transaction seam", () => {
       "select",
       "execute",
       "select",
-      "for:update",
       "select",
+      "for:update",
       "delete",
       "update",
       "hook:2",
@@ -863,6 +863,7 @@ describe("canonical hard-delete transaction seam", () => {
     const script = new ScriptedTransaction([
       { operation: "select", result: [{ roomId: "room-1" }] },
       { operation: "execute", result: [] },
+      { operation: "select", result: [{ id: "subthread-1" }] },
       {
         operation: "select",
         result: [{
@@ -877,7 +878,6 @@ describe("canonical hard-delete transaction seam", () => {
           subthreadRoomId: null,
         }],
       },
-      { operation: "select", result: [{ id: "subthread-1" }] },
     ]);
     let hooked = false;
 
@@ -899,8 +899,8 @@ describe("canonical hard-delete transaction seam", () => {
       "select",
       "execute",
       "select",
-      "for:update",
       "select",
+      "for:update",
     ]);
     script.assertExhausted();
   });
@@ -909,6 +909,7 @@ describe("canonical hard-delete transaction seam", () => {
     const script = new ScriptedTransaction([
       { operation: "select", result: [{ roomId: "room-1" }] },
       { operation: "execute", result: [] },
+      { operation: "select", result: [] },
       {
         operation: "select",
         result: [{
@@ -921,7 +922,6 @@ describe("canonical hard-delete transaction seam", () => {
           subthreadRoomId: null,
         }],
       },
-      { operation: "select", result: [] },
       { operation: "delete", result: [] },
       { operation: "update", result: [] },
     ]);

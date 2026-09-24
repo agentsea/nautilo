@@ -8,6 +8,7 @@ export type AdminSectionId =
   | "search"
   | "costs"
   | "users"
+  | "moderation"
   | "invites"
   | "reports"
   | "audit-log"
@@ -56,6 +57,7 @@ export const ADMIN_DESTINATIONS = [
   { kind: "section", id: "stenographer", href: "#stenographer", label: "Stenographer", requiresAnyCap: ["read_server_settings"], catalogueTarget: "admin.stenographer" },
   { kind: "section", id: "reflection", href: "#reflection", label: "Reflection", requiresAnyCap: ["read_server_settings"], catalogueTarget: "admin.reflection" },
   { kind: "section", id: "users", href: "#users", label: "Users", requiresAnyCap: ["manage_members"], catalogueTarget: "admin.users" },
+  { kind: "section", id: "moderation", href: "#moderation", label: "Moderation", requiresAnyCap: ["ban_server_members", "kick_server_members", "view_server_moderation", "manage_server_enrollment"], catalogueTarget: "admin.moderation" },
   { kind: "section", id: "invites", href: "#invites", label: "Invites", requiresAnyCap: ["manage_members"], catalogueTarget: "admin.invites" },
   { kind: "route", id: "access-control", href: ADMIN_ACCESS_CONTROL_ROUTE, label: "Access control", requiresAnyCap: ["manage_members", "manage_groups", "manage_roles"], catalogueTarget: "admin.access_control" },
   { kind: "section", id: "reports", href: "#reports", label: "Reports", requiresAnyCap: ["moderate_content_reports"], catalogueTarget: "admin.reports" },

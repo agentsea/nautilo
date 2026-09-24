@@ -8,7 +8,7 @@ import {
 describe("public community join route", () => {
   test("redirects the stable entry to the configured ordinary invite on the same origin", async () => {
     const app = Fastify();
-    publicJoinRoutes(app, { inviteToken: `inv_${"a".repeat(32)}` });
+    publicJoinRoutes(app, { inviteToken: `inv_${"a".repeat(32)}`, isEnrollmentOpen: async () => true });
 
     const response = await app.inject({ method: "GET", url: "/join" });
 
@@ -38,5 +38,23 @@ describe("public community join route", () => {
     expect(publicJoinInviteToken(`inv_${"a".repeat(31)}`)).toBeNull();
     expect(publicJoinInviteToken(`inv_${"a".repeat(33)}`)).toBeNull();
     expect(publicJoinInviteToken(undefined)).toBeNull();
+  });
+
+  test("a saved public address rechecks pause and fails closed on a policy outage", async () => {
+    let paused = false;
+    let unavailable = false;
+    const app = Fastify();
+    publicJoinRoutes(app, { inviteToken: `inv_${"a".repeat(32)}`, isEnrollmentOpen: async () => {
+      if (unavailable) throw new Error("Fixture unavailable");
+      return !paused;
+    } });
+    expect((await app.inject({ method: "GET", url: "/join" })).statusCode).toBe(302);
+    paused = true;
+    const closed = await app.inject({ method: "GET", url: "/join" });
+    expect(closed.statusCode).toBe(503);
+    expect(closed.headers.location).toBeUndefined();
+    unavailable = true; paused = false;
+    expect((await app.inject({ method: "GET", url: "/join" })).statusCode).toBe(503);
+    await app.close();
   });
 });

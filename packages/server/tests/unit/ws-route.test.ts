@@ -12,6 +12,7 @@
  *   - happy path → addClient called, voice.stop reaches the spy
  *     ONLY after auth, ping → pong round-trip works
  */
+import { addClient as registerClient, broadcast, disconnectHumanWebSockets, flushPendingWebSocketBroadcasts, removeHumanRoomSubscriptions, type WsClientMeta } from "../../src/realtime/ws-publisher";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import {
   handleWsConnection,
@@ -83,6 +84,7 @@ const FAKE_PRINCIPAL = {
   logtoSub: "sub",
   userId: "user-1",
   disabledAt: null,
+    serverAccessAllowed: true,
   actorId: "actor-1",
   actorDisplayName: "Actor",
   handle: "user",
@@ -501,5 +503,56 @@ describe("handleWsConnection ()", () => {
       hosts: [],
       cursor: { streamId: "stream-a", sequence: 5, snapshotRevision: 3 },
     });
+  });
+});
+
+
+describe("moderation live WebSocket removal", () => {
+  test("Server withdrawal closes every active and pending login socket before later publication", async () => {
+    const active = makeFakeSocket(), pending = makeFakeSocket();
+    let releaseRooms!: (rows: Array<{id: string}>) => void;
+    let entered!: () => void;
+    const inLookup = new Promise<void>(resolve => { entered = resolve; });
+    const deps = { addClient: registerClient, onVoiceStop: () => {}, authTimeoutMs: 5000, listRoomsForActor: emptyRoomList };
+    handleWsConnection(active as unknown as WsSocket, fakeOkBearer(), deps);
+    active.emit("message", Buffer.from(JSON.stringify({type: "auth", token: "valid"})));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    handleWsConnection(pending as unknown as WsSocket, fakeOkBearer(), {...deps,
+      listRoomsForActor: async () => { entered(); return new Promise(resolve => { releaseRooms = resolve; }); }});
+    pending.emit("message", Buffer.from(JSON.stringify({type: "auth", token: "valid"})));
+    await inLookup;
+    disconnectHumanWebSockets("user-1");
+    releaseRooms([{id: "removed-room"}]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const sent = active.sent.length;
+    broadcast({type: "room.catalog.changed"}, {kind: "user", userId: "user-1"});
+    await flushPendingWebSocketBroadcasts();
+    expect(active.closes.at(-1)?.reason).toBe("server_access_withdrawn");
+    expect(active.sent).toHaveLength(sent);
+    expect(pending.sent.some(frame => frame.type === "auth.accepted")).toBe(false);
+  });
+
+  test("Room removal updates inbound typing and outbound delivery without closing other Rooms", async () => {
+    const sender = makeFakeSocket(), peer = makeFakeSocket();
+    let senderMeta: WsClientMeta | undefined;
+    const setup = (socket: FakeSocket, userId: string, actorId: string) => {
+      handleWsConnection(socket as unknown as WsSocket, async () => ({...okResult, sessionUserId: userId, sessionActorId: actorId}), {
+        addClient: (socket, meta) => { if (userId === "user-1") senderMeta = meta; registerClient(socket, meta); },
+        onVoiceStop: () => {}, authTimeoutMs: 5000,
+        listRoomsForActor: async () => [{id: "removed-room"}, {id: "retained-room"}],
+      });
+      socket.emit("message", Buffer.from(JSON.stringify({type: "auth", token: "valid"})));
+    };
+    setup(sender, "user-1", "actor-1"); setup(peer, "user-2", "actor-2");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    // Match an intervening catalogue refresh: inbound dispatch must consult
+    // the current metadata, not the original login-time Set.
+    expect(senderMeta).toBeDefined();
+    senderMeta!.roomIds = new Set(senderMeta!.roomIds);
+    removeHumanRoomSubscriptions("user-1", new Set(["removed-room"]));
+    for (const roomId of ["removed-room", "retained-room"]) sender.emit("message", Buffer.from(JSON.stringify({type: "typing.ping", roomId})));
+    expect(peer.sent.filter(frame => frame.type === "typing.ping").map(frame => frame["roomId"])).toEqual(["retained-room"]);
+    expect(sender.closes).toHaveLength(0);
+    sender.close(); peer.close();
   });
 });

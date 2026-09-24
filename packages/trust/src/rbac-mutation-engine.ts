@@ -45,6 +45,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { lockFingerprintState } from "./rbac-mutation-locks";
+import { holdsModerationPermission, MODERATION_PERMISSIONS, moderationCapability, type ModerationAuthority } from "./moderation-policy";
 import type { Database } from "@nautilo/db";
 import {
   and,
@@ -53,10 +55,14 @@ import {
   eq,
   getSharedDirectDb,
   groupMembers,
+  groupModerationScopes,
   groupRoles,
   groups,
   inArray,
   roles,
+  rooms,
+  isNull,
+  ne,
   roleCapabilities,
   sql,
   users,
@@ -147,6 +153,7 @@ export type AccessControlOperation =
       readonly ownerUserId: string;
       readonly roleSlugs: readonly string[];
     }
+  | { readonly kind: "group.set_moderation_scopes"; readonly groupId: string; readonly roomIds: readonly string[] }
   | { readonly kind: "group.rename"; readonly groupId: string; readonly label: string }
   | {
       readonly kind: "group.set_roles";
@@ -242,6 +249,7 @@ export function managementCapabilitiesFor(
       return ["manage_roles"];
     case "group.create":
     case "group.rename":
+    case "group.set_moderation_scopes":
     case "group.set_roles":
     case "group.transfer_owner":
     case "group.delete":
@@ -277,6 +285,7 @@ export interface EngineRoleRow {
 }
 
 export interface EngineGroupRow {
+  readonly moderationRoomIds?: readonly string[];
   readonly id: string;
   readonly type: string;
   readonly label: string;
@@ -325,7 +334,9 @@ export type CheckCode =
   | "owner_required"
   | "user_not_found"
   | "last_owner"
-  | "community_enrollment_unavailable";
+  | "community_enrollment_unavailable"
+  | "insufficient_moderation_scope"
+  | "moderation_room_unavailable";
 
 export interface Check {
   readonly code: CheckCode;
@@ -384,6 +395,7 @@ export interface DeletionConsequence {
  * time.
  */
 export type RbacAuditEventInput =
+  | { readonly kind: "rbac_group_moderation_scopes_set"; readonly actorId: string | null; readonly groupId: string; readonly roomIds: readonly string[] }
   | {
       readonly kind: "rbac_role_created";
       readonly actorId: string | null;
@@ -565,6 +577,7 @@ export interface ApplyFacts {
   readonly actorHoldsManagement: boolean;
   /** All target users (owner + members for composite; single target otherwise) exist. */
   readonly targetUserExists: boolean;
+  readonly moderationRoomsExist?: boolean;
 }
 
 export interface MutationEngineDeps {
@@ -574,6 +587,7 @@ export interface MutationEngineDeps {
   userHasCapability(userId: string, slug: CapabilitySlug): Promise<boolean>;
   /** Whether a user row exists (for owner / membership targets). */
   userExists(userId: string): Promise<boolean>;
+  moderationRoomsExist?(roomIds: readonly string[]): Promise<boolean>;
   /** Read the full RBAC state snapshot outside a transaction (preview). */
   loadState(): Promise<EngineState>;
   /**
@@ -588,6 +602,7 @@ export interface MutationEngineDeps {
       readonly actorUserId: string;
       readonly requiredManagementCapabilities: readonly CapabilitySlug[];
       readonly targetUserIds: readonly string[] | null;
+      readonly moderationRoomIds?: readonly string[];
     },
   ): Promise<ApplyFacts>;
   /**
@@ -670,6 +685,7 @@ export function computeFingerprint(state: EngineState): string {
         // deletion-consequence display, so a count-only drift (with no
         // edge change) does NOT invalidate a preview.
         members: [...g.members].sort(),
+        moderationRoomIds: [...(g.moderationRoomIds ?? [])].sort(),
         approvalChallengeCount: g.approvalChallengeCount,
       }))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
@@ -963,6 +979,7 @@ function projectSharedAccessAssignExisting(
 
 
 export interface EvaluationInput {
+  readonly actorUserId?: string;
   readonly operation: AccessControlOperation;
   readonly state: EngineState;
   readonly actorCapabilities: readonly string[];
@@ -977,6 +994,7 @@ export interface EvaluationInput {
   /** Management caps the actor actually holds (subset of the required set). */
   readonly actorHeldManagementCaps: readonly CapabilitySlug[];
   readonly targetUserExists: boolean;
+  readonly moderationRoomsExist?: boolean;
 }
 
 export interface EvaluationResult {
@@ -1852,7 +1870,7 @@ function evaluateSharedAccessAssignExisting(
  * consequence, redacted audit preview). No I/O. Both preview and apply
  * route through this so the policy is enforced identically.
  */
-export function evaluateOperation(input: EvaluationInput): EvaluationResult {
+function evaluateBaseOperation(input: EvaluationInput): EvaluationResult {
   const { operation: op, state, actorCapabilities, actorHoldsManagement, actorHeldManagementCaps, targetUserExists } = input;
   switch (op.kind) {
     case "role.create":
@@ -1867,6 +1885,11 @@ export function evaluateOperation(input: EvaluationInput): EvaluationResult {
       return evaluateGroupCreate(op, state, actorCapabilities, actorHoldsManagement, targetUserExists);
     case "group.rename":
       return evaluateGroupRename(op, state, actorCapabilities, actorHoldsManagement);
+    case "group.set_moderation_scopes": {
+      const group = groupById(state, op.groupId);
+      const result = evaluateGroupSetRoles({ kind: "group.set_roles", groupId: op.groupId, roleSlugs: group?.roleSlugs ?? [] }, state, actorCapabilities, actorHoldsManagement);
+      return { ...result, auditPreview: { kind: "rbac_group_moderation_scopes_set", actorId: null, groupId: op.groupId, roomIds: dedupe(op.roomIds).sort() } };
+    }
     case "group.set_roles":
       return evaluateGroupSetRoles(op, state, actorCapabilities, actorHoldsManagement);
     case "group.transfer_owner":
@@ -1891,6 +1914,36 @@ export function evaluateOperation(input: EvaluationInput): EvaluationResult {
 }
 
 // ---------------------------------------------------------------------------
+
+/** Scope delegation is checked for every writer of an already scoped Group. */
+export function evaluateOperation(input: EvaluationInput): EvaluationResult {
+  const result = evaluateBaseOperation(input);
+  const { operation: op, state } = input;
+  const affected = "groupId" in op && op.kind !== "group.rename" ? state.groups.filter(g => g.id === op.groupId)
+    : (op.kind === "role.set_capabilities" || op.kind === "role.delete")
+      ? state.groups.filter(g => g.roleSlugs.includes(roleById(state, op.roleId)?.slug ?? "")) : [];
+  const caller: ModerationAuthority = {
+    userId: input.actorUserId ?? "", owner: false, disabled: false,
+    grants: state.groups.filter(g => g.members.includes(input.actorUserId ?? "")).map(g => ({
+      groupId: g.id, capabilities: g.capabilities, roomIds: g.moderationRoomIds ?? [],
+    })),
+  };
+  const checks = [...result.checks];
+  if (op.kind === "group.set_moderation_scopes" && input.moderationRoomsExist !== true) checks.push(fail("moderation_room_unavailable"));
+  for (const group of affected) {
+    const roomIds = dedupe([...(group.moderationRoomIds ?? []), ...(op.kind === "group.set_moderation_scopes" ? op.roomIds : [])]);
+    const proposed = op.kind === "role.set_capabilities" ? op.capabilities
+      : op.kind === "group.set_roles" ? bundleOfRoleSlugs(state, op.roleSlugs) : [];
+    const bundle = dedupe([...group.capabilities, ...proposed]);
+    for (const roomId of roomIds) for (const permission of MODERATION_PERMISSIONS) {
+      if (!bundle.includes(moderationCapability(permission, "room"))) continue;
+      if (!holdsModerationPermission(caller, permission, roomId)) checks.push(fail("insufficient_moderation_scope", roomId));
+    }
+  }
+  const failures = checks.filter(check => !check.passed);
+  return { ...result, checks, failures, ok: failures.length === 0 };
+}
+
 // Preview / apply orchestration (production wiring over injected deps).
 // ---------------------------------------------------------------------------
 
@@ -1953,12 +2006,15 @@ export async function previewOperation(
   const targetUserExists =
     targetUserIds === null ? true : await allUsersExist(deps, targetUserIds);
   const evaluation = evaluateOperation({
+    actorUserId: input.actorUserId,
     operation: input.operation,
     state,
     actorCapabilities,
     actorHoldsManagement,
     actorHeldManagementCaps,
     targetUserExists,
+    moderationRoomsExist: input.operation.kind === "group.set_moderation_scopes"
+      ? await deps.moderationRoomsExist?.(input.operation.roomIds) ?? false : true,
   });
   return {
     ok: evaluation.ok,
@@ -2084,14 +2140,17 @@ async function runApply(
         actorUserId: input.actorUserId,
         requiredManagementCapabilities: requiredMgmt,
         targetUserIds,
+        moderationRoomIds: input.operation.kind === "group.set_moderation_scopes" ? input.operation.roomIds : [],
       });
       const evaluation = evaluateOperation({
+        actorUserId: input.actorUserId,
         operation: input.operation,
         state,
         actorCapabilities: facts.actorCapabilities,
         actorHoldsManagement: facts.actorHoldsManagement,
         actorHeldManagementCaps: facts.actorHeldManagementCaps,
         targetUserExists: facts.targetUserExists,
+        moderationRoomsExist: facts.moderationRoomsExist ?? false,
       });
       const currentFingerprint = computeFingerprint(state);
       if (checkFingerprint && input.fingerprint !== currentFingerprint) {
@@ -2235,6 +2294,7 @@ async function loadStateFrom(dbClient: Pick<Database, "select">): Promise<Engine
     if (r.groupId) challengeCountByGroup.set(r.groupId, r.challengeCount);
   }
 
+  const moderationScopeRows = await dbClient.select().from(groupModerationScopes);
   const roleBySlug = new Map(rolesState.map((r) => [r.slug, r]));
   const groupsState: EngineGroupRow[] = groupRows.map((g) => {
     const roleSlugs = dedupe(roleSlugsByGroup.get(g.id) ?? []);
@@ -2251,26 +2311,11 @@ async function loadStateFrom(dbClient: Pick<Database, "select">): Promise<Engine
       members,
       memberCount: members.length,
       approvalChallengeCount: challengeCountByGroup.get(g.id) ?? 0,
+      moderationRoomIds: moderationScopeRows.filter(scope => scope.groupId === g.id).map(scope => scope.roomId).sort(),
     };
   });
   void roleBySlug;
   return { roles: rolesState, groups: groupsState, knownCapabilities };
-}
-
-/**
- * Lock every row represented by {@link computeFingerprint} in deterministic
- * table order. The state loader then reads the same rows from this
- * transaction snapshot. SERIALIZABLE (configured by `applyInTx`) handles
- * phantoms, while these locks serialize concurrent engine writers.
- */
-async function lockFingerprintState(tx: MutationTx): Promise<void> {
-  await tx.select({ id: capabilities.id }).from(capabilities).for("update");
-  await tx.select({ id: roles.id }).from(roles).for("update");
-  await tx.select({ roleId: roleCapabilities.roleId, capabilityId: roleCapabilities.capabilityId }).from(roleCapabilities).for("update");
-  await tx.select({ id: groups.id }).from(groups).for("update");
-  await tx.select({ groupId: groupRoles.groupId, roleId: groupRoles.roleId }).from(groupRoles).for("update");
-  await tx.select({ groupId: groupMembers.groupId, userId: groupMembers.userId }).from(groupMembers).for("update");
-  await tx.select({ id: approvalChallenges.id }).from(approvalChallenges).for("update");
 }
 
 async function loadApplyFactsFrom(
@@ -2279,6 +2324,7 @@ async function loadApplyFactsFrom(
     readonly actorUserId: string;
     readonly requiredManagementCapabilities: readonly CapabilitySlug[];
     readonly targetUserIds: readonly string[] | null;
+    readonly moderationRoomIds?: readonly string[];
   },
 ): Promise<ApplyFacts> {
   const capabilityRows = await tx
@@ -2307,6 +2353,12 @@ async function loadApplyFactsFrom(
     targetUserExists = rows.length === uniqueIds.length;
   }
 
+  const roomIds = dedupe(input.moderationRoomIds ?? []);
+  const scopeRooms = roomIds.length === 0 ? [] : await tx.select({ id: rooms.id }).from(rooms)
+    .where(and(inArray(rooms.id, roomIds), ne(rooms.kind, "access"), isNull(rooms.archivedAt)))
+    .orderBy(rooms.id).for("update");
+  const moderationRoomsExist = scopeRooms.length === roomIds.length;
+
   const actorHeldManagementCaps = input.requiredManagementCapabilities.filter((c) =>
     actorCapabilities.includes(c),
   );
@@ -2315,6 +2367,7 @@ async function loadApplyFactsFrom(
     actorHeldManagementCaps,
     actorHoldsManagement: actorHeldManagementCaps.length === input.requiredManagementCapabilities.length,
     targetUserExists,
+    moderationRoomsExist,
   };
 }
 
@@ -2347,6 +2400,13 @@ export function createProductionMutationEngineDeps(
       const db = getSharedDirectDb();
       const [row] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
       return !!row;
+    },
+    moderationRoomsExist: async (ids) => {
+      const roomIds = dedupe(ids);
+      if (roomIds.length === 0) return true;
+      const rows = await getSharedDirectDb().select({ id: rooms.id }).from(rooms)
+        .where(and(inArray(rooms.id, roomIds), ne(rooms.kind, "access"), isNull(rooms.archivedAt)));
+      return rows.length === roomIds.length;
     },
     loadState: async () => loadStateFrom(getSharedDirectDb()),
     loadApplyFacts: (tx, input) => loadApplyFactsFrom(tx, input),
@@ -2470,6 +2530,12 @@ async function executeOperationWrites(
     }
     case "group.rename": {
       await tx.update(groups).set({ label: op.label }).where(eq(groups.id, op.groupId));
+      break;
+    }
+    case "group.set_moderation_scopes": {
+      await tx.delete(groupModerationScopes).where(eq(groupModerationScopes.groupId, op.groupId));
+      const roomIds = dedupe(op.roomIds);
+      if (roomIds.length) await tx.insert(groupModerationScopes).values(roomIds.map(roomId => ({ groupId: op.groupId, roomId })));
       break;
     }
     case "group.set_roles": {
