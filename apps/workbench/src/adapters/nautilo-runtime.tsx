@@ -2521,6 +2521,7 @@ export function NautiloRuntimeProvider({
   const voicePlaybackEnabledRef = useRef(false);
   voicePlaybackEnabledRef.current = voiceOwnership.enabled;
   const [voicePlaying, setVoicePlaying] = useState(false);
+  const [voiceCanStop, setVoiceCanStop] = useState(false);
   // Rolling activity log consumed by the Activity tab.
   // We push on tool.start + mutate the matching entry on tool.end, and
   // cap total length so a long session doesn't bloat state.
@@ -3043,6 +3044,7 @@ export function NautiloRuntimeProvider({
   const visibleOutputQuietTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voicePlayerRef = useRef<VoicePlayer | null>(null);
   const voiceEnabledRef = useRef(false);
+  const voicePreferenceChosenRef = useRef(false);
   const readyToWorkOwnerAdapterRef = useRef<ReadyToWorkRendererOwnerAdapter | null>(null);
   const readyToWorkRestoreAttemptedRef = useRef(false);
 
@@ -3052,11 +3054,13 @@ export function NautiloRuntimeProvider({
       event => wsRef.current?.send(event),
       () => {
         voiceEnabledRef.current = false;
+        voicePreferenceChosenRef.current = true;
         companionVoiceRoomRef.current = null;
         voicePlaybackEnabledRef.current = false;
         setVoiceEnabled(false);
         setCompanionVoiceRoom(null);
       },
+      canStop => setVoiceCanStop(canStop),
     );
   }
 
@@ -3748,7 +3752,8 @@ export function NautiloRuntimeProvider({
               if (pending.wireVersion !== 2 || roomHistoryShadowReadAdapter === undefined) continue;
               const projection = pending.protectedMessage.projection;
               const isDisplayed = () => activeRoomIdRef.current === projection.roomId
-                || threadRoomRegistrationRef.current?.roomId === projection.roomId;
+                || threadRoomRegistrationRef.current?.roomId === projection.roomId
+                || roomChangeSource.hasRoom(projection.roomId);
               if (!sameReceivingViewer() || !isDisplayed()) continue;
               try {
                 const reader = roomHistoryShadowReadAdapter;
@@ -3764,7 +3769,7 @@ export function NautiloRuntimeProvider({
                   }),
                 });
                 if (!sameReceivingViewer() || !isDisplayed()) continue;
-                if (threadRoomRegistrationRef.current?.roomId === projection.roomId) {
+                if (threadRoomRegistrationRef.current?.roomId === projection.roomId || roomChangeSource.hasRoom(projection.roomId)) {
                   const projected = projectVerifiedFullHumanEvent(projection, opened.content, pending.logicalMessageKey);
                   protectedProjectedEventsRef.current.add(projected);
                   projectedLiveShadowEventRef.current(projected);
@@ -3860,7 +3865,7 @@ export function NautiloRuntimeProvider({
               );
               if (event.wireVersion === 2) {
                 const projection = event.protectedMessage.projection;
-                if (threadRoomRegistrationRef.current?.roomId === projection.roomId) {
+                if (threadRoomRegistrationRef.current?.roomId === projection.roomId || roomChangeSource.hasRoom(projection.roomId)) {
                   const projected = projectVerifiedFullHumanEvent(projection, result.payload.content, event.logicalMessageKey);
                   protectedProjectedEventsRef.current.add(projected);
                   projectedLiveShadowEventRef.current(projected);
@@ -3879,8 +3884,9 @@ export function NautiloRuntimeProvider({
                 }
                 return;
               }
-              if (pending !== undefined && threadRoomRegistrationRef.current?.roomId
-                === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)) {
+              if (pending !== undefined && (threadRoomRegistrationRef.current?.roomId
+                === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)
+                || roomChangeSource.hasRoom(roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)))) {
                 const projected = {
                   ...pending,
                   content: result.payload.content,
@@ -3980,7 +3986,7 @@ export function NautiloRuntimeProvider({
               );
               if (event.wireVersion === 2) {
                 const projection = event.protectedMessage.projection;
-                if (threadRoomRegistrationRef.current?.roomId === projection.roomId) {
+                if (threadRoomRegistrationRef.current?.roomId === projection.roomId || roomChangeSource.hasRoom(projection.roomId)) {
                   const projected = projectVerifiedFullHumanEvent(projection, result.payload.content, event.logicalMessageKey);
                   protectedProjectedEventsRef.current.add(projected);
                   projectedLiveShadowEventRef.current(projected);
@@ -3999,8 +4005,9 @@ export function NautiloRuntimeProvider({
                 }
                 return;
               }
-              if (pending !== undefined && threadRoomRegistrationRef.current?.roomId
-                === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)) {
+              if (pending !== undefined && (threadRoomRegistrationRef.current?.roomId
+                === roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)
+                || roomChangeSource.hasRoom(roomIdFromLaneKey(pending.laneKey, laneKeyToRoomIdRef.current)))) {
                 const projected = {
                   ...pending,
                   content: result.payload.content,
@@ -4101,7 +4108,7 @@ export function NautiloRuntimeProvider({
         const viewerGeneration = viewerGenerationRef.current;
         const origin = serverOriginRef.current;
         const current = (): boolean => sameReceivingViewer()
-          && (activeRoomIdRef.current === roomId || threadRoomRegistrationRef.current?.roomId === roomId)
+          && (activeRoomIdRef.current === roomId || threadRoomRegistrationRef.current?.roomId === roomId || roomChangeSource.hasRoom(roomId))
           && viewerKeyRef.current === viewer
           && viewerGenerationRef.current === viewerGeneration
           && serverOriginRef.current === origin;
@@ -4126,7 +4133,7 @@ export function NautiloRuntimeProvider({
               }),
             });
             if (!current()) return;
-            if (threadRoomRegistrationRef.current?.roomId === roomId) {
+            if (threadRoomRegistrationRef.current?.roomId === roomId || roomChangeSource.hasRoom(roomId)) {
               if (typeof updated.editedAt !== "string") throw new Error("Protected edit timestamp unavailable");
               const projected = {
                 type: "message.updated" as const, laneKey: event.laneKey,
@@ -4193,12 +4200,17 @@ export function NautiloRuntimeProvider({
       // Publish the displayed child's requester-private focus signal before
       // the active-parent gate, which correctly rejects all other child frames.
       const threadRoomRegistration = threadRoomRegistrationRef.current;
+      const companionEventRoomId = "laneKey" in event && typeof event.laneKey === "string"
+        ? roomIdFromLaneKey(event.laneKey, laneKeyToRoomIdRef.current)
+        : "jobId" in event && typeof event.jobId === "string"
+          ? jobIdToRoomIdRef.current.get(event.jobId) ?? null : null;
+      const forCompanion = roomChangeSource.hasRoom(companionEventRoomId);
       if (isConfidentialRoomEvent(event) && !consumedRoomEventsRef.current.has(event)) {
         const forChild = threadRoomRegistration !== null && shouldRouteEventToThreadRoom(
           threadRoomRegistration, event,
           (laneKey) => roomIdFromLaneKey(laneKey, laneKeyToRoomIdRef.current),
         );
-        if (!forChild && !shouldApplyWsEventForActiveRoom({
+        if (!forChild && !forCompanion && !shouldApplyWsEventForActiveRoom({
           event, activeRoomId: activeRoomIdRef.current,
           laneKeyToRoomId: laneKeyToRoomIdRef.current,
           jobIdToRoomId: jobIdToRoomIdRef.current,
@@ -4238,6 +4250,14 @@ export function NautiloRuntimeProvider({
           }
         });
         return;
+      }
+      // Secondary Room views receive the same authenticated/decrypted events.
+      // Never publish raw confidential frames before consumeRealtime above.
+      if (forCompanion && companionEventRoomId) {
+        roomChangeSource.publishAdmittedEvent(companionEventRoomId, event);
+        if (event.type === "job.dispatched") {
+          jobIdToRoomIdRef.current.set(event.jobId, companionEventRoomId);
+        }
       }
       if (
         threadRoomRegistration &&
@@ -7186,11 +7206,11 @@ export function NautiloRuntimeProvider({
 
   // --- Voice controls ---
 
-  const toggleVoice = useCallback(() => {
-    const next = !voiceEnabled;
+  const setSharedVoiceEnabled = useCallback((next: boolean) => {
+    voicePreferenceChosenRef.current = true;
     voiceEnabledRef.current = next;
     setVoiceEnabled(next);
-    const playbackEnabled = next || companionVoiceRoomRef.current !== null;
+    const playbackEnabled = next;
     voicePlaybackEnabledRef.current = playbackEnabled;
     voicePlayerRef.current?.setEnabled(playbackEnabled);
     if (playbackEnabled) {
@@ -7201,7 +7221,8 @@ export function NautiloRuntimeProvider({
       // ctx.resume() and playback becomes silent.
       void voicePlayerRef.current?.prime();
     }
-  }, [voiceEnabled]);
+  }, []);
+  const toggleVoice = useCallback(() => setSharedVoiceEnabled(!voiceEnabledRef.current), [setSharedVoiceEnabled]);
 
   const stopVoice = useCallback(() => {
     const turnId = voicePlayerRef.current?.currentTurnId();
@@ -7228,13 +7249,17 @@ export function NautiloRuntimeProvider({
 
   const enableCompanionVoice = useCallback((roomId: string) => {
     if (voiceRoomRef.current !== roomId) voicePlayerRef.current?.stop();
+    const enabled = !voicePreferenceChosenRef.current || voiceEnabledRef.current;
+    voicePreferenceChosenRef.current = true;
     companionVoiceRoomRef.current = roomId;
     voiceRoomRef.current = roomId;
-    voicePlaybackEnabledRef.current = true;
+    voicePlaybackEnabledRef.current = enabled;
     setCompanionVoiceRoom(roomId);
-    voicePlayerRef.current?.setEnabled(true);
-    void voicePlayerRef.current?.prime();
-    wsRef.current?.send({ type: "voice.listen", version: 1, enabled: true, roomId });
+    voiceEnabledRef.current = enabled;
+    setVoiceEnabled(enabled);
+    voicePlayerRef.current?.setEnabled(enabled);
+    if (enabled) void voicePlayerRef.current?.prime();
+    wsRef.current?.send({ type: "voice.listen", version: 1, enabled, roomId: enabled ? roomId : null });
   }, []);
   const releaseCompanionVoice = useCallback((roomId: string) => {
     if (companionVoiceRoomRef.current !== roomId) return;
@@ -7262,9 +7287,10 @@ export function NautiloRuntimeProvider({
       // temporary claim on the shared player.
       readVoice: () => voiceEnabledRef.current,
       setVoice: (enabled) => {
+        voicePreferenceChosenRef.current = true;
         voiceEnabledRef.current = enabled;
         setVoiceEnabled(enabled);
-        const playbackEnabled = enabled || companionVoiceRoomRef.current !== null;
+        const playbackEnabled = enabled;
         voicePlaybackEnabledRef.current = playbackEnabled;
         voicePlayerRef.current?.setEnabled(playbackEnabled);
       },
@@ -7370,6 +7396,7 @@ export function NautiloRuntimeProvider({
   const voiceControls: VoiceControls = {
     enabled: voiceEnabled,
     playing: voicePlaying,
+    canStopTalking: voiceCanStop,
     toggle: toggleVoice,
     stop: stopVoice,
     sendText: (
@@ -8043,8 +8070,8 @@ export function NautiloRuntimeProvider({
       >
       <RoomMessageOperationsContext.Provider value={roomMessageOperations}>
       <RoomChangeSourceContext.Provider value={roomChangeSource}>
-      <CompanionVoiceContext.Provider value={{ roomId: voiceRoom, pinnedRoomId: companionVoiceRoom, enabled: voiceOwnership.enabled, playing: voicePlaying,
-        prepare: () => { void voicePlayerRef.current?.prime(); }, enable: enableCompanionVoice, release: releaseCompanionVoice, stopTalking: stopVoice }}>
+      <CompanionVoiceContext.Provider value={{ roomId: voiceRoom, pinnedRoomId: companionVoiceRoom, enabled: voiceOwnership.enabled, playing: voicePlaying, canStopTalking: voiceCanStop,
+        prepare: () => { void voicePlayerRef.current?.prime(); }, enable: enableCompanionVoice, release: releaseCompanionVoice, setEnabled: setSharedVoiceEnabled, stopTalking: stopVoice }}>
       <ThreadRoomEventRouterContext.Provider value={threadRoomEventRouter}>
       <ConversationEncryptionPolicyModeContext.Provider value={shadowPolicyMode}>
       <RoomMessageEditContext.Provider value={editRoomMessage}>

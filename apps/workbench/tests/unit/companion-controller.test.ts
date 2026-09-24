@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { initialThreadRoomControllerState, threadRoomReducer } from "../../src/modes/rooms/thread-drawer/thread-room-controller";
 import { CompanionController } from "../../src/companion/companion-controller";
 import type { CompanionBinding, CompanionOwnerAPI, CompanionSnapshot } from "../../../desktop/electron/companion-contract";
 import type { RoomMessageOperations } from "../../src/adapters/room-message-operations";
@@ -209,6 +210,46 @@ test("spoken replies follow the pinned voice owner and stop-talking never cancel
   expect(modes).toEqual([true, false]);
 });
 
+test("speech can be stopped in a silent gap only for the pinned Room", async () => {
+  let speechStops = 0;
+  const f = fixture({ media: { prepare() {}, createCapture: () => ({ cancel() {} }) as any, enable() {}, release() {}, stopTalking() { speechStops++; } } });
+  await f.controller.enable(binding);
+  f.controller.updateMedia(binding.roomId, true, false, true);
+  expect(f.snapshot()?.speaking).toBe(false);
+  expect(f.snapshot()?.canStopTalking).toBe(true);
+  await f.controller.action("1", { type: "stop-talking" });
+  expect(speechStops).toBe(1);
+  f.controller.updateMedia("other-room", true, false, true);
+  expect(f.snapshot()?.canStopTalking).toBe(false);
+  await f.controller.action("1", { type: "stop-talking" });
+  expect(speechStops).toBe(1);
+});
+
+test("mic off retains transcription for deliberate Send without changing the sound preference", async () => {
+  let starts = 0; let finishes = 0; let voiceEnables = 0; let speechStops = 0;
+  let changed!: (state: { state: "listening" | "transcribing" | "idle"; error: null }) => void;
+  let result!: (text: string) => void;
+  const f = fixture({ media: { prepare() {}, enable() { voiceEnables++; }, release() {}, stopTalking() { speechStops++; },
+    createCapture: (onChange, onResult) => {
+      changed = onChange; result = onResult;
+      return { start() { starts++; changed({ state: "listening", error: null }); }, finish() { finishes++; changed({ state: "transcribing", error: null }); }, cancel() {} } as any;
+    },
+  } });
+  await f.controller.enable(binding);
+  await f.controller.action("1", { type: "mic" });
+  expect(starts).toBe(1); expect(speechStops).toBe(1); expect(voiceEnables).toBe(1);
+  expect(f.snapshot()?.capture).toBe("listening");
+  await f.controller.action("1", { type: "mic" });
+  expect(finishes).toBe(1); expect(f.snapshot()?.capture).toBe("transcribing");
+  changed({ state: "idle", error: null }); result("A spoken message");
+  await Promise.resolve();
+  expect(f.sends).toEqual([]);
+  expect(f.snapshot()?.draft).toBe("A spoken message");
+  await f.controller.action("1", { type: "send", text: "A spoken message" });
+  expect(f.sends).toEqual([{ binding, text: "A spoken message" }]);
+  expect(f.snapshot()?.voiceEnabled).toBe(false);
+});
+
 test("dictation retains a typed draft for review and late transcription cannot reach a new binding", async () => {
   const results: ((text: string) => void)[] = [];
   let cancels = 0;
@@ -261,4 +302,222 @@ test("follow-up Stop does not hide an ambiguous send outcome", async () => {
   expect(f.snapshot()?.stopState).toBe("stopped");
   expect(f.snapshot()?.error).toContain("Send could not be confirmed");
   expect(f.sends).toHaveLength(1);
+});
+
+describe("companion shared Room live projection", () => {
+  const tokens = (content: string, done = false) => ({ type: "message.tokens" as const, laneKey: "room:room-a", content, done, turnId: "turn-a", authorAgentId: "genie-a" });
+  test("outgoing message is visible before send acknowledgement and reconciles an early echo once", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    const pending = deferred<unknown>(); f.setSend(() => pending.promise);
+    const sending = f.controller.action("1", { type: "send", text: "Hello there" });
+    expect(f.snapshot()?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Hello there" }]);
+    expect(f.snapshot()?.messages.at(-1)?.metadata?.custom?.optimisticRequestId).toBeString();
+    f.controller.ingestEvent("room-a", { type: "message.new", laneKey: "room:room-a", messageId: "42", role: "user", content: "Hello there" });
+    pending.resolve({ messageId: 42 }); await sending;
+    expect(f.snapshot()?.messages.filter(message => message.role === "user")).toHaveLength(1);
+    expect(f.snapshot()?.messages.at(-1)?.id).toBe("42");
+    expect(f.snapshot()?.messages.at(-1)?.metadata?.custom?.optimisticRequestId).toBeUndefined();
+  });
+  test("live tokens appear immediately without reloading history and survive an in-flight older page", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    const pending = deferred<typeof page>(); f.setRead(() => pending.promise);
+    const refresh = f.controller.refresh();
+    f.controller.ingestEvent("room-a", tokens("Live "));
+    expect(f.snapshot()?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Live " }]);
+    f.controller.ingestEvent("room-a", tokens("reply"));
+    pending.resolve(page); await refresh;
+    expect(f.snapshot()?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Live reply" }]);
+    f.controller.ingestEvent("room-a", tokens("", true));
+    f.controller.ingestEvent("room-a", { type: "message.new", laneKey: "room:room-a", messageId: "43", role: "ai", content: "Live reply", authorAgentId: "genie-a" });
+    expect(f.snapshot()?.messages).toHaveLength(2);
+    expect(f.snapshot()?.messages.at(-1)?.id).toBe("43");
+  });
+  test("an unrelated Room or revoked binding cannot display incoming text", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    f.controller.ingestEvent("other-room", tokens("Wrong room"));
+    expect(f.snapshot()?.messages).toHaveLength(1);
+    f.revoke(); f.controller.ingestEvent("room-a", tokens("Revoked"));
+    expect(f.snapshot()?.messages).toHaveLength(1);
+    f.controller.stop(); f.controller.ingestEvent("room-a", tokens("Closed"));
+    expect(f.snapshot()).toBeNull();
+  });
+  test("history arriving before a send receipt does not duplicate the pending message", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    const pending = deferred<unknown>(); f.setSend(() => pending.promise);
+    const sending = f.controller.action("1", { type: "send", text: "Pending" });
+    f.setRead(async () => ({ ...page, messages: [...page.messages, { id: "44", role: "user", content: "Pending", createdAt: "2026-01-02" }] }));
+    await f.controller.refresh();
+    expect(f.snapshot()?.messages.filter(message => message.role === "user")).toHaveLength(1);
+    pending.resolve({ messageId: 44 }); await sending;
+    expect(f.snapshot()?.messages.filter(message => message.role === "user")).toHaveLength(1);
+    expect(f.snapshot()?.messages.at(-1)?.id).toBe("44");
+  });
+  test("a completed stream is not swallowed by an older identical reply or a Human message", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    f.controller.ingestEvent("room-a", tokens("Hello", true));
+    await f.controller.refresh();
+    expect(f.snapshot()?.messages).toHaveLength(2);
+    f.controller.ingestEvent("room-a", { type: "message.new", laneKey: "room:room-a", messageId: "45", role: "user", content: "Next question" });
+    expect(f.snapshot()?.messages).toHaveLength(3);
+    expect(f.snapshot()?.messages.filter(message => message.role === "assistant")).toHaveLength(2);
+  });
+  test("an uncertain send remains visible, marked unconfirmed, and is not retried", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    f.setSend(async () => { throw new Error("connection lost"); });
+    await f.controller.action("1", { type: "send", text: "Keep this visible" });
+    expect(f.snapshot()?.messages.at(-1)?.metadata?.custom?.sendFailed).toBe(true);
+    expect(f.snapshot()?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Keep this visible" }]);
+    expect(f.sends).toHaveLength(1);
+  });
+  test("a persisted tool result replaces the live tool card rather than duplicating it", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    f.controller.ingestEvent("room-a", { type: "tool.start", laneKey: "room:room-a", toolCallId: "call-1", toolName: "read_file" });
+    f.setRead(async () => ({ ...page, messages: [
+      ...page.messages,
+      { id: "call-row", role: "assistant", content: "", createdAt: "2026-01-02", toolCalls: JSON.stringify([{ id: "call-1", name: "read_file", args: {} }]) },
+      { id: "result-row", role: "tool", content: "Result", createdAt: "2026-01-02", toolName: "read_file" },
+    ] }));
+    await f.controller.refresh();
+    expect(f.snapshot()?.messages.filter(message => Array.isArray(message.content) && message.content.some(part => part.type === "tool-call"))).toHaveLength(1);
+  });
+});
+
+test("companion keeps separate assistant messages in the same turn until their own durable rows arrive", async () => {
+  const f = fixture(); await f.controller.enable(binding);
+  for (const [key, content] of [["first", "First sentence"], ["second", "Second sentence"]]) {
+    f.controller.ingestEvent("room-a", { type: "message.tokens", laneKey: "room:room-a", turnId: "one-turn", assistantMessageKey: key, authorAgentId: "genie-a", content, done: true });
+  }
+  f.controller.ingestEvent("room-a", { type: "message.new", laneKey: "room:room-a", messageId: "77", role: "ai", content: "Second sentence", assistantMessageKey: "second", authorAgentId: "genie-a" });
+  expect(f.snapshot()?.messages).toHaveLength(3);
+  expect(f.snapshot()?.messages[1]?.content).toEqual([{ type: "text", text: "First sentence" }]);
+  expect(f.snapshot()?.messages[2]?.id).toBe("77");
+});
+
+test("an identical new draft survives the preceding send receipt", async () => {
+  const f = fixture(); await f.controller.enable(binding);
+  await f.controller.action("1", { type: "draft", text: "Again" });
+  const pending = deferred<unknown>(); f.setSend(() => pending.promise);
+  const sending = f.controller.action("1", { type: "send", text: "Again" });
+  expect(f.snapshot()?.draft).toBe("");
+  await f.controller.action("1", { type: "draft", text: "Again" });
+  pending.resolve({ messageId: 78 }); await sending;
+  expect(f.snapshot()?.draft).toBe("Again");
+});
+
+
+test("sound toggles use the shared preference without changing capture or cancelling work", async () => {
+  const preferences: boolean[] = []; let cancels = 0; let taskStops = 0;
+  const f = fixture({ media: {
+    prepare() {}, enable() {}, release() {}, stopTalking() {},
+    setEnabled(enabled) { preferences.push(enabled); },
+    createCapture: () => ({ cancel() { cancels++; } }) as any,
+  }, workRunning: async () => true, stopTask: async () => { taskStops++; return { stopped: true }; } });
+  await f.controller.enable(binding);
+  f.controller.updateMedia(binding.roomId, true, true);
+  await f.controller.action("1", { type: "sound", enabled: false });
+  expect(preferences).toEqual([false]);
+  expect(cancels).toBe(0); expect(taskStops).toBe(0);
+  f.controller.updateMedia(binding.roomId, false, false);
+  expect(f.snapshot()?.voiceEnabled).toBe(false);
+  expect(f.snapshot()?.workRunning).toBe(true);
+  await f.controller.action("stale", { type: "sound", enabled: true });
+  expect(preferences).toEqual([false]);
+});
+
+// Exercise the real capture lifecycle: microphone release, transcription and
+// cancellation must agree with the controller's send intent.
+import { SpeechCapture } from "../../src/lib/speech-capture";
+const settleCapture = () => new Promise(resolve => setTimeout(resolve, 0));
+function voiceFixture() {
+  const transcription = deferred<string>();
+  const delivery = deferred<unknown>();
+  const sent: { text: string; options: unknown }[] = [];
+  let stoppedTracks = 0; let interrupted = 0;
+  const f = fixture({
+    canAttach: () => true, upload: async () => "upload-a",
+    send: async (_binding, text, options) => { sent.push({ text, options }); return delivery.promise; },
+    media: {
+      prepare() {}, enable() {}, release() {}, stopTalking() { interrupted++; },
+      createCapture: (changed, result) => new SpeechCapture({
+        permission: async () => {},
+        stream: async () => ({ getTracks: () => [{ stop() { stoppedTracks++; } }] }) as unknown as MediaStream,
+        recorder: () => {
+          const recorder = { state: "inactive", mimeType: "audio/webm", onstop: null as null | (() => void),
+            ondataavailable: null as null | ((event: { data: Blob }) => void), onerror: null,
+            start() { this.state = "recording"; },
+            stop() { this.state = "inactive"; this.ondataavailable?.({ data: new Blob(["audio"]) }); this.onstop?.(); } };
+          return recorder as unknown as MediaRecorder;
+        },
+        transcribe: () => transcription.promise,
+      }, changed, result),
+    },
+  });
+  return { ...f, transcription, delivery, sent, stoppedTracks: () => stoppedTracks, interrupted: () => interrupted };
+}
+
+test("two bubble taps submit only speech, preserve panel draft/files, and reject duplicate pending taps", async () => {
+  const f = voiceFixture();
+  f.bridge.pickFiles = async () => [{ name: "example.txt", base64: "eA==", sizeBytes: 1 }];
+  await f.controller.enable(binding);
+  await f.controller.action("1", { type: "draft", text: "Unsent panel draft" });
+  await f.controller.action("1", { type: "attach" });
+  await f.controller.action("1", { type: "talk" }); await settleCapture();
+  expect(f.snapshot()?.capture).toBe("listening"); expect(f.interrupted()).toBe(1);
+  await f.controller.action("1", { type: "talk" });
+  expect(f.snapshot()?.capture).toBe("transcribing"); expect(f.stoppedTracks()).toBeGreaterThan(0);
+  await f.controller.action("1", { type: "talk" });
+  await f.controller.action("1", { type: "view", value: "chat" });
+  f.transcription.resolve("Spoken turn"); await settleCapture();
+  expect(f.sent).toEqual([{ text: "Spoken turn", options: { voiceMode: false, attachments: [] } }]);
+  expect(f.snapshot()?.draft).toBe("Unsent panel draft"); expect(f.snapshot()?.attachments).toHaveLength(1);
+  expect(f.snapshot()?.busy).toBe(true);
+  await f.controller.action("1", { type: "talk" }); expect(f.interrupted()).toBe(1);
+  f.delivery.resolve({}); await settleCapture();
+  expect(f.sent).toHaveLength(1); expect(f.snapshot()?.attachments).toHaveLength(1);
+  f.controller.stop();
+});
+
+test("panel dictation stays a draft even when the view changes to bubble during transcription", async () => {
+  const f = voiceFixture(); await f.controller.enable(binding);
+  await f.controller.action("1", { type: "mic" }); await settleCapture();
+  await f.controller.action("1", { type: "mic" });
+  await f.controller.action("1", { type: "view", value: "orb" });
+  f.transcription.resolve("Review me"); await settleCapture();
+  expect(f.sent).toHaveLength(0); expect(f.snapshot()?.draft).toBe("Review me");
+  f.controller.stop();
+});
+
+test("Escape and Off fence late bubble transcription without sending or retaining discarded audio", async () => {
+  for (const off of [false, true]) {
+    const f = voiceFixture(); await f.controller.enable(binding);
+    await f.controller.action("1", { type: "talk" }); await settleCapture();
+    await f.controller.action("1", { type: "talk" });
+    if (off) f.controller.stop(); else await f.controller.action("1", { type: "mute" });
+    f.transcription.resolve("Discard me"); await settleCapture();
+    expect(f.sent).toHaveLength(0); expect(f.snapshot()?.draft ?? "").toBe("");
+    f.controller.stop();
+  }
+});
+
+test("unconfirmed bubble send saves speech beside the pending draft and does not retry", async () => {
+  const f = voiceFixture(); await f.controller.enable(binding);
+  await f.controller.action("1", { type: "draft", text: "Keep me" });
+  await f.controller.action("1", { type: "talk" }); await settleCapture();
+  await f.controller.action("1", { type: "talk" });
+  f.transcription.resolve("Check me"); await settleCapture();
+  f.delivery.reject(new Error("Transport lost")); await settleCapture();
+  expect(f.snapshot()?.draft).toBe("Keep me\nCheck me"); expect(f.snapshot()?.sendUncertain).toBe(true);
+  await f.controller.action("1", { type: "talk" }); await f.controller.refresh();
+  expect(f.sent).toHaveLength(1); expect(f.snapshot()?.capture).toBe("idle");
+  f.controller.stop();
+});
+
+
+test("shared Room history failure becomes visible and cannot overwrite another Room", () => {
+  const opening = threadRoomReducer(initialThreadRoomControllerState, {
+    type: "open", roomId: "room-a", visible: true, connected: true,
+  });
+  const failed = threadRoomReducer(opening, { type: "hydrate.failed", roomId: "room-a", error: "History unavailable" });
+  expect(failed.phase).toBe("error"); expect(failed.error).toBe("History unavailable");
+  expect(threadRoomReducer(opening, { type: "hydrate.failed", roomId: "room-b", error: "Stale" })).toBe(opening);
 });

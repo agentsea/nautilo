@@ -287,12 +287,13 @@ export class CompanionWindowManager {
       this.publish(bound);
     } else if (action.type === "menu") {
       Menu.buildFromTemplate([
-        ...companionViews.map(view => ({ label: ({ orb: "Bubble", waveform: "Waveform", prompt: "Prompt", chat: "Chat" })[view], type: "radio" as const, checked: bound.state.view === view, click: () => { if (this.bound === bound) this.command(bound, { type: "view", value: view }); } })),
+        ...companionViews.map(view => ({ label: ({ orb: "Voice bubble", prompt: "Compact panel", chat: "Full chat" })[view], type: "radio" as const, checked: bound.state.view === view, click: () => { if (this.bound === bound) this.command(bound, { type: "view", value: view }); } })),
         { type: "separator" },
         { label: "Bubble appearance", submenu: (["avatar", "orb"] as const).map(value => ({ label: value === "avatar" ? "Genie avatar" : "Abstract orb", type: "radio" as const, checked: bound.state.bubbleAppearance === value, click: () => { if (this.bound === bound) this.command(bound, { type: "bubble-appearance", value }); } })) },
         { label: "Dock", submenu: companionDocks.map(dock => ({ label: dock === "free" ? "Free floating" : dock[0]!.toUpperCase() + dock.slice(1), type: "radio" as const, checked: bound.state.dock === dock, click: () => { if (this.bound === bound) this.command(bound, { type: "dock", value: dock }); } })) },
-        { label: bound.state.snapshot.capture === "listening" ? "Finish recording and send" : "Record a message", enabled: !["requesting", "transcribing"].includes(bound.state.snapshot.capture), click: () => { if (this.bound === bound) this.command(bound, { type: "mic" }); } },
-        { label: "Mute microphone / discard recording", click: () => { if (this.bound === bound) this.command(bound, { type: "mute" }); } },
+        { label: bound.state.snapshot.capture === "listening" ? (bound.state.view === "orb" ? "Send spoken turn" : "Finish dictation") : "Record a message", enabled: !bound.state.snapshot.busy && !["requesting", "transcribing"].includes(bound.state.snapshot.capture), click: () => { if (this.bound === bound) this.command(bound, { type: bound.state.view === "orb" ? "talk" : "mic" }); } },
+        { label: "Discard recording", click: () => { if (this.bound === bound) this.command(bound, { type: "mute" }); } },
+        { label: bound.state.snapshot.voiceEnabled ? "Sound off" : "Sound on", click: () => { if (this.bound === bound) this.command(bound, { type: "sound", enabled: !bound.state.snapshot.voiceEnabled }); } },
         { label: "Stop talking", enabled: bound.state.snapshot.voiceEnabled, click: () => { if (this.bound === bound) this.command(bound, { type: "stop-talking" }); } },
         { label: "Stop action in this Room", click: () => { if (this.bound === bound) this.command(bound, { type: "stop-task" }); } },
         { label: "Attach files…", enabled: bound.state.snapshot.canAttach, click: () => { if (this.bound === bound) this.command(bound, { type: "view", value: "chat" }); if (this.bound === bound) this.command(bound, { type: "attach" }); } },
@@ -314,7 +315,7 @@ export class CompanionWindowManager {
       bound.state.dock = nearestDock(current, screen.getDisplayMatching(current).workArea);
       this.relayout();
     } else if (action.type === "drag-cancel") bound.drag = null;
-    else if (action.type === "send" || action.type === "draft" || action.type === "refresh" || action.type === "return" || action.type === "mic" || action.type === "mute" || action.type === "stop-talking" || action.type === "stop-task" || action.type === "attach" || action.type === "remove-attachment") {
+    else if (action.type === "send" || action.type === "draft" || action.type === "refresh" || action.type === "return" || action.type === "sound" || action.type === "talk" || action.type === "mic" || action.type === "mute" || action.type === "stop-talking" || action.type === "stop-task" || action.type === "attach" || action.type === "remove-attachment") {
       if (!this.ownerCurrent(bound)) { this.close(); return; }
       bound.owner.contents.send("companion:action", bound.state.generation, action);
       if (action.type === "return") { this.deps.mainWindow()?.show(); this.deps.mainWindow()?.focus(); }
