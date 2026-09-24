@@ -598,6 +598,7 @@ import type {
   WhoamiResponse,
   ListRoomsResponse,
   RoomDetailResponse,
+  RoomPresenceResponse,
   CreateRoomRequest,
   RenameRoomRequest,
   SetRoomVisibilityRequest,
@@ -10104,6 +10105,20 @@ export class NautiloApiClient {
       auth: "session-fresh",
       defaultErrorPrefix: `GET /api/rooms/${roomId}`,
     });
+  }
+
+  /** Current Human availability; failures remain errors, never an Offline snapshot. */
+  async getRoomPresence(roomId: string, options?: { signal?: AbortSignal }): Promise<RoomPresenceResponse> {
+    const response = await this.request<unknown>({
+      path: `/api/rooms/${encodeURIComponent(roomId)}/presence`,
+      auth: "session-fresh",
+      defaultErrorPrefix: "GET room presence",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+    return z.object({ members: z.array(z.object({
+      actorId: z.string(),
+      status: z.enum(["online", "idle", "offline"]),
+    })) }).parse(response);
   }
 
   /** canonical thread hydration without paging parent history. */

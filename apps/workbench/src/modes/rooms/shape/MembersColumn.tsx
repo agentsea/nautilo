@@ -4,6 +4,7 @@ import type { RoomMemberDto } from "@nautilo/types";
 import { useRoomFocus } from "./use-room-focus";
 import { sortMembersByTalking } from "./members-panel-model";
 import { MemberFocusAvatar } from "./MemberFocusAvatar";
+import { useRoomPresence } from "./use-room-presence";
 
 /**
  * Compact members column (the ~48px thin column in the
@@ -20,16 +21,19 @@ const EMPTY_LAST_SPOKE: ReadonlyMap<string, number> = new Map();
 
 export function MembersColumn({
   roomId,
+  viewerActorId,
   members,
   onExpand,
   lastSpokeAtMs,
 }: {
   readonly roomId: string;
+  readonly viewerActorId: string;
   readonly members: readonly RoomMemberDto[];
   readonly onExpand: () => void;
   readonly lastSpokeAtMs?: ReadonlyMap<string, number>;
 }): ReactElement {
   const focus = useRoomFocus(roomId);
+  const presence = useRoomPresence(roomId, viewerActorId);
   const sorted = useMemo(
     () => sortMembersByTalking(members, lastSpokeAtMs ?? EMPTY_LAST_SPOKE),
     [members, lastSpokeAtMs],
@@ -44,7 +48,15 @@ export function MembersColumn({
       data-testid="members-column"
     >
       {visible.map((m) => (
-        <MemberFocusAvatar key={m.actorId} member={m} focus={focus} size="sm" roomId={roomId} />
+        <MemberFocusAvatar
+          key={m.actorId}
+          member={m}
+          focus={focus}
+          size="sm"
+          roomId={roomId}
+          showPresence={m.kind === "user"}
+          presence={m.kind === "user" ? presence.get(m.actorId) : undefined}
+        />
       ))}
       {overflow > 0 ? (
         <button

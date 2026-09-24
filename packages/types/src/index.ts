@@ -1,3 +1,4 @@
+export * from "./human-presence";
 export * from "./api";
 export * from "./workspace-media";
 export * from "./workspace-logical-path";

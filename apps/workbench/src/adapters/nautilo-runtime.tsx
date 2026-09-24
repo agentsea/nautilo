@@ -131,6 +131,7 @@ import {
 } from "./message-backfill-scheduler";
 import { restoreRoomReadOutcome } from "./room-read-outcome";
 import { createVisibilityGate, shouldHandleVisibility } from "./ws-visibility-gate";
+import { observeWorkbenchHumanActivity } from "./human-activity";
 import { setFocusedTurnDispatcher, setRevertDispatcher } from "./tool-invoke-ref";
 import {
   dedupeMessageArtifactOpenRefs,
@@ -1643,6 +1644,7 @@ export function NautiloRuntimeProvider({
   const [admissionReady, setAdmissionReady] = useState(isCryptoAdmissionAllowed);
   const [admissionResumeGeneration, setAdmissionResumeGeneration] = useState(0);
   const wsRef = useRef<RealtimeClient | null>(null);
+  const humanActivityRef = useRef<ReturnType<typeof observeWorkbenchHumanActivity> | null>(null);
   shadowPolicyModeRef.current = shadowPolicyMode;
   const [protectedRoomAccessByRoom, setProtectedRoomAccessByRoom] = useState<
     ReadonlyMap<string, Readonly<{
@@ -5710,7 +5712,10 @@ export function NautiloRuntimeProvider({
 
   useEffect(() => {
     let openedOnce = false;
+    const humanActivity = observeWorkbenchHumanActivity(document);
+    humanActivityRef.current = humanActivity;
     const client = createWsRealtimeClient(WS_URL, {
+      isIdle: humanActivity.isIdle,
       onVoiceEvent: (event) => {
         if (!voicePlaybackEnabledRef.current) return;
         if (event.type === "voice.stream.start" && event.roomId !== voiceRoomRef.current) return;
@@ -5806,6 +5811,8 @@ export function NautiloRuntimeProvider({
     }
 
     return () => {
+      humanActivity.dispose();
+      if (humanActivityRef.current === humanActivity) humanActivityRef.current = null;
       clearClientActionSession();
       if (handleVisibility) {
         document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -5819,6 +5826,12 @@ export function NautiloRuntimeProvider({
     // The WS lifecycle remains mount-scoped because setWsState is a stable
     // useCallback([]); handleWsEvent is reached via handleWsEventRef.
   }, [setWsState]);
+
+  // The socket stays mounted across viewer refreshes; activity must not carry
+  // a previous Human's clock into a new authenticated identity.
+  useEffect(() => {
+    humanActivityRef.current?.reset();
+  }, [auth.viewerGeneration, viewerKey]);
 
   // select/cache/fence in the layout phase so Room A cannot appear
   // under Room B before the first paint. The server fetch deliberately starts

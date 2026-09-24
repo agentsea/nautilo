@@ -725,7 +725,7 @@ export function WorkbenchShell() {
     }
   }, [browserMode, browserModeViewerKey]);
 
-  // M259 — a mode persisted while the viewer had broader authority must not
+  // A mode persisted while the viewer had broader authority must not
   // leave a newly restricted session with an empty browser column.
   useEffect(() => {
     const modeRequiresInvocation = browserMode === "web";
@@ -839,12 +839,12 @@ export function WorkbenchShell() {
     [navigate, panelSizes],
   );
 
-  // M238 — typed important-arrival events now own generic desktop popup
+  // Typed important-arrival events now own generic desktop popup
   // eligibility in NotificationStateProvider. This shell retains only native
   // click-to-Room routing. `desktopSessionActive` is still tracked here for the
   // terminal surface and servers panel.
 
-  // M161 Phase 3 emits this after an in-process server session becomes active.
+  // This event fires after an in-process server session becomes active.
   // Routing preserves the renderer and its other live sessions.
   useEffect(() => {
     return desktopAPI?.servers?.onNavigateHome?.(() => {
@@ -2070,6 +2070,7 @@ export function WorkbenchShell() {
           ) : (
             <MembersColumn
               roomId={roomNav.activeRoomId}
+              viewerActorId={auth.viewer.sessionActorId ?? ""}
               members={activeRoomMembers}
               onExpand={() => setReaderMembersExpanded(true)}
             />

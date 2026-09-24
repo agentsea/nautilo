@@ -25,6 +25,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Keep the compact Genie and members rail visible beside document chat in group
   Rooms. Stop remains available while another job in the Room is still active,
   and document previews retain their last readable version during refresh.
+- Group conversation rosters show Online, Idle, or Offline beside Humans on
+  Workbench/Desktop and Mobile. Status uses authenticated chat connections and
+  app activity; failed reads show unavailable. Multiple connected devices are
+  combined, and Agent controls retain their existing behavior.
 
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
   Mobile for users with the `manage_rooms` permission. It addresses current Human

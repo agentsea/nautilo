@@ -1,3 +1,4 @@
+export { createRoomPresencePoller } from "./room-presence";
 export * from "./schemas/memory-processor-transport";
 export {
   NautiloApiClient,

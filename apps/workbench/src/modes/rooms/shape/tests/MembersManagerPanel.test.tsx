@@ -1,5 +1,5 @@
 /**
- * D279 — silence controls in the docked §4.7.4 MembersManagerPanel (full view).
+ * Silence controls in the docked MembersManagerPanel full view.
  */
 import { afterAll, beforeAll, describe, test, expect, mock } from "bun:test";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
@@ -34,6 +34,7 @@ mock.module("../../../../lib/api", () => ({
       silence: roomSilenceCurrent,
       canManage: roomSilenceCanManage,
     }),
+    getRoomPresence: async () => ({ members: [] }),
     setRoomSilence,
     clearRoomSilence,
     setRoomConductorMode,
@@ -179,7 +180,7 @@ function dispatchRouting(state: "deciding" | "settled", roomId = "r1", userActor
   );
 }
 
-describe("MembersManagerPanel — D279 silence section", () => {
+describe("MembersManagerPanel — silence section", () => {
   test("human-only full view keeps members and Manage but hides conductor chrome", async () => {
     roomSilenceCanManage = true;
     roomSilenceCurrent = null;
@@ -467,7 +468,7 @@ describe("MembersManagerPanel — D279 silence section", () => {
   });
 });
 
-describe("MembersManagerPanel — D317 header", () => {
+describe("MembersManagerPanel — header", () => {
   test("full view shows room label as header title", async () => {
     roomSilenceCanManage = true;
     roomSilenceCurrent = null;

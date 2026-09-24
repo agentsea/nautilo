@@ -16,6 +16,8 @@ import {
 } from "../../../components/composer/ask-user-state";
 import { resumeAskUserPick } from "../../../components/composer/ask-user-resume";
 import { memberTypeSuffix, sortMembersByTalking } from "./members-panel-model";
+import { HumanPresence } from "./HumanPresence";
+import { useRoomPresence } from "./use-room-presence";
 import { useRoomFocus } from "./use-room-focus";
 import {
   useAutoApprove,
@@ -32,23 +34,9 @@ import {
 const EMPTY_LAST_SPOKE: ReadonlyMap<string, number> = new Map();
 
 /**
- * D193 — In-room members management panel.
- *
- * Room membership and response controls share the selected Room identity.
- *
- * Composes with:
- * - D128 mode-flip (Q4): admin can flip an agent's `agentResponseMode`
- *   from this panel — natural home, removes the "no UI to change mode"
- *   gap from the D128 ship.
- * - D192 add-bot consent (sibling Phase 5 sub-PR): the agent-add path
- *   will route through D192's dialog before completing once that
- *   sub-PR ships. Until then, agent adds use default mode = mention_only.
- * - D194 wireframes (Phase 0): visual vocabulary anchor.
- *
- * Scope per phase-5-d193-members-panel.md. Sub-tasks 5.2-5.5 implemented
- * in this iteration: fetch + remove (with confirmation) + add picker +
- * mode-flip for agents + unit tests. MR4 (D192 consent route) and MR6
- * (audit timeline) deferred to follow-ups.
+ * Room membership management. Room admins can add and remove members, set
+ * Human roles, and choose response modes for Agents. The panel also exposes
+ * room settings to viewers with the corresponding permissions.
  */
 
 const MODE_LABELS: Record<AgentResponseMode, string> = {
@@ -65,12 +53,12 @@ export interface MembersPanelProps {
   readonly onClose: () => void;
   readonly onMembershipChanged?: () => void;
   /**
-   * Server-wide `manage_rooms` cosmetic gate (M129). Hosts should pass
+   * Server-wide `manage_rooms` gate. Hosts should pass
    * `useCan()("manage_rooms")`; defaults false when omitted (SSR tests).
    */
   readonly viewerCanManageRooms?: boolean;
   /**
-   * D278 §4.7.4 sort-by-talking: actorId → epoch-ms of that member's most
+   * Sort-by-talking input: actorId → epoch-ms of that member's most
    * recent message, derived client-side from the room transcript. Omit (or
    * empty) → falls back to admin → alphabetical. Wired by the room shell that
    * has transcript access (MembersPanel itself mounts outside the Thread
@@ -194,6 +182,7 @@ export function MembersPanel({
   // Per-agent mode-flip in-flight flags (Q4)
   const [modeBusy, setModeBusy] = useState<Record<string, boolean>>({});
   const [roleBusy, setRoleBusy] = useState<Record<string, boolean>>({});
+  const presence = useRoomPresence(roomId, viewerActorId, open);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -577,6 +566,7 @@ export function MembersPanel({
                     isSelf={m.actorId === viewerActorId}
                     modeBusy={modeBusy[m.actorId] === true}
                     focus={focus}
+                    presence={m.kind === "user" ? presence.get(m.actorId) : undefined}
                     askUserActive={askUser.active && askUser.roomId === roomId}
                     onAskUserPick={handleAskUserPick}
                     roleBusy={roleBusy[m.actorId] === true}
@@ -818,6 +808,7 @@ function MemberRow({
   isSelf,
   modeBusy,
   focus,
+  presence,
   askUserActive,
   onAskUserPick,
   roleBusy,
@@ -833,6 +824,7 @@ function MemberRow({
   readonly isSelf: boolean;
   readonly modeBusy: boolean;
   readonly focus: ReturnType<typeof useRoomFocus>;
+  readonly presence?: import("@nautilo/types").HumanPresenceStatus | undefined;
   readonly askUserActive: boolean;
   readonly onAskUserPick: (botActorId: string) => void;
   readonly roleBusy: boolean;
@@ -895,10 +887,7 @@ function MemberRow({
             ) : null}
           </button>
         ) : (
-          <span
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-background text-xs font-medium text-foreground-muted"
-            aria-hidden
-          >
+          <span className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-background text-xs font-medium text-foreground-muted" aria-hidden>
             {member.displayName.charAt(0).toUpperCase()}
           </span>
         )}
@@ -906,6 +895,7 @@ function MemberRow({
           <span className="truncate text-xs font-medium text-foreground">
             {member.displayName}
             {isSelf ? <span className="ml-1 text-foreground-muted">(you)</span> : null}
+            {!isAgent ? <span className="ml-1 normal-case"><HumanPresence status={presence} /></span> : null}
           </span>
           <span className="text-[10px] uppercase tracking-wide text-foreground-muted">
             {isAgent ? "Bot" : "Person"} · {member.roomRole} · {suffix}
@@ -983,19 +973,14 @@ function MemberRow({
 /**
  * Inline picker for adding a human or agent to the room.
  *
- * P3/MR6 (D187): the tabbed People/Bots list + bespoke `PickerRow` were
- * replaced by the shared `SelectablePicker`. This room-management variant now
- * uses its multi-select mode so an admin can choose several humans and Genies,
- * then add the selection with one explicit commit.
+ * Uses the shared multi-select picker so an admin can choose several people
+ * and Genies, then add the selection with one explicit commit.
  *
  * Because the addable lists are room-scoped and small, the picker's `search`
  * is a local case-insensitive filter over the already-loaded list — no server
  * search here.
  *
- * Agent path: ships with default mode = `mention_only` per D128 default for
- * multi-human rooms. The D192 consent dialog hookup is intentionally deferred
- * to a follow-up sub-PR — when D192 lands, this add call routes through it.
- * Tracked as MR4 in phase-5-d193-members-panel.md.
+ * New Agents default to `mention_only` in rooms with multiple Humans.
  */
 function AddMemberPicker({
   roomId,
