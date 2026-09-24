@@ -28,7 +28,9 @@ export function finalizeModerationMigration(source: string): string {
       `ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;`,
       `REVOKE ALL ON TABLE "${table}" FROM PUBLIC, "nautilo_agent", "nautilo_crypto";`,
       `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "${table}" TO "nautilo";`,
-      `REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "${table}" FROM "nautilo";`,
+      ...(table === "moderation_actions" ? [] : [
+        `REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "${table}" FROM "nautilo";`,
+      ]),
     ]),
     // Preserve existing enrollment, including unfinished browser bindings.
     `INSERT INTO "server_admission" ("user_id", "admitted")
@@ -36,12 +38,14 @@ SELECT u.id, NOT EXISTS (
   SELECT 1 FROM invite_redemptions r WHERE r.user_id = u.id AND r.completed_at IS NULL
 ) OR EXISTS (
   SELECT 1 FROM invite_redemptions r WHERE r.user_id = u.id AND r.completed_at IS NOT NULL
-) FROM users u;`,
+    ) FROM users u;`,
     moderationActionGuard,
+    `GRANT TRIGGER ON TABLE "moderation_actions" TO "nautilo";`,
     `CREATE TRIGGER moderation_action_immutable_row BEFORE UPDATE OR DELETE ON moderation_actions
 FOR EACH ROW EXECUTE FUNCTION public.guard_moderation_action();`,
     `CREATE TRIGGER moderation_action_immutable_table BEFORE TRUNCATE ON moderation_actions
 FOR EACH STATEMENT EXECUTE FUNCTION public.guard_moderation_action();`,
+    `REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "moderation_actions" FROM "nautilo";`,
     `REVOKE ALL ON FUNCTION public.guard_moderation_action() FROM PUBLIC, nautilo_agent, nautilo_crypto;`,
   ];
   return `${source}\n--> statement-breakpoint\n${marker}\n${statements.join("\n--> statement-breakpoint\n")}\n`;
