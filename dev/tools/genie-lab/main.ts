@@ -68,7 +68,7 @@ function popup() {
   Menu.buildFromTemplate([
     { label: "Genie Lab · microphone off", enabled: false },
     { type: "separator" },
-    ...views.map((value, i) => ({ label: ({ orb: "Tiny orb", waveform: "Voice only", prompt: "Slim prompt", chat: "Expanded chat" })[value], type: "radio" as const, checked: state.view === value, accelerator: `CommandOrControl+${i + 1}`, click: () => select({ type: "view", value }) })),
+    ...views.map((value, i) => ({ label: ({ orb: "Tiny orb", prompt: "Slim prompt", chat: "Expanded chat" })[value], type: "radio" as const, checked: state.view === value, accelerator: `CommandOrControl+${i + 1}`, click: () => select({ type: "view", value }) })),
     { type: "separator" },
     { label: "Dock", submenu: docks.map(value => ({ label: value === "free" ? "Float freely" : value[0]!.toUpperCase() + value.slice(1), type: "radio" as const, checked: state.dock === value, click: () => select({ type: "dock", value }) })) },
     { label: "Visual", submenu: visuals.map(value => ({ label: value === "nautilo" ? "Nautilo orb" : "Persona · Opal", type: "radio" as const, checked: state.visual === value, click: () => select({ type: "visual", value }) })) },

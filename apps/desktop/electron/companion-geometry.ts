@@ -5,8 +5,7 @@ export interface Rect { x: number; y: number; width: number; height: number }
 // limits on user content. Chat scrolls, and all sizes fit the available display.
 const sizes: Record<View, { width: number; height: number }> = {
   orb: { width: 88, height: 88 },
-  waveform: { width: 192, height: 72 },
-  prompt: { width: 380, height: 132 },
+  prompt: { width: 380, height: 216 },
   chat: { width: 380, height: 460 },
 };
 const inset = 8;

@@ -172,7 +172,7 @@ export function PanelIdentity({
             </div>
           )}
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5"><h2 className="truncate text-lg font-semibold text-foreground">{name}</h2>{floatingControl}</div>
+            <div className="flex flex-wrap items-center gap-1.5"><h2 className="max-w-full truncate text-lg font-semibold text-foreground">{name}</h2>{floatingControl}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
               <span className="flex items-center gap-2">
                 <span aria-hidden className="text-xs text-online">●</span>

@@ -40,11 +40,7 @@
 .companion-orb .companion-small-close { left: 2px; }
 .companion-orb .companion-small-close::after { content: none; }
 .companion-orb .companion-small-expand { right: 2px; }
-.companion-waveform .companion-small-close { top: 5px; left: 7px; }
-.companion-waveform .companion-small-expand { top: 5px; right: 7px; width: 23px; height: 23px; }
 .companion-state-icon { position: absolute; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: #292335; border: 1px solid #baa4ff50; color: #d9caff; }
-.companion-waveform .companion-compact { border-radius: 30px; border: 1px solid #c2a5ff40; background: linear-gradient(135deg, #2b243cf5, #171320fc); }
-.companion-waveform .companion-state-icon { right: 9px; bottom: 9px; width: 19px; height: 19px; }
 .companion-wave { display: flex; justify-content: center; align-items: center; height: 100%; gap: 3px; padding-right: 18px; color: #bea4ff; }
 .companion-wave-mark { margin-right: 5px; }
 .companion-wave i { display: block; width: 3px; height: 5px; border-radius: 3px; background: linear-gradient(#d0b5ff, #9876e1); }
@@ -60,8 +56,3 @@
 @keyframes companion-spin { to { transform: rotate(360deg); } }
 .companion-spinner { animation: companion-spin 1.2s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .companion *, .companion *::before, .companion *::after { animation: none !important; transition: none !important; } }
-
-.companion-waveform .companion-compact { display: flex; align-items: center; gap: 9px; padding: 10px 35px 10px 9px; }
-.companion-waveform .companion-avatar { width: 34px; height: 34px; flex-shrink: 0; }
-.companion-waveform .companion-wave { min-width: 0; flex: 1; gap: 2px; padding: 0; }
-.companion-waveform .companion-wave i { flex-shrink: 0; }

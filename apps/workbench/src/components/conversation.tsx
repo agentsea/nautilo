@@ -2953,6 +2953,7 @@ function Composer({
         <VoicePlaybackStopPill
           enabled={voice.enabled}
           playing={voice.playing}
+          canStop={voice.canStopTalking}
           onStop={voice.stop}
         />
         <MentionAwareLexicalComposerInput

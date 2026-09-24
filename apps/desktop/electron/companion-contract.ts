@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from "@assistant-ui/core";
-export const companionViews = ["orb", "waveform", "prompt", "chat"] as const;
+export const companionViews = ["orb", "prompt", "chat"] as const;
 export const companionDocks = ["free", "top", "bottom", "left", "right"] as const;
 export type CompanionView = typeof companionViews[number];
 export type CompanionDock = typeof companionDocks[number];
@@ -11,6 +11,10 @@ export interface CompanionSnapshot {
   capture: "idle" | "requesting" | "listening" | "transcribing" | "error";
   voiceEnabled: boolean;
   speaking: boolean;
+  /** Optional because Workbench and Desktop can upgrade independently. */
+  canStopTalking?: boolean;
+  /** Prevent a bubble tap from obscuring a send whose outcome is unknown. */
+  sendUncertain?: boolean;
   workRunning: boolean;
   stopState: "idle" | "stopping" | "stopped" | "failed";
   canAttach: boolean;
@@ -41,7 +45,8 @@ export type CompanionAction =
   | { type: "view"; value: CompanionView }
   | { type: "dock"; value: CompanionDock }
   | { type: "bubble-appearance"; value: "avatar" | "orb" }
-  | { type: "mic" | "mute" | "stop-talking" | "stop-task" | "attach" | "off" | "return" | "refresh" | "menu" | "drag-start" | "drag-move" | "drag-end" | "drag-cancel" };
+  | { type: "sound"; enabled: boolean }
+  | { type: "talk" | "mic" | "mute" | "stop-talking" | "stop-task" | "attach" | "off" | "return" | "refresh" | "menu" | "drag-start" | "drag-move" | "drag-end" | "drag-cancel" };
 export interface CompanionOwnerAPI {
   enable(binding: CompanionBinding): Promise<string>;
   pickFiles(generation: string): Promise<CompanionPickedFile[]>;
@@ -69,6 +74,8 @@ export function isCompanionSnapshot(value: unknown): value is CompanionSnapshot 
   return ["idle", "requesting", "listening", "transcribing", "error"].includes(s.capture)
     && ["idle", "stopping", "stopped", "failed"].includes(s.stopState)
     && [s.voiceEnabled, s.speaking, s.workRunning, s.canAttach, s.pickingAttachments].every(v => typeof v === "boolean")
+    && (s.sendUncertain === undefined || typeof s.sendUncertain === "boolean")
+    && (s.canStopTalking === undefined || typeof s.canStopTalking === "boolean")
     && Array.isArray(s.attachments) && s.attachments.every(a => a && typeof a.id === "string" && typeof a.name === "string"
       && ["pending", "ready", "error"].includes(a.status) && (a.error === null || typeof a.error === "string"))
     && (s.avatarDataUrl === null || isCompanionAvatar(s.avatarDataUrl)) && isCompanionBinding(s.binding) && typeof s.busy === "boolean" && typeof s.hasEarlier === "boolean"
@@ -79,12 +86,13 @@ export function isCompanionAction(value: unknown): value is CompanionAction {
   if (!value || typeof value !== "object") return false;
   const a = value as CompanionAction;
   switch (a.type) {
+    case "sound": return typeof a.enabled === "boolean";
     case "remove-attachment": return typeof a.id === "string";
     case "send": case "draft": return typeof a.text === "string";
     case "view": return companionViews.includes(a.value);
     case "dock": return companionDocks.includes(a.value);
     case "bubble-appearance": return a.value === "avatar" || a.value === "orb";
-    case "mic": case "mute": case "stop-talking": case "stop-task": case "attach":
+    case "talk": case "mic": case "mute": case "stop-talking": case "stop-task": case "attach":
     case "off": case "return": case "refresh": case "menu":
     case "drag-start": case "drag-move": case "drag-end": case "drag-cancel": return true;
     default: return false;
@@ -96,6 +104,6 @@ export function shouldShowCompanion(input: { enabled: boolean; ownerCurrent: boo
 
 export function emptyCompanionSnapshot(binding: CompanionBinding): CompanionSnapshot {
   return { binding, avatarDataUrl: null, messages: [], hasEarlier: false, busy: false, error: null, draft: "", draftRevision: 0, draftBase: "", dictationText: null,
-    capture: "idle", voiceEnabled: false, speaking: false, workRunning: false, stopState: "idle",
+    capture: "idle", voiceEnabled: false, speaking: false, canStopTalking: false, workRunning: false, stopState: "idle",
     canAttach: false, pickingAttachments: false, attachments: [] };
 }
