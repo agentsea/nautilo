@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
+import { withModerationMigrationCompat } from "./moderation-migration-compat";
 import * as schema from "../schema/index";
 import { resolveInstance, resolvedInstanceChildEnv } from "@nautilo/config";
 import {
@@ -196,13 +197,14 @@ async function ensureDatabaseContainer(
   print(`Running migrations from ${migrationsFolder}...`);
   const migrationSql = postgres(direct, { max: 1, onnotice: () => {} });
   const migrationDb = drizzle(migrationSql, { schema });
-  await migrate(migrationDb, { migrationsFolder });
+  await withModerationMigrationCompat(migrationsFolder, (folder) =>
+    migrate(migrationDb, { migrationsFolder: folder }));
   await migrationSql.end();
   print("Migrations complete.");
 
   await applyRuntimeRoleContract(direct, print, "container");
 
-  // D374 — stamp the connected-DB identity marker in deploy/container
+  // Stamp the connected-DB identity marker in deploy/container
   // mode too. Here `DB_DIRECT_CONNECTION` is the operator-configured
   // truth, so trust it (host path derives + verifies against instance.json
   // instead). A present marker naming a different instance still throws.
@@ -217,7 +219,7 @@ async function ensureDatabaseContainer(
 }
 
 /**
- * D202 — should ensureDatabase() auto-heal a corrupted scratch DB?
+ * Should ensureDatabase() auto-heal a corrupted scratch DB?
  *
  * True only when BOTH hold:
  *   1. The test harness opted in via `TEST_DB_AUTOHEAL_ENV` (set by
@@ -264,14 +266,15 @@ async function runMigrations(directConnection: string): Promise<void> {
   const migrationSql = postgres(directConnection, { max: 1, onnotice: () => {} });
   const migrationDb = drizzle(migrationSql, { schema });
   try {
-    await migrate(migrationDb, { migrationsFolder: MIGRATIONS_FOLDER });
+    await withModerationMigrationCompat(MIGRATIONS_FOLDER, (folder) =>
+      migrate(migrationDb, { migrationsFolder: folder }));
   } finally {
     await migrationSql.end();
   }
 }
 
 /**
- * D202 (A) — loud assertion: after migrate, the applied-migration count
+ * Loud assertion: after migrate, the applied-migration count
  * must equal the journal length. A mismatch means a conflicting/partial
  * migration or a hand-edited schema — the exact "haunted scratch DB"
  * failure mode. Throws an actionable message.
@@ -289,7 +292,7 @@ async function assertMigrationsConsistent(directConnection: string): Promise<voi
 }
 
 /**
- * D202 (C) — destructive heal of the disposable scratch DB. Drops the
+ * Destructive heal of the disposable scratch DB. Drops the
  * `public` and `drizzle` schemas (wiping the migration journal so drizzle
  * re-applies everything from scratch), then re-migrates. The caller applies
  * the complete runtime role contract after this returns. Caller MUST have
@@ -315,10 +318,10 @@ async function healScratchDatabase(
 }
 
 /**
- * Run migrations with the D202 test-harness safety net: assert journal
+ * Run migrations with the test-harness safety net: assert journal
  * consistency, and (scratch instance only) auto-heal a corrupted DB once.
  * In non-test contexts (`TEST_DB_AUTOHEAL_ENV` unset) this is a plain
- * `runMigrations` with identical behavior to the pre-D202 code path.
+ * `runMigrations` with identical behavior to the previous code path.
  */
 async function runMigrationsGuarded(
   directConnection: string,
@@ -351,7 +354,7 @@ async function runMigrationsGuarded(
  * 3. Runs Drizzle migrations via direct connection.
  * 4. Sets DB_CONNECTION_STRING to the direct app-role URL for runtime code.
  *
- * D202: under a test harness (`bootstrapTestDbInstance` set
+ * Under a test harness (`bootstrapTestDbInstance` set
  * `NAUTILO_TEST_DB_AUTOHEAL=1`) a corrupted *scratch* DB is auto-healed;
  * `(default)` and named instances are never touched destructively.
  *
