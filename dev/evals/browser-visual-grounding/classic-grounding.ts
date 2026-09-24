@@ -71,8 +71,6 @@ const EDGE_COLOR_DISTANCE = 5;
 const EDGE_MIN_BOX_AREA = 360;
 const EDGE_MIN_WIDTH = 18;
 const EDGE_MIN_HEIGHT = 12;
-const MAX_REGION_CANDIDATES = 80;
-const MAX_TEXT_CANDIDATES = 120;
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -137,7 +135,7 @@ function dedupeRegions(regions: readonly RegionObservation[]): RegionObservation
     if (accepted.some((candidate) => intersectionOverUnion(candidate.box, region.box) >= 0.88)) continue;
     accepted.push(region);
   }
-  return accepted.slice(0, MAX_REGION_CANDIDATES).sort(readingOrder);
+  return accepted.sort(readingOrder);
 }
 
 function regionLabel(region: RegionObservation, text: readonly TextObservation[]): {
@@ -218,7 +216,7 @@ export function classicObservationsToGrounding(options: {
       confidence: region.confidence,
     };
   });
-  const textTargets = text.slice(0, MAX_TEXT_CANDIDATES).map((observation) => {
+  const textTargets = text.map((observation) => {
     const center = boxCenter(observation.box);
     const enclosing = regions
       .filter((region) => containsPoint(region.box, center, 3))

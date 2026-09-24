@@ -64,6 +64,39 @@ describe("classic local visual grounding", () => {
       .toBe('OCR text box; at 81% from left, 49% from top; below "Sat"; in section "Oct 2026"');
   });
 
+  test("keeps every distinct region and OCR target beyond the former candidate caps", () => {
+    const regions = Array.from({ length: 81 }, (_, index) => ({
+      box: {
+        x: 100 + (index % 9) * 100,
+        y: 100 + Math.floor(index / 9) * 100,
+        width: 40,
+        height: 40,
+      },
+      confidence: 0.8,
+      source: "perceptual-edge" as const,
+    }));
+    const text: TextObservation[] = Array.from({ length: 121 }, (_, index) => ({
+      text: `Text ${index}`,
+      confidence: 0.9,
+      box: {
+        x: 100 + (index % 11) * 100,
+        y: 1_400 + Math.floor(index / 11) * 100,
+        width: 40,
+        height: 20,
+      },
+    }));
+    const grounding = classicObservationsToGrounding({
+      backend: "portable",
+      image: { width: 3_000, height: 3_000 },
+      text,
+      regions,
+    });
+    expect(grounding.targets.filter(({ role }) => role === "visual region")).toHaveLength(81);
+    expect(grounding.targets.filter(({ role }) => role === "visible text")).toHaveLength(121);
+    expect(grounding.targets.some(({ name }) => name === "Text 120")).toBe(true);
+    expect(grounding.visibleText).toContain("Text 120");
+  });
+
   test("parses all experiment backends", () => {
     const defaults = parseClassicBaselineArgs([]);
     expect(defaults.live).toBe(false);
