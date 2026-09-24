@@ -1,5 +1,6 @@
 import type {
   ActiveRoomSilenceDto,
+  HumanPresenceStatus,
   ConductorDecisionReasonCode,
   ImportantMessageArrivedEvent,
   EncryptionPolicyChangedEvent,
@@ -35,7 +36,8 @@ export type WsClientMeta = {
   subscriptionRevision?: number;
 };
 
-const clients = new Map<WebSocket, WsClientMeta>();
+type ConnectedClient = WsClientMeta & { lastPingAt: number; idle: boolean };
+const clients = new Map<WebSocket, ConnectedClient>();
 const pendingHumanAdmissions = new Map<WebSocket, string>();
 
 /** Track the async admission gap without making the socket a delivery recipient. */
@@ -52,6 +54,32 @@ export function interruptHumanSocketAdmissions(userId: string): void {
     pendingHumanAdmissions.delete(socket);
     if (socket.readyState === socket.OPEN) socket.close(4401, "access_changed");
   }
+}
+
+// Presence policy: five missed 15-second chat heartbeats stop indicating availability.
+const HUMAN_PRESENCE_STALE_MS = 75_000;
+
+/** Called only after chat authentication; client-supplied identity is never consumed. */
+export function recordClientPing(socket: WebSocket, idle: unknown): void {
+  const meta = clients.get(socket);
+  if (!meta || socket.readyState !== socket.OPEN) return;
+  meta.lastPingAt = Date.now();
+  meta.idle = idle === true;
+}
+
+/** The caller supplies the authorized Human roster; this map contains chat sockets only. */
+export function readHumanPresence(
+  actorIds: readonly string[],
+  now = Date.now(),
+): Map<string, HumanPresenceStatus> {
+  const result = new Map<string, HumanPresenceStatus>(actorIds.map((id) => [id, "offline"]));
+  for (const [socket, meta] of clients) {
+    if (!result.has(meta.actorId) || !meta.userId || socket.readyState !== socket.OPEN
+      || now - meta.lastPingAt >= HUMAN_PRESENCE_STALE_MS) continue;
+    if (!meta.idle) result.set(meta.actorId, "online");
+    else if (result.get(meta.actorId) !== "online") result.set(meta.actorId, "idle");
+  }
+  return result;
 }
 const pendingBroadcasts = new Set<Promise<void>>();
 
@@ -113,7 +141,7 @@ export function roomIdFromLaneKey(laneKey: string): string | null {
 }
 
 /**
- * Stack-162 — structural view of a `ConductorDecision` for the receipt
+ * structural view of a `ConductorDecision` for the receipt
  * classifier. Defined locally (rather than importing `ConductorDecision`
  * from `@nautilo/runtime`) so the realtime module stays decoupled from the
  * runtime package at import time; a real `ConductorDecision` is structurally
@@ -126,7 +154,7 @@ export interface ConductorDecisionForReceipt {
 }
 
 /**
- * Stack-162 — the privacy-safe outcome + reason the receipt carries. The
+ * the privacy-safe outcome + reason the receipt carries. The
  * `displayReason` is always a server-authored sentence; the raw
  * model-produced `decision.reason` is NEVER forwarded.
  */
@@ -137,7 +165,7 @@ export interface SafeDecisionOutcome {
 }
 
 /**
- * Stack-162 — controlled Floor Manager silence reasons (no embedded model
+ * controlled Floor Manager silence reasons (no embedded model
  * text). Any `floor: ` reason NOT in this set carries model-generated
  * semantic detail and must collapse to the generic `*_router` code.
  */
@@ -150,7 +178,7 @@ const FLOOR_CONTROLLED_SILENT_REASONS: ReadonlySet<string> = new Set([
   "floor: search error",
 ]);
 
-/** Stack-162 — deterministic wake reasons that route via conversation history. */
+/** deterministic wake reasons that route via conversation history. */
 const WAKE_HISTORY_REASONS: ReadonlySet<string> = new Set([
   "history-intent",
   "history single-owner",
@@ -158,7 +186,7 @@ const WAKE_HISTORY_REASONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Stack-162 — map a Conductor decision to a privacy-safe receipt outcome +
+ * map a Conductor decision to a privacy-safe receipt outcome +
  * controlled reason code + concise display reason.
  *
  * Privacy contract: this is the ONLY path from a `ConductorDecision.reason`
@@ -293,7 +321,7 @@ export function classifyConductorDecision(
   };
 }
 
-/** Stack-162 — outcome for a routing catch/error (no decision object exists). */
+/** outcome for a routing catch/error (no decision object exists). */
 export function classifyRoutingError(): SafeDecisionOutcome {
   return {
     outcome: "error",
@@ -383,7 +411,7 @@ function inferDeliveryScope(event: ServerEvent): DeliveryScope {
     );
     return { kind: "none" };
   }
-  // Stack-162 — requester-private decision receipt. Delivered ONLY to the
+  // requester-private decision receipt. Delivered ONLY to the
   // requester's connections (never room-fanned-out), so the safe explanation
   // of a routing decision cannot reach other room members. `userId` is the
   // load-bearing discriminator; `laneKey`/`roomId`/`userActorId` are client
@@ -500,7 +528,8 @@ function shouldDeliver(meta: WsClientMeta, scope: DeliveryScope): boolean {
 }
 
 export function addClient(socket: WebSocket, meta: WsClientMeta) {
-  clients.set(socket, meta);
+  // Voice delivery and authenticated routing share this mutable subscription metadata.
+  clients.set(socket, Object.assign(meta, { lastPingAt: Date.now(), idle: false }));
   // log on connect so a userId / roomId binding regression
   // is grep-able. Pairs with the enriched DROPPED log; together they make
   // user-lane delivery failures (approval.ask, prove_it.challenge,

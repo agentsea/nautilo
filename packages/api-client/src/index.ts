@@ -1,3 +1,4 @@
+export { createRoomPresencePoller } from "./room-presence";
 export {
   NautiloApiClient,
   ApiError,

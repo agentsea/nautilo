@@ -8,13 +8,14 @@ import { useRoomFocusContext } from "./room-focus-context";
 import { sortMembersByTalking } from "./members-panel-model";
 import { AgentCard } from "./AgentCard";
 import { MemberFocusAvatar } from "./MemberFocusAvatar";
+import { useRoomPresence } from "./use-room-presence";
 import type { MembersPanelView } from "./use-members-panel-view";
 import { formatSilenceCountdown, useRoomSilence } from "./use-room-silence";
 import { useConductorRoutingDeciding } from "./conductor-routing-status";
 import { SubagentDock } from "../subagents/SubagentDock";
 
 /**
- * D278 §4.7.4 — the always-on group-room Members / Agent-Manager panel.
+ * Always-on group-room Members and Agent Manager panel.
  *
  * Rendered as the right panel for Human-only rooms and group rooms so their
  * participant roster and management entry remain reachable. A direct
@@ -73,6 +74,7 @@ export function MembersManagerPanel({
   const [memberSearch, setMemberSearch] = useState("");
   const [agentsOnly, setAgentsOnly] = useState(false);
   const routingDeciding = useConductorRoutingDeciding(roomId, viewerActorId || null);
+  const presence = useRoomPresence(roomId, viewerActorId);
 
   useEffect(() => {
     setLocalConductorMode(conductorMode);
@@ -199,7 +201,15 @@ export function MembersManagerPanel({
           </span>
         ) : null}
         {sorted.map((m) => (
-          <MemberFocusAvatar key={m.actorId} member={m} focus={focus} size="sm" roomId={roomId} />
+          <MemberFocusAvatar
+            key={m.actorId}
+            member={m}
+            focus={focus}
+            size="sm"
+            roomId={roomId}
+            showPresence={m.kind === "user"}
+            presence={m.kind === "user" ? presence.get(m.actorId) : undefined}
+          />
         ))}
         <SubagentDock className="mt-auto w-full" />
       </section>
@@ -441,6 +451,7 @@ export function MembersManagerPanel({
                   focus={focus}
                   viewerIsAdmin={viewerIsAdmin}
                   viewerUserId={viewerUserId}
+                  presence={m.kind === "user" ? presence.get(m.actorId) : undefined}
                   onModeChanged={onModeChanged}
                 />
               </li>
