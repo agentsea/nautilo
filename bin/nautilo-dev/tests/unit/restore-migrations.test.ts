@@ -13,6 +13,28 @@ import {
   resolvePsqlExecTarget,
 } from "../../src/lib/restore-migrations";
 
+describe("moderation policy snapshot restoration", () => {
+  test("restores saved policy over the seeded default and leaves older snapshots alone", () => {
+    const rule = RESTORE_MIGRATIONS.find((entry) => entry.table === "public.server_moderation_policy")!;
+    expect(rule.skipCopy).toBe(true);
+    expect(rule.intentionalSkip).toBeUndefined();
+    const statements: string[] = [];
+    const context = { psqlExec: (sql: string) => { statements.push(sql); return ""; }, log: () => {} };
+    rule.postRestore!({ ...context, dumpRowsFor: () => [] });
+    expect(statements).toEqual([]);
+    rule.postRestore!({ ...context, dumpRowsFor: () => [{
+      columns: ["singleton", "enabled", "joins_paused", "approval_required", "revision", "updated_by", "updated_at"],
+      values: ["t", "t", "t", "t", "9", "\\N", "2026-09-24 00:00:00+00"],
+    }] });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain("VALUES ('t', 't', 't', 't', '9', NULL, '2026-09-24 00:00:00+00')");
+    expect(statements[0]).toContain("ON CONFLICT (singleton) DO UPDATE SET");
+    for (const column of ["enabled", "joins_paused", "approval_required", "revision", "updated_by", "updated_at"]) {
+      expect(statements[0]).toContain(`${column} = EXCLUDED.${column}`);
+    }
+  });
+});
+
 describe("pgValue — pg_dump TEXT literal → SQL literal", () => {
   test("NULL sentinel becomes NULL", () => {
     expect(pgValue("\\N")).toBe("NULL");
