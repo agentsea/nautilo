@@ -38,7 +38,7 @@ import {
 } from "@nautilo/types";
 import type { RuntimePolicyContext } from "@nautilo/trust";
 import { listRoomsForActor as defaultListRoomsForActor } from "@nautilo/trust";
-import { addClient, publishTypingPing, type WsClientMeta } from "../realtime/ws-publisher";
+import { addClient, publishTypingPing, trackHumanSocketAdmission, type WsClientMeta } from "../realtime/ws-publisher";
 import { getClientActionBindingRegistry } from "../realtime/client-action-binding-registry";
 import { getTtsService } from "../realtime/tts-service";
 import { voiceDelivery } from "../realtime/voice-delivery";
@@ -206,7 +206,7 @@ export function handleWsConnection(
   // dispatch can validate that inbound `typing.ping.userId` matches
   // the authenticated socket (no cross-user spoofing).
   let authenticatedUserId: string | null = null;
-  let authenticatedRoomIds: Set<string> | null = null;
+  let authenticatedClient: WsClientMeta | null = null;
   let admissionRecheckTimer: ReturnType<typeof setInterval> | null = null;
   let admissionRecheckInFlight = false;
 
@@ -242,7 +242,7 @@ export function handleWsConnection(
   }, deps.authTimeoutMs);
 
   socket.on("message", (raw: RawData) => {
-    if (state === "closed") return;
+    if (state === "closed" || socket.readyState !== socket.OPEN) return;
     let parsed: { type?: unknown; token?: unknown; initiatingClientSurface?: unknown; voiceProtocol?: unknown; turnId?: unknown };
     try {
       parsed = JSON.parse(rawDataToString(raw)) as {
@@ -293,11 +293,11 @@ export function handleWsConnection(
   });
 
   function handleTypingPing(parsed: Record<string, unknown>): void {
-    if (authenticatedUserId === null || authenticatedRoomIds === null) return;
+    if (authenticatedUserId === null || authenticatedClient === null) return;
     const roomId = parsed["roomId"];
     const displayNameRaw = parsed["displayName"];
     if (typeof roomId !== "string" || roomId.length === 0) return;
-    if (!authenticatedRoomIds.has(roomId)) return;
+    if (!authenticatedClient.roomIds.has(roomId)) return;
     const displayName =
       typeof displayNameRaw === "string" ? displayNameRaw.trim().slice(0, 80) : "";
     publishTypingPing({
@@ -390,6 +390,7 @@ export function handleWsConnection(
       return;
     }
 
+    const releasePendingAdmission = trackHumanSocketAdmission(socket, result.sessionUserId);
     const admissionInput = Object.freeze({
       credentialDigestBase64url: bearerResolutionDigest(parsed.token),
       userId: result.sessionUserId,
@@ -471,9 +472,10 @@ export function handleWsConnection(
       roomIds,
     };
     deps.addClient(socket, clientMeta);
+    releasePendingAdmission();
     voiceDelivery.register(socket, clientMeta, parsed.voiceProtocol === 1);
     authenticatedUserId = result.sessionUserId;
-    authenticatedRoomIds = roomIds;
+    authenticatedClient = clientMeta;
 
     if (deps.checkDeviceAdmission !== undefined) {
       const recheckMs = deps.deviceAdmissionRecheckMs ?? 15_000;

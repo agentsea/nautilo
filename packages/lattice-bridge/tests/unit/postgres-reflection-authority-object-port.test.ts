@@ -1090,7 +1090,7 @@ describe("signed Reflection saved-output recovery", () => {
           : normalized.includes("from reflection_record_authority_closure") ? [{terminal_leaf_handle: "namespace-1"}]
           : normalized.includes("from reflection_record_authority_blocks") ? blocked ? [{block_id: "blocked"}] : []
           : normalized.includes("from reflection_record_payload_representations") ? [{crypto_object_id: "old-object", current_representation_generation: 1}]
-          : normalized.includes("from rooms") ? [1, 2].map(index => ({id: `room-${index}`, namespace_id: `namespace-${index}`, kind: "access", human_actor_ids: ["human-1"], archived_at: null}))
+          : normalized.includes("from rooms") ? [1, 2].map(index => ({id: `room-${index}`, namespace_id: `namespace-${index}`, kind: "access", human_actor_ids: ["human-1"], effective_human_actor_ids: ["human-1"], archived_at: null}))
           : [];
         return Promise.resolve(rows as unknown as readonly Row[]);
       }};

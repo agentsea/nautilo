@@ -10,6 +10,7 @@
     "typecheck": "TURBO_CONCURRENCY=${TURBO_CONCURRENCY:-1} NODE_OPTIONS=--max-old-space-size=5120 turbo run typecheck",
     "test": "turbo run test --concurrency=1",
     "test:unit": "turbo run test:unit",
+    "test:moderation": "bun dev/scripts/test-community-moderation.ts",
     "test:integration": "turbo run test:integration --concurrency=1",
     "test:invariants": "bun test --timeout 60000 ./dev/tests/repo-invariants/",
     "encryption:inventory": "bun run --cwd packages/encryption-invariants inventory",

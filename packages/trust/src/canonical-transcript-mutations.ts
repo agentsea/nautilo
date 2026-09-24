@@ -172,6 +172,9 @@ export interface CanonicalHardDeleteHookContext {
 }
 
 export interface CanonicalHardDeleteHooks<T = void> {
+  /** Trusted ban cleanup may retain the child Room's structural anchor while
+   * deleting the original message and all canonical cascades. */
+  preserveThreadOnModerationDelete?: boolean;
   /**
    * Runs after every canonical delete side effect is known and before commit.
    * A protected caller uses this to persist the durable terminal receipt.
@@ -375,8 +378,16 @@ async function recomputeLegacyRootSummary(
   return {
     replyCount,
     lastReplyAt,
-    revision: updated?.revision ?? 0,
+    revision: updated?.revision ?? await updateDeletedThreadSummary(tx, subthreadRoomId, replyCount, lastReplyAt),
   };
+}
+
+async function updateDeletedThreadSummary(tx: CanonicalTranscriptTx, roomId: string, replyCount: number, lastReplyAt: Date | null): Promise<number> {
+  const [updated] = await tx.update(rooms).set({ deletedThreadReplyCount: replyCount, deletedThreadLastReplyAt: lastReplyAt,
+    deletedThreadSummaryRevision: sql`${rooms.deletedThreadSummaryRevision} + 1`,
+  }).where(and(eq(rooms.id, roomId), sql`${rooms.deletedThreadRootMessageId} IS NOT NULL`))
+    .returning({ revision: rooms.deletedThreadSummaryRevision });
+  return updated?.revision ?? 0;
 }
 
 async function recomputeProtectedRootSummary(
@@ -408,7 +419,7 @@ async function recomputeProtectedRootSummary(
     ));
   const [legacyAggregate] = await tx.execute<{
     reply_count: number | bigint;
-    last_reply_at: Date | null;
+    last_reply_at: Date | string | null;
   }>(sql`
     SELECT count(*)::integer AS reply_count,
            max(legacy_message.created_at) AS last_reply_at
@@ -434,7 +445,9 @@ async function recomputeProtectedRootSummary(
   const protectedCount = Number(protectedAggregate?.reply_count ?? 0);
   const legacyCount = Number(legacyAggregate?.reply_count ?? 0);
   const protectedLast = protectedAggregate?.last_reply_at ?? null;
-  const legacyLast = legacyAggregate?.last_reply_at ?? null;
+  // Raw aggregate rows bypass Drizzle's timestamp decoder.
+  const legacyLastValue = legacyAggregate?.last_reply_at ?? null;
+  const legacyLast = typeof legacyLastValue === "string" ? new Date(legacyLastValue) : legacyLastValue;
   const lastReplyAt =
     protectedLast === null
       ? legacyLast
@@ -455,7 +468,7 @@ async function recomputeProtectedRootSummary(
   return {
     replyCount: protectedCount + legacyCount,
     lastReplyAt,
-    revision: updated?.revision ?? 0,
+    revision: updated?.revision ?? await updateDeletedThreadSummary(tx, subthreadRoomId, protectedCount + legacyCount, lastReplyAt),
   };
 }
 
@@ -468,7 +481,7 @@ async function resolveSubthreadRoot(
   const [row] = await tx
     .select({
       parentRoomId: rooms.parentRoomId,
-      anchorMessageId: rooms.threadRootMessageId,
+      anchorMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
     .from(rooms)
     .where(and(eq(rooms.id, subthreadRoomId), eq(rooms.kind, "subthread")))
@@ -1129,6 +1142,12 @@ export async function deleteMessageHardInTx<T = void>(
   if (!coordinate?.roomId) throw new MessageDeleteError("not_found");
 
   await acquireRoomWriteLock(tx, coordinate.roomId);
+  const [anchor] = await tx
+    .select({ id: rooms.id })
+    .from(rooms)
+    .where(eq(rooms.threadRootMessageId, messageId))
+    .limit(1);
+  if (anchor && hooks.preserveThreadOnModerationDelete) await acquireRoomWriteLock(tx, anchor.id);
   const [row] = await tx
     .select({
       roomId: sessions.roomId,
@@ -1157,12 +1176,14 @@ export async function deleteMessageHardInTx<T = void>(
     .limit(1);
   if (!row?.roomId) throw new MessageDeleteError("not_found");
 
-  const [anchor] = await tx
-    .select({ id: rooms.id })
-    .from(rooms)
-    .where(eq(rooms.threadRootMessageId, messageId))
-    .limit(1);
-  if (anchor) throw new MessageDeleteError("message_anchors_thread");
+  if (anchor) {
+    if (!hooks.preserveThreadOnModerationDelete) throw new MessageDeleteError("message_anchors_thread");
+    await tx.update(rooms).set({ deletedThreadRootMessageId: messageId,
+      deletedThreadReplyCount: sql`(SELECT reply_count FROM session_messages WHERE id = ${messageId})`,
+      deletedThreadLastReplyAt: sql`(SELECT last_reply_at FROM session_messages WHERE id = ${messageId})`,
+      deletedThreadSummaryRevision: sql`(SELECT summary_revision + 1 FROM session_messages WHERE id = ${messageId})`,
+    }).where(eq(rooms.id, anchor.id));
+  }
 
   await tx.delete(sessionMessages).where(eq(sessionMessages.id, messageId));
   await tx

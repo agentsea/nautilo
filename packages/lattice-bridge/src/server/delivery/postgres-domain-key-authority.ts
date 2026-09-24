@@ -26,6 +26,9 @@ import {
   or,
   roomMembers,
   rooms,
+  sql,
+  moderationAccessAllowedSql,
+  moderationEffectiveHumanActorIdsSql,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
@@ -2953,6 +2956,7 @@ export class PostgresDomainKeyAuthorityRepository {
             namespace_id: rooms.namespaceId,
             namespace_access_revision: rooms.namespaceAccessRevision,
             stored_human_actor_ids: rooms.humanActorIds,
+            effective_human_actor_ids: moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`).as("effective_human_actor_ids"),
           }).from(rooms)
             .innerJoin(roomMembers, and(
               eq(roomMembers.roomId, rooms.id),
@@ -2966,6 +2970,7 @@ export class PostgresDomainKeyAuthorityRepository {
               isNull(rooms.archivedAt),
               isNull(rooms.parentRoomId),
               isNotNull(rooms.namespaceId),
+              moderationAccessAllowedSql(sql`${actors.ownerId}`, sql`${rooms.id}`),
             ))
             .orderBy(asc(rooms.namespaceId))
             .limit(FOREGROUND_AUTHORITY_NAMESPACE_QUERY_BATCH + 1),
@@ -3007,11 +3012,13 @@ export class PostgresDomainKeyAuthorityRepository {
             || stored.some((value, index) => value !== canonical[index])) {
             return null;
           }
+          const effective = requiredTextArray(row.effective_human_actor_ids);
+          if (!effective.includes(input.humanId) || effective.some(id => !canonical.includes(id))) return null;
           const room = Object.freeze({
             roomId,
             namespaceId: requiredText(row.namespace_id),
             accessRevision: requiredCounter(row.namespace_access_revision),
-            participantHumanIds: Object.freeze([...canonical]),
+            participantHumanIds: Object.freeze([...effective]),
           });
           if (roomsByNamespace.has(room.namespaceId)) return null;
           roomsByNamespace.set(room.namespaceId, room);

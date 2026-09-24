@@ -1,6 +1,6 @@
 import {
   and, eq, inArray, isNotNull, isNull, or, sql,
-  createNamespaceBoundaryProjection, namespaceSubsetPredicate,
+  createNamespaceBoundaryProjection, moderationEffectiveHumanActorIdsSql,
   rooms,
   type PostgresJsBridgeExecutor,
 } from "@nautilo/db";
@@ -41,9 +41,9 @@ export async function readableNamespacePolicyAllows(
         ),
         or(
           and(isNull(publicBoundaryRoomId),
-            namespaceSubsetPredicate([...input.sourceHumanIds], false)),
+            sql`${moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`)} @> ${sql.param([...input.sourceHumanIds])}::uuid[]`),
           and(isNotNull(publicBoundaryRoomId),
-            namespaceSubsetPredicate([...input.sourceHumanIds], true)),
+            and(eq(rooms.kind, "open"), sql`${moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`)} @> ${sql.param([...input.sourceHumanIds])}::uuid[]`)),
         ),
       )).orderBy(rooms.namespaceId));
   return allowed.length === input.namespaceIds.length

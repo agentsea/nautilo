@@ -1,4 +1,6 @@
 import { useCallback, useState } from "react";
+import { Link } from "react-router-dom";
+import { useCan } from "../../../../hooks/use-can";
 import { ApiError, LastOwnerError, pickHighestRoleSlug } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../../lib/api";
 import { Button, FieldRow, TextInput } from "../../../settings/ui";
@@ -65,6 +67,7 @@ export function UserDetailPanel({
   readonly onUserUpdated: () => void;
   readonly onUserDeleted: () => void;
 }) {
+  const can = useCan();
   const [disableMode, setDisableMode] = useState(false);
   const [disableReason, setDisableReason] = useState("");
   const [deleteMode, setDeleteMode] = useState(false);
@@ -260,6 +263,8 @@ export function UserDetailPanel({
           {formatUserIdentity(user)}
         </h3>
         <p className="mt-0.5 text-sm text-foreground-muted">{user.displayName}</p>
+        {(can("ban_server_members") || can("kick_server_members") || can("view_server_moderation")) &&
+          <Link className="mt-2 inline-block text-sm underline" to={`/admin?moderateUser=${encodeURIComponent(user.id)}#moderation`}>Moderate this person</Link>}
         {federated ? (
           <p
             data-testid="federated-detail-badge"

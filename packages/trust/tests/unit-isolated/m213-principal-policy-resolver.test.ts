@@ -108,6 +108,7 @@ function makeVerifiedPrincipal(
     logtoSub: "logto-sub-owner",
     userId: OWNER_ID,
     disabledAt: null,
+  serverAccessAllowed: true,
     actorId: OWNER_ACTOR_ID,
     actorDisplayName: "Owner",
     handle: "owner",

@@ -40,6 +40,7 @@ export const WORK_ACCEPTANCE_REASONS = {
    * `maintenanceDrain`: a user stop is not a maintenance cancellation (R8).
    */
   userStop: "Cancelled by the user (Stop)",
+  accessWithdrawn: "Cancelled because the initiating person no longer has access",
 } as const;
 
 export type WorkAcceptanceReason =

@@ -10,6 +10,7 @@ import {
   eq,
   sql,
   users,
+  serverAdmission,
   actors,
   agents,
   namespaces,
@@ -74,7 +75,7 @@ beforeAll(async () => {
     .insert(users)
     .values({
       name: "trust-test-owner",
-      email: `trust-test-${Date.now()}@test.local`,
+      email: null,
       handle: testHandle,
     })
     .returning({ id: users.id });
@@ -89,7 +90,7 @@ beforeAll(async () => {
     .insert(users)
     .values({
       name: "trust-test-household",
-      email: `trust-household-${Date.now()}@test.local`,
+      email: null,
     })
     .returning({ id: users.id });
   if (!householdUser) throw new Error("Failed to create household user");
@@ -99,11 +100,14 @@ beforeAll(async () => {
     .insert(users)
     .values({
       name: "trust-test-stranger",
-      email: `trust-stranger-${Date.now()}@test.local`,
+      email: null,
     })
     .returning({ id: users.id });
   if (!strangerUser) throw new Error("Failed to create stranger user");
   strangerUserId = strangerUser.id;
+  // These fixtures represent enrolled Humans; a new account alone is pending.
+  await db.insert(serverAdmission).values([ownerId, householdUserId, strangerUserId]
+    .map(userId => ({ userId, admitted: true })));
 
   // 2. Create owner actor (kind='user').
   const [ownerActor] = await db

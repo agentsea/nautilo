@@ -22,6 +22,7 @@ export const eventFeedTypeSchema = z.enum([
   "room.member_left",
   "artifact.added",
   "artifact.shared",
+  "moderation.action",
 ]);
 
 export type EventFeedType = z.infer<typeof eventFeedTypeSchema>;
@@ -54,7 +55,18 @@ const artifactSharedDataSchema = z
   })
   .strict();
 
+const moderationActionDataSchema = z.object({
+  operationId: uuidReferenceSchema,
+  userId: uuidReferenceSchema.nullable(),
+  action: z.enum(["ban", "kick", "lift"]),
+}).strict();
+
 export const eventFeedRecordInputSchema = z.discriminatedUnion("type", [
+  z.object({
+    key: z.string().min(1), type: z.literal("moderation.action"),
+    actorKind: z.literal("human"), actorId: uuidReferenceSchema,
+    recipientUserIds: z.array(uuidReferenceSchema), data: moderationActionDataSchema,
+  }).strict(),
   z
     .object({
       key: z.string().min(1),
@@ -110,6 +122,7 @@ const eventItemFields = {
 };
 
 const knownEventFeedItemSchema = z.discriminatedUnion("type", [
+  z.object({ ...eventItemFields, type: z.literal("moderation.action"), data: moderationActionDataSchema }).strict(),
   z.object({ ...eventItemFields, type: z.literal("room.member_joined"), data: memberJoinedDataSchema }).strict(),
   z.object({ ...eventItemFields, type: z.literal("room.member_left"), data: memberLeftDataSchema }).strict(),
   z.object({ ...eventItemFields, type: z.literal("artifact.added"), data: artifactAddedDataSchema }).strict(),

@@ -14,6 +14,7 @@ import {
   CAP_USE_SERVER_PROVIDER_CREDENTIALS,
   CAP_WRITE_ARTIFACTS,
 } from "./capabilities";
+import { and, eq, getSharedDirectDb, isNull, moderationAccessAllowedSql, taskInvocationOriginAllowedSql, sql, users } from "@nautilo/db";
 import { AmbiguousAgentOwnerError, findAgentOwnerUserId, getUserCapabilities } from "./queries";
 
 export type AgentInvocationOrigin =
@@ -32,6 +33,10 @@ export interface AgentInvocationAdmissionInput {
   readonly origin: AgentInvocationOrigin;
   readonly roomId?: string;
   readonly agentId?: string;
+  /** Existing durable Task identity; its stored ancestry owns source Rooms. */
+  readonly taskId?: string;
+  readonly originRoomId?: string;
+  readonly originTaskId?: string;
 }
 
 export interface ArtifactWriteAdmissionInput {
@@ -48,12 +53,33 @@ export interface ActionCapabilityAdmissionDeps {
   getUserCapabilities(humanUserId: string): Promise<string[]>;
   /** Resolve the canonical Human owner for one exact Genie target. */
   findAgentOwnerUserId(agentId: string): Promise<string | null>;
+  isInvocationAccessAllowed(input: AgentInvocationAdmissionInput): Promise<boolean>;
 }
 
 const DEFAULT_DEPS: ActionCapabilityAdmissionDeps = {
   getUserCapabilities,
   findAgentOwnerUserId,
+  isInvocationAccessAllowed,
 };
+
+/** Current access subtraction, also used when accepted runtime work starts. */
+export async function isInvocationAccessAllowed(
+  input: Pick<AgentInvocationAdmissionInput, "humanUserId" | "roomId" | "taskId" | "originRoomId" | "originTaskId">,
+): Promise<boolean> {
+  // Task delivery Rooms need not contain the initiating Human. Content owners
+  // still authorize reads; this predicate only subtracts current sanctions.
+  const [row] = await getSharedDirectDb().select({ id: users.id }).from(users).where(and(
+    eq(users.id, input.humanUserId), isNull(users.disabledAt),
+    moderationAccessAllowedSql(sql`${users.id}`, input.roomId ? sql`${input.roomId}::uuid` : undefined),
+    input.taskId ? taskInvocationOriginAllowedSql(sql`${users.id}`, sql`${input.taskId}::uuid`) : undefined,
+    input.originTaskId && input.originTaskId !== input.taskId
+      ? taskInvocationOriginAllowedSql(sql`${users.id}`, sql`${input.originTaskId}::uuid`) : undefined,
+    input.originRoomId ? sql`public.moderation_access_allowed(${users.id}, ${input.originRoomId}::uuid)
+      AND EXISTS (SELECT 1 FROM room_members member JOIN actors actor ON actor.id = member.actor_id
+        WHERE member.room_id = ${input.originRoomId}::uuid AND actor.kind = 'user' AND actor.owner_id = ${users.id})` : undefined,
+  )).limit(1);
+  return row !== undefined;
+}
 
 declare const acceptedInvocationAuthorityBrand: unique symbol;
 
@@ -68,10 +94,13 @@ export interface AcceptedInvocationAuthority {
 }
 
 const acceptedInvocationSubjects = new WeakMap<object, string>();
+type AcceptedInvocationOrigin = Readonly<{ originRoomId?: string; originTaskId?: string }>;
+const acceptedInvocationOrigins = new WeakMap<object, AcceptedInvocationOrigin>();
 
 /** Trusted admission seam. Call only after every gate for the unit succeeds. */
 export function createAcceptedInvocationAuthority(
   humanUserId: string,
+  origin: AcceptedInvocationOrigin = {},
 ): AcceptedInvocationAuthority {
   if (humanUserId.length === 0) {
     throw new TypeError("Accepted invocation authority requires a Human subject");
@@ -85,7 +114,27 @@ export function createAcceptedInvocationAuthority(
     },
   });
   acceptedInvocationSubjects.set(authority, humanUserId);
+  acceptedInvocationOrigins.set(authority, Object.freeze({ ...origin }));
   return Object.freeze(authority) as AcceptedInvocationAuthority;
+}
+
+/** Origin is private proof state; continuations cannot replace it with Job input. */
+export function getAcceptedInvocationAuthorityOrigin(authority: AcceptedInvocationAuthority): AcceptedInvocationOrigin {
+  getAcceptedInvocationAuthoritySubject(authority);
+  return acceptedInvocationOrigins.get(authority)!;
+}
+
+/** Trusted execution admission may bind a previously Room-less proof once.
+ * Preserve the original proof and never replace an inherited source.
+ */
+export function bindAcceptedInvocationAuthorityOrigin(
+  authority: AcceptedInvocationAuthority, origin: AcceptedInvocationOrigin,
+): AcceptedInvocationAuthority {
+  const existing = getAcceptedInvocationAuthorityOrigin(authority);
+  if (!existing.originRoomId && !existing.originTaskId) {
+    acceptedInvocationOrigins.set(authority, Object.freeze({ ...origin }));
+  }
+  return authority;
 }
 
 /** Reject forged, parsed, or cross-Human continuation authority. */
@@ -117,6 +166,7 @@ export function getAcceptedInvocationAuthoritySubject(
 }
 
 export type ActionCapabilityDenialCode =
+  | "invocation_access_withdrawn"
   | "invoke_agents_required"
   | "invoke_other_agents_required"
   | "agent_target_unavailable"
@@ -167,16 +217,19 @@ export class AgentInvocationDeniedError extends ActionCapabilityDeniedError {
     denial:
       | typeof CAP_INVOKE_AGENTS
       | typeof CAP_INVOKE_OTHER_AGENTS
-      | "agent_target_unavailable" =
+      | "agent_target_unavailable"
+      | "invocation_access_withdrawn" =
       CAP_INVOKE_AGENTS,
   ) {
     super({
-      code: denial === "agent_target_unavailable"
+      code: denial === "invocation_access_withdrawn"
+        ? "invocation_access_withdrawn"
+        : denial === "agent_target_unavailable"
         ? "agent_target_unavailable"
         : denial === CAP_INVOKE_OTHER_AGENTS
           ? "invoke_other_agents_required"
           : "invoke_agents_required",
-      capability: denial === "agent_target_unavailable"
+      capability: denial === "agent_target_unavailable" || denial === "invocation_access_withdrawn"
         ? CAP_INVOKE_AGENTS
         : denial,
       humanUserId: input.humanUserId,
@@ -252,7 +305,7 @@ async function hasCapability(
   return capabilities.includes(capability);
 }
 
-/** Resolve current RBAC authority for one Human invocation. */
+/** Resolve current capability and moderation admission for one Human invocation. */
 export async function assertCanInvokeAgent(
   input: AgentInvocationAdmissionInput,
   deps: ActionCapabilityAdmissionDeps = DEFAULT_DEPS,
@@ -261,6 +314,10 @@ export async function assertCanInvokeAgent(
   const capabilities = await deps.getUserCapabilities(input.humanUserId);
   if (!capabilities.includes(CAP_INVOKE_AGENTS)) {
     throw new AgentInvocationDeniedError(input);
+  }
+
+  if (!(await deps.isInvocationAccessAllowed(input))) {
+    throw new AgentInvocationDeniedError(input, "invocation_access_withdrawn");
   }
 
   // A pre-routing check intentionally omits agentId and establishes only the

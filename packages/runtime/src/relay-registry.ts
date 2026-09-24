@@ -2704,6 +2704,12 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     return true;
   }
 
+  /** Retire only the exact socket generation that failed registration. */
+  unregisterConnection(relayId: string, send: RelaySendFn): Promise<void> {
+    if (this.relays.get(relayId)?.send !== send) return Promise.resolve();
+    return this.unregister(relayId);
+  }
+
   unregister(relayId: string): Promise<void> {
     // capture the entry before deletion so the onUnregister hook
     // can fail-closed any server-side state bound to this relay (e.g.

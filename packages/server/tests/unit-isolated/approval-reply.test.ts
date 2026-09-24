@@ -24,6 +24,7 @@ import { AgentInvocationDeniedError, PinChallengeProvider } from "@nautilo/trust
 import { authRoutes } from "../../src/routes/auth";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 
 let app: FastifyInstance;
 let sessionStore: SessionStore;
@@ -33,6 +34,7 @@ const OWNER_ACTOR_ID = "test-actor-id";
 const OWNER_ID = "test-owner-id";
 
 beforeAll(async () => {
+  await installResumeInvocationAuthority("checkpoint-causal-human");
   sessionStore = new SessionStore(undefined, { persistPath: null });
 
   app = Fastify({ logger: false });

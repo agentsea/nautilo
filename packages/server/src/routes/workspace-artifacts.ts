@@ -494,7 +494,7 @@ export type WorkspaceArtifactsRouteService = {
   /** Best-effort post-attachment observer for Human upload/Office creation. */
   onArtifactCreated?: WorkspaceArtifactCreatedSink;
   readonly readAuthoredChange?: typeof readWorkspaceAuthoredChange;
-  /** Rebuilds long-lived SSE policy at delivery time after membership changes. */
+  /** Rebuilds SSE and download policy at delivery time after membership changes. */
   readonly buildCurrentEnvelope?: (
     actorId: string,
     agentId: string | undefined,
@@ -603,6 +603,53 @@ export function workspaceArtifactsRoutes(
     }
     reply.code(403).send({ error: "Agent context required" });
     return null;
+  }
+
+  async function currentDownloadEnvelope(
+    request: FastifyRequest,
+    original: MemoryAccessEnvelope,
+  ): Promise<MemoryAccessEnvelope> {
+    if (!service.buildCurrentEnvelope) {
+      throw Object.assign(new Error("Artifact access is temporarily unavailable"), {
+        statusCode: 503, code: "artifact_read_authority_unavailable",
+      });
+    }
+    let current: MemoryAccessEnvelope;
+    try {
+      current = await service.buildCurrentEnvelope(original.actorId, original.agentId || undefined, original.roomId);
+    } catch {
+      throw Object.assign(new Error("Artifact access is temporarily unavailable"), {
+        statusCode: 503, code: "artifact_read_authority_unavailable",
+      });
+    }
+    if (isScopeMemoryEnvelope(current) || current.actorId !== original.actorId
+      || current.ownerId !== original.ownerId || current.roomId !== original.roomId
+      || current.agentId !== original.agentId || request.sessionUserId !== current.ownerId
+      || envelopeReadableNamespaces(current).length === 0) {
+      throw Object.assign(new Error("Artifact access withdrawn"), {
+        statusCode: 403, code: "artifact_access_withdrawn",
+      });
+    }
+    // Human-only reads remain restricted to the existing plaintext policy.
+    if (!current.agentId) {
+      const policy = await (service.loadEncryptionPolicy ?? currentStrictShadowPolicy)();
+      if (policy.mode !== "plaintext_only") {
+        throw Object.assign(new Error("Artifact access withdrawn"), {
+          statusCode: 403, code: "artifact_access_withdrawn",
+        });
+      }
+    }
+    return current;
+  }
+
+  async function assertDownloadArtifact(current: MemoryAccessEnvelope, original: Artifact): Promise<void> {
+    const row = await resolveEventArtifact({ internalId: original.id,
+      readableNamespaceIds: envelopeReadableNamespaces(current) });
+    if (!row || row.storageUri !== original.storageUri) {
+      throw Object.assign(new Error("Artifact access withdrawn"), {
+        statusCode: 403, code: "artifact_access_withdrawn",
+      });
+    }
   }
 
   async function requireWorkspaceArtifactWrite(
@@ -1145,6 +1192,15 @@ export function workspaceArtifactsRoutes(
         code: "artifact_bytes_unavailable",
       });
     }
+    await assertDownloadArtifact(await currentDownloadEnvelope(request, env), row);
+    // Revalidate on the stream's existing backpressure boundary. No timer or
+    // cached subscription grants permission to deliver the next file chunk.
+    async function* authorizedChunks(source: AsyncIterable<Buffer>) {
+      for await (const chunk of source) {
+        await assertDownloadArtifact(await currentDownloadEnvelope(request, env!), row!);
+        yield chunk;
+      }
+    }
     const mimeType = row.mimeType ?? "application/octet-stream";
     const rangeRaw = request.headers.range;
     if (!rangeRaw) {
@@ -1154,7 +1210,7 @@ export function workspaceArtifactsRoutes(
         "Content-Length": String(size),
       });
       const rs = createReadStream(abs);
-      await pipeline(rs, reply.raw);
+      await pipeline(rs, authorizedChunks, reply.raw);
       return;
     }
     const parsed = parseRangeHeader(rangeRaw, size);
@@ -1178,7 +1234,7 @@ export function workspaceArtifactsRoutes(
       "Content-Range": `bytes ${start}-${end}/${size}`,
     });
     const rs = createReadStream(abs, { start, end });
-    await pipeline(rs, reply.raw);
+    await pipeline(rs, authorizedChunks, reply.raw);
   });
 
   app.put(
@@ -1667,6 +1723,7 @@ export function workspaceArtifactsRoutes(
     }
 
     const files: Record<string, Uint8Array> = {};
+    const exportedArtifacts: Artifact[] = [];
     const usedNames = new Set<string>();
     let totalBytes = 0;
     for (const id of ids) {
@@ -1677,6 +1734,7 @@ export function workspaceArtifactsRoutes(
       if (!row) continue; // skip inaccessible/missing — partial export beats hard fail
       const abs = absPathFromStorageUri(row.storageUri);
       if (!abs) continue;
+      await assertDownloadArtifact(await currentDownloadEnvelope(request, env), row);
       let bytes: Buffer;
       try {
         bytes = await readFile(abs);
@@ -1691,9 +1749,20 @@ export function workspaceArtifactsRoutes(
         return reply.code(413).send({ error: "Selected artifacts exceed the export size limit" });
       }
       files[uniqueZipEntryName(row.path, usedNames)] = new Uint8Array(bytes);
+      exportedArtifacts.push(row);
     }
     if (Object.keys(files).length === 0) {
       return reply.code(404).send({ error: "No accessible artifacts to export" });
+    }
+    // Nothing leaves the server until every included file is still readable.
+    const current = await currentDownloadEnvelope(request, env);
+    for (const artifact of exportedArtifacts) await assertDownloadArtifact(current, artifact);
+    const finalEnvelope = await currentDownloadEnvelope(request, env);
+    const finalReadable = new Set(envelopeReadableNamespaces(finalEnvelope));
+    if (envelopeReadableNamespaces(current).some(namespaceId => !finalReadable.has(namespaceId))) {
+      throw Object.assign(new Error("Artifact access changed during export"), {
+        statusCode: 403, code: "artifact_access_withdrawn",
+      });
     }
     const zipped = zipSync(files);
     reply.header("Content-Type", "application/zip");

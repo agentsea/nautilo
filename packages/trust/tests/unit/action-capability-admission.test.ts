@@ -13,6 +13,8 @@ import {
   assertCanWriteArtifacts,
   createAcceptedInvocationAuthority,
   getAcceptedInvocationAuthoritySubject,
+  getAcceptedInvocationAuthorityOrigin,
+  bindAcceptedInvocationAuthorityOrigin,
   toActionCapabilityDenialDiagnostic,
   toActionCapabilityHttpDenial,
   toAgentInvocationTargetUnavailableHttpDenial,
@@ -44,6 +46,7 @@ function capabilityDeps(
   return {
     calls,
     ownerCalls,
+    isInvocationAccessAllowed: async () => true,
     getUserCapabilities: async (humanUserId) => {
       calls.push(humanUserId);
       return resultForCall(calls.length, humanUserId);
@@ -462,6 +465,17 @@ describe("M254 accepted invocation authority", () => {
     expect(() =>
       assertAcceptedInvocationAuthoritySubject(cloned, "human-1"),
     ).toThrow("Accepted invocation authority subject mismatch");
+  });
+
+  test("copies and freezes source authority outside serializable payloads", () => {
+    const source = { originRoomId: "source-room" };
+    const authority = createAcceptedInvocationAuthority("human-1", source);
+    source.originRoomId = "replacement-room";
+    expect(getAcceptedInvocationAuthorityOrigin(authority)).toEqual({ originRoomId: "source-room" });
+    expect(Object.isFrozen(getAcceptedInvocationAuthorityOrigin(authority))).toBe(true);
+    expect(bindAcceptedInvocationAuthorityOrigin(authority, { originRoomId: "replacement-room" })).toBe(authority);
+    expect(getAcceptedInvocationAuthorityOrigin(authority)).toEqual({ originRoomId: "source-room" });
+    expect(() => getAcceptedInvocationAuthorityOrigin({} as AcceptedInvocationAuthority)).toThrow();
   });
 
   test("does not confuse arbitrary or maintenance-shaped values with authority", () => {
@@ -888,4 +902,26 @@ test("M254 execution primitive callsites stay positively classified", () => {
       classification === "neutral_internal_work"
     )).toBe(true);
   }
+});
+
+
+describe("current invocation admission", () => {
+  test("every work origin rechecks Human and Room access despite a retained capability", async () => {
+    const checked: unknown[] = [];
+    const deps = { ...capabilityDeps(() => ["invoke_agents"]),
+      isInvocationAccessAllowed: async (input: unknown) => { checked.push(input); return false; } };
+    for (const origin of AGENT_INVOCATION_ORIGINS) {
+      const input = { humanUserId: "withdrawn-human", origin, roomId: "restricted-room" };
+      await Promise.resolve(expect(assertCanInvokeAgent(input, deps)).rejects.toMatchObject({
+        code: "invocation_access_withdrawn", humanUserId: input.humanUserId, roomId: input.roomId,
+      }));
+    }
+    expect(checked).toHaveLength(AGENT_INVOCATION_ORIGINS.length);
+  });
+
+  test("access lookup failure fails closed without misreporting a missing capability", async () => {
+    const deps = { ...capabilityDeps(() => ["invoke_agents"]),
+      isInvocationAccessAllowed: async () => { throw new Error("authority unavailable"); } };
+    await Promise.resolve(expect(assertCanInvokeAgent({ humanUserId: "human", origin: "task_dispatch" }, deps)).rejects.toThrow("authority unavailable"));
+  });
 });

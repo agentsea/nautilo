@@ -16,11 +16,11 @@ function harness() {
     alternativeNamespace: "namespace-1", alternatives: 1, publicBoundary: false, blocked: false, headRevision: 0, headRevisionAsText: false, memoryAccessRevision: 0, messageAccessRevision: 0,
     missingBundle: false, memoryRevision: 1, memoryMappingCurrent: true, messageRevision: 0, messageHeadObject: "message-object", memoryAttachments: ["33000000-0000-4000-8000-000000000001"],
     rooms: [
-      {id: "room-1", namespace_id: "namespace-1", human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
-      {id: "room-2", namespace_id: "namespace-2", human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
-      {id: "room-3", namespace_id: "namespace-leaf", human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
-      {id: "room-4", namespace_id: "33000000-0000-4000-8000-000000000001", human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
-      {id: "55000000-0000-4000-8000-000000000001", namespace_id: "44000000-0000-4000-8000-000000000001", human_actor_ids: ["alice", "bob"], kind: "private", archived_at: null},
+      {id: "room-1", namespace_id: "namespace-1", human_actor_ids: ["alice", "bob"], effective_human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
+      {id: "room-2", namespace_id: "namespace-2", human_actor_ids: ["alice", "bob"], effective_human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
+      {id: "room-3", namespace_id: "namespace-leaf", human_actor_ids: ["alice", "bob"], effective_human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
+      {id: "room-4", namespace_id: "33000000-0000-4000-8000-000000000001", human_actor_ids: ["alice", "bob"], effective_human_actor_ids: ["alice", "bob"], kind: "access", archived_at: null},
+      {id: "55000000-0000-4000-8000-000000000001", namespace_id: "44000000-0000-4000-8000-000000000001", human_actor_ids: ["alice", "bob"], effective_human_actor_ids: ["alice", "bob"], kind: "private", archived_at: null},
     ],
   };
   const queries: string[] = [];
@@ -44,6 +44,7 @@ function harness() {
       else if (sql.includes("from memories")) rows = [{id: "memory-1", content_revision: state.memoryRevision, crypto_mapping_state: "verified", crypto_access_revision: state.memoryAccessRevision, scope_origin_namespace_id: null, crypto_required_namespace_fingerprint: state.memoryMappingCurrent ? fingerprintRequiredMemoryNamespaces(state.memoryAttachments) : digest(9)}];
       else if (sql.includes("from memory_scopes")) rows = [];
       else if (sql.includes("from memory_namespaces")) rows = state.memoryAttachments.map(namespace_id => ({namespace_id}));
+      else if (sql.startsWith("select namespace_access_revision from rooms")) return [{namespace_access_revision: 11}] as unknown as readonly Row[];
       else if (sql.includes("from rooms")) {if (sql.endsWith("for update")) onRoomLock?.(); rows = state.rooms.filter(room => parameters.includes(room.namespace_id));}
       else throw new Error(`Unexpected product SQL: ${sql}`);
       return structuredClone(rows) as readonly Row[];
@@ -99,7 +100,7 @@ describe("Reflection semantic metadata source plan", () => {
       const f = harness();
       if (mode === "alternative") f.state.alternativeNamespace = "foreign";
       if (mode === "multiple") f.state.alternatives = 2;
-      if (mode === "narrow") f.state.rooms[0]!.human_actor_ids = ["alice"];
+      if (mode === "narrow") f.state.rooms[0]!.effective_human_actor_ids = ["alice"];
       if (mode === "public") f.state.publicBoundary = true;
       expect(await readPostgresReflectionSemanticSourcePlan(f)).toBeNull();
     }
@@ -204,8 +205,14 @@ describe("Reflection semantic metadata source plan", () => {
     expect(await readPostgresReflectionSemanticSourcePlan({...f, coordinates: selected})).toBeNull();
     expect(f.queries.filter(sql => sql.includes("from memory_namespaces")).every(sql => !sql.includes("limit"))).toBe(true);
   });
-  test.each([false, true])("preparation shares policy/Room fences and wakes missing keys after release missing=%s", async missing => {
-    const f = harness(); f.state.missingBundle = missing;
+  test.each(["ready", "missing", "stale"])("preparation shares policy/Room fences and wakes missing or stale keys after release %s", async mode => {
+    const missing = mode !== "ready";
+    const f = harness(); f.state.missingBundle = mode === "missing";
+    if (mode === "stale") {
+      const query = f.product.query.bind(f.product);
+      f.product.query = async (statement, parameters) => statement.startsWith('select "namespace_access_revision"')
+        ? [{namespace_access_revision: 12}] as never : query(statement, parameters);
+    }
     let transactionOpen = false; let woke = false; const events: string[] = [];
     const transactionClient = Object.assign(() => undefined, {unsafe: (sql: string, params: readonly PostgresJsBridgeScalar[] = []) => f.product.query(sql, params), savepoint: async () => undefined});
     const poolClient = Object.assign(() => undefined, {unsafe: transactionClient.unsafe, begin: async () => undefined});

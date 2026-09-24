@@ -65,7 +65,7 @@ function buildApp(options: {
     messageId: number;
     actorUserId: string;
     actorId: string | null;
-    source: "room_message" | "content_report";
+    source: "room_message" | "content_report" | "moderation_ban";
     authority: string;
     reportId?: string;
     logContext?: string;

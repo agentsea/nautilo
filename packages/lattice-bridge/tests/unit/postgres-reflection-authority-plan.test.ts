@@ -38,6 +38,7 @@ type RoomRow = {
   namespace_id: string;
   kind: string;
   human_actor_ids: string[];
+  effective_human_actor_ids: string[];
   archived_at: Date | null;
 };
 
@@ -81,28 +82,28 @@ function initialState(): State {
         id: "22000000-0000-4000-8000-000000000001",
         namespace_id: LEAF_A,
         kind: "access",
-        human_actor_ids: [HUMAN_A, HUMAN_B],
+        human_actor_ids: [HUMAN_A, HUMAN_B], effective_human_actor_ids: [HUMAN_A, HUMAN_B],
         archived_at: null,
       },
       {
         id: "22000000-0000-4000-8000-000000000002",
         namespace_id: LEAF_B,
         kind: "access",
-        human_actor_ids: [HUMAN_B, HUMAN_C],
+        human_actor_ids: [HUMAN_B, HUMAN_C], effective_human_actor_ids: [HUMAN_B, HUMAN_C],
         archived_at: null,
       },
       {
         id: "22000000-0000-4000-8000-000000000003",
         namespace_id: SOURCE_NAMESPACE,
         kind: "access",
-        human_actor_ids: [HUMAN_B, HUMAN_C],
+        human_actor_ids: [HUMAN_B, HUMAN_C], effective_human_actor_ids: [HUMAN_B, HUMAN_C],
         archived_at: null,
       },
       {
         id: "22000000-0000-4000-8000-000000000004",
         namespace_id: OUTPUT_NAMESPACE,
         kind: "access",
-        human_actor_ids: [HUMAN_B],
+        human_actor_ids: [HUMAN_B], effective_human_actor_ids: [HUMAN_B],
         archived_at: null,
       },
     ],
@@ -162,8 +163,9 @@ function databaseHarness(state = initialState()) {
           target_access_namespace_ids: receipt.targetAccessNamespaceIds,
         }]) as unknown as readonly Row[];
       }
-      if (sql.includes("from rooms")) {
-        return [...state.rooms]
+      if (sql.startsWith("select namespace_access_revision from rooms")) return [{namespace_access_revision: 11}] as unknown as readonly Row[];
+      else if (sql.includes("from rooms")) {
+        return state.rooms.map(room => ({...room, effective_human_actor_ids: room.human_actor_ids}))
           .sort((left, right) => left.id.localeCompare(right.id)) as unknown as readonly Row[];
       }
       if (sql === "select callback_fence_probe") return [];
@@ -347,7 +349,7 @@ describe("PostgreSQL Reflection authority source planning", () => {
     }
     for (const outputChange of [
       { kind: "persona" },
-      { human_actor_ids: [HUMAN_A] },
+      { human_actor_ids: [HUMAN_A], effective_human_actor_ids: [HUMAN_A] },
     ]) {
       const harness = databaseHarness();
       Object.assign(harness.state.rooms.find(({ namespace_id }) =>
@@ -516,10 +518,17 @@ describe("PostgreSQL Reflection authority source planning", () => {
     plan?.sourceManifestHash.fill(0);
   });
 
-  test.each([false, true])("holds preparation fences and wakes missing bundles after release (missing=%s)", async missingBundle => {
+  test.each(["ready", "missing", "stale"])("holds preparation fences and wakes missing or stale bundles after release (%s)", async mode => {
+    const missingBundle = mode !== "ready";
     const crypto = new LatticeCrypto();
     const harness = databaseHarness();
-    if (missingBundle) {
+    if (mode === "stale") {
+      const query = harness.product.query.bind(harness.product);
+      harness.product.query = async (statement, parameters) =>
+        statement.startsWith('select "namespace_access_revision"') && parameters?.includes(OUTPUT_NAMESPACE)
+          ? [{namespace_access_revision: 12}] as never : query(statement, parameters);
+    }
+    if (mode === "missing") {
       const query = harness.restricted.query.bind(harness.restricted);
       harness.restricted.query = async (statement, parameters) =>
         statement.includes('"namespace_domain_key_heads"') && parameters?.[0] === OUTPUT_NAMESPACE

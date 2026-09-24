@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ArtifactDto } from "@nautilo/api-client/browser";
-import { Bell, CheckCheck, FilePlus2, LogIn, LogOut, BellOff, RefreshCw, Share2 } from "lucide-react";
+import { Bell, CheckCheck, FilePlus2, LogIn, LogOut, BellOff, RefreshCw, Share2, Shield } from "lucide-react";
 import { useEventFeed } from "./event-feed-context";
 import { presentEventFeedItem } from "./event-feed-presentation";
 
@@ -186,7 +186,7 @@ export function EventFeedPanel({
                     ? FilePlus2
                     : event.type === "artifact.shared"
                       ? Share2
-                      : Bell;
+                      : event.type === "moderation.action" ? Shield : Bell;
               return (
                 <li key={event.id} className={`px-3 py-3 ${unread ? "bg-[var(--primary-muted)]/35" : "bg-background"}`}>
                   <div className="flex items-start gap-2.5">

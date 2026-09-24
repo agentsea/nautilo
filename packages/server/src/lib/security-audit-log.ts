@@ -36,6 +36,7 @@ import {
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { gunzipSync } from "node:zlib";
+import { isDeepStrictEqual } from "node:util";
 import { basename, dirname, join } from "node:path";
 
 import type { DeploymentMode, SecurityLevel } from "@nautilo/config";
@@ -346,6 +347,12 @@ export interface RbacGroupRolesSetAuditEvent extends CommonAuditFields {
   readonly groupId: string;
   readonly groupType: string;
   readonly roleSlugs: readonly string[];
+}
+
+export interface RbacGroupModerationScopesSetAuditEvent extends CommonAuditFields {
+  readonly kind: "rbac_group_moderation_scopes_set";
+  readonly groupId: string;
+  readonly roomIds: readonly string[];
 }
 
 export interface RbacGroupOwnerTransferredAuditEvent extends CommonAuditFields {
@@ -791,7 +798,23 @@ export interface RelayPairingLifecycleAuditEvent extends CommonAuditFields {
   readonly correlationId: string;
 }
 
+/** Durable decision projection. Human ids remain distinct from Actor ids;
+ * request metadata and private moderation text are not retained in this log.
+ */
+export interface ModerationActionAuditEvent extends CommonAuditFields {
+  readonly kind: "moderation_action";
+  readonly correlationId: string;
+  readonly requesterUserId: string | null;
+  readonly subjectId: string;
+  readonly action: "ban" | "kick" | "timeout" | "mute" | "lift";
+  readonly roomId: string | null;
+}
+
 export type SecurityAuditEvent =
+  | (CommonAuditFields & { readonly kind: "moderation_policy_changed"; readonly requesterUserId: string;
+      readonly enabled: boolean; readonly joinsPaused: boolean; readonly approvalRequired: boolean; readonly revision: number })
+  | (CommonAuditFields & { readonly kind: "enrollment_review_decided"; readonly requesterUserId: string;
+      readonly inviteId: string; readonly userId: string; readonly decision: "approved" | "rejected"; readonly revision: number })
   | PostureChangedAuditEvent
   | CapabilityCheckFailedAuditEvent
   | PinCheckFailedAuditEvent
@@ -823,6 +846,7 @@ export type SecurityAuditEvent =
   | RbacGroupCreatedAuditEvent
   | RbacGroupRenamedAuditEvent
   | RbacGroupRolesSetAuditEvent
+  | RbacGroupModerationScopesSetAuditEvent
   | RbacGroupOwnerTransferredAuditEvent
   | RbacGroupDeletedAuditEvent
   | RbacSharedAccessCreatedAuditEvent
@@ -854,7 +878,8 @@ export type SecurityAuditEvent =
   | WorkstationSessionAuditEvent
   | UncontainedHostCommandsAuditEvent
   | WorkstationAdmissionAuditEvent
-  | RelayPairingLifecycleAuditEvent;
+  | RelayPairingLifecycleAuditEvent
+  | ModerationActionAuditEvent;
 
 export type SecurityAuditEventKind = SecurityAuditEvent["kind"];
 
@@ -951,7 +976,13 @@ export function writeSecurityAuditEvent(
   // buffer size, which a single JSONL line always is).
   const fd = openSync(path, "a", 0o600);
   try {
-    writeSync(fd, line, null, "utf-8");
+    const bytes = Buffer.from(line, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset);
+      if (written === 0) throw new Error("Security audit append made no progress");
+      offset += written;
+    }
     // Explicit fsync on the SAME fd we wrote through — flushes the
     // write to durable storage. Reading fsync(2): "transfers all
     // modified in-core data of the file referred to by the file
@@ -965,6 +996,45 @@ export function writeSecurityAuditEvent(
       warn(`[security-audit-log] closeSync failed: ${String(err)}`);
     }
   }
+}
+
+/** Called while holding the moderation receipt's DB row lock. Scan the same
+ * active/rotated journal as the reader, but never treat unreadable or malformed
+ * history as proof of absence. No second audit store or deduplication ledger.
+ */
+export function writeModerationAuditEventOnce(path: string, event: ModerationActionAuditEvent): void {
+  const expected: unknown = JSON.parse(JSON.stringify(event));
+  let matchedPath: string | null = null;
+  for (const candidate of auditLogCandidatePaths(path)) {
+    const raw = candidate.endsWith(".gz")
+      ? gunzipSync(readFileSync(candidate)).toString("utf8")
+      : readFileSync(candidate, "utf8");
+    for (const line of raw.split("\n")) {
+      if (line.trim().length === 0) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); }
+      catch { throw new Error("Moderation audit history is malformed; receipt remains pending"); }
+      if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("Moderation audit history is malformed; receipt remains pending");
+      }
+      if (!("kind" in parsed) || parsed.kind !== "moderation_action"
+        || !("correlationId" in parsed) || parsed.correlationId !== event.correlationId) continue;
+      if (!isDeepStrictEqual(parsed, expected)) throw new Error("Moderation audit operation conflict");
+      matchedPath = candidate;
+    }
+    // An interrupted append must be repaired by the journal owner before a
+    // new write; appending would join two records into an unreadable line.
+    if (raw.length > 0 && !raw.endsWith("\n")) {
+      throw new Error("Moderation audit history has an incomplete append; receipt remains pending");
+    }
+  }
+  if (matchedPath !== null) {
+    // A previous write may have reached the page cache before fsync failed.
+    const fd = openSync(matchedPath, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    return;
+  }
+  writeSecurityAuditEvent(path, event);
 }
 
 export function readSecurityAuditLog(

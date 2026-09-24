@@ -328,6 +328,7 @@ export function useThreadRoomController({
     return registerThreadRoom({
       roomId,
       ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
+      ...(state.anchor ? { anchorMessageId: state.anchor.id } : {}),
       ...(state.anchor?.logicalMessageKey
         ? { anchorLogicalMessageKey: state.anchor.logicalMessageKey }
         : {}),
@@ -340,6 +341,7 @@ export function useThreadRoomController({
     registerThreadRoom,
     roomId,
     state.anchor?.logicalMessageKey,
+    state.anchor?.id,
     state.parentRoomId,
   ]);
 
