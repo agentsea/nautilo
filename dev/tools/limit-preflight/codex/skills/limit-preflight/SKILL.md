@@ -10,36 +10,28 @@ review yourself. The scanner is deliberately dumb: it reports source facts,
 extraction confidence, mechanical priority cues, and fingerprint drift. It
 does not know whether a limit is legitimate.
 
-## Private audit files and Git hygiene
+## Canonical audit files and Git hygiene
 
-Keep local audit files in their existing working directories with the standard
-name `<topic>.limit-audit.<extension>` and other model working notes as
-`<topic>.agent-notes.<extension>`. Use lowercase hyphenated topics; Markdown,
-JSON and JSONL all follow the same rule. For example,
-`limit-inventory.limit-audit.jsonl` and `browser-recovery.agent-notes.md`.
-These are private working files, never product source.
-
-The repository `.gitignore` must include `*.limit-audit.*` and
-`*.agent-notes.*`; preserve other entries. Keep the same patterns in existing
-global Git excludes as defense in depth. Verify with
-`git check-ignore -v --no-index`. Ignores do not protect tracked files:
-preserve their local contents under the standard names and remove the old
-tracked copies from the index when cleanup is authorized. Never force-add
-an audit file, commit raw evidence, or disguise notes as product documentation.
+Keep the canonical inventory, reviewed decisions, frozen legacy debt, and
+generated reports at their stable tracked paths under
+`packages/limit-invariants/baseline/` and `packages/limit-invariants/generated/`.
+They are repository evidence and must remain visible beside the source they
+govern. Keep separate model working notes in ignored
+`<topic>.agent-notes.<extension>` files when they are useful.
 
 Report routine findings in chat. Create additional private notes only when
-needed. Inspect every outgoing commit as well as the staged diff: a later
-deletion does not remove a private file from unpublished history. Source code,
-scanner schemas, tests and public contributor instructions remain tracked;
-review decisions, inventories and generated audit reports do not. A local
-semantic check with missing evidence must report that fact, not claim approval.
-Do not weaken a required CI check silently to make ignored files disappear.
+needed. Inspect every outgoing commit as well as the staged diff. Canonical
+artifacts must contain no credentials, personal data, private planning
+references, or workstation-specific paths. Replace private provenance with
+code-grounded public evidence; never invent authority merely to make a row
+publishable. A semantic check with missing evidence must report that fact, not
+claim approval.
 
 ## Choose the mode
 
 - For a repository audit, run `bun run limits:check`, then
   `bun run limits:inventory` when the check reports factual drift. Read
-  `packages/limit-invariants/generated/limit-matrix.limit-audit.md` and investigate the
+  `packages/limit-invariants/generated/limit-matrix.md` and investigate the
   highest-priority unreviewed or changed observations first.
 - For a proposed diff, inspect the diff and run `bun run limits:check`. Focus
   on new and changed observations while still reporting any pre-existing check
@@ -119,7 +111,7 @@ rationale make that choice by proxy.
 
 ## Update the reviewed ledger
 
-Edit `packages/limit-invariants/baseline/reviewed-limit-decisions.limit-audit.jsonl` by
+Edit `packages/limit-invariants/baseline/reviewed-limit-decisions.jsonl` by
 hand after investigation. Pin the exact `locator` and `fingerprint`, and fill
 every field with concrete evidence:
 

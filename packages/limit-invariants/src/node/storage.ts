@@ -2,13 +2,13 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const LIMIT_AUDIT_FILENAMES = {
-  inventory: "limit-inventory.limit-audit.jsonl",
-  decisions: "reviewed-limit-decisions.limit-audit.jsonl",
-  legacy: "legacy-unreviewed.limit-audit.jsonl",
-  legacyLock: "legacy-lock.limit-audit.json",
-  matrix: "limit-matrix.limit-audit.md",
-  scout: "limit-scout.limit-audit.jsonl",
-  investigationMap: "investigation-map.limit-audit.md",
+  inventory: "limit-inventory.jsonl",
+  decisions: "reviewed-limit-decisions.jsonl",
+  legacy: "legacy-unreviewed.jsonl",
+  legacyLock: "legacy-lock.json",
+  matrix: "limit-matrix.md",
+  scout: "limit-scout.jsonl",
+  investigationMap: "investigation-map.md",
 } as const;
 
 export function limitAuditPaths(packageRoot: string) {
@@ -39,7 +39,7 @@ export async function readRequiredLimitAudit(path: string, label: string): Promi
     return await readFile(path, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`Missing local ${label} audit evidence at ${path}; restore the private .limit-audit file before running this command`);
+      throw new Error(`Missing tracked ${label} audit evidence at ${path}; restore or regenerate the canonical artifact before running this command`);
     }
     throw error;
   }

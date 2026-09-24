@@ -190,4 +190,40 @@ describe("limit decision reconciliation", () => {
     expect(rows[1]?.["unsupportedSyntax"]).toContain("semantic legitimacy");
     expect(rows[2]?.["investigationLinks"]).toEqual(links.get(observation.locator));
   });
+
+  test("redacts private planning identifiers and personal data from public scout evidence", () => {
+    const planningId = ["D", "999"].join("");
+    const issueId = ["ISSUE", "M", "999"].join("-").replace("M-", "M");
+    const email = ["example", "example.invalid"].join("@");
+    const userPath = ["", "Users", "example", "project"].join("/");
+    const sensitiveObservation = {
+      ...observation,
+      sites: [{ ...observation.sites[0]!, expression: `describe("legacy ${planningId} scenario")` }],
+    };
+    const links = new Map<string, readonly LimitInvestigationLink[]>([[observation.locator, [{
+      kind: "caller",
+      path: observation.path,
+      line: observation.line,
+      symbol: observation.symbol,
+      reasonCode: observation.reasonCode,
+      detail: `${issueId} historical fixture by ${email} from ${userPath}`,
+    }]]]);
+    const rendered = renderScout({
+      observations: [sensitiveObservation],
+      coverage: {
+        recordType: "coverage",
+        supportedSourceKinds: ["typescript"],
+        supportedSyntax: ["direct numeric returns"],
+        unsupportedSyntax: ["semantic legitimacy"],
+      },
+      linksByLocator: links,
+    });
+    expect(rendered).not.toContain(planningId);
+    expect(rendered).not.toContain(issueId);
+    expect(rendered).toContain("[private planning reference]");
+    expect(rendered).not.toContain(email);
+    expect(rendered).not.toContain(userPath);
+    expect(rendered).toContain("[email]");
+    expect(rendered).toContain("/[user-home]/project");
+  });
 });

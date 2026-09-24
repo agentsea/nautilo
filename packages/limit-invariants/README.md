@@ -17,8 +17,9 @@ parser-grounded extraction confidence, and transparent mechanical priority
 cues. It never infers authority, legitimacy, classification, approval, or
 remediation. The `limit-preflight` Codex skill performs the semantic
 investigation and either records an evidence-backed reviewed decision in the
-local audit workspace or surfaces the unresolved decision to the user. Audit
-evidence is private working material and is ignored by Git.
+tracked review ledger or surfaces the unresolved decision to the user. The
+inventory, ledger, and generated reports are visible repository artifacts so
+their history and current coverage can be reviewed with the source they govern.
 
 ## Commands
 
@@ -87,7 +88,7 @@ cannot absorb a new or changed observation.
 1. Run `bun run limits:inventory` and inspect the factual diff.
 2. Trace the complete producer-to-consumer behavior and its real authority.
 3. Add or update a row in
-   `baseline/reviewed-limit-decisions.limit-audit.jsonl` only when the evidence
+   `baseline/reviewed-limit-decisions.jsonl` only when the evidence
    supports the classification and disposition. If it does not, surface the
    decision to the user.
 4. Remove the matching legacy row with `shrink-legacy`, regenerate the report,
@@ -96,14 +97,14 @@ cannot absorb a new or changed observation.
 There is no permanent `approved arbitrary` state. A local literal, comment,
 configuration knob, test, or existing ledger row is not policy authority.
 
-## Local audit workspace
+## Tracked audit artifacts
 
-The local `baseline/*.limit-audit.*` files record primary investigation packets,
-not every boundary-shaped syntax site. Generated reports use the same suffix in
-`generated/`. Both directories stay in the package for familiar command paths,
-but the evidence files are ignored and must never be committed. Frozen legacy
-packets remain visible and unable to grow through ordinary commands; frozen
-does not mean approved or safe.
+The tracked `baseline/*` files record primary investigation packets, not every
+boundary-shaped syntax site. Generated reports live in `generated/`. Review
+their diffs with the source change and keep them free of credentials, personal
+data, private planning references, and workstation-specific paths. Frozen
+legacy packets remain visible and unable to grow through ordinary commands;
+frozen does not mean approved or safe.
 The non-blocking scout can broaden an investigation without turning every
 counter comparison, timer scheduler, or test fixture into a demanded review.
 

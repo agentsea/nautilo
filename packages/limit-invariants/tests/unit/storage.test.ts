@@ -9,12 +9,12 @@ import {
   readRequiredLimitAudit,
 } from "../../src/node/storage";
 
-describe("local limit audit storage", () => {
-  test("uses one ignored suffix for every private evidence and report file", () => {
-    expect(Object.values(LIMIT_AUDIT_FILENAMES).every((name) => name.includes(".limit-audit."))).toBe(true);
+describe("tracked limit audit storage", () => {
+  test("uses stable visible names for canonical evidence and reports", () => {
+    expect(Object.values(LIMIT_AUDIT_FILENAMES).every((name) => !name.includes(".limit-audit."))).toBe(true);
     const paths = limitAuditPaths("/workspace/packages/limit-invariants");
-    expect(paths.inventory).toBe("/workspace/packages/limit-invariants/baseline/limit-inventory.limit-audit.jsonl");
-    expect(paths.matrix).toBe("/workspace/packages/limit-invariants/generated/limit-matrix.limit-audit.md");
+    expect(paths.inventory).toBe("/workspace/packages/limit-invariants/baseline/limit-inventory.jsonl");
+    expect(paths.matrix).toBe("/workspace/packages/limit-invariants/generated/limit-matrix.md");
   });
 
   test("creates only the familiar local directories and fails closed when evidence is absent", async () => {
@@ -29,7 +29,7 @@ describe("local limit audit storage", () => {
         failure = error;
       }
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toContain("Missing local inventory audit evidence");
+      expect((failure as Error).message).toContain("Missing tracked inventory audit evidence");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

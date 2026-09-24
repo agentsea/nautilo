@@ -48,11 +48,7 @@ run_gate() {
       run_cmd test-invariants bun run test:invariants
       ;;
     query-inventory)
-      if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-        run_cmd query-inventory bun run --cwd packages/query-invariants check:ci --base "${LIMIT_REVIEW_BASE:?exact base required}" --head "${LIMIT_REVIEW_HEAD:?exact head required}" --repository "${GITHUB_REPOSITORY:?repository required}"
-      else
-        run_cmd query-inventory bun run db:query-inventory:check
-      fi
+      run_cmd query-inventory bun run db:query-inventory:check
       ;;
     lint-unused)
       run_cmd lint-unused bun run lint:unused

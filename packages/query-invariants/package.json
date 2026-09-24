@@ -11,8 +11,6 @@
     "clean": "rm -rf dist .turbo node_modules",
     "inventory": "bun src/node/cli.ts --write",
     "check": "bun src/node/cli.ts --check",
-    "check:ci": "bun src/node/public-check.ts",
-    "review": "bun src/node/review.ts",
     "test": "bun run test:unit",
     "test:unit": "bun test tests/unit/"
   },

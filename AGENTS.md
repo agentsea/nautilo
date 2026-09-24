@@ -116,9 +116,10 @@ options, and a recommendation. The choice remains Human judgment.
 
 The commands under `packages/limit-invariants` are optional investigation aids,
 not pre-push or CI gates. Their scanner output is an observation, not a policy
-decision. Local, ignored `*.limit-audit.*` files may hold working evidence;
-never commit audit inventories, decision ledgers, generated reports, or
-`*.agent-notes.*` working notes. See
+decision. Keep the limit and query inventories, reviewed decisions, and
+generated limit reports tracked so another checkout can reproduce them. Review
+their content for private planning references, personal data, and credentials
+before committing. Keep `*.agent-notes.*` working notes local. See
 [limit tooling](packages/limit-invariants/README.md) for optional commands.
 
 Partial results must disclose completeness and continuation. Termination must

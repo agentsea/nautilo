@@ -212,7 +212,24 @@ function renderJsonl(type: string, purpose: string, values: readonly unknown[]):
 }
 
 export function renderInventory(observations: readonly LimitObservation[]): string {
-  return renderJsonl("limit-inventory", "Deterministically grouped investigation packets; never semantic judgments.", observations);
+  return renderJsonl("limit-inventory", "Deterministically grouped investigation packets; never semantic judgments.", observations.map(publicObservation));
+}
+
+function publicArtifactEvidence(value: string): string {
+  return value
+    .replace(/\b(?:ISSUE-)?[MD]\d{3}(?![A-Za-z0-9])/gu, "[private planning reference]")
+    .replace(/\/(?:Users|home)\/[^/"'\s\\]+/gu, "/[user-home]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[email]");
+}
+
+function publicObservation(observation: LimitObservation): LimitObservation {
+  return {
+    ...observation,
+    sites: observation.sites.map((site) => ({
+      ...site,
+      expression: publicArtifactEvidence(site.expression),
+    })),
+  };
 }
 
 export function renderScout(input: {
@@ -236,8 +253,11 @@ export function renderScout(input: {
       recordType: "observation",
       type: "limit-scout-observation",
       schemaVersion: LIMIT_INVENTORY_SCHEMA_VERSION,
-      ...observation,
-      investigationLinks: input.linksByLocator.get(observation.locator) ?? [],
+      ...publicObservation(observation),
+      investigationLinks: (input.linksByLocator.get(observation.locator) ?? []).map((link) => ({
+        ...link,
+        detail: publicArtifactEvidence(link.detail),
+      })),
     })),
   ];
   return `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
@@ -389,7 +409,7 @@ export function renderMatrix(input: {
     const debt = legacy.get(observation.locator);
     const status = decision ? "reviewed" : debt ? "legacy" : "unreviewed";
     counts[status] += 1;
-    const siteDetail = observation.sites.map((site) => `${site.path}:${site.line} ${site.detector} \`${cell(site.expression)}\``).join("<br>");
+    const siteDetail = observation.sites.map((site) => `${site.path}:${site.line} ${site.detector} \`${cell(publicArtifactEvidence(site.expression))}\``).join("<br>");
     return `| ${cell(observation.locator)} | ${observation.effects.join(", ")} | ${cell(observation.value)} ${cell(observation.unit)} | ${observation.siteCount} | ${observation.reachability} | ${observation.extractionConfidence} | ${observation.mechanicalPriority} | ${observation.reasonCodes.join(", ")} | ${status} | ${decision?.classification ?? "—"} | ${decision?.disposition ?? "—"} | ${siteDetail} |`;
   });
   const summarize = (dimension: string, values: readonly string[]): string[] => {
@@ -470,7 +490,7 @@ export function renderInvestigationMap(input: {
   };
   const packetRows = (observations: readonly LimitObservation[]): string[] => observations.map((observation) => {
     const status = decisions.has(observation.locator) ? "reviewed" : legacy.has(observation.locator) ? "legacy" : "unreviewed";
-    const sites = observation.sites.map((site) => `${site.path}:${site.line} \`${cell(site.expression)}\``).join("<br>");
+    const sites = observation.sites.map((site) => `${site.path}:${site.line} \`${cell(publicArtifactEvidence(site.expression))}\``).join("<br>");
     const evidence = (input.linksByLocator?.get(observation.locator) ?? [])
       .map((link) => `${link.kind}: ${link.path}:${link.line} ${link.symbol} (${link.reasonCode})`)
       .join("<br>") || "—";
