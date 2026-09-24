@@ -14,6 +14,11 @@ html.companion-document, .companion-document body, .companion-document #root { m
 .companion-lexical-input .aui-lexical-input { min-height: 24px; white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
 .companion-lexical-input .aui-lexical-placeholder { pointer-events: none; position: absolute; top: 0; color: #a29aaf; }
 .companion-prompt .companion-lexical-input { max-height: 30px; }
+.companion-voice-stop { min-height: 30px; }
+.companion-voice-stop .voice-playback-stop-pill { justify-content: flex-end; }
+.companion-voice-stop .voice-playback-stop-pill > div { background: #211d31; border-color: #504660; color: #b9adc9; font-size: 11px; }
+.companion-voice-stop .voice-playback-stop-button { background: #302a43; color: #f1eafc; }
+.companion .companion-send-recording { width: auto; padding: 0 10px; gap: 5px; display: flex; border-radius: 8px; white-space: nowrap; }
 
 .companion-portrait { position: relative; display: grid; place-items: center; border-radius: 50%; padding: 3px; background: #241e36; border: 1px solid #c3b0ed70; }
 .companion-portrait img, .companion-initials { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
@@ -47,5 +52,28 @@ html.companion-document, .companion-document body, .companion-document #root { m
 .companion-orb .companion-small-stop { left: 2px; bottom: 2px; background: var(--bubble-bg); }
 .companion-orb .companion-small-stop .companion-stop-task { width: 23px; height: 23px; border-radius: 50%; padding: 0; border: 1px solid var(--bubble-line); background: var(--bubble-bg); color: #ffbd95 !important; }
 .companion .companion-stop-task:disabled { color: var(--muted) !important; opacity: .5; cursor: default; }
-.companion-waveform .companion-small-stop { left: auto; right: 35px; bottom: 6px; }
 .companion-prompt .companion-room-composer { min-height: 0; overflow-y: auto; }
+
+/* Separate capture, playback preference, speech interruption and task stop. */
+.companion-compact-body { position: relative; width: 100%; height: 100%; }
+.companion-header { min-height: 65px; padding-bottom: 7px; }
+.companion-header-audio { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.companion-audio-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 4px 7px; border-radius: 14px; background: #302a43; color: #b9adc9; white-space: nowrap; }
+.companion-identity .companion-audio-toggle span { font-size: 11px; color: inherit; }
+.companion-audio-toggle[aria-pressed="true"] { color: #abd997; background: #443456; }
+.companion-small-speech-stop { position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); border-radius: 50%; background: var(--bubble-bg); }
+.companion-small-speech-stop .companion-stop-talking { width: 24px; height: 24px; padding: 0; border: 1px solid var(--bubble-line); border-radius: 50%; background: var(--bubble-raised); }
+.companion .companion-stop-talking { color: #bea0f3; }
+.companion .companion-stop-talking:disabled { opacity: .4; cursor: default; }
+.companion-operation-status { color: #b9adc9; font-size: 11px; }
+.companion-voice-stop { display: flex; align-items: center; justify-content: flex-end; }
+
+.companion-bubble-cue { position: absolute; bottom: 2px; right: 2px; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--bubble-line) !important; border-radius: 50%; background: var(--bubble-raised); color: #f1eafc; }
+.companion-bubble-cue:disabled { cursor: default; color: var(--muted); }
+.companion-bubble-cue.is-recording { color: #211d31; background: #abd997; }
+.companion-compact[aria-disabled="true"] { cursor: grab; }
+.companion-muted-indicator { position: absolute; left: 35px; top: 2px; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border-radius: 50%; background: #211d31; color: #b9adc9; }
+.companion-panel-preview { display: flex; flex-shrink: 0; gap: 6px; width: 100%; min-width: 0; align-items: center; padding: 6px 13px; background: #ffffff06; text-align: left; font-size: 11px !important; }
+.companion-panel-preview strong { flex-shrink: 0; color: #b9adc9; }
+.companion-panel-preview span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.companion-panel-preview:hover { background: #ffffff0c; }

@@ -1,6 +1,6 @@
 # Floating Genie lab
 
-An isolated Electron shell for trying four companion densities, screen-edge
+An isolated Electron shell for trying three companion sizes, screen-edge
 docking and the Nautilo / AI Elements Persona visuals. The surface lives in
 Workbench so it can be connected to the existing runtime without a second UI.
 
@@ -8,13 +8,13 @@ Workbench so it can be connected to the existing runtime without a second UI.
 bun run --cwd dev/tools/genie-lab start
 ```
 
-Drag the orb, waveform or header handle. Release near an edge to snap; right-click
+Drag the orb or header. Release near an edge to snap; right-click
 anywhere for explicit docking, visual and simulated-state controls. With the lab
-focused, use **Cmd/Ctrl+1–4** for orb, waveform, prompt and chat; **Shift+F10** opens
-the same native menu. The compact views intentionally have no persistent text.
+focused, use **Cmd/Ctrl+1–3** for orb, compact panel and full chat; **Shift+F10** opens
+the same native menu. The bubble has no persistent text.
 The menu is also available in the macOS application menu. The visible expand
-button on both compact views opens chat directly; chat's collapse button returns
-to the tiny orb. Keyboard focus follows the view change.
+button on the bubble opens chat directly; chat's collapse button hides history
+in the compact panel. Choose Tiny orb from the menu to return to the orb. Keyboard focus follows the view change.
 
 This is a **shell preview**. Tapping the microphone previews an animation. It
 never requests microphone permission or sends drafts. Expanded chat keeps local
