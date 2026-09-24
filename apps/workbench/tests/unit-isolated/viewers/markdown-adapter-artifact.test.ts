@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-let nextBlob: Blob = new Blob(["# hi"], { type: "text/markdown" });
-const bytesMock = mock(async () => nextBlob);
+let nextBytes: ArrayBuffer = new TextEncoder().encode("# hi").buffer;
+const bytesMock = mock(async () => nextBytes);
 mock.module("../../../src/lib/api", () => ({
   apiClient: {
-    getWorkspaceArtifactBytes: bytesMock,
+    getWorkspaceArtifactBytesArrayBuffer: bytesMock,
   },
 }));
 
@@ -13,27 +13,27 @@ const { markdownViewerAdapter } = await import("../../../src/viewers/markdown/ad
 describe("markdownViewerAdapter artifact branch", () => {
   beforeEach(() => {
     bytesMock.mockClear();
-    nextBlob = new Blob(["# hi"], { type: "text/markdown" });
+    nextBytes = new TextEncoder().encode("# hi").buffer;
   });
 
-  test("load reads markdown text from blob", async () => {
+  test("load reads markdown text from bounded artifact bytes", async () => {
     const r = await markdownViewerAdapter.load(
       { kind: "artifact", id: "m1", path: "n.md", mimeType: "text/markdown" },
       { maxTextBytes: 10_000 },
     );
-    expect(bytesMock).toHaveBeenCalledWith("m1");
+    expect(bytesMock).toHaveBeenCalledWith("m1", expect.objectContaining({ maxBytes: 10_000 }));
     expect(r.kind).toBe("ready");
     if (r.kind === "ready") {
       expect((r.data as { content: string }).content).toBe("# hi");
     }
   });
 
-  test("over-cap blob → kind: too_large (M088C item 3 step 3)", async () => {
-    nextBlob = new Blob(["x".repeat(20_000)], { type: "text/markdown" });
+  test("over-cap metadata returns too_large before fetching", async () => {
     const r = await markdownViewerAdapter.load(
-      { kind: "artifact", id: "m-big", path: "huge.md", mimeType: "text/markdown" },
+      { kind: "artifact", id: "m-big", path: "huge.md", mimeType: "text/markdown", sizeBytes: 20_000 },
       { maxTextBytes: 10_000 },
     );
     expect(r.kind).toBe("too_large");
+    expect(bytesMock).not.toHaveBeenCalled();
   });
 });
