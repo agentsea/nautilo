@@ -210,7 +210,7 @@ function productHarness(input: MatchInput) {
     parent_room_id: null,
     archived_at: null,
     namespace_access_revision: authority.namespaceAccessRevision,
-    human_actor_ids: [HUMAN],
+    human_actor_ids: [HUMAN], effective_human_actor_ids: [HUMAN],
   }));
   const members = input.descriptor.namespaceRequirements.map(({ authority }) => ({
     room_id: authority.roomId,

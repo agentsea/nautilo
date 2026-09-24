@@ -220,7 +220,7 @@ describe("Workbench Genie application target registry", () => {
     });
     expect(effective.filter(({ presentation }) => presentation === "spotlight").map(({ target }) => target).sort())
       .toEqual(["connections.codex", "connections.github_cli", "connections.google", "connections.local_mcp", "connections.ssh"]);
-    expect(effective.filter(({ presentation }) => presentation === "reveal")).toHaveLength(49);
+    expect(effective.filter(({ presentation }) => presentation === "reveal")).toHaveLength(50);
     expect(resolveWorkbenchApplicationPresentation({ version: 2, target: "admin.provider_credentials", presentation: "spotlight" }).kind).toBe("unsupported");
     expect(resolveWorkbenchApplicationPresentation({ version: 1, target: "connections.unknown", presentation: "spotlight" }).kind).toBe("unsupported");
     expect(resolveWorkbenchApplicationPresentation({ version: 1, target: "admin.provider_credentials", presentation: "click" }).kind).toBe("unsupported");

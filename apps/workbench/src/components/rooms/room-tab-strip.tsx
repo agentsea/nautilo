@@ -156,7 +156,9 @@ export function RoomTabStrip({
       <div
         ref={roomsPanelRef}
         className="z-50 max-h-[calc(100vh-1rem)] overflow-hidden rounded-md border border-border bg-background-panel shadow-lg"
-        style={panelStyle ?? undefined}
+        // The portal precedes the app shell. Keep the unmeasured panel out of
+        // document flow so it cannot move the button before we measure it.
+        style={panelStyle ?? { position: "fixed", visibility: "hidden" }}
         role="dialog"
         aria-label="Rooms list"
       >

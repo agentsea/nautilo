@@ -23,7 +23,7 @@ const VALID_GRANT_SNAPSHOT = {
   grants: [
     {
       id: "grant-1",
-      canonicalRoot: "/Users/alice/project",
+      canonicalRoot: "/path/to/project",
       access: ["read", "create_modify"] as const,
       policyVersion: 2,
       lifetime: "durable" as const,
@@ -1203,7 +1203,7 @@ describe("InMemoryRelayRegistry updateCapabilities anti-smuggling (D418 protocol
           profile: "desktop-agent",
           canReadWorkspace: true,
           canRunShell: true,
-          allowedRoots: ["/Users/alice/project"],
+          allowedRoots: ["/path/to/project"],
           securityLevel: "standard",
           dataDir: "/tmp/sandbox",
           browserSessionId: "nautilo-browser-a1b2c3d4",
@@ -1214,11 +1214,27 @@ describe("InMemoryRelayRegistry updateCapabilities anti-smuggling (D418 protocol
       const caps = registry.getCapabilities("relay-1") as Record<string, unknown>;
       expect(caps["canReadWorkspace"]).toBe(true);
       expect(caps["canRunShell"]).toBe(true);
-      expect(caps["allowedRoots"]).toEqual(["/Users/alice/project"]);
+      expect(caps["allowedRoots"]).toEqual(["/path/to/project"]);
       expect(caps["securityLevel"]).toBe("standard");
       expect(caps["dataDir"]).toBe("/tmp/sandbox");
       expect(caps["browserSessionId"]).toBe("nautilo-browser-a1b2c3d4");
       expect(registry.getWorkstationProfileSnapshot("relay-1")).toEqual(VALID_PROFILE_SNAPSHOT);
     })();
+  });
+});
+
+
+describe("Relay connection cleanup", () => {
+  it("late cleanup from a replaced socket cannot unregister the current socket", async () => {
+    const registry = new InMemoryRelayRegistry();
+    const previous = () => {};
+    const current = () => {};
+    await registry.register("relay-replacement", "human", CAPS, previous, 6);
+    await registry.register("relay-replacement", "human", CAPS, current, 6);
+    await registry.unregisterConnection("relay-replacement", previous);
+    expect(await registry.listConnected()).toEqual(["relay-replacement"]);
+    expect(registry.getUserId("relay-replacement")).toBe("human");
+    await registry.unregisterConnection("relay-replacement", current);
+    expect(await registry.listConnected()).toEqual([]);
   });
 });

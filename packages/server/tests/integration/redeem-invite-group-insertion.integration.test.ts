@@ -10,6 +10,9 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { eq, groupMembers, groups, invites, users } from "@nautilo/db";
 import { pickHighestRoleSlug } from "@nautilo/api-client";
 import { findUserHighestRoleSlug } from "@nautilo/trust";
+import { applyModeration, inspectModerationPerson } from "../../../trust/src/moderation-coordinator";
+import { completeInviteProfile, redeemInviteWithLogtoSub } from "../../src/lib/redeem-invite";
+import { randomUUID } from "node:crypto";
 import { setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
 import {
@@ -78,6 +81,53 @@ describe("server invite redeem — group_members insertion regression", () => {
     expect(guestsChip!.roleSlug).toBe("guest");
 
     await cleanupInvitee(fx, redeem.newUserId);
+  });
+
+  test("kick rejects an existing bearer and stale completion; a fresh Invite preserves the Human", async () => {
+    const mint = async () => {
+      const response = await authedInject(fx.app, { method: "POST", url: "/api/invites", bearer,
+        payload: { kind: "server", targetGroupRoleSlug: "member", maxUses: 1 } });
+      expect(response.statusCode).toBe(200);
+      return JSON.parse(response.body) as { token: string };
+    };
+    const original = await mint();
+    const handle = `return${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const enrolled = await redeemServerInviteToken(original.token, handle);
+    expect(enrolled.ok).toBe(true);
+    if (!enrolled.ok) throw new Error("Initial enrollment failed");
+    try {
+      const [person] = await fx.db.select().from(users).where(eq(users.id, enrolled.newUserId));
+      if (!person?.externalId) throw new Error("Missing enrolled identity");
+      const existingBearer = await fx.mintSessionBearerForUser(enrolled.newActorId, person.id);
+      const inspection = await inspectModerationPerson(fx.ownerId, person.id, null);
+      await applyModeration(fx.ownerId, { operationId: randomUUID(), targetUserId: person.id, roomId: null,
+        action: "kick", reason: "Integration fixture withdrawal", privateNote: null, expiresAt: null,
+        targetRevision: inspection.targetRevision, restrictionId: null, restrictionRevision: null },
+      { issuer: process.env["LOGTO_ISSUER"]!, appendAudit: async () => {}, converge: async () => {} });
+      const denied = await fx.app.inject({ method: "GET", url: "/api/auth/whoami", headers: { authorization: `Bearer ${existingBearer}` } });
+      expect(denied.statusCode).toBe(403);
+      expect((JSON.parse(denied.body) as { code: string }).code).toBe("server_access_withdrawn");
+      const stale = await completeInviteProfile(original.token, person.externalId, { displayName: "Ignored rejoin name", pin: "847291" }, {});
+      expect(stale.ok).toBe(false);
+      if (!stale.ok) expect(stale.code).toBe("admission_withdrawn");
+      const fresh = await mint();
+      const bound = await redeemInviteWithLogtoSub(fresh.token, person.externalId, { handle, displayName: "Ignored rejoin name" }, {});
+      expect(bound.ok).toBe(true);
+      const joined = await completeInviteProfile(fresh.token, person.externalId, { displayName: "Ignored rejoin name", pin: "847291" }, {});
+      expect(joined.ok).toBe(true);
+      if (!joined.ok) throw new Error(`Rejoin failed: ${joined.code}`);
+      expect(joined.newUserId).toBe(person.id);
+      expect(joined.newActorId).toBe(enrolled.newActorId);
+      expect(joined.recoveryCodes).toEqual([]);
+      const [preserved] = await fx.db.select().from(users).where(eq(users.id, person.id));
+      expect(preserved?.name).toBe(person.name);
+      const admitted = await fx.app.inject({ method: "GET", url: "/api/auth/whoami", headers: { authorization: `Bearer ${existingBearer}` } });
+      expect(admitted.statusCode).toBe(200);
+      const replay = await completeInviteProfile(fresh.token, person.externalId, { displayName: person.name, pin: "847291" }, {});
+      expect(replay.ok).toBe(true);
+    } finally {
+      await cleanupInvitee(fx, enrolled.newUserId);
+    }
   });
 
   test("rejects replay, revoked, expired, denied, and concurrent one-use journeys", async () => {

@@ -26,6 +26,7 @@ import {
   createDirectDb,
   ensureDatabase,
   users,
+  serverAdmission,
   actors,
   agents,
   rooms,
@@ -85,11 +86,12 @@ async function seedUserWithActor(
     .insert(users)
     .values({
       name: `m124-sub-${tag}`,
-      email: `m124sub-${tag}-${ts}@test.local`,
+      email: null,
       handle: `m124sub${tag}${ts.slice(-6)}`,
     })
     .returning({ id: users.id });
   if (!u) throw new Error(`user ${tag}`);
+  await db.insert(serverAdmission).values({ userId: u.id, admitted: true });
   const [a] = await db
     .insert(actors)
     .values({ ownerId: u.id, displayName: `Sub ${tag}`, trustState: "verified", kind: "user" })

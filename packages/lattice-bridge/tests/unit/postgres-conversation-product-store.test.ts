@@ -1581,7 +1581,7 @@ describe("Postgres conversation product store", () => {
       { operation: "select", result: [{
         namespace_id: NAMESPACE_ID,
         namespace_access_revision: 1,
-        human_actor_ids: [HUMAN_ACTOR_ID],
+        human_actor_ids: [HUMAN_ACTOR_ID], effective_human_actor_ids: [HUMAN_ACTOR_ID],
       }] },
       { operation: "update", result: [{ messageId: 11 }] },
       { operation: "insert", result: [] },

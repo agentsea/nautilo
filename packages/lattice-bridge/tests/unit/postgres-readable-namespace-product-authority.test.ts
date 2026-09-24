@@ -31,19 +31,19 @@ function fixture(options: Readonly<{
   setTargetMembers?: readonly PostgresJsBridgeRow[];
 }> = {}) {
   const row = {
-    source_room_id: ROOM,
+    source_room_id: ROOM, source_access_allowed: true,
     source_namespace_id: NAMESPACE,
     source_kind: "private",
     source_parent_room_id: null,
     source_archived_at: null,
-    source_human_actor_ids: [HUMAN, PEER],
+    source_human_actor_ids: [HUMAN, PEER], effective_source_human_actor_ids: [HUMAN, PEER],
     target_room_id: ROOM,
     target_namespace_id: NAMESPACE,
     target_kind: "private",
     target_parent_room_id: null,
     target_archived_at: null,
     target_access_revision: 3,
-    target_human_actor_ids: [HUMAN, PEER],
+    target_human_actor_ids: [HUMAN, PEER], effective_target_human_actor_ids: [HUMAN, PEER],
     subject_user_id: USER,
     ...options.room,
   };
@@ -57,7 +57,7 @@ function fixture(options: Readonly<{
     namespace_id: row.target_namespace_id,
     parent_room_id: row.target_parent_room_id,
     namespace_access_revision: row.target_access_revision,
-    human_actor_ids: row.target_human_actor_ids,
+    human_actor_ids: row.target_human_actor_ids, effective_human_actor_ids: row.target_human_actor_ids,
   }];
   let transactionActive = false;
   const executor: PostgresJsBridgeExecutor = {
@@ -93,11 +93,11 @@ function fixture(options: Readonly<{
         result = options.sourceMembers ?? members;
       } else if (statement.includes("m291_namespace_key_readable_set_source")) {
         result = [{
-          source_room_id: ROOM,
+          source_room_id: ROOM, source_access_allowed: true,
           kind: row.source_kind,
           parent_room_id: row.source_parent_room_id,
           archived_at: row.source_archived_at,
-          human_actor_ids: row.source_human_actor_ids,
+          human_actor_ids: row.source_human_actor_ids, effective_human_actor_ids: row.source_human_actor_ids,
           subject_user_id: row.subject_user_id,
         }];
       } else if (statement.includes("m291_namespace_key_readable_set_targets")) {
@@ -263,8 +263,8 @@ describe("Human-only Room Domain-key product authority", () => {
     ["parent itself a Subthread", {room: {target_parent_room_id: PEER}}],
     ["removed child membership", {sourceMembers: [members[1]!]}],
     ["removed parent membership", {targetMembers: [members[1]!]}],
-    ["stale child roster", {room: {source_human_actor_ids: [HUMAN]}}],
-    ["stale parent roster", {room: {target_human_actor_ids: [HUMAN]}}],
+    ["stale child roster", {room: {source_human_actor_ids: [HUMAN], effective_source_human_actor_ids: [HUMAN]}}],
+    ["stale parent roster", {room: {target_human_actor_ids: [HUMAN], effective_target_human_actor_ids: [HUMAN]}}],
     ["foreign account", {room: {subject_user_id: PEER}}],
   ] as const;
   for (const [label, options] of invalidInheritedStates) {
@@ -311,7 +311,7 @@ describe("Human-only Room Domain-key product authority", () => {
         target_room_id: OTHER_ROOM,
         target_namespace_id: OTHER_NAMESPACE,
         target_kind: "open",
-        target_human_actor_ids: [HUMAN],
+        target_human_actor_ids: [HUMAN], effective_target_human_actor_ids: [HUMAN],
       },
       sourceMembers: membersWithAgent,
       targetMembers: [{ actor_id: HUMAN, kind: "user" }],
@@ -332,7 +332,7 @@ describe("Human-only Room Domain-key product authority", () => {
       '"public_boundary_room"."id" is not null',
     );
     expect(policyQuery?.statement).toContain(
-      '"rooms"."human_actor_ids" @> ARRAY[',
+      'public.moderation_effective_humans("rooms"."human_actor_ids", "rooms"."id") @>',
     );
   });
 
@@ -344,11 +344,11 @@ describe("Human-only Room Domain-key product authority", () => {
       const state = fixture({
         room: {
           source_kind: sourceKind,
-          source_human_actor_ids: [HUMAN],
+          source_human_actor_ids: [HUMAN], effective_source_human_actor_ids: [HUMAN],
           target_room_id: OTHER_ROOM,
           target_namespace_id: OTHER_NAMESPACE,
           target_kind: "open",
-          target_human_actor_ids: [HUMAN, PEER],
+          target_human_actor_ids: [HUMAN, PEER], effective_target_human_actor_ids: [HUMAN, PEER],
         },
         sourceMembers: [members[0]!, { actor_id: AGENT, kind: "agent" }],
       });
@@ -372,10 +372,10 @@ describe("Human-only Room Domain-key product authority", () => {
         '"rooms"."parent_room_id" is null and "rooms"."archived_at" is null',
       );
       expect(policyQuery?.statement).toContain(
-        '"public_boundary_room"."id" is null and "rooms"."human_actor_ids" @> ARRAY[$8]::uuid[]',
+        '"public_boundary_room"."id" is null and public.moderation_effective_humans("rooms"."human_actor_ids", "rooms"."id") @> $8::uuid[]',
       );
       expect(policyQuery?.statement).toContain(
-        '"public_boundary_room"."id" is not null and ("rooms"."human_actor_ids" @> ARRAY[$9]::uuid[] and "rooms"."kind" = $10)',
+        '"public_boundary_room"."id" is not null and ("rooms"."kind" = $9 and public.moderation_effective_humans("rooms"."human_actor_ids", "rooms"."id") @> $10::uuid[])',
       );
       expect(policyQuery?.parameters).toEqual([
         ROOM,
@@ -385,15 +385,15 @@ describe("Human-only Room Domain-key product authority", () => {
         "group",
         "open",
         "access",
-        HUMAN,
-        HUMAN,
+        [HUMAN],
         "open",
+        [HUMAN],
       ]);
       expect(policyQuery?.statement).toContain(
         '"rooms"."namespace_id" = ANY($3::uuid[])',
       );
       expect(policyQuery?.parameters.filter(Array.isArray)).toEqual([
-        [OTHER_NAMESPACE],
+        [OTHER_NAMESPACE], [HUMAN], [HUMAN],
       ]);
     });
   }
@@ -451,7 +451,7 @@ describe("Human-only Room Domain-key product authority", () => {
       const state = fixture({
         room: {
           source_kind: sourceKind,
-          source_human_actor_ids: [HUMAN],
+          source_human_actor_ids: [HUMAN], effective_source_human_actor_ids: [HUMAN],
         },
         sourceMembers: [members[0]!, { actor_id: AGENT, kind: "agent" }],
         setTargets: [{
@@ -459,7 +459,7 @@ describe("Human-only Room Domain-key product authority", () => {
           namespace_id: OTHER_NAMESPACE,
           parent_room_id: null,
           namespace_access_revision: 8,
-          human_actor_ids: [HUMAN, PEER],
+          human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER],
         }],
         setTargetMembers: members.map((member) => ({
           ...member,
@@ -503,7 +503,7 @@ describe("Human-only Room Domain-key product authority", () => {
         namespace_id: OTHER_NAMESPACE,
         parent_room_id: null,
         namespace_access_revision: 8,
-        human_actor_ids: [HUMAN, PEER],
+        human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER],
       }],
       setTargetMembers: members.map((member) => ({
         ...member,
@@ -534,7 +534,7 @@ describe("Human-only Room Domain-key product authority", () => {
         namespace_id: OTHER_NAMESPACE,
         parent_room_id: null,
         namespace_access_revision: 8,
-        human_actor_ids: [HUMAN],
+        human_actor_ids: [HUMAN], effective_human_actor_ids: [HUMAN],
       }],
       setTargetMembers: [{
         room_id: OTHER_ROOM,
@@ -578,8 +578,8 @@ describe("Human-only Room Domain-key product authority", () => {
     ["foreign account", { room: { subject_user_id: PEER } }],
     ["removed source Human", { sourceMembers: [members[1]!] }],
     ["removed target Human", { targetMembers: [members[1]!] }],
-    ["stale source audience", { room: { source_human_actor_ids: [HUMAN] } }],
-    ["stale target audience", { room: { target_human_actor_ids: [HUMAN] } }],
+    ["stale source audience", { room: { source_human_actor_ids: [HUMAN], effective_source_human_actor_ids: [HUMAN] } }],
+    ["stale target audience", { room: { target_human_actor_ids: [HUMAN], effective_target_human_actor_ids: [HUMAN] } }],
     ["archived source", { room: { source_archived_at: new Date() } }],
     ["public source", { room: { source_kind: "public" } }],
     ["source subthread", { room: { source_parent_room_id: OTHER_ROOM } }],

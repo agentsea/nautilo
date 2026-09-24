@@ -14,7 +14,7 @@ function fixture(count = 2) {
   }));
   const rows = coordinates.map(entry => ({room_id: entry.roomId,
     namespace_id: entry.namespaceId, kind: "access", parent_room_id: null,
-    archived_at: null, namespace_access_revision: 3, human_actor_ids: [HUMAN, OTHER]}));
+    archived_at: null, namespace_access_revision: 3, human_actor_ids: [HUMAN, OTHER], effective_human_actor_ids: [HUMAN, OTHER]}));
   const members = coordinates.flatMap(entry => [HUMAN, OTHER].map(actor_id => ({
     room_id: entry.roomId, actor_id, kind: "user",
   })));

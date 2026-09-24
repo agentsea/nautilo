@@ -46,6 +46,7 @@ export const APPLICATION_CATALOGUE_TARGET_IDS_V1 = [
   "admin.search",
   "admin.costs",
   "admin.users",
+  "admin.moderation",
   "admin.invites",
   "admin.reports",
   "admin.audit_log",
@@ -659,6 +660,23 @@ const GENERATED_APPLICATION_CATALOGUE_METADATA_V1 = [
     "discoveryTerms": [
       "admin users",
       "server users"
+    ]
+  },
+  {
+    "target": "admin.moderation",
+    "label": "Moderation",
+    "menuPath": [
+      "Server admin",
+      "Moderation"
+    ],
+    "description": "Review joining requests, pause enrollment, and manage Server bans and kicks.",
+    "discoveryTerms": [
+      "community moderation",
+      "ban member",
+      "kick member",
+      "pause joins",
+      "joining requests",
+      "enrollment approval"
     ]
   },
   {

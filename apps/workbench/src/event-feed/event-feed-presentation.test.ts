@@ -161,3 +161,15 @@ describe("event feed presentation", () => {
     expect(presentation.roomUnavailable).toBe(true);
   });
 });
+
+test("private moderation confirmation identifies the action without claiming cleanup finished", () => {
+  const event: EventFeedItem = { id: ROOM_ID, type: "moderation.action", actorKind: "human",
+    actorId: ADMIN_ACTOR_ID, createdAt: "2026-09-09T09:00:00.000Z", readAt: null,
+    data: { operationId: ROOM_ID, userId: SUBJECT_ID, action: "ban" } };
+  const result = presentEventFeedItem({ event,
+    humansById: new Map([[SUBJECT_ID, { userId: SUBJECT_ID, displayName: "Practice member" }]]),
+    roomsById: new Map(), artifactsById: new Map(), viewerActorId: ADMIN_ACTOR_ID });
+  expect(result.text).toBe("You banned Practice member from the Server.");
+  expect(result.kindLabel).toBe("Moderation · Only you");
+  expect(result.roomId).toBeNull();
+});

@@ -17,7 +17,7 @@ import type {
   PostgresJsBridgeConnection,
   PostgresJsBridgeRow,
 } from "@nautilo/db";
-import { and, asc, eq, inArray, isNull, sql, actors, roomMembers, rooms as roomsTable } from "@nautilo/db";
+import { and, asc, eq, inArray, isNull, sql, moderationEffectiveHumanActorIdsSql, actors, roomMembers, rooms as roomsTable } from "@nautilo/db";
 import {
   conversationProductTypedDb,
   executeTypedConversationProductQuery,
@@ -125,6 +125,14 @@ function canonicalHumans(values: readonly string[]): readonly HumanId[] {
   return Object.freeze(canonical);
 }
 
+function effectiveAudience(row: PostgresJsBridgeRow, key: string, canonical: readonly HumanId[], subject: string): readonly HumanId[] | null {
+  const values = row[key];
+  if (!Array.isArray(values) || values.length === 0 || values.some(value => typeof value !== "string")) return null;
+  const effective = canonicalHumans(values as string[]);
+  if (!effective.includes(humanId(subject)) || effective.some(value => !canonical.includes(value))) return null;
+  return effective;
+}
+
 function snapshotOf(
   handle: NamespaceProductAuthoritySnapshot,
 ): Snapshot {
@@ -193,6 +201,7 @@ export class PostgresNamespaceProductAuthority {
                 r.kind, r.parent_room_id, r.archived_at,
                 r.namespace_access_revision,
                 r.human_actor_ids::text[] AS human_actor_ids,
+                public.moderation_effective_humans(r.human_actor_ids, r.id)::text[] AS effective_human_actor_ids,
                 a.owner_id::text AS subject_user_id
            FROM rooms r
            JOIN actors a ON a.id = $2::uuid AND a.kind = 'user'
@@ -231,14 +240,16 @@ export class PostgresNamespaceProductAuthority {
         || storedHumans.length !== humans.length
         || storedHumans.some((value, index) => value !== humans[index])
       ) return null;
+      const effectiveHumans = effectiveAudience(room, "effective_human_actor_ids", humans, input.subjectHumanId);
+      if (effectiveHumans === null) return null;
       const audienceFingerprint =
-        fingerprintNamespaceGenerationAudience(humans);
+        fingerprintNamespaceGenerationAudience(effectiveHumans);
       const handle = Object.freeze({}) as NamespaceProductAuthoritySnapshot;
       snapshots.set(handle, Object.freeze({
         roomId: input.roomId,
         namespaceId: namespaceId(input.namespaceId),
         accessRevision: accessRevision(number(room, "namespace_access_revision")),
-        participantHumanIds: humans,
+        participantHumanIds: effectiveHumans,
         audienceFingerprint,
         subjectHumanId: humanId(input.subjectHumanId),
       }));
@@ -347,6 +358,7 @@ export class PostgresNamespaceProductAuthority {
           archived_at: roomsTable.archivedAt,
           namespace_access_revision: roomsTable.namespaceAccessRevision,
           human_actor_ids: roomsTable.humanActorIds,
+          effective_human_actor_ids: moderationEffectiveHumanActorIdsSql(sql`${roomsTable.humanActorIds}`, sql`${roomsTable.id}`).as("effective_human_actor_ids"),
         }).from(roomsTable)
           .where(sql`${roomsTable.id} = ANY(${sql.param(roomIds)}::uuid[])`)
           .orderBy(sql`${roomsTable.parentRoomId} nulls first`, asc(roomsTable.id))
@@ -390,14 +402,16 @@ export class PostgresNamespaceProductAuthority {
           if (!humans.includes(subjectHumanId) || !Array.isArray(stored)
             || stored.length !== humans.length
             || stored.some((value, index) => value !== humans[index])) return null;
-          const audienceFingerprint = fingerprintNamespaceGenerationAudience(humans);
+          const effectiveHumans = effectiveAudience(row, "effective_human_actor_ids", humans, subjectHumanId);
+          if (effectiveHumans === null) return null;
+          const audienceFingerprint = fingerprintNamespaceGenerationAudience(effectiveHumans);
           fingerprints.push(audienceFingerprint);
           const authority = Object.freeze({}) as NamespaceProductAuthoritySnapshot;
           snapshots.set(authority, Object.freeze({
             roomId: coordinate.roomId,
             namespaceId: namespaceId(coordinate.namespaceId),
             accessRevision: accessRevision(number(row, "namespace_access_revision")),
-            participantHumanIds: humans, audienceFingerprint, subjectHumanId,
+            participantHumanIds: effectiveHumans, audienceFingerprint, subjectHumanId,
           }));
           entries.push(Object.freeze({namespaceId: namespaceId(coordinate.namespaceId), authority}));
         }
@@ -473,7 +487,9 @@ export class PostgresNamespaceProductAuthority {
                 authority.kind, authority.parent_room_id,
                 authority.archived_at,
                 authority.namespace_access_revision,
-                authority.human_actor_ids::text[] AS human_actor_ids
+                public.moderation_access_allowed($3::uuid, source.id) AS source_access_allowed,
+                authority.human_actor_ids::text[] AS human_actor_ids,
+                public.moderation_effective_humans(authority.human_actor_ids, authority.id)::text[] AS effective_human_actor_ids
            FROM rooms source
            JOIN rooms authority
              ON authority.id = COALESCE(source.parent_room_id, source.id)
@@ -481,7 +497,7 @@ export class PostgresNamespaceProductAuthority {
           WHERE source.id = $1::uuid
             AND source.namespace_id = $2::uuid
           LIMIT 2 FOR UPDATE OF source, authority`,
-        [input.roomId, input.namespaceId],
+        [input.roomId, input.namespaceId, input.subjectUserId],
       );
       if (rooms.length !== 1) return null;
       const room = rooms[0]!;
@@ -526,6 +542,7 @@ export class PostgresNamespaceProductAuthority {
       if (
         text(room, "source_room_id") !== input.roomId
         || !sourceShapeCurrent
+        || room["source_access_allowed"] !== true
         || room["source_archived_at"] !== null
         || text(room, "namespace_id") !== input.namespaceId
         || !(requireAgent || protectedMessageOnly
@@ -541,8 +558,10 @@ export class PostgresNamespaceProductAuthority {
         || storedHumans.length !== humans.length
         || storedHumans.some((value, index) => value !== humans[index])
       ) return null;
+      const effectiveHumans = effectiveAudience(room, "effective_human_actor_ids", humans, input.subjectHumanId);
+      if (effectiveHumans === null) return null;
       const audienceFingerprint =
-        fingerprintNamespaceGenerationAudience(humans);
+        fingerprintNamespaceGenerationAudience(effectiveHumans);
       const handle = Object.freeze({}) as NamespaceProductAuthoritySnapshot;
       snapshots.set(handle, Object.freeze({
         roomId: authorityRoomId,
@@ -550,7 +569,7 @@ export class PostgresNamespaceProductAuthority {
         accessRevision: accessRevision(
           number(room, "namespace_access_revision"),
         ),
-        participantHumanIds: humans,
+        participantHumanIds: effectiveHumans,
         audienceFingerprint,
         subjectHumanId: humanId(input.subjectHumanId),
       }));
@@ -590,6 +609,7 @@ export class PostgresNamespaceProductAuthority {
                 r.kind, r.parent_room_id, r.archived_at,
                 r.namespace_access_revision,
                 r.human_actor_ids::text[] AS human_actor_ids,
+                public.moderation_effective_humans(r.human_actor_ids, r.id)::text[] AS effective_human_actor_ids,
                 a.owner_id::text AS subject_user_id
            FROM rooms r
            JOIN actors a ON a.id = $2::uuid AND a.kind = 'user'
@@ -637,14 +657,16 @@ export class PostgresNamespaceProductAuthority {
         || storedHumans.length !== humans.length
         || storedHumans.some((value, index) => value !== humans[index])
       ) return null;
+      const effectiveHumans = effectiveAudience(room, "effective_human_actor_ids", humans, input.subjectHumanId);
+      if (effectiveHumans === null) return null;
       const audienceFingerprint =
-        fingerprintNamespaceGenerationAudience(humans);
+        fingerprintNamespaceGenerationAudience(effectiveHumans);
       const handle = Object.freeze({}) as NamespaceProductAuthoritySnapshot;
       snapshots.set(handle, Object.freeze({
         roomId: input.roomId,
         namespaceId: namespaceId(input.namespaceId),
         accessRevision: accessRevision(number(room, "namespace_access_revision")),
-        participantHumanIds: humans,
+        participantHumanIds: effectiveHumans,
         audienceFingerprint,
         subjectHumanId: humanId(input.subjectHumanId),
       }));
@@ -752,6 +774,7 @@ export class PostgresNamespaceProductAuthority {
                   r.kind, r.parent_room_id, r.archived_at,
                   r.namespace_access_revision,
                   r.human_actor_ids::text[] AS human_actor_ids,
+                public.moderation_effective_humans(r.human_actor_ids, r.id)::text[] AS effective_human_actor_ids,
                   a.owner_id::text AS subject_user_id
              FROM rooms r
              JOIN actors a ON a.id = $2::uuid AND a.kind = 'user'
@@ -789,15 +812,17 @@ export class PostgresNamespaceProductAuthority {
           || storedHumans.length !== humans.length
           || storedHumans.some((value, index) => value !== humans[index])
         ) return null;
+        const effectiveHumans = effectiveAudience(room, "effective_human_actor_ids", humans, input.subjectHumanId);
+        if (effectiveHumans === null) return null;
         return Object.freeze({
           roomId: input.roomId,
           namespaceId: namespaceId(input.namespaceId),
           accessRevision: accessRevision(
             number(room, "namespace_access_revision"),
           ),
-          participantHumanIds: humans,
+          participantHumanIds: effectiveHumans,
           audienceFingerprint:
-            fingerprintNamespaceGenerationAudience(humans),
+            fingerprintNamespaceGenerationAudience(effectiveHumans),
           subjectHumanId: humanId(input.subjectHumanId),
         });
       }, { isolationLevel: "serializable" });
@@ -895,7 +920,8 @@ export class PostgresNamespaceProductAuthority {
                 source.kind AS source_kind,
                 source.parent_room_id AS source_parent_room_id,
                 source.archived_at AS source_archived_at,
-                source.human_actor_ids::text[] AS source_human_actor_ids
+                source.human_actor_ids::text[] AS source_human_actor_ids,
+                public.moderation_effective_humans(source.human_actor_ids, source.id)::text[] AS effective_source_human_actor_ids
            FROM rooms source
           WHERE source.id = $1::uuid
           LIMIT 2 FOR UPDATE OF source`,
@@ -930,7 +956,8 @@ export class PostgresNamespaceProductAuthority {
                 target.parent_room_id AS target_parent_room_id,
                 target.archived_at AS target_archived_at,
                 target.namespace_access_revision AS target_access_revision,
-                target.human_actor_ids::text[] AS target_human_actor_ids
+                target.human_actor_ids::text[] AS target_human_actor_ids,
+                public.moderation_effective_humans(target.human_actor_ids, target.id)::text[] AS effective_target_human_actor_ids
            FROM rooms target
           WHERE target.namespace_id = $1::uuid
             AND target.parent_room_id IS NULL
@@ -999,19 +1026,22 @@ export class PostgresNamespaceProductAuthority {
           value !== targetHumans[index]
         )
       ) return null;
+      const effectiveSourceHumans = effectiveAudience(source, "effective_source_human_actor_ids", sourceHumans, subjectHumanId);
+      const effectiveTargetHumans = effectiveAudience(target, "effective_target_human_actor_ids", targetHumans, subjectHumanId);
+      if (effectiveSourceHumans === null || effectiveTargetHumans === null) return null;
       if (!await readableNamespacePolicyAllows(transaction, {
         sourceRoomId: input.sourceRoomId,
-        sourceHumanIds: sourceHumans,
+        sourceHumanIds: effectiveSourceHumans,
         namespaceIds: [input.namespaceId],
       })) return null;
       const audienceFingerprint =
-        fingerprintNamespaceGenerationAudience(targetHumans);
+        fingerprintNamespaceGenerationAudience(effectiveTargetHumans);
       const handle = Object.freeze({}) as NamespaceProductAuthoritySnapshot;
       snapshots.set(handle, Object.freeze({
         roomId: targetRoomId,
         namespaceId: namespaceId(input.namespaceId),
         accessRevision: accessRevision(number(target, "target_access_revision")),
-        participantHumanIds: targetHumans,
+        participantHumanIds: effectiveTargetHumans,
         audienceFingerprint,
         subjectHumanId,
       }));
@@ -1091,7 +1121,8 @@ export class PostgresNamespaceProductAuthority {
         `/* m291_namespace_key_readable_set_source */
          SELECT source.id::text AS source_room_id, source.kind,
                 source.parent_room_id, source.archived_at,
-                source.human_actor_ids::text[] AS human_actor_ids
+                source.human_actor_ids::text[] AS human_actor_ids,
+                public.moderation_effective_humans(source.human_actor_ids, source.id)::text[] AS effective_human_actor_ids
            FROM rooms source
           WHERE source.id = $1::uuid
           LIMIT 2 FOR UPDATE OF source`,
@@ -1141,12 +1172,15 @@ export class PostgresNamespaceProductAuthority {
         )
       ) return null;
 
+      const effectiveSourceHumans = effectiveAudience(source, "effective_human_actor_ids", sourceHumans, input.subjectHumanId);
+      if (effectiveSourceHumans === null) return null;
       const targetRows = await transaction.query(
         `/* m291_namespace_key_readable_set_targets */
          SELECT target.id::text AS room_id,
                 target.namespace_id::text AS namespace_id,
                 target.parent_room_id, target.namespace_access_revision,
-                target.human_actor_ids::text[] AS human_actor_ids
+                target.human_actor_ids::text[] AS human_actor_ids,
+                public.moderation_effective_humans(target.human_actor_ids, target.id)::text[] AS effective_human_actor_ids
            FROM rooms target
           WHERE target.namespace_id = ANY($1::uuid[])
             AND target.parent_room_id IS NULL
@@ -1177,7 +1211,7 @@ export class PostgresNamespaceProductAuthority {
       );
       if (!await readableNamespacePolicyAllows(transaction, {
         sourceRoomId: input.sourceRoomId,
-        sourceHumanIds: sourceHumans,
+        sourceHumanIds: effectiveSourceHumans,
         namespaceIds: input.namespaceIds,
       })) return null;
       const subjectHumanId = humanId(input.subjectHumanId);
@@ -1199,8 +1233,10 @@ export class PostgresNamespaceProductAuthority {
             || storedHumans.length !== humans.length
             || storedHumans.some((value, index) => value !== humans[index])
           ) return null;
+          const effectiveHumans = effectiveAudience(row, "effective_human_actor_ids", humans, subjectHumanId);
+          if (effectiveHumans === null) return null;
           const audienceFingerprint =
-            fingerprintNamespaceGenerationAudience(humans);
+            fingerprintNamespaceGenerationAudience(effectiveHumans);
           fingerprints.push(audienceFingerprint);
           const handle = Object.freeze(
             {},
@@ -1211,7 +1247,7 @@ export class PostgresNamespaceProductAuthority {
             accessRevision: accessRevision(
               number(row, "namespace_access_revision"),
             ),
-            participantHumanIds: humans,
+            participantHumanIds: effectiveHumans,
             audienceFingerprint,
             subjectHumanId,
           }));

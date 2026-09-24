@@ -34,7 +34,7 @@ export async function requireServerFunding(
 }
 
 /**
- * Apply the canonical current-RBAC decision and render only a known absence as
+ * Apply the canonical current invocation decision and render a known denial as
  * the stable 403. Lookup failures remain server errors and create no work.
  */
 export async function requireAgentInvocation(

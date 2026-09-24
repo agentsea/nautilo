@@ -32,9 +32,27 @@ export type WsClientMeta = {
   userId: string;
   actorId: string;
   roomIds: Set<string>;
+  subscriptionRevision?: number;
 };
 
 const clients = new Map<WebSocket, WsClientMeta>();
+const pendingHumanAdmissions = new Map<WebSocket, string>();
+
+/** Track the async admission gap without making the socket a delivery recipient. */
+export function trackHumanSocketAdmission(socket: WebSocket, userId: string): () => void {
+  pendingHumanAdmissions.set(socket, userId);
+  const release = () => { pendingHumanAdmissions.delete(socket); };
+  socket.on("close", release);
+  return release;
+}
+
+export function interruptHumanSocketAdmissions(userId: string): void {
+  for (const [socket, ownerId] of pendingHumanAdmissions) {
+    if (ownerId !== userId) continue;
+    pendingHumanAdmissions.delete(socket);
+    if (socket.readyState === socket.OPEN) socket.close(4401, "access_changed");
+  }
+}
 const pendingBroadcasts = new Set<Promise<void>>();
 
 type DeliveryScope =
@@ -495,6 +513,32 @@ export function addClient(socket: WebSocket, meta: WsClientMeta) {
   });
 }
 
+/** Remove live delivery eligibility before initiating the close handshake. */
+export function disconnectHumanWebSockets(userId: string): void {
+  interruptHumanSocketAdmissions(userId);
+  for (const [socket, meta] of clients) {
+    if (meta.userId !== userId) continue;
+    meta.roomIds.clear();
+    clients.delete(socket);
+    if (socket.readyState === socket.OPEN) {
+      socket.send(JSON.stringify({ type: "auth.rejected", error: "server_access_withdrawn" }));
+      socket.close(4401, "server_access_withdrawn");
+    }
+  }
+  voiceDelivery.refresh();
+}
+
+/** Remove exact revoked Room subscriptions before any asynchronous refresh. */
+export function removeHumanRoomSubscriptions(userId: string, roomIds: ReadonlySet<string>): void {
+  interruptHumanSocketAdmissions(userId);
+  for (const meta of clients.values()) {
+    if (meta.userId !== userId) continue;
+    meta.subscriptionRevision = (meta.subscriptionRevision ?? 0) + 1;
+    for (const roomId of roomIds) meta.roomIds.delete(roomId);
+  }
+  voiceDelivery.refresh();
+}
+
 /**
  * reload room membership for every open WS owned by `userId`
  * (same `sessionActorId` on every tab for that user).
@@ -503,14 +547,22 @@ export async function refreshRoomSubscriptionsForUser(
   userId: string,
   sessionActorId: string,
 ): Promise<void> {
+  // A slower earlier refresh must never restore a revoked subscription.
+  const revisions = new Map<WsClientMeta, number>();
+  for (const meta of clients.values()) {
+    if (meta.userId !== userId) continue;
+    const revision = (meta.subscriptionRevision ?? 0) + 1;
+    meta.subscriptionRevision = revision;
+    revisions.set(meta, revision);
+  }
   const rows = await listRoomsForActor(sessionActorId, {
     includeRoster: false,
     includeSubthreads: true,
   });
   const next = new Set(rows.map((r) => r.id));
   for (const [, meta] of clients) {
-    if (meta.userId === userId) {
-      meta.roomIds = next;
+    if (meta.userId === userId && revisions.get(meta) === meta.subscriptionRevision) {
+      meta.roomIds = new Set(next);
     }
   }
   voiceDelivery.refresh();

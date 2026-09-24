@@ -1453,14 +1453,14 @@ describe("M275 selected Room-history Shadow projection", () => {
       if (statement.includes("m298_namespace_key_human_ai_readable_actor")) return [{ subject_user_id: USER_ID }];
       if (statement.includes("m298_namespace_key_human_ai_readable_source_room")) {
         return [{
-          source_room_id: ROOM_ID, source_kind: "group", source_parent_room_id: null, source_archived_at: null,
+          source_room_id: ROOM_ID, source_access_allowed: true, source_kind: "group", source_parent_room_id: null, source_archived_at: null,
           room_id: ROOM_ID,
           namespace_id: NAMESPACE_ID,
           kind: "group",
           parent_room_id: null,
           archived_at: null,
           namespace_access_revision: 4,
-          human_actor_ids: [HUMAN_ID, USER_ID].sort(),
+          human_actor_ids: [HUMAN_ID, USER_ID].sort(), effective_human_actor_ids: [HUMAN_ID, USER_ID].sort(),
           subject_user_id: USER_ID,
         }];
       }
@@ -1598,7 +1598,7 @@ describe("M275 selected Room-history Shadow projection", () => {
         } else if (statement.includes("m298_namespace_key_human_ai_readable_source_room")) {
           captures++;
           rows = scenario === "read_denied" ? [] : [{
-            source_room_id: ROOM_ID,
+            source_room_id: ROOM_ID, source_access_allowed: true,
             source_kind: "group",
             source_parent_room_id: null,
             source_archived_at: null,
@@ -1608,7 +1608,7 @@ describe("M275 selected Room-history Shadow projection", () => {
             parent_room_id: null,
             archived_at: null,
             namespace_access_revision: scenario === "access_changed" && captures === 2 ? 5 : 4,
-            human_actor_ids: humans,
+            human_actor_ids: humans, effective_human_actor_ids: humans,
             subject_user_id: USER_ID,
           }];
         } else if (statement.includes("m298_namespace_key_human_ai_readable_authority_members")) {

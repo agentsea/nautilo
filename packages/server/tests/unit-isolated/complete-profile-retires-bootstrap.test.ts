@@ -40,7 +40,10 @@ const ownerBoundTransitions: boolean[] = [];
 
 function selectFor(table: unknown, actorSelectCount: { value: number }) {
   if (table === invites) return { where: () => ({ for: () => ({ limit: async () => [invite] }), limit: async () => [invite] }) };
-  if (table === users) return { where: () => ({ limit: async () => [{ id: "user-1", handle: "alice", externalId: "sub-1" }] }) };
+  if (table === users) {
+    const read = async () => [{ id: "user-1", handle: "alice", externalId: "sub-1" }];
+    return { where: () => ({ limit: read, for: () => ({ limit: read }) }) };
+  }
   if (table === actors) {
     actorSelectCount.value += 1;
     const row = actorSelectCount.value === 1 ? { id: "actor-user" } : { agentId: "agent-1" };
@@ -49,8 +52,8 @@ function selectFor(table: unknown, actorSelectCount: { value: number }) {
   if (table === credentials) return { where: () => ({ limit: async () => [] }) };
   if (table === inviteRedemptions) return {
     where: () => ({
-      for: () => ({ limit: async () => [{ completedAt: null }] }),
-      limit: async () => [{ completedAt: null }],
+      for: () => ({ limit: async () => [{ completedAt: null, boundAdmissionEpoch: 0 }] }),
+      limit: async () => [{ completedAt: null, boundAdmissionEpoch: 0 }],
     }),
   };
   if (table === rooms) return {
@@ -87,6 +90,9 @@ function makeDb() {
 beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb: makeDb,
+    serverAdmission: { userId: "userId" },
+    moderationAccessAllowedSql: () => ({}),
+    sql: () => ({}),
     hasClaimedOwner: async () => false,
     inviteRedemptions, invites, users, actors, credentials, channelIdentities, groupMembers, profiles, rooms, roomMembers, groups, groupRoles, roles,
     eq, ne, and, asc, isNull,
@@ -99,6 +105,9 @@ beforeAll(() => {
     seedPersonalPrivateRoomInTx: async () => ({ roomId: "room-1" }),
   }));
   mock.module("@nautilo/trust", () => ({
+    prepareModerationEnrollmentInTx: async () => 0,
+    completeModerationEnrollmentInTx: async () => 0,
+    ModerationError: class extends Error {},
     hashPin: async () => "hashed-pin",
     generateRecoveryCodesInTx: async () => ["recovery"],
     findLocalUserByHandle: async () => null,

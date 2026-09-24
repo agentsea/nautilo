@@ -13,6 +13,7 @@ import { useAuth } from "../hooks/use-auth";
 import { Button, FieldRow, TextInput } from "../pages/settings/ui";
 import { PreAuthShell } from "../components/pre-auth-shell";
 import { roomPath } from "./room-route";
+import { EnrollmentReviewGate } from "./enrollment-review-gate";
 import { HANDLE_RE, HANDLE_INVALID_MESSAGE, normalizeHandle } from "@nautilo/types";
 
 const TOKEN_RE = /^inv_[A-Za-z0-9_-]+$/;
@@ -55,6 +56,10 @@ export function humanizeApiError(err: unknown, fallback: string): string {
       invite_target_unavailable:
         "The access group selected for this invite is no longer available. Ask an administrator for a new invite.",
       handle_taken: "That handle is already in use. Choose another one.",
+      enrollment_paused: "New joins are paused. Please check back later.",
+      join_message_required: "Please provide a short message explaining why you want to join.",
+      enrollment_review_required: "Your joining request must be approved before you can enter.",
+      enrollment_rejected: "Your joining request was declined. Contact the community administrators if you believe this was a mistake.",
     };
     if (messages[err.message]) return messages[err.message];
     if (err.status === 429) return "Too many attempts. Please wait a moment and try again.";
@@ -527,6 +532,7 @@ export function InviteRedeem() {
 
   if (state.kind === "profile") {
     return (
+      <EnrollmentReviewGate key={tokenParam} token={tokenParam!}>
       <PreAuthShell title="Finish your profile" scrim="page">
         <form
           className="text-left"
@@ -573,6 +579,7 @@ export function InviteRedeem() {
           </div>
         </form>
       </PreAuthShell>
+      </EnrollmentReviewGate>
     );
   }
 

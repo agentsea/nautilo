@@ -75,6 +75,7 @@ import {
 } from "../../src/realtime/ws-publisher";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 
 const OWNER_ID = "d440-owner";
 const OWNER_ACTOR_ID = "d440-owner-actor";
@@ -83,6 +84,7 @@ let app: FastifyInstance;
 let token: string;
 
 beforeAll(async () => {
+  await installResumeInvocationAuthority(OWNER_ID);
   const sessions = new SessionStore(undefined, { persistPath: null });
   app = Fastify({ logger: false });
   installLocalAuthPreHandlerStub(app, sessions);

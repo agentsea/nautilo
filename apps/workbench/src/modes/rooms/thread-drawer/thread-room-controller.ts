@@ -225,6 +225,8 @@ function isThreadEventForRoom(
 ): boolean {
   if (isProtectedMessageRealtimeEventV2(event)) return false;
   if (!state.roomId || event.type === "thread.summary.changed") return false;
+  if (event.type === "message.deleted" && eventRoomId(event, resolveRoomId) === state.parentRoomId
+    && state.anchor?.id === String(event.messageId)) return true;
   if (event.type === "message.updated") {
     const roomId = eventRoomId(event, resolveRoomId);
     const anchorMatch =
@@ -422,7 +424,7 @@ function applyThreadEvent(
         } as ThreadMessageLike;
       };
       const anchor =
-        state.anchor?.logicalMessageKey === event.logicalMessageKey &&
+        state.anchor?.role !== "system" && state.anchor?.logicalMessageKey === event.logicalMessageKey &&
         event.editRevision > (state.anchor.editRevision ?? 0)
           ? {
               ...state.anchor,
@@ -522,12 +524,18 @@ function applyThreadEvent(
         },
       };
     }
-    case "message.deleted":
+    case "message.deleted": {
+      if (state.anchor?.id === String(event.messageId)) {
+        const anchor = { id: state.anchor.id, role: "system", content: "Message removed by moderation", createdAt: state.anchor.createdAt,
+          replyCount: state.anchor.replyCount, lastReplyAt: state.anchor.lastReplyAt, summaryRevision: state.anchor.summaryRevision };
+        return { ...state, anchor, detail: state.detail ? { ...state.detail, anchor } : null };
+      }
       return {
         ...state,
         messages: state.messages.filter((message) => message.id !== String(event.messageId)),
         runtimeMessages: state.runtimeMessages.filter((message) => String(message.id) !== String(event.messageId)),
       };
+    }
     case "reaction.added":
       return {
         ...state,

@@ -29,6 +29,7 @@ import {
   type RelaySocketLike,
 } from "../../src/realtime/relay-endpoint";
 import {
+  getRelayTokenStore,
   resetRelayTokenStore,
   setRelayTokenStore,
   type RelayTokenStore,
@@ -77,6 +78,8 @@ function makeFakeRegistry(): {
 } {
   const calls: RegisteredCall[] = [];
   const registry: RelayRegistryLike = {
+    getUserId: () => null,
+    unregisterConnection: async () => {},
     async register(
       relayId,
       userId,
@@ -108,8 +111,8 @@ const FAKE_CAPS: RelayCapabilities = {
   canRunShell: true,
   allowedRoots: ["/tmp"],
   securityLevel: "standard",
-  userHome: "/Users/test",
-  dataDir: "/Users/test/.nautilo",
+  userHome: "/path/to/user",
+  dataDir: "/path/to/user/.nautilo",
   toolsBin: "/usr/local/bin",
 };
 
@@ -133,6 +136,7 @@ function stubStore(
     insertToken: async () => ({ id: "" }),
     pairForInstallation: async () => ({ id: "" }),
     findActiveByHash,
+    withRegistrationAdmission: (_row, publish) => publish(),
     touchLastSeen: async () => {},
     listForUser: async () => [],
     revokeForUser: async () => false,
@@ -142,6 +146,71 @@ function stubStore(
 describe("handleRelayRegister (M056)", () => {
   afterEach(() => {
     resetRelayTokenStore();
+  });
+
+  test("withdrawal between lookup and publication rejects registration", async () => {
+    stubStore(async () => ({ id: "pairing", userId: "human", actorId: "actor" }));
+    setRelayTokenStore({ ...getRelayTokenStore(), withRegistrationAdmission: async () => null });
+    const { socket } = makeFakeSocket();
+    const { registry, calls } = makeFakeRegistry();
+    const result = await handleRelayRegister(socket, makeRegisterMsg({ token: "rty_fixture" }), registry);
+    expect(result.outcome).toBe("rejected-invalid-token");
+    expect(calls).toHaveLength(0);
+    expect(socket.readyState).toBe(3);
+  });
+
+  test("a socket closed during token lookup never enters the registry", async () => {
+    const { socket } = makeFakeSocket();
+    stubStore(async () => {
+      socket.close();
+      return { id: "pairing", userId: "human", actorId: "actor" };
+    });
+    const { registry, calls } = makeFakeRegistry();
+    const result = await handleRelayRegister(socket, makeRegisterMsg({ token: "rty_fixture" }), registry);
+    expect(result.outcome).toBe("connection-closed");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a socket closed during registry publication retires only its exact connection", async () => {
+    stubStore(async () => ({ id: "pairing", userId: "human", actorId: "actor" }));
+    const { socket, events } = makeFakeSocket();
+    let installed: ((msg: unknown) => void) | undefined;
+    let retired = false;
+    const registry: RelayRegistryLike = {
+      getUserId: () => null,
+      register: async (_id, _user, _caps, send) => { installed = send; socket.close(); },
+      unregisterConnection: async (_id, send) => { expect(send).toBe(installed!); retired = true; },
+    };
+    expect((await handleRelayRegister(socket, makeRegisterMsg({ token: "rty_fixture" }), registry)).outcome).toBe("connection-closed");
+    expect(retired).toBe(true);
+    expect(events.some(e => (e.payload as { type?: string } | undefined)?.type === "relay:registered")).toBe(false);
+  });
+
+  test("the endpoint publishes its socket binding while admission is still locked", async () => {
+    stubStore(async () => ({ id: "pairing", userId: "human", actorId: "actor" }));
+    let locked = false;
+    let bound = false;
+    setRelayTokenStore({ ...getRelayTokenStore(), withRegistrationAdmission: async (_row, publish) => {
+      locked = true;
+      try { return await publish(); } finally { locked = false; }
+    } });
+    const { socket } = makeFakeSocket();
+    const { registry } = makeFakeRegistry();
+    const result = await handleRelayRegister(socket, makeRegisterMsg({ token: "rty_fixture" }), registry, undefined, () => {
+      expect(locked).toBe(true); bound = true;
+    });
+    expect(result.outcome).toBe("registered");
+    expect(bound).toBe(true);
+    expect(locked).toBe(false);
+  });
+
+  test("an existing relay id cannot be replaced by another paired Human", async () => {
+    stubStore(async () => ({ id: "pairing", userId: "different-human", actorId: "actor" }));
+    const { socket } = makeFakeSocket();
+    const { registry, calls } = makeFakeRegistry();
+    registry.getUserId = () => "original-human";
+    expect((await handleRelayRegister(socket, makeRegisterMsg({ token: "rty_fixture" }), registry)).outcome).toBe("rejected-invalid-token");
+    expect(calls).toHaveLength(0);
   });
 
   test("missing token → relay:error + 4401, registry untouched", async () => {
@@ -313,7 +382,7 @@ describe("handleRelayRegister (M056)", () => {
     const { registry, calls } = makeFakeRegistry();
     const v10Capabilities: RelayCapabilities = {
       ...FAKE_CAPS,
-      workspaceRoot: "/Users/test/Nautilo",
+      workspaceRoot: "/path/to/user/Nautilo",
     };
 
     const result = await handleRelayRegister(
@@ -334,7 +403,7 @@ describe("handleRelayRegister (M056)", () => {
 
     expect(result.outcome).toBe("registered");
     expect(calls[0]?.protocolVersion).toBe(RELAY_PROTOCOL_VERSION);
-    expect(calls[0]?.capabilities.workspaceRoot).toBe("/Users/test/Nautilo");
+    expect(calls[0]?.capabilities.workspaceRoot).toBe("/path/to/user/Nautilo");
     expect(events.some((event) =>
       event.kind === "send" &&
       (event.payload as { type?: string }).type === "relay:registered" &&
@@ -378,8 +447,8 @@ describe("handleRelayRegister (M056)", () => {
         protocolVersion: 9,
         capabilities: {
           ...FAKE_CAPS,
-          workspaceRoot: "/Users/test/Nautilo",
-          currentFolderRoot: "/Users/test/project",
+          workspaceRoot: "/path/to/user/Nautilo",
+          currentFolderRoot: "/path/to/user/project",
         },
       }),
       registry,

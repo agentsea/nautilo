@@ -56,6 +56,15 @@ export function presentEventFeedItem(input: {
       ?? roomActor?.displayName
       ?? (event.actorKind === "agent" ? "An agent" : "Someone");
 
+  if (event.type === "moderation.action") {
+    const subject = event.data.userId === null ? "a deleted account"
+      : humansById.get(event.data.userId)?.displayName ?? "a member";
+    const text = event.data.action === "lift" ? `You lifted a restriction on ${subject}.`
+      : `You ${event.data.action === "ban" ? "banned" : "kicked"} ${subject} from the Server.`;
+    return { text, roomId: null, roomLabel: null, roomUnavailable: false,
+      artifactId: null, artifactLabel: null, artifactUnavailable: false, kindLabel: "Moderation · Only you" };
+  }
+
   if (event.type === "artifact.added" || event.type === "artifact.shared") {
     const artifactId = event.data.artifactId;
     const artifact = artifactsById.get(artifactId) ?? null;

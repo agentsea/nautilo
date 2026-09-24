@@ -21,6 +21,13 @@ export const SENSITIVE_TABLES = [
   // replay history, not Agent runtime authority. Keep them denied after the
   // broad legacy/default grants are reconciled.
   "content_access_operations",
+  "group_moderation_scopes",
+  "moderation_subjects",
+  "moderation_restrictions",
+  "moderation_actions",
+  "server_admission",
+  "server_moderation_policy",
+  "invite_redemptions",
   ...CRYPTO_STORAGE_TABLE_NAMES,
   ...DOMAIN_KEY_AUTHORITY_TABLE_NAMES,
   // M257 — durable Reflection state is product-owned. Organizer/Sleep reach

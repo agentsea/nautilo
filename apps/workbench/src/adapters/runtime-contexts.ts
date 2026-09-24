@@ -58,6 +58,7 @@ export interface ThreadRoomRegistration {
   /** Parent lane mirrored only for an edit of the displayed anchor. */
   parentRoomId?: string;
   anchorLogicalMessageKey?: string;
+  anchorMessageId?: string;
   ingestEvent: (event: ServerEvent, resolveRoomId: ThreadRoomLaneResolver) => void;
   /** Allows lane-less job terminals only when this controller already knows the job. */
   ownsJobId: (jobId: string) => boolean;
@@ -117,6 +118,8 @@ export function shouldRouteEventToThreadRoom(
     ) {
       return true;
     }
+    if (event.type === "message.deleted" && roomId === registration.parentRoomId
+      && String(event.messageId) === registration.anchorMessageId) return true;
     return roomId === registration.roomId;
   }
   return (

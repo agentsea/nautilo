@@ -5,6 +5,7 @@ import {acquireEncryptionConsumptionFence, createPostgresJsCanonicalBridgeConnec
   reflectionRecordPayloadRepresentationHeads, reflectionRecordPayloadRepresentations, reflectionRecords,
   objectCryptoAccessHeads, objectCryptoNamespaceEnvelopes, rooms,
   type PostgresJsBridgeConnection} from "@nautilo/db";
+import {sql, moderationEffectiveHumanActorIdsSql} from "@nautilo/db";
 import type {LatticeCrypto} from "@nautilo/lattice-crypto";
 import {BACKGROUND_REFLECTION_MAX_NAMESPACES_V2, type BackgroundNamespaceAuthorityV2, type BackgroundReflectionWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import {cryptoTypedDb, executeTypedCryptoQuery} from "../storage/postgres-lattice-storage.ts";
@@ -111,7 +112,7 @@ export async function readPostgresReflectionAuthoritySourcePlan(input: Readonly<
   if (envelopes.length < 1 || envelopes.length > 256) return null;
   const roomNamespaces = sorted([...leaves, ...c.exactAccessNamespaceIds, ...envelopes.map(entry => entry.namespace_id)]);
   const query = cryptoTypedDb.select({roomId: rooms.id, namespaceId: rooms.namespaceId,
-    kind: rooms.kind, humans: rooms.humanActorIds, archived: rooms.archivedAt})
+    kind: rooms.kind, humans: rooms.humanActorIds, effective_human_actor_ids: moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`).as("effective_human_actor_ids"), archived: rooms.archivedAt})
     .from(rooms).where(and(inArray(rooms.namespaceId, roomNamespaces), isNull(rooms.parentRoomId))).orderBy(asc(rooms.id));
   const roomRows = await executeTypedCryptoQuery(input.product, input.lock === true ? query.for("update") : query);
   const byNamespace = new Map(roomRows.map(row => [row.namespace_id, row]));
@@ -120,7 +121,7 @@ export async function readPostgresReflectionAuthoritySourcePlan(input: Readonly<
   const sourceLeaves = leaves.map(namespace => {
     const room = byNamespace.get(namespace)!;
     return {terminalAuthorityLeafHandle: namespace,
-      alternatives: [{humanRefs: sorted(room.human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
+      alternatives: [{humanRefs: sorted(room.effective_human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
   });
   // Each current Room leaf has one alternative: N normalization operations
   // and at most N-1 combinations, using the canonical public-boundary algebra.
@@ -129,16 +130,16 @@ export async function readPostgresReflectionAuthoritySourcePlan(input: Readonly<
     || algebra.outcome.alternatives.length !== 1 || c.exactAccessNamespaceIds.length !== 1) return null;
   const humans = algebra.outcome.alternatives[0]!.humanRefs;
   const outputRoom = byNamespace.get(c.exactAccessNamespaceIds[0]!)!;
-  if (outputRoom.kind !== "access" || !sameStrings(sorted(outputRoom.human_actor_ids), humans)) return null;
+  if (outputRoom.kind !== "access" || !sameStrings(sorted(outputRoom.effective_human_actor_ids), humans)) return null;
   const sourceEnvelope = envelopes.find(entry => (input.selectedSourceNamespaceId === undefined || entry.namespace_id === input.selectedSourceNamespaceId)
-    && humans.some(human => byNamespace.get(entry.namespace_id)!.human_actor_ids.includes(human)));
+    && humans.some(human => byNamespace.get(entry.namespace_id)!.effective_human_actor_ids.includes(human)));
   if (sourceEnvelope === undefined) return null;
   const sourceManifestHash = Uint8Array.from(sourceEnvelope.manifest_hash);
   const canonical = new TextEncoder().encode(JSON.stringify([
     "nautilo/reflection/authority-source/v2", c.recordRef, c.sourceChangeGeneration, c.expectedProjectionGeneration,
     c.expectedRepresentationGeneration, c.targetRepresentationGeneration, representation.crypto_object_id, sourceEnvelope.namespace_id,
     Array.from(sourceManifestHash), leaves, c.exactAccessNamespaceIds,
-    roomNamespaces.map(namespace => {const room = byNamespace.get(namespace)!; return [namespace, room.id, room.kind, sorted(room.human_actor_ids)];}),
+    roomNamespaces.map(namespace => {const room = byNamespace.get(namespace)!; return [namespace, room.id, room.kind, sorted(room.effective_human_actor_ids)];}),
   ]));
   const fingerprint = input.crypto.hash(canonical); canonical.fill(0);
   const requirements = sorted([sourceEnvelope.namespace_id, ...c.exactAccessNamespaceIds]);
@@ -185,7 +186,16 @@ export async function withPostgresReflectionAuthoritySourcePlan<Value>(input: Re
       const domains = new PostgresDomainKeyAuthorityRepository(input.restricted, input.crypto, input.serverScope);
       for (const coordinate of plan.namespaceRooms) {
         const current = await domains.inspectForegroundNamespaceAuthority({namespaceId: coordinate.namespaceId, keyClass: "ai"});
-        if (current.status !== "ready") {
+        const authorityRows = await executeTypedCryptoQuery(product, cryptoTypedDb
+          .select({ revision: rooms.namespaceAccessRevision }).from(rooms)
+          .where(and(eq(rooms.id, coordinate.roomId), eq(rooms.namespaceId, coordinate.namespaceId))));
+        if (current.status !== "ready" || authorityRows.length !== 1
+          || authorityRows[0]!.namespace_access_revision !== current.namespaceAccessRevision) {
+          if (current.status === "ready") {
+            for (const digest of [current.namespaceHeadDigest, current.namespacePublicationDigest,
+              current.namespacePublicationSetDigest, current.namespaceAudienceFingerprint,
+              current.domainHeadDigest, current.bundleDigest]) digest.fill(0);
+          }
           missingNamespace = coordinate;
           return null;
         }

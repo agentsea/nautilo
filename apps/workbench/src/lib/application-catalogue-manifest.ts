@@ -67,6 +67,7 @@ export const APPLICATION_CATALOGUE_MANIFEST_V1 = [
   entry("admin.search", "admin", "search", "Search", ["Server admin", "Search"], "Configure server-wide web search behavior.", ["search", "web research", "search provider"]),
   entry("admin.costs", "admin", "costs", "Costs", ["Server admin", "Costs"], "Review server usage costs.", ["server costs", "usage costs", "spending"]),
   entry("admin.users", "admin", "users", "Users", ["Server admin", "Users"], "Manage server users.", ["admin users", "server users"]),
+  entry("admin.moderation", "admin", "moderation", "Moderation", ["Server admin", "Moderation"], "Review joining requests, pause enrollment, and manage Server bans and kicks.", ["community moderation", "ban member", "kick member", "pause joins", "joining requests", "enrollment approval"]),
   entry("admin.invites", "admin", "invites", "Invites", ["Server admin", "Invites"], "Manage server invitations.", ["invites", "invitations"]),
   entry("admin.reports", "admin", "reports", "Reports", ["Server admin", "Reports"], "Review content and person reports submitted to this server.", ["reports", "content reports", "moderation queue", "reported messages"]),
   entry("admin.audit_log", "admin", "audit-log", "Audit log", ["Server admin", "Audit log"], "Review server audit records.", ["audit log", "audit"]),

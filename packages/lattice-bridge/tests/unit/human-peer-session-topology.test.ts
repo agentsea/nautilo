@@ -54,7 +54,7 @@ for (const sessionAgent of [null, AGENT]) {
           return [{
             room_id: ROOM, namespace_id: NAMESPACE, kind,
             parent_room_id: null, archived_at: null, namespace_access_revision: 1,
-            human_actor_ids: [...humans], subject_user_id: USER,
+            human_actor_ids: [...humans], effective_human_actor_ids: [...humans], subject_user_id: USER,
           }];
         }
         if (statement.includes("m295_namespace_key_human_only_product_members")) {

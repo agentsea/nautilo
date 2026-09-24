@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import {
   bigint,
+  check,
   index,
   integer,
   pgTable,
@@ -171,6 +172,11 @@ export const rooms = pgTable(
      * `sessions.ts`).
      */
     threadRootMessageId: integer("thread_root_message_id"),
+    /** Content-free thread anchor retained after a moderation hard delete. */
+    deletedThreadRootMessageId: integer("deleted_thread_root_message_id"),
+    deletedThreadReplyCount: integer("deleted_thread_reply_count").notNull().default(0),
+    deletedThreadLastReplyAt: timestamp("deleted_thread_last_reply_at", { withTimezone: true }),
+    deletedThreadSummaryRevision: integer("deleted_thread_summary_revision").notNull().default(0),
     createdBy: uuid("created_by").references(() => actors.id, {
       onDelete: "set null",
     }),
@@ -196,6 +202,7 @@ export const rooms = pgTable(
       .default("advanced"),
   },
   (table) => [
+    check("rooms_thread_anchor_shape", sql`(${table.kind} = 'subthread') = (${table.parentRoomId} IS NOT NULL AND (${table.threadRootMessageId} IS NOT NULL OR ${table.deletedThreadRootMessageId} IS NOT NULL)) AND (${table.deletedThreadRootMessageId} IS NULL OR (${table.kind} = 'subthread' AND (${table.threadRootMessageId} IS NULL OR ${table.threadRootMessageId} = ${table.deletedThreadRootMessageId})))`),
     index("idx_rooms_owner_type").on(table.ownerId, table.type),
     // M044 — backs the `human_actor_ids @> ARRAY[...]` containment
     // lookup in findReadableNamespacesForSubset. GIN on uuid[] is
