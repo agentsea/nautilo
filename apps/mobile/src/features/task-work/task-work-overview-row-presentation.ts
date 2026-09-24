@@ -1,6 +1,7 @@
 import type { TaskPresentationStatus } from "@nautilo/types";
 
 import type { TaskWorkOverviewDisplayRow } from "./task-work-overview-presentation";
+import { mobileTaskSummaryContent } from "./task-content-mobile";
 
 export type TaskWorkOverviewRowPresentation = {
   readonly prompt: string;
@@ -26,10 +27,13 @@ export function presentTaskWorkOverviewRow(input: {
   readonly nowMs: number;
 }): TaskWorkOverviewRowPresentation {
   const { row } = input.displayRow;
+  const content = mobileTaskSummaryContent(row.task);
   return {
     // Render every nonempty server value byte-for-byte; whitespace is only
     // inspected to decide whether the fixed missing-identity fallback applies.
-    prompt: row.task.prompt.trim() ? row.task.prompt : "Untitled task",
+    prompt: content.prompt.trim()
+      ? content.prompt
+      : "Untitled task",
     agentName: row.task.agentName?.trim() ? row.task.agentName : "Assigned Genie",
     statusLabel: taskWorkStatusLabel(row.status),
     activity: row.activity,

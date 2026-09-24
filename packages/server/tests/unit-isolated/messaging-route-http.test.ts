@@ -70,6 +70,7 @@ mock.module("@nautilo/trust", () => ({
       throw new actualTrust.AgentInvocationDeniedError(input);
     }
   },
+  assertCanUseServerProviderCredentials: async () => {},
   userHasCapability: async (_userId: string, capability: string) =>
     capability === "manage_rooms" && manageRoomsCapabilityEnabled,
   // M133 — the room-message route gates on the caller being a verified

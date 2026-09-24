@@ -130,6 +130,7 @@ const EXPECTED_V2_RUNTIME_EXPORTS = Object.freeze([
   "assertAgentRuntimeDomainEnvelope",
   "assertAgentRuntimeGeneration",
   "assertAuthenticPreparedAgentMemoryDeletionV1",
+  "assertAuthenticPreparedAgentObjectAccessManifestGenesisSetV3",
   "assertAuthenticPreparedAgentObjectAccessManifestUpdateSetV3",
   "assertAuthenticPreparedHumanMemoryDeletionV1",
   "assertAuthenticPreparedHumanObjectAccessManifestGenesisSetV1",

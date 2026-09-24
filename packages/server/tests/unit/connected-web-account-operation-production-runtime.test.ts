@@ -305,8 +305,9 @@ test("D568 production composition preserves sealed read authority after a cursor
     sealedIntent: secrets.sealIntent({
       context,
       intent: JSON.stringify({
-        version: 1,
+        version: 2,
         kind: "read_connected_web_account",
+        fundingHumanUserId: context.ownerUserId,
         origin: "https://example.com",
         request: "Read the current balance.",
         delivery: "text",

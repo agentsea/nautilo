@@ -47,6 +47,14 @@ describe("resolveViewerRole (D420 — highestRole authority)", () => {
     expect(resolveViewerRole("member", [])).toBe("member");
   });
 
+  test("Community is recognized from the server and ranked above Guest", () => {
+    expect(resolveViewerRole("community", [])).toBe("community");
+    expect(resolveViewerRole(null, [
+      { id: "guest", type: "guests", label: "Guests", roleSlug: "guest" },
+      { id: "community", type: "communities", label: "Community", roleSlug: "community" },
+    ])).toBe("community");
+  });
+
   test("populated groups + null highestRole → falls back to group-chip ranking", () => {
     expect(resolveViewerRole(null, [ownerChip, memberChip])).toBe("owner");
   });

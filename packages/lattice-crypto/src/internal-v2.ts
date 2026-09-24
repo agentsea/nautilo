@@ -402,6 +402,7 @@ export {
   prepareDeviceWrappedLiveShadowAgentObjectAccessManifestGenesisV1,
 } from "./object/agent-access-manifest.ts";
 export {
+  assertAuthenticPreparedAgentObjectAccessManifestGenesisSetV3,
   assertAuthenticPreparedAgentObjectAccessManifestUpdateSetV3,
   assertAuthenticPreparedAgentMemoryDeletionV1,
   prepareAgentObjectAccessManifestGenesisSetV3,

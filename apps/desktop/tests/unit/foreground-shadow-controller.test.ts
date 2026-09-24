@@ -47,6 +47,7 @@ type FactoryOverrides = Partial<{
   sharedAgentOutputReceiver: Record<string, unknown>;
   historyReader: Record<string, unknown>;
   humanMemory: Record<string, unknown>;
+  humanTask: Record<string, unknown>;
   messageBackfill: Record<string, unknown>;
   backgroundAuthorization: Record<string, unknown>;
   custodyDispose: () => Promise<void>;
@@ -139,6 +140,13 @@ function factories(
       makePrivate: async (memoryId: string) => ({ status: "updated", memoryId }),
       ...overrides.humanMemory,
     }) as never,
+    createHumanTask: () => ({
+      list: async () => [],
+      open: async (task: unknown) => ({ task, content: { status: "protected" } }),
+      create: async () => ({ taskId: "task-1", status: "pending", nextFireAt: null }),
+      update: async (current: unknown) => current,
+      ...overrides.humanTask,
+    }) as never,
     createMessageBackfill: () => ({
       prioritize: () => undefined,
       runBatch: async () => ({ state: "caught_up", resumeAt: null }),
@@ -193,6 +201,33 @@ function controllerInput(input: Readonly<{
 }
 
 describe("ElectronForegroundShadowController", () => {
+  test("routes protected Task list, open, create, and update through main custody", async () => {
+    const calls: string[] = [];
+    const summary = { id: "task-1", content: { status: "protected" } };
+    const controller = createElectronForegroundShadowController(controllerInput({
+      api: {
+        setToken: () => undefined,
+        admin: { encryptionTransition: { getPolicy: async () => ({
+          policy: { mode: "encrypted_only", shadowBehavior: "strict",
+            revision: 7, updatedAt: "2026-09-01T00:00:00.000Z" },
+        }) } },
+      } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ humanTask: {
+        list: async () => { calls.push("list"); return [summary]; },
+        open: async () => { calls.push("open"); return { task: summary,
+          content: { status: "protected", payload: { prompt: "private" } } }; },
+        create: async () => { calls.push("create"); return { taskId: "task-1" }; },
+        update: async () => { calls.push("update"); return summary; },
+      } }),
+    }));
+
+    expect(await controller.taskList({})).toEqual([summary]);
+    expect((await controller.taskOpen(summary as never)).content.status).toBe("protected");
+    expect((await controller.taskCreate({} as never)).taskId).toBe("task-1");
+    expect((await controller.taskUpdate(summary as never, {} as never)).id).toBe("task-1");
+    expect(calls).toEqual(["list", "open", "create", "update"]);
+  });
+
   test("coalesces one Message backfill batch and aborts it without exposing content", async () => {
     const prioritized: unknown[] = [];
     const signals: AbortSignal[] = [];

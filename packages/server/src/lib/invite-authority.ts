@@ -26,8 +26,10 @@ export function inviteRoleAllowed(
   authority: InviteAuthority,
   role: ServerRoleSlug,
 ): boolean {
-  return authority.canManageAll
-    || (authority.canCreateOwn && SELF_SERVICE_TARGET_ROLES.has(role));
+  return role !== "community" && (
+    authority.canManageAll
+    || (authority.canCreateOwn && SELF_SERVICE_TARGET_ROLES.has(role))
+  );
 }
 
 export function inviteRoomAllowed(

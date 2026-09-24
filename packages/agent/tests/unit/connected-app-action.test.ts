@@ -51,6 +51,7 @@ describe("D456 generic connected-app action projection", () => {
     setConnectedAppActionRuntime({ execute });
     const tool = createConnectedAppActionTool(admission, {
       userId: "11111111-1111-4111-8111-111111111111",
+      causalHumanUserId: "33333333-3333-4333-8333-333333333333",
       memoryAccessEnvelope: {
         memoryMode: "namespace",
         writableNamespaces: ["22222222-2222-4222-8222-222222222222"],
@@ -66,6 +67,7 @@ describe("D456 generic connected-app action projection", () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
       userId: "11111111-1111-4111-8111-111111111111",
+      causalHumanUserId: "33333333-3333-4333-8333-333333333333",
       namespaceId: "22222222-2222-4222-8222-222222222222",
       memoryAccessEnvelope: {
         memoryMode: "namespace",

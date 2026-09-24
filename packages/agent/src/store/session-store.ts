@@ -22,9 +22,11 @@ import {
   type MessageAttachmentRef,
 } from "@nautilo/types";
 import {
+  assertCanUseServerProviderCredentials,
   appendCanonicalTranscriptRowsInTx,
   isCountedReplyRow as isCanonicalCountedReplyRow,
   type AppendNotificationContext,
+  ServerProviderCredentialsDeniedError,
 } from "@nautilo/trust";
 import { withAgentTrustContext, withSerializableAgentTrustContext, type TrustAgentTx } from "./trust-agent-db";
 import { createUniversalModel } from "../providers/universal";
@@ -1170,14 +1172,60 @@ export interface SessionSearchResult {
   summary: string;
 }
 
+type SessionSearchSummarySource = readonly [
+  sessionId: string,
+  data: { title: string | null; startedAt: Date; snippets: readonly string[] },
+];
+
+export async function summarizeSessionSearchSources(
+  sources: readonly SessionSearchSummarySource[],
+  input: {
+    readonly humanUserId: string;
+    readonly query: string;
+    readonly model: { invoke(messages: BaseMessage[]): Promise<unknown> };
+    readonly assertServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  },
+): Promise<SessionSearchResult[]> {
+  const humanUserId = input.humanUserId.trim();
+  if (!humanUserId) {
+    throw new ServerProviderCredentialsDeniedError("", "session_search");
+  }
+  return Promise.all(sources.map(async ([sessionId, data]) => {
+    const prompt = [
+      "Summarize the following conversation excerpts in 2-3 sentences.",
+      `Focus only on what is relevant to this query: "${input.query}"`,
+      "",
+      ...data.snippets.map((snippet, i) => `Excerpt ${i + 1}: ${snippet}`),
+    ].join("\n");
+
+    await (input.assertServerProviderCredentials
+      ?? assertCanUseServerProviderCredentials)(humanUserId, "session_search");
+    const response = await runWithUsageContext(
+      { callType: "session_search" },
+      () => input.model.invoke([new HumanMessage(prompt)]),
+    );
+    const summary = visibleTranscriptContent(response as BaseMessage);
+
+    return {
+      sessionId,
+      title: data.title,
+      startedAt: data.startedAt,
+      snippets: [...data.snippets],
+      summary,
+    };
+  }));
+}
+
 export async function searchSessions(opts: {
   ownerId: string;
+  /** Exact Human who caused the search; distinct from the transcript owner. */
+  humanUserId: string;
   personaId: string;
   query: string;
   limit?: number;
   excludeThreadId?: string;
 }): Promise<SessionSearchResult[]> {
-  const { ownerId, personaId, query, limit = 5, excludeThreadId } = opts;
+  const { ownerId, humanUserId, personaId, query, limit = 5, excludeThreadId } = opts;
 
   const grouped = await withSessionTrustContext(ownerId, undefined, async (tx) => {
     // Raw SQL: Drizzle has no native full-text search support — needs
@@ -1232,32 +1280,11 @@ export async function searchSessions(opts: {
   });
   const model = await createUniversalModel(modelId);
 
-  const summaries = await Promise.all(
-    selected.map(async ([sessionId, data]) => {
-      const prompt = [
-        `Summarize the following conversation excerpts in 2-3 sentences.`,
-        `Focus only on what is relevant to this query: "${query}"`,
-        "",
-        ...data.snippets.map((snippet, i) => `Excerpt ${i + 1}: ${snippet}`),
-      ].join("\n");
-
-      const response = await runWithUsageContext(
-        { callType: "session_search" },
-        () => model.invoke([new HumanMessage(prompt)]),
-      );
-      const summary = visibleTranscriptContent(response as BaseMessage);
-
-      return {
-        sessionId,
-        title: data.title,
-        startedAt: data.startedAt,
-        snippets: data.snippets,
-        summary,
-      };
-    }),
-  );
-
-  return summaries;
+  return summarizeSessionSearchSources(selected, {
+    humanUserId,
+    query,
+    model,
+  });
 }
 
 function getRole(message: BaseMessage): string {

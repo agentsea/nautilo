@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isCompanionAction, isCompanionAvatar, isCompanionBinding, isCompanionSnapshot, shouldShowCompanion } from "../../electron/companion-contract";
+import { emptyCompanionSnapshot, isCompanionAction, isCompanionAvatar, isCompanionBinding, isCompanionSnapshot, shouldShowCompanion } from "../../electron/companion-contract";
 
 test("visibility follows the Workbench owner, not application-wide focus", () => {
   const away = { enabled: true, ownerCurrent: true, mainFocused: false, mainDialogFocused: false };
@@ -10,6 +10,12 @@ test("visibility follows the Workbench owner, not application-wide focus", () =>
   expect(shouldShowCompanion({ ...away, enabled: false })).toBe(false);
 });
 test("surface contract accepts fixed controls and rejects malformed commands", () => {
+  expect(isCompanionAction({ type: "sound", enabled: false })).toBe(true);
+  expect(isCompanionAction({ type: "sound", enabled: "false" })).toBe(false);
+  expect(isCompanionAction({ type: "talk" })).toBe(true);
+  expect(isCompanionAction({ type: "view", value: "waveform" })).toBe(false);
+  expect(isCompanionAction({ type: "audio-collapse", collapsed: true })).toBe(false);
+  expect(isCompanionAction({ type: "audio-collapse", collapsed: 1 })).toBe(false);
   expect(isCompanionAction({ type: "send", text: "Hi" })).toBe(true);
   expect(isCompanionAction({ type: "send", text: 4 })).toBe(false);
   expect(isCompanionAction({ type: "view", value: "chat" })).toBe(true);
@@ -28,4 +34,12 @@ test("avatar transport admits only inline PNG and fixed bubble appearance choice
   expect(isCompanionAction({ type: "bubble-appearance", value: "avatar" })).toBe(true);
   expect(isCompanionAction({ type: "bubble-appearance", value: "orb" })).toBe(true);
   expect(isCompanionAction({ type: "bubble-appearance", value: "remote" })).toBe(false);
+});
+
+test("stoppable speech state is optional for older Workbench snapshots and strictly typed", () => {
+  const snapshot = emptyCompanionSnapshot({ roomId: "room-a", agentId: "genie-a", botActorId: "bot-a", name: "Genie" });
+  expect(isCompanionSnapshot({ ...snapshot, speaking: false, canStopTalking: true })).toBe(true);
+  delete snapshot.canStopTalking;
+  expect(isCompanionSnapshot(snapshot)).toBe(true);
+  expect(isCompanionSnapshot({ ...snapshot, canStopTalking: "true" })).toBe(false);
 });

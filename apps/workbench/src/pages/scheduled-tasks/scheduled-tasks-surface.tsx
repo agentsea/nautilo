@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import { Search } from "lucide-react";
 import { ScheduledTaskCard } from "./ScheduledTaskCard";
+import { ProtectedScheduledTaskCard } from "./ProtectedScheduledTaskCard";
 import { filterBySearch } from "./scheduled-tasks-view-model";
 import { useScheduledTasks } from "./use-scheduled-tasks";
 
@@ -13,10 +14,23 @@ import { useScheduledTasks } from "./use-scheduled-tasks";
  * — exit via normal route navigation (rail, back, or clicking Files/Artifacts).
  */
 export function ScheduledTasksSurface(): ReactElement {
-  const { tasks, loading, error, busyIds, disable, enable, remove } = useScheduledTasks();
+  const { tasks, protectedTasks, protectedLoading, loading, error,
+    busyIds, disable, enable, remove } = useScheduledTasks();
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => filterBySearch(tasks, query), [tasks, query]);
+  const protectedVisible = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return protectedTasks;
+    return protectedTasks.filter(({ task, prompt }) => [
+      prompt,
+      task.agentName ?? "",
+      task.cron ?? "",
+      task.scheduleKind,
+      task.status,
+      "protected",
+    ].join(" ").toLowerCase().includes(normalized));
+  }, [protectedTasks, query]);
 
   return (
     <div
@@ -49,7 +63,7 @@ export function ScheduledTasksSurface(): ReactElement {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading ? (
+        {loading || (protectedLoading && tasks.length === 0) ? (
           <p
             className="px-6 py-10 text-sm text-foreground-muted"
             data-testid="scheduled-tasks-loading"
@@ -64,7 +78,8 @@ export function ScheduledTasksSurface(): ReactElement {
           >
             {error}
           </p>
-        ) : tasks.length === 0 ? (
+        ) : tasks.length === 0 && protectedTasks.length === 0
+          && !protectedLoading ? (
           <p
             className="px-6 py-10 text-sm text-foreground-muted"
             data-testid="scheduled-tasks-empty"
@@ -72,7 +87,7 @@ export function ScheduledTasksSurface(): ReactElement {
             No scheduled tasks yet. Ask your agent to schedule something — e.g.
             “remind me every weekday at 9am”.
           </p>
-        ) : visible.length === 0 ? (
+        ) : visible.length === 0 && protectedVisible.length === 0 ? (
           <p
             className="px-6 py-10 text-sm text-foreground-muted"
             data-testid="scheduled-tasks-no-matches"
@@ -86,6 +101,16 @@ export function ScheduledTasksSurface(): ReactElement {
                 key={task.id}
                 task={task}
                 busy={busyIds.has(task.id)}
+                onEnable={enable}
+                onDisable={disable}
+                onRemove={remove}
+              />
+            ))}
+            {protectedVisible.map((row) => (
+              <ProtectedScheduledTaskCard
+                key={row.task.id}
+                row={row}
+                busy={busyIds.has(row.task.id)}
                 onEnable={enable}
                 onDisable={disable}
                 onRemove={remove}

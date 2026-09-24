@@ -11,7 +11,7 @@ import { readTaskPreparation } from "@nautilo/types";
  * Phase 2 can pass either a pooled `DirectDatabase` or a transaction-
  * scoped handle) rather than reaching for a module-level singleton.
  */
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
 import { taskRuns, type TaskRun, type NewTaskRun } from "../schema/task-runs";
@@ -142,6 +142,27 @@ export async function getTaskById(
   id: string,
 ): Promise<Task | undefined> {
   const [row] = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+  return row;
+}
+
+/**
+ * Read a Task together with PostgreSQL's exact tuple version for a later
+ * optimistic mutation. JavaScript Date cannot preserve PostgreSQL's
+ * microsecond timestamp precision, so updated_at is unsuitable as a
+ * round-tripped compare-and-swap token.
+ */
+export async function getTaskByIdWithMutationVersion(
+  db: DirectDatabase,
+  id: string,
+): Promise<(Task & { mutationVersion: string }) | undefined> {
+  const [row] = await db
+    .select({
+      ...getTableColumns(tasks),
+      mutationVersion: sql<string>`${tasks}.xmin::text`,
+    })
+    .from(tasks)
+    .where(eq(tasks.id, id))
+    .limit(1);
   return row;
 }
 
@@ -276,6 +297,38 @@ export async function updateTask(
     .update(tasks)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(tasks.id, id))
+    .returning();
+  return row;
+}
+
+/**
+ * Owner-scoped optimistic update for an externally prepared Task PATCH.
+ * Every authority coordinate observed before validation participates in the
+ * write predicate, so an intervening lifecycle or protected-content update
+ * wins instead of being overwritten. Internal lifecycle callers continue to
+ * use `updateTask` where their own transaction supplies the authority fence.
+ */
+export async function updateTaskIfCurrent(
+  db: DirectDatabase,
+  input: Readonly<{
+    id: string;
+    ownerId: string;
+    expectedStatus: "pending" | "paused";
+    expectedMutationVersion: string;
+    expectedContentRevision: number;
+  }>,
+  patch: Partial<NewTask>,
+): Promise<Task | undefined> {
+  const [row] = await db
+    .update(tasks)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(and(
+      eq(tasks.id, input.id),
+      eq(tasks.ownerId, input.ownerId),
+      eq(tasks.status, input.expectedStatus),
+      sql`${tasks}.xmin::text = ${input.expectedMutationVersion}`,
+      eq(tasks.contentRevision, input.expectedContentRevision),
+    ))
     .returning();
   return row;
 }
@@ -1463,6 +1516,7 @@ export async function claimDueTasks(
       .where(
         and(
           eq(tasks.status, "pending"),
+          eq(tasks.contentRepresentation, "ordinary"),
           lte(tasks.nextFireAt, now),
           isNull(tasks.fireLockId),
         ),

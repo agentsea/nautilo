@@ -9,6 +9,12 @@ import {
 } from "@nautilo/runtime";
 import {
   createAcceptedInvocationAuthority,
+  assertCanInvokeAgent,
+  assertCanUseServerProviderCredentials,
+  AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
+  isUuidString,
+  type AgentInvocationAdmissionInput,
   getPolicyResolver,
 } from "@nautilo/trust";
 import {
@@ -21,6 +27,26 @@ import type { ConnectedWebOperationSecrets } from "./operation-secrets";
 
 const DEFAULT_BATCH = 4;
 const DEFAULT_LEASE_MS = 60_000;
+
+function sealedFundingHuman(
+  operation: ConnectedWebOperation,
+  secrets: Pick<ConnectedWebOperationSecrets, "unsealIntent"> | undefined,
+): string | null {
+  if (!secrets) return null;
+  try {
+    const intent = JSON.parse(secrets.unsealIntent({
+      context: { operationId: operation.id, ownerUserId: operation.ownerUserId, accountId: operation.accountId },
+      sealedIntent: operation.sealedIntent,
+    })) as Record<string, unknown>;
+    const human = intent["fundingHumanUserId"];
+    return intent["version"] === 2
+      && typeof human === "string" && isUuidString(human)
+      && intent["deliveryId"] === operation.deliveryId
+      && intent["threadId"] === operation.initiatingThreadId
+      && intent["lane"] === operation.initiatingLane
+      ? human : null;
+  } catch { return null; }
+}
 
 type ConnectedWebOperationWakeJobManager = Pick<typeof jobManager, "createSystemForegroundJob">;
 
@@ -68,6 +94,8 @@ export function createConnectedWebOperationWakeExecutor(options: {
       || current.initiatingAgentId !== expected.initiatingAgentId || current.initiatingRoomId !== expected.initiatingRoomId
       || current.initiatingThreadId !== expected.initiatingThreadId || current.initiatingLane !== expected.initiatingLane
       || current.controlEpoch !== expected.controlEpoch || current.wakeFingerprint !== expected.wakeFingerprint) return;
+    const fundingHumanUserId = sealedFundingHuman(current, options.secrets);
+    if (!fundingHumanUserId || input["requestorId"] !== fundingHumanUserId) return;
     const envelope = await options.resolveEnvelope(current);
     let voiceMode = false;
     if (options.secrets) {
@@ -76,7 +104,7 @@ export function createConnectedWebOperationWakeExecutor(options: {
           context: { operationId: current.id, ownerUserId: current.ownerUserId, accountId: current.accountId },
           sealedIntent: current.sealedIntent,
         })) as Record<string, unknown>;
-        voiceMode = intent["version"] === 1 && (intent["kind"] === "read_connected_web_account" || intent["kind"] === "browse_web" || intent["kind"] === "run_website_task") && intent["voiceMode"] === true;
+        voiceMode = intent["version"] === 2 && (intent["kind"] === "read_connected_web_account" || intent["kind"] === "browse_web" || intent["kind"] === "run_website_task") && intent["voiceMode"] === true;
       } catch { /* Older or unreadable response preferences do not enable speech. */ }
     }
     if (signal.aborted) return;
@@ -108,6 +136,8 @@ export async function deliverConnectedWebOperationWakes(input: {
   readonly secrets?: Pick<ConnectedWebOperationSecrets, "unsealIntent">;
   readonly resolveEnvelope?: (operation: ConnectedWebOperation) => Promise<unknown>;
   readonly operations?: ConnectedWebOperationWakeOperations;
+  readonly assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
+  readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
 }): Promise<{ readonly claimed: number; readonly accepted: number; readonly delivered: number }> {
   const now = input.now ?? (() => new Date());
   const store = input.operations === undefined ? createConnectedWebAccountStore(input.db) : null;
@@ -133,6 +163,20 @@ export async function deliverConnectedWebOperationWakes(input: {
       continue;
     }
     try {
+      const fundingHumanUserId = sealedFundingHuman(operation, input.secrets);
+      if (!fundingHumanUserId) {
+        throw new ServerProviderCredentialsDeniedError("", "connected_web_operation_wake");
+      }
+      await (input.assertInvocation ?? assertCanInvokeAgent)({
+        humanUserId: fundingHumanUserId,
+        origin: "foreground_resume",
+        roomId: operation.initiatingRoomId,
+        agentId: operation.initiatingAgentId,
+      });
+      await (input.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+        fundingHumanUserId,
+        "connected_web_operation_wake",
+      );
       const resolveEnvelope = input.resolveEnvelope ?? (async (operation: ConnectedWebOperation) => {
         const resolver = getPolicyResolver();
         if (!resolver) throw new Error("policy resolver unavailable");
@@ -157,12 +201,13 @@ export async function deliverConnectedWebOperationWakes(input: {
       const envelope = await resolveEnvelope(operation);
       await (input.jobs ?? jobManager).createSystemForegroundJob(
         operation.ownerUserId,
-        operation.ownerUserId,
+        fundingHumanUserId,
         operation.initiatingLane,
         {
           message: connectedWebOperationWakeMessage(operation),
           ownerId: operation.ownerUserId,
-          requestorId: operation.ownerUserId,
+          requestorId: fundingHumanUserId,
+          causalHumanUserId: fundingHumanUserId,
           agentId: operation.initiatingAgentId,
           roomId: operation.initiatingRoomId,
           roomRoster: [],
@@ -188,7 +233,7 @@ export async function deliverConnectedWebOperationWakes(input: {
         }),
         createMaintenanceAcceptanceAuthority(),
         undefined,
-        createAcceptedInvocationAuthority(operation.ownerUserId),
+        createAcceptedInvocationAuthority(fundingHumanUserId),
       );
       accepted += 1;
       if (await operations.complete({
@@ -197,7 +242,17 @@ export async function deliverConnectedWebOperationWakes(input: {
         expectedWakeFingerprint: fingerprint,
         now: now(),
       })) delivered += 1;
-    } catch {
+    } catch (error) {
+      if (error instanceof AgentInvocationDeniedError
+        || error instanceof ServerProviderCredentialsDeniedError) {
+        await operations.complete({
+          operationId: operation.id,
+          workerId: input.workerId,
+          expectedWakeFingerprint: fingerprint,
+          now: now(),
+        });
+        continue;
+      }
       await operations.release({
         operationId: operation.id,
         workerId: input.workerId,

@@ -17,6 +17,7 @@ import { TaskDetailTranscript } from "./task-detail-transcript";
 import { TaskDetailLifecycleControls } from "./task-detail-lifecycle-controls";
 import { useTaskDetail } from "./use-task-detail";
 import { useTaskRoomHandoff } from "./use-task-room-handoff";
+import { mobileTaskDefinitionContent } from "./task-content-mobile";
 
 /** Phase 4.1 shell: identity and exact loading only; transcript/controls follow in 4.2–4.4. */
 export default function TaskDetailRoute() {
@@ -42,6 +43,7 @@ export default function TaskDetailRoute() {
     else router.replace(taskDetailBackTarget(originRoomId));
   };
   const task = detail.data?.task ?? null;
+  const definition = detail.data ? mobileTaskDefinitionContent(detail.data) : null;
   const { pendingApprovalForTask, activeChallengeForTask, presentChallenge } = useAttention();
   const latestRunId = detail.data?.runs.at(-1)?.id;
   const taskApproval = task ? pendingApprovalForTask(task.id, latestRunId) : null;
@@ -73,18 +75,19 @@ export default function TaskDetailRoute() {
         <>
           <TaskDetailTranscript
             detail={detail.data!}
-            activity={detail.liveActivity ?? "No current activity."}
-            harnessActivity={detail.liveHarnessActivity}
+            activity={definition?.status === "unsupported_client" ? "Task status is available. Encrypted activity cannot be opened here." : detail.liveActivity ?? "No current activity."}
+            harnessActivity={definition?.status === "unsupported_client" ? null : detail.liveHarnessActivity}
             loading={detail.loading}
             recovery={detail.error ? <Recovery error={detail.error} onRetry={() => void detail.refresh()} retained /> : null}
             header={<View style={styles.identity}>
-              <View style={styles.identityRow} accessibilityRole="summary" accessibilityLabel={`${task.agentName?.trim() || "Assigned Genie"}. ${task.prompt || "Task"}. ${task.status}.`}>
+              <View style={styles.identityRow} accessibilityRole="summary" accessibilityLabel={`${task.agentName?.trim() || "Assigned Genie"}. ${definition?.prompt || "Task"}. ${task.status}.`}>
                 {/* This is intentionally mounted only after the exact authorized response. */}
                 <TaskAgentAvatar serverUrl={detail.target!.serverUrl} taskId={task.id} size={44} agentName={task.agentName} />
                 <View style={styles.identityCopy}>
                   <Text style={styles.agentName}>{task.agentName?.trim() || "Assigned Genie"}</Text>
                   <Text style={styles.status} accessibilityLiveRegion="polite">{task.status}</Text>
-                  <Text style={styles.prompt} selectable>{task.prompt || "Task"}</Text>
+                  <Text style={styles.prompt} selectable>{definition?.prompt || "Task"}</Text>
+                  {definition?.status === "unsupported_client" ? <Text style={styles.status} accessibilityRole="alert">Encrypted content cannot be opened on this device. Use Browser or Desktop.</Text> : null}
                 </View>
               </View>
               <TaskDetailLifecycleControls

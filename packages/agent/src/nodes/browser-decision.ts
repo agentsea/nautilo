@@ -5,6 +5,7 @@ import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
 import type { NautiloState } from "../agent/state";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { runWithUsageContext } from "../usage/usage-context";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { chooseBrowserAction } from "../graph/browser-choice";
 import {
   invokeChoice,
@@ -31,6 +32,8 @@ interface BrowserDecisionDeps {
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
   /** Deep-module test seam; production always uses the accounted Choice transport. */
   choose?: (input: ChoiceInput) => Promise<ChoiceResult>;
+  /** Deep-module test seam for the production Choice driver and its funding binding. */
+  invokeChoice?: typeof invokeChoice;
 }
 
 /**
@@ -164,10 +167,11 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
       const continuation = decision.sequence?.step != null && continuations.length === 1 ? continuations[0] : undefined;
       const additionalInstructions = browserDecisionAdditionalInstructions(observation);
       const started = performance.now();
+      const fundingHumanUserId = causalHumanForExecution(state.causalHumanUserId);
       try {
         const result = continuation ? null : await runWithUsageContext({
           callType: (state.subagentDepth ?? 0) > 0 ? "subagent" : "chat",
-          userId: state.userId ?? null,
+          userId: fundingHumanUserId || null,
           roomId: state.roomId ?? null,
           metadata: { ...(state.agentId ? { agentId: state.agentId } : {}),
             ...(state.turnId ? { turnId: state.turnId } : {}) },
@@ -184,7 +188,9 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           visualNoChange: decision.recovery?.visualNoChange,
           sequence: decision.sequence,
           ...(additionalInstructions === undefined ? {} : { additionalInstructions }),
-        }), maxChoices, deps.choose ?? invokeChoice));
+        }), maxChoices, deps.choose ?? ((input) => (deps.invokeChoice ?? invokeChoice)(input, {
+          fundingHumanUserId,
+        }))));
         if (config.signal.aborted) return handoff(state, decision, "run_cancelled");
         const selected = continuation ?? candidates.find(({ id }) => id === result?.selectedId);
         if (!selected) return recover(state, decision, "invalid_choice");

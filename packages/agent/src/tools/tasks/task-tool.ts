@@ -5,9 +5,11 @@ import { log } from "@nautilo/logger";
 import { dispatchTaskCommand, type TaskDispatchContext } from "./dispatch";
 import { createTaskToolSchema, type TaskToolArgs } from "./schema";
 import { isClaudeCodeTasksEnabled } from "./task-tool-runtime";
+import { causalHumanForExecution } from "../../runtime/causal-human-context";
 
 interface TaskToolContext {
   ownerId: string;
+  causalHumanUserId: string;
   agentId: string;
   roomId: string;
   callingRoomId: string;
@@ -30,6 +32,9 @@ function contextFromUnknown(ctx: unknown): TaskToolContext {
     taskReadPendingPages: Array.isArray(c["taskReadPendingPages"]) ? c["taskReadPendingPages"] as TaskReadPendingPage[] : undefined,
     taskReadMessages: Array.isArray(c["taskReadMessages"]) ? c["taskReadMessages"] as BaseMessage[] : undefined,
     ownerId,
+    causalHumanUserId: causalHumanForExecution(
+      typeof c["causalHumanUserId"] === "string" ? c["causalHumanUserId"] : "",
+    ),
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
     roomId: typeof c["roomId"] === "string" ? c["roomId"] : "",
     callingRoomId:
@@ -60,6 +65,7 @@ export function createTaskTool(context?: unknown) {
 
       const dispatchCtx: TaskDispatchContext = {
         ownerId: taskCtx.ownerId,
+        causalHumanUserId: taskCtx.causalHumanUserId,
         agentId: taskCtx.agentId,
         roomId: taskCtx.roomId || taskCtx.callingRoomId,
         currentTaskId: taskCtx.currentTaskId,

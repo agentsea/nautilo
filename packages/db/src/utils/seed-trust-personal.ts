@@ -29,6 +29,9 @@ export const CAPABILITY_SEEDS = [
   // agents
   { slug: "manage_agents", description: "Create Agents; edit Profile/Soul/Avatar (gates regenerate_soul, manage_profile)", category: "agents" },
   { slug: "invoke_agents", description: "Start or resume Agent execution through chat, Jobs, Tasks, and schedules.", category: "agents" },
+  { slug: "invoke_other_agents", description: "Address a Genie owned by another Human, subject to existing invocation and scope checks.", category: "agents" },
+  { slug: "use_personal_provider_credentials", description: "Use provider credentials owned by the authenticated Human when personal funding is available.", category: "agents" },
+  { slug: "use_server_provider_credentials", description: "Use instance-owned provider credentials for an otherwise permitted Human-initiated operation.", category: "agents" },
   // rooms
   { slug: "create_rooms", description: "Create shared private Rooms on the Server", category: "rooms" },
   { slug: "manage_rooms", description: "Administer any Room on the Server", category: "rooms" },
@@ -74,8 +77,8 @@ export const CAPABILITY_SEEDS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Role seeds — M128 catalogue (6 slugs, strict-subset ladder).
-// owner ⊃ admin ⊃ superuser ⊃ member ⊃ contributor ⊃ guest.
+// Role seeds — canonical strict-subset ladder.
+// owner ⊃ admin ⊃ superuser ⊃ member ⊃ contributor ⊃ community ⊃ guest.
 // ---------------------------------------------------------------------------
 
 type RoleSeed = {
@@ -88,6 +91,7 @@ type RoleSeed = {
 // `admin` = owner minus posture; `superuser` = admin minus meta-admin;
 // `member` = superuser minus server-wide administration and approvals;
 // `contributor` = member minus non-collaboration product surfaces;
+// `community` = contributor minus server-funded and cross-owner invocation;
 // `guest` = nothing.
 
 const ALL_CAP_SLUGS = CAPABILITY_SEEDS.map((c) => c.slug);
@@ -144,6 +148,11 @@ const CONTRIBUTOR_REMOVES = new Set([
   "use_google_workspace",
   "control_home",
 ]);
+const COMMUNITY_REMOVES = new Set([
+  ...CONTRIBUTOR_REMOVES,
+  "use_server_provider_credentials",
+  "invoke_other_agents",
+]);
 
 /**
  * D556 compatibility widening applied to every existing Role before the
@@ -166,6 +175,29 @@ export const RETIRED_CAPABILITY_REPLACEMENTS: Readonly<Record<string, readonly s
   use_destructive_tools: [],
 };
 
+/**
+ * Compatibility widening for existing user-managed Roles. Each source
+ * Capability named here was sufficient to enter a server-funded provider path
+ * before the funding boundary became explicit. Invocation also carried the
+ * prior ability to address any otherwise reachable Genie. Personal credential
+ * authority is intentionally absent because it did not exist before.
+ */
+export const CUSTOM_ROLE_COMPATIBILITY_GRANTS: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  invoke_agents: Object.freeze([
+    "invoke_other_agents",
+    "use_server_provider_credentials",
+  ]),
+  manage_agents: Object.freeze(["use_server_provider_credentials"]),
+  use_research_tools: Object.freeze(["use_server_provider_credentials"]),
+  use_image_generation: Object.freeze(["use_server_provider_credentials"]),
+  use_media_generation: Object.freeze(["use_server_provider_credentials"]),
+  use_transcription: Object.freeze(["use_server_provider_credentials"]),
+  use_connections: Object.freeze(["use_server_provider_credentials"]),
+  use_project_content: Object.freeze(["use_server_provider_credentials"]),
+});
+
 function capsExcept(removes: Set<string>): string[] {
   return ALL_CAP_SLUGS.filter((s) => !removes.has(s));
 }
@@ -176,14 +208,15 @@ const ROLE_SEEDS: RoleSeed[] = [
   { slug: "superuser",   label: "Superuser",   capabilitySlugs: capsExcept(SUPERUSER_REMOVES) },
   { slug: "member",      label: "Member",      capabilitySlugs: capsExcept(MEMBER_REMOVES) },
   { slug: "contributor", label: "Contributor", capabilitySlugs: capsExcept(CONTRIBUTOR_REMOVES) },
+  { slug: "community",   label: "Community",   capabilitySlugs: capsExcept(COMMUNITY_REMOVES) },
   { slug: "guest",       label: "Guest",       capabilitySlugs: [] },
 ];
 
 // ---------------------------------------------------------------------------
-// Group seeds — M128 canonical server-wide Groups (6, one per Role).
+// Group seeds — canonical server-wide Groups (one per ladder Role).
 // Only `owners` is seeded with a member (the bootstrap claimer).
 //
-// D418 Wave 2 / Stack 193 — the six canonical ladder Groups are
+// The canonical ladder Groups are
 // platform/system-managed authorization objects (is_system=true,
 // owner_id=NULL), exactly like the ladder Roles (`roles.is_system`).
 // They are independent of any Human account lifecycle: deleting a
@@ -196,7 +229,7 @@ const ROLE_SEEDS: RoleSeed[] = [
 type GroupSeed = { type: string; label: string; roleSlug: string };
 
 // D538 — this protected Role/Group pair represents only an explicit positive
-// Human grant. It is intentionally outside the six-rung ladder: it carries
+// Human grant. It is intentionally outside the canonical ladder: it carries
 // no Capability, changes no role rank, and starts with no memberships.
 export const UNCONTAINED_HOST_COMMANDS_GRANTEE_ROLE_SLUG =
   "uncontained_host_commands_grantee";
@@ -209,6 +242,7 @@ const GROUP_SEEDS: GroupSeed[] = [
   { type: "superusers",   label: "Superusers",   roleSlug: "superuser" },
   { type: "members",      label: "Members",      roleSlug: "member" },
   { type: "contributors", label: "Contributors", roleSlug: "contributor" },
+  { type: "communities",  label: "Communities",  roleSlug: "community" },
   { type: "guests",       label: "Guests",       roleSlug: "guest" },
 ];
 
@@ -220,6 +254,7 @@ export const M128_ROLE_SLUGS = [
   "superuser",
   "member",
   "contributor",
+  "community",
   "guest",
 ] as const;
 export const M128_GROUP_TYPES = GROUP_SEEDS.map((g) => g.type);
@@ -253,11 +288,10 @@ const OWNER_BOOT_CHANNELS = ["tui", "electron", "workbench"] as const;
  *   and for the small number of audit fields that still reference
  *   `actors.id`)
  * - canonical capabilities (M128 catalogue + later approved additions)
- * - 6 ladder Roles (`owner`, `admin`, `superuser`, `member`,
- *   `contributor`, `guest`) — M043 collapsed per-`group_type`
- *   duplicates; M128 set the canonical 6-rung ladder
+ * - canonical ladder Roles (`owner`, `admin`, `superuser`, `member`,
+ *   `contributor`, `community`, `guest`), with Community as the seventh rung
  * - Role → capability mappings
- * - 6 canonical Groups, each mapped to one ladder Role via the
+ * - canonical Groups, each mapped to one ladder Role via the
  *   `group_roles` junction (M131; was the 1:1 `groups.role_id` pre-M131)
  *
  * M044: this seed NO LONGER mints Namespaces. Per REL-NSP-RMS the
@@ -331,6 +365,47 @@ export async function seedTrustPersonal(
     const retiringSlugs = Object.keys(RETIRED_CAPABILITY_REPLACEMENTS);
     const seededCapabilities = await db.select().from(capabilities);
     const capabilityIdsBySlug = new Map(seededCapabilities.map((capability) => [capability.slug, capability.id]));
+
+    // Preserve the effective authority of existing custom Roles before the
+    // new checks become active. This only widens user-managed Roles from
+    // explicit historical grants; canonical Roles are reconciled below and
+    // personal-key authority is never inferred.
+    const compatibilitySourceSlugs = Object.keys(
+      CUSTOM_ROLE_COMPATIBILITY_GRANTS,
+    );
+    const compatibilityGrants = await db
+      .select({
+        roleId: roleCapabilities.roleId,
+        capabilitySlug: capabilities.slug,
+      })
+      .from(roleCapabilities)
+      .innerJoin(capabilities, eq(roleCapabilities.capabilityId, capabilities.id))
+      .innerJoin(roles, eq(roleCapabilities.roleId, roles.id))
+      .where(
+        and(
+          eq(roles.isSystem, false),
+          inArray(capabilities.slug, compatibilitySourceSlugs),
+        ),
+      );
+
+    for (const grant of compatibilityGrants) {
+      for (const targetSlug of
+        CUSTOM_ROLE_COMPATIBILITY_GRANTS[grant.capabilitySlug] ?? []) {
+        const targetId = capabilityIdsBySlug.get(targetSlug);
+        if (!targetId) {
+          throw new Error(
+            `custom Role compatibility capability missing from catalogue: ${targetSlug}`,
+          );
+        }
+        await db
+          .insert(roleCapabilities)
+          .values({ roleId: grant.roleId, capabilityId: targetId })
+          .onConflictDoNothing({
+            target: [roleCapabilities.roleId, roleCapabilities.capabilityId],
+          });
+      }
+    }
+
     const retiringGrants = await db
       .select({ roleId: roleCapabilities.roleId, capabilitySlug: capabilities.slug })
       .from(roleCapabilities)
@@ -402,6 +477,14 @@ export async function seedTrustPersonal(
     // Re-read roles to get stable ids for capability mapping (covers
     // both fresh-insert and already-seeded paths uniformly).
     let allRoles = await db.select().from(roles);
+    const existingCommunityRole = allRoles.find(
+      (role) => role.slug === "community",
+    );
+    if (existingCommunityRole && !existingCommunityRole.isSystem) {
+      throw new Error(
+        "Community role collision: community is not system-managed",
+      );
+    }
     const existingGranteeRole = allRoles.find(
       (role) => role.slug === UNCONTAINED_HOST_COMMANDS_GRANTEE_ROLE_SLUG,
     );
@@ -498,13 +581,18 @@ export async function seedTrustPersonal(
         .onConflictDoNothing({ target: groups.type });
 
       const [groupRow] = await db
-        .select({ id: groups.id })
+        .select({ id: groups.id, isSystem: groups.isSystem })
         .from(groups)
         .where(eq(groups.type, groupSeed.type))
         .limit(1);
       if (!groupRow) {
         print(`[warn] group ${groupSeed.type} missing after upsert; skipping group_roles map`);
         continue;
+      }
+      if (groupSeed.type === "communities" && !groupRow.isSystem) {
+        throw new Error(
+          "Community group collision: communities is not system-managed",
+        );
       }
       await db
         .insert(groupRoles)
@@ -553,6 +641,25 @@ export async function seedTrustPersonal(
         groupId: granteeGroup.id,
         roleId: granteeRoleId,
       });
+    }
+
+    // Community is installed as a dormant rung. No startup reconciliation may
+    // convert or otherwise enroll a Human before the complete journey ships.
+    const [communityGroup] = await db
+      .select({ id: groups.id })
+      .from(groups)
+      .where(eq(groups.type, "communities"))
+      .limit(1);
+    if (communityGroup) {
+      const [communityMemberCount] = await db
+        .select({ total: count() })
+        .from(groupMembers)
+        .where(eq(groupMembers.groupId, communityGroup.id));
+      if ((communityMemberCount?.total ?? 0) > 0) {
+        throw new Error(
+          "Community enrollment is unavailable while the role is dormant",
+        );
+      }
     }
 
     // 4c. Seed bootstrap claimer into the `owners` Group on a fresh

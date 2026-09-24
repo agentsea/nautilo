@@ -45,7 +45,7 @@ function Lab() {
   }, []);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      const views = ["orb", "waveform", "prompt", "chat"] as const;
+      const views = ["orb", "prompt", "chat"] as const;
       const view = views[Number(event.key) - 1];
       if ((event.metaKey || event.ctrlKey) && view) {
         event.preventDefault();

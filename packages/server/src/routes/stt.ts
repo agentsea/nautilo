@@ -10,6 +10,11 @@ import {
   type TranscriptionProvider,
 } from "@nautilo/attachments";
 import { safelyRecordProviderCost } from "../costs/provider-cost-recorder";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+  toActionCapabilityHttpDenial,
+} from "@nautilo/trust";
 
 export type SttTranscriptionOutcome =
   | { ok: true; text: string; provider: string; model: string; blocked: boolean }
@@ -20,6 +25,7 @@ export async function transcribeUploadedAudio(args: {
   filename: string;
   claimedMime?: string | undefined;
   provider?: TranscriptionProvider | null | undefined;
+  beforeProviderDispatch?: (() => Promise<void>) | undefined;
 }): Promise<SttTranscriptionOutcome> {
   const envelope: AttachmentEnvelope = {
     id: `stt:${args.filename}`,
@@ -46,6 +52,7 @@ export async function transcribeUploadedAudio(args: {
     return { ok: false, statusCode: 503, error: "Voice transcription not configured" };
   }
 
+  await args.beforeProviderDispatch?.();
   const result = await attachmentAudioToTranscriptBlock(envelope, classification, provider);
   if (!result.ok) {
     if (result.code === "provider_error") {
@@ -76,8 +83,17 @@ export async function transcribeUploadedAudio(args: {
   };
 }
 
-export function sttRoutes(app: FastifyInstance) {
+export function sttRoutes(
+  app: FastifyInstance,
+  deps: {
+    assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  } = {},
+) {
   app.post("/api/stt", async (request, reply) => {
+    if (!request.sessionUserId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const humanUserId = request.sessionUserId;
     const data = await request.file({
       limits: {
         fileSize: ATTACHMENT_POLICY.maxAudioBytes,
@@ -98,11 +114,21 @@ export function sttRoutes(app: FastifyInstance) {
         detail: "The upload could not be read. Try a smaller file or a different format.",
       });
     }
-    const result = await transcribeUploadedAudio({
-      bytes: buf,
-      filename: data.filename ?? "recording.webm",
-      claimedMime: data.mimetype,
-    });
+    let result: SttTranscriptionOutcome;
+    try {
+      result = await transcribeUploadedAudio({
+        bytes: buf,
+        filename: data.filename ?? "recording.webm",
+        claimedMime: data.mimetype,
+        beforeProviderDispatch: () => (deps.assertCanUseServerProviderCredentials
+          ?? assertCanUseServerProviderCredentials)(humanUserId, "speech_to_text"),
+      });
+    } catch (error) {
+      if (error instanceof ServerProviderCredentialsDeniedError) {
+        return reply.code(403).send(toActionCapabilityHttpDenial(error));
+      }
+      throw error;
+    }
 
     if (!result.ok) {
       return reply.code(result.statusCode).send({

@@ -92,6 +92,9 @@ function owner(request: { readonly sessionUserId: string | null; readonly policy
 
 function replyForStoreError(error: unknown, reply: FastifyReply): never {
   if (error instanceof ConnectedWebAccountControllerError) {
+    if (error.kind === "server_funding_required") {
+      return reply.code(403).send({ error: "server_provider_credentials_required" }) as never;
+    }
     if (error.kind === "invalid_target") {
       return reply.code(400).send({ error: "Invalid website address" }) as never;
     }

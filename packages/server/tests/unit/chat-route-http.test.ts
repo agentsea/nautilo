@@ -16,6 +16,7 @@ const loadRoomRoster = mock((_roomId: string) => Promise.resolve([]));
 import { chatRoutes } from "../../src/routes/chat";
 import {
   AgentInvocationDeniedError,
+  ServerProviderCredentialsDeniedError,
   setBootstrapOwnerId,
   getBootstrapOwnerId,
   type AgentInvocationAdmissionInput,
@@ -39,6 +40,7 @@ async function makeChatApp(
     replyToMessageInRoom?: (messageId: number, roomId: string) => Promise<boolean>;
     omitPolicyContext?: boolean;
     assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
+    assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
   } = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
@@ -65,6 +67,7 @@ async function makeChatApp(
     createForegroundJob,
     loadRoomRoster,
     assertInvocation: async () => {},
+    assertServerFunding: async () => {},
     ...extraDeps,
   });
   await app.ready();
@@ -72,6 +75,28 @@ async function makeChatApp(
 }
 
 describe("/api/chat route", () => {
+  test("a BYOK-only Human cannot start a legacy server-funded foreground job", async () => {
+    const app = await makeChatApp("owner", ROOM_ID, {
+      assertServerFunding: async (humanUserId) => {
+        throw new ServerProviderCredentialsDeniedError(humanUserId, "chat_model");
+      },
+    });
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/chat",
+        headers: { "content-type": "application/json" },
+        payload: { message: "use my Genie", roomId: ROOM_ID } });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toMatchObject({
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+      expect(createForegroundJob).not.toHaveBeenCalled();
+    } finally {
+      createForegroundJob.mockClear();
+      await app.close();
+    }
+  });
+
   test("403 returns the stable capability denial before creating a legacy foreground job", async () => {
     const app = await makeChatApp("guest", ROOM_ID, {
       assertInvocation: async (input) => {

@@ -22,7 +22,7 @@ const raceEvent = { ...event, toolCallId: "tool-race" };
 beforeAll(async () => {
   const sessions = new SessionStore(undefined, { persistPath: null }); app = Fastify(); installLocalAuthPreHandlerStub(app, sessions);
   authRoutes(app, { pinProvider: new PinChallengeProvider({ persistPath: null }), ownerId: userId, ownerActorId: actorId, assertCanInvokeAgent: async () => undefined,
-    resumeThreadMembershipForUser: async () => true, projectionResumeBindingForThread: async () => ({ kind: "none" }), connectedWebActionPendingForThread: async () => [event, raceEvent], connectedWebActionResumeBindingForThread: async () => ({ agentId: "agent", laneKey }) });
+    resumeThreadMembershipForUser: async () => true, projectionResumeBindingForThread: async () => ({ kind: "none" }), resumeCausalHumanUserIdForThread: async () => userId, connectedWebActionPendingForThread: async () => [event, raceEvent], connectedWebActionResumeBindingForThread: async () => ({ agentId: "agent", laneKey }) });
   await app.ready(); token = sessions.createSession(actorId, userId, userId).token;
 });
 afterAll(async () => { await app.close(); });

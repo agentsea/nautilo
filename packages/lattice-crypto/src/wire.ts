@@ -1266,3 +1266,12 @@ export type {
 
 export type {AnyBackgroundProcessorWorkDescriptorV2, BackgroundReflectionWorkDescriptorV2, BackgroundReflectionMaintenanceWorkDescriptorV2, BackgroundReflectionSemanticWorkDescriptorV2, BackgroundReflectionSemanticInputBindingV2,
   BackgroundReflectionNamespaceRequirementV2, BackgroundProcessorDomainRequirementV2} from "./background/work-descriptor-v2.ts";
+export {
+  HUMAN_TASK_PUBLICATION_REQUEST_DOMAIN_V1,
+  HUMAN_TASK_PUBLICATION_REQUEST_MAX_TTL_MS_V1,
+  decodeHumanTaskPublicationRequestV1,
+  encodeHumanTaskPublicationRequestV1,
+  humanTaskPublicationRequestSigningBytesV1,
+} from "./task/publication-request-v1.ts";
+
+export type { HumanTaskPublicationRequestUnsignedV1 } from "./task/publication-request-v1.ts";

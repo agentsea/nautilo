@@ -7,6 +7,9 @@ import type {
   ProtectedMemoryOrdinaryFallbackCreateRequestV1,
   LiveShadowMessagePreparedRequestV1,
   FullEncryptionMessagePreparedRequestV2,
+  DualTaskPreparedCreateRequestV1,
+  ProtectedTaskPreparedCreateRequestV1,
+  ProtectedTaskPreparedUpdateRequestV1,
 } from "@nautilo/api-client/browser";
 
 import {
@@ -14,6 +17,7 @@ import {
   PreparedMutationJournalBackpressureError,
   PreparedMutationJournalCollisionError,
   createPreparedMutationJournal,
+  decodePreparedMutationJournalIndex,
   type PreparedMutationJournalIndex,
   type PreparedMutationJournalVaultPort,
 } from "../../src/client/memory/prepared-mutation-journal.ts";
@@ -24,6 +28,7 @@ const ARTIFACT_ID = "82000000-0000-4000-8000-000000000001";
 const ARTIFACT_ROW_ID = "82000000-0000-4000-8000-000000000002";
 const BLOB_ID = "82000000-0000-4000-8000-000000000003";
 const ROOM_ID = "83000000-0000-4000-8000-000000000001";
+const TASK_ID = "84000000-0000-4000-8000-000000000001";
 
 function liveShadowRequest(): LiveShadowMessagePreparedRequestV1 {
   return {
@@ -143,6 +148,52 @@ function artifactRequest(
     chunkCount: 1,
     mimeClass: "document",
     sizeBucket: "le_64_kib",
+  };
+}
+
+function taskCreateRequest(
+  operationId = "task-create:1",
+): ProtectedTaskPreparedCreateRequestV1 {
+  return {
+    requestVersion: 1,
+    operationId,
+    planDigestBase64url: "T".repeat(43),
+    taskId: TASK_ID,
+    expectedContentRevision: 0,
+    nextContentRevision: 1,
+    expectedCryptoAccessRevision: 0,
+    resultCryptoAccessRevision: 0,
+    cryptoObjectId: `task:v1:${TASK_ID}:1`,
+    payloadVersion: 1,
+    requiredNamespaceIds: [NAMESPACE_ID],
+    encryptedPayloadBytesBase64url: "Y2lwaGVydGV4dA",
+    accessManifestBytesBase64url: "bWFuaWZlc3Q",
+    namespaceEnvelopes: [{
+      namespaceId: NAMESPACE_ID,
+      envelopeBytesBase64url: "ZW52ZWxvcGU",
+    }],
+    signedPublicationRequestBytesBase64url: "c2lnbmVk",
+    task: {},
+    operation: "create",
+  };
+}
+
+function taskUpdateRequest(): ProtectedTaskPreparedUpdateRequestV1 {
+  return {
+    ...taskCreateRequest("task-update:1"),
+    operation: "update",
+    expectedContentRevision: 1,
+    nextContentRevision: 2,
+    expectedCryptoAccessRevision: 2,
+    cryptoObjectId: `task:v1:${TASK_ID}:2`,
+  };
+}
+
+function dualTaskCreateRequest(): DualTaskPreparedCreateRequestV1 {
+  return {
+    ...taskCreateRequest("task-dual-create:1"),
+    representation: "dual",
+    ordinaryPayloadBytesBase64url: "c2Vuc2l0aXZlLXRhc2stY2FuYXJ5",
   };
 }
 
@@ -343,6 +394,115 @@ describe("vault-sealed prepared Human Memory mutation journal", () => {
       artifactId: ARTIFACT_ID,
       request: artifactRequest(),
     })).rejects.toThrow("coordinates disagree");
+  });
+
+  test("seals Task create and update under exact Task coordinates", async () => {
+    const state = fixture();
+    const created = await state.journal.putBeforeSend({
+      kind: "task_create",
+      taskId: TASK_ID,
+      request: taskCreateRequest(),
+    });
+    const updated = await state.journal.putBeforeSend({
+      kind: "task_update",
+      taskId: TASK_ID,
+      request: taskUpdateRequest(),
+    });
+    expect(created.index).toMatchObject({
+      kind: "task_create",
+      taskId: TASK_ID,
+      operationId: "task-create:1",
+    });
+    expect(updated.index).toMatchObject({
+      kind: "task_update",
+      taskId: TASK_ID,
+      operationId: "task-update:1",
+    });
+    expect(created.index.authenticatedRequestDigestBase64url)
+      .not.toBe(updated.index.authenticatedRequestDigestBase64url);
+    expect(JSON.stringify(created.index)).not.toContain("encryptedPayload");
+
+    let opened: unknown;
+    await state.journal.withPrepared("task-update:1", (mutation) => {
+      opened = mutation;
+    });
+    expect(opened).toEqual({
+      kind: "task_update",
+      taskId: TASK_ID,
+      request: taskUpdateRequest(),
+    });
+    expect(state.vault.openedBufferWiped).toBeTrue();
+  });
+
+  test("seals the complete dual Task body while keeping its index content-free", async () => {
+    const state = fixture();
+    const request = dualTaskCreateRequest();
+    const inserted = await state.journal.putBeforeSend({
+      kind: "task_create",
+      taskId: TASK_ID,
+      request,
+    });
+    expect(JSON.stringify(inserted.index)).not.toContain("ordinaryPayload");
+    expect(JSON.stringify(inserted.index)).not.toContain("sensitive-task-canary");
+    let opened: unknown;
+    await state.journal.withPrepared(request.operationId, (mutation) => {
+      opened = mutation;
+    });
+    expect(opened).toEqual({ kind: "task_create", taskId: TASK_ID, request });
+    expect(state.vault.openedBufferWiped).toBeTrue();
+  });
+
+  test("rejects Task wrapper disagreement and preserves authenticated index order", async () => {
+    const state = fixture();
+    expect(state.journal.putBeforeSend({
+      kind: "task_create",
+      taskId: "84000000-0000-4000-8000-000000000099",
+      request: taskCreateRequest(),
+    })).rejects.toThrow("coordinates disagree");
+    expect(state.journal.putBeforeSend({
+      kind: "task_update",
+      taskId: TASK_ID,
+      request: taskCreateRequest() as unknown as ProtectedTaskPreparedUpdateRequestV1,
+    })).rejects.toThrow();
+
+    const inserted = await state.journal.putBeforeSend({
+      kind: "task_create",
+      taskId: TASK_ID,
+      request: taskCreateRequest(),
+    });
+    const serialized = JSON.stringify(inserted.index);
+    expect(decodePreparedMutationJournalIndex(inserted.index)).toBe(inserted.index);
+    expect(JSON.stringify(inserted.index)).toBe(serialized);
+    expect(() => decodePreparedMutationJournalIndex({
+      ...inserted.index,
+      unexpected: true,
+    })).toThrow("corrupt");
+    const devicePlan = {
+      formatVersion: 1,
+      operationId: "device-plan:1",
+      kind: "additional_device_target_plan",
+      authenticatedRequestDigestBase64url: "D".repeat(43),
+      canonicalBytes: 1,
+      sealedBytes: 17,
+      createdAt: 1,
+      updatedAt: 1,
+      attempts: 0,
+      attemptWindowStartedAt: null,
+      attemptsInWindow: 0,
+      nextAttemptAt: 1,
+      lastAttemptAt: null,
+      state: "pending",
+      targetDeviceId: "device:1",
+      verificationCode: "123456",
+      deliveryHighWatermark: 1,
+      deliveryManifest: [{
+        messageId: "message:1",
+        recipientSequence: 1,
+        payloadHashBase64url: "M".repeat(43),
+        unexpected: true,
+      }],
+    };
+    expect(() => decodePreparedMutationJournalIndex(devicePlan)).toThrow("corrupt");
   });
 
   test("atomically puts canonical create/update/access bodies before send", async () => {

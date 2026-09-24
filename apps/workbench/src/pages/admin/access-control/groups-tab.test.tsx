@@ -20,9 +20,13 @@ mock.module("./access-control-context", () => ({
     loading: false, error: null,
     catalogue: {
       capabilities: [],
-      roles: [{ id: "role", slug: "member", label: "Member", isSystem: true, capabilitySlugs: ["invoke_agents"], groupCount: 1 }],
+      roles: [
+        { id: "role", slug: "member", label: "Member", isSystem: true, capabilitySlugs: ["invoke_agents"], groupCount: 1 },
+        { id: "community-role", slug: "community", label: "Community", isSystem: true, capabilitySlugs: ["invoke_agents"], groupCount: 1 },
+      ],
       groups: [
         { id: "system", type: "members", label: "Members", isSystem: true, ownerId: null, roleSlugs: ["member"], memberCount: 2 },
+        { id: "community", type: "communities", label: "Communities", isSystem: true, ownerId: null, roleSlugs: ["community"], memberCount: 1 },
         { id: "custom", type: "custom:mobile-dev", label: "Mobile developers", isSystem: false, ownerId: "owner", roleSlugs: [], memberCount: 0 },
         { id: "custom-b", type: "custom:web-dev", label: "Web developers", isSystem: false, ownerId: "owner", roleSlugs: ["member"], memberCount: 0 },
       ],
@@ -69,6 +73,23 @@ describe("GroupsTab", () => {
     expect(view.getByText(/target Group bundle: invoke_agents/)).toBeTruthy();
     expect((view.getByRole("button", { name: "Review add" }) as HTMLButtonElement).disabled)
       .toBeTrue();
+  });
+
+  test("blocks Community enrollment while preserving removal", async () => {
+    reapplyHappyDomGlobals();
+    listGroupMembers.mockResolvedValueOnce({
+      members: [{ userId: "ada", displayName: "Ada", handle: "ada" }],
+    });
+    const view = render(<GroupsTab onReview={() => undefined} />);
+    fireEvent.click(view.getByText("Communities"));
+
+    expect(view.getByText(/Community enrollment is unavailable/)).toBeTruthy();
+    expect((view.getByRole("button", { name: "Review add" }) as HTMLButtonElement).disabled)
+      .toBeTrue();
+    await waitFor(() => {
+      expect((view.getByRole("button", { name: "Review removal" }) as HTMLButtonElement).disabled)
+        .toBeFalse();
+    });
   });
 
   test("ignores an out-of-order roster response and reviews the matching Group/member", async () => {

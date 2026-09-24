@@ -276,6 +276,10 @@ describe("D421 redirect target — canonical foreground job", () => {
     const invocationAuthority = createAcceptedInvocationAuthority("user-1");
     const calls: unknown[][] = [];
     const deps = {
+      assertInvocation: async (input: { humanUserId: string; agentId?: string }) => {
+        expect(input.humanUserId).toBe("user-1");
+        expect(input.agentId).toBe(TARGET_AGENT);
+      },
       createForegroundJob: async (...args: unknown[]) => {
         calls.push(args);
         return { id: "job-target", virtualJobId: "job-target" };

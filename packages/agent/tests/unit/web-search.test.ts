@@ -23,6 +23,7 @@ import {
 } from "../../src/tools/utilities/web-search";
 import type { BrowserResearchExecutionPort } from "../../src/tools/utilities/browser-research-execution";
 import { clearAgentTurnContextByKey } from "../../src/runtime/turn-context";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 describe("web-search", () => {
   const desktopSearchPort = (onSearch?: () => void): BrowserResearchExecutionPort => ({
@@ -45,9 +46,10 @@ describe("web-search", () => {
     });
 
   const toolWithSearchResult = (result: SearchResults, config = toolRuntimeConfig()) =>
-    createRunWebSearchTool(undefined, {
+    createRunWebSearchTool({ causalHumanUserId: "human-web-search" }, {
       getRuntimeConfig: () => config,
       createSearchFetcher: () => async () => result,
+      assertCanUseServerProviderCredentials: async () => {},
     });
 
   test("tool is named run_web_search", () => {
@@ -92,25 +94,71 @@ describe("web-search", () => {
     }
   });
 
-  test("passes caller cancellation into Tavily search", async () => {
+  test("does not dispatch Tavily after caller cancellation", async () => {
     const controller = new AbortController();
     let upstreamSignal: AbortSignal | null | undefined;
     const search = buildTavilySearchFetcher({
       apiKey: "test-key",
-      fetchImpl: (async (_input, init) => {
+      beforeProviderDispatch: async () => {},
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
         upstreamSignal = init?.signal;
         return new Promise<Response>((_resolve, reject) => {
           upstreamSignal?.addEventListener("abort", () => reject(new Error("provider aborted")), { once: true });
         });
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     });
 
     const pending = search("cancelled query", { signal: controller.signal });
     controller.abort(new DOMException("deadline", "TimeoutError"));
     const result = await pending;
 
-    expect(upstreamSignal).toBe(controller.signal);
+    expect(upstreamSignal).toBeUndefined();
     expect(result).toMatchObject({ provider: "tavily", outcome: "unavailable" });
+  });
+
+  test("denies Tavily before network dispatch without paid-provider authority", async () => {
+    let fetchCalls = 0;
+    const search = buildTavilySearchFetcher({
+      apiKey: "test-key",
+      beforeProviderDispatch: async () => {
+        throw new ServerProviderCredentialsDeniedError("human-denied", "web_search_tavily");
+      },
+      fetchImpl: (async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ results: [] }));
+      }) as unknown as typeof fetch,
+    });
+
+    const denial = await search("must not spend").catch((error: unknown) => error);
+    expect(denial).toMatchObject({
+      code: "server_provider_credentials_required",
+      humanUserId: "human-denied",
+    });
+    expect(fetchCalls).toBe(0);
+  });
+
+  test("missing initiating Human denies paid synthesis after keyless search", async () => {
+    let fundingChecks = 0;
+    const tool = createRunWebSearchTool({
+      browserResearchExecutionPort: desktopSearchPort(),
+    }, {
+      getRuntimeConfig: () => toolRuntimeConfig({
+        nautilo_search_provider: "duckduckgo_html",
+        nautilo_search_trusted_domains: [],
+        nautilo_search_read_page_count: 0,
+      }),
+      createSearchFetcher: () => async (query) => ({
+        provider: "duckduckgo_html",
+        query,
+        items: [{ url: "https://example.org/article", title: "Example" }],
+      }),
+      assertCanUseServerProviderCredentials: async () => { fundingChecks += 1; },
+    });
+
+    const denial: unknown = await tool.invoke({ query: "keyless evidence" })
+      .catch((error: unknown) => error);
+    expect(denial).toMatchObject({ code: "server_provider_credentials_required", humanUserId: "" });
+    expect(fundingChecks).toBe(0);
   });
 
   test("does not start another page read after the shared deadline aborts", async () => {
@@ -382,7 +430,8 @@ describe("web-search", () => {
         },
         recoverConsent: async () => ({ category: "unavailable" }),
       };
-      const tool = createRunWebSearchTool({ browserResearchExecutionPort }, {
+      const tool = createRunWebSearchTool({ browserResearchExecutionPort, causalHumanUserId: "human-web-search" }, {
+        assertCanUseServerProviderCredentials: async () => {},
         getRuntimeConfig: () => toolRuntimeConfig({
           nautilo_search_provider: "duckduckgo_html",
           nautilo_search_trusted_domains: ["trusted.example"],
@@ -748,6 +797,7 @@ describe("web-search", () => {
 
     const search = buildTavilySearchFetcher({
       apiKey: "test-key",
+      beforeProviderDispatch: async () => {},
       fetchImpl: fetchImpl as typeof fetch,
       includeDomains: ["wikipedia.org"],
       excludeDomains: ["reddit.com", "facebook.com", "quora.com"],
@@ -766,6 +816,7 @@ describe("web-search", () => {
     const receipts: Array<Record<string, unknown>> = [];
     const search = buildTavilySearchFetcher({
       apiKey: "test-key",
+      beforeProviderDispatch: async () => {},
       searchDepth: "advanced",
       fetchImpl: (async () => new Response(JSON.stringify({
         request_id: "tavily-request-1",
@@ -871,10 +922,12 @@ describe("web-search", () => {
   test("distinguishes valid Tavily empty responses from malformed successful payloads", async () => {
     const validEmpty = await buildTavilySearchFetcher({
       apiKey: "test-key",
+      beforeProviderDispatch: async () => {},
       fetchImpl: (async () => new Response(JSON.stringify({ results: [] }), { status: 200 })) as unknown as typeof fetch,
     })("valid empty");
     const malformed = await buildTavilySearchFetcher({
       apiKey: "test-key",
+      beforeProviderDispatch: async () => {},
       fetchImpl: (async () => new Response(JSON.stringify({ answer: "not the Tavily search schema" }), { status: 200 })) as unknown as typeof fetch,
     })("malformed");
 
@@ -886,12 +939,14 @@ describe("web-search", () => {
   test("treats wholly unparseable Tavily result rows as malformed but keeps mixed valid rows", async () => {
     const unparseable = await buildTavilySearchFetcher({
       apiKey: "test-key",
+      beforeProviderDispatch: async () => {},
       fetchImpl: (async () => new Response(JSON.stringify({
         results: [{ title: "missing URL" }, null, { url: "" }],
       }), { status: 200 })) as unknown as typeof fetch,
     })("unparseable rows");
     const mixed = await buildTavilySearchFetcher({
       apiKey: "test-key",
+      beforeProviderDispatch: async () => {},
       fetchImpl: (async () => new Response(JSON.stringify({
         results: [{ title: "missing URL" }, { url: "https://www.sec.gov/edgar/", title: "SEC" }],
       }), { status: 200 })) as unknown as typeof fetch,
@@ -910,6 +965,7 @@ describe("web-search", () => {
     const search = buildSearchFetcher({
       provider: "auto",
       apiKey: "tvly-test",
+      beforeTavilyDispatch: async () => {},
       includeDomains: ["nasdaq.com", "nvidia.com", "sandisk.com", "sec.gov"],
       tavilyFetchImpl: (async () => {
         tavilyCalls += 1;
@@ -958,6 +1014,7 @@ describe("web-search", () => {
     const search = buildSearchFetcher({
       provider: "auto",
       apiKey: "tvly-test",
+      beforeTavilyDispatch: async () => {},
       tavilyFetchImpl: (async () => {
         tavilyCalls += 1;
         return new Response(JSON.stringify({ results: [{ url: "https://official.example/result", title: "Official" }] }), { status: 200 });
@@ -1015,6 +1072,7 @@ describe("web-search", () => {
     const search = buildSearchFetcher({
       provider: "auto",
       apiKey: "tvly-test",
+      beforeTavilyDispatch: async () => {},
       tavilyFetchImpl: (async () => new Response(JSON.stringify({ results: [] }), { status: 200 })) as unknown as typeof fetch,
       browserResearchExecutionPort: {
         read: async () => ({ category: "unavailable" }),
@@ -1038,6 +1096,7 @@ describe("web-search", () => {
     const search = buildSearchFetcher({
       provider: "auto",
       apiKey: "tvly-test",
+      beforeTavilyDispatch: async () => {},
       tavilyFetchImpl: (async () => new Response(JSON.stringify({ results: [] }), { status: 200 })) as unknown as typeof fetch,
       browserResearchExecutionPort: {
         read: async () => ({ category: "unavailable" }),
@@ -1065,6 +1124,7 @@ describe("web-search", () => {
     const search = buildSearchFetcher({
       provider: "auto",
       apiKey: "tvly-test",
+      beforeTavilyDispatch: async () => {},
       tavilyFetchImpl: (async () => { throw new Error(upstreamSecret); }) as unknown as typeof fetch,
       browserResearchExecutionPort: desktopSearchPort(),
     });
@@ -1084,6 +1144,7 @@ describe("web-search", () => {
     const search = buildSearchFetcher({
       provider: "auto",
       apiKey: "tvly-test",
+      beforeTavilyDispatch: async () => {},
       tavilyFetchImpl: (async () => { throw new Error(upstreamSecret); }) as unknown as typeof fetch,
     });
     const result = await search("query");

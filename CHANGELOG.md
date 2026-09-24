@@ -7,6 +7,22 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Floating Genie reuses the Room's Stop talking pill above the chat and compact
+  prompt inputs. Streaming replies remain stoppable through buffering and
+  sentence gaps, independently of Stop action. The floating composer now shows
+  separate Mic and Sound toggles, synchronized with Desktop voice. Mic off
+  finishes recording into a reviewable draft; the Send arrow stays separate.
+  The voice bubble uses tap to record, then tap to send without expanding.
+  Transcribing and sending show progress; pending panel drafts and attachments
+  remain separate. Full and compact chat share the conversation and draft, with
+  a latest-message preview when history is collapsed. The separate waveform
+  mode and bubble audio strip are removed. Explicit sound preferences survive
+  resizing and reactivation. Stop talking has a waveform-and-square icon distinct from Sound off. A labeled Float Genie button beside the portrait makes
+  detaching discoverable and shows Floating while active.
+  The floating chat now shares the Room-panel live message reducer: outgoing
+  messages appear immediately, replies stream into the transcript, and history
+  refreshes preserve live messages instead of replacing them.
+
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
   Mobile for users with the `manage_rooms` permission. It addresses current Human
   members through their existing notification preferences, supports encrypted

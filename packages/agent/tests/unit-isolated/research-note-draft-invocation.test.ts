@@ -13,6 +13,13 @@ import { NautiloStateAnnotation, type NautiloState } from "../../src/agent/state
 import { getUsageContext } from "../../src/usage/usage-context";
 import { bindModelAttemptProgressSinkByKey, clearAgentTurnContextByKey, getAgentTurnContextByKey, turnContextKey } from "../../src/runtime/turn-context";
 
+const actualTrust = await import("@nautilo/trust");
+mock.module("@nautilo/trust", () => ({ ...actualTrust,
+  assertCanUseServerProviderCredentials: mock(async (humanUserId: string) => {
+    expect(humanUserId).toBe("owner");
+  }),
+}));
+
 const MODEL = "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
 const originalKey = process.env["FIREWORKS_API_KEY"];
 const oldFetch = globalThis.fetch;
@@ -44,7 +51,7 @@ afterAll(() => {
 });
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const call = (signal?: AbortSignal) => invocation.invokeChatModelWithFallback([new HumanMessage("Visible source")], [], MODEL,
-  "owner", "agent", null, { ...(signal ? { signal } : {}), callbacks: [] }, { modelFallbackMode: "none", sameModelRetryMode: "none", isolatedProgress: true });
+  "owner", "agent", null, { ...(signal ? { signal } : {}), callbacks: [] }, { modelFallbackMode: "none", sameModelRetryMode: "none", isolatedProgress: true, fundingHumanUserId: "owner" });
 
 test("isolated semantic progress outlives first-progress allowance without replacing the auditor sink", async () => {
   invocation._setFirstTokenTimeoutMsForTests(80);
@@ -110,7 +117,7 @@ test("real graph callbacks do not inherit into the helper; Task usage and exact 
     await done;
     return {};
   }).addEdge(START, "prepare").addEdge("prepare", END).compile();
-  const input: Partial<NautiloState> = { userId: "owner", agentId: "agent", currentTaskId: "task", currentTaskRunId: "run", model: MODEL,
+  const input: Partial<NautiloState> = { userId: "owner", causalHumanUserId: "owner", agentId: "agent", currentTaskId: "task", currentTaskRunId: "run", model: MODEL,
     taskRun: true, subagentRun: true, researchWorkEnabled: true, toolWhitelist: ["security_scan"], messages,
     taskReportBackContinuation: { status: "available" } };
   try {
@@ -136,7 +143,7 @@ test("real agent invocation skips oversized advice and removes fitting advice be
   await hydrateRuntimeModelCatalog();
   const { agentNode } = await import("../../src/nodes/agent");
   const source = new HumanMessage("Full unchanged source ".repeat(400));
-  const input: Partial<NautiloState> = { userId: "owner", agentId: "agent", model: MODEL, modelFallbackMode: "none", subagentDepth: 1,
+  const input: Partial<NautiloState> = { userId: "owner", causalHumanUserId: "owner", agentId: "agent", model: MODEL, modelFallbackMode: "none", subagentDepth: 1,
     currentTaskId: "task", currentTaskRunId: "run", taskRun: true, subagentRun: true, toolWhitelist: ["security_scan"], messages: [source], preparedMessages: [source] };
   for (const oversized of [true, false]) {
     createdModels.length = 0;

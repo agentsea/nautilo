@@ -1,5 +1,6 @@
 import type { ConnectedAppProviderId, ConnectedAppToolReceipt } from "@nautilo/types";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import { causalHumanForExecution } from "../../runtime/causal-human-context";
 
 export interface ConnectedAppToolScope {
   readonly userId: string;
@@ -7,6 +8,7 @@ export interface ConnectedAppToolScope {
 }
 
 export interface ConnectedAppToolActor extends ConnectedAppToolScope {
+  readonly causalHumanUserId: string;
   /** Existing resolved invocation authority; never synthesized by this tool. */
   readonly memoryAccessEnvelope: MemoryAccessEnvelope;
 }
@@ -37,7 +39,9 @@ export function connectedAppActorFromContext(context: Record<string, unknown> | 
   const scope = connectedAppScopeFromContext(context);
   const memoryAccessEnvelope = context?.["memoryAccessEnvelope"] as MemoryAccessEnvelope | null | undefined;
   return scope && memoryAccessEnvelope
-    ? { ...scope, memoryAccessEnvelope }
+    ? { ...scope, causalHumanUserId: causalHumanForExecution(
+      typeof context?.["causalHumanUserId"] === "string" ? context["causalHumanUserId"] : "",
+    ), memoryAccessEnvelope }
     : null;
 }
 
@@ -46,6 +50,7 @@ export interface ConnectedAppActionRuntime {
   eligibleProviderIds?(scope: ConnectedAppToolScope): Promise<readonly ConnectedAppProviderId[]>;
   execute(input: {
     readonly userId: string;
+    readonly causalHumanUserId: string;
     readonly namespaceId: string;
     readonly memoryAccessEnvelope: MemoryAccessEnvelope;
     readonly providerId: ConnectedAppProviderId;

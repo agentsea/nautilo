@@ -8,6 +8,10 @@ import { scanContent } from "@nautilo/security";
 import { createUniversalModel } from "../providers/universal";
 import { getEligibleModels } from "../config/eligible-models";
 import { parseVisionCandidateIds } from "./vision-candidates";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+} from "@nautilo/trust";
 
 export type TextOnlyImagePolicy = "unsupported" | "vision_summary";
 
@@ -70,6 +74,8 @@ function pickRunnableVisionModel(
  * resolves API keys via each provider client’s normal `process.env` behavior (`createUniversalModel`).
  */
 export async function maybeSummarizeImagesWithVisionFallback(args: {
+  /** Exact initiating Human (`users.id`), required before auxiliary dispatch. */
+  humanUserId: string;
   mainModelId: string;
   images: readonly ChatMultimodalImagePart[];
   signal?: AbortSignal;
@@ -80,6 +86,8 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
   /** Override candidate list string (comma/newline). */
   visionFallbackCandidates?: string;
   env?: NodeJS.ProcessEnv;
+  /** Test seam; production always resolves current canonical RBAC state. */
+  assertServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }): Promise<string[]> {
   const env = args.env ?? process.env;
   const cfg = fromRuntimeConfig();
@@ -144,6 +152,12 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
 
   try {
     const model = await createUniversalModel(picked);
+    const humanUserId = args.humanUserId?.trim() ?? "";
+    if (!humanUserId) {
+      throw new ServerProviderCredentialsDeniedError("", "vision_fallback");
+    }
+    await (args.assertServerProviderCredentials
+      ?? assertCanUseServerProviderCredentials)(humanUserId, "vision_fallback");
     const msg = new HumanMessage({ content: parts });
     const resp = (await model.invoke([msg] as BaseMessageLike[], {
       ...(args.signal ? { signal: args.signal } : {}),
@@ -169,6 +183,7 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
     log(`[vision-fallback] summary blocked by scanner: ${threats}`);
     return [`[Attachments] Vision summary blocked by content scanner (${threats}). ${repl}`];
   } catch (e) {
+    if (e instanceof ServerProviderCredentialsDeniedError) throw e;
     const msg = e instanceof Error ? e.message : String(e);
     log(`[vision-fallback] auxiliary invoke failed: ${msg}`);
     return [`[Attachments] Vision fallback failed: ${msg}`];

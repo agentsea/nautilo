@@ -22,12 +22,16 @@ config({ path: resolve(import.meta.dirname, "../../../.env") });
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import {
   tasks,
+  namespaces,
+  cryptoObjects,
+  taskDefinitionCryptoRevisions,
   taskRuns,
   sessions,
   sessionMessages,
   actors,
   agents,
   profiles,
+  groups,
   groupMembers,
   channelIdentities,
   credentials,
@@ -49,11 +53,13 @@ import {
   registerTaskLiveMiniAppBinding,
   removeTaskReturnBinding,
 } from "@nautilo/runtime";
+import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 
 let fx: AppFixture;
 let ownerAgentId: string;
 let peer: { userId: string; actorId: string; agentId: string; bearer: string };
 let guest: { userId: string; actorId: string; agentId: string; bearer: string };
+let community: { userId: string; actorId: string; agentId: string; bearer: string };
 
 const FUTURE_RUN_AT = "2035-01-01T00:00:00.000Z";
 
@@ -71,6 +77,22 @@ beforeAll(async () => {
     suiteName: "tasksapi",
     groupType: "guests",
   });
+  community = await seatPeerUser(fx.db, {
+    suiteName: "tasksapi-community",
+    groupType: "guests",
+  });
+  const [communityGroup] = await fx.db
+    .select({ id: groups.id })
+    .from(groups)
+    .where(eq(groups.type, "communities"))
+    .limit(1);
+  if (!communityGroup) throw new Error("canonical communities group missing");
+  await fx.db.delete(groupMembers).where(eq(groupMembers.userId, community.userId));
+  await fx.db.insert(groupMembers).values({
+    groupId: communityGroup.id,
+    userId: community.userId,
+    grantedBy: community.actorId,
+  });
 });
 
 afterAll(async () => {
@@ -78,7 +100,7 @@ afterAll(async () => {
   // Owner tasks/task_runs cascade off the owner-user delete in fx.cleanup();
   // sessions are deleted by ownerId there too. Clean the peer's rows manually
   // BEFORE fx.cleanup() (which ends the shared pool last).
-  for (const user of [peer, guest]) {
+  for (const user of [peer, guest, community]) {
     if (!user) continue;
     await fx.db.delete(tasks).where(eq(tasks.ownerId, user.userId));
     await fx.db.delete(profiles).where(eq(profiles.userId, user.userId));
@@ -95,6 +117,358 @@ afterAll(async () => {
 });
 
 describe("tasks HTTP API (M146)", () => {
+  test("prepared Task placeholder is never returned as ordinary empty content", async () => {
+    const [namespace] = await fx.db.insert(namespaces).values({
+      scope: "private", label: "Task pending publication",
+    }).returning({ id: namespaces.id });
+    if (!namespace) throw new Error("Namespace seed failed");
+    const [task] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+    }).returning({ id: tasks.id });
+    if (!task) throw new Error("Task seed failed");
+    try {
+      await fx.db.insert(taskDefinitionCryptoRevisions).values({
+        taskId: task.id,
+        contentNamespaceId: namespace.id,
+        contentRevision: 1,
+        operationId: `task:pending:${randomUUID()}`,
+        requestDigest: new Uint8Array(32),
+        authorityFingerprint: new Uint8Array(32),
+        requesterHumanId: fx.ownerId,
+        anchorNamespaceId: namespace.id,
+        cryptoObjectId: deriveTaskContentCryptoObjectIdV1({
+          kind: "definition", taskId: task.id, contentRevision: 1,
+        }),
+        representation: "protected",
+        requiredNamespaceFingerprint: new Uint8Array(32),
+      });
+      const bearer = await fx.mintOwnerBearer();
+      for (const url of ["/api/tasks", `/api/tasks/${task.id}`]) {
+        const response = await authedInject(fx.app, { method: "GET", url, bearer });
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({ error: "task_content_requires_current_client" });
+      }
+      const list = await authedInject(fx.app, {
+        method: "GET", url: "/api/tasks/content-v1", bearer,
+      });
+      expect(list.statusCode).toBe(200);
+      const row = list.json<Array<{ id: string; content: unknown }>>()
+        .find((item) => item.id === task.id);
+      expect(row?.content).toEqual({
+        dtoVersion: 1, status: "unavailable", reason: "waiting_for_authorization",
+      });
+      const detail = await authedInject(fx.app, {
+        method: "GET", url: `/api/tasks/${task.id}/content-v1`, bearer,
+      });
+      expect(detail.statusCode).toBe(200);
+      const detailBody = detail.json<{ definition: unknown }>();
+      expect(detailBody.definition)
+        .toEqual({ dtoVersion: 1, status: "unavailable", reason: "waiting_for_authorization" });
+      expect(JSON.stringify({ row, detail: detailBody })).not.toContain('"prompt":""');
+    } finally {
+      await fx.db.delete(taskDefinitionCryptoRevisions)
+        .where(eq(taskDefinitionCryptoRevisions.taskId, task.id));
+      await fx.db.delete(tasks).where(eq(tasks.id, task.id));
+      await fx.db.delete(namespaces).where(eq(namespaces.id, namespace.id));
+    }
+  });
+
+  test("content-v1 Task list and detail separate ordinary content and keep owner reads private", async () => {
+    const [task] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "ordinary scheduled work",
+      expectedOutput: "a concise report",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+    }).returning({ id: tasks.id });
+    if (!task) throw new Error("Task seed failed");
+    try {
+      const bearer = await fx.mintOwnerBearer();
+      const list = await authedInject(fx.app, {
+        method: "GET", url: "/api/tasks/content-v1", bearer,
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.headers["cache-control"]).toBe("private, no-store");
+      expect(list.headers.vary).toBe("Authorization");
+      const row = list.json<Array<{ id: string; content: unknown }>>()
+        .find((item) => item.id === task.id);
+      expect(row).toBeDefined();
+      expect(row).not.toHaveProperty("prompt");
+      expect(row).not.toHaveProperty("lastError");
+      expect(row?.content).toMatchObject({
+        dtoVersion: 1, status: "ordinary", promptPreview: "ordinary scheduled work",
+        lastError: null,
+      });
+
+      const detail = await authedInject(fx.app, {
+        method: "GET", url: `/api/tasks/${task.id}/content-v1`, bearer,
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.headers["cache-control"]).toBe("private, no-store");
+      expect(detail.headers.vary).toBe("Authorization");
+      const detailBody = detail.json<{ task: Record<string, unknown> }>();
+      expect(detailBody).toMatchObject({
+        task: { id: task.id },
+        definition: {
+          dtoVersion: 1, status: "ordinary",
+          prompt: "ordinary scheduled work", expectedOutput: "a concise report", lastError: null,
+        },
+        runs: [],
+      });
+      expect(detailBody.task).not.toHaveProperty("prompt");
+      expect(detailBody.task).not.toHaveProperty("expectedOutput");
+
+      const peerDetail = await authedInject(fx.app, {
+        method: "GET", url: `/api/tasks/${task.id}/content-v1`, bearer: peer.bearer,
+      });
+      expect(peerDetail.statusCode).toBe(404);
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, task.id));
+    }
+  });
+
+  test("ordinary Task POST, PATCH, list, and detail retain legacy/content-v1 parity", async () => {
+    const bearer = await fx.mintOwnerBearer();
+    const created = await authedInject(fx.app, {
+      method: "POST",
+      url: "/api/tasks",
+      bearer,
+      payload: {
+        prompt: "plain parity before update",
+        expectedOutput: "first expected output",
+        scheduleKind: "one_shot",
+        runAt: FUTURE_RUN_AT,
+        timezone: "UTC",
+        targetChat: "orphan",
+        resultDelivery: "raw_and_wake",
+        tools: [],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const taskId = created.json<{ taskId: string }>().taskId;
+
+    try {
+      const assertParity = async (expected: {
+        prompt: string;
+        expectedOutput: string;
+      }) => {
+        const [legacyListResponse, contentListResponse, legacyDetailResponse, contentDetailResponse] =
+          await Promise.all([
+            authedInject(fx.app, { method: "GET", url: "/api/tasks", bearer }),
+            authedInject(fx.app, { method: "GET", url: "/api/tasks/content-v1", bearer }),
+            authedInject(fx.app, { method: "GET", url: `/api/tasks/${taskId}`, bearer }),
+            authedInject(fx.app, { method: "GET", url: `/api/tasks/${taskId}/content-v1`, bearer }),
+          ]);
+        for (const response of [legacyListResponse, contentListResponse, legacyDetailResponse, contentDetailResponse]) {
+          expect(response.statusCode).toBe(200);
+        }
+
+        const legacyRow = legacyListResponse.json<Array<Record<string, unknown>>>()
+          .find((row) => row["id"] === taskId);
+        const contentRow = contentListResponse.json<Array<Record<string, unknown>>>()
+          .find((row) => row["id"] === taskId);
+        expect(legacyRow).toBeDefined();
+        expect(contentRow).toBeDefined();
+        expect(contentRow?.["content"]).toEqual({
+          dtoVersion: 1,
+          status: "ordinary",
+          promptPreview: expected.prompt,
+          lastError: legacyRow?.["lastError"],
+        });
+        for (const key of [
+          "id", "parentTaskId", "depth", "status", "preset", "scheduleKind",
+          "cron", "nextFireAt", "callingRoomId", "agentId", "agentName",
+          "targetRoomId", "requestedModelId", "lastModelId",
+        ]) {
+          expect(contentRow?.[key]).toEqual(legacyRow?.[key]);
+        }
+
+        const legacyDetail = legacyDetailResponse.json<{
+          task: Record<string, unknown>;
+          runs: unknown[];
+        }>();
+        const contentDetail = contentDetailResponse.json<{
+          task: Record<string, unknown>;
+          definition: Record<string, unknown>;
+          runs: unknown[];
+        }>();
+        expect(contentDetail.definition).toEqual({
+          dtoVersion: 1,
+          status: "ordinary",
+          prompt: expected.prompt,
+          expectedOutput: expected.expectedOutput,
+          lastError: legacyDetail.task["lastError"],
+        });
+        expect(contentDetail.runs).toEqual(legacyDetail.runs);
+        for (const key of [
+          "id", "parentTaskId", "depth", "status", "preset", "scheduleKind",
+          "cron", "runAt", "timezone", "targetChat", "resultDelivery", "useScope",
+          "scopeId", "toolsMode", "toolsWhitelist", "selectionProfile", "selectionSpec",
+          "requestedModelId", "createdAt", "updatedAt", "agentId", "agentName",
+          "targetRoomId", "callingRoomId",
+        ]) {
+          expect(contentDetail.task[key]).toEqual(legacyDetail.task[key]);
+        }
+      };
+
+      await assertParity({
+        prompt: "plain parity before update",
+        expectedOutput: "first expected output",
+      });
+
+      const updated = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${taskId}`,
+        bearer,
+        payload: {
+          prompt: "plain parity after update",
+          expectedOutput: "second expected output",
+          resultDelivery: "raw",
+          tools: ["search_memory"],
+        },
+      });
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json()).toMatchObject({
+        id: taskId,
+        prompt: "plain parity after update",
+      });
+      await assertParity({
+        prompt: "plain parity after update",
+        expectedOutput: "second expected output",
+      });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, taskId));
+    }
+  });
+
+  test("content-v1 keeps an unrelated ordinary Task visible beside a protected Task", async () => {
+    const [namespace] = await fx.db.insert(namespaces).values({
+      scope: "private", label: `Mixed Task content ${randomUUID()}`,
+    }).returning({ id: namespaces.id });
+    if (!namespace) throw new Error("Namespace seed failed");
+    const [ordinary, protectedTask] = await fx.db.insert(tasks).values([{
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "ordinary sibling remains visible",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+    }, {
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+    }]).returning({ id: tasks.id });
+    if (!ordinary || !protectedTask) throw new Error("Mixed Task seed failed");
+    const objectId = deriveTaskContentCryptoObjectIdV1({
+      kind: "definition", taskId: protectedTask.id, contentRevision: 1,
+    });
+    const fingerprint = new Uint8Array(32).fill(7);
+    try {
+      await fx.db.insert(cryptoObjects).values({
+        objectId,
+        payloadHash: new Uint8Array(32).fill(8),
+        payloadBytes: new Uint8Array([1]),
+      });
+      await fx.db.insert(taskDefinitionCryptoRevisions).values({
+        taskId: protectedTask.id,
+        contentNamespaceId: namespace.id,
+        contentRevision: 1,
+        operationId: `task:mixed:${randomUUID()}`,
+        requestDigest: new Uint8Array(32).fill(1),
+        authorityFingerprint: new Uint8Array(32).fill(2),
+        requesterHumanId: fx.ownerId,
+        anchorNamespaceId: namespace.id,
+        cryptoObjectId: objectId,
+        representation: "protected",
+        requiredNamespaceFingerprint: fingerprint,
+        completion: "complete",
+        disposition: "mapped",
+        cryptoCompletedAt: new Date(),
+      });
+      await fx.db.update(tasks).set({
+        contentRepresentation: "protected",
+        contentNamespaceId: namespace.id,
+        contentRevision: 1,
+        cryptoObjectId: objectId,
+        cryptoAccessRevision: 0,
+        cryptoRequiredNamespaceFingerprint: fingerprint,
+        cryptoMappingState: "verified",
+      }).where(eq(tasks.id, protectedTask.id));
+
+      const bearer = await fx.mintOwnerBearer();
+      const current = await authedInject(fx.app, {
+        method: "GET", url: "/api/tasks/content-v1", bearer,
+      });
+      expect(current.statusCode).toBe(200);
+      const rows = current.json<Array<{
+        id: string;
+        content: { status: string; promptPreview?: string };
+      }>>();
+      expect(rows.find((row) => row.id === ordinary.id)?.content).toMatchObject({
+        status: "ordinary",
+        promptPreview: "ordinary sibling remains visible",
+      });
+      expect(rows.find((row) => row.id === protectedTask.id)?.content).toMatchObject({
+        status: "protected",
+        objectId,
+        contentRevision: 1,
+      });
+
+      const legacy = await authedInject(fx.app, {
+        method: "GET", url: "/api/tasks", bearer,
+      });
+      expect(legacy.statusCode).toBe(409);
+      expect(legacy.json<{ error: string }>()).toEqual({ error: "task_content_requires_current_client" });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, ordinary.id));
+      await fx.db.delete(tasks).where(eq(tasks.id, protectedTask.id));
+      await fx.db.delete(taskDefinitionCryptoRevisions)
+        .where(eq(taskDefinitionCryptoRevisions.taskId, protectedTask.id));
+      await fx.db.delete(cryptoObjects).where(eq(cryptoObjects.objectId, objectId));
+      await fx.db.delete(namespaces).where(eq(namespaces.id, namespace.id));
+    }
+  });
+
+  test("owner Task list and detail responses are private and uncached", async () => {
+    const [task] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "ordinary scheduled work",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+    }).returning({ id: tasks.id });
+    if (!task) throw new Error("Task seed failed");
+    try {
+      const bearer = await fx.mintOwnerBearer();
+      for (const url of ["/api/tasks", `/api/tasks/${task.id}`]) {
+        const response = await authedInject(fx.app, {
+          method: "GET", url, bearer,
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["cache-control"]).toBe("private, no-store");
+        expect(response.headers.vary).toBe("Authorization");
+      }
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, task.id));
+    }
+  });
+
   test("D569 — both Task creation surfaces reject recursion from a live-bound Task", async () => {
     const [parent] = await fx.db.insert(tasks).values({
       ownerId: fx.ownerId,
@@ -136,6 +510,7 @@ describe("tasks HTTP API (M146)", () => {
     };
     const context = {
       ownerId: fx.ownerId,
+      causalHumanUserId: fx.ownerId,
       agentId: ownerAgentId,
       roomId: fx.defaultRoomId!,
       currentTaskId: parent.id,
@@ -757,6 +1132,95 @@ describe("tasks HTTP API (M146)", () => {
     expect(after).toEqual({ prompt: "unchanged guest task", status: "paused" });
 
     await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+  });
+
+  test("Task owner can patch and unpause when the distinct requestor retains paid authority", async () => {
+    const [seeded] = await fx.db
+      .insert(tasks)
+      .values({
+        ownerId: guest.userId,
+        requestorId: peer.userId,
+        agentId: peer.agentId,
+        prompt: "requestor-funded task",
+        status: "paused",
+        scheduleKind: "one_shot",
+        runAt: new Date(FUTURE_RUN_AT),
+        nextFireAt: new Date(FUTURE_RUN_AT),
+      })
+      .returning({ id: tasks.id });
+    if (!seeded) throw new Error("seed requestor-funded task failed");
+
+    try {
+      const patchRes = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: guest.bearer,
+        payload: { prompt: "owner-controlled, requestor-funded task" },
+      });
+      expect(patchRes.statusCode).toBe(200);
+
+      const unpauseRes = await authedInject(fx.app, {
+        method: "POST",
+        url: `/api/tasks/${seeded.id}/unpause`,
+        bearer: guest.bearer,
+      });
+      expect(unpauseRes.statusCode).toBe(200);
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
+  });
+
+  test("Task owner cannot patch or unpause when the distinct requestor lacks server funding", async () => {
+    const [seeded] = await fx.db
+      .insert(tasks)
+      .values({
+        ownerId: fx.ownerId,
+        requestorId: community.userId,
+        agentId: community.agentId,
+        prompt: "community-funded task",
+        status: "paused",
+        scheduleKind: "one_shot",
+        runAt: new Date(FUTURE_RUN_AT),
+        nextFireAt: new Date(FUTURE_RUN_AT),
+      })
+      .returning({ id: tasks.id });
+    if (!seeded) throw new Error("seed community-funded task failed");
+
+    try {
+      const ownerToken = await fx.mintOwnerBearer();
+      const patchRes = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: ownerToken,
+        payload: { prompt: "must remain unchanged" },
+      });
+      expect(patchRes.statusCode).toBe(403);
+      expect(JSON.parse(patchRes.body)).toEqual({
+        error: "server_provider_credentials_required",
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+
+      const unpauseRes = await authedInject(fx.app, {
+        method: "POST",
+        url: `/api/tasks/${seeded.id}/unpause`,
+        bearer: ownerToken,
+      });
+      expect(unpauseRes.statusCode).toBe(403);
+      expect(JSON.parse(unpauseRes.body)).toEqual({
+        error: "server_provider_credentials_required",
+        code: "server_provider_credentials_required",
+        capability: "use_server_provider_credentials",
+      });
+
+      const [after] = await fx.db
+        .select({ prompt: tasks.prompt, status: tasks.status })
+        .from(tasks)
+        .where(eq(tasks.id, seeded.id));
+      expect(after).toEqual({ prompt: "community-funded task", status: "paused" });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
   });
 
   test("PATCH on a pending cron task recomputes next_fire_at (UTC)", async () => {

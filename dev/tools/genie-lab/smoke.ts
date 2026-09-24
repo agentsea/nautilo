@@ -48,7 +48,6 @@ try {
   assert.equal(await input.inputValue(), "A draft that survives collapse");
   await input.press("Enter");
   await page.getByText("A draft that survives collapse", { exact: true }).waitFor();
-  await command({ type: "view", value: "waveform" });
   await command({ type: "view", value: "chat" });
   await page.getByText("A draft that survives collapse", { exact: true }).waitFor();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.focus());
@@ -74,7 +73,7 @@ try {
     await page.waitForTimeout(1000);
     if (output) await page.screenshot({ path: join(output, `genie-lab-${visual}-orb.png`), omitBackground: true });
   }
-  for (const view of ["waveform", "prompt", "chat"] as const) {
+  for (const view of ["prompt", "chat"] as const) {
     await command({ type: "view", value: view });
     if (output) await page.screenshot({ path: join(output, `genie-lab-${view}.png`), omitBackground: true });
   }

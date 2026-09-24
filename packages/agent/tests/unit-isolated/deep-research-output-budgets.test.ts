@@ -1,8 +1,9 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { ChatModel } from "../../src/providers/types";
 import type { Configuration } from "../../src/subagents/deep-research/shared/config";
+import { runWithUsageContext } from "../../src/usage/usage-context";
 
 const MODEL = "openrouter:moonshotai/kimi-k3";
 const factoryCalls: Array<{ modelId: string; options: Record<string, unknown> }> = [];
@@ -67,6 +68,8 @@ mock.module("../../src/subagents/deep-research/supervisor/graph", () => ({
   }),
 }));
 
+const trust = await import("@nautilo/trust");
+const fundingAssertion = spyOn(trust, "assertCanUseServerProviderCredentials").mockResolvedValue(undefined);
 const { createModel } = await import("../../src/subagents/deep-research/providers/router");
 const { createResearcherGraph } = await import("../../src/subagents/deep-research/researcher/graph");
 const { createDeepResearchGraph } = await import("../../src/subagents/deep-research/agent/graph");
@@ -103,17 +106,22 @@ const configuration = {
   mcp_prompt: null,
 } as Configuration;
 
+function withServerFunding<T>(fn: () => T): T {
+  return runWithUsageContext({ callType: "subagent", userId: "deep-research-human" }, fn);
+}
+
 beforeEach(() => {
   factoryCalls.length = 0;
   scenario = "router";
   compressionSignal = undefined;
+  fundingAssertion.mockClear();
   compressionStarted = new Promise((resolve) => { markCompressionStarted = resolve; });
 });
 
 test("router forwards an explicit output budget and preserves omitted legacy behavior", async () => {
-  await createModel(MODEL, configuration, { maxTokens: 7_777 });
-  await createModel(MODEL, configuration, { maxTokens: undefined });
-  await createModel(MODEL, configuration);
+  await withServerFunding(() => createModel(MODEL, configuration, { maxTokens: 7_777 }));
+  await withServerFunding(() => createModel(MODEL, configuration, { maxTokens: undefined }));
+  await withServerFunding(() => createModel(MODEL, configuration));
 
   expect(factoryCalls.map((call) => call.options["maxTokens"])).toEqual([
     7_777,
@@ -122,15 +130,16 @@ test("router forwards an explicit output budget and preserves omitted legacy beh
   ]);
   expect(factoryCalls[1]!.options).not.toHaveProperty("maxTokens");
   expect(factoryCalls[2]!.options).not.toHaveProperty("maxTokens");
+  expect(fundingAssertion).toHaveBeenCalledTimes(3);
 });
 
 test("researcher and compression use their distinct budgets when model IDs match", async () => {
   scenario = "researcher";
-  const result = await createResearcherGraph(configuration).invoke({
+  const result = await withServerFunding(() => createResearcherGraph(configuration).invoke({
     research_topic: "RFC 1035 TTL semantics",
     research_brief: "Use only RFC 1035.",
     raw_notes: ["RFC 1035 Section 3.2.1"],
-  }) as Record<string, unknown>;
+  })) as Record<string, unknown>;
 
   expect(result["compressed_research"]).toBe("Compressed findings");
   expect(factoryCalls.map((call) => ({
@@ -140,15 +149,16 @@ test("researcher and compression use their distinct budgets when model IDs match
     { modelId: MODEL, maxTokens: 1_111 },
     { modelId: MODEL, maxTokens: 2_222 },
   ]);
+  expect(fundingAssertion).toHaveBeenCalledTimes(4);
 });
 
 test("clarification and final synthesis use their role budgets when model IDs match", async () => {
   scenario = "agent";
-  const result = await createDeepResearchGraph(undefined, configuration).invoke({
+  const result = await withServerFunding(() => createDeepResearchGraph(undefined, configuration).invoke({
     messages: [{ role: "user", content: "Research RFC 1035 TTL semantics" }],
     research_brief: "Research RFC 1035 TTL semantics",
     report_language: "English",
-  }) as Record<string, unknown>;
+  })) as Record<string, unknown>;
 
   expect(result["final_report"]).toBe("Final report");
   expect(factoryCalls.map((call) => ({
@@ -158,16 +168,17 @@ test("clarification and final synthesis use their role budgets when model IDs ma
     { modelId: MODEL, maxTokens: 1_111 },
     { modelId: MODEL, maxTokens: 3_333 },
   ]);
+  expect(fundingAssertion).toHaveBeenCalledTimes(4);
 });
 
 test("graph cancellation reaches compression transport and rejects promptly", async () => {
   scenario = "compression-cancel";
   const controller = new AbortController();
-  const graphRun = createResearcherGraph(configuration).invoke({
+  const graphRun = withServerFunding(() => createResearcherGraph(configuration).invoke({
     research_topic: "RFC 1035 TTL semantics",
     research_brief: "Use only RFC 1035.",
     raw_notes: ["RFC 1035 Section 3.2.1"],
-  }, { signal: controller.signal });
+  }, { signal: controller.signal }));
 
   await compressionStarted;
   const abortedAt = performance.now();
@@ -177,5 +188,6 @@ test("graph cancellation reaches compression transport and rejects promptly", as
   expect(compressionSignal).toBeDefined();
   expect(compressionSignal?.aborted).toBe(true);
   expect(error).toBeInstanceOf(Error);
+  expect(fundingAssertion).toHaveBeenCalledTimes(4);
   expect(performance.now() - abortedAt).toBeLessThan(250);
 });

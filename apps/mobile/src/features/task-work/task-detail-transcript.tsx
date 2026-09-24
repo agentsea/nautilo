@@ -2,8 +2,6 @@ import { useMemo, type ReactElement } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
 import {
   isTaskTranscriptToolRow,
-  taskDetailTranscriptToPresentation,
-  type TaskDetail,
   type TaskTranscriptMessageVM,
 } from "@nautilo/types";
 
@@ -12,6 +10,13 @@ import { ToolCard } from "@/components/tool-card";
 import { useAppTheme } from "@/providers/theme";
 import type { AppTheme } from "@/theme/tokens";
 import type { TaskDetailHarnessActivity } from "./task-detail-live-activity";
+import {
+  MOBILE_PROTECTED_TASK_DETAIL,
+  mobileTaskDefinitionContent,
+  mobileTaskRunContent,
+  mobileTaskTranscript,
+  type MobileTaskDetail,
+} from "./task-content-mobile";
 
 /**
  * A read-only, non-inverted Task run transcript. It intentionally owns no
@@ -25,7 +30,7 @@ export function TaskDetailTranscript({
   recovery,
   harnessActivity,
 }: {
-  readonly detail: TaskDetail;
+  readonly detail: MobileTaskDetail;
   readonly activity: string;
   readonly loading: boolean;
   readonly header: ReactElement;
@@ -34,8 +39,11 @@ export function TaskDetailTranscript({
 }): ReactElement {
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
-  const rows = useMemo(() => taskDetailTranscriptToPresentation(detail), [detail]);
+  const rows = useMemo(() => mobileTaskTranscript(detail), [detail]);
+  const definition = mobileTaskDefinitionContent(detail);
   const latestRun = detail.runs.at(-1);
+  const latestRunUnsupported = latestRun !== undefined
+    && mobileTaskRunContent(latestRun).status === "unsupported_client";
 
   return (
     <FlatList
@@ -50,7 +58,8 @@ export function TaskDetailTranscript({
             <Text style={styles.activityLabel}>Activity</Text>
             <Text selectable style={styles.activityText}>{activity}</Text>
           </View>
-          {detail.task.expectedOutput ? <Text selectable style={styles.meta}>Expected output: {detail.task.expectedOutput}</Text> : null}
+          {definition.status === "unsupported_client" ? <Text style={styles.meta} accessibilityRole="alert">{MOBILE_PROTECTED_TASK_DETAIL}</Text> : null}
+          {definition.expectedOutput ? <Text selectable style={styles.meta}>Expected output: {definition.expectedOutput}</Text> : null}
           {latestRun?.startedAt ? <Text selectable style={styles.meta}>Started: {latestRun.startedAt}</Text> : null}
           {latestRun?.completedAt ? <Text selectable style={styles.meta}>Completed: {latestRun.completedAt}</Text> : null}
           {harnessActivity ? <ToolCard name={harnessActivity.name} status={harnessActivity.status === "running" ? "start" : "end"} taskActivityStatus={harnessActivity.status} args={harnessActivity.args} result={harnessActivity.result} taskTranscript /> : null}
@@ -60,7 +69,8 @@ export function TaskDetailTranscript({
       }
       ListEmptyComponent={
         <Text style={styles.empty} accessibilityLiveRegion="polite">
-          {loading ? "Loading transcript…" : latestRun ? "No transcript is available for this run." : "No runs yet."}
+          {definition.status === "unsupported_client" || latestRunUnsupported ? MOBILE_PROTECTED_TASK_DETAIL
+            : loading ? "Loading transcript…" : latestRun ? "No transcript is available for this run." : "No runs yet."}
         </Text>
       }
       accessibilityLabel="Task transcript"

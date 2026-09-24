@@ -8,11 +8,13 @@ mock.module("../../src/lib/server-direct-db", () => ({
 }));
 const realAgent = await import("@nautilo/agent");
 const resumeSpy = mock(async () => {});
+let checkpointCausalHumanUserId: string | null = "checkpoint-causal-human";
 mock.module("@nautilo/agent", () => ({
   ...realAgent,
   resumeGraphWithAskReply: resumeSpy,
   resumeGraphWithApproval: resumeSpy,
   readTurnIdForThread: mock(async () => "validation-turn"),
+  readCausalHumanUserIdForThread: mock(async () => checkpointCausalHumanUserId),
   readAgentIdForThread: mock(async () => null),
 }));
 import { fallbackResumePolicy } from "../helpers/auth-resume-policy-fixture";
@@ -172,7 +174,7 @@ describe("POST /api/auth/approval-reply (validation)", () => {
 });
 
 describe("M254 foreground resume admission", () => {
-  test("returns the exact denial after thread binding and before resume", async () => {
+  test("checks the checkpoint initiating Human rather than another Room responder", async () => {
     const localSessions = new SessionStore(undefined, { persistPath: null });
     const localApp = Fastify({ logger: false });
     installLocalAuthPreHandlerStub(localApp, localSessions);
@@ -183,6 +185,7 @@ describe("M254 foreground resume admission", () => {
       resumeThreadMembershipForUser: async () => true,
       projectionResumeBindingForThread: async () => ({ kind: "none" }),
       assertCanInvokeAgent: async (input) => {
+        expect(input.humanUserId).toBe("checkpoint-causal-human");
         throw new AgentInvocationDeniedError(input);
       },
     });
@@ -200,5 +203,25 @@ describe("M254 foreground resume admission", () => {
       capability: "invoke_agents",
     });
     await localApp.close();
+  });
+
+  test("fails closed when the checkpoint has no initiating Human", async () => {
+    checkpointCausalHumanUserId = null;
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/auth/approval-reply",
+        headers: { Authorization: `Bearer ${validToken}` },
+        payload: { verb: "once", threadId: "thread-missing-causal-human" },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "invoke_agents_required",
+        code: "invoke_agents_required",
+        capability: "invoke_agents",
+      });
+    } finally {
+      checkpointCausalHumanUserId = "checkpoint-causal-human";
+    }
   });
 });

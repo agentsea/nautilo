@@ -10,6 +10,7 @@ const AGENT_ID = "20000000-0000-4000-8000-000000000002";
 const ROOM_ID = "30000000-0000-4000-8000-000000000003";
 const CTX = {
   ownerId: OWNER_ID,
+  causalHumanUserId: OWNER_ID,
   agentId: AGENT_ID,
   roomId: ROOM_ID,
   userTimezone: "America/Los_Angeles",
@@ -151,6 +152,7 @@ describe("schedule shortcut (M145)", () => {
     stubRuntime();
     await createScheduleTool({
       ownerId: OWNER_ID,
+      causalHumanUserId: OWNER_ID,
       agentId: AGENT_ID,
       roomId: ROOM_ID,
     }).invoke({

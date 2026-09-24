@@ -14,6 +14,7 @@ import { unfinishedFileDiscovery } from "./security/discovery-continuation";
 import { securityScanProgressText, type RelaySecurityScanProgressMessage } from "@nautilo/relay";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import type { NautiloState } from "../agent/state";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { defaultPostModelDeps } from "../agent/post-model-deps";
 import type { UncontainedHostCommandsDispatchRequest } from "../nodes/post-model";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -1152,6 +1153,7 @@ export function createNautiloToolInvocationSession(
           workspacePath: state.workspacePath,
           userTimezone: state.userTimezone,
           userId: state.userId,
+          causalHumanUserId: causalHumanForExecution(state.causalHumanUserId),
           agentId: state.agentId,
           roomId: state.roomId,
           callingRoomId: state.callingRoomId,
@@ -1792,7 +1794,7 @@ export function createNautiloToolInvocationSession(
           const threadId = state.langgraphThreadId || state.currentThreadId;
           const laneKey = state.approvalLaneKey || "";
           const valid = verifyMediaGenerationPreparedApproval(prepared, {
-            userId: state.userId,
+            userId: causalHumanForExecution(state.causalHumanUserId),
             roomId: state.roomId,
             threadId,
             turnId: state.turnId,
@@ -1807,7 +1809,7 @@ export function createNautiloToolInvocationSession(
           });
           const result = valid
             ? await submitMediaGenerationApproval(
-              { userId: state.userId, roomId: state.roomId, agentId: state.agentId },
+              { userId: causalHumanForExecution(state.causalHumanUserId), roomId: state.roomId, agentId: state.agentId },
               {
                 prepared,
                 approvalId,

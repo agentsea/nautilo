@@ -60,6 +60,7 @@ describe("M241 generated migration authority finalizer", () => {
   test("keeps the finalizer in the canonical generate-only command", () => {
     expect(packageJson.scripts["db:generate"]?.split(" && ")).toEqual([
       "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate",
+      "bun scripts/finalize-task-crypto-lifecycle.ts",
       "bun scripts/finalize-crypto-delivery-migration.ts",
       "bun scripts/finalize-m237-message-crypto-lifecycle.ts",
       "bun scripts/finalize-m241-background-authorization.ts",

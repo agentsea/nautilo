@@ -21,6 +21,10 @@ import type {
   ConnectedWebAccountStore,
   ConnectedWebOperation,
 } from "./store";
+import {
+  canUseBrowserUseServerFunding,
+  type BrowserUseServerFundingAdmission,
+} from "../browser-use/browser-use-cloud";
 
 const MAX_ROUTER_RESULT_BYTES = 96 * 1024;
 
@@ -33,6 +37,8 @@ export type DirectBrowserRouterSource = "saved_profile" | "hosted_session";
 
 export interface DirectBrowserRouterAdmission {
   readonly ownerUserId: string;
+  /** Trusted Human funding identity, distinct from the connected-account owner. */
+  readonly fundingHumanUserId: string;
   readonly accountId: string;
   readonly operationId: string;
   readonly expectedControlEpoch: number;
@@ -119,6 +125,8 @@ export interface DirectBrowserRouterDependencies {
   readonly navigateSavedProfileBrowser: (cdpUrl: string, origin: string, timeoutMs: number) => Promise<void>;
   readonly now?: () => Date;
   readonly discoveryTimeoutMs?: number;
+  /** Fresh current-Human funding authority before creating a paid browser. */
+  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 export interface DirectBrowserRouterCleanupResult {
@@ -151,6 +159,7 @@ function isProviderFailure(value: unknown): value is BrowserUseProviderFailure {
 
 function validAdmission(input: DirectBrowserRouterAdmission): boolean {
   return input.ownerUserId.length > 0
+    && input.fundingHumanUserId.trim().length > 0
     && input.accountId.length > 0
     && input.operationId.length > 0
     && Number.isSafeInteger(input.expectedControlEpoch)
@@ -642,6 +651,11 @@ export class DirectBrowserRouter {
 
   private async startOrAttach(input: DirectBrowserRouterAdmission, binding: ConnectedWebAccountBinding, operation: ConnectedWebOperation): Promise<BrowserUseBrowserSession & { readonly cdpUrl: string }> {
     if (input.source === "saved_profile") {
+      if (!await canUseBrowserUseServerFunding(
+        input.fundingHumanUserId,
+        "connected_web_direct_browser",
+        this.deps.assertServerFunding,
+      )) throw new DirectBrowserRouterError("unavailable");
       const browser = browserForStart(await this.deps.provider.startBrowser({
         profileId: binding.profileRef!, timeoutMinutes: this.deps.browserTimeoutMinutes,
       }).catch(() => ({ kind: "failure", code: "network_error" } as const)));

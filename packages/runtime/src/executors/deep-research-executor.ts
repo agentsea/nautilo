@@ -5,6 +5,7 @@ import {
   createDeepResearchGraph,
   DeepResearchUnavailableError,
   fromDeepResearchConfig,
+  runWithUsageContext,
   validateDeepResearchModelPlan,
 } from "@nautilo/agent";
 import { log, warn } from "@nautilo/logger";
@@ -222,12 +223,28 @@ export function streamDeepResearchReport(
   input: Record<string, unknown>,
   executionId: string,
   signal: AbortSignal,
+  initiatingHumanUserId?: string,
 ): DeepResearchReportStream {
-  return (reportStreamOverrideForTests ?? runDeepResearchReportStream)(
+  const source = (reportStreamOverrideForTests ?? runDeepResearchReportStream)(
     input,
     executionId,
     signal,
   );
+  const humanUserId = initiatingHumanUserId?.trim() ?? "";
+  return (async function* (): DeepResearchReportStream {
+    for (;;) {
+      const next = await runWithUsageContext(
+        {
+          callType: "subagent",
+          userId: humanUserId,
+          metadata: { executionId, operation: "deep_research" },
+        },
+        () => source.next(),
+      );
+      if (next.done) return next.value;
+      yield next.value;
+    }
+  })();
 }
 
 /**
@@ -243,7 +260,12 @@ export async function* deepResearchExecutor(
   const routed = <T extends ServerEvent>(event: T): T => (
     laneKey ? { ...event, laneKey } : event
   );
-  const stream = streamDeepResearchReport(input, jobId, signal);
+  const stream = streamDeepResearchReport(
+    input,
+    jobId,
+    signal,
+    readReturnRoute(input)?.requestorId,
+  );
   let finalReport = "";
   for (;;) {
     const next = await stream.next();

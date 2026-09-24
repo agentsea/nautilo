@@ -3,6 +3,7 @@ import {
   BROWSER_USE_DEFAULT_MODEL,
   BROWSER_USE_V4_BASE_URL,
   BrowserUseCloudAdapter,
+  canUseBrowserUseServerFunding,
   type BrowserUseFetch,
 } from "../../src/browser-use/browser-use-cloud.ts";
 
@@ -11,6 +12,22 @@ const PROFILE_ID = "profile-private-id";
 const BROWSER_ID = "browser-private-id";
 const RUN_ID = "run-private-id";
 const FIXED_TIME = new Date("2026-09-01T12:00:00.000Z");
+
+describe("Browser Use server funding admission", () => {
+  test("uses the current Human and fails closed without touching a provider", async () => {
+    const admitted: unknown[] = [];
+    expect(await canUseBrowserUseServerFunding("human-1", "connected_web_read", async (...input) => {
+      admitted.push(input);
+    })).toBe(true);
+    expect(admitted).toEqual([["human-1", "connected_web_read"]]);
+    expect(await canUseBrowserUseServerFunding("human-2", "connected_web_action", async () => {
+      throw new Error("server_provider_credentials_required");
+    })).toBe(false);
+    expect(await canUseBrowserUseServerFunding("human-3", "connected_web_task", async () => {
+      throw new Error("capability lookup unavailable");
+    })).toBe(false);
+  });
+});
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

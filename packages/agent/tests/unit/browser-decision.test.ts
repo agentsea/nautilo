@@ -4,6 +4,7 @@ import type { ToolCall } from "@langchain/core/messages/tool";
 import { invalidateRuntimeConfigCache, setConfigOverrides } from "@nautilo/config";
 import { z } from "zod";
 import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
+import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import type { NautiloState } from "../../src/agent/state";
 import {
   browserDecisionCandidates,
@@ -2589,7 +2590,7 @@ describe("browser decision node", () => {
     expect(update.messages).toBeUndefined();
   });
 
-  test("attributes Choice usage to the initiating user, room, agent, and turn without leaking scope", async () => {
+  test("attributes Choice usage to the causal Human, room, agent, and turn without leaking scope", async () => {
     for (const [subagentDepth, callType] of [[0, "chat"], [1, "subagent"]] as const) {
       let captured = getUsageContext();
       const node = createBrowserDecisionNode({
@@ -2608,7 +2609,8 @@ describe("browser decision node", () => {
       const turnId = `turn-usage-${subagentDepth}`;
       await node(state({
         turnId,
-        userId: "user-usage",
+        userId: "owner-usage",
+        causalHumanUserId: "human-usage",
         roomId: "room-usage",
         agentId: "agent-usage",
         subagentDepth,
@@ -2617,12 +2619,56 @@ describe("browser decision node", () => {
 
       expect(captured).toEqual({
         callType,
-        userId: "user-usage",
+        userId: "human-usage",
         roomId: "room-usage",
         metadata: { agentId: "agent-usage", turnId },
       });
       expect(getUsageContext()).toBeUndefined();
     }
+  });
+
+  test("binds production Choice funding to the causal Human rather than the Agent owner", async () => {
+    const fundingHumanIds: Array<string | undefined> = [];
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      invokeChoice: async (_input, deps) => {
+        fundingHumanIds.push(deps?.fundingHumanUserId);
+        return {
+          selectedId: "action_0",
+          requestedModelId: JEV_ID,
+          resolvedModelId: "typesafe/jev-1.13-20260917",
+          usage: { inputTokens: 20, outputTokens: 2, actualCostUsd: null },
+        };
+      },
+    });
+
+    await node(state({
+      userId: "agent-owner",
+      causalHumanUserId: "causal-human",
+    }), { signal: new AbortController().signal });
+
+    expect(fundingHumanIds).toEqual(["causal-human"]);
+  });
+
+  test("does not fall back to the Agent owner when causal-Human funding identity is absent", async () => {
+    const fundingHumanIds: Array<string | undefined> = [];
+    const node = createBrowserDecisionNode({
+      fullEncryptionOnlyForState: () => false,
+      invokeChoice: async (_input, deps) => {
+        fundingHumanIds.push(deps?.fundingHumanUserId);
+        throw new ServerProviderCredentialsDeniedError("", "decision_model");
+      },
+    });
+
+    const update = await node(state({
+      userId: "agent-owner-must-not-fund",
+    }), { signal: new AbortController().signal });
+
+    expect(fundingHumanIds).toEqual([""]);
+    expect(update.browserDecision).toMatchObject({
+      phase: "handoff",
+      reason: "choice_unavailable",
+    });
   });
 
   test("successful reads automatically reach the next Choice as exact source evidence", async () => {

@@ -71,6 +71,7 @@ function checkpointState(
     messages: [new HumanMessage("D526 activated-tool cache wire probe")],
     model: "openai:gpt-5.6-luna",
     userId: "d526-user",
+    causalHumanUserId: "d526-user",
     agentId: "d526-agent",
     actorRole: "owner",
     roomId: "d526-room",
@@ -182,6 +183,9 @@ beforeAll(async () => {
   mock.module("@nautilo/trust", () => ({
     ...realTrust,
     envelopeReadableNamespaces: () => [],
+    assertCanUseServerProviderCredentials: async (humanUserId: string) => {
+      expect(humanUserId).toBe("d526-user");
+    },
   }));
 
   savedEnv["ANTHROPIC_API_KEY"] = process.env["ANTHROPIC_API_KEY"];

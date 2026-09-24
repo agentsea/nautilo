@@ -9,9 +9,11 @@ import { z } from "zod";
 import { SELECTION_PROFILES, type ResolvedFocusedResource } from "@nautilo/types";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import type { OrdinaryContentAccessExecution } from "../../../runtime/ordinary-content-access";
+import { causalHumanForExecution } from "../../../runtime/causal-human-context";
 
 export interface ShortcutContext {
   ownerId: string;
+  causalHumanUserId: string;
   agentId: string;
   roomId: string;
   /** Exact Desktop Current Folder captured for this turn, when present. */
@@ -66,6 +68,9 @@ export function shortcutContextFromUnknown(ctx: unknown): ShortcutContext {
         : "";
   return {
     ownerId,
+    causalHumanUserId: causalHumanForExecution(
+      typeof c["causalHumanUserId"] === "string" ? c["causalHumanUserId"] : "",
+    ),
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
     roomId: typeof c["roomId"] === "string" ? c["roomId"] : "",
     currentFolder:

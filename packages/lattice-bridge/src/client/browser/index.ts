@@ -46,6 +46,7 @@ import {
   recoverPersonalDomainAuthorityV2,
   createForegroundLiveShadowMessageClient,
   createForegroundHumanMemoryClient,
+  createForegroundHumanTaskClient,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
@@ -56,6 +57,7 @@ import {
   type ForegroundBackgroundAuthorizationClientInput,
   type ForegroundMessageBackfillClientInput,
   type ForegroundHumanMemoryClientInput,
+  type ForegroundHumanTaskClientInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
   type ForegroundRoomHistoryShadowMessageReaderInput,
   type ForegroundRoomHistoryShadowMessageReader,
@@ -1005,6 +1007,15 @@ export function createBrowserHumanMemoryClient(
   return createForegroundHumanMemoryClient(browserForegroundShadowPlatform, input);
 }
 
+export type BrowserHumanTaskClientInput = ForegroundHumanTaskClientInput;
+
+/** Browser vault-backed protected Task client. Plain uses the legacy API adapter. */
+export function createBrowserHumanTaskClient(
+  input: BrowserHumanTaskClientInput,
+) {
+  return createForegroundHumanTaskClient(browserForegroundShadowPlatform, input);
+}
+
 /** Public, secret-free coordinate used to bind browser resume approvals. */
 export function deriveBrowserCryptoDeviceId(input: Readonly<{
   serverScope: string;
@@ -1223,6 +1234,17 @@ export {
   type HumanMemoryObjectAccessAnchorPort,
   type VaultHumanMemoryDeviceContentInput,
 } from "../memory/vault-human-memory-device-content.ts";
+export {
+  createAuthorizedHumanTaskClientV1,
+  type HumanTaskDeviceContentPortV1,
+  type HumanTaskOpenedDefinitionV1,
+  type HumanTaskPreparedJournalV1,
+  type HumanTaskPublicationPlansV1,
+} from "../task/authorized-human-task-client.ts";
+export {
+  createVaultHumanTaskDeviceContentPortV1,
+  type VaultHumanTaskDeviceContentInputV1,
+} from "../task/vault-human-task-device-content.ts";
 export {
   createVaultHumanArtifactDeviceContentPort,
   type AuthorizedHumanArtifactContentIntentV1,

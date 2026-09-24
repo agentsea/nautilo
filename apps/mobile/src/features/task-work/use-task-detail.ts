@@ -3,6 +3,7 @@ import { useFocusEffect } from "expo-router";
 
 import { getApiClient } from "@/lib/api";
 import { useRealtime } from "@/providers/realtime";
+import { isMissingTaskContentProjection } from "./task-content-mobile";
 import {
   createTaskDetailController,
   isExactTaskId,
@@ -59,7 +60,13 @@ export function useTaskDetail({
       if (!server || server.id !== requestTarget.serverId || server.serverUrl !== requestTarget.serverUrl) {
         throw new Error("Active server changed.");
       }
-      return getApiClient(requestTarget.serverUrl).getTask(requestTarget.taskId);
+      const client = getApiClient(requestTarget.serverUrl);
+      try {
+        return await client.getTaskContentV1(requestTarget.taskId);
+      } catch (error) {
+        if (!isMissingTaskContentProjection(error)) throw error;
+        return client.getTask(requestTarget.taskId);
+      }
     },
   }), [server]);
   const lifecycleApi = useMemo<TaskDetailLifecycleApi>(() => ({

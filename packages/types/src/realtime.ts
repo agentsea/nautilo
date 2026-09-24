@@ -1964,6 +1964,7 @@ export type ConductorDecisionReasonCode =
   | "silent_not_addressed"
   | "silent_no_wakeable"
   | "silent_router_unresolved"
+  | "silent_agent_not_authorized"
   | "silent_router"
   | "ask_ambiguous_direct"
   | "ask_ambiguous_history"

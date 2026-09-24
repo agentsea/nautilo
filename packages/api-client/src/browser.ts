@@ -196,6 +196,8 @@ export type {
   MemorySearchResponse,
   MemoryDetailResponse,
   AdminUserRow,
+  CanonicalServerRoleSlug,
+  EnrollableServerRoleSlug,
   AdminUsersListResponse,
   AdminUsersListOptions,
   GroupRow,
@@ -273,6 +275,33 @@ export type {
   ProtectedArtifactPreparedAccessRequestV1,
   ProtectedArtifactAccessUpdateResponseV1,
 } from "./schemas/protected-artifact";
+export {
+  protectedTaskPreparedCreateRequestV1Schema,
+  protectedTaskPreparedPublicationRequestV1Schema,
+  protectedTaskPreparedUpdateRequestV1Schema,
+  dualTaskPreparedCreateRequestV1Schema,
+  dualTaskPreparedUpdateRequestV1Schema,
+  protectedTaskPublicationPlanRequestV1Schema,
+  protectedTaskPublicationPlanV1Schema,
+  protectedTaskDefinitionReadEnvelopeV1Schema,
+  protectedTaskContentListV1Schema,
+  taskContentDetailV1Schema,
+  taskContentListV1Schema,
+  taskContentSummaryV1Schema,
+  taskOperationalCreateV1Schema,
+  taskOperationalUpdateV1Schema,
+} from "./schemas/protected-task";
+export type {
+  ProtectedTaskPreparedCreateRequestV1,
+  ProtectedTaskPreparedPublicationRequestV1,
+  ProtectedTaskPreparedUpdateRequestV1,
+  DualTaskPreparedCreateRequestV1,
+  DualTaskPreparedUpdateRequestV1,
+  ProtectedTaskPublicationPlanRequestV1,
+  ProtectedTaskPublicationPlanV1,
+  ProtectedTaskDefinitionReadEnvelopeV1,
+  ProtectedTaskDefinitionReadReadyEnvelopeV1,
+} from "./schemas/protected-task";
 export type {
   ProtectedMemoryBriefResponseV1,
   ProtectedMemoryArchiveRequestV1,

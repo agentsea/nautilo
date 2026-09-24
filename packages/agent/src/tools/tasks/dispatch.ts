@@ -40,6 +40,7 @@ import { genieRecoveryResult } from "../genie-recovery";
 
 export interface TaskDispatchContext {
   ownerId: string;
+  causalHumanUserId: string;
   agentId: string;
   roomId: string;
   /** Server-authored durable Task currently executing this graph, if any. */
@@ -234,6 +235,7 @@ export async function dispatchTaskCommand(
         ).join("\n");
       }
       case "create": {
+        if (!ctx.causalHumanUserId) return "Cannot create task: initiating Human is unavailable.";
         if (!ctx.ownerId || !ctx.agentId) {
           return "Cannot create task: missing owner or agent context.";
         }
@@ -241,6 +243,9 @@ export async function dispatchTaskCommand(
           return "Cannot create task: 'prompt' is required for command 'create'.";
         }
         const rt = getTaskToolRuntime();
+        if (rt.canUseLegacyTaskContent && !await rt.canUseLegacyTaskContent()) {
+          return "Cannot create task: protected Task creation is not yet available from this Agent tool.";
+        }
         if (
           args.collaboration_mode !== undefined
           && args.harness !== "codex"
@@ -288,7 +293,7 @@ export async function dispatchTaskCommand(
           }
           const created = await rt.createHarnessTask({
             ownerId: ctx.ownerId,
-            requestorId: ctx.ownerId,
+            requestorId: ctx.causalHumanUserId,
             agentId: ctx.agentId,
             prompt: args.prompt,
             callingRoomId: ctx.roomId,
@@ -369,7 +374,7 @@ export async function dispatchTaskCommand(
         // seam; orthogonal to `target_chat` (where the result lands).
         const targets = await resolveTargetUserIds(
           rt.db,
-          ctx.ownerId,
+          ctx.causalHumanUserId,
           args.target_users,
         );
         if (!targets.ok) return targets.message;
@@ -386,7 +391,7 @@ export async function dispatchTaskCommand(
 
         const input: TaskToolCreateInput = {
           ownerId: ctx.ownerId,
-          requestorId: ctx.ownerId,
+          requestorId: ctx.causalHumanUserId,
           agentId: ctx.agentId,
           prompt: args.prompt,
           ...(args.expected_output !== undefined
@@ -521,6 +526,15 @@ export async function dispatchTaskCommand(
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";
         }
+        if (task.contentRepresentation === "protected"
+          || task.contentRepresentation === "dual"
+          || (rt.canUseLegacyTaskContent && !await rt.canUseLegacyTaskContent())) {
+          return JSON.stringify({
+            task: { id: task.id, status: task.status },
+            content: { status: "unavailable", reason: "protected_task_read_unavailable" },
+            runs: [],
+          });
+        }
         const readContext = { ownerId: ctx.ownerId, agentId: task.agentId,
           maxResponseBytes: ctx.taskReadMaxResponseBytes, messages: ctx.taskReadMessages, pendingPages: ctx.taskReadPendingPages };
         if (!Number.isSafeInteger(ctx.taskReadMaxResponseBytes) || !ctx.taskReadMaxResponseBytes || ctx.taskReadMaxResponseBytes < 1) {
@@ -597,6 +611,8 @@ export async function dispatchTaskCommand(
       }
       case "list": {
         const rt = getTaskToolRuntime();
+        const ordinaryContentAllowed = rt.canUseLegacyTaskContent
+          ? await rt.canUseLegacyTaskContent() : true;
         // When a status is given, push it to the store (which filters by exact
         // status and takes precedence over includeTerminal). The previous shape
         // passed `{}` then JS-filtered, but `{}` makes the store EXCLUDE
@@ -615,7 +631,10 @@ export async function dispatchTaskCommand(
             ...(task.status === "errored" && task.lastError === "no_progress" && await rt.canResumeResearch?.(task) === true
               ? { canResumeResearch: true } : {}),
             status: task.status,
-            prompt: task.prompt.slice(0, 80),
+            ...(!ordinaryContentAllowed
+              || task.contentRepresentation === "protected" || task.contentRepresentation === "dual"
+              ? { content: { status: "unavailable", reason: "protected_task_read_unavailable" } }
+              : { prompt: task.prompt.slice(0, 80) }),
             scheduleKind: task.scheduleKind,
             callingRoomId: task.callingRoomId,
             selectionProfile: task.selectionProfile,
@@ -638,6 +657,12 @@ export async function dispatchTaskCommand(
         const task = await getTaskById(rt.db, args.taskId);
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";
+        }
+        if (task.contentRepresentation === "protected" || task.contentRepresentation === "dual") {
+          return "Cannot update task: protected Task content requires an authorized client.";
+        }
+        if (rt.canUseLegacyTaskContent && !await rt.canUseLegacyTaskContent()) {
+          return "Cannot update task: protected Task content requires an authorized client.";
         }
         if (task.status !== "pending" && task.status !== "paused") {
           return `Cannot update task: only pending or paused tasks can be updated (this one is '${task.status}').`;

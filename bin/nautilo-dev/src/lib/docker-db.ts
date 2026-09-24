@@ -416,8 +416,12 @@ export const DATA_TABLES = [
   "public.llm_usage_events",
   // Paid provider/tool cost evidence. FKs users + rooms + agents (all earlier).
   "public.provider_cost_events",
-  // M141 — Task substrate. Ordered after users/agents/rooms/agent_scopes
-  // (tasks FKs) and jobs (task_runs FK) so COPY restore satisfies FKs.
+  // Task substrate. Crypto revision ledgers depend only on namespaces and must
+  // be restored before the Task/TaskRun rows that point at their current
+  // protected representations. The product rows remain after all of their
+  // users/agents/rooms/agent_scopes/jobs parents.
+  "public.task_definition_crypto_revisions",
+  "public.task_run_result_crypto_revisions",
   "public.tasks",
   "public.task_runs",
   // Pending/recoverable Plan input references the Task, run, Job,
@@ -536,6 +540,16 @@ export const SERIAL_PK_TABLES: ReadonlyArray<{
   {
     table: "artifact_crypto_revisions",
     seq: "artifact_crypto_revisions_sequence_seq",
+    pkCol: "sequence",
+  },
+  {
+    table: "task_definition_crypto_revisions",
+    seq: "task_definition_crypto_revisions_sequence_seq",
+    pkCol: "sequence",
+  },
+  {
+    table: "task_run_result_crypto_revisions",
+    seq: "task_run_result_crypto_revisions_sequence_seq",
     pkCol: "sequence",
   },
   {

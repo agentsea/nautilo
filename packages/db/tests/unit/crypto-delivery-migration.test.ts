@@ -128,8 +128,9 @@ describe("Wave 7 crypto delivery migration", () => {
       readFileSync(resolve(import.meta.dir, "../../package.json"), "utf8"),
     ) as { scripts: Record<string, string> };
     const generateSteps = packageJson.scripts["db:generate"]?.split(" && ");
-    expect(generateSteps?.slice(0, 2)).toEqual([
+    expect(generateSteps?.slice(0, 3)).toEqual([
       "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate",
+      "bun scripts/finalize-task-crypto-lifecycle.ts",
       "bun scripts/finalize-crypto-delivery-migration.ts",
     ]);
   });

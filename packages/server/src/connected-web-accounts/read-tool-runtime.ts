@@ -26,6 +26,7 @@ export interface ConnectedWebAccountReadRuntimeActor {
   /** Trusted initiating response preference; never a model argument. */
   readonly voiceMode?: boolean;
   readonly userId: string;
+  readonly causalHumanUserId?: string;
   readonly agentId: string;
   readonly roomId: string;
   /** Non-empty means a background/task/subagent origin, unsupported in Phase 1. */
@@ -419,11 +420,11 @@ export function createConnectedWebAccountReadServerRuntime(
     totalCostUsd: string | null,
     cost: ReturnType<typeof parseConnectedWebProviderCost>,
   ): Promise<void> {
-    if (options.recordProviderCost === undefined) return;
+    if (options.recordProviderCost === undefined || !actor.causalHumanUserId) return;
     try {
       await options.recordProviderCost({
         occurredAt: clock.now(),
-        userId: actor.userId,
+        userId: actor.causalHumanUserId,
         roomId: actor.roomId,
         agentId: actor.agentId,
         provider: "browser_use",

@@ -31,9 +31,16 @@ beforeAll(async () => {
   process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";
   globalThis.fetch = (() => { throw new Error("Network disabled in routing consent test"); }) as unknown as typeof fetch;
   const realDb = await import("@nautilo/db");
+  const realTrust = await import("@nautilo/trust");
   mock.module("@nautilo/db", () => ({ ...realDb,
     getCachedServerModelConfigRow: () => null,
     kickServerModelConfigRefresh: () => {},
+  }));
+  mock.module("@nautilo/trust", () => ({
+    ...realTrust,
+    assertCanUseServerProviderCredentials: async (humanUserId: string) => {
+      expect(humanUserId).toBe("routing-fixture");
+    },
   }));
   mock.module("../../src/utils/resolve-fallback-policy", () => ({
     resolveFallbackPolicy: async () => ({ enabled: false, chain: [] }),
@@ -127,7 +134,7 @@ async function runGraph() {
     .compile();
   const prompt = new HumanMessage("Review the authorized source.");
   return graph.invoke({ model: MODEL, modelFallbackMode: "none", subagentDepth: 1, subagentRun: true,
-    userId: "routing-fixture", agentId: "routing-agent", turnId: "routing-turn", roomId: "", messages: [prompt], preparedMessages: [prompt] });
+    userId: "routing-fixture", causalHumanUserId: "routing-fixture", agentId: "routing-agent", turnId: "routing-turn", roomId: "", messages: [prompt], preparedMessages: [prompt] });
 }
 
 test("actual Task graph preserves an opted-in exact model through role, invocation and provider gates", async () => {

@@ -109,6 +109,7 @@
   "foregroundShadow:send",
   "foregroundShadow:serviceDomainKeyBacklog",
   "foregroundShadow:synchronizeRecipients",
+  "foregroundShadow:task:operateV1",
   "fs:mkdir",
   "fs:openPath",
   "fs:readDir",

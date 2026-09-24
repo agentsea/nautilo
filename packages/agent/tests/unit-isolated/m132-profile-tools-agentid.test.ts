@@ -19,6 +19,7 @@ const upsertCalls: UpsertCall[] = [];
 // stays DB-independent.
 type RenameCall = { ownerUserId: string; agentId: string; name: string };
 const renameCalls: RenameCall[] = [];
+const soulGenerationHumans: string[] = [];
 
 const fakeProfile = {
   id: "p1",
@@ -75,7 +76,14 @@ beforeAll(() => {
     emitProfileUpdated: () => {},
   }));
   mock.module("../../src/soul/generate-soul-file", () => ({
-    generateSoulFile: async () => "# Soul\n\nGenerated.",
+    generateSoulFile: async (
+      _input: unknown,
+      _signal: AbortSignal | undefined,
+      authorization: { humanUserId?: string } | undefined,
+    ) => {
+      soulGenerationHumans.push(authorization?.humanUserId ?? "");
+      return "# Soul\n\nGenerated.";
+    },
   }));
 });
 
@@ -111,12 +119,26 @@ describe("M132 — config tools thread context agentId into upsertProfile", () =
 
   test("regenerate_soul apply passes (ownerId, agentId, { soulFile })", async () => {
     const { createRegenerateSoulTool } = await import("../../src/tools/config/regenerate-soul");
-    const tool = createRegenerateSoulTool({ ownerId: "owner-1", agentId: "agent-1" });
+    const tool = createRegenerateSoulTool({
+      ownerId: "owner-1",
+      causalHumanUserId: "initiator-1",
+      agentId: "agent-1",
+    });
     const out = await tool.invoke({ action: "apply" });
     expect(out).toContain("Soul file saved");
     const call = upsertCalls.find((c) => typeof c[2]["soulFile"] === "string");
     expect(call).toBeDefined();
     expect(call?.[0]).toBe("owner-1");
     expect(call?.[1]).toBe("agent-1");
+    expect(soulGenerationHumans).toContain("initiator-1");
+  });
+
+  test("regenerate_soul fails closed without an initiating Human", async () => {
+    const { createRegenerateSoulTool } = await import("../../src/tools/config/regenerate-soul");
+    const tool = createRegenerateSoulTool({ ownerId: "owner-1", agentId: "agent-1" });
+    const before = soulGenerationHumans.length;
+    const out = await tool.invoke({ action: "preview" });
+    expect(out).toContain("no Human in context");
+    expect(soulGenerationHumans).toHaveLength(before);
   });
 });

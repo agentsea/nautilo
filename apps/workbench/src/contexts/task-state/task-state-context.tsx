@@ -30,6 +30,7 @@ import {
   type TaskStateSnapshot,
   type TaskStateStore,
 } from "./task-state-store";
+import { listTaskStateSummaries } from "./task-state-content";
 
 /** Bridge surface the runtime WS handler calls into the canonical task store. */
 export interface TaskStateBridge {
@@ -89,7 +90,7 @@ export function TaskStateProvider({
   if (!storeRef.current) {
     storeRef.current = createTaskStateStore({
       // Include the existing bounded terminal window to discover verified recovery.
-      listActiveTasks: () => apiClient.listTasks({ includeTerminal: true }),
+      listActiveTasks: () => listTaskStateSummaries(apiClient),
       lifecycle: {
         pauseTask: (taskId) => apiClient.pauseTask(taskId),
         unpauseTask: (taskId) => apiClient.unpauseTask(taskId),

@@ -13,6 +13,11 @@ import type { ToolRelayRegistry } from "../../src/nodes/tools";
 import type { ChatModel } from "../../src/providers/types";
 
 const actualDb = await import("@nautilo/db");
+const actualTrust = await import("@nautilo/trust");
+mock.module("@nautilo/trust", () => ({
+  ...actualTrust,
+  assertCanUseServerProviderCredentials: async () => {},
+}));
 let roomPreferenceReads = 0;
 let profilePreferenceReads = 0;
 const getRoomAgentModelControlSelection = async () => { roomPreferenceReads += 1; return null; };

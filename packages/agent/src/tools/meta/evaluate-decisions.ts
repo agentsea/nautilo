@@ -3,6 +3,11 @@ import { z } from "zod";
 import { decisionQuestionsSchema, decisionStateSchema } from "../../providers/decision";
 import { invokeDecision, DecisionRequestError } from "../../providers/decision-driver";
 import { getUsageContext, runWithUsageContext } from "../../usage/usage-context";
+import {
+  assertCanUseServerProviderCredentials,
+  ServerProviderCredentialsDeniedError,
+} from "@nautilo/trust";
+import { causalHumanForExecution } from "../../runtime/causal-human-context";
 
 interface DecisionToolContext {
   readonly turnId?: string | undefined;
@@ -10,13 +15,20 @@ interface DecisionToolContext {
   readonly userId?: string | undefined;
   readonly roomId?: string | undefined;
   readonly agentId?: string | undefined;
+  readonly causalHumanUserId?: string | undefined;
+}
+interface DecisionToolDependencies {
+  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }
 export function decisionToolUnavailable(context?: DecisionToolContext): string | null {
   return context?.turnId && context.fullEncryptionOnly === false ? null
     : "External decision models require an admitted turn without Full encryption.";
 }
 
-export function createEvaluateDecisionsTool(context?: DecisionToolContext) {
+export function createEvaluateDecisionsTool(
+  context?: DecisionToolContext,
+  dependencies: DecisionToolDependencies = {},
+) {
   return new DynamicStructuredTool({
     name: "evaluate_decisions",
     description: "Classify supplied text or JSON using a catalog decision model. First use discover_models with workload decision and decision_operation to select an available exact model_id. "
@@ -36,16 +48,26 @@ export function createEvaluateDecisionsTool(context?: DecisionToolContext) {
       if (!signal) return JSON.stringify({ error: "unavailable", message: "Decision evaluation requires a supervised run signal." });
       try {
         const ambient = getUsageContext();
+        const fundingHumanUserId = causalHumanForExecution(context?.causalHumanUserId);
         return JSON.stringify(await runWithUsageContext({
           callType: ambient?.callType ?? "other",
-          userId: context?.userId ?? ambient?.userId ?? null,
+          userId: fundingHumanUserId || null,
           roomId: context?.roomId ?? ambient?.roomId ?? null,
           metadata: { ...ambient?.metadata, turnId: context?.turnId, agentId: context?.agentId, tool: "evaluate_decisions" },
         }, () => invokeDecision({
           modelId: input.model_id, state: input.state, questions: input.questions,
           signal,
+        }, {
+          fundingHumanUserId,
+          ...(dependencies.assertCanUseServerProviderCredentials === undefined
+            ? {}
+            : {
+                assertCanUseServerProviderCredentials:
+                  dependencies.assertCanUseServerProviderCredentials,
+              }),
         })));
       } catch (error) {
+        if (error instanceof ServerProviderCredentialsDeniedError) throw error;
         if (error instanceof DecisionRequestError)
           return JSON.stringify({ error: error.code, message: error.message, retryable: error.retryable });
         // Provider bodies and supplied state never cross the diagnostic boundary.

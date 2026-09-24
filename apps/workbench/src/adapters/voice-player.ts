@@ -28,6 +28,7 @@ type StatusCallback = (playing: boolean) => void;
 export class VoicePlayer {
   private ctx: AudioContext | null = null;
   private playing = false;
+  private canStop = false;
   private enabled = false;
   private onStatusChange: StatusCallback | null = null;
 
@@ -50,7 +51,7 @@ export class VoicePlayer {
   private streamReceivedAt = 0;
   private onsetReported = false;
 
-  constructor(onStatusChange?: StatusCallback, private readonly sendVoice?: (event: Record<string, unknown>) => void, private readonly onUnavailable?: () => void) {
+  constructor(onStatusChange?: StatusCallback, private readonly sendVoice?: (event: Record<string, unknown>) => void, private readonly onUnavailable?: () => void, private readonly onCanStopChange?: StatusCallback) {
     this.onStatusChange = onStatusChange ?? null;
   }
 
@@ -65,12 +66,16 @@ export class VoicePlayer {
 
   currentTurnId(): string | null { return this.turnId; }
 
+  /** An admitted stream remains stoppable through buffering and sentence gaps. */
+  canStopTalking(): boolean { return this.canStop; }
+
   handleStreamEvent(event: VoicePlaybackEvent): void {
     if (!this.enabled || (event.type === "voice.stream.start" && event.turnId === this.silencedTurnId)) return;
     if (event.type === "voice.stream.start") {
       this.stop();
       this.streamId = event.streamId;
       this.turnId = event.turnId;
+      this.setCanStop(true);
       this.streamReceivedAt = performance.now();
       this.onsetReported = false;
     }
@@ -131,7 +136,12 @@ export class VoicePlayer {
         }
         else if (data.streamId === this.streamId && data.type === "consumed") {
           this.sendVoice?.({ type: "voice.consumed", streamId: data.streamId, samples: data.samples });
-          if (data.final) console.debug("[speech]", { streamId: data.streamId, stage: "render_ended", elapsedMs: performance.now() - this.streamReceivedAt, samples: data.samples, underruns: data.underruns });
+          if (data.final) {
+            console.debug("[speech]", { streamId: data.streamId, stage: "render_ended", elapsedMs: performance.now() - this.streamReceivedAt, samples: data.samples, underruns: data.underruns });
+            this.streamId = null;
+            this.turnId = null;
+            this.setPlaying(false);
+          }
         }
         else if (data.streamId === this.streamId && data.type === "error") this.failStreaming();
       };
@@ -342,10 +352,17 @@ export class VoicePlayer {
   }
 
   private setPlaying(value: boolean): void {
+    this.setCanStop(this.streamId !== null || value);
     if (this.playing !== value) {
       this.playing = value;
       this.onStatusChange?.(value);
     }
+  }
+
+  private setCanStop(value: boolean): void {
+    if (this.canStop === value) return;
+    this.canStop = value;
+    this.onCanStopChange?.(value);
   }
 }
 

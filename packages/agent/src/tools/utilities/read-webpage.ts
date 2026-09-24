@@ -3,6 +3,8 @@ import { ToolMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { warn } from "@nautilo/logger";
 import type { ToolContext } from "@nautilo/catalog";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
+import { causalHumanForExecution } from "../../runtime/causal-human-context";
 import { fromRuntimeConfig } from "@nautilo/config";
 import {
   BROWSER_PAGE_READ_MAX_CHARS,
@@ -31,6 +33,7 @@ export interface ReadWebpageOptions {
   apiKey?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
   recordProviderCost?: ProviderCostRecorder | undefined;
+  beforeTavilyDispatch?: (() => Promise<void>) | undefined;
 }
 
 export interface ReadWebpageFetchOptions {
@@ -262,6 +265,7 @@ export function buildReadWebpageFetcher(
     apiKey = process.env["TAVILY_API_KEY"],
     fetchImpl = fetch,
     recordProviderCost,
+    beforeTavilyDispatch,
   } = options;
 
   return async (
@@ -279,6 +283,8 @@ export function buildReadWebpageFetcher(
         errorCode: "blocked_url",
       };
     }
+
+    if (apiKey) await beforeTavilyDispatch?.();
 
     try {
       if (!apiKey) {
@@ -624,7 +630,11 @@ export function createReadWebpageTool(context?: ToolContext): DynamicStructuredT
   const browserResearchExecutionPort = context?.["browserResearchExecutionPort"] as BrowserResearchExecutionPort | undefined;
   const provider = fromRuntimeConfig().nautilo_search_provider;
   const recordProviderCost = createToolProviderCostRecorder(context);
-  const fetchPage = buildAutoReadWebpageFetcher({ browserResearchExecutionPort, provider, recordProviderCost });
+  const humanUserId = causalHumanForExecution(
+    typeof context?.["causalHumanUserId"] === "string" ? context["causalHumanUserId"] : "",
+  );
+  const beforeTavilyDispatch = () => assertCanUseServerProviderCredentials(humanUserId, "read_webpage_extract");
+  const fetchPage = buildAutoReadWebpageFetcher({ browserResearchExecutionPort, provider, recordProviderCost, beforeTavilyDispatch });
 
   return new DynamicStructuredTool({
     name: "read_webpage",
@@ -782,7 +792,7 @@ Returns actual extracted page content, not only a search snippet. A one-shot ext
         }, "");
       }
       const res = maxContentLength
-        ? await buildAutoReadWebpageFetcher({ maxContentLength, browserResearchExecutionPort, provider, recordProviderCost })(url, consentActions ? { consentActions } : {})
+        ? await buildAutoReadWebpageFetcher({ maxContentLength, browserResearchExecutionPort, provider, recordProviderCost, beforeTavilyDispatch })(url, consentActions ? { consentActions } : {})
         : await fetchPage(url, consentActions ? { consentActions } : {});
       return formatReadWebpageToolResponse(res, url);
     },

@@ -163,6 +163,7 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
     },
     findPageTargetAtOrigin: async () => "target-1",
     browserTimeoutMinutes: 15,
+    assertServerFunding: async () => undefined,
     now: () => new Date("2026-09-03T00:00:00.000Z"),
     ...overrides,
   };
@@ -180,6 +181,7 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
 
 const admission = {
   ownerUserId: "owner-1",
+  fundingHumanUserId: "human-1",
   accountId: "account-1",
   operationId: "operation-1",
   expectedControlEpoch: 4,
@@ -210,6 +212,30 @@ test("direct router admits only an owner-scoped connected saved profile, fences 
     result: { text: "snapshot [redacted]", truncated: false },
     cleanup: { browser: "stopped", directories: "released", operation: "released" },
   });
+});
+
+test("direct router denies a paid saved-profile start before provider or durable mutation", async () => {
+  const checks: unknown[] = [];
+  const { router, calls } = makeRouter({
+    assertServerFunding: async (...input) => {
+      checks.push(input);
+      throw new Error("server_provider_credentials_required");
+    },
+  });
+  const error = await router.acquire(admission).catch((cause: unknown) => cause);
+  expect(error).toMatchObject({ code: "unavailable", message: "direct browser control unavailable" });
+  expect(checks).toEqual([["human-1", "connected_web_direct_browser"]]);
+  expect(calls.started).toEqual([]);
+  expect(calls.rotated).toEqual([]);
+  expect(calls.allocated).toEqual([]);
+});
+
+test("direct router rejects absent Human funding identity before provider or durable mutation", async () => {
+  const { router, calls } = makeRouter();
+  const error = await router.acquire({ ...admission, fundingHumanUserId: " " }).catch((cause: unknown) => cause);
+  expect(error).toMatchObject({ code: "unavailable" });
+  expect(calls.started).toEqual([]);
+  expect(calls.rotated).toEqual([]);
 });
 
 test("direct router attaches only the one active browser proven by the exact hosted Agent session", async () => {
@@ -305,7 +331,7 @@ test("direct router CAS-fences a hosted/checking handoff after provider start an
 test("direct router stops its newly created browser when initial navigation fails", async () => {
   const { router, calls } = makeRouter({ navigateSavedProfileBrowser: async () => { throw new Error("navigation failed"); } });
   const failed = await router.acquire({
-    ownerUserId: "owner-1", accountId: "account-1", operationId: "operation-1", expectedControlEpoch: 4, source: "saved_profile",
+    ownerUserId: "owner-1", fundingHumanUserId: "human-1", accountId: "account-1", operationId: "operation-1", expectedControlEpoch: 4, source: "saved_profile",
   }).then(() => null, (cause: unknown) => cause);
   expect(failed).toMatchObject({ code: "unavailable" });
   expect(calls.started).toHaveLength(1);

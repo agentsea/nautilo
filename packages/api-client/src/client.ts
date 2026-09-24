@@ -420,6 +420,25 @@ import {
   type ProtectedArtifactAccessUpdateResponseV1,
 } from "./schemas/protected-artifact";
 import {
+  dualTaskPreparedCreateRequestV1Schema,
+  dualTaskPreparedUpdateRequestV1Schema,
+  protectedTaskDefinitionReadEnvelopeV1Schema,
+  protectedTaskContentListV1Schema,
+  protectedTaskPreparedCreateRequestV1Schema,
+  protectedTaskPreparedUpdateRequestV1Schema,
+  protectedTaskPublicationPlanRequestV1Schema,
+  protectedTaskPublicationPlanV1Schema,
+  taskContentDetailV1Schema,
+  taskContentListV1Schema,
+  taskContentSummaryV1Schema,
+  type ProtectedTaskDefinitionReadEnvelopeV1,
+  type ProtectedTaskPreparedCreateRequestV1,
+  type ProtectedTaskPreparedUpdateRequestV1,
+  type ProtectedTaskPublicationPlanV1,
+  type DualTaskPreparedCreateRequestV1,
+  type DualTaskPreparedUpdateRequestV1,
+} from "./schemas/protected-task";
+import {
   protectedAdditionalDeviceAcknowledgementRequestV1Schema,
   protectedAdditionalDeviceActivationRequestV1Schema,
   protectedAdditionalDeviceActivationV1Schema,
@@ -562,6 +581,14 @@ import type {
   ListTasksQuery,
   TaskSummary,
   TaskDetail,
+  TaskContentSummaryV1,
+  TaskContentListV1,
+  TaskContentDetailV1,
+  TaskCreateResponse,
+  TaskCreatePayload,
+  TaskOperationalCreateV1,
+  TaskOperationalUpdateV1,
+  TaskUpdatePayload,
   TaskLifecycleResponse,
   ServerEvent,
   ApprovalReplyVerb,
@@ -1087,6 +1114,7 @@ const ROLE_LADDER: readonly RoleSlug[] = [
   "superuser",
   "member",
   "contributor",
+  "community",
   "guest",
 ] as const;
 
@@ -1400,11 +1428,24 @@ export type AdminPasswordResetResponse = {
   | { delivery: "temporary_password"; temporaryPassword: string; mustChangePassword: true }
 );
 export type AdminProvisionMemberResponse = z.infer<typeof adminProvisionMemberResponseSchema>;
+export type CanonicalServerRoleSlug =
+  | "owner"
+  | "admin"
+  | "superuser"
+  | "member"
+  | "contributor"
+  | "community"
+  | "guest";
+/** Community is installed but remains closed to enrollment in this phase. */
+export type EnrollableServerRoleSlug = Exclude<
+  CanonicalServerRoleSlug,
+  "community"
+>;
 export interface AdminProvisionMemberInput {
   handle: string;
   displayName: string;
   email?: string | undefined;
-  roleSlug: "admin" | "superuser" | "member" | "contributor" | "guest";
+  roleSlug: Exclude<EnrollableServerRoleSlug, "owner">;
   permanentCredential?: { password: string; pin: string } | undefined;
 }
 export interface AdminPermanentCredentialInput { password: string; pin: string }
@@ -1868,16 +1909,10 @@ export interface CreateInviteInput {
   kind: "server";
   /**
    * Required. The canonical Group rung the invitee joins on redeem.
-   * One of the six ladder slugs: owner / admin / superuser / member /
-   * contributor / guest.
+   * One of the currently enrollable ladder slugs. Community is canonical but
+   * remains unavailable as an invitation target in this phase.
    */
-  targetGroupRoleSlug:
-    | "owner"
-    | "admin"
-    | "superuser"
-    | "member"
-    | "contributor"
-    | "guest";
+  targetGroupRoleSlug: EnrollableServerRoleSlug;
   /**
    * Optional. When set, the invitee is ALSO added to this Room on
    * redeem (in addition to the canonical Group). Inviter must own the
@@ -7320,6 +7355,216 @@ export class NautiloApiClient {
       method: "GET",
       path: `/api/rooms/${roomId}/active-jobs`,
       defaultErrorPrefix: `GET /api/rooms/${roomId}/active-jobs`,
+    });
+  }
+
+  /** Opt-in, content-safe Task list. Legacy Task methods keep their wire shape. */
+  async listTaskContentV1(query: ListTasksQuery = {}): Promise<TaskContentListV1> {
+    const params = new URLSearchParams();
+    if (query.status !== undefined) params.set("status", query.status);
+    if (query.includeTerminal !== undefined) {
+      params.set("includeTerminal", String(query.includeTerminal));
+    }
+    if (query.recentTerminalLimit !== undefined) {
+      params.set("recentTerminalLimit", String(query.recentTerminalLimit));
+    }
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<TaskContentListV1>({
+      path: `/api/tasks/content-v1${suffix}`,
+      schema: taskContentListV1Schema,
+      defaultErrorPrefix: "GET /api/tasks/content-v1",
+    });
+  }
+
+  /** Opt-in Task detail with content separated from lifecycle data. */
+  async getTaskContentV1(taskId: string): Promise<TaskContentDetailV1> {
+    const id = z.string().uuid().parse(taskId);
+    return this.request<TaskContentDetailV1>({
+      path: `/api/tasks/${encodeURIComponent(id)}/content-v1`,
+      schema: taskContentDetailV1Schema,
+      defaultErrorPrefix: `GET /api/tasks/${id}/content-v1`,
+    });
+  }
+
+  /** Content-free protected Task lifecycle projection. */
+  async listProtectedTaskContentV1(
+    query: ListTasksQuery = {},
+  ): Promise<TaskContentListV1> {
+    const params = new URLSearchParams();
+    if (query.status !== undefined) params.set("status", query.status);
+    if (query.includeTerminal !== undefined) {
+      params.set("includeTerminal", String(query.includeTerminal));
+    }
+    if (query.recentTerminalLimit !== undefined) {
+      params.set("recentTerminalLimit", String(query.recentTerminalLimit));
+    }
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<TaskContentListV1>({
+      path: `/api/protected/tasks${suffix}`,
+      schema: protectedTaskContentListV1Schema,
+      defaultErrorPrefix: "GET /api/protected/tasks",
+    });
+  }
+
+  async getProtectedTaskDefinitionEnvelopeV1(
+    taskId: string,
+    reference: Readonly<{
+      objectId: string;
+      contentRevision: number;
+      cryptoAccessRevision: number;
+    }>,
+  ): Promise<ProtectedTaskDefinitionReadEnvelopeV1> {
+    const id = z.string().uuid().parse(taskId);
+    const params = new URLSearchParams({
+      objectId: reference.objectId,
+      contentRevision: String(reference.contentRevision),
+      cryptoAccessRevision: String(reference.cryptoAccessRevision),
+    });
+    return this.request<ProtectedTaskDefinitionReadEnvelopeV1>({
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/definition?${params.toString()}`,
+      schema: protectedTaskDefinitionReadEnvelopeV1Schema,
+      defaultErrorPrefix: `GET /api/protected/tasks/${id}/definition`,
+    });
+  }
+
+  async planProtectedTaskCreateV1(input: Readonly<{
+    operationId: string;
+    task: TaskOperationalCreateV1;
+  }>): Promise<ProtectedTaskPublicationPlanV1> {
+    const body = protectedTaskPublicationPlanRequestV1Schema.parse({
+      requestVersion: 1, operation: "create", ...input,
+    });
+    return this.request<ProtectedTaskPublicationPlanV1>({
+      method: "POST",
+      path: "/api/protected/tasks/publication-plan",
+      body,
+      schema: protectedTaskPublicationPlanV1Schema,
+      defaultErrorPrefix: "POST /api/protected/tasks/publication-plan",
+    });
+  }
+
+  async planProtectedTaskUpdateV1(taskId: string, input: Readonly<{
+    operationId: string;
+    current?: TaskContentSummaryV1;
+    task: TaskOperationalUpdateV1;
+  }>): Promise<ProtectedTaskPublicationPlanV1> {
+    const id = z.string().uuid().parse(taskId);
+    const { current: _current, ...wireInput } = input;
+    const body = protectedTaskPublicationPlanRequestV1Schema.parse({
+      requestVersion: 1, operation: "update", ...wireInput,
+    });
+    return this.request<ProtectedTaskPublicationPlanV1>({
+      method: "POST",
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/publication-plan`,
+      body,
+      schema: protectedTaskPublicationPlanV1Schema,
+      defaultErrorPrefix: `POST /api/protected/tasks/${id}/publication-plan`,
+    });
+  }
+
+  /** Publish client-prepared ciphertext; plaintext Task content is not accepted. */
+  async createPreparedTaskV1(
+    prepared: ProtectedTaskPreparedCreateRequestV1,
+  ): Promise<TaskCreateResponse> {
+    const body = protectedTaskPreparedCreateRequestV1Schema.parse(prepared);
+    return this.request<TaskCreateResponse>({
+      method: "POST",
+      path: "/api/protected/tasks/publication",
+      body,
+      schema: z.object({
+        taskId: z.string().uuid(),
+        status: z.string(),
+        nextFireAt: z.string().nullable(),
+      }).strict(),
+      defaultErrorPrefix: "POST /api/protected/tasks/publication",
+    });
+  }
+
+  async updatePreparedTaskV1(
+    taskId: string,
+    prepared: ProtectedTaskPreparedUpdateRequestV1,
+  ): Promise<TaskContentSummaryV1> {
+    const id = z.string().uuid().parse(taskId);
+    const body = protectedTaskPreparedUpdateRequestV1Schema.parse(prepared);
+    if (body.taskId !== id) {
+      throw new TypeError("Prepared Task update does not match path Task");
+    }
+    return this.request<TaskContentSummaryV1>({
+      method: "PATCH",
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/publication`,
+      body,
+      schema: taskContentSummaryV1Schema,
+      defaultErrorPrefix: `PATCH /api/protected/tasks/${id}/publication`,
+    });
+  }
+
+  /** Atomically publish the ordinary and protected siblings for Shadow mode. */
+  async createDualPreparedTaskV1(
+    prepared: DualTaskPreparedCreateRequestV1,
+  ): Promise<TaskCreateResponse> {
+    const body = dualTaskPreparedCreateRequestV1Schema.parse(prepared);
+    return this.request<TaskCreateResponse>({
+      method: "POST",
+      path: "/api/protected/tasks/publication",
+      body,
+      schema: z.object({
+        taskId: z.string().uuid(),
+        status: z.string(),
+        nextFireAt: z.string().nullable(),
+      }).strict(),
+      defaultErrorPrefix: "POST /api/protected/tasks/publication",
+    });
+  }
+
+  /** Atomically update the ordinary and protected siblings for Shadow mode. */
+  async updateDualPreparedTaskV1(
+    taskId: string,
+    prepared: DualTaskPreparedUpdateRequestV1,
+  ): Promise<TaskContentSummaryV1> {
+    const id = z.string().uuid().parse(taskId);
+    const body = dualTaskPreparedUpdateRequestV1Schema.parse(prepared);
+    if (body.taskId !== id) {
+      throw new TypeError("Prepared dual Task update does not match path Task");
+    }
+    return this.request<TaskContentSummaryV1>({
+      method: "PATCH",
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/publication`,
+      body,
+      schema: taskContentSummaryV1Schema,
+      defaultErrorPrefix: `PATCH /api/protected/tasks/${id}/publication`,
+    });
+  }
+
+  /** Legacy ordinary publication used only when the policy owner selects it. */
+  async createOrdinaryTaskV1(
+    input: Omit<TaskCreatePayload, "expectedOutput">
+      & Readonly<{ expectedOutput: string | null }>,
+  ): Promise<TaskCreateResponse> {
+    return this.request<TaskCreateResponse>({
+      method: "POST",
+      path: "/api/tasks",
+      body: input,
+      schema: z.object({
+        taskId: z.string().uuid(),
+        status: z.string(),
+        nextFireAt: z.string().nullable(),
+      }).strict(),
+      defaultErrorPrefix: "POST /api/tasks",
+    });
+  }
+
+  /** Legacy ordinary update used only when the policy owner selects it. */
+  async updateOrdinaryTaskV1(
+    taskId: string,
+    input: Omit<TaskUpdatePayload, "prompt" | "expectedOutput">
+      & Readonly<{ prompt: string; expectedOutput: string | null }>,
+  ): Promise<TaskSummary> {
+    const id = z.string().uuid().parse(taskId);
+    return this.request<TaskSummary>({
+      method: "PATCH",
+      path: `/api/tasks/${encodeURIComponent(id)}`,
+      body: input,
+      defaultErrorPrefix: `PATCH /api/tasks/${id}`,
     });
   }
 

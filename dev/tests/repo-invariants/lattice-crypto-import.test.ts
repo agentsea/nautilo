@@ -1040,6 +1040,12 @@ function productConsumerImports(repoRoot: string): string[] {
 }
 
 const reviewedCryptoProductConsumerInventory = [
+  // Dormant Task publication authenticates device-signed requests and exact
+  // ciphertext envelopes before entering the durable Task repository.
+  "packages/server/src/routes/task-protected-publication.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/task-protected-publication.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-crypto/wire",
   // Protected approval recovery composes the canonical decrypt-only foreground
   // grant and checkpoint capsule APIs; it introduces no alternate crypto store.
   // Wire decoding validates publication receipts before dispatch, while these
@@ -1077,6 +1083,10 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/api-client/package.json dependency @nautilo/lattice-crypto -> workspace:*",
   "packages/api-client/src/schemas/human-memory-read-observation.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/src/schemas/protected-memory.ts -> @nautilo/lattice-crypto/wire-limits",
+  // Prepared Task transport schemas consume only provider-free wire ceilings;
+  // neither the production schema nor its boundary test performs crypto.
+  "packages/api-client/src/schemas/protected-task.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/api-client/tests/unit/protected-task-schema.test.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/tests/unit/human-memory-read-observation.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/api-client/tests/unit/protected-memory-schema.test.ts -> @nautilo/lattice-crypto/wire",
   // M320 — foreground Domain Memory Runtime owns invocation-scoped plaintext
@@ -1318,6 +1328,18 @@ function isLatticeBridgeTarget(value: string): boolean {
 }
 
 const reviewedBridgeProductConsumerInventory = [
+  // Protected Task publication and client custody use the reviewed bridge
+  // facades; isolated tests exercise those exact seams.
+  "apps/desktop/electron/task-operation-ipc.ts -> @nautilo/lattice-bridge",
+  "apps/workbench/src/lib/protected-human-task-controller.ts -> @nautilo/lattice-bridge",
+  "apps/workbench/src/lib/protected-human-task-controller.ts -> @nautilo/lattice-bridge",
+  "apps/workbench/src/lib/protected-human-task-controller.ts -> @nautilo/lattice-bridge/client/browser",
+  "packages/server/src/routes/task-protected-publication.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/tasks.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/integration/tasks-api.integration.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/task-summary-mapper.test.ts -> @nautilo/lattice-bridge",
   // Real admitted-device, storage, and foreground integration proof.
   "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge/client/background",
@@ -2791,12 +2813,12 @@ describe("M226 lattice-crypto current package governance", () => {
       perScopeWorkerBudget: 4,
       hostedMaxParallelScopes: 4,
       maximumHostedWorkers: 16,
-      scopeCount: 28,
+      scopeCount: 29,
       reviewedDuplicateTargets: [],
     });
     expect(
       manifest.scopes.filter((scope) => scope.tier === "critical"),
-    ).toHaveLength(26);
+    ).toHaveLength(27);
     expect(
       manifest.scopes.filter((scope) => scope.tier === "provider"),
     ).toHaveLength(2);
@@ -2810,9 +2832,9 @@ describe("M226 lattice-crypto current package governance", () => {
     )).toHaveLength(1);
 
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(125);
+    expect(new Set(mutationTargets).size).toBe(126);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(125);
+    expect(eligibleTargets).toHaveLength(126);
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-core.ts");
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-v2.ts");
     expect([...new Set(mutationTargets)].sort()).toEqual(eligibleTargets);

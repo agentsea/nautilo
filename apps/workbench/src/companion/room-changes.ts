@@ -1,10 +1,26 @@
 import { createContext } from "react";
+import type { ServerEvent } from "@nautilo/types";
 
-/** Metadata-only invalidation from the one admitted runtime socket. Consumers
- * reload through canonical Room operations; no message bodies cross this seam. */
+/** Secondary Room views share the admitted runtime socket. History invalidation
+ * remains metadata-only; live bodies must pass the runtime content owner first. */
 export function createRoomChangeSource() {
   const listeners = new Set<(roomId: string) => void>();
+  const roomViews = new Map<string, Set<(event: ServerEvent) => void>>();
   return {
+    subscribeToRoom(roomId: string, listener: (event: ServerEvent) => void) {
+      let views = roomViews.get(roomId);
+      if (!views) roomViews.set(roomId, views = new Set());
+      views.add(listener);
+      return () => {
+        views.delete(listener);
+        if (!views.size && roomViews.get(roomId) === views) roomViews.delete(roomId);
+      };
+    },
+    hasRoom(roomId: string | null) { return roomId !== null && roomViews.has(roomId); },
+    /** Called only after the runtime's content admission boundary. */
+    publishAdmittedEvent(roomId: string, event: ServerEvent) {
+      for (const listener of roomViews.get(roomId) ?? []) listener(event);
+    },
     subscribe(listener: (roomId: string) => void) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };

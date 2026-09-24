@@ -6,11 +6,25 @@ import type {
 } from "@nautilo/types";
 import { executeAgentMediatedRoomMessage } from "../../src/messaging/agent-mediated";
 import type { ChatRoutesDeps } from "../../src/routes/chat";
-import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import {
+  createAcceptedInvocationAuthority,
+  type AgentInvocationAdmissionInput,
+} from "@nautilo/trust";
 import {
   ClientActionBindingRegistry,
   installClientActionBindingRegistry,
 } from "../../src/realtime/client-action-binding-registry";
+
+function assertExactInvocation(humanUserId: string) {
+  return mock(async (input: AgentInvocationAdmissionInput) => {
+    expect(input).toEqual({
+      humanUserId,
+      origin: "room_message",
+      agentId: "agent-id",
+      roomId: "room-id",
+    });
+  });
+}
 
 describe("agent-mediated ephemeral mini-app context", () => {
   test("clears previous active mini-app and live session when a fresh turn omits them", async () => {
@@ -25,10 +39,11 @@ describe("agent-mediated ephemeral mini-app context", () => {
     const deps = {
       createForegroundJob,
       loadRoomRoster: async () => [],
+      assertInvocation: assertExactInvocation("test-user"),
     } as unknown as ChatRoutesDeps;
     const request = {
-      sessionUserId: "",
-      sessionActorId: "",
+      sessionUserId: "test-user",
+      sessionActorId: "test-actor",
       memoryEnvelope: null,
       policyContext: null,
       ip: "127.0.0.1",
@@ -111,6 +126,7 @@ describe("agent-mediated ephemeral mini-app context", () => {
       deps: {
         createForegroundJob,
         loadRoomRoster: async () => [],
+        assertInvocation: assertExactInvocation("11111111-1111-4111-8111-111111111111"),
       } as unknown as ChatRoutesDeps,
       content: "hello @bob",
       voiceMode: false,
@@ -162,7 +178,11 @@ describe("agent-mediated ephemeral mini-app context", () => {
           headers: {},
           body: {},
         } as FastifyRequest,
-        deps: { createForegroundJob, loadRoomRoster: async () => [] } as unknown as ChatRoutesDeps,
+        deps: {
+          createForegroundJob,
+          loadRoomRoster: async () => [],
+          assertInvocation: assertExactInvocation("user-a"),
+        } as unknown as ChatRoutesDeps,
         content: "ordinary direct message",
         voiceMode: false,
         currentFolder: null,

@@ -13,7 +13,10 @@ import { act, cleanup, render } from "@testing-library/react";
 import { Window } from "happy-dom";
 import * as React from "react";
 import { DrawerProvider } from "../../src/modes/rooms/thread-drawer/drawer-state.tsx";
-import { RunningSubagentsContext } from "../../src/adapters/runtime-contexts";
+import {
+  ConversationEncryptionPolicyModeContext,
+  RunningSubagentsContext,
+} from "../../src/adapters/runtime-contexts";
 
 type StbChildren =
   | React.ReactNode
@@ -56,6 +59,15 @@ mock.module("use-stick-to-bottom", () => {
 let canonicalStatus = "completed";
 
 const actualApi = await import("../../src/lib/api");
+const actualAuth = await import("../../src/hooks/use-auth");
+
+mock.module("../../src/hooks/use-auth", () => ({
+  ...actualAuth,
+  useAuth: () => ({
+    viewerGeneration: 1,
+    viewer: { isVerified: true, sessionUserId: "viewer-a", sessionActorId: "viewer-a-actor" },
+  }),
+}));
 
 mock.module("../../src/lib/api", () => ({
   ...actualApi,
@@ -135,6 +147,7 @@ beforeAll(() => {
 
 afterAll(() => {
   mock.module("../../src/lib/api", () => actualApi);
+  mock.module("../../src/hooks/use-auth", () => actualAuth);
   mock.module("use-stick-to-bottom", () => actualStb);
   const g = globalThis as Record<string, unknown>;
   for (const key of DOM_GLOBAL_KEYS) {
@@ -152,9 +165,11 @@ describe("SubagentTranscriptSurface scroll contract", () => {
   test("a parked task without a dock entry is awaiting and has no working pulse", async () => {
     canonicalStatus = "awaiting";
     const view = render(
-      <RunningSubagentsContext.Provider value={{ list: [], heartbeat: { count: 0, line: "" } }}>
-        <DrawerProvider><SubagentTranscriptSurface taskId="task-1" /></DrawerProvider>
-      </RunningSubagentsContext.Provider>,
+      <ConversationEncryptionPolicyModeContext.Provider value="plaintext_only">
+        <RunningSubagentsContext.Provider value={{ list: [], heartbeat: { count: 0, line: "" } }}>
+          <DrawerProvider><SubagentTranscriptSurface taskId="task-1" /></DrawerProvider>
+        </RunningSubagentsContext.Provider>
+      </ConversationEncryptionPolicyModeContext.Provider>,
     );
     await act(async () => { await Promise.resolve(); });
     expect(view.getByTestId("subagent-transcript-header").textContent).toContain("needs attention");
@@ -164,11 +179,13 @@ describe("SubagentTranscriptSurface scroll contract", () => {
 
   test("uses a bounded box + stick-to-bottom scroll element, no flex-squish on rows (D329)", async () => {
     const view = render(
-      <RunningSubagentsContext.Provider value={{ list: [], heartbeat: { count: 0, line: "" } }}>
-        <DrawerProvider>
-          <SubagentTranscriptSurface taskId="task-1" />
-        </DrawerProvider>
-      </RunningSubagentsContext.Provider>,
+      <ConversationEncryptionPolicyModeContext.Provider value="plaintext_only">
+        <RunningSubagentsContext.Provider value={{ list: [], heartbeat: { count: 0, line: "" } }}>
+          <DrawerProvider>
+            <SubagentTranscriptSurface taskId="task-1" />
+          </DrawerProvider>
+        </RunningSubagentsContext.Provider>
+      </ConversationEncryptionPolicyModeContext.Provider>,
     );
 
     await act(async () => {

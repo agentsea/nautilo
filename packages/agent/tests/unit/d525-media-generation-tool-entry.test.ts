@@ -104,7 +104,7 @@ describe("D525 paid media tool entry", () => {
         impact: "destructive",
         requiresApproval: true,
         approvalLevel: "prove_it",
-        requiredCapabilities: ["use_media_generation"],
+        requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
         resultScanPolicy: "never",
       });
     }

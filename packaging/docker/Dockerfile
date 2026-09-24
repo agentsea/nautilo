@@ -325,6 +325,7 @@ COPY apps/desktop/electron/connection-presentation.ts apps/desktop/electron/conn
 COPY apps/desktop/electron/connection-support-receipt.ts apps/desktop/electron/connection-support-receipt.ts
 COPY apps/desktop/electron/ready-to-work-contract.ts apps/desktop/electron/ready-to-work-contract.ts
 COPY apps/desktop/electron/mini-app-draft-recovery-contract.ts apps/desktop/electron/mini-app-draft-recovery-contract.ts
+COPY apps/desktop/electron/companion-contract.ts apps/desktop/electron/companion-contract.ts
 COPY packages/api-client           packages/api-client
 COPY packages/attachments          packages/attachments
 COPY packages/computer-use-contracts packages/computer-use-contracts

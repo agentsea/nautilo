@@ -193,6 +193,7 @@ describe("D420 maintenance admission gate", () => {
         },
         maintenanceGate: gate,
         assertInvocation: async () => {},
+        assertServerFunding: async () => {},
       }),
     );
     expect(createForegroundCalls).toBe(0);

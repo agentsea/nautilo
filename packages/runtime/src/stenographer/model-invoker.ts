@@ -91,6 +91,7 @@ export function createRoomSideModelInvoker(opts: {
             opts.laneKey,
             invocationSignal === undefined ? undefined : { signal: invocationSignal },
             {
+              serverFundedService: "shared_memory_maintenance",
               reasoningOutput: false,
               modelFallbackMode: opts.invocationPolicy?.modelFallbackMode ?? "agent_chain",
               ...(opts.invocationPolicy === undefined ? {} : {
