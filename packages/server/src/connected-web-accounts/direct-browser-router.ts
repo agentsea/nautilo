@@ -257,6 +257,7 @@ type DecisionRef = { readonly role: string; readonly name: string };
 
 interface BoundDecisionObservation {
   readonly id: string;
+  readonly snapshot: string;
   readonly refs: Readonly<Record<string, DecisionRef>>;
   readonly pageUrl: string;
 }
@@ -302,18 +303,17 @@ function sameSemanticRefMap(
 }
 
 /**
- * Rebinds every target-bearing argument to the one fresh element with the same
- * semantic identity. Geometry, ref numbering and unrelated page state are not
- * authority: an absent or ambiguous target fails closed before the command is
- * sent to the browser.
+ * Rebinds each unambiguous target to its one fresh semantic match. Duplicate
+ * labels cannot establish element identity after a page change, even when the
+ * generated ref numbers happen to be unchanged.
  */
 function rebindDecisionCommand(
   command: DirectBrowserControlCommand,
-  boundRefs: Readonly<Record<string, DecisionRef>>,
-  freshRefs: Readonly<Record<string, DecisionRef>>,
+  bound: BoundDecisionObservation,
+  fresh: { readonly snapshot: string; readonly refs: Readonly<Record<string, DecisionRef>> },
 ): DirectBrowserControlCommand | null {
   const argumentNames = DECISION_REF_ARGUMENTS[command.toolName] ?? [];
-  const refsUnchanged = sameSemanticRefMap(boundRefs, freshRefs);
+  const observationUnchanged = bound.snapshot === fresh.snapshot && sameSemanticRefMap(bound.refs, fresh.refs);
   let reboundArgs: Record<string, unknown> | null = null;
   for (const argumentName of argumentNames) {
     const supplied = command.args[argumentName];
@@ -321,19 +321,21 @@ function rebindDecisionCommand(
     // page-level commands with no target reference.
     if (supplied === undefined) continue;
     const boundRefId = normalizedDecisionRef(supplied);
-    const boundTarget = boundRefId === null ? undefined : boundRefs[boundRefId];
+    const boundTarget = boundRefId === null ? undefined : bound.refs[boundRefId];
     if (!boundTarget) return null;
-    // An unchanged complete ref map preserves the original element identity,
-    // even when role + name alone would match multiple sibling elements.
-    if (refsUnchanged) {
+    const boundMatches = Object.entries(bound.refs).filter(([, target]) => sameSemanticTarget(boundTarget, target));
+    const freshMatches = Object.entries(fresh.refs).filter(([, target]) => sameSemanticTarget(boundTarget, target));
+    if (boundMatches.length > 1 || freshMatches.length > 1) {
+      // Identical labels may belong to different rows after a same-URL
+      // re-render. Only the exact unchanged observation preserves the ref.
+      if (!observationUnchanged) return null;
       reboundArgs ??= { ...command.args };
       reboundArgs[argumentName] = `@${boundRefId}`;
       continue;
     }
-    const matches = Object.entries(freshRefs).filter(([, target]) => sameSemanticTarget(boundTarget, target));
-    if (matches.length !== 1) return null;
+    if (freshMatches.length !== 1) return null;
     reboundArgs ??= { ...command.args };
-    reboundArgs[argumentName] = `@${matches[0]![0]}`;
+    reboundArgs[argumentName] = `@${freshMatches[0]![0]}`;
   }
   return reboundArgs === null ? command : { ...command, args: reboundArgs };
 }
@@ -495,7 +497,8 @@ export class DirectBrowserRouterLease {
         browserSessionId: this.decisionSessionId,
         observationId: randomUUID(),
       };
-      this.decisionObservation = { id: observation.observationId, refs: observation.refs, pageUrl: observation.pageUrl };
+      this.decisionObservation = { id: observation.observationId, snapshot: observation.snapshot,
+        refs: observation.refs, pageUrl: observation.pageUrl };
       this.hasFreshSnapshot = true;
       return observation;
     } catch (error) {
@@ -540,7 +543,7 @@ export class DirectBrowserRouterLease {
     if (refreshed.pageUrl !== boundObservation.pageUrl) {
       throw new DirectBrowserRouterError("observation_stale");
     }
-    const reboundCommand = rebindDecisionCommand(command, boundObservation.refs, refreshed.observation.refs);
+    const reboundCommand = rebindDecisionCommand(command, boundObservation, refreshed.observation);
     if (!reboundCommand) {
       throw new DirectBrowserRouterError("observation_stale");
     }

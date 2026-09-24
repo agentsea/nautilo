@@ -461,6 +461,45 @@ test("decision target freshness preserves an exact ref when duplicate labels and
   await lease.close();
 });
 
+test("decision target freshness rejects reordered rows with unchanged duplicate button refs", async () => {
+  const context = makeRouter();
+  context.setDecisionSnapshot('- row "Alice"\n  - button "Delete" [ref=e1]\n- row "Bob"\n  - button "Delete" [ref=e2]');
+  context.setDecisionRefs({
+    e1: { role: "button", name: "Delete" },
+    e2: { role: "button", name: "Delete" },
+  });
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- row "Bob"\n  - button "Delete" [ref=e1]\n- row "Alice"\n  - button "Delete" [ref=e2]');
+
+  expect(await lease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    observation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(context.calls.invoked).toHaveLength(0);
+  await lease.close();
+});
+
+test("decision target freshness does not rebind one of two old duplicates to a surviving button", async () => {
+  const context = makeRouter();
+  context.setDecisionSnapshot('- row "Alice"\n  - button "Delete" [ref=e1]\n- row "Bob"\n  - button "Delete" [ref=e2]');
+  context.setDecisionRefs({
+    e1: { role: "button", name: "Delete" },
+    e2: { role: "button", name: "Delete" },
+  });
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- row "Bob"\n  - button "Delete" [ref=e9]');
+  context.setDecisionRefs({ e9: { role: "button", name: "Delete" } });
+
+  expect(await lease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    observation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(context.calls.invoked).toHaveLength(0);
+  await lease.close();
+});
+
 test("decision target freshness rejects changed and ambiguous semantic targets before mutation", async () => {
   const changed = makeRouter();
   const changedLease = await changed.router.acquire(admission);
