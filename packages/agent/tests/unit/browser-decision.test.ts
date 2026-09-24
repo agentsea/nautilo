@@ -1520,9 +1520,13 @@ describe("sustained browser recovery", () => {
     const action = route("action", `browser_${kind}`, args);
     const waiting = { ...previous, phase: "waiting" as const, pending: { call: action,
       browserSessionId: previous.observation!.browserSessionId, observationId: previous.observation!.observationId } };
-    const acted = settleBrowserDecision(state({ browserDecision: waiting }), [action],
+    const acted = settleBrowserDecision(state({ browserDecision: waiting, messages: [new AIMessage({
+      content: "", tool_calls: [action], additional_kwargs: { nautilo_browser_decision: {
+        operation: "choice", action: kind === "press" ? JSON.stringify({ kind: "press", key: args["key"] }) : `browser_${kind}`,
+      } },
+    })] }), [action],
       [successfulResult(action, JSON.stringify({ ok: true }))], [], JEV_ID)!;
-    const snapshot = route("snapshot", "browser_snapshot", {});
+    const snapshot = route("snapshot", previous.observation?.visual ? "browser_screenshot" : "browser_snapshot", {});
     const observing = { ...acted, phase: "waiting" as const, pending: { call: snapshot,
       browserSessionId: next.browserSessionId, observationId: null } };
     return settleBrowserDecision(state({ browserDecision: observing }), [snapshot],
@@ -1558,6 +1562,80 @@ describe("sustained browser recovery", () => {
       expect(progressed).toMatchObject({ phase: "decide", recovery: { consecutiveEvents: 0, transitionsSeen: [] } });
     });
   }
+
+  test("advises Jev about distinct visual no-ops, then clears the hint when extracted state changes", () => {
+    const visual = (value: string, x = 200) => ({
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      keyboardFocus: "page" as const,
+      targets: [{ visualRef: "v1", role: "grid item", name: value, interaction: "unknown" as const,
+        x, y: 200, context: "visible tile" }],
+    });
+    const at = (id: string, value = "2", x = 200) => observation({ observationId: id, refs: {},
+      snapshot: `- grid item ${value}`, visual: visual(value, x) });
+    const visualPlan = browserDecisionPlanSchema.parse({ goal: "Change the visible board",
+      allowedOrigins: ["https://shop.example"],
+      actions: [{ kind: "press", key: "ArrowLeft" }, { kind: "press", key: "ArrowDown" },
+        { kind: "press", key: "ArrowRight" }], progress: [], success: [] });
+    let current = decision({ plan: visualPlan, observation: at("initial"), recovery: {
+      interventionLimit: 2, consecutiveEvents: 0, interventionAt: 2,
+      progressSeen: [], assessNextObservation: false,
+    } });
+    current = round(current, "press", { key: "ArrowLeft" }, at("after-left"));
+    current = round(current, "press", { key: "ArrowDown" }, at("after-down"));
+    const left = JSON.stringify({ kind: "press", key: "ArrowLeft" });
+    const down = JSON.stringify({ kind: "press", key: "ArrowDown" });
+    expect(current.recovery?.visualNoChange?.actions).toEqual([left, down]);
+    const candidates = browserDecisionCandidates(visualPlan, current.observation!, 40).candidates;
+    const input = browserDecisionChoiceInput({ modelId: JEV_ID, signal: new AbortController().signal,
+      plan: visualPlan, observation: current.observation!, candidates,
+      visualNoChange: current.recovery?.visualNoChange,
+      additionalInstructions: "If visualNoChangeActions is present, the signal is advisory, not proof." });
+    expect(input.state).toHaveProperty("visualNoChangeActions", [left, down]);
+    expect(input.instructions).toContain("advisory, not proof");
+    expect(input.choices.map((choice) => choice.description)).toContain(left);
+    expect(input.choices.map((choice) => choice.description)).toContain(down);
+    expect(JSON.stringify(input.state)).not.toContain('"x":200');
+
+    const screenshot = call("reobserve-unchanged", "browser_screenshot", {});
+    const reobserving = { ...current, phase: "waiting" as const, pending: { call: screenshot,
+      browserSessionId: current.observation!.browserSessionId, observationId: null } };
+    current = settleBrowserDecision(state({ browserDecision: reobserving }), [screenshot],
+      [successfulResult(screenshot, JSON.stringify(at("after-reobserve")))], [], JEV_ID)!;
+    expect(current.recovery?.visualNoChange?.actions).toEqual([left, down]);
+    current = round(current, "press", { key: "ArrowRight" }, at("after-right"));
+    expect(current.recovery?.visualNoChange?.actions).toEqual([down, JSON.stringify({ kind: "press", key: "ArrowRight" })]);
+    current = round(current, "press", { key: "ArrowLeft" }, at("after-change", "4"));
+    expect(current.recovery?.visualNoChange).toBeUndefined();
+    const changedInput = browserDecisionChoiceInput({ modelId: JEV_ID, signal: new AbortController().signal,
+      plan: visualPlan, observation: current.observation!, candidates,
+      visualNoChange: current.recovery?.visualNoChange });
+    expect(changedInput.state).not.toHaveProperty("visualNoChangeActions");
+    current = round(current, "press", { key: "ArrowLeft" }, at("after-move", "4", 250));
+    expect(current.recovery?.visualNoChange).toBeUndefined();
+  });
+
+  test("DOM observations and unexecuted visual actions never receive no-change advice", () => {
+    const dom = decision({ plan: { ...plan, progress: [] } });
+    const afterDom = round(dom, "click", { ref: "@e1" }, observation({ observationId: "after-dom" }));
+    expect(afterDom.recovery?.visualNoChange).toBeUndefined();
+    const visualObservation = observation({ refs: {}, visual: {
+      viewport: { imageWidth: 800, imageHeight: 600, cssWidth: 400, cssHeight: 300, dpr: 2 },
+      targets: [{ visualRef: "v1", role: "button", name: "Start", interaction: "click",
+        x: 200, y: 200, context: "start" }],
+    } });
+    const stale = decision({ observation: visualObservation, lastAction: {
+      toolCallId: "stale", description: "Press ArrowLeft", beforeObservationId: visualObservation.observationId,
+      execution: "not_executed_stale",
+    }, recovery: { interventionLimit: 2, consecutiveEvents: 0, interventionAt: 2,
+      progressSeen: [], assessNextObservation: true } });
+    const screenshot = call("fresh", "browser_screenshot", {});
+    const waiting = { ...stale, phase: "waiting" as const, pending: { call: screenshot,
+      browserSessionId: visualObservation.browserSessionId, observationId: null } };
+    const next = settleBrowserDecision(state({ browserDecision: waiting }), [screenshot],
+      [successfulResult(screenshot, JSON.stringify(observation({ ...visualObservation,
+        observationId: "after-stale" })))], [], JEV_ID);
+    expect(next?.recovery?.visualNoChange).toBeUndefined();
+  });
 });
 
 describe("browser decision node", () => {

@@ -250,6 +250,8 @@ export interface BrowserDecisionState {
     readonly pendingTransition?: string | null;
     /** One hash per distinct successful transition since the last milestone or repair. */
     readonly transitionsSeen?: readonly string[];
+    /** Advisory only: executed actions whose follow-up capture had the same extracted visual state. */
+    readonly visualNoChange?: { readonly stateKey: string; readonly actions: readonly string[] } | undefined;
   };
 }
 export type BrowserDecisionCandidate = {
@@ -285,6 +287,7 @@ const VISUAL_DECISION_INSTRUCTIONS =
   "A successful append-only visual_type intent is offered at most once in a delegated episode; use the fresh screenshot to verify it or choose a different remaining action, never to append the same value again. " +
   "scroll_up and scroll_down are ordinary browser_scroll operations and must be followed by a fresh screenshot before choosing newly visible content. " +
   "When previousSnapshot is present, it is the visual state before lastAction, not a source of current targets. Compare it with snapshot to judge what changed; only current choices and visual_ref values can be acted on. " +
+  "If visualNoChangeActions is present, those executed actions left the extracted visual state unchanged at the next capture. This is advisory, not proof that pixels or the underlying page did not change; animation and extraction gaps are possible. Prefer another supported action when the goal is still unmet, but repeat one if fresh evidence makes it useful. Never treat historical target IDs as current targets. " +
   "Do not choose needs_visual_evidence merely because targets use visual_ref or because the original screenshot is unavailable to you: the structured state is your visual evidence. " +
   "Choose needs_visual_evidence only when the required target is still absent or ambiguous. Choose needs_input only when required text is absent from the executable visual_type choices.";
 
@@ -455,6 +458,7 @@ export interface BrowserDecisionChoiceInputOptions {
   readonly recentActions?: readonly unknown[];
   readonly lastAction?: BrowserDecisionState["lastAction"];
   readonly sequence?: BrowserDecisionState["sequence"];
+  readonly visualNoChange?: NonNullable<BrowserDecisionState["recovery"]>["visualNoChange"];
   readonly additionalInstructions?: string;
 }
 
@@ -497,6 +501,9 @@ export function browserDecisionChoiceInput(options: BrowserDecisionChoiceInputOp
     // does not substitute action counts for observed control values.
     state: {
       ...(semanticRecentActions?.length ? { recentActions: semanticRecentActions } : {}),
+      ...(observation.visual && options.visualNoChange?.actions.length
+        ? { visualNoChangeActions: sanitizeVisualReceiptValue(options.visualNoChange.actions) }
+        : {}),
       ...(previousSnapshot === null ? {} : { previousSnapshot }),
       ...(semanticLastAction ? { lastAction: {
         description: semanticLastAction.description,
@@ -881,6 +888,14 @@ function materialEvidenceKey(observation: BrowserDecisionObservation | null): st
   });
 }
 
+/** Strictly compare locally extracted evidence, including private geometry, but not ephemeral refs. */
+function visualEvidenceKey(observation: BrowserDecisionObservation | null): string | null {
+  if (!observation?.visual?.targets.length) return null;
+  const { viewport, keyboardFocus, targets } = observation.visual;
+  return evidenceDigest({ pageUrl: observation.pageUrl, browserSessionId: observation.browserSessionId,
+    viewport, keyboardFocus, targets: targets.map(({ visualRef: _visualRef, confidence: _confidence, ...target }) => target) });
+}
+
 function evidenceDigest(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
@@ -960,6 +975,19 @@ function settleFreshObservation(
   observation: BrowserDecisionObservation,
 ): BrowserDecisionState {
   if (!decision.recovery) return immediateHandoff(decision, "browser_decision_recovery_state_unavailable");
+  const previousVisualKey = visualEvidenceKey(decision.observation);
+  const currentVisualKey = visualEvidenceKey(observation);
+  const sameVisualState = previousVisualKey !== null && previousVisualKey === currentVisualKey;
+  const priorNoChange = decision.recovery.visualNoChange;
+  const visualNoChange = sameVisualState && decision.lastAction?.execution === "executed"
+    && !decision.lastAction.afterObservationId
+    && decision.lastAction.beforeObservationId === decision.observation?.observationId
+    ? { stateKey: currentVisualKey, actions: [...new Set([
+      ...(priorNoChange?.stateKey === currentVisualKey ? priorNoChange.actions : []),
+      decision.lastAction.description,
+    ])].slice(-decision.recovery.interventionLimit) }
+    : sameVisualState && priorNoChange?.stateKey === currentVisualKey
+      && decision.lastAction?.execution !== "uncertain" ? priorNoChange : undefined;
   if (decision.lastAction && !decision.lastAction.afterObservationId && decision.observation) {
     const executed = decision.lastAction.execution === "executed";
     decision = { ...decision, lastAction: { ...decision.lastAction, afterObservationId: observation.observationId,
@@ -1001,6 +1029,7 @@ function settleFreshObservation(
         assessNextObservation: false,
         pendingTransition: null,
         transitionsSeen: [],
+        visualNoChange: undefined,
       },
     };
   }
@@ -1015,6 +1044,7 @@ function settleFreshObservation(
     reason: null,
     recovery: { ...decision.recovery, progressSeen, assessNextObservation: false,
       pendingTransition: null,
+      visualNoChange,
       ...(transition ? { transitionsSeen: seen.includes(transition) ? seen : [...seen, transition] } : {}),
     },
   };
@@ -1173,6 +1203,7 @@ export function settleBrowserDecision(
           assessNextObservation: false,
           pendingTransition: null,
           transitionsSeen: [],
+          visualNoChange: undefined,
         },
       };
     }

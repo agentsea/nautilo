@@ -181,6 +181,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           candidates,
           recentActions,
           lastAction: decision.lastAction,
+          visualNoChange: decision.recovery?.visualNoChange,
           sequence: decision.sequence,
           ...(additionalInstructions === undefined ? {} : { additionalInstructions }),
         }), maxChoices, deps.choose ?? invokeChoice));
