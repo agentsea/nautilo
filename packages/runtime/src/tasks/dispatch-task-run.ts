@@ -755,7 +755,9 @@ export async function dispatchTaskRun(
   const liveMiniAppTaskDelegation = parseLiveMiniAppTaskDelegationIntent(task.metadata);
   const taskMessage = writerReviewVerification
     ? `${task.prompt}\n\n${WRITER_REVIEW_VERIFICATION_CONTINUATION}`
-    : task.prompt;
+    : task.preset === "schedule" && task.callingRoomId
+      ? `${task.prompt}\n\n[Scheduled Task delivery] Your final answer is returned automatically to the conversation that scheduled this Task. If this is a reminder for the requesting Human, state the reminder in your final answer. Do not use ask_peer merely to deliver it to that same Human; use ask_peer when a separate conversation or reply is actually needed.`
+      : task.prompt;
   // D560 — a background Task has no ambient Desktop authority. Resolve the
   // task's creation-time binding immediately before the Job is accepted and
   // carry it only when the exact relay/session/folder is still live. The graph
@@ -796,6 +798,7 @@ export async function dispatchTaskRun(
     // D363 — preset + metadata so the executor can branch to the repo-docs
     // wrapper (preset "repo_docs") and read its target/mode/publish from metadata.
     preset: task.preset,
+    resultDelivery: task.resultDelivery,
     metadata: task.metadata,
     ...(askPeerArtifactRefs.length > 0
       ? {

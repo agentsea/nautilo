@@ -648,6 +648,7 @@ export function coalescedInputToJobInput(c: CoalescedInput): Record<string, unkn
       ? { retainedAttachmentIds: c.retainedAttachmentIds }
       : {}),
     ownerId: c.ownerId,
+    requestorId: c.requestorId,
     ...(c.causalHumanUserId
       ? { causalHumanUserId: c.causalHumanUserId }
       : {}),
