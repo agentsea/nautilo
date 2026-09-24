@@ -1,6 +1,6 @@
 {
   "name": "@nautilo/computer-use-host",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "type": "module",
   "description": "Headless signed local Host for Nautilo Computer Use",
