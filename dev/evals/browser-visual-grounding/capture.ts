@@ -162,23 +162,52 @@ async function capture(options: CaptureOptions): Promise<string> {
       screenshot: { file: "screenshot.png", bytes: screenshotBytes.byteLength, sha256: sha256(screenshotBytes) },
     };
 
+    return await publishCaptureCase({ casesRoot, manifest, snapshotBytes, screenshotPath: temporaryScreenshot });
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+export async function publishCaptureCase(options: {
+  readonly casesRoot: string;
+  readonly manifest: BrowserVisualGroundingCase;
+  readonly snapshotBytes: Uint8Array;
+  readonly screenshotPath: string;
+}): Promise<string> {
+  const { casesRoot, manifest, snapshotBytes, screenshotPath } = options;
+  if (!isCaseId(manifest.id)) throw new Error(`Invalid case id: ${manifest.id}`);
+  const destination = path.join(casesRoot, manifest.id);
+  const staging = path.join(casesRoot, `.capture-${manifest.id}-${randomUUID()}`);
+  const indexTemporary = path.join(casesRoot, `.manifest-${randomUUID()}.json`);
+  let createdDestination = false;
+  let published = false;
+  try {
     await mkdir(casesRoot, { recursive: true });
-    const staging = path.join(casesRoot, `.capture-${options.id}-${randomUUID()}`);
     await mkdir(staging);
     await writeFile(path.join(staging, "snapshot.txt"), snapshotBytes);
-    await copyFile(temporaryScreenshot, path.join(staging, "screenshot.png"));
+    await copyFile(screenshotPath, path.join(staging, "screenshot.png"));
     await writeFile(path.join(staging, "case.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    await rename(staging, destination);
+
+    // Reserve the case ID exclusively: rename() could replace an existing empty directory.
+    await mkdir(destination);
+    createdDestination = true;
+    for (const file of ["snapshot.txt", "screenshot.png", "case.json"]) {
+      await rename(path.join(staging, file), path.join(destination, file));
+    }
+    await rm(staging, { recursive: true, force: true });
 
     const indexPath = path.join(casesRoot, "manifest.json");
     const current = parseCorpusIndex(JSON.parse(await readFile(indexPath, "utf8")));
-    const next = { ...current, cases: [...current.cases, { id: options.id }].sort((a, b) => a.id.localeCompare(b.id)) };
-    const indexTemporary = path.join(casesRoot, `.manifest-${randomUUID()}.json`);
+    if (current.cases.some(({ id }) => id === manifest.id)) throw new Error(`Case already exists: ${manifest.id}`);
+    const next = { ...current, cases: [...current.cases, { id: manifest.id }].sort((a, b) => a.id.localeCompare(b.id)) };
     await writeFile(indexTemporary, `${JSON.stringify(next, null, 2)}\n`, "utf8");
     await rename(indexTemporary, indexPath);
+    published = true;
     return destination;
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    if (!published && createdDestination) await rm(destination, { recursive: true, force: true });
+    await rm(staging, { recursive: true, force: true });
+    await rm(indexTemporary, { force: true });
   }
 }
 
