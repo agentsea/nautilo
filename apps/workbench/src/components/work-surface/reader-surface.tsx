@@ -235,13 +235,18 @@ export function ReaderSurface({
       return;
     }
     let cancelled = false;
+    let timedOut = false;
     const controller = new AbortController();
     const deadlineAt = Date.now() + BINARY_PREVIEW_LOAD_TIMEOUT_MS;
     const targetIdentity = file.kind === "artifact"
       ? `artifact:${file.roomId ?? ""}:${file.id}:${file.path}`
       : `fs:${file.rootPath}:${file.path}`;
     const deadlineTimer = setTimeout(() => {
+      if (cancelled) return;
+      timedOut = true;
       controller.abort(new DOMException("Preview timed out. Try again.", "TimeoutError"));
+      displayedTargetRef.current = null;
+      setState({ kind: "error", message: "Preview timed out. Try again." });
     }, BINARY_PREVIEW_LOAD_TIMEOUT_MS);
     // A changed artifact revision refreshes in place. Keep the last readable
     // document mounted while its next version is fetched.
@@ -268,7 +273,7 @@ export function ReaderSurface({
               deadlineAt,
               ...(artifactBytes === undefined ? {} : { artifactBytes }),
             });
-            if (cancelled) return;
+            if (cancelled || timedOut) return;
             if (result.kind === "ready") {
               displayedTargetRef.current = targetIdentity;
               setState({ ...result, adapter });
@@ -278,11 +283,11 @@ export function ReaderSurface({
             }
             return;
           } catch (err) {
-            if (cancelled) return;
+            if (cancelled || timedOut) return;
             const delay = retryDelaysMs[attempt];
             if (!controller.signal.aborted && isNetworkLoadError(err) && delay !== undefined) {
               await new Promise((resolve) => setTimeout(resolve, delay));
-              if (cancelled) return;
+              if (cancelled || timedOut) return;
               continue;
             }
             setState({
