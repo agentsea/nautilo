@@ -2,8 +2,9 @@
 
 The server has one durable **Allow personal provider keys** switch. It is off
 when a server is first installed or upgraded, including when the policy row has
-not yet been written. The current value lives in the server database and is
-read at admission time; it is not an environment or browser-local setting.
+not yet been written. The current value lives in the server database; it is
+not an environment or browser-local setting. Later BYOK operations must read
+it at their admission boundaries.
 
 An administrator can inspect it in **Admin → Server**. A Human with
 `manage_server_settings` can change it there; readers with
