@@ -35,11 +35,6 @@ export async function loadArtifactViewerBlob(
   context: ViewerLoadContext,
   maxBytes: number,
 ): Promise<Blob> {
-  if (context.artifactBytes === undefined) {
-    return file.roomId === undefined
-      ? apiClient.getWorkspaceArtifactBytes(file.id)
-      : apiClient.getWorkspaceArtifactBytes(file.id, { roomId: file.roomId });
-  }
   return new Blob(
     [await loadArtifactViewerArrayBuffer(file, context, maxBytes)],
     { type: file.mimeType },

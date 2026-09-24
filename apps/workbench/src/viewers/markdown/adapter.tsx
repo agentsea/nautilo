@@ -19,6 +19,9 @@ export const markdownViewerAdapter: ViewerAdapter = {
   },
   async load(file, ctx) {
     if (file.kind === "artifact") {
+      if (file.sizeBytes !== undefined && file.sizeBytes > ctx.maxTextBytes) {
+        return { kind: "too_large", sizeBytes: file.sizeBytes, maxBytes: ctx.maxTextBytes };
+      }
       const blob = await loadArtifactViewerBlob(file, ctx, ctx.maxTextBytes);
       if (blob.size > ctx.maxTextBytes) {
         return { kind: "too_large", sizeBytes: blob.size, maxBytes: ctx.maxTextBytes };
