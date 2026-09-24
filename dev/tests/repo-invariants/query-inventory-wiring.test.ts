@@ -39,7 +39,7 @@ describe("query inventory enforcement wiring", () => {
       /query-inventory\)\s+run_cmd query-inventory bun run db:query-inventory:check\s+;;/,
     );
     expect(gates).toMatch(
-      /lint\)\s+run_gate lint-eslint\s+run_gate test-invariants\s+run_gate query-inventory\s+run_gate limit-invariants\s+run_gate lint-unused\s+;;/,
+      /lint\)\s+run_gate lint-eslint\s+run_gate test-invariants\s+run_gate query-inventory\s+run_gate lint-unused\s+;;/,
     );
     const prePushJobs = hooks["pre-push"].jobs.flatMap((job) =>
       job.group?.jobs ?? [job]

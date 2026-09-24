@@ -12,13 +12,12 @@ Gates:
   lint-eslint      Run affected ESLint via Turbo
   test-invariants Run repo invariant tests
   query-inventory  Reject unreviewed direct-query inventory changes
-  limit-invariants Reject new or changed unreviewed repository limits
   lint-unused      Run Knip
   typecheck        Run affected TypeScript checks via Turbo
   unit             Run affected unit tests via Turbo
   encryption-indicators Run Wave 0 check, decision coverage, integration, and property indicators
   encryption-assurance Run Wave 0 indicators followed by mutation assurance
-  lint             Run lint-eslint, repository invariants, inventory gates, and lint-unused
+  lint             Run lint-eslint, repository invariants, query inventory, and lint-unused
   all              Run lint, typecheck, unit
 EOF
 }
@@ -50,13 +49,6 @@ run_gate() {
       ;;
     query-inventory)
       run_cmd query-inventory bun run db:query-inventory:check
-      ;;
-    limit-invariants)
-      if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-        run_cmd limit-invariants bun run --cwd packages/limit-invariants check:ci --base "${LIMIT_REVIEW_BASE:?exact base required}" --head "${LIMIT_REVIEW_HEAD:?exact head required}" --repository "${GITHUB_REPOSITORY:?repository required}"
-      else
-        run_cmd limit-invariants bun run limits:check
-      fi
       ;;
     lint-unused)
       run_cmd lint-unused bun run lint:unused
@@ -98,7 +90,6 @@ run_gate() {
       run_gate lint-eslint
       run_gate test-invariants
       run_gate query-inventory
-      run_gate limit-invariants
       run_gate lint-unused
       ;;
     all)

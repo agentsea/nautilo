@@ -1,10 +1,16 @@
 # Limit invariants
 
-This private workspace package is Nautilo's developer-only inventory and drift
-gate for hard-coded ceilings, timeouts, retries, retention, truncation,
+This private workspace package is Nautilo's optional developer-only inventory
+for hard-coded ceilings, timeouts, retries, retention, truncation,
 pagination, batching, payload bounds, and concurrency limits. It is not a
 runtime package and exposes no browser, server, database, Workbench, Desktop,
 Mobile, Genie, or customer-instance surface.
+
+No pre-push hook or pull-request CI job invokes a limit-policy gate or check. A
+separate human review of constants introduced by added code owns the decision:
+it identifies the constants mechanically, investigates their behavior, and
+presents the Human with rationale and concrete options. This scanner can supply
+supporting evidence for that review.
 
 The scanner is deliberately dumb. It reports deterministic source facts,
 parser-grounded extraction confidence, and transparent mechanical priority
@@ -36,19 +42,17 @@ decisions, frozen legacy debt, and legacy lock; missing evidence fails closed.
 The matrix and investigation map are local non-authoritative reports, so their
 freshness does not control the semantic check.
 
-Public CI independently scans the exact pull-request base and HEAD source trees.
-Unchanged or removed observations need no private evidence. Every new or changed
-observation requires the strict local semantic check against the ignored audit
-files and a successful `limit-policy-reviewed` status bound to that exact HEAD
-commit. Merging source never admits new legacy debt or carries approval to a
-different fingerprint.
+Repository automation does not run the limit-policy check or require a review
+status. Run the inventory commands only when their broader historical evidence
+helps an investigation; the pull-request constants review remains the decision
+point.
 
-`review` is the maintainer-only exact-commit publication step. It
+The `review` CLI remains available for an explicit maintainer action. It
 requires an explicit GitHub `owner/name`, a full commit SHA, a matching
 `origin`, and a worktree with no tracked or non-ignored untracked changes. It
 runs the strict local check, verifies the same clean HEAD again, then publishes
-only the generic `limit-policy-reviewed` success status. Failures and private
-audit contents are never posted.
+only the generic `limit-policy-reviewed` success status. No hook or CI workflow
+calls it or requires that status.
 
 `limits:scout` writes a non-blocking wide-scout projection for generic measured
 comparisons and scheduling timers. Test, fixture, generated, migration, and
@@ -78,11 +82,10 @@ initialization command and refuses to replace a non-empty legacy ledger.
 `shrink-legacy` can only retain exact current fingerprints or remove rows; it
 cannot absorb a new or changed observation.
 
-## Review workflow
+## Optional inventory workflow
 
 1. Run `bun run limits:inventory` and inspect the factual diff.
-2. Invoke the canonical `limit-preflight` skill to trace the complete
-   producer-to-consumer behavior and its real authority.
+2. Trace the complete producer-to-consumer behavior and its real authority.
 3. Add or update a row in
    `baseline/reviewed-limit-decisions.limit-audit.jsonl` only when the evidence
    supports the classification and disposition. If it does not, surface the

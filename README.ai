@@ -188,9 +188,11 @@ user data; do not repurpose it as an empty fixture. Configuration comes through
 `@nautilo/config`; secrets and per-instance state stay outside source control.
 
 Change the Drizzle schema first and generate migrations with repository tools.
-Use the typed query boundary and close owned database clients. Run
-`bun run limits:check` when changing a production/operator limit, and investigate
-the actual producer-to-consumer behavior before recording a policy decision.
+Use the typed query boundary and close owned database clients. When a pull
+request adds constants, mechanically identify them and investigate their
+producer-to-consumer behavior. Present new constants, rationale, and concrete
+options to the Human for a decision. The limit inventory commands remain
+available as optional investigation aids; they are not pre-push or CI gates.
 
 ## Releases and current records
 

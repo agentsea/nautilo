@@ -36,11 +36,12 @@ async function productSourceFiles(): Promise<string[]> {
   return results;
 }
 
-describe("limit-invariant wiring", () => {
-  test("uses one blocking developer/CI gate", async () => {
-    const [rootPackage, gates, hooks, workflow] = await Promise.all([
+describe("optional limit analysis tooling", () => {
+  test("keeps local commands without an automatic developer or CI gate", async () => {
+    const [rootPackage, gates, localCi, hooks, workflow] = await Promise.all([
       read("package.json"),
       read("dev/scripts/ci-gates.sh"),
+      read("dev/scripts/ci-local.sh"),
       read("lefthook.yml"),
       read(".github/workflows/ci.yml"),
     ]);
@@ -52,13 +53,12 @@ describe("limit-invariant wiring", () => {
       "limits:scout": "bun run --cwd packages/limit-invariants scout",
       "limits:eval-agent": "bun dev/tools/limit-preflight/evaluate-live-agent.ts",
     });
-    expect(gates).toContain("run_cmd limit-invariants bun run limits:check");
-    expect(gates).toMatch(/lint\)\s+run_gate lint-eslint\s+run_gate test-invariants\s+run_gate query-inventory\s+run_gate limit-invariants\s+run_gate lint-unused/u);
-    expect(hooks).toContain("name: limit-invariants\n            run: bash dev/scripts/ci-gates.sh limit-invariants");
-    expect(gates).toContain("run_cmd limit-invariants bun run --cwd packages/limit-invariants check:ci --base");
-    expect(workflow).toContain("LIMIT_REVIEW_BASE: ${{ github.event.pull_request.base.sha }}");
-    expect(workflow).toContain("LIMIT_REVIEW_HEAD: ${{ github.event.pull_request.head.sha }}");
-    expect(workflow).toContain("run: bash dev/scripts/ci-gates.sh limit-invariants");
+    expect(gates).not.toContain("limit-invariants");
+    expect(localCi).toContain("bash dev/scripts/ci-gates.sh all");
+    expect(localCi).not.toContain("limit-invariants");
+    expect(hooks).not.toContain("limit-invariants");
+    expect(workflow).not.toContain("limit-invariants");
+    expect(workflow).not.toContain("limit-policy-reviewed");
   });
 
   test("developer-only package is absent from product imports and Genie skill registration", async () => {
@@ -121,11 +121,6 @@ describe("ordinary CI token permissions", () => {
 
     expect(workflow.permissions).toEqual({ contents: "read" });
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
-      if (jobName === "lint") {
-        // The limit check reads a maintainer's exact-commit status; CI cannot post one.
-        expect(job.permissions).toEqual({ contents: "read", statuses: "read" });
-        continue;
-      }
       expect(
         job.permissions,
         `${jobName} must not widen the ordinary CI workflow token`,
