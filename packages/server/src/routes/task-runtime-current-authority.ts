@@ -181,7 +181,7 @@ function destroyHeldAuthority(authority: HeldProtectedTaskRuntimeAuthority): voi
   }
 }
 
-export async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
+async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
   product: PostgresJsBridgeConnection;
   occurrence: ProtectedTaskOccurrence;
 }>): Promise<CurrentProtectedTaskRuntimeFacts | null> {

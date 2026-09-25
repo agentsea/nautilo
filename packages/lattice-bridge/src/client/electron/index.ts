@@ -684,6 +684,15 @@ export {
   type VaultHumanTaskDeviceContentInputV1,
 } from "../task/vault-human-task-device-content.ts";
 export {
+  createAuthorizedHumanTaskRunResultReaderV1,
+  type HumanTaskRunResultDevicePortV1,
+  type HumanTaskRunResultReadV1,
+} from "../task/authorized-human-task-run-result.ts";
+export {
+  createVaultHumanTaskRunResultReaderV1,
+  type VaultHumanTaskRunResultReaderInputV1,
+} from "../task/vault-human-task-run-result.ts";
+export {
   createVaultHumanArtifactDeviceContentPort,
   type AuthorizedHumanArtifactContentIntentV1,
   type PreparedHumanArtifactContentPublicationV1,
