@@ -23,7 +23,7 @@ import {
   type ReviewedQueryDecisionDocument,
 } from "../../src/node/query-inventory";
 
-describe("M223 query inventory", () => {
+describe("query inventory", () => {
   test("ignores transient tsup configuration bundles created during parallel CI", async () => {
     const repositoryRoot = await mkdtemp(join(tmpdir(), "nautilo-query-inventory-"));
     const packageRoot = join(repositoryRoot, "apps", "cli");
@@ -335,5 +335,28 @@ describe("M223 query inventory", () => {
     });
     expect(auditFullDrizzleSample({ inventory, sample: { ...sample, decisions: sample.decisions.slice(1) } }))
       .toMatchObject({ ok: false, removed: [picked[0]!.locator] });
+  });
+
+  test("samples a single candidate per owner only once", () => {
+    const observation = discoverQueriesInSource(
+      "packages/trust/src/query.ts",
+      "db.query(`SELECT id FROM users WHERE id = ${id}`);",
+    )[0]!;
+    const inventory: QueryInventoryDocument = {
+      schemaVersion: QUERY_INVENTORY_SCHEMA_VERSION,
+      purpose: "test",
+      observations: [observation],
+    };
+    const sample: FullDrizzleSampleDocument = {
+      schemaVersion: QUERY_INVENTORY_SCHEMA_VERSION,
+      purpose: "test",
+      decisions: [{
+        locator: observation.locator,
+        fingerprint: observation.fingerprint,
+        reviewedSafetyOpportunity: "full_drizzle",
+        rationale: "The schema-owned select can use the typed query builder.",
+      }],
+    };
+    expect(auditFullDrizzleSample({ inventory, sample })).toMatchObject({ ok: true, removed: [] });
   });
 });

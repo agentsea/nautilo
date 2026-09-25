@@ -21,7 +21,6 @@ This README covers the **command bundles**.
 | `phase-end/` | `/fb:phase-end`, `/phase-end`, `/prompts:phase-end` | Fast 3-pass self-check after a coding pass |
 | `green-pr/` | `/fb:green-pr`, `/green-pr`, `/prompts:green-pr` | Drive a sprint/worktree/folder to an open PR with green CI; fix lints + tests by root cause, never by silencing checks |
 | `dispatch-coders/` | `/fb:dispatch-coders`, `/fb:subagent-rules`, `/dispatch-coders`, `/subagent-rules`, `/prompts:dispatch-coders`, `/prompts:subagent-rules` | Orchestrator persona + subagent anti-clobber block |
-| `limit-preflight/` | `$limit-preflight` in Codex | Investigate deterministic limit observations, record evidence-backed decisions, and surface unresolved policy choices |
 
 > Cursor slash commands are flat: filename `phase-end.md` becomes
 > `/phase-end`. Claude commands live under `commands/fb/` so they

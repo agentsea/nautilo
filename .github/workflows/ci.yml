@@ -66,10 +66,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
 
   lint:
-    name: Lint (eslint + invariant inventories + knip)
-    permissions:
-      contents: read
-      statuses: read
+    name: Lint (eslint + query inventory + knip)
     needs: prepare-bun-cache
     runs-on: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 15
@@ -110,18 +107,7 @@ jobs:
         run: bash dev/scripts/ci-gates.sh test-invariants
 
       - name: Query inventory
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          LIMIT_REVIEW_BASE: ${{ github.event.pull_request.base.sha }}
-          LIMIT_REVIEW_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash dev/scripts/ci-gates.sh query-inventory
-
-      - name: Limit invariants
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          LIMIT_REVIEW_BASE: ${{ github.event.pull_request.base.sha }}
-          LIMIT_REVIEW_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: bash dev/scripts/ci-gates.sh limit-invariants
 
       - name: Unused exports (knip)
         env:

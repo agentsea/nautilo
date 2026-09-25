@@ -18,10 +18,10 @@ import {
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const repositoryRoot = resolve(packageRoot, "../..");
-const baselinePath = resolve(packageRoot, "baseline/query-inventory.limit-audit.jsonl");
-const addendumPath = resolve(packageRoot, "baseline/query-inventory-addendum.limit-audit.jsonl");
-const reviewsPath = resolve(packageRoot, "baseline/reviewed-query-decisions.limit-audit.jsonl");
-const fullDrizzleSamplePath = resolve(packageRoot, "baseline/full-drizzle-sample.limit-audit.jsonl");
+const baselinePath = resolve(packageRoot, "baseline/query-inventory.jsonl");
+const addendumPath = resolve(packageRoot, "baseline/query-inventory-addendum.jsonl");
+const reviewsPath = resolve(packageRoot, "baseline/reviewed-query-decisions.jsonl");
+const fullDrizzleSamplePath = resolve(packageRoot, "baseline/full-drizzle-sample.jsonl");
 const mode = process.argv[2];
 
 if (mode !== "--write" && mode !== "--write-addendum" && mode !== "--check") {
@@ -36,7 +36,7 @@ if (mode === "--write") {
   // A complete refresh incorporates all prior additions into the baseline.
   await writeFile(addendumPath, serializeQueryInventory({
     schemaVersion: actual.schemaVersion,
-    purpose: "Additive query observations alongside the local baseline",
+    purpose: "Additive query observations alongside the tracked baseline",
     observations: [],
   }), "utf8");
   console.log(`Wrote ${actual.observations.length} query observations to ${baselinePath}`);

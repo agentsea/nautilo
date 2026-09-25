@@ -106,16 +106,6 @@ apps/workbench/tests/fixtures/ooxml/capacity/
 # Raw exact-image reports are CI/release artifacts, not source inputs.
 /packaging/docker/evidence/source-*/
 
-# Local-only agent audits and working notes. These files may contain private
-# review evidence and must never enter public source history.
+# Local-only working notes and legacy audit snapshots.
 *.limit-audit.*
 *.agent-notes.*
-
-# Retired limit-audit names, kept ignored after their tracked copies are removed.
-/packages/limit-invariants/baseline/legacy-lock.json
-/packages/limit-invariants/baseline/legacy-unreviewed.jsonl
-/packages/limit-invariants/baseline/limit-inventory.jsonl
-/packages/limit-invariants/baseline/reviewed-limit-decisions.jsonl
-/packages/limit-invariants/generated/investigation-map.md
-/packages/limit-invariants/generated/limit-matrix.md
-/packages/limit-invariants/generated/limit-scout.jsonl

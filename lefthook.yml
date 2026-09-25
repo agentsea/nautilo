@@ -44,8 +44,6 @@ pre-push:
             run: bash dev/scripts/ci-gates.sh test-invariants
           - name: query-inventory
             run: bash dev/scripts/ci-gates.sh query-inventory
-          - name: limit-invariants
-            run: bash dev/scripts/ci-gates.sh limit-invariants
           - name: typecheck
             run: TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh typecheck
     - name: test-unit

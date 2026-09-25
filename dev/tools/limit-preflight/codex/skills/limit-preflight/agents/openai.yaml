@@ -1,4 +1,0 @@
-interface:
-  display_name: "Limit Preflight"
-  short_description: "Audit and govern repository limits"
-  default_prompt: "Use $limit-preflight to scan this repository or diff for hard-coded limits and review each finding against its real authority."
