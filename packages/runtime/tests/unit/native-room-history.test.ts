@@ -8,7 +8,7 @@ import { buildTranscriptContext, buildProtectedRoomHybridContext, buildBudgetedR
 import { createNativeRoomHistoryPort, bindNativeRoomHistoryPort } from "../../src/context/native-room-history";
 import type { RoomHistoryHit } from "../../src/conductor/history-search";
 import { formatTranscriptLine } from "../../src/conductor/transcript-format";
-import { windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
+import { computerMutationReceiptSchema, windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 
 const journal = { rollup: null, events: [] };
 function hit(messageId: number, role: NonNullable<RoomHistoryHit["role"]>, snippet: string): RoomHistoryHit {
@@ -97,6 +97,34 @@ test("missing/forged source provenance and uncertain action turns stay unchanged
   const identical = [observation(), { ...observation(), messageId: 5 }];
   const singleBody = bodyFor([identical[1]!, hit(6, "assistant", "Keep this conclusion")]);
   expect(createNativeRoomHistoryPort(singleBody, identical).project(message(singleBody))).toBeNull();
+});
+
+test("checked non-delivery permits a model-only Room projection without dropping the failed receipt", () => {
+  const result = computerMutationReceiptSchema.parse({ version: 1, timing: "immediate", action: "click",
+    target: { version: 1, context: `dctx_${"a".repeat(43)}`, reference: `detgt_${"b".repeat(43)}` },
+    resolvedTarget: { kind: "element", role: "menu_item", action: "click" }, provider: "cua",
+    deliveryMode: "not_delivered", completionCertainty: "not_completed", verification: "unavailable", providerAction: null,
+    unexecutedRemainder: { count: 1, reason: "failed" }, outcome: { version: 1, phase: "pre_effect_dispatch",
+      retrySafety: "observe_before_retry", stateChangeCertainty: "not_changed", providerCondition: "ready",
+      targetCondition: "stale", recovery: ["observe_again"] } });
+  const refused = { ...hit(3, "tool", JSON.stringify({ version: 1, ok: false, settlement: "not_completed", result })),
+    toolEvidence: { name: "computer_do", callId: "refused", status: "success" as const } };
+  const hits = [hit(1, "user", "Use the fixture"), observation(), refused];
+  const body = bodyFor(hits);
+  const original = JSON.stringify(hits);
+  const port = createNativeRoomHistoryPort(body, hits);
+  const projected = port.project(message(body))!;
+  expect(projected).not.toBeNull();
+  expect(projected.length).toBeLessThan(body.length);
+  expect(projected).toContain(refused.snippet);
+  expect(port.read(ref(projected))!.text).toContain("Field 199");
+  expect(JSON.stringify(hits)).toBe(original);
+  for (const changed of [{ ...result, completionCertainty: "unknown_completion" },
+    { ...result, deliveryMode: "background" }, { ...result, outcome: { ...result.outcome, stateChangeCertainty: "unknown" } }, {}]) {
+    const uncertain = [...hits.slice(0, -1), { ...refused, snippet: JSON.stringify({ settlement: "not_completed", result: changed }) }];
+    const uncertainBody = bodyFor(uncertain);
+    expect(createNativeRoomHistoryPort(uncertainBody, uncertain).project(message(uncertainBody))).toBeNull();
+  }
 });
 
 test("invocation identity and cancellation fence reads; missing restart port restores full canonical history", () => {

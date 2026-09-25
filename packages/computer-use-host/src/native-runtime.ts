@@ -1425,7 +1425,7 @@ type CuaTextOrKeyEffect =
   /** Exact element resolver/background gate refusal before an element action. */
   | { readonly kind: "refused_element" }
   | { readonly kind: "chunk_refusal"; readonly maxChunkCharacters: number }
-  | { readonly kind: "partial"; readonly delivered: number; readonly delivery: "background" | "foreground" | "unknown" }
+  | { readonly kind: "partial"; readonly delivered: number; readonly delivery: "background" | "foreground" | "unknown"; readonly synthesizedInput: boolean }
   | { readonly kind: "indeterminate" }
   | { readonly kind: "provider_failure" }
   | { readonly kind: "malformed" };
@@ -1550,6 +1550,7 @@ function parseTextOrKeyEffect(
       || (expected.deliveryMode === "foreground" && data["path"] !== "key_events_fg" && data["path"] !== "key_events")) return { kind: "malformed" };
     return {
       kind: "partial", delivered: data["delivered_chars"],
+      synthesizedInput: data["path"] !== "ax",
       delivery: data["path"] === "key_events_fg" ? "foreground" : data["path"] === "key_events" || data["path"] === "ax" ? "background" : "unknown",
     };
   }
@@ -3666,7 +3667,15 @@ export class CuaComputerUseAdapter {
       // check instead of falsely attributing our own event to the Human.
       const confirmedSelectionPointer = name === "click" && effect.kind === "completed"
         && effect.providerAction.route === "synthetic_events";
+      // Background is a delivery mode, not evidence of AX-only input. Cua
+      // can post keyboard events to the PID; those events share HIDIdleTime
+      // with Human input. Preserve its parsed receipt and fence old actions
+      // until a fresh read, just as for foreground input and pointer fallback.
+      const synthesizedKeyboard = (name === "type_text" || name === "press_key")
+        && (effect.kind === "partial" ? effect.synthesizedInput
+          : "providerAction" in effect && effect.providerAction.route === "synthetic_events");
       const postDispatchHumanControl = deliveryMode === "foreground" || provider.operation === "right_click" || provider.operation === "double_click" || confirmedSelectionPointer
+        || synthesizedKeyboard
         || (name === "scroll" && effect.kind === "synthetic_unverifiable")
         ? "current"
         : await this.assertContextHumanControl(context, request.scope);
@@ -3880,6 +3889,7 @@ export class CuaComputerUseAdapter {
         };
       }
       if (effect.kind === "partial") {
+        if (synthesizedKeyboard) this.registry.retireMutationCapabilities(context, request.scope);
         const result = outcome("post_effect_verification", { retrySafety: "observe_before_retry", stateChangeCertainty: "changed", providerCondition: "ready", targetCondition: "current", recovery: ["observe_again"] });
         return {
           ok: false,
@@ -3964,17 +3974,18 @@ export class CuaComputerUseAdapter {
           outcome: result,
         };
       }
-      // A token-addressed row selection can itself synthesize pointer input.
-      // Keep the driver's verified selection, but reacquire state rather than
-      // attributing its HID epoch to the Human or reusing pre-gesture targets.
-      if (confirmedSelectionPointer) this.registry.retireMutationCapabilities(context, request.scope);
+      // Token-addressed selection and background keyboard synthesis can both
+      // advance HID. Keep verified effects, but reacquire state instead of
+      // attributing that epoch to the Human or reusing pre-gesture targets.
+      const requiresFreshRead = confirmedSelectionPointer || synthesizedKeyboard;
+      if (requiresFreshRead) this.registry.retireMutationCapabilities(context, request.scope);
       const postconditionOnly = name === "set_value" || name === "click" && effect.providerAction.effect === "confirmed";
       const result = outcome("post_effect_verification", {
         // Readback proves the requested value/selection, not a before/after
         // transition: the control may already have held that value.
         retrySafety: "never", stateChangeCertainty: postconditionOnly ? "unknown" : "changed", providerCondition: "ready",
-        targetCondition: confirmedSelectionPointer ? "unknown" : "current",
-        recovery: confirmedSelectionPointer ? ["observe_again", "do_not_replay"]
+        targetCondition: requiresFreshRead ? "unknown" : "current",
+        recovery: requiresFreshRead ? ["observe_again", "do_not_replay"]
           : postconditionOnly ? ["do_not_replay"] : [],
       });
       return {

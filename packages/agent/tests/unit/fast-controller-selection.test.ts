@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { selectBoundChoice, type BoundChoice } from "../../scripts/fast-controller/selection";
 import { ChoiceRequestError, type ChoiceInput, type ChoiceResult } from "../../src/providers/choice";
+import { createChoiceMenuProjector } from "../../src/graph/bound-choice";
 
 function answer(input: ChoiceInput, id: string): ChoiceResult {
   return { selectedId: id, requestedModelId: input.modelId, resolvedModelId: input.modelId,
@@ -94,4 +95,48 @@ test("invalid IDs and cancelled late results cannot resolve a private action", a
   const abort = new AbortController();
   expect(await selectBoundChoice({ ...base, choices, signal: abort.signal,
     choose: async input => { abort.abort(); return answer(input, "a0"); } }).then(() => null, (error: unknown) => error)).toMatchObject({ code: "cancelled" });
+});
+
+test("shared template projection preserves semantics and sends only each group's templates", () => {
+  const descriptions = [
+    { id: "first", presentation: { template: { tool: "native_action", operation: { kind: "click", target: "control" } }, bindings: { control: "c1" } } },
+    { id: "second", presentation: { template: { operation: { target: "control", kind: "click" }, tool: "native_action" }, bindings: { control: "c2" } } },
+    { id: "third", presentation: { template: { tool: "native_action", operation: { kind: "read", target: "control" } }, bindings: { control: "c3" } } },
+  ];
+  const project = createChoiceMenuProjector(descriptions);
+  const input: ChoiceInput = { ...base, signal: new AbortController().signal,
+    choices: [{ id: "first", description: "click1" }, { id: "second", description: "click2" }, { id: "reobserve", description: "recover" }] };
+  const before = structuredClone({ choices: input.choices, state: input.state });
+  const first = project(input);
+  const state = first.state as { actionTemplates: Record<string, unknown>[] };
+  expect(state.actionTemplates).toHaveLength(1);
+  expect(state.actionTemplates[0]).toEqual({ id: "t0", tool: "native_action", operation: { kind: "click", target: "control" } });
+  expect(first.choices.map(choice => choice.id)).toEqual(["first", "second", "reobserve"]);
+  expect(JSON.parse(first.choices[1]!.description)).toEqual({ action: "t0", control: "c2" });
+  expect(first.choices[2]).toEqual(input.choices[2]);
+  const other = project({ ...input, choices: [{ id: "third", description: "read3" }] });
+  expect((other.state as { actionTemplates: { id: string }[] }).actionTemplates.map(template => template.id)).toEqual(["t1"]);
+  expect({ choices: input.choices, state: input.state }).toEqual(before);
+});
+
+test("factored candidates keep every binding across context-driven re-screening", async () => {
+  const items: BoundChoice<unknown>[] = candidates(20).map((candidate, index) => ({ ...candidate,
+    presentation: { template: { tool: "native_action", operation: { kind: "click", target: "control" } }, bindings: { control: `c${index}` } },
+  }));
+  const seen = new Set<string>();
+  const result = await selectBoundChoice({ ...base, choices: [...items, ...controls], signal: new AbortController().signal,
+    choose: async input => {
+      if (input.choices.length > 8) throw new ChoiceRequestError("context_length_exceeded");
+      const state = input.state as { candidateEvidence: { id: string }[]; actionTemplates: unknown[] };
+      expect(state.actionTemplates).toHaveLength(1);
+      expect(JSON.stringify(input)).not.toContain("private-");
+      for (const choice of input.choices.filter(row => row.id.startsWith("a"))) {
+        seen.add(choice.id);
+        expect(JSON.parse(choice.description)).toEqual({ action: "t0", control: `c${choice.id.slice(1)}` });
+      }
+      expect(state.candidateEvidence.map(row => row.id)).toEqual(input.choices.filter(row => row.id.startsWith("a")).map(row => row.id));
+      return answer(input, input.choices.some(row => row.id === "a19") ? "a19" : "none_in_group");
+    } });
+  expect(seen.size).toBe(20);
+  expect(result.value).toBe(items[19]!.value);
 });

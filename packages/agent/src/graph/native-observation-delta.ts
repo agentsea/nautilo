@@ -24,6 +24,11 @@ function describe(rows: readonly Row[]) {
   });
 }
 
+/** Progress evidence only, never authority or cross-snapshot target identity. */
+export function nativeControlProgress(rows: readonly Row[]) {
+  return describe(rows).map(entry => entry.key ?? JSON.stringify(entry.row)).sort();
+}
+
 /**
  * Model-only multiset difference, never cross-snapshot target identity.
  * Equal semantic rows cancel one occurrence each, not every duplicate. Order

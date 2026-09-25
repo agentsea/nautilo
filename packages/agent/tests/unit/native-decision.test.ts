@@ -7,7 +7,7 @@ import { COMPUTER_USE_NATIVE_CONTRACTS, windowStateObservationSchema } from "@na
 import type { NautiloState } from "../../src/agent/state";
 import { shouldContinueAfterTools } from "../../src/agent/graph";
 import { nativeDecisionPlanSchema, nativeDecisionHostArguments } from "../../src/graph/native-decision-plan";
-import { nativeDecisionCandidates, nativeDecisionDispatchError, nativeDecisionEvidence, nativeDecisionResult, projectNativeDecisionScreen, settleNativeDecision, type NativeDecisionState } from "../../src/graph/native-decision";
+import { nativeDecisionCandidates, nativeDecisionDispatchError, nativeDecisionEvidence, nativeDecisionResult, projectNativeDecisionScreen, projectNativeDecisionMenu, settleNativeDecision, type NativeDecisionState } from "../../src/graph/native-decision";
 import { createNativeDecisionNode } from "../../src/nodes/native-decision";
 import { resolveNativeDecisionModel } from "../../src/config/native-decision-model";
 import { createComputerHostContractTool } from "../../src/tools/computer/computer-host-contract";
@@ -15,7 +15,7 @@ import { computerResultDurableSidecar, projectSemanticComputerResult } from "../
 import { resolveComputerUseHostToolRequest } from "../../src/config/computer-use-catalogue/host-tool-admission";
 import { configureRuntimeModelCatalog, resetRuntimeModelCatalog, getActiveModelCatalogSync, hydrateRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { chooseBrowserAction } from "../../src/graph/browser-choice";
-import type { ChoiceInput, ChoiceResult } from "../../src/providers/choice";
+import { ChoiceRequestError, type ChoiceInput, type ChoiceResult } from "../../src/providers/choice";
 import { withComputerUseContractSelection } from "../../src/config/computer-use-catalogue/selection";
 import { bundledComputerUseContractCatalogue } from "../../src/config/computer-use-catalogue/catalog";
 
@@ -60,6 +60,58 @@ function controlAnswer(input: ChoiceInput, selectedId: string) {
   return { selectedId, requestedModelId: input.modelId, usage: { inputTokens: 1, outputTokens: 1,
     cacheReadTokens: null, cacheWriteTokens: null, actualCostUsd: null } };
 }
+
+test("native menu commands are bound from complete ancestry without removing generic controls or replay fences", () => {
+  const d = decision({ plan: nativeDecisionPlanSchema.parse({ goal: "Create a document", actions: [
+    { purpose: "Create", target: "each_control", operation: { kind: "click" } },
+  ] }) });
+  const controls = [
+    { id: "bar", role: "menu_bar", label: "" },
+    { id: "file", parent: "bar", role: "menu_bar_item", label: "File" },
+    { id: "submenu", parent: "file", role: "menu", label: "" },
+    { id: "command", parent: "submenu", role: "menu_item", label: "New Document" },
+  ].map((row, i) => ({ ...row, target: { ...target, reference: `detgt_${String(i).padEnd(43, "x")}` },
+    state: { completeness: "partial" as const } }));
+  d.observation!.controlCollection = { completeness: "partial", received: controls.length, omitted: 0, controls };
+  const choices = nativeDecisionCandidates(d);
+  const typed = choices.find(row => (row.call?.args["operation"] as { kind?: string })?.kind === "invoke_menu")!;
+  const clicked = choices.find(row => row.controlId === "command" && (row.call?.args["operation"] as { kind?: string })?.kind === "click")!;
+  expect(typed.call?.args).toEqual({ operation: { kind: "invoke_menu", target, menuPath: ["File", "New Document"] } });
+  expect(clicked).toBeDefined();
+  expect(typed.replayKey).toBe(clicked.replayKey);
+  d.unresolved = [{ callId: "uncertain", operation: clicked.call!.args["operation"], receipt: {}, replayKey: clicked.replayKey! }];
+  expect(nativeDecisionCandidates(d).some(row => row.controlId === "command")).toBe(false);
+  d.unresolved = [];
+  controls[1]!.parent = "missing";
+  expect(nativeDecisionCandidates(d).some(row => (row.call?.args["operation"] as { kind?: string })?.kind === "invoke_menu")).toBe(false);
+});
+function boundChoice(input: ChoiceInput, kind: string, control: string) {
+  const templates = (input.state as { actionTemplates: Array<{ id: string; operation: { kind: string } }> }).actionTemplates;
+  return input.choices.find(choice => {
+    if (!choice.description.startsWith("{")) return false;
+    const row = JSON.parse(choice.description) as { action: string; control: string };
+    return row.control === control && templates.some(template => template.id === row.action && template.operation.kind === kind);
+  })!.id;
+}
+
+test("factored menu preserves exact calls and per-group semantic evidence without repeated templates", () => {
+  const segment = decision({ observation: observation(600), plan: nativeDecisionPlanSchema.parse({ goal: "Set control 599",
+    values: { amount: "42" }, actions: [{ purpose: "Set supplied exact value", target: "each_control", operation: { kind: "set_value" } }] }) });
+  const candidates = nativeDecisionCandidates(segment);
+  const input: ChoiceInput = { modelId, signal: new AbortController().signal, instructions: "Choose",
+    state: { observation: nativeDecisionEvidence(segment.observation!), suppliedValues: segment.plan.values },
+    choices: candidates.map(({ id, description }) => ({ id, description })) };
+  const projected = projectNativeDecisionMenu(input, segment, candidates);
+  const data = projected.state as { actionTemplates: unknown[] };
+  expect(data.actionTemplates).toHaveLength(1);
+  expect(boundChoice(projected, "set_value", "c599")).toBe("a1_599");
+  expect(candidates[599]!.call?.args).toMatchObject({ operation: { kind: "set_value", value: "42", target: segment.observation!.controlCollection!.controls[599]!.target } });
+  expect(JSON.stringify(projected)).not.toContain("detgt_");
+  expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThan(Buffer.byteLength(JSON.stringify(input)));
+  const final = projectNativeDecisionMenu({ ...input, choices: [input.choices[599]!, ...input.choices.filter(row => row.id === "reobserve")] }, segment, candidates);
+  expect(final.state).toMatchObject({ observation: { collection: { projection: { included: 1, omittedCandidateControls: 599 } } } });
+  expect((final.state as typeof data).actionTemplates).toHaveLength(1);
+});
 let priorKey: string | undefined;
 beforeEach(() => {
   priorKey = process.env["OPENROUTER_API_KEY"];
@@ -79,6 +131,23 @@ test("delegation is optional on the same observation tool and absent without a r
   delete process.env["OPENROUTER_API_KEY"];
   expect(schema(false)).not.toContain('"decisionPlan"');
   expect(resolveComputerUseHostToolRequest("computer_observe", { operation: "window_state", target })).not.toBeNull();
+});
+
+test("workflow schema remains exposed with eligible Choice and unavailable Middle", async () => {
+  const catalog = structuredClone(getActiveModelCatalogSync().catalog);
+  for (const entry of catalog.entries) if (entry.id === "openrouter:deepseek/deepseek-v4.1-flash") entry.defaultEnabled = false;
+  configureRuntimeModelCatalog({ loader: {
+    get: async () => ({ catalog, source: "remote-fresh", stale: false, fetchedAt: "2026-09-25T00:00:00.000Z",
+      originUrl: "https://catalog.invalid/native-test.json", reason: "", catalogVersion: catalog.catalogVersion }),
+    refresh: async () => {}, clearCache: () => {},
+  } });
+  await hydrateRuntimeModelCatalog();
+  expect(resolveNativeDecisionModel({ turnId: "turn-1", fullEncryptionOnly: false })?.id).toBe(modelId);
+  const schema = JSON.stringify(createComputerHostContractTool("computer_observe", { turnId: "turn-1", fullEncryptionOnly: false }).schema);
+  expect(schema).toContain('"decisionPlan"');
+  expect(schema).toContain('"workflow"');
+  expect(createComputerHostContractTool("computer_observe", { turnId: "turn-1", fullEncryptionOnly: false }).description)
+    .toContain("interpreter is optional");
 });
 
 test("plan stays server-side while the signed Host argument schema remains authoritative", () => {
@@ -210,7 +279,8 @@ test("600 choices retain all controls, use compact groups plus NONE, then compar
       expect(JSON.stringify(projected.state).length).toBeLessThan(JSON.stringify(input.state).length);
       return answer(request, request.choices.some((choice) => choice.id === wanted.id) ? wanted.id : "none_in_group");
     }
-    expect(projected.state).toEqual(input.state);
+    expect(projected.state).toMatchObject({ observation: { collection: { projection: { kind: "finalists" } } } });
+    expect(JSON.stringify(projected.state).length).toBeLessThan(JSON.stringify(input.state).length);
     return answer(request, wanted.id);
   }, { controlIds: candidates.filter(candidate => candidate.call === null || candidate.id === "reobserve").map(candidate => candidate.id) });
   expect(groups).toBe(3);
@@ -222,7 +292,7 @@ test("production node proposes an exact ordinary action, preserving usage and ad
   const next = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (request) => {
     expect(z.json().safeParse(request.state).success).toBe(true);
     expect(JSON.stringify(request.state)).not.toContain("detgt_");
-    return answer(request, request.choices.find((choice) => choice.description.includes('"set_value"') && choice.description.includes('"c1"'))!.id);
+    return answer(request, boundChoice(request, "set_value", "c1"));
   } })(state(segment), { signal: new AbortController().signal });
   const pending = next.nativeDecision!.pending!;
   expect(pending.name).toBe("computer_do");
@@ -230,6 +300,61 @@ test("production node proposes an exact ordinary action, preserving usage and ad
   expect(nativeDecisionDispatchError({ ...state(segment), ...next }, pending)).toBeNull();
   expect(nativeDecisionDispatchError({ ...state(segment), ...next }, { ...pending, args: { operation: { kind: "launch_app", app: { name: "Another App" } } } })).toBe("native_decision_proposal_changed");
   expect(next.messages?.at(-1)?.additional_kwargs["nautilo_native_decision"]).toMatchObject({ choiceCalls: 1, usage: { inputTokens: 1 } });
+});
+
+test("selector and controller share evidence-first recovery instructions without removing actions or escapes", async () => {
+  for (const controller of [false, true]) {
+    const segment = decision({ ...(controller ? { controller: { modelId: "openrouter:deepseek/deepseek-v4.1-flash", active: true, attemptedGeneration: 1 } } : {}) });
+    const select = async (input: ChoiceInput) => {
+      expect(input.instructions).toContain("Do not route ordinary chat or author content");
+      expect(input.instructions).toContain("before selecting another action");
+      expect(input.instructions).toContain("supersede an earlier refusal");
+      expect(input.instructions).toContain("indistinguishable controls");
+      expect(input.instructions).toContain("An empty document is not a completed composition request");
+      expect(input.instructions).toContain("routine enabling action");
+      expect(input.instructions).toContain("consent/security dialogs");
+      expect(input.choices.map(choice => choice.id)).toEqual(nativeDecisionCandidates(segment).map(choice => choice.id));
+      return answer(input, "needs_input");
+    };
+    const next = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false, choose: select,
+      control: async input => { const result = await select(input); return controlAnswer(input, result.selectedId); },
+    })(state(segment), { signal: new AbortController().signal });
+    expect(next.nativeDecision).toMatchObject({ phase: "handoff", reason: "needs_input", pending: null });
+  }
+});
+
+test("large native evidence fits the final comparison as well as every screening group", async () => {
+  const observed = observation(469);
+  for (const row of observed.controlCollection!.controls) row.state.value = "Synthetic contextual value. ".repeat(20);
+  observed.controlCollection!.controls[0]!.enabled = false;
+  observed.controlCollection!.controls[0]!.label = "Global warning: preserve the existing document";
+  const segment = decision({ observation: observed, plan: nativeDecisionPlanSchema.parse({
+    goal: "Insert the supplied text into Control 468", values: { text: "Original supplied text" },
+    actions: [{ purpose: "Insert", target: "each_control", operation: { kind: "type_text" } }],
+  }) });
+  const candidates = nativeDecisionCandidates(segment);
+  const wanted = candidates.find(candidate => candidate.controlId === "c468")!;
+  const covered = new Set<string>();
+  const fullBytes = JSON.stringify(nativeDecisionEvidence(observed)).length;
+  let finals = 0;
+  const next = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async input => {
+    // Simulate a provider whose context fits either screen, not the full collection.
+    if (JSON.stringify(input.state).length > fullBytes * 0.8) throw new ChoiceRequestError("context_length_exceeded");
+    const rows = (input.state as { observation: { collection: { controls: Array<{ id: string; label: string }> } } }).observation.collection.controls;
+    expect(rows.some(row => row.label.startsWith("Global warning"))).toBe(true);
+    if (input.choices.some(choice => choice.id === "none_in_group")) {
+      for (const choice of input.choices) if (choice.id !== "none_in_group") covered.add(choice.id);
+      return answer(input, input.choices.some(choice => choice.id === wanted.id) ? wanted.id : input.choices[0]!.id);
+    }
+    finals++;
+    expect(rows.some(row => row.id === "c468")).toBe(true);
+    expect(input.choices.some(choice => choice.id === "request_replan")).toBe(true);
+    return answer(input, wanted.id);
+  } })(state(segment), { signal: new AbortController().signal });
+  expect(covered.size).toBe(468);
+  expect(finals).toBe(1);
+  expect(next.nativeDecision?.pending?.args).toEqual(wanted.call!.args);
+  expect(next.nativeDecision?.observation).toEqual(observed);
 });
 
 test("classifier handoff checkpoints the same plan and effects; controller rebuild returns mechanically", async () => {
@@ -261,24 +386,72 @@ test("classifier handoff checkpoints the same plan and effects; controller rebui
   expect(shouldContinueAfterTools(state(fresh))).toBe("native_decision");
 });
 
-test("controller-only native selection works without a classifier and preserves exact bound text", async () => {
+test("exhausted classifier context gives the eligible controller the same bindings once", async () => {
+  const value = "Keep this exact 🐙 input\nincluding newlines.";
+  const segment = decision({ plan: nativeDecisionPlanSchema.parse({ goal: "Insert the supplied value", values: { text: value } }),
+    history: [{ action: "earlier input", settlement: "completed", evidence: { confirmed: true } }],
+    unresolved: [{ callId: "earlier", operation: { kind: "key" }, receipt: { settlement: "unknown_completion" }, replayKey: "unrelated_effect" }],
+  });
+  const node = createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    choose: async () => { throw new ChoiceRequestError("context_length_exceeded"); },
+    control: async input => controlAnswer(input, boundChoice(input, "type_text", "c0")),
+  });
+  const config = { signal: new AbortController().signal };
+  const routed = await node(state(segment), config);
+  expect(routed.nativeDecision?.phase).toBe("decide");
+  expect(routed.nativeDecision?.controller?.active).toBe(true);
+  expect(routed.nativeDecision?.plan).toBe(segment.plan);
+  expect(routed.nativeDecision?.history).toBe(segment.history);
+  expect(routed.nativeDecision?.unresolved).toBe(segment.unresolved);
+  expect(routed.messages?.at(-1)?.additional_kwargs["nautilo_native_decision"]).toMatchObject({
+    operation: "controller_transition", reason: "choice_context_length_exceeded",
+  });
+  const next = await node({ ...state(segment), ...routed }, config);
+  expect(next.nativeDecision?.pending?.args["operation"]).toMatchObject({ kind: "type_text", text: value });
+  // A failed controller or a selector return cannot loop on unchanged evidence.
+  const retried = await node(state({ ...routed.nativeDecision!, controller: { ...routed.nativeDecision!.controller!, active: false } }), config);
+  expect(retried.nativeDecision?.phase).toBe("handoff");
+  expect(retried.nativeDecision?.reason).toBe("choice_context_length_exceeded");
+});
+
+test("classifier errors do not bypass cancellation, egress, intervention or model eligibility", async () => {
+  for (const mode of ["cancel", "egress", "intervention", "model_removed", "invalid_response"] as const) {
+    const controller = new AbortController();
+    let controllerCalls = 0;
+    const current = state(decision(mode === "model_removed" ? {
+      controller: { modelId: "openrouter:removed/controller", attemptedGeneration: 0, active: false },
+    } : {}));
+    if (mode === "intervention") current.approvalDenied = true;
+    const next = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => mode === "egress",
+      choose: async () => {
+        if (mode === "cancel") controller.abort();
+        throw new ChoiceRequestError(mode === "invalid_response" ? "invalid_response" : "context_length_exceeded");
+      },
+      control: async input => { controllerCalls++; return controlAnswer(input, "completion_ready"); },
+    })(current, { signal: controller.signal });
+    expect(next.nativeDecision?.phase).toBe("handoff");
+    expect(next.nativeDecision?.pending).toBeNull();
+    expect(next.nativeDecision?.controller?.active ?? false).toBe(false);
+    expect(controllerCalls).toBe(0);
+  }
+});
+
+test("a controller-only checkpoint cannot bypass the required Choice model", async () => {
   const value = "Original 🐙\nDo not rewrite me.";
-  const segment = decision({ modelId: "openrouter:qwen/qwen3.8-flash", plan: nativeDecisionPlanSchema.parse({
+  const segment = decision({ modelId: "openrouter:deepseek/deepseek-v4.1-flash", plan: nativeDecisionPlanSchema.parse({
     goal: "Insert the supplied content", values: { content: value }, actions: [{ purpose: "Insert", target: "each_control", operation: { kind: "type_text" } }],
   }) });
   const node = createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
     choose: async () => { throw new Error("must not call classifier"); },
-    control: async input => controlAnswer(input, input.choices.find(choice => choice.description.includes('"c0"'))!.id),
+    control: async () => { throw new Error("must not call controller without Choice eligibility"); },
   });
   const next = await node(state(segment), { signal: new AbortController().signal });
-  const call = next.nativeDecision!.pending!;
-  expect(call.args).toEqual({ operation: { kind: "type_text", text: value, target: segment.observation!.controlCollection!.controls[0]!.target } });
-  expect(nativeDecisionDispatchError({ ...state(segment), ...next }, call)).toBeNull();
-  expect(next.messages?.at(-1)?.additional_kwargs["nautilo_native_decision"]).toMatchObject({ role: "controller", choiceCalls: 1 });
+  expect(next.nativeDecision?.pending).toBeNull();
+  expect(next.nativeDecision?.reason).toBe("decision_model_unavailable");
 });
 
 test("controller handback cannot ping-pong on the same observation", async () => {
-  const segment = decision({ controller: { modelId: "openrouter:qwen/qwen3.8-flash", active: true, attemptedGeneration: 1 } });
+  const segment = decision({ controller: { modelId: "openrouter:deepseek/deepseek-v4.1-flash", active: true, attemptedGeneration: 1 } });
   const node = createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
     choose: async input => answer(input, "defer_to_genie"),
     control: async input => controlAnswer(input, "return_to_selector"),
@@ -292,7 +465,7 @@ test("controller handback cannot ping-pong on the same observation", async () =>
 });
 
 test("controller replan preserves unknown effects and never proposes replay", async () => {
-  const segment = decision({ controller: { modelId: "openrouter:qwen/qwen3.8-flash", active: true, attemptedGeneration: 1 } });
+  const segment = decision({ controller: { modelId: "openrouter:deepseek/deepseek-v4.1-flash", active: true, attemptedGeneration: 1 } });
   const candidate = nativeDecisionCandidates(segment).find(candidate => candidate.description.includes('"type_text"'))!;
   segment.unresolved = [{ callId: "uncertain", operation: candidate.call!.args["operation"], receipt: { settlement: "unknown_completion" }, replayKey: candidate.replayKey! }];
   const next = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false, control: async input => {
@@ -304,8 +477,8 @@ test("controller replan preserves unknown effects and never proposes replay", as
   expect(next.nativeDecision?.pending).toBeNull();
 });
 
-test("controller cancellation and retained-model removal never switch model or propose actions", async () => {
-  const segment = decision({ controller: { modelId: "openrouter:qwen/qwen3.8-flash", active: true, attemptedGeneration: 1 } });
+test("controller cancellation is fenced and retained-Middle removal continues through Choice without actions", async () => {
+  const segment = decision({ controller: { modelId: "openrouter:deepseek/deepseek-v4.1-flash", active: true, attemptedGeneration: 1 } });
   const abort = new AbortController();
   const node = createNativeDecisionNode({ fullEncryptionOnlyForState: () => false, control: async input => {
     abort.abort(); return controlAnswer(input, input.choices[0]!.id);
@@ -313,11 +486,20 @@ test("controller cancellation and retained-model removal never switch model or p
   const cancelled = await node(state(segment), { signal: abort.signal });
   expect(cancelled.nativeDecision?.reason).toBe("run_cancelled");
   expect(cancelled.nativeDecision?.pending).toBeNull();
-  const unavailable = await node(state({ ...segment, controller: { ...segment.controller!, modelId: "openrouter:removed/controller" } }), { signal: new AbortController().signal });
-  expect(unavailable.nativeDecision?.reason).toBe("controller_model_unavailable");
+  let choiceCalls = 0;
+  const withoutMiddle = createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    control: async () => { throw new Error("removed Middle must not run"); },
+    choose: async input => { choiceCalls++; return answer(input, "defer_to_genie"); },
+  });
+  const unavailable = await withoutMiddle(state({ ...segment, controller: { ...segment.controller!, modelId: "openrouter:removed/controller" } }),
+    { signal: new AbortController().signal });
+  expect(choiceCalls).toBe(1);
+  expect(unavailable.nativeDecision?.reason).toBe("defer_to_genie");
+  expect(unavailable.nativeDecision?.pending).toBeNull();
+  expect(unavailable.nativeDecision?.controller?.active).toBe(false);
 });
 
-test("native delegation is exposed with chat credentials but no Choice route", async () => {
+test("ordinary Computer Use stays available but acceleration is absent without a Choice route", async () => {
   const catalog = structuredClone(getActiveModelCatalogSync().catalog);
   for (const entry of catalog.entries) if ("workload" in entry && entry.workload === "decision") entry.defaultEnabled = false;
   configureRuntimeModelCatalog({ loader: {
@@ -327,8 +509,10 @@ test("native delegation is exposed with chat credentials but no Choice route", a
   } });
   await hydrateRuntimeModelCatalog();
   const model = resolveNativeDecisionModel({ turnId: "turn-1", fullEncryptionOnly: false });
-  expect(model?.id).toBe("openrouter:qwen/qwen3.8-flash");
-  expect(JSON.stringify(createComputerHostContractTool("computer_observe", { turnId: "turn-1", fullEncryptionOnly: false }).schema)).toContain('"decisionPlan"');
+  expect(model).toBeNull();
+  const tool = createComputerHostContractTool("computer_observe", { turnId: "turn-1", fullEncryptionOnly: false });
+  expect(JSON.stringify(tool.schema)).not.toContain('"decisionPlan"');
+  expect(JSON.stringify(tool.schema)).toContain('"window_state"');
   expect(resolveNativeDecisionModel({ turnId: "turn-1", fullEncryptionOnly: true })).toBeNull();
 });
 
@@ -429,7 +613,10 @@ test("fresh settlement compacts reindexed history while preserving receipts, tar
   const projected = projectNativeDecisionScreen(input, fresh, candidates);
   expect(projected.state).toMatchObject({ recentActions: fresh.history, unresolved: retainedUnresolved });
   const final = { ...input, choices: [chosen] };
-  expect(projectNativeDecisionScreen(final, fresh, candidates)).toBe(final);
+  expect(projectNativeDecisionScreen(final, fresh, candidates).state).toMatchObject({
+    recentActions: fresh.history, unresolved: retainedUnresolved,
+    observation: { collection: { projection: { kind: "finalists" } } },
+  });
 });
 
 test("revoked model, encrypted egress, cancellation and visual handback never propose input", async () => {
@@ -461,7 +648,7 @@ test("verified action is followed by a free fresh read and completion returns to
   let choices = 0;
   const node = createNativeDecisionNode({ fullEncryptionOnlyForState: () => false, choose: async (input) => {
     choices++;
-    return answer(input, choices === 1 ? input.choices.find((choice) => choice.description.includes('"set_value"') && choice.description.includes('"c1"'))!.id : "completion_ready");
+    return answer(input, choices === 1 ? boundChoice(input, "set_value", "c1") : "completion_ready");
   } });
   const config = { signal: new AbortController().signal };
   let current = { ...state(segment), ...await node(state(segment), config) };
@@ -510,6 +697,35 @@ test("known non-delivery recovers, while human interference hands back", async (
   }
 });
 
+test("workflow redelegation retains same-surface recovery instead of restarting its budget", () => {
+  const plan = nativeDecisionPlanSchema.parse({ execution: "workflow", goal: "Create a document" });
+  let segment = decision({ plan, execution: { request: plan.goal, tools: ["computer_observe", "computer_do"],
+    observation: null, observationCallId: null, freshRead: false, mustObserve: false, question: null } });
+  const call = { id: "delegate", name: "computer_observe", args: { operation: "window_state", target, decisionPlan: plan } };
+  for (let index = 0; index <= segment.recovery.limit; index++) {
+    const nextCall = { ...call, id: `delegate-${index}` };
+    const current = state(segment, [new AIMessage({ content: "", tool_calls: [nextCall] })]);
+    current.toolNames = ["computer_observe", "computer_do"];
+    segment = settleNativeDecision(current, [nextCall], [result(nextCall, observation(2, index + 1))], [], modelId)!;
+    expect(segment.recovery.events).toBe(index);
+  }
+  expect(segment.reason).toBe("native_decision_no_progress");
+});
+
+test("ordinary Genie recovery retains a reported input takeover after the fast workflow hands off", () => {
+  const segment = decision({ phase: "handoff", reason: "native_decision_no_progress",
+    execution: { request: "Edit a draft", tools: ["computer_observe", "computer_do"], observation: null,
+      observationCallId: null, freshRead: false, mustObserve: false, question: null } });
+  const call = { id: "ordinary-observe", name: "computer_observe", args: { operation: "window_state", target } };
+  const observed = observation();
+  const receipt = result(call, { ...observed, outcome: { ...readOutcome, externalInterference: "user_input" } });
+  expect(nativeDecisionResult(receipt)).not.toBeNull();
+  const settled = settleNativeDecision(state(segment), [call], [receipt], [], modelId)!;
+  expect(settled.humanTakeover).toBe(true);
+  expect(settled.reason).toBe("human_takeover");
+  expect(nativeDecisionDispatchError(state(settled), { ...call, id: "fresh-retry" })).toBe("native_human_takeover_wait_for_user");
+});
+
 test("screening keeps ancestors and final-state evidence, including duplicate labels", () => {
   const observed = observation(3);
   observed.controlCollection!.controls[1]!.parent = "c0";
@@ -525,6 +741,54 @@ test("screening keeps ancestors and final-state evidence, including duplicate la
   expect(rows.map((row) => row.id)).toEqual(["c0", "c2"]);
   expect(candidates.filter((candidate) => candidate.controlId === "c1")).toHaveLength(3);
   expect(candidates.filter((candidate) => candidate.controlId === "c2")).toHaveLength(3);
+});
+
+test("final comparison retains context-only rows, ancestry and escape routes without changing canonical evidence", () => {
+  const observed = observation(5);
+  const rows = observed.controlCollection!.controls;
+  rows[0]!.enabled = false;
+  rows[0]!.label = "Unsaved changes";
+  rows[2]!.parent = "c1";
+  rows[3]!.target = undefined;
+  rows[3]!.label = "Document state";
+  const segment = decision({ observation: observed });
+  const candidates = nativeDecisionCandidates(segment);
+  const chosen = candidates.find(candidate => candidate.controlId === "c2")!;
+  const input: ChoiceInput = { modelId, signal: new AbortController().signal, instructions: "goal",
+    state: { observation: nativeDecisionEvidence(observed), unresolved: segment.unresolved },
+    choices: [chosen, ...candidates.filter(candidate => candidate.controlId === undefined)],
+  };
+  const before = JSON.stringify(observed);
+  const projected = projectNativeDecisionScreen(input, segment, candidates);
+  expect(projected.choices).toBe(input.choices);
+  expect(projected.state).toMatchObject({ unresolved: segment.unresolved, observation: { collection: {
+    controls: [{ id: "c0" }, { id: "c1" }, { id: "c2" }, { id: "c3" }],
+    projection: { kind: "finalists", total: 5, included: 4, omittedCandidateControls: 1 },
+  } } });
+  expect(JSON.stringify(projected.state)).not.toContain("detgt_");
+  expect(JSON.stringify(observed)).toBe(before);
+});
+
+test("window-wide operations, control-only decisions and broken ancestry retain complete evidence", () => {
+  const observed = observation(3);
+  const segment = decision({ observation: observed, plan: nativeDecisionPlanSchema.parse({
+    goal: "Inspect and focus", actions: [
+      { purpose: "Focus window", target: "window", operation: { kind: "focus" } },
+      { purpose: "Activate control", target: "each_control", operation: { kind: "click" } },
+    ],
+  }) });
+  const candidates = nativeDecisionCandidates(segment);
+  const window = candidates.find(candidate => candidate.call?.name === "computer_do" && !candidate.controlId)!;
+  expect(window).toBeDefined();
+  const input: ChoiceInput = { modelId, signal: new AbortController().signal, instructions: "goal",
+    state: { observation: nativeDecisionEvidence(observed) }, choices: [window],
+  };
+  expect(projectNativeDecisionScreen(input, segment, candidates)).toBe(input);
+  const controlOnly = { ...input, choices: candidates.filter(candidate => candidate.call === null) };
+  expect(projectNativeDecisionScreen(controlOnly, segment, candidates)).toBe(controlOnly);
+  observed.controlCollection!.controls[2]!.parent = "missing";
+  const missingParent = { ...input, choices: [candidates.find(candidate => candidate.controlId === "c2")!] };
+  expect(projectNativeDecisionScreen(missingParent, segment, candidates)).toBe(missingParent);
 });
 
 test("unchanged observations trigger the existing caller-policy intervention threshold", async () => {

@@ -5,6 +5,7 @@ import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
 import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
 import { parseNativeDecisionPlan } from "../graph/native-decision-plan";
 import { currentNativeDecision, nativeDecisionDispatchError } from "../graph/native-decision";
+import { resolveNativeControllerModel, resolveNativeDecisionModel } from "../config/native-decision-model";
 import { computerUseContractSupportedForState } from "../config/computer-use-catalogue/live-selection";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
@@ -3416,15 +3417,17 @@ async function executeViaRelayRaw(
   const nativeDispatchError = nativeDecisionDispatchError(state, tc);
   if (nativeDispatchError || (nativeDecision && nativeDecision.pending && nativeDecision.pending.id === tc.id
     && (!opts.signal || opts.signal.aborted
-      || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly }, nativeDecision.modelId)))) {
+      || !resolveNativeDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly }, nativeDecision.modelId)
+      || (!nativeDecision.execution && nativeDecision.controller?.active && !resolveNativeControllerModel(nativeDecision.controller.modelId))))) {
     return { ok: false, errorMessage: nativeDispatchError ?? "Native decision authority or model availability changed. No request was sent." };
   }
   if (tc.name === "computer_observe" && Object.hasOwn(tc.args, "decisionPlan")) {
     const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
-    if (!parseNativeDecisionPlan(tc.name, tc.args) || source?.tool_calls?.length !== 1
+    const plan = parseNativeDecisionPlan(tc.name, tc.args);
+    if (!plan || source?.tool_calls?.length !== 1
       || source.tool_calls[0]?.id !== tc.id
-      || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly })) {
-      return { ok: false, errorMessage: "Native delegation requires one standalone window_state call without selector, a valid decisionPlan and an available decision model. Omit decisionPlan for ordinary Computer Use. No request was sent." };
+      || !resolveNativeDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly })) {
+      return { ok: false, errorMessage: "Native delegation requires one standalone fresh observation, a valid decisionPlan and its eligible execution model. Window-only selection requires window_state without selector. Omit decisionPlan for ordinary Computer Use. No request was sent." };
     }
   }
   if (isComputerUseToolName(tc.name) && !isSemanticComputerUse) {

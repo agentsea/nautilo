@@ -375,7 +375,7 @@ export {
   type AgentToolCallTracker,
 } from "./runtime-hooks";
 export { projectSemanticComputerResult } from "./tools/computer/model-result-projector";
-export { nativeRoomObservation, NATIVE_HISTORY_WARNING, type NativeRoomHistoryPort, type NativeRoomHistoryPortForState } from "./tools/computer/native-history";
+export { nativeRoomObservation, nativeHistoryProvesNonDelivery, NATIVE_HISTORY_WARNING, type NativeRoomHistoryPort, type NativeRoomHistoryPortForState } from "./tools/computer/native-history";
 export { readTranscriptToolPresentation } from "./store/transcript-tool-result";
 export type { DeepResearchReturnContext } from "./runtime/deep-research-return-context";
 export {

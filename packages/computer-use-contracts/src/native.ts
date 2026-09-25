@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CUA_MACOS_KEY_PATTERN, CUA_MACOS_KEY_MODIFIERS, normalizeCuaMacosHotkey } from "./native-keyboard.js";
-export { CUA_MACOS_KEY_PATTERN, CUA_MACOS_KEY_MODIFIERS, normalizeCuaMacosKey, normalizeCuaMacosHotkey } from "./native-keyboard.js";
+export { CUA_MACOS_KEY_NAMES, CUA_MACOS_KEY_PATTERN, CUA_MACOS_KEY_MODIFIERS, normalizeCuaMacosKey, normalizeCuaMacosHotkey } from "./native-keyboard.js";
 import { computeComputerUseSchemaDigest } from "./schema-digest.js";
 import {
   computerAppTargetReferenceSchema as sharedComputerAppTargetReferenceSchema,

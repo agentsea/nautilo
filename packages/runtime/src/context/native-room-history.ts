@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { HumanMessage } from "@langchain/core/messages";
-import { nativeRoomObservation, NATIVE_HISTORY_WARNING, ROOM_CONTEXT_MESSAGE_HEADER, type NativeRoomHistoryPort, type NativeRoomHistoryPortForState } from "@nautilo/agent";
+import { nativeRoomObservation, nativeHistoryProvesNonDelivery, NATIVE_HISTORY_WARNING, ROOM_CONTEXT_MESSAGE_HEADER, type NativeRoomHistoryPort, type NativeRoomHistoryPortForState } from "@nautilo/agent";
 import type { RoomHistoryHit } from "../conductor/history-search";
 import { formatTranscriptLine } from "../conductor/transcript-format";
 
@@ -41,7 +41,8 @@ export function createNativeRoomHistoryPort(
     if (hit.role !== "tool" || hit.toolEvidence?.name !== "computer_do") return;
     try {
       const receipt = JSON.parse(hit.snippet) as { settlement?: unknown };
-      if (hit.toolEvidence.status !== "success" || receipt.settlement !== "completed") uncertainTurns.add(turns[index]!);
+      if (hit.toolEvidence.status !== "success"
+        || (receipt.settlement !== "completed" && !nativeHistoryProvesNonDelivery(receipt))) uncertainTurns.add(turns[index]!);
     } catch { uncertainTurns.add(turns[index]!); }
   });
   hits.forEach((hit, index) => {

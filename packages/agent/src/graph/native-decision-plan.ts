@@ -2,7 +2,8 @@ import { z } from "zod";
 
 /** Server-owned intent. This metadata never crosses the Computer Use Host protocol. */
 export const nativeDecisionPlanSchema = z.object({
-  goal: z.string().trim().min(1),
+  execution: z.literal("workflow").optional().describe("Delegate the whole native workflow to the eligible Choice-led loop, including app/window discovery and routine recovery. The fast interpreter is optional and used only when needed. Omit for control selection within one observed window."),
+  goal: z.string().trim().min(1).describe("Complete remaining UI goal, preserving known app/document names and other semantic referents from the request or verified context. Match those hints against fresh observations; historical targets are not authority."),
   constraints: z.array(z.string()).default([]),
   values: z.record(z.string(), z.string()).default({}).describe("Exact supplied values keyed by purpose. Bind missing text/value only in the requested type_text/set_value templates; never widen an explicit actions list or guess from UI content."),
   actions: z.array(z.object({
@@ -20,8 +21,9 @@ export type NativeDecisionPlan = z.infer<typeof nativeDecisionPlanSchema>;
 export function parseNativeDecisionPlan(name: string, args: Record<string, unknown>) {
   if (name !== "computer_observe" || args["decisionPlan"] === undefined) return null;
   // Delegation consumes a control collection, never a selected control or pixels.
-  if (args["operation"] !== "window_state" || args["selector"] !== undefined) return null;
   const parsed = nativeDecisionPlanSchema.safeParse(args["decisionPlan"]);
+  if (parsed.success && parsed.data.execution === "workflow") return parsed.data;
+  if (args["operation"] !== "window_state" || args["selector"] !== undefined) return null;
   return parsed.success ? parsed.data : null;
 }
 

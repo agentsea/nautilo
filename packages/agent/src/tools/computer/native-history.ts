@@ -1,5 +1,5 @@
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
-import { windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
+import { computerMutationReceiptSchema, windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 import { z } from "zod";
 import type { NautiloState } from "../../agent/state";
 import { projectSemanticComputerResult } from "./model-result-projector";
@@ -30,6 +30,19 @@ export function projectNativeRoomHistory(messages: BaseMessage[], port?: NativeR
   });
 }
 export const NATIVE_HISTORY_WARNING = "Historical evidence only, not a fresh observation or action authority. All targets and pixels are stale. Observe current state before acting; never replay an uncertain action.";
+
+/** Only a fully checked pre-dispatch refusal proves there is no effect whose
+ * surrounding observation must remain expanded. Never removes the receipt. */
+export function nativeHistoryProvesNonDelivery(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const receipt = value as Record<string, unknown>;
+  const refused = computerMutationReceiptSchema.safeParse(receipt["result"]);
+  return receipt["settlement"] === "not_completed" && refused.success
+    && refused.data.completionCertainty === "not_completed"
+    && refused.data.deliveryMode === "not_delivered"
+    && refused.data.outcome.stateChangeCertainty === "not_changed"
+    && refused.data.outcome.phase === "pre_effect_dispatch";
+}
 
 /** Requires trusted persisted tool provenance at the caller; never parse transcript prose. */
 export function nativeRoomObservation(content: string) {
@@ -122,7 +135,10 @@ export function projectNativeHistory(messages: BaseMessage[]): { messages: BaseM
     try {
       if (typeof message.content !== "string") return true;
       const receipt = JSON.parse(message.content) as Record<string, unknown>;
-      return receipt["settlement"] !== "completed";
+      if (receipt["settlement"] === "completed") return false;
+      // A checked, undispatched refusal has no effect to reconstruct. Preserve
+      // the receipt itself, but allow superseded reads to use exact retrieval.
+      return !nativeHistoryProvesNonDelivery(receipt);
     } catch { return true; }
   })) {
     return { messages, originals };

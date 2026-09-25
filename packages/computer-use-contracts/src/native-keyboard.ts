@@ -1,5 +1,5 @@
 /** Cua macOS keyboard.rs key_name_to_code at e88e9d899ac5effaeae38619527ebaa46b26ce72. */
-const keyNames = [
+export const CUA_MACOS_KEY_NAMES = [
   "return", "enter", "tab", "space", "delete", "backspace", "escape", "esc",
   "command", "cmd", "shift", "capslock", "option", "alt", "control", "ctrl", "fn",
   "home", "pageup", "del", "forward_delete", "end", "pagedown",
@@ -13,7 +13,7 @@ const keyNames = [
 
 // JSON Schema carries a pattern but no RegExp flags. Encode ASCII case folding
 // in the pattern itself so catalogue admission agrees with the Host's schema.
-export const CUA_MACOS_KEY_PATTERN = new RegExp(`^(?:${keyNames.map((key) => key
+export const CUA_MACOS_KEY_PATTERN = new RegExp(`^(?:${CUA_MACOS_KEY_NAMES.map((key) => key
   .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   .replace(/[a-z]/g, (letter) => `[${letter}${letter.toUpperCase()}]`)).join("|")})$`);
 export const CUA_MACOS_KEY_MODIFIERS = ["cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"] as const;

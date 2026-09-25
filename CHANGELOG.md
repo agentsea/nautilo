@@ -7,6 +7,30 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Explicitly delegated native Computer Use workflows can use an eligible
+  Jev-style Choice model for grounded operations, input binding and completion
+  review. The optional DeepSeek V4.1 Flash interpreter handles visual evidence,
+  moderate complexity and recovery; deeper planning and composition return to
+  Genie. Ordinary chat never enters this loop, and ordinary Computer Use
+  remains available without a Choice model.
+- Models select issued choices; code forwards exact captured content and
+  targets through existing authority. Shared templates, grouped full-coverage
+  selection and typed related-input decisions reduce repeated context without
+  dropping late candidates or supported options. Per-attempt telemetry records
+  routing, request/image bytes, elapsed time and available provider usage.
+- Native workflows retain request context, receipts and recovery across
+  observation changes and redelegation. Fresh readback can run without another
+  model decision. Scoped append evidence can nominate whole-goal review across
+  rotated control references, without claiming persistent element identity.
+  Intermediate matches are not automatically completion; uncertain effects
+  remain protected from replay.
+- Computer Use retains untitled windows on other Spaces, offers checked recovery,
+  and can bind native menu paths from observed ancestry. Reported Human input
+  pauses dispatch until resumption; the managed Host connects its input monitor
+  and accounts for its own background keyboard delivery. Private decision IDs
+  no longer enter chat or speech. Checked non-delivery permits model-only
+  history compaction while preserving canonical receipts and retrievable evidence.
+
 - Native Computer Use can retrieve retained historical window evidence without
   contacting the desktop. Eligible older active-turn observations use a compact
   model view while preserving current before/after evidence, canonical results,

@@ -1726,7 +1726,10 @@ export function processStreamEvent(
     // chunk-sequence counter stays clean and no stale chunks can leak
     // through a later flush. Synchronous tool emits (future `reply`
     // tool) bypass this path entirely.
-    if (skipSuppressed || ctx?.quietSupervision) {
+    // Nested selectors return private protocol IDs, not assistant prose. Keep
+    // their progress/usage events, but never feed chat or speech buffers.
+    const metadata = eventObj["metadata"] as Record<string, unknown> | undefined;
+    if (skipSuppressed || ctx?.quietSupervision || metadata?.["nautilo_output_visibility"] === "internal_decision") {
       return { events: [], messagesToPersist: [] };
     }
     handleTokenStream(data, tokenBatcher, sentenceDetector, eventObj["metadata"]);

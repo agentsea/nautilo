@@ -20,6 +20,7 @@ import { currentNativeDecision } from "../graph/native-decision";
 import { computerUseContractsForState } from "../config/computer-use-catalogue/live-selection";
 import { withComputerUseContractSelection } from "../config/computer-use-catalogue/selection";
 import { createNativeDecisionNode } from "../nodes/native-decision";
+import type { NativeExecutionDeps } from "../nodes/native-execution";
 import { agentNode } from "../nodes/agent";
 import {
   createPostModelNode,
@@ -145,7 +146,7 @@ export function shouldContinueAfterTools(
     || state.ordinaryContentAccessRejectedToolCallIds?.length) return "pre_model";
   const decision = currentBrowserDecision(state);
   const native = currentNativeDecision(state);
-  if (native?.phase === "decide" || native?.phase === "observe") return "native_decision";
+  if (native?.phase === "decide" || native?.phase === "observe" || native?.phase === "interpret") return "native_decision";
   return decision?.phase === "decide" || decision?.phase === "observe" ? "browser_decision" : "pre_model";
 }
 
@@ -162,7 +163,7 @@ interface CompiledGraph {
   ): Promise<unknown>;
 }
 
-export interface NautiloGraphDeps extends PostModelDeps {
+export interface NautiloGraphDeps extends PostModelDeps, NativeExecutionDeps {
   readonly researchNoteDraft?: ResearchNoteDraft;
   readonly liveShadowToolBoundaryForState?:
     LiveShadowToolBoundaryForState;
@@ -286,8 +287,8 @@ export function createNautiloGraph(
     .addConditionalEdges("tools", shouldContinueAfterTools)
     .addConditionalEdges("native_decision", (state) => {
       const phase = currentNativeDecision(state)?.phase;
-      return phase === "waiting" ? "model_output_preflight"
-        : phase === "observe" || phase === "decide" ? "native_decision" : "pre_model";
+      return phase === "waiting" || phase === "complete" ? "model_output_preflight"
+        : phase === "observe" || phase === "decide" || phase === "interpret" ? "native_decision" : "pre_model";
     })
     .addConditionalEdges("browser_decision", (state) => {
       const phase = currentBrowserDecision(state)?.phase;

@@ -3159,6 +3159,71 @@ describe("Cua semantic adapter foundation", () => {
     expect(keyedPort.calls.at(-1)).toEqual({ name: "press_key", args: { pid: 42, window_id: 90, key: "return", modifiers: ["option", "cmd"], scope: "window", delivery_mode: "background" } });
   });
 
+  test("does not attribute background keyboard synthesis to the Human, and requires a checked read before another action", async () => {
+    for (const scenario of ["text-confirmed", "text-unverified", "key-confirmed", "key-unverified", "hotkey", "text-partial"] as const) {
+      const isText = scenario.startsWith("text-");
+      const name = isText ? "type_text" : scenario === "hotkey" ? "hotkey" : "press_key";
+      const confirmed = scenario.endsWith("confirmed");
+      const partial = scenario === "text-partial";
+      const action = partial
+        ? result({ code: "type_text_incomplete", path: "key_events", effect: "partial", requested_chars: 3, delivered_chars: 2, retryable: true, retry_from_character: 2 }, true)
+        : result({
+          effect: confirmed ? "confirmed" : "unverifiable", route: "synthetic_events",
+          delivery: { mode: "background", ...(isText ? { delivered_count: 3 } : {}) },
+          ...(confirmed ? { evidence: [{ kind: "value_readback" }] } : {}),
+          ...(isText && !confirmed ? { escalation: { target: "foreground", reason: "delivery_failed" } } : {}),
+        });
+      const checked = port([apps(), windows(), apps(), windows(), action, exactWindowState(42, 90), exactWindowState(42, 90)]);
+      let humanDuringRead = false;
+      const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+        readHidIdleNanoseconds: async () => humanDuringRead && checked.dispatched.filter((call) => call.name === "get_window_state").length > 1
+          ? 0 : checked.dispatched.some((call) => call.name === name) ? 1_000_000_000 : 2_000_000_000 });
+      const observed = await subject.observe({ scope, operation: "desktop_state" });
+      if (!observed.ok) throw new Error("expected desktop");
+      const target = observed.observation.targets[0]!.target;
+      const act = () => isText ? subject.typeText({ scope, operation: { kind: "type_text", target, text: "a😀b" } })
+        : scenario === "hotkey" ? subject.hotkey({ scope, operation: { kind: "hotkey", target, keys: ["cmd", "end"] } })
+        : subject.pressKey({ scope, operation: { kind: "press_key", target, key: "return", modifiers: [] } });
+      const performed = await act();
+      expect(performed.receipt).toMatchObject({ completionCertainty: partial ? "partially_completed" : confirmed ? "completed" : "unknown_completion" });
+      expect(performed.outcome).not.toHaveProperty("externalInterference");
+      if (!partial) expect(performed.receipt).toMatchObject({ providerAction: { route: "synthetic_events" } });
+      expect(computerMutationReceiptSchema.safeParse(performed.receipt).success).toBe(true);
+      expect(subject.registry.resolveTarget(target.context, scope, target.reference).ok).toBe(false);
+      await act();
+      expect(checked.dispatched.filter((call) => call.name === name)).toHaveLength(1);
+      const read = await subject.observeWindowState({ scope, target });
+      expect(read.ok).toBe(true);
+      expect(checked.dispatched.filter((call) => call.name === name)).toHaveLength(1);
+      // Rebaselining after our own settled input must not suppress actual
+      // activity during the next read or mint targets from that changed state.
+      humanDuringRead = true;
+      const interrupted = await subject.observeWindowState({ scope, target });
+      expect(interrupted).toMatchObject({ ok: false, outcome: { externalInterference: "user_input" } });
+      expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+      await subject.close();
+    }
+  });
+
+  test("retains pre-dispatch keyboard takeover checks and post-dispatch AX attribution", async () => {
+    for (const scenario of ["type_text", "press_key", "hotkey", "ax"] as const) {
+      const name = scenario === "ax" ? "type_text" : scenario;
+      const checked = port([apps(), windows(), apps(), windows(), result({ effect: "confirmed", route: "accessibility",
+        delivery: { mode: "background", delivered_count: 3 }, evidence: [{ kind: "value_readback" }] })]);
+      const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+        readHidIdleNanoseconds: async () => (scenario === "ax" ? checked.dispatched : checked.calls).some((call) => call.name === name) ? 0 : 1_000_000_000 });
+      const observed = await subject.observe({ scope, operation: "desktop_state" });
+      if (!observed.ok) throw new Error("expected desktop");
+      const target = observed.observation.targets[0]!.target;
+      const performed = name === "type_text" ? await subject.typeText({ scope, operation: { kind: name, target, text: "abc" } })
+        : name === "hotkey" ? await subject.hotkey({ scope, operation: { kind: name, target, keys: ["cmd", "end"] } })
+        : await subject.pressKey({ scope, operation: { kind: name, target, key: "return", modifiers: [] } });
+      expect(performed).toMatchObject({ ok: false, outcome: { externalInterference: "user_input" } });
+      expect(checked.dispatched.filter((call) => call.name === name)).toHaveLength(scenario === "ax" ? 1 : 0);
+      await subject.close();
+    }
+  });
+
   test("accepts Cua 0.19.3's public background press-key ActionResult as unknown completion without a raw leak", async () => {
     const observedAdapter = new CuaComputerUseAdapter({ port: port([apps(), windows()]).value });
     const observed = await observedAdapter.observe({ scope, operation: "desktop_state" });

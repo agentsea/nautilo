@@ -5,13 +5,16 @@ import { canonicalizeComputerUseJson } from "@nautilo/computer-use-contracts";
 import { windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 import type { z } from "zod";
 import type { NautiloState } from "../agent/state";
-import { projectComputerUseHostToolResult, resolveComputerUseHostToolRequest } from "../config/computer-use-catalogue/host-tool-admission";
+import { computerUseHostToolDefinition, projectComputerUseHostToolResult, resolveComputerUseHostToolRequest } from "../config/computer-use-catalogue/host-tool-admission";
+import { resolveNativeControllerModel } from "../config/native-decision-model";
 import { durableComputerResultText } from "../tools/computer/model-result-projector";
 import { BROWSER_DECISION_CONTROL_IDS } from "./browser-choice";
 import { nativeDecisionHostArguments, parseNativeDecisionPlan, type NativeDecisionPlan } from "./native-decision-plan";
 import { resolveGraphExecutionPolicy } from "./execution-policy";
 import type { ChoiceInput } from "../providers/choice";
 import { nativeObservationDelta } from "./native-observation-delta";
+import { settleNativeExecution, type NativeExecution } from "./native-execution";
+import { createChoiceMenuProjector } from "./bound-choice";
 
 type Observation = z.infer<typeof windowStateObservationSchema>;
 type Control = NonNullable<Observation["controlCollection"]>["controls"][number];
@@ -21,10 +24,14 @@ export interface NativeDecisionState {
   plan: NativeDecisionPlan;
   observeArgs: Record<string, unknown>;
   observation: Observation | null;
-  phase: "observe" | "decide" | "waiting" | "handoff";
+  phase: "observe" | "decide" | "interpret" | "waiting" | "handoff" | "complete";
   pending: (ToolCall & { id: string }) | null;
   reason: string | null;
   generation: number;
+  /** Reported takeover pauses Computer Use until a new Human turn. */
+  humanTakeover?: boolean;
+  /** Optional for old checkpoints. Explicit workflow delegation shares this run and executor. */
+  execution?: NativeExecution;
   /** Optional for old checkpoints. A retained model is revalidated, never silently replaced. */
   controller?: { modelId: string; attemptedGeneration: number; active: boolean };
   history: Array<{ action: string; settlement: string; evidence: unknown; repetitions?: number }>;
@@ -38,6 +45,10 @@ export interface NativeDecisionCandidate {
   call: Pick<ToolCall, "name" | "args"> | null;
   controlId?: string;
   replayKey?: string;
+  /** Code-bound authored inputs, retained across workflow/control selection. */
+  inputReferences?: NativeExecution["boundInputs"];
+  /** Semantic template only: executable targets and supplied bytes stay local. */
+  presentation?: { purpose: string; operation: Record<string, unknown>; target?: string };
 }
 export function currentNativeDecision(state: NautiloState): NativeDecisionState | null {
   return state.nativeDecision?.turnId === state.turnId ? state.nativeDecision : null;
@@ -70,6 +81,26 @@ function replayOperationFor(operation: Record<string, unknown>) {
   return operation["kind"] === "type_text" || operation["kind"] === "set_value"
     ? { kind: "write_value", value: operation["text"] ?? operation["value"] } : logicalOperation;
 }
+
+/** Only complete native menu ancestry can supply a literal command path.
+ * Empty AXMenu containers are structural; labels are never guessed from a
+ * task or app name. The driver resolves the live path at each expansion. */
+function nativeMenuPath(control: Control, controls: readonly Control[]): string[] | null {
+  if (control.role !== "menu_item") return null;
+  const path: string[] = [];
+  const visited = new Set<string>();
+  let row: Control | undefined = control;
+  while (row && !visited.has(row.id)) {
+    visited.add(row.id);
+    if (row.role === "menu_bar") return path.length ? path.reverse() : null;
+    if (row.role !== "menu") {
+      if ((row.role !== "menu_item" && row.role !== "menu_bar_item") || !row.label) return null;
+      path.push(row.label);
+    }
+    row = controls.find(candidate => candidate.id === row?.parent);
+  }
+  return null;
+}
 export function nativeDecisionCandidates(decision: NativeDecisionState): NativeDecisionCandidate[] {
   const observation = decision.observation;
   if (!observation) return [];
@@ -77,6 +108,12 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
   const candidates: NativeDecisionCandidate[] = [];
   const seen = new Set<string>();
   const add = (purpose: string, operation: Record<string, unknown>, control?: Control, valueName?: string) => {
+    if (control && operation["kind"] === "click" && operation["button"] === undefined
+      && operation["axAction"] === undefined && operation["modifiers"] === undefined) {
+      const path = nativeMenuPath(control, controls);
+      if (path) add(`${purpose}; native menu route (preferred over clicking a closed submenu)`,
+        { kind: "invoke_menu", target: observation.target, menuPath: path }, control);
+    }
     const admitted = resolveComputerUseHostToolRequest("computer_do", { operation });
     if (!admitted) return;
     const key = JSON.stringify(canonicalizeComputerUseJson(admitted.arguments));
@@ -98,8 +135,9 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
       lineage.push({ role: row.role, ...(row.label ? { label: row.label } : {}) });
       row = controls.find((candidate) => candidate.id === row?.parent);
     }
-    const replayOperation = replayOperationFor(operation);
-    const replayLineage = operation["kind"] === "click" ? lineage : null;
+    const menuAlternative = operation["kind"] === "invoke_menu" && control !== undefined;
+    const replayOperation = menuAlternative ? { kind: "click" } : replayOperationFor(operation);
+    const replayLineage = operation["kind"] === "click" || menuAlternative ? lineage : null;
     const replayKey = digest(canonicalizeComputerUseJson([replayOperation, replayLineage]));
     if (decision.unresolved.some((entry) => {
       if (entry.replayKey === replayKey) return true;
@@ -116,6 +154,9 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
         ...(control ? { control: control.id } : { target: "planned exact target or current window" }) }),
       call: { name: "computer_do", args: admitted.arguments },
       replayKey,
+      ...(valueName === undefined ? {} : { inputReferences: [{ $valueRef: { source: "values" as const, path: [valueName] } }] }),
+      presentation: { purpose, operation: describedOperation,
+        ...(control ? {} : { target: "planned exact target or current window" }) },
       ...(control ? { controlId: control.id } : {}),
     });
   };
@@ -138,9 +179,13 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
     }
   }
   for (const id of BROWSER_DECISION_CONTROL_IDS) candidates.push({
-    id, description: id === "completion_ready" ? "Whole goal appears reached; return evidence for Genie verification."
+    id, description: id === "completion_ready" ? decision.execution
+      ? "Whole goal appears reached; nominate fresh evidence for the workflow completion review."
+      : "Whole goal appears reached; return evidence for Genie verification."
       : id === "reobserve" ? "Read fresh state without repeating a mutation."
-        : id === "needs_visual_evidence" ? "Target or effect needs pixels; return to the vision-capable Genie."
+        : id === "needs_visual_evidence" ? decision.execution
+          ? "Target or effect needs pixels; use the workflow's screenshot-capable operation menu."
+          : "Target or effect needs pixels; return to the vision-capable Genie."
           : id === "needs_input" ? "Required exact argument is missing; return to Genie."
             : "Return to Genie for interpretation, ambiguity or recovery.",
     call: id === "reobserve" ? { name: "computer_observe", args: decision.observeArgs } : null,
@@ -157,43 +202,77 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
 /** Repeat selection validation at ordinary admission and dispatch, not just prompting. */
 export function nativeDecisionDispatchError(state: NautiloState, call: ToolCall): string | null {
   const decision = currentNativeDecision(state);
+  if (decision?.humanTakeover && computerUseHostToolDefinition(call.name)) return "native_human_takeover_wait_for_user";
   const pending = decision?.pending;
   if (!decision || !pending || pending.id !== call.id) return null;
   if (decision.phase !== "waiting" || pending.name !== call.name
     || !sameJson(pending.args, call.args)) return "native_decision_proposal_changed";
+  if (decision.execution) {
+    if (!decision.execution.tools.includes(call.name) || !state.toolNames?.includes(call.name)
+      || !resolveComputerUseHostToolRequest(call.name, call.args)) return "native_execution_tool_unavailable";
+    if (computerUseHostToolDefinition(call.name)?.entry.descriptor.effectClass !== "read"
+      && (decision.execution.mustObserve || decision.unresolved.length)) return "native_execution_effect_not_current";
+    return null; // Exact pending bytes were bound before entering ordinary preflights.
+  }
   if (call.name === "computer_observe") return null;
   return nativeDecisionCandidates(decision).some((candidate) => candidate.call?.name === call.name
     && sameJson(candidate.call.args, call.args)) ? null : "native_decision_action_not_current_or_replay_fenced";
 }
 
-/** Each screening request sees its rows and ancestors, not the whole collection again. */
+/** Project every comparison, including finalists. Retain non-candidate context
+ * and ancestors; the complete observation and executable bindings stay local. */
 export function projectNativeDecisionScreen(input: ChoiceInput, decision: NativeDecisionState, candidates: readonly NativeDecisionCandidate[]): ChoiceInput {
-  if (!input.choices.some((choice) => choice.id === "none_in_group") || !decision.observation?.controlCollection) return input;
+  if (!decision.observation?.controlCollection) return input;
   const rows = decision.observation.controlCollection.controls;
   const ids = new Set(input.choices.map((choice) => choice.id));
   const selected = candidates.filter((candidate) => ids.has(candidate.id));
   // Window/exact operations can depend on any row. Preserve that evidence.
-  if (selected.some((candidate) => candidate.controlId === undefined)) return input;
+  if (selected.some((candidate) => candidate.call?.name === "computer_do" && candidate.controlId === undefined)) return input;
+  // A control-only decision (finish/recover/inspect) needs the whole state.
+  if (!selected.some((candidate) => candidate.controlId !== undefined)) return input;
   const byId = new Map(rows.map((row) => [row.id, row]));
-  const keep = new Set(selected.flatMap((candidate) => candidate.controlId ? [candidate.controlId] : []));
+  const actionControls = new Set(candidates.flatMap((candidate) => candidate.controlId ? [candidate.controlId] : []));
+  const keep = new Set([
+    ...rows.filter((row) => !actionControls.has(row.id)).map((row) => row.id),
+    ...selected.flatMap((candidate) => candidate.controlId ? [candidate.controlId] : []),
+  ]);
   for (const id of keep) {
     const row = byId.get(id);
     if (!row) return input;
     if (row.parent) keep.add(row.parent);
   }
+  if (keep.size === rows.length) return input;
   const evidence = nativeDecisionEvidence(decision.observation);
-  return { ...input, state: { ...(input.state as Record<string, unknown>), observation: {
+  return { ...input,
+    instructions: input.instructions + " The observation is a disclosed candidate projection, not the whole UI. Omitted candidate controls were not proven absent or irrelevant to the whole task. Compare the supplied candidates using their retained context; if this decision needs omitted evidence, defer_to_genie when offered rather than infer completion or safety from omission. During screening, nominate only within the group; no action executes.",
+    state: { ...(input.state as Record<string, unknown>), observation: {
     ...evidence, collection: { ...evidence.collection,
       controls: evidence.collection!.controls.filter((row) => keep.has(row.id)),
-      projection: { kind: "screening_group", total: rows.length, included: keep.size },
+      projection: { kind: input.choices.some((choice) => choice.id === "none_in_group") ? "screening_group" : "finalists",
+        total: rows.length, included: keep.size, omittedCandidateControls: rows.length - keep.size },
     },
   } } };
+}
+
+/** Factor repeated operation semantics once per comparison. The same candidate
+ * IDs resolve to the original calls; this changes neither eligibility nor scope. */
+export function projectNativeDecisionMenu(input: ChoiceInput, decision: NativeDecisionState, candidates: readonly NativeDecisionCandidate[]): ChoiceInput {
+  const projected = projectNativeDecisionScreen(input, decision, candidates);
+  return createChoiceMenuProjector(candidates.map(candidate => ({ id: candidate.id,
+    ...(candidate.presentation ? { presentation: { template: candidate.presentation,
+      bindings: candidate.controlId ? { control: candidate.controlId } : {} } } : {}),
+  })))({ ...projected, instructions: projected.instructions + " A choice's control names a retained observation row." });
 }
 
 export function nativeDecisionHandoffMessage(decision: NativeDecisionState): SystemMessage {
   return new SystemMessage({ id: `native-handoff:${randomUUID()}`, content: JSON.stringify({
     kind: "native_decision_handoff", reason: decision.reason, goal: decision.plan.goal,
-    instruction: "Inspect current evidence and independently verify completion. Use ordinary Computer Use for visual grounding or diagnosis. Repair missing exact arguments before redelegating remaining work. A fresh target is not proof that an uncertain mutation did not happen; do not replay it.",
+    ...(decision.humanTakeover ? { instruction: "Computer Use is paused because local input was reported. Tell the Human that completed steps are retained and wait for them to resume. Do not reobserve, relaunch, retry, or redelegate in this turn. A later Human turn starts with fresh observation; never replay uncertain effects. This report does not identify which application received the input." } : {
+      ...(decision.execution ? { question: decision.execution.question,
+        continuation: "For composition, author the requested content once in decisionPlan.values. Delegate remaining routine work with decisionPlan.execution=workflow on a standalone fresh computer_observe call. Do not perform every UI step or retranscribe authored content. Use existing tools when the fast route is unavailable." } : {}),
+      instruction: "Inspect current evidence and independently verify completion. Use ordinary Computer Use for visual grounding or diagnosis. Repair missing exact arguments before redelegating remaining work. A fresh target is not proof that an uncertain mutation did not happen; do not replay it.",
+      ...(decision.reason === "native_decision_no_progress" ? { recovery: "Changing observation type or redelegating does not reset recovery. Use a genuinely different evidence-backed recovery route, or explain the unresolved prerequisite and wait. A successful launch followed by an empty window list is not evidence that the process needs launching again. Prefer an exact window's offered recovery over repeated broad scans." } : {}),
+    }),
     ...(decision.unresolved.length ? { unresolved: decision.unresolved } : {}),
   }) });
 }
@@ -230,21 +309,47 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
   const plan = parseNativeDecisionPlan(call.name, call.args);
   const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
   const starts = plan && modelId && state.turnId && source?.tool_calls?.length === 1 && source.tool_calls[0]?.id === call.id;
-  if (!continues && !starts) return current ? handoff(current, "ordinary_genie_control") : null;
+  if (!continues && !starts) {
+    // Genie may diagnose after a fast-loop handoff, but it must not erase a
+    // takeover or an uncertain effect simply by issuing an ordinary tool call.
+    const checked = current?.execution && computerUseHostToolDefinition(call.name) ? nativeDecisionResult(result) : null;
+    if (current?.execution && checked) {
+      const settled = settleNativeExecution(current, { ...call, id: call.id }, checked);
+      return handoff(settled, settled.reason ?? "ordinary_genie_control");
+    }
+    return current ? handoff(current, "ordinary_genie_control") : null;
+  }
+  const controller = starts && plan.execution === "workflow"
+    ? resolveNativeControllerModel(current?.controller?.modelId) : null;
   let next: NativeDecisionState = starts ? {
     turnId: state.turnId, modelId, plan,
     observeArgs: nativeDecisionHostArguments(call.name, call.args) as Record<string, unknown>,
     observation: null, phase: "decide", pending: null, reason: null, generation: (current?.generation ?? 0) + 1,
     history: current?.history ?? [], unresolved: current?.unresolved ?? [],
-    recovery: { limit: resolveGraphExecutionPolicy().browserDecisionInterventionLimit, events: 0, transitions: [], before: null },
+    ...(current?.humanTakeover ? { humanTakeover: true } : {}),
+    recovery: current?.recovery ?? { limit: resolveGraphExecutionPolicy().browserDecisionInterventionLimit, events: 0, transitions: [], before: null },
+    ...(plan.execution === "workflow" ? { execution: {
+      request: current?.execution?.request ?? plan.goal, tools: state.toolNames ?? [],
+      observation: null, observationCallId: null, freshRead: false, mustObserve: false, question: null,
+      ...(current?.execution?.progressByRead ? { progressByRead: current.execution.progressByRead } : {}),
+    }, ...(controller ? { controller: { modelId: controller.id, attemptedGeneration: (current?.generation ?? 0) + 1, active: true } } : {}) } : {}),
   } : { ...current!, pending: null };
+  // The fast interpreter is optional. The eligible Choice model that admitted
+  // this delegation remains the workflow gate; an absent interpreter is only
+  // consequential when a later decision actually needs interpretation.
   const checked = nativeDecisionResult(result);
   if (!checked) {
-    if (call.name === "computer_do") next.unresolved = [...next.unresolved, { callId: call.id, operation: call.args["operation"], receipt: { settlement: "unrecognized_result" }, replayKey: "unclassified" }];
+    if (computerUseHostToolDefinition(call.name)?.entry.descriptor.effectClass !== "read") next.unresolved = [...next.unresolved, { callId: call.id, operation: call.args["operation"], receipt: { settlement: "unrecognized_result" }, replayKey: "unclassified" }];
     return handoff(next, "checked_host_result_unavailable");
   }
+  if (next.execution) return settleNativeExecution(next, { ...call, id: call.id }, checked);
   const payload = checked["result"] as Record<string, unknown>;
   const settlement = String(checked["settlement"]);
+  if (next.humanTakeover || (payload["outcome"] as Record<string, unknown> | undefined)?.["externalInterference"] === "user_input") {
+    // Mutations still pass through receipt settlement below to retain unknown effects.
+    next.humanTakeover = true;
+    if (call.name === "computer_observe") return handoff(next, "human_takeover");
+  }
   if (call.name === "computer_observe") {
     const parsed = windowStateObservationSchema.safeParse(payload);
     if (settlement !== "completed" || !parsed.success || !parsed.data.controlCollection || parsed.data.evidence === null) return handoff(next, "native_control_collection_unavailable");
@@ -293,7 +398,7 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
     next.unresolved = [...next.unresolved, { callId: call.id, operation: call.args["operation"], receipt, replayKey: candidate?.replayKey ?? "unclassified" }];
   }
   if (["revoked", "cancelled", "fenced"].includes(settlement)) return handoff(next, settlement);
-  if (outcome?.["externalInterference"] === "user_input") return handoff(next, "human_takeover");
+  if (next.humanTakeover) return handoff(next, "human_takeover");
   // Refused actions may recover. Unknown effects stay fenced from replay across
   // fresh handles; different recovery actions and observations remain available.
   if (settlement !== "completed" && !unknown && payload["completionCertainty"] !== "not_completed") return handoff(next, "unclassified_action_failure");

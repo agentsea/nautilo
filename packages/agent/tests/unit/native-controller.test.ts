@@ -16,7 +16,7 @@ afterEach(() => {
   resetRuntimeModelCatalog();
 });
 function input(signal = new AbortController().signal): ChoiceInput {
-  return { modelId: "openrouter:qwen/qwen3.8-flash", instructions: "Choose from current evidence.",
+  return { modelId: "openrouter:deepseek/deepseek-v4.1-flash", instructions: "Choose from current evidence.",
     state: { goal: "Insert the supplied value", values: { content: "Unchanged 🌊\ncontent" } },
     choices: [{ id: "a1_0", description: "Insert content into observed editor" }, { id: "request_replan", description: "Return for replanning" }], signal };
 }
@@ -37,6 +37,7 @@ test("prototype controller remains pinned while catalogue withdrawal, capabiliti
   await hydrateRuntimeModelCatalog();
   expect(resolveNativeControllerModel()?.id).toBe(input().modelId);
   expect(resolveNativeControllerModel("openrouter:example/general-chat")).toBeNull();
+  expect(resolveNativeControllerModel("openrouter:qwen/qwen3.8-flash")).toBeNull();
   catalog.entries[0]!.defaultEnabled = false;
   await hydrateRuntimeModelCatalog();
   expect(resolveNativeControllerModel()).toBeNull();
@@ -51,10 +52,10 @@ test("prototype controller remains pinned while catalogue withdrawal, capabiliti
   expect(resolveNativeControllerModel()).toBeNull();
 });
 function modelReturning(response: unknown): ChatModel {
-  return { bindTools: () => ({ invoke: async () => response }), invoke: async () => { throw new Error("must bind"); } };
+  return { bindTools: () => { throw new Error("must not bind tools"); }, invoke: async () => response };
 }
 function response(choice = "a1_0") {
-  return { content: "", tool_calls: [{ id: "pick", name: "select_native_choice", args: { choice } }],
+  return { content: choice,
     usage_metadata: { input_tokens: 90, output_tokens: 4, total_tokens: 94, input_token_details: { cache_read: 70 } } };
 }
 async function expectFailure(promise: Promise<unknown>, message?: string) {
@@ -64,45 +65,45 @@ async function expectFailure(promise: Promise<unknown>, message?: string) {
 }
 
 test("real controller adapter returns only a validated ID and measured usage", async () => {
-  const result = await invokeNativeController(input(), async () => modelReturning(response()));
+  const result = await invokeNativeController(input(), async (id, options) => {
+    expect(id).toBe(input().modelId);
+    expect(options).toEqual({ reasoningEffort: "off", reasoningOutput: false });
+    return modelReturning(response());
+  });
   expect(result).toMatchObject({ selectedId: "a1_0", usage: { inputTokens: 90, outputTokens: 4, cacheReadTokens: 70, actualCostUsd: null } });
   expect(Object.hasOwn(result, "args")).toBe(false);
 });
 
-test("schema and instruction prefix stay fixed while exact content and changing choices remain in the tail", async () => {
-  const tools: unknown[] = [];
+test("instruction prefix stays fixed and no tool schema or generated JSON is needed", async () => {
   const messages: unknown[][] = [];
-  const model: ChatModel = { bindTools: (definitions, options) => {
-    tools.push(definitions);
-    expect(options).toEqual({ tool_choice: "auto", parallel_tool_calls: false });
-    return { invoke: async (sent, config) => {
+  const model: ChatModel = { bindTools: () => { throw new Error("must not bind tools"); },
+    invoke: async (sent, config) => {
       messages.push(sent); expect(config?.["signal"]).toBeInstanceOf(AbortSignal);
+      expect(config?.["metadata"]).toEqual({ nautilo_output_visibility: "internal_decision" });
       return response();
     } };
-  }, invoke: async () => { throw new Error("must bind"); } };
   const original = input();
   await invokeNativeController(original, async () => model);
   await invokeNativeController({ ...original, choices: [...original.choices, { id: "a2_1", description: "Another control" }] }, async () => model);
-  expect(tools[0]).toEqual(tools[1]);
   expect(messages[0]![0]).toEqual(messages[1]![0]);
   const tail = messages[0]![1] as { content: string };
   expect(JSON.parse(tail.content)).toEqual({ state: original.state, choices: original.choices });
-  expect(JSON.stringify(tools[0])).not.toContain("a1_0");
+  expect(JSON.stringify(messages[0]![0])).not.toContain("a1_0");
 });
 
 test("rejects invented IDs, reconstructed inputs, prose and multiple selections", async () => {
   for (const invalid of [response("unissued"),
     { tool_calls: [{ name: "select_native_choice", args: { choice: "a1_0", text: "changed" } }] },
     { content: '{"choice":"a1_0"}' },
-    { tool_calls: [...response().tool_calls, ...response().tool_calls] },
-    { tool_calls: response().tool_calls, invalid_tool_calls: [{ name: "invented" }] },
+    { content: "a1_0 request_replan" },
+    { content: "a1_0", invalid_tool_calls: [{ name: "invented" }] },
   ]) await expectFailure(invokeNativeController(input(), async () => modelReturning(invalid)), "invalid_native_controller_selection");
 });
 
 test("late cancellation and model removal cannot create a selection", async () => {
   const abort = new AbortController();
   await expectFailure(invokeNativeController(input(abort.signal), async () => ({
-    bindTools: () => ({ invoke: async () => { abort.abort(); return response(); } }), invoke: async () => null,
+    invoke: async () => { abort.abort(); return response(); },
   })));
   let calls = 0;
   await expectFailure(invokeNativeController({ ...input(), modelId: "openrouter:removed/model" }, async () => {
@@ -112,6 +113,6 @@ test("late cancellation and model removal cannot create a selection", async () =
 });
 
 test("unreported usage stays unknown rather than claiming zero tokens or free execution", async () => {
-  const result = await invokeNativeController(input(), async () => modelReturning({ tool_calls: response().tool_calls }));
+  const result = await invokeNativeController(input(), async () => modelReturning({ content: "a1_0" }));
   expect(result.usage).toEqual({ inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, actualCostUsd: null });
 });

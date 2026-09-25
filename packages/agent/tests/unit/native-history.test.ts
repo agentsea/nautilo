@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage, mapStoredMessagesToChatMessages, type BaseMessage } from "@langchain/core/messages";
 import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
-import { windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
+import { computerMutationReceiptSchema, windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 import { readNativeHistory, projectNativeHistory } from "../../src/tools/computer/native-history";
 import { ToolCatalog, initToolCatalog, clearToolCatalog } from "@nautilo/catalog";
 import { registerAllTools } from "../../src/tools/register-all";
@@ -98,6 +98,25 @@ test("actions, unresolved effects, malformed sources and missing provenance are 
   bad[1]!.content = "not json";
   expect(readNativeHistory(bad, "old")).toBeNull();
   expect(projectNativeHistory(transcript(bad, cycle("before"), cycle("now"))).messages[1]).toBe(bad[1]);
+});
+
+test("checked non-delivery does not pin every stale control tree; uncertainty still preserves evidence", () => {
+  const receipt = computerMutationReceiptSchema.parse({ version: 1, timing: "immediate", action: "click", target: { ...target, reference: `detgt_${"c".repeat(43)}` },
+    resolvedTarget: { kind: "element", role: "menu_item", action: "click" }, provider: "cua", deliveryMode: "not_delivered",
+    completionCertainty: "not_completed", verification: "unavailable", providerAction: null,
+    unexecutedRemainder: { count: 1, reason: "failed" }, outcome: { version: 1, phase: "pre_effect_dispatch",
+      retrySafety: "observe_before_retry", stateChangeCertainty: "not_changed", providerCondition: "ready", targetCondition: "stale", recovery: ["observe_again"] } });
+  const failed = new ToolMessage({ name: "computer_do", tool_call_id: "click", status: "success",
+    content: JSON.stringify({ version: 1, ok: false, settlement: "not_completed", result: receipt }) });
+  const messages = transcript(cycle("old"), [new AIMessage({ content: "", tool_calls: [{ id: "click", name: "computer_do", args: {} }] }), failed], cycle("before"), cycle("now"));
+  const bytes = JSON.stringify(messages);
+  const projected = projectNativeHistory(messages);
+  expect(projected.originals.size).toBe(1);
+  expect(projected.messages[3]).toBe(failed);
+  expect(readNativeHistory(messages, "old")).not.toBeNull();
+  expect(JSON.stringify(messages)).toBe(bytes);
+  failed.content = JSON.stringify({ settlement: "unknown_completion", result: { ...receipt, completionCertainty: "unknown_completion" } });
+  expect(projectNativeHistory(messages).messages).toEqual(messages);
 });
 
 test.each([false, true])("ordinary invocation reads retained native evidence with image=%s without a Relay", async (image) => {
