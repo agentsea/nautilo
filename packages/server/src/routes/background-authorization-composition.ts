@@ -82,6 +82,25 @@ type WithCurrentTaskAuthority = <Value>(input: Readonly<{
     restricted: PostgresJsBridgeConnection): Promise<Value>;
 }>) => Promise<Value | null>;
 
+type BindTaskRecipient = (input: Readonly<{
+  subject: BackgroundAuthorizationDeviceSubject;
+  admission: StenographerRequestAdmission;
+  device: CurrentDeviceAdmissionAuthority;
+  restricted: PostgresJsBridgeConnection;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+}>) => Promise<Readonly<{
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  requestBytes: Uint8Array;
+}> | null>;
+
+type AwaitingCursor = Readonly<{updatedAt: number; requestId: string}>;
+function compareAwaitingCursor(left: AwaitingCursor, right: AwaitingCursor): number {
+  return left.updatedAt - right.updatedAt || left.requestId.localeCompare(right.requestId);
+}
+function recordCursor(record: BackgroundAuthorizationRecord): AwaitingCursor {
+  return {updatedAt: record.snapshot.updatedAt, requestId: record.snapshot.requestId};
+}
+
 /** Metadata transport composition. All Room, policy, key-authority and acceptance
  * checks enter Lattice's existing authority owners; no plaintext enters these routes.
  */
@@ -98,6 +117,7 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
   /** Process-local custody proof; absent until the Task Runtime owns a live recipient. */
   isTaskRecipientActive(record: BackgroundAuthorizationTaskRuntimeRecordV3): boolean;
   withTaskAuthority: WithCurrentTaskAuthority;
+  bindTaskRecipient: BindTaskRecipient;
   wakeProtectedTask(): void;
 }> = {}): BackgroundAuthorizationDeviceService {
   const crypto = dependencies.crypto ?? new LatticeCrypto();
@@ -132,6 +152,7 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
     }
     return {...subject.admission, userId: subject.userId, humanActorId: subject.humanActorId};
   };
+  const bindTaskRecipient = dependencies.bindTaskRecipient;
 
   const withTaskAuthority: WithCurrentTaskAuthority = dependencies.withTaskAuthority ?? (async input => {
     if (!(dependencies.isTaskRecipientActive?.(input.record) ?? false)) return null;
@@ -209,12 +230,92 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
       const issuer = issuerFromDevice(crypto, device);
       const requests: {requestBytes: Uint8Array}[] = [];
       let page: Awaited<ReturnType<BackgroundAuthorizationRepository["listAwaitingDevicePage"]>> | undefined;
+      let taskPage: Awaited<ReturnType<NonNullable<BackgroundAuthorizationRepository["listAwaitingTaskRuntimeRecipientPage"]>>> | undefined;
       try {
         if (!matchesStenographerRequestAdmission(admission, device, now())) {
           throw new BackgroundAuthorizationDeviceServiceError("unauthorized");
         }
         const {canonicalRunner: runner} = await context(subject.userId);
-        page = await (await repository(restricted)).listAwaitingDevicePage({now: startedAt,
+        const store = await repository(restricted);
+        if (bindTaskRecipient !== undefined && store.listAwaitingTaskRuntimeRecipientPage !== undefined) {
+          const pageInput = {now: startedAt,
+            throughUpdatedAt: cursor?.through ?? startedAt, limit: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
+            ...(cursor === undefined ? {} : {after: {updatedAt: cursor.updated, requestId: cursor.id}})};
+          page = await store.listAwaitingDevicePage(pageInput);
+          taskPage = await store.listAwaitingTaskRuntimeRecipientPage(pageInput);
+          const continuations = [page.continuation, taskPage.continuation]
+            .filter((entry): entry is AwaitingCursor => entry !== null && entry !== undefined)
+            .sort(compareAwaitingCursor);
+          const frontier = continuations[0] ?? null;
+          const candidates: Array<Readonly<{
+            source: "device" | "recipient";
+            record: BackgroundAuthorizationRecord | BackgroundAuthorizationTaskRuntimeRecordV3;
+          }>> = [
+            ...page.records.map(record => ({source: "device" as const, record})),
+            ...taskPage.records.map(record => ({source: "recipient" as const, record})),
+          ].sort((left, right) => compareAwaitingCursor(recordCursor(left.record), recordCursor(right.record)));
+          const seen = new Set<string>();
+          let lastProcessed: AwaitingCursor | null = null;
+          let stopped = false;
+          let totalRequestBytes = 0;
+          const maximumPageBytes = Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
+            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1);
+          for (const candidate of candidates) {
+            const coordinate = recordCursor(candidate.record);
+            if (frontier !== null && compareAwaitingCursor(coordinate, frontier) > 0) break;
+            if (seen.has(coordinate.requestId)) continue;
+            seen.add(coordinate.requestId);
+            let requestBytes: Uint8Array | null = null;
+            let bound: Awaited<ReturnType<BindTaskRecipient>> = null;
+            try {
+              if (candidate.source === "recipient") {
+                bound = await bindTaskRecipient({subject, admission, device, restricted,
+                  record: candidate.record as BackgroundAuthorizationTaskRuntimeRecordV3});
+                if (bound !== null) {
+                  const permitted = await withTaskAuthority({subject, admission, restricted, record: bound.record,
+                    use: () => Promise.resolve(true)});
+                  if (permitted === true) requestBytes = bound.requestBytes;
+                }
+              } else {
+                const record = candidate.record;
+                if (isTaskRuntimeRecord(record)) {
+                  const permitted = await withTaskAuthority({subject, admission, restricted, record,
+                    use: () => Promise.resolve(true)});
+                  if (permitted === true) requestBytes = record.descriptorBytes;
+                } else if (record.snapshot.formatVersion === 2
+                  && record.snapshot.credentialSubject.kind === "processor"
+                  && record.descriptorBytes !== null) {
+                  let descriptor: AnyBackgroundProcessorWorkDescriptorV2;
+                  try {descriptor = decodeAnyBackgroundProcessorWorkDescriptorV2(record.descriptorBytes);}
+                  catch {lastProcessed = coordinate; continue;}
+                  try {
+                    const allowed = await withProcessorAuthority({runner, restricted, crypto, serverScope, descriptor, issuer,
+                      admission, now, use: () => Promise.resolve(true)});
+                    if (allowed === true) requestBytes = record.descriptorBytes;
+                  } finally {destroyBytes(descriptor);}
+                }
+              }
+              if (requestBytes !== null) {
+                if (requestBytes.length > maximumPageBytes) {
+                  throw new BackgroundAuthorizationDeviceServiceError("malformed");
+                }
+                if (requests.length >= BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH
+                  || totalRequestBytes + requestBytes.length > maximumPageBytes) {
+                  stopped = true;
+                  break;
+                }
+                requests.push({requestBytes: Uint8Array.from(requestBytes)});
+                totalRequestBytes += requestBytes.length;
+              }
+              lastProcessed = coordinate;
+            } finally {destroyBytes(bound);}
+          }
+          admitted(subject);
+          const continuation = stopped ? lastProcessed : frontier;
+          return {requests, ...(continuation === null ? {} : {continuation: encodeCursor({v: 1,
+            through: cursor?.through ?? startedAt, updated: continuation.updatedAt, id: continuation.requestId})})};
+        }
+        page = await store.listAwaitingDevicePage({now: startedAt,
           throughUpdatedAt: cursor?.through ?? startedAt, limit: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
           ...(cursor === undefined ? {} : {after: {updatedAt: cursor.updated, requestId: cursor.id}})});
         for (const record of page.records) {
@@ -249,7 +350,7 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
         return {requests, ...(continuation === null || continuation === undefined ? {} : {continuation: encodeCursor({v: 1,
           through: cursor?.through ?? startedAt, updated: continuation.updatedAt, id: continuation.requestId})})};
       } catch (error) {destroyBytes(requests); throw error;}
-      finally {destroyBytes(device); destroyBytes(issuer); destroyBytes(page);}
+      finally {destroyBytes(device); destroyBytes(issuer); destroyBytes(page); destroyBytes(taskPage);}
     },
     async respond(subject, input) {
       const admission = admitted(subject);
