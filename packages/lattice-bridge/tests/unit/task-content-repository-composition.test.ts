@@ -266,6 +266,181 @@ describe("durable Task content repository composition", () => {
     ]);
   });
 
+  test("adaptively publishes a prepared revision as protected in Full", async () => {
+    const state = setup();
+    const ordinaryContent = definition(1);
+    let dualCalls = 0;
+    const publication = await state.repository.publishPreparedProtectedOrDual({
+      owner: owner({ mode: "encrypted_only", shadowBehavior: "strict" }),
+      operationId: "task:adaptive:protected",
+      requestDigest: new Uint8Array(32).fill(13),
+      authority,
+      operationalMetadata: null,
+      prepared: authenticPreparedDefinition(),
+      ordinaryContent,
+      publishProtectedProduct: async () => {
+        state.calls.push("publish:adaptive:protected");
+        return 1;
+      },
+      publishDualProduct: async () => {
+        dualCalls += 1;
+        throw new Error("Dual publication unexpectedly selected");
+      },
+    });
+
+    expect(publication).toMatchObject({
+      representation: "protected",
+      product: 1,
+      protectedRevision: { status: "mapped" },
+    });
+    expect(dualCalls).toBe(0);
+    expect(state.calls).toEqual([
+      "reserve:definition:protected",
+      "publish:adaptive:protected",
+      "complete:definition",
+    ]);
+  });
+
+  test("adaptively publishes a canonical ordinary sibling only to Shadow dual", async () => {
+    const state = setup();
+    const ordinaryContent = definition(1);
+    let protectedCalls = 0;
+    const publication = await state.repository.publishPreparedProtectedOrDual({
+      owner: owner({ mode: "shadow_encryption", shadowBehavior: "strict" }),
+      operationId: "task:adaptive:dual",
+      requestDigest: new Uint8Array(32).fill(14),
+      authority,
+      operationalMetadata: null,
+      prepared: authenticPreparedDefinition(),
+      ordinaryContent,
+      publishProtectedProduct: async () => {
+        protectedCalls += 1;
+        throw new Error("Protected publication unexpectedly selected");
+      },
+      publishDualProduct: async (content) => {
+        expect(content).toEqual(ordinaryContent);
+        expect(content).not.toBe(ordinaryContent);
+        expect(Object.isFrozen(content)).toBe(true);
+        state.calls.push("publish:adaptive:dual");
+        return 1;
+      },
+    });
+
+    expect(publication).toMatchObject({
+      representation: "dual",
+      product: 1,
+      protectedRevision: { status: "mapped" },
+    });
+    expect(protectedCalls).toBe(0);
+    expect(state.calls).toEqual([
+      "reserve:definition:dual",
+      "publish:adaptive:dual",
+      "complete:definition",
+    ]);
+  });
+
+  test("rejects Plain and mismatched prepared coordinates before any effect", async () => {
+    const plainState = setup();
+    let callbackCalls = 0;
+    const common = {
+      operationId: "task:adaptive:rejected",
+      requestDigest: new Uint8Array(32).fill(15),
+      authority,
+      operationalMetadata: null,
+      prepared: authenticPreparedDefinition(),
+      ordinaryContent: definition(1),
+      publishProtectedProduct: async () => {
+        callbackCalls += 1;
+        return 1;
+      },
+      publishDualProduct: async () => {
+        callbackCalls += 1;
+        return 1;
+      },
+    } as const;
+    const plain = await plainState.repository.publishPreparedProtectedOrDual({
+      ...common,
+      owner: owner({ mode: "plaintext_only", shadowBehavior: "fallback" }),
+    }).then(() => null, (error: unknown) => error);
+    expect(plain).toMatchObject({ failureClass: "unsupported" });
+    expect(callbackCalls).toBe(0);
+    expect(plainState.calls).toEqual([]);
+
+    const mismatchState = setup();
+    let policyResolutions = 0;
+    const mismatchOwner = bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => {
+          policyResolutions += 1;
+          return {
+            policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+            revalidationToken: 8,
+          };
+        },
+        revalidate: async () => undefined,
+      },
+    });
+    const mismatch = await mismatchState.repository
+      .publishPreparedProtectedOrDual({
+        ...common,
+        owner: mismatchOwner,
+        ordinaryContent: definition(2),
+      }).then(() => null, (error: unknown) => error);
+    expect(mismatch).toBeInstanceOf(TypeError);
+    expect((mismatch as Error).message).toContain("coordinates disagree");
+    expect(policyResolutions).toBe(0);
+    expect(callbackCalls).toBe(0);
+    expect(mismatchState.calls).toEqual([]);
+  });
+
+  test("replays the selected adaptive representation and fails closed on conflict", async () => {
+    const state = setup();
+    const ordinaryContent = definition(1);
+    let callbackCalls = 0;
+    const request = {
+      owner: owner({ mode: "shadow_encryption", shadowBehavior: "strict" }),
+      operationId: "task:adaptive:replay",
+      requestDigest: new Uint8Array(32).fill(16),
+      authority,
+      operationalMetadata: null,
+      prepared: authenticPreparedDefinition(),
+      ordinaryContent,
+      publishProtectedProduct: async () => {
+        throw new Error("Protected publication unexpectedly selected");
+      },
+      publishDualProduct: async (content: TaskContentPayloadV1) => {
+        callbackCalls += 1;
+        expect(content).toEqual(ordinaryContent);
+        return 1;
+      },
+    } as const;
+
+    state.protectedRepository.reservation = "replayed";
+    expect(await state.repository.publishPreparedProtectedOrDual(request))
+      .toMatchObject({
+        representation: "dual",
+        product: 1,
+        protectedRevision: { status: "mapped" },
+      });
+    expect(callbackCalls).toBe(1);
+    expect(state.calls).toEqual([
+      "reserve:definition:dual",
+      "complete:definition",
+    ]);
+
+    state.protectedRepository.reservation = "conflict";
+    const conflict = await state.repository
+      .publishPreparedProtectedOrDual(request)
+      .then(() => null, (error: unknown) => error);
+    expect(conflict).toMatchObject({ failureClass: "integrity" });
+    expect(callbackCalls).toBe(1);
+    expect(state.calls).toEqual([
+      "reserve:definition:dual",
+      "complete:definition",
+      "reserve:definition:dual",
+    ]);
+  });
+
   test("publishes ordinary create, dual update, and protected TaskRun result", async () => {
     const state = setup();
     const ordinary = await state.repository.mutate({
