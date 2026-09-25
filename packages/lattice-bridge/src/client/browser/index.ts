@@ -47,6 +47,7 @@ import {
   createForegroundLiveShadowMessageClient,
   createForegroundHumanMemoryClient,
   createForegroundHumanTaskClient,
+  createForegroundHumanTaskRunResultReader,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
@@ -58,6 +59,7 @@ import {
   type ForegroundMessageBackfillClientInput,
   type ForegroundHumanMemoryClientInput,
   type ForegroundHumanTaskClientInput,
+  type ForegroundHumanTaskRunResultReaderInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
   type ForegroundRoomHistoryShadowMessageReaderInput,
   type ForegroundRoomHistoryShadowMessageReader,
@@ -1014,6 +1016,19 @@ export function createBrowserHumanTaskClient(
   input: BrowserHumanTaskClientInput,
 ) {
   return createForegroundHumanTaskClient(browserForegroundShadowPlatform, input);
+}
+
+export type BrowserHumanTaskRunResultReaderInput =
+  ForegroundHumanTaskRunResultReaderInput;
+
+/** Exact protected TaskRun result reads through Browser device custody. */
+export function createBrowserHumanTaskRunResultReader(
+  input: BrowserHumanTaskRunResultReaderInput,
+) {
+  return createForegroundHumanTaskRunResultReader(
+    browserForegroundShadowPlatform,
+    input,
+  );
 }
 
 /** Public, secret-free coordinate used to bind browser resume approvals. */

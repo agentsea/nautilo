@@ -6,8 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBrowserHumanTaskClient } from
   "../../src/client/browser/index.ts";
+import { createBrowserHumanTaskRunResultReader } from
+  "../../src/client/browser/index.ts";
 import { createElectronHumanTaskClient } from
   "../../src/client/electron/index.ts";
+import { createElectronHumanTaskRunResultReader } from
+  "../../src/client/electron/index.ts";
+import { deriveTaskContentCryptoObjectIdV1 } from
+  "../../src/task/task-content-repository.ts";
 import {
   bindEncryptionDataOperationOwner,
   ClassifiedDataOperationError,
@@ -79,6 +85,63 @@ function protectedListApi(calls: string[]): NautiloApiClient {
 }
 
 describe("protected Human Task platform composition", () => {
+  test("Browser and Desktop result readers use only the exact protected endpoint", async () => {
+    const taskId = "30000000-0000-4000-8000-000000000248";
+    const taskRunId = "30000000-0000-4000-8000-000000000249";
+    const calls: string[] = [];
+    const resultApi = {
+      getProtectedTaskRunResultEnvelopeV1: async (
+        requestedTaskId: string,
+        requestedRunId: string,
+      ) => {
+        calls.push(`${requestedTaskId}:${requestedRunId}`);
+        return {
+          readVersion: 1 as const,
+          status: "waiting" as const,
+          taskId,
+          taskRunId,
+          objectId: deriveTaskContentCryptoObjectIdV1({
+            kind: "run_result", taskId, taskRunId, contentRevision: 1,
+          }),
+          resultRevision: 1 as const,
+          cryptoAccessRevision: 0 as const,
+          reason: "result_not_mapped" as const,
+        };
+      },
+    } as unknown as NautiloApiClient;
+    const common = {
+      ...input(resultApi),
+      resolveTrustedIssuingDevicePublicKey: () => Promise.resolve(null),
+    };
+    const request = {
+      taskId,
+      taskRunId,
+      agentId: "30000000-0000-4000-8000-000000000250",
+    };
+    expect(await createBrowserHumanTaskRunResultReader(common).read(request))
+      .toEqual({ status: "waiting", reason: "result_not_mapped" });
+    const directory = await mkdtemp(join(tmpdir(), "nautilo-task-result-"));
+    try {
+      expect(await createElectronHumanTaskRunResultReader({
+        ...common,
+        directory,
+        safeStorage: {
+          isEncryptionAvailable: () => true,
+          encryptString: (value) => Buffer.from(value, "utf8"),
+          decryptString: (value) => value.toString("utf8"),
+        },
+      }).read(request)).toEqual({
+        status: "waiting", reason: "result_not_mapped",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+    expect(calls).toEqual([
+      `${taskId}:${taskRunId}`,
+      `${taskId}:${taskRunId}`,
+    ]);
+  });
+
   test("Browser selects the additive protected list transport", async () => {
     const calls: string[] = [];
     const result = await createBrowserHumanTaskClient(

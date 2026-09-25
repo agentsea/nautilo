@@ -43,6 +43,7 @@ import {
   createForegroundLiveShadowMessageClient,
   createForegroundHumanMemoryClient,
   createForegroundHumanTaskClient,
+  createForegroundHumanTaskRunResultReader,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
@@ -54,6 +55,7 @@ import {
   type ForegroundLiveShadowMessageClientInput,
   type ForegroundHumanMemoryClientInput,
   type ForegroundHumanTaskClientInput,
+  type ForegroundHumanTaskRunResultReaderInput,
   type ForegroundLiveShadowMessageReceiverInput,
   type ForegroundMessageBackfillClientInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
@@ -497,6 +499,9 @@ export type ElectronHumanMemoryClientInput =
 export type ElectronHumanTaskClientInput =
   ForegroundHumanTaskClientInput & ElectronForegroundShadowCustodyInput;
 
+export type ElectronHumanTaskRunResultReaderInput =
+  ForegroundHumanTaskRunResultReaderInput & ElectronForegroundShadowCustodyInput;
+
 export type ElectronMessageBackfillClientInput =
   ForegroundMessageBackfillClientInput & ElectronForegroundShadowCustodyInput;
 
@@ -522,6 +527,16 @@ export function createElectronHumanTaskClient(
   input: ElectronHumanTaskClientInput,
 ) {
   return createForegroundHumanTaskClient(electronForegroundShadowPlatform(input), input);
+}
+
+/** Exact protected TaskRun result reads through Electron-main custody. */
+export function createElectronHumanTaskRunResultReader(
+  input: ElectronHumanTaskRunResultReaderInput,
+) {
+  return createForegroundHumanTaskRunResultReader(
+    electronForegroundShadowPlatform(input),
+    input,
+  );
 }
 
 /** Electron-main foreground sender with file-backed private custody. */
