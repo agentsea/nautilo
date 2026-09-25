@@ -7,6 +7,7 @@ import { useCan } from "../../../hooks/use-can";
 import { ServerIcon } from "../../../components/server/server-icon";
 import { formatLevel } from "../../../components/security/posture-colors";
 import { Button } from "../../settings/ui";
+import { ServerProviderPolicyCard } from "./server-provider-policy-card";
 
 type DescriptionVisibility = "public" | "members";
 function defaultDescriptionVisibility(profile: ServerProfile | undefined): DescriptionVisibility {
@@ -352,6 +353,8 @@ export function ServerSection() {
             <p className="mt-2 text-sm text-foreground-muted">Posture unavailable.</p>
           )}
         </div>
+
+        <ServerProviderPolicyCard />
 
       </div>
     </section>

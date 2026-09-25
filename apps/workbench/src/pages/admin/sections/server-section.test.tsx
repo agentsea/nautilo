@@ -136,6 +136,10 @@ mock.module("../../../lib/api", () => ({
     }),
     updateResearchProvider: updateResearchProviderMock,
     admin: {
+      serverProviderPolicy: {
+        get: async () => ({ allowPersonalProviderKeys: false }),
+        set: async (input: { allowPersonalProviderKeys: boolean }) => input,
+      },
       serverContext: {
         get: async () => ({
           recentConversationLimit: contextLimit,

@@ -402,6 +402,14 @@ export {
   type ServerContextConfigDb,
 } from "./utils/server-context-config-queries";
 export {
+  resolveServerProviderPolicy,
+  getServerProviderPolicy,
+  upsertServerProviderPolicy,
+  type ResolvedServerProviderPolicy,
+  type ServerProviderPolicyChange,
+  type ServerProviderPolicyDb,
+} from "./utils/server-provider-policy-queries";
+export {
   LIVE_SHADOW_ENCRYPTION_TRANSITION_MODES,
   UnsupportedEncryptionTransitionStateError,
   EncryptionTransitionPolicyConflictError,

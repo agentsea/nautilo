@@ -2122,6 +2122,13 @@
       "when": 1790262808877,
       "tag": "0302_dizzy_swarm",
       "breakpoints": true
+    },
+    {
+      "idx": 303,
+      "version": "7",
+      "when": 1790322939705,
+      "tag": "0303_square_blonde_phantom",
+      "breakpoints": true
     }
   ]
 }

@@ -6,12 +6,14 @@ const migrations = resolve(import.meta.dir, "../../src/migrations");
 const journal = JSON.parse(readFileSync(resolve(migrations, "meta/_journal.json"), "utf8")) as {
   entries: readonly { tag: string }[];
 };
-const migration = journal.entries.find((entry) => entry.tag === "0299_mushy_jasper_sitwell");
+const taskMigrationTag = "0299_mushy_jasper_sitwell";
+const migration = journal.entries.find((entry) => entry.tag === taskMigrationTag);
 if (!migration) throw new Error("Protected Task persistence migration is missing from the journal");
 const sql = readFileSync(resolve(migrations, `${migration.tag}.sql`), "utf8");
 
 describe("generated protected Task persistence migration", () => {
   test("is additive for existing Plain rows and installs exact mappings", () => {
+    expect(journal.entries.some((entry) => entry.tag === taskMigrationTag)).toBe(true);
     expect(sql).not.toContain('ALTER COLUMN "prompt" DROP NOT NULL');
     expect(sql).toContain('"content_representation" text DEFAULT \'ordinary\' NOT NULL');
     expect(sql).toContain('"result_representation" text DEFAULT \'ordinary\' NOT NULL');

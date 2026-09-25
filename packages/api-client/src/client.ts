@@ -1291,6 +1291,10 @@ export const serverContextConfigSchema = z.object({
   memoryReviewEnabled: z.boolean().nullable(),
 });
 
+export const serverProviderPolicySchema = z.object({
+  allowPersonalProviderKeys: z.boolean(),
+}).strict();
+
 // shared rooms owned by a user that block their deletion, with the
 // members eligible to receive ownership (non-federated humans).
 const sharedRoomMemberSchema = z.object({
@@ -1468,6 +1472,7 @@ export type AdminUserDeleteResponse = {
 };
 export type ServerModelConfig = z.infer<typeof serverModelConfigSchema>;
 export type ServerContextConfig = z.infer<typeof serverContextConfigSchema>;
+export type ServerProviderPolicy = z.infer<typeof serverProviderPolicySchema>;
 export type OwnedSharedRoom = z.infer<typeof ownedSharedRoomSchema>;
 export type OwnedSharedRoomsResponse = z.infer<typeof ownedSharedRoomsResponseSchema>;
 export type {
@@ -3971,6 +3976,27 @@ export class NautiloApiClient {
           body: patch,
           schema: serverContextConfigSchema,
           defaultErrorPrefix: "POST /api/admin/server-context",
+        });
+      },
+    },
+    // Server-wide admission policy for personal provider credentials.
+    // GET requires `read_server_settings` or `manage_server_settings`; set
+    // requires `manage_server_settings`.
+    serverProviderPolicy: {
+      get: async (): Promise<ServerProviderPolicy> => {
+        return this.request<ServerProviderPolicy>({
+          path: "/api/admin/server-provider-policy",
+          schema: serverProviderPolicySchema,
+          defaultErrorPrefix: "GET /api/admin/server-provider-policy",
+        });
+      },
+      set: async (input: ServerProviderPolicy): Promise<ServerProviderPolicy> => {
+        return this.request<ServerProviderPolicy>({
+          method: "POST",
+          path: "/api/admin/server-provider-policy",
+          body: serverProviderPolicySchema.parse(input),
+          schema: serverProviderPolicySchema,
+          defaultErrorPrefix: "POST /api/admin/server-provider-policy",
         });
       },
     },
