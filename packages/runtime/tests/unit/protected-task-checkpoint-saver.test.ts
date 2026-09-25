@@ -38,8 +38,9 @@ function fixture() {
     createDedicatedPool: () => {
       poolCalls += 1;
       return {
+        connect: async () => { throw new Error("not used"); },
         end: async () => { closeCalls += 1; },
-      } as DedicatedPool;
+      } as unknown as DedicatedPool;
     },
     execute: async (_saver: EncryptedCheckpointSaver) => "finished",
   } as Input;
@@ -74,6 +75,24 @@ describe("protected Task checkpoint saver ownership", () => {
     }).then(() => null, (error: unknown) => error);
     expect(caught).toBe(failure);
     expect(scenario.poolCalls()).toBe(1);
+    expect(scenario.closeCalls()).toBe(1);
+  });
+
+  test("refuses to share a checkpoint pool across Task-run segments", async () => {
+    const scenario = fixture();
+    const pool = scenario.input.createDedicatedPool();
+    await withProtectedTaskCheckpointSaver({
+      ...scenario.input,
+      createDedicatedPool: () => pool,
+    });
+    let entered = false;
+    const failure = await withProtectedTaskCheckpointSaver({
+      ...scenario.input,
+      createDedicatedPool: () => pool,
+      execute: async () => { entered = true; },
+    }).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(TypeError);
+    expect(entered).toBe(false);
     expect(scenario.closeCalls()).toBe(1);
   });
 });

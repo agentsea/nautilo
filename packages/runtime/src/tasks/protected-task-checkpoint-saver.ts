@@ -9,6 +9,7 @@ import {
 
 type DedicatedPool = CreateEncryptedCheckpointSaverOptions["dedicatedPool"];
 type TaskCellInput = Parameters<typeof createTaskRuntimeCheckpointCellCrypto>[0];
+const ownedPools = new WeakSet<object>();
 
 /**
  * One Task-run graph segment owns one saver and physical checkpoint pool. The
@@ -22,6 +23,13 @@ export async function withProtectedTaskCheckpointSaver<Value>(input: Readonly<
 >): Promise<Value> {
   const cell = createTaskRuntimeCheckpointCellCrypto(input);
   const pool = input.createDedicatedPool();
+  if (typeof pool !== "object" || pool === null
+    || typeof pool.connect !== "function"
+    || typeof pool.end !== "function"
+    || ownedPools.has(pool)) {
+    throw new TypeError("Protected Task checkpoint segment requires a fresh dedicated pool");
+  }
+  ownedPools.add(pool);
   let saver: EncryptedCheckpointSaver;
   try {
     saver = createEncryptedCheckpointSaver({
