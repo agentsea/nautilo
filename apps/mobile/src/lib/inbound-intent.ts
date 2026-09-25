@@ -91,6 +91,14 @@ export interface MobilePushIntentResolver {
   findBindingServer(bindingId: string): Promise<PushIntentServer | null>;
 }
 
+/** A validated push target only needs a visible switch when its origin differs. */
+export function shouldSwitchToPushServer(
+  active: PushIntentServer | null,
+  target: PushIntentServer,
+): boolean {
+  return active?.id !== target.id || active.serverUrl !== target.serverUrl;
+}
+
 const MAX_INBOUND_DEDUP_KEYS = 128;
 
 /**

@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Mobile now opens notifications for the active server without restarting the
+  encryption check. Notifications for another server still check that server
+  before opening the conversation.
+
 - Scheduled reminders now tell the background Genie that its final answer
   returns to the original conversation. A redundant request to message the
   requester without waiting for a reply receives corrective feedback before

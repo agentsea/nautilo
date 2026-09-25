@@ -8,6 +8,7 @@ import {
   parseMobilePushNotification,
   shouldPresentForegroundPush,
   shouldSuppressForegroundPush,
+  shouldSwitchToPushServer,
   type InboundUrlIntent,
   type MobilePushIntentResolverDeps,
 } from "./inbound-intent";
@@ -198,6 +199,14 @@ describe("D468 inbound push envelope", () => {
 });
 
 describe("D468 root inbound coordinator", () => {
+  test("a push on the active server does not switch it again", () => {
+    const target = { id: serverId, serverUrl };
+    expect(shouldSwitchToPushServer({ ...target }, target)).toBe(false);
+    expect(shouldSwitchToPushServer(null, target)).toBe(true);
+    expect(shouldSwitchToPushServer({ id: "another", serverUrl }, target)).toBe(true);
+    expect(shouldSwitchToPushServer({ id: serverId, serverUrl: "https://old.example" }, target)).toBe(true);
+  });
+
   test("serializes and deduplicates a server-qualified invite URL without treating it as a push target", async () => {
     const urlListeners: Array<(url: string) => void> = [];
     const intents: InboundUrlIntent[] = [];
