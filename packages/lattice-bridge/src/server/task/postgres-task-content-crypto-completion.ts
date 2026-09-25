@@ -147,7 +147,7 @@ function exactPublication(
   const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(revision);
   const payloadBytes = snapshot.object.payloadBytes.ciphertext.slice();
   const manifestBytes = snapshot.access.manifestBytes.slice();
-  const envelopeBytes = snapshot.access.envelopeBytes[0]!.slice();
+  const envelopeBytes = snapshot.access.envelopeBytes[0].slice();
   return Object.freeze({
     coordinate: snapshot.coordinate,
     authority: snapshot.authority,
