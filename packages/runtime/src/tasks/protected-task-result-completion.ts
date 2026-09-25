@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
-
 import {
-  encodeTaskRunResultPayloadV1,
   prepareTaskRuntimeRunResult,
+  taskRuntimePreparedResultDigestV1,
   type PrepareTaskRuntimeRunResultInput,
 } from "@nautilo/lattice-bridge";
 
@@ -28,12 +26,14 @@ export type CompleteProtectedTaskRunResultInput = Readonly<
 
 export type CompleteProtectedTaskRunResultDependencies = Readonly<{
   prepare: typeof prepareTaskRuntimeRunResult;
+  digestPrepared: typeof taskRuntimePreparedResultDigestV1;
   publish: typeof publishProtectedOrDualTaskRunResult;
 }>;
 
 const productionDependencies: CompleteProtectedTaskRunResultDependencies =
   Object.freeze({
     prepare: prepareTaskRuntimeRunResult,
+    digestPrepared: taskRuntimePreparedResultDigestV1,
     publish: publishProtectedOrDualTaskRunResult,
   });
 
@@ -59,17 +59,11 @@ export async function completeProtectedTaskRunResult(
     throw new TypeError("Protected Task result disagrees with its grant");
   }
 
-  const canonical = encodeTaskRunResultPayloadV1(input.payload);
-  let requestDigest: Uint8Array;
-  try {
-    requestDigest = createHash("sha256").update(canonical).digest();
-  } finally {
-    canonical.fill(0);
-  }
   const prepared = dependencies.prepare(input);
   if (prepared.coordinate.kind !== "run_result") {
     throw new TypeError("Protected Task result has no run coordinate");
   }
+  const requestDigest = dependencies.digestPrepared(prepared);
   input.signal.throwIfAborted();
   return dependencies.publish({
     repository: input.repository,

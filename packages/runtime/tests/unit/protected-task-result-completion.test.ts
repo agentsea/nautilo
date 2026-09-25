@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 
 import {
   deriveTaskContentCryptoObjectIdV1,
-  encodeTaskRunResultPayloadV1,
   type TaskRunResultPayloadV1,
 } from "@nautilo/lattice-bridge";
 
@@ -77,6 +75,7 @@ function fixture(payload: TaskRunResultPayloadV1) {
       prepareCalls += 1;
       return prepared as ReturnType<CompleteProtectedTaskRunResultDependencies["prepare"]>;
     },
+    digestPrepared: () => new Uint8Array(32).fill(9),
     publish: async (publication) => {
       publications.push(publication);
       return {
@@ -111,11 +110,7 @@ describe("protected Task result completion", () => {
     expect(publication.outcome).toBe("completed");
     expect(publication.scheduleKind).toBe("cron");
     expect(publication.ordinaryContent).toEqual({ coordinate, payload });
-    const bytes = encodeTaskRunResultPayloadV1(payload);
-    expect(publication.requestDigest).toEqual(
-      createHash("sha256").update(bytes).digest(),
-    );
-    bytes.fill(0);
+    expect(publication.requestDigest).toEqual(new Uint8Array(32).fill(9));
   });
 
   test("rejects a substituted grant or aborted operation before preparation", async () => {

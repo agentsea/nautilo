@@ -45,6 +45,7 @@ import {
 } from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 import {
   prepareTaskRuntimeRunResult,
+  taskRuntimePreparedResultDigestV1,
 } from "../../src/task/task-run-result-preparation.ts";
 
 const NOW = 1_820_000_000_000;
@@ -280,6 +281,9 @@ describe("Task Runtime result preparation", () => {
     });
     const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(
       revision,
+    );
+    expect(taskRuntimePreparedResultDigestV1(revision)).toEqual(
+      scenario.crypto.hash(snapshot.access.manifestBytes),
     );
     expect(snapshot.coordinate).toEqual(scenario.coordinate);
     expect(snapshot.signerKind).toBe("agent_runtime");

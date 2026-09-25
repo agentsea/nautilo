@@ -10,7 +10,9 @@ import type { TaskContentAuthorityV1 } from
   "./task-content-authority-v1.ts";
 import {
   createPreparedTaskRuntimeResultContentCryptoRevisionV1,
+  readPreparedTaskContentCryptoRevisionSnapshotV1,
 } from "./task-content-prepared-revision.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   deriveTaskContentCryptoObjectIdV1,
   TASK_RUN_RESULT_OBJECT_TYPE_V1,
@@ -86,4 +88,16 @@ export function prepareTaskRuntimeRunResult(
   } finally {
     plaintext.fill(0);
   }
+}
+
+/** Stable receipt digest for this exact encrypted, Agent-signed preparation. */
+export function taskRuntimePreparedResultDigestV1(
+  prepared: PreparedTaskContentCryptoRevisionV1,
+): Uint8Array {
+  const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared);
+  if (snapshot.coordinate.kind !== "run_result"
+    || snapshot.signerKind !== "agent_runtime") {
+    throw new TypeError("Task Runtime result preparation is required");
+  }
+  return sha256(snapshot.access.manifestBytes);
 }

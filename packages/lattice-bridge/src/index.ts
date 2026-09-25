@@ -177,6 +177,7 @@ export * from "./task/task-content-shadow-saga.ts";
 export * from "./task/task-content-operation.ts";
 export {
   prepareTaskRuntimeRunResult,
+  taskRuntimePreparedResultDigestV1,
   type PrepareTaskRuntimeRunResultInput,
 } from "./task/task-run-result-preparation.ts";
 export {
