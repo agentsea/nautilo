@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import {
   BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS,
-  CRYPTO_STORAGE_COLLECTION_LIMITS,
 } from "@nautilo/db/schema";
+import { MAX_AGENT_GRANT_NAMESPACES_V2 } from
+  "@nautilo/lattice-crypto/wire-limits";
 
 import {
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS,
@@ -525,7 +526,7 @@ function scopeMaximum(
 ): number {
   return "recipientKind" in binding
       && binding.recipientKind === "nautilo_task_runtime"
-    ? CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal + 1
+    ? MAX_AGENT_GRANT_NAMESPACES_V2
     : FOREGROUND_AUTHORIZATION_MAX_SESSIONS;
 }
 
@@ -655,7 +656,7 @@ function snapshotDescription(
   }
   const maximum = "recipientKind" in value
       && value.recipientKind === "nautilo_task_runtime"
-    ? CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal + 1
+    ? MAX_AGENT_GRANT_NAMESPACES_V2
     : FOREGROUND_AUTHORIZATION_MAX_SESSIONS;
   const namespaceIds = canonicalIds(value.namespaceIds, maximum);
   const domainIds = canonicalIds(value.domainIds, maximum);

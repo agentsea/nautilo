@@ -100,13 +100,6 @@ export {
 } from "./prepare-processor-recipient";
 
 export {
-  TaskRuntimeGrantClaim,
-  createTaskRuntimeGrantClaim,
-  type TaskRuntimeGrantClaimDependencies,
-  type TaskRuntimeGrantClaimPlan,
-} from "./task-runtime-grant-claim";
-
-export {
   DARK_BACKGROUND_DEFAULT_PENDING_DELAY_MS,
   DARK_BACKGROUND_ENTRYPOINT_INVENTORY,
   DARK_BACKGROUND_MAX_PENDING_DELAY_MS,

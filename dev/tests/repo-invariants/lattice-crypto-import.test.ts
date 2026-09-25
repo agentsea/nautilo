@@ -1309,6 +1309,28 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto/background",
   "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto/wire",
+  // Protected Task runtime authorization uses Lattice-owned request, grant,
+  // authority, and publication formats. The API schema and scope bounds use
+  // provider-free limits; focused tests exercise the same signed contracts.
+  "packages/api-client/src/schemas/background-authorization.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/lattice-bridge/src/client/background/task-runtime-authorization-responder-v1.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/src/server/task/current-task-runtime-authority.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/current-task-runtime-authority.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/task-runtime-authorization-responder-v1.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/runtime/src/protected-execution/background-authorization/repository.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-crypto",
+  "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-crypto/background",
+  "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-crypto/wire",
+  "packages/runtime/src/protected-execution/foreground-authorization-session.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/runtime/tests/unit/background-authorization-repository.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/runtime/tests/unit/task-runtime-grant-claim.test.ts -> @nautilo/lattice-crypto",
+  "packages/runtime/tests/unit/task-runtime-grant-claim.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/runtime/tests/unit/task-runtime-grant-claim.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/background-authorization-composition.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/task-protected-composition.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/task-protected-composition.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit-isolated/task-protected-composition.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/background-authorization-composition.test.ts -> @nautilo/lattice-crypto/wire",
 ] as const;
 
 const allowedReviewedCryptoProductConsumers = new Set(
@@ -1335,10 +1357,13 @@ const reviewedBridgeProductConsumerInventory = [
   "apps/workbench/src/lib/protected-human-task-controller.ts -> @nautilo/lattice-bridge",
   "apps/workbench/src/lib/protected-human-task-controller.ts -> @nautilo/lattice-bridge/client/browser",
   "packages/server/src/routes/task-protected-publication.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/task-protected-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/task-protected-composition.ts -> @nautilo/lattice-bridge/server",
   "packages/server/src/routes/tasks.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/integration/tasks-api.integration.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit-isolated/task-protected-composition.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit/task-summary-mapper.test.ts -> @nautilo/lattice-bridge",
   // Real admitted-device, storage, and foreground integration proof.
   "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge",
@@ -1800,6 +1825,9 @@ const allowedProtectedExecutionProductionReferences = new Set([
   "packages/runtime/src/stenographer/protected-stenographer-publication-reconciliation.ts -> ../protected-execution/background-authorization/repository",
   "packages/runtime/src/stenographer/protected-stenographer-work-composition.ts -> ../protected-execution/background-authorization/lifecycle",
   "packages/runtime/src/stenographer/protected-stenographer-work-composition.ts -> ../protected-execution/background-authorization/repository",
+  // The Task Job reference validates the same durable authorization request
+  // identifier bound as the background lifecycle before accepting a Job row.
+  "packages/runtime/src/tasks/protected-task-job-reference.ts -> ../protected-execution/background-authorization/lifecycle",
 ]);
 
 function bridgeProductConsumerReferences(repoRoot: string): string[] {
@@ -2813,12 +2841,12 @@ describe("M226 lattice-crypto current package governance", () => {
       perScopeWorkerBudget: 4,
       hostedMaxParallelScopes: 4,
       maximumHostedWorkers: 16,
-      scopeCount: 29,
+      scopeCount: 30,
       reviewedDuplicateTargets: [],
     });
     expect(
       manifest.scopes.filter((scope) => scope.tier === "critical"),
-    ).toHaveLength(27);
+    ).toHaveLength(28);
     expect(
       manifest.scopes.filter((scope) => scope.tier === "provider"),
     ).toHaveLength(2);
@@ -2832,9 +2860,9 @@ describe("M226 lattice-crypto current package governance", () => {
     )).toHaveLength(1);
 
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(126);
+    expect(new Set(mutationTargets).size).toBe(127);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(126);
+    expect(eligibleTargets).toHaveLength(127);
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-core.ts");
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-v2.ts");
     expect([...new Set(mutationTargets)].sort()).toEqual(eligibleTargets);

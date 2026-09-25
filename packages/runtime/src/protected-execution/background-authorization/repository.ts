@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import {
   BACKGROUND_AUTHORIZATION_BYTE_LIMITS,
   BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS,
-  CRYPTO_STORAGE_COLLECTION_LIMITS,
 } from "@nautilo/db/schema";
+import { MAX_AGENT_GRANT_DOMAINS_V2, MAX_AGENT_GRANT_NAMESPACES_V2 } from
+  "@nautilo/lattice-crypto/wire-limits";
 import type {
   VerifiedBackgroundAuthorizationDeviceResponse,
   VerifiedAgentBackgroundAuthorizationDeviceResponseV2,
@@ -681,14 +682,14 @@ function parseAuthoritySet(
     || value.namespaceRequirements.length < 1
     || value.namespaceRequirements.length > (
       subjectKind === "runtime"
-        ? CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal + 1
+        ? MAX_AGENT_GRANT_NAMESPACES_V2
         : MAX_AUTHORITY_SET_SIZE
     )
     || !Array.isArray(value.domainRequirements as unknown)
     || value.domainRequirements.length < 1
     || value.domainRequirements.length > (
       subjectKind === "runtime"
-        ? CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal + 1
+        ? MAX_AGENT_GRANT_DOMAINS_V2
         : MAX_AUTHORITY_SET_SIZE
     )
   ) {

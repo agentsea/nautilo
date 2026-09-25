@@ -5,7 +5,7 @@ import {
   MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
 } from "@nautilo/lattice-crypto/background";
 import { DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2 } from
-  "@nautilo/lattice-crypto/wire";
+  "@nautilo/lattice-crypto/wire-limits";
 
 export const BACKGROUND_AUTHORIZATION_MAX_LIST_REQUESTS = 256;
 const BACKGROUND_AUTHORIZATION_MAX_REQUEST_WIRE_BYTES = Math.max(

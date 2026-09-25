@@ -4,6 +4,10 @@
  * Values remain owned by their codecs; this entry point adds no policy.
  */
 export { MAX_RETAINED_NAMESPACE_GENERATIONS_V2 } from "./v2-types/limits.ts";
+export { MAX_AGENT_GRANT_DOMAINS_V2, MAX_AGENT_GRANT_NAMESPACES_V2 } from
+  "./v2-types/limits.ts";
+export { DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2 } from
+  "./format/domain-foreground-authorization-v2.ts";
 export {
   HUMAN_MEMORY_EXACT_ACCESS_REQUEST_MAX_ENTRIES_V2,
   MAX_HUMAN_MEMORY_EXACT_ACCESS_REQUEST_WIRE_BYTES_V2,

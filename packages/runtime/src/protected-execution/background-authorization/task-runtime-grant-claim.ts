@@ -385,7 +385,7 @@ function createCandidate(input: Readonly<{
  * Dark Task Runtime grant/claim composition. It can prepare and atomically
  * claim an accepted device grant, but does not mount the protected executor.
  */
-export class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
+class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
   readonly #now: () => number;
   readonly #claimId: () => string;
 

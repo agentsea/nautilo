@@ -1,12 +1,19 @@
 import {describe, expect, test} from "bun:test";
-import {LatticeCrypto, authorizationRevision, cryptoDeviceId, humanId} from "@nautilo/lattice-crypto";
+import {
+  LatticeCrypto,
+  authorizationRevision,
+  createDomainForegroundAuthorizationPlan,
+  cryptoDeviceId,
+  domainForegroundNamespaceBindingSetDigest,
+  humanId,
+  mintDomainForegroundAuthorization,
+  type DomainForegroundAuthorityEntry,
+} from "@nautilo/lattice-crypto";
 import {createBackgroundAuthorizationResponseV2, encodeBackgroundWorkDescriptorV2,
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   type BackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
-import {createDomainForegroundAuthorizationPlan, domainForegroundNamespaceBindingSetDigest,
-  mintDomainForegroundAuthorization, type DomainForegroundAuthorityEntry} from "@nautilo/lattice-crypto";
 import {parseDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2} from "@nautilo/lattice-crypto/wire";
 import {createProductionBackgroundAuthorizationComposition} from "../../src/routes/background-authorization-composition";
