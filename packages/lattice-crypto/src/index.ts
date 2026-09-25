@@ -1091,6 +1091,13 @@ export type {
   TaskRuntimeResultObjectAuthorityV1 as TaskRuntimeResultObjectAuthority,
 } from "./object/task-runtime-result-preparation-v1.ts";
 export {
+  withTaskRuntimeCheckpointNamespaceV1 as withTaskRuntimeCheckpointNamespace,
+} from "./object/task-runtime-checkpoint-namespace-v1.ts";
+export type {
+  TaskRuntimeCheckpointIdentityV1 as TaskRuntimeCheckpointIdentity,
+  TaskRuntimeCheckpointNamespaceMaterialV1 as TaskRuntimeCheckpointNamespaceMaterial,
+} from "./object/task-runtime-checkpoint-namespace-v1.ts";
+export {
   ObjectAccessPersistenceOutcomeUnknownV2
     as ObjectAccessPersistenceOutcomeUnknown,
   persistPreparedObjectAccessManifestGenesisV2

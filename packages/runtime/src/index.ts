@@ -348,6 +348,9 @@ export {
   type CompleteProtectedTaskRunResultInput,
 } from "./tasks/protected-task-result-completion";
 export {
+  withProtectedTaskCheckpointSaver,
+} from "./tasks/protected-task-checkpoint-saver";
+export {
   dispatchTaskRun,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,

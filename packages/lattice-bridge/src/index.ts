@@ -599,6 +599,7 @@ export type {
   ProtectedCheckpointCellAuthorityPort,
   ProtectedCheckpointCellCoordinate,
   ProtectedCheckpointCellCrypto,
+  ProtectedCheckpointEntrypointId,
   ProtectedCheckpointCryptoErrorCode,
   ProtectedCheckpointInvocationScope,
   ProtectedCheckpointNamespaceContentResult,
@@ -606,6 +607,11 @@ export type {
   ProtectedCheckpointNamespaceOperationContext,
   ProtectedCheckpointNamespaceSessionContentExecutor,
 } from "./checkpoint/protected-checkpoint-cell-crypto.ts";
+export {
+  createTaskRuntimeCheckpointCellCrypto,
+  type TaskRuntimeCheckpointCellCrypto,
+  type TaskRuntimeCheckpointCellIdentity,
+} from "./checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 export {
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS,
   createProtectedAgentRuntimeContentExecutor,

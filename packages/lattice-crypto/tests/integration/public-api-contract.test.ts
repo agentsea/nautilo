@@ -135,9 +135,25 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  {
+    source: "./object/task-runtime-checkpoint-namespace-v1.ts",
+    imported: "withTaskRuntimeCheckpointNamespaceV1",
+    exported: "withTaskRuntimeCheckpointNamespace",
+    typeOnly: false,
+  },
+  ...([
+    "TaskRuntimeCheckpointIdentity",
+    "TaskRuntimeCheckpointNamespaceMaterial",
+  ] as const).map((name) => ({
+    source: "./object/task-runtime-checkpoint-namespace-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
   ...([
     "TaskRuntimeExecutionDomainAuthority",
     "TaskRuntimeExecutionEvidence",
+    "TaskRuntimeExecutionNamespaceAuthority",
   ] as const).map((name) => ({
     source: "./background/task-runtime-execution-evidence-v1.ts",
     imported: `${name}V1`,
