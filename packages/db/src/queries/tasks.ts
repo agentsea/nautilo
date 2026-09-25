@@ -1754,6 +1754,220 @@ export async function prepareClaimedProtectedTaskOccurrence(
   });
 }
 
+export type ProtectedTaskDurableJobReference = Readonly<{
+  kind: "protected_task_run_v1";
+  taskId: string;
+  taskRunId: string;
+  inputObjectId: string;
+  resultObjectId: string;
+  authorizationRequestId: string;
+  policyRevision: number;
+}>;
+
+export type StartProtectedTaskRunInput = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  graphThreadId: string;
+  jobId: string;
+  contentRepresentation: "dual" | "protected";
+  contentNamespaceId: string;
+  contentRevision: number;
+  cryptoObjectId: string;
+  cryptoAccessRevision: number;
+  cryptoRequiredNamespaceFingerprint: Uint8Array;
+  jobReference: ProtectedTaskDurableJobReference;
+}>;
+
+export type StartProtectedTaskRunResult =
+  | Readonly<{ status: "started" }>
+  | Readonly<{ status: "stale" }>;
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function exactProtectedTaskJobReference(
+  value: unknown,
+  expected: ProtectedTaskDurableJobReference,
+): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const reference = value as Record<string, unknown>;
+  return Object.keys(reference).sort().join(",")
+      === "authorizationRequestId,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
+    && reference["kind"] === expected.kind
+    && reference["taskId"] === expected.taskId
+    && reference["taskRunId"] === expected.taskRunId
+    && reference["inputObjectId"] === expected.inputObjectId
+    && reference["resultObjectId"] === expected.resultObjectId
+    && reference["authorizationRequestId"] === expected.authorizationRequestId
+    && reference["policyRevision"] === expected.policyRevision;
+}
+
+/**
+ * Attach one persisted, content-free Job to its exact protected TaskRun before
+ * any transient plaintext is opened. Task -> TaskRun -> Job lock order matches
+ * the existing lifecycle writers. A duplicate, stale authorization, changed
+ * crypto coordinate, user Stop/Pause, or unrelated Job returns `stale` without
+ * changing either lifecycle row.
+ *
+ * One-shot Tasks enter `running`; cron Tasks remain `pending` because their
+ * next occurrence was already advanced when this run was prepared. In both
+ * cases only the exact awaiting TaskRun enters `running` with the Job link.
+ */
+export async function startProtectedTaskRun(
+  db: DirectDatabase,
+  input: StartProtectedTaskRunInput,
+): Promise<StartProtectedTaskRunResult> {
+  if (
+    !input.taskId
+    || !input.taskRunId
+    || !input.graphThreadId
+    || !input.jobId
+    || input.contentRepresentation !== "dual"
+      && input.contentRepresentation !== "protected"
+    || !input.contentNamespaceId
+    || !Number.isSafeInteger(input.contentRevision)
+    || input.contentRevision < 1
+    || !input.cryptoObjectId
+    || !Number.isSafeInteger(input.cryptoAccessRevision)
+    || input.cryptoAccessRevision < 0
+    || !(input.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || input.cryptoRequiredNamespaceFingerprint.length !== 32
+    || input.jobReference === null
+    || typeof input.jobReference !== "object"
+    || Array.isArray(input.jobReference)
+    || input.jobReference.kind !== "protected_task_run_v1"
+    || input.jobReference.taskId !== input.taskId
+    || input.jobReference.taskRunId !== input.taskRunId
+    || input.jobReference.inputObjectId !== input.cryptoObjectId
+    || !input.jobReference.resultObjectId
+    || !input.jobReference.authorizationRequestId
+    || !Number.isSafeInteger(input.jobReference.policyRevision)
+    || input.jobReference.policyRevision < 1
+  ) {
+    throw new TypeError("Protected Task start binding is malformed");
+  }
+
+  return db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, input.taskId))
+      .limit(1)
+      .for("update");
+    if (!task) return { status: "stale" } as const;
+
+    const expectedTaskStatus = task.scheduleKind === "cron"
+      ? "pending"
+      : "awaiting";
+    if (
+      task.status !== expectedTaskStatus
+      || task.contentRepresentation !== input.contentRepresentation
+      || task.contentNamespaceId !== input.contentNamespaceId
+      || task.contentRevision !== input.contentRevision
+      || task.cryptoObjectId !== input.cryptoObjectId
+      || task.cryptoAccessRevision !== input.cryptoAccessRevision
+      || task.cryptoMappingState !== "verified"
+      || task.cryptoRequiredNamespaceFingerprint === null
+      || !sameBytes(
+        task.cryptoRequiredNamespaceFingerprint,
+        input.cryptoRequiredNamespaceFingerprint,
+      )
+    ) {
+      return { status: "stale" } as const;
+    }
+
+    const [run] = await tx
+      .select()
+      .from(taskRuns)
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, task.id),
+      ))
+      .limit(1)
+      .for("update");
+    if (
+      !run
+      || run.graphThreadId !== input.graphThreadId
+      || run.status !== "awaiting"
+      || run.jobId !== null
+      || run.modelId !== null
+      || run.resultText !== null
+      || run.completedAt !== null
+      || run.lastError !== null
+      || run.resultRepresentation !== "ordinary"
+      || run.resultContentNamespaceId !== null
+      || run.resultRevision !== 0
+      || run.resultCryptoObjectId !== null
+      || run.resultCryptoAccessRevision !== 0
+      || run.resultCryptoRequiredNamespaceFingerprint !== null
+      || run.resultCryptoMappingState !== "unmapped"
+    ) {
+      return { status: "stale" } as const;
+    }
+
+    const [job] = await tx
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, input.jobId))
+      .limit(1)
+      .for("share");
+    if (
+      !job
+      || job.ownerId !== task.requestorId
+      || job.requestorId !== task.requestorId
+      || job.laneKey !== `task:${task.id}`
+      || job.type !== "foreground"
+      || job.status !== "queued"
+      || job.result !== null
+      || job.message !== null
+      || job.startedAt !== null
+      || job.completedAt !== null
+      || !exactProtectedTaskJobReference(job.input, input.jobReference)
+    ) {
+      return { status: "stale" } as const;
+    }
+
+    const [updatedRun] = await tx
+      .update(taskRuns)
+      .set({ status: "running", jobId: job.id })
+      .where(and(
+        eq(taskRuns.id, run.id),
+        eq(taskRuns.taskId, task.id),
+        eq(taskRuns.graphThreadId, input.graphThreadId),
+        eq(taskRuns.status, "awaiting"),
+        isNull(taskRuns.jobId),
+      ))
+      .returning();
+    if (!updatedRun) {
+      throw new Error("Protected Task start lost its locked TaskRun");
+    }
+
+    if (task.scheduleKind === "cron") {
+      return { status: "started" } as const;
+    }
+
+    const [updatedTask] = await tx
+      .update(tasks)
+      .set({ status: "running", updatedAt: new Date() })
+      .where(and(
+        eq(tasks.id, task.id),
+        eq(tasks.status, "awaiting"),
+      ))
+      .returning();
+    if (!updatedTask) {
+      throw new Error("Protected Task start lost its locked Task");
+    }
+    return { status: "started" } as const;
+  });
+}
+
 /**
  * Clear fire-locks older than `olderThan` (stale-lock recovery — an
  * observer crashed mid-claim). Returns the number of rows cleared.
