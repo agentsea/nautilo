@@ -48,7 +48,10 @@ import { MemoryClientProfileVault } from
   "../../src/testing/client-profile-vault.ts";
 import { createAuthorizedHumanTaskRunResultReaderV1 } from
   "../../src/client/task/authorized-human-task-run-result.ts";
-import { createVaultHumanTaskRunResultReaderV1 } from
+import {
+  createVaultHumanTaskRunResultReaderV1,
+  type VaultHumanTaskRunResultReaderInputV1,
+} from
   "../../src/client/task/vault-human-task-run-result.ts";
 import { ClassifiedDataOperationError } from
   "../../src/transition/encryption-data-operation-owner.ts";
@@ -457,11 +460,10 @@ describe("Task Runtime result preparation", () => {
       }],
     };
     let response = resultEnvelope;
-    const reader = createAuthorizedHumanTaskRunResultReaderV1({
-      api: {
-        getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
-      } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">,
-      device: createVaultHumanTaskRunResultReaderV1({
+    const api = {
+      getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
+    } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">;
+    const deviceInput: VaultHumanTaskRunResultReaderInputV1 = {
         crypto: scenario.crypto,
         vault,
         coordinates,
@@ -492,7 +494,10 @@ describe("Task Runtime result preparation", () => {
             return Promise.resolve(true);
           },
         },
-      }),
+    };
+    const reader = createAuthorizedHumanTaskRunResultReaderV1({
+      api,
+      device: createVaultHumanTaskRunResultReaderV1(deviceInput),
     });
     const request = { taskId: TASK_ID, taskRunId: RUN_ID, agentId: AGENT_ID };
     expect(await reader.read(request)).toEqual({
@@ -521,6 +526,21 @@ describe("Task Runtime result preparation", () => {
       );
       response = resultEnvelope;
     }
+    const wrongSubject = createAuthorizedHumanTaskRunResultReaderV1({
+      api,
+      device: createVaultHumanTaskRunResultReaderV1({
+        ...deviceInput,
+        subjectHumanId: "30000000-0000-4000-8000-000000000099",
+      }),
+    });
+    await wrongSubject.read(request).then(
+      () => { throw new Error("wrong Human subject was accepted"); },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+        if (!(error instanceof ClassifiedDataOperationError)) return;
+        expect(error.failureClass).toBe("integrity");
+      },
+    );
   });
 
   test("rejects result, Namespace, and signer substitution before publication", async () => {

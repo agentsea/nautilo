@@ -86,7 +86,9 @@ export function createVaultHumanTaskRunResultReaderV1(
         taskRunId: input.taskRunId,
         contentRevision: 1,
       });
-      if (envelope.taskId !== input.taskId
+      if (dependencies.subjectHumanId
+          !== dependencies.coordinates.humanActorId
+        || envelope.taskId !== input.taskId
         || envelope.taskRunId !== input.taskRunId
         || envelope.objectId !== expectedObjectId
         || envelope.resultRevision !== 1
