@@ -15,6 +15,11 @@ import {
 import type {
   DurableTaskContentRepositoryV1,
 } from "@nautilo/lattice-bridge/server";
+import {
+  terminalizeDualTaskRunResult,
+  terminalizeProtectedTaskRunResult,
+  type DirectDatabase,
+} from "@nautilo/db";
 
 import {
   assertProtectedTaskJobReferenceV1,
@@ -102,6 +107,38 @@ export interface DualTaskRunResultTerminalPort {
     /** Canonical ordinary sibling, visible only to the Shadow product callback. */
     ordinaryContent: RunResultContent;
   }>): Promise<ProtectedTaskRunTerminalResult>;
+}
+
+/** Product adapter for the protected and Shadow terminal transactions. */
+export function createTaskRunResultTerminalPorts(db: DirectDatabase): Readonly<{
+  protected: ProtectedTaskRunTerminalPort;
+  dual: DualTaskRunResultTerminalPort;
+}> {
+  return Object.freeze({
+    protected: Object.freeze({
+      terminalize: (terminalInput: Parameters<
+        ProtectedTaskRunTerminalPort["terminalize"]
+      >[0]) => {
+        const { policyRevalidationToken: _token, ...input } = terminalInput;
+        return terminalizeProtectedTaskRunResult(db, input);
+      },
+    }) satisfies ProtectedTaskRunTerminalPort,
+    dual: Object.freeze({
+      terminalizeDual: (terminalInput: Parameters<
+        DualTaskRunResultTerminalPort["terminalizeDual"]
+      >[0]) => {
+        const {
+          ordinaryContent,
+          policyRevalidationToken: _token,
+          ...input
+        } = terminalInput;
+        return terminalizeDualTaskRunResult(db, {
+          ...input,
+          ordinaryResult: ordinaryContent.payload,
+        });
+      },
+    }) satisfies DualTaskRunResultTerminalPort,
+  });
 }
 
 export type PublishProtectedTaskRunResultInput = Readonly<{
