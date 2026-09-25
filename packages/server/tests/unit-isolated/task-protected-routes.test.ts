@@ -19,6 +19,7 @@ import {
 import { protectedTaskRoutes } from "../../src/routes/task-protected-routes";
 
 const TASK = "91000000-0000-4000-8000-000000000001";
+const RUN = "91000000-0000-4000-8000-000000000009";
 const HUMAN = "91000000-0000-4000-8000-000000000002";
 const ACTOR = "91000000-0000-4000-8000-000000000003";
 const AGENT = "91000000-0000-4000-8000-000000000004";
@@ -28,6 +29,7 @@ const NAMESPACE = "91000000-0000-4000-8000-000000000006";
 const DOMAIN = "task-domain:one";
 const HASH = "A".repeat(43);
 const OBJECT = `task:v1:${TASK}:1`;
+const RESULT_OBJECT = `task-run-result:v1:${"a".repeat(64)}`;
 
 const authority: ProtectedTaskRouteAuthority = Object.freeze({
   userId: HUMAN, subjectHumanId: HUMAN, actorId: ACTOR, agentId: AGENT,
@@ -85,6 +87,20 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
         signerEvidence: [{ kind: "human_device", subjectHumanId: HUMAN,
           committerDeviceId: "device:one", hostAuthorizationRevision: 1,
           signingPublicKeyBase64url: HASH }],
+      };
+    },
+    readRunResult: async (input) => {
+      calls.push(input);
+      return {
+        readVersion: 1, status: "ready", taskId: input.taskId,
+        taskRunId: input.taskRunId, objectId: RESULT_OBJECT,
+        resultRevision: 1, cryptoAccessRevision: 0, namespaceId: NAMESPACE,
+        encryptedPayloadBytesBase64url: "Y2lwaGVy",
+        accessManifestBytesBase64url: "bWFuaWZlc3Q",
+        accessManifestProofBytesBase64url: [],
+        namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
+        signerEvidence: [{ kind: "agent_runtime_publication",
+          evidenceBytesBase64url: "ZXZpZGVuY2U" }],
       };
     },
     plan: async (input) => {
@@ -186,6 +202,15 @@ describe("protected Task routes", () => {
     expect(envelope.signerEvidence[0]).toMatchObject({
       kind: "human_device", subjectHumanId: HUMAN,
     });
+    const result = await state.client.getProtectedTaskRunResultEnvelopeV1(
+      TASK,
+      RUN,
+    );
+    expect(result).toMatchObject({
+      status: "ready", taskId: TASK, taskRunId: RUN,
+      objectId: RESULT_OBJECT, resultRevision: 1,
+      signerEvidence: [{ kind: "agent_runtime_publication" }],
+    });
     expect((await state.client.createPreparedTaskV1(preparedCreate())).taskId).toBe(TASK);
     const update: ProtectedTaskPreparedUpdateRequestV1 = {
       ...preparedCreate(), operation: "update", expectedContentRevision: 1,
@@ -193,7 +218,7 @@ describe("protected Task routes", () => {
     };
     expect((await state.client.updatePreparedTaskV1(TASK, update)).content)
       .toMatchObject({ status: "protected", contentRevision: 2 });
-    expect(state.calls).toHaveLength(6);
+    expect(state.calls).toHaveLength(7);
     expect(state.calls.every((call) =>
       (call as { authority: unknown }).authority === authority)).toBe(true);
   });
@@ -274,11 +299,62 @@ describe("protected Task routes", () => {
     expect(state.calls).toHaveLength(0);
   });
 
+  test("returns waiting and unavailable TaskRun result states without plaintext", async () => {
+    const waiting = fixture({
+      readRunResult: async (input) => ({
+        readVersion: 1, status: "waiting", taskId: input.taskId,
+        taskRunId: input.taskRunId, objectId: RESULT_OBJECT,
+        resultRevision: 1, cryptoAccessRevision: 0,
+        reason: "result_not_mapped",
+      }),
+    });
+    expect(await waiting.client.getProtectedTaskRunResultEnvelopeV1(TASK, RUN))
+      .toMatchObject({ status: "waiting", reason: "result_not_mapped" });
+
+    const unavailable = fixture({
+      readRunResult: async (input) => ({
+        readVersion: 1, status: "unavailable", taskId: input.taskId,
+        taskRunId: input.taskRunId, objectId: RESULT_OBJECT,
+        resultRevision: 1, cryptoAccessRevision: 0,
+        reason: "authority_changed",
+      }),
+    });
+    const response = await unavailable.app.inject({
+      method: "GET",
+      url: `/api/protected/tasks/${TASK}/runs/${RUN}/result`,
+    });
+    expect(response.json()).toMatchObject({
+      status: "unavailable", reason: "authority_changed",
+    });
+    expect(response.body).not.toContain("resultText");
+    expect(response.body).not.toContain("lastError");
+  });
+
+  test("rejects TaskRun result substitution and query-bearing reads", async () => {
+    const state = fixture({
+      readRunResult: async (input) => ({
+        readVersion: 1, status: "waiting", taskId: input.taskId,
+        taskRunId: "91000000-0000-4000-8000-000000000010",
+        objectId: RESULT_OBJECT, resultRevision: 1, cryptoAccessRevision: 0,
+        reason: "result_not_mapped",
+      }),
+    });
+    expect((await state.app.inject({
+      method: "GET",
+      url: `/api/protected/tasks/${TASK}/runs/${RUN}/result?plaintext=true`,
+    })).statusCode).toBe(400);
+    expect((await state.app.inject({
+      method: "GET",
+      url: `/api/protected/tasks/${TASK}/runs/${RUN}/result`,
+    })).statusCode).toBe(500);
+  });
+
   test("marks authorized protected reads private and viewer-specific", async () => {
     const state = fixture();
     for (const url of [
       "/api/protected/tasks",
       `/api/protected/tasks/${TASK}/definition?objectId=${encodeURIComponent(OBJECT)}&contentRevision=1&cryptoAccessRevision=0`,
+      `/api/protected/tasks/${TASK}/runs/${RUN}/result`,
     ]) {
       const response = await state.app.inject({ method: "GET", url });
       expect(response.headers["cache-control"]).toBe("private, no-store");

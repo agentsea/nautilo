@@ -7,7 +7,10 @@ import type {
   PostgresJsBridgeRow,
   PostgresJsBridgeScalar,
 } from "@nautilo/db";
-import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import {
+  bindEncryptionDataOperationOwner,
+  deriveTaskContentCryptoObjectIdV1,
+} from "@nautilo/lattice-bridge";
 import {
   LatticeCrypto,
   type HumanTaskPublicationRequest,
@@ -70,6 +73,36 @@ function productDatabaseWithoutQueries(): DirectDatabase {
     begin: () => Promise.reject(new Error("Product DB must remain idle")),
   });
   return { $client: client } as unknown as DirectDatabase;
+}
+
+function productDatabaseWithReadRows(
+  rowSets: readonly (readonly Record<string, unknown>[])[],
+  selections: string[][],
+): DirectDatabase {
+  let index = 0;
+  const client = Object.assign(function postgresClient() {}, {
+    unsafe: () => Promise.reject(new Error("Product DB client must remain idle")),
+    begin: () => Promise.reject(new Error("Product DB client must remain idle")),
+  });
+  return {
+    $client: client,
+    select(selection: Record<string, unknown>) {
+      selections.push(Object.keys(selection));
+      return {
+        from() {
+          return {
+            where() {
+              return {
+                limit() {
+                  return Promise.resolve(rowSets[index++] ?? []);
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  } as unknown as DirectDatabase;
 }
 
 function observedRestrictedConnection(counter: { queries: number }):
@@ -207,5 +240,68 @@ describe("production protected Task composition", () => {
       );
     }
     expect(published).toBe(false);
+  });
+
+  test("reports an exact terminal reservation as waiting without reading its ordinary sibling", async () => {
+    const taskId = "10000000-0000-4000-8000-000000000004";
+    const taskRunId = "10000000-0000-4000-8000-000000000006";
+    const namespaceId = "10000000-0000-4000-8000-000000000005";
+    const objectId = deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result", taskId, taskRunId, contentRevision: 1,
+    });
+    const selections: string[][] = [];
+    const cryptoActivity = { queries: 0 };
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([
+        [{
+          ownerId: ROUTE_AUTHORITY.userId,
+          requestorId: ROUTE_AUTHORITY.userId,
+          agentId: ROUTE_AUTHORITY.agentId,
+          contentRepresentation: "protected",
+          contentNamespaceId: namespaceId,
+          cryptoMappingState: "verified",
+        }],
+        [{
+          taskId, status: "completed", resultRepresentation: "ordinary",
+          resultContentNamespaceId: null, resultRevision: 0,
+          resultCryptoObjectId: null, resultCryptoAccessRevision: 0,
+          resultCryptoMappingState: "unmapped",
+        }],
+        [{
+          taskId, taskRunId, requesterHumanId: ROUTE_AUTHORITY.subjectHumanId,
+          contentNamespaceId: namespaceId, anchorNamespaceId: namespaceId,
+          resultRevision: 1, cryptoObjectId: objectId,
+          representation: "protected", cryptoAccessRevision: 0,
+          completion: "complete", disposition: "active", failureCode: null,
+        }],
+      ], selections),
+      restricted: observedRestrictedConnection(cryptoActivity),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+            revalidationToken: 1,
+          }),
+          revalidate: () => Promise.resolve(),
+        },
+      }),
+      observer: { kick() {} },
+    });
+
+    expect(await composition.ports.readRunResult({
+      authority: ROUTE_AUTHORITY,
+      taskId,
+      taskRunId,
+    })).toEqual({
+      readVersion: 1, status: "waiting", taskId, taskRunId, objectId,
+      resultRevision: 1, cryptoAccessRevision: 0,
+      reason: "result_not_mapped",
+    });
+    expect(selections).toHaveLength(3);
+    expect(selections.flat()).not.toContain("resultText");
+    expect(selections.flat()).not.toContain("lastError");
+    expect(cryptoActivity.queries).toBe(0);
   });
 });

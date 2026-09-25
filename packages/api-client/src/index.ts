@@ -381,6 +381,7 @@ export {
   protectedTaskPublicationPlanRequestV1Schema,
   protectedTaskPublicationPlanV1Schema,
   protectedTaskDefinitionReadEnvelopeV1Schema,
+  protectedTaskRunResultReadEnvelopeV1Schema,
   protectedTaskContentListV1Schema,
   taskContentDetailV1Schema,
   taskContentListV1Schema,
@@ -398,6 +399,8 @@ export type {
   ProtectedTaskPublicationPlanV1,
   ProtectedTaskDefinitionReadEnvelopeV1,
   ProtectedTaskDefinitionReadReadyEnvelopeV1,
+  ProtectedTaskRunResultReadEnvelopeV1,
+  ProtectedTaskRunResultReadReadyEnvelopeV1,
 } from "./schemas/protected-task";
 export type {
   ProtectedMemoryBriefResponseV1,
