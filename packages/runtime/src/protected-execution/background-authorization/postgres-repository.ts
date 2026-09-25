@@ -59,6 +59,9 @@ import {
   type BackgroundAuthorizationRepository,
   type BackgroundAuthorizationAwaitingDeviceCursor,
   type BackgroundAuthorizationAwaitingDevicePage,
+  type BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor,
+  type BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage,
+  type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationVerifiedDeviceResponse,
   type ProcessorSignerAuthorizationEvidence,
   type ProcessorSignerEvidenceAppendResult,
@@ -1131,6 +1134,97 @@ export class PostgresBackgroundAuthorizationRepository
         ? Object.freeze({
           updatedAt: requiredTimestamp(lastRow, "updated_at"),
           requestId: requiredString(lastRow, "request_id"),
+        })
+        : null,
+    });
+  }
+
+  async listAwaitingTaskRuntimeRecipientPage(input: Readonly<{
+    readonly now: number;
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage> {
+    if (
+      !Number.isSafeInteger(input.now)
+      || input.now < 0
+      || input.now > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+      || !Number.isSafeInteger(input.throughUpdatedAt)
+      || input.throughUpdatedAt < 0
+      || input.throughUpdatedAt > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+      || !Number.isSafeInteger(input.limit)
+      || input.limit < 1
+      || input.limit > BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH
+      || (input.after !== undefined && (
+        !Number.isSafeInteger(input.after.updatedAt)
+        || input.after.updatedAt < 0
+        || input.after.updatedAt > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+        || input.after.updatedAt > input.throughUpdatedAt
+        || !/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u.test(input.after.requestId)
+        || new TextEncoder().encode(input.after.requestId).length
+          > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+      ))
+    ) throw new TypeError("Task Runtime recipient page input must be bounded");
+    const now = new Date(input.now);
+    const through = new Date(input.throughUpdatedAt);
+    const after = input.after;
+    const table = backgroundCryptoAuthorizationRequests;
+    const rows = await executeTypedCryptoQuery(
+      this.handle,
+      cryptoTypedDb.select().from(table).where(and(
+        eq(table.formatVersion, 3),
+        eq(table.credentialSubjectKind, "runtime"),
+        eq(table.runtimeKind, "task"),
+        eq(table.runtimeVersion, 1),
+        eq(table.state, "awaiting_recipient"),
+        isNull(table.descriptorHash),
+        isNull(table.descriptorBytes),
+        isNull(table.recipientKeyId),
+        isNull(table.recipientPublicKey),
+        isNull(table.recipientExpiresAt),
+        or(
+          isNull(table.nextAttemptAt),
+          lte(table.nextAttemptAt, now),
+        ),
+        lte(table.updatedAt, through),
+        ...(after === undefined ? [] : [or(
+          gt(table.updatedAt, new Date(after.updatedAt)),
+          and(
+            eq(table.updatedAt, new Date(after.updatedAt)),
+            gt(table.requestId, after.requestId),
+          ),
+        )]),
+      )).orderBy(
+        asc(table.updatedAt),
+        asc(table.requestId),
+      ).limit(input.limit),
+    );
+    const parsed = await this.#recordsFromRows(rows as readonly Row[]);
+    const records = parsed.map((record) => {
+      const snapshot = record.snapshot;
+      if (
+        snapshot.formatVersion !== 3
+        || snapshot.credentialSubject.kind !== "runtime"
+        || snapshot.credentialSubject.runtimeKind !== "task"
+        || snapshot.credentialSubject.runtimeVersion !== 1
+        || snapshot.state !== "awaiting_recipient"
+        || snapshot.descriptorDigest !== null
+        || record.descriptorBytes !== null
+        || snapshot.recipient !== null
+        || (snapshot.nextAttemptAt !== null
+          && snapshot.nextAttemptAt > input.now)
+        || snapshot.updatedAt > input.throughUpdatedAt
+        || record.authoritySet === undefined
+      ) throw new TypeError("Task Runtime recipient page row was substituted");
+      return record as BackgroundAuthorizationTaskRuntimeRecordV3;
+    });
+    const last = records.at(-1);
+    return Object.freeze({
+      records: Object.freeze(records),
+      continuation: records.length === input.limit && last !== undefined
+        ? Object.freeze({
+          updatedAt: last.snapshot.updatedAt,
+          requestId: last.snapshot.requestId,
         })
         : null,
     });

@@ -331,6 +331,19 @@ export type BackgroundAuthorizationAwaitingDevicePage = Readonly<{
   readonly continuation: BackgroundAuthorizationAwaitingDeviceCursor | null;
 }>;
 
+export type BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor =
+  Readonly<{
+    readonly updatedAt: number;
+    readonly requestId: string;
+  }>;
+
+export type BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage =
+  Readonly<{
+    readonly records: readonly BackgroundAuthorizationTaskRuntimeRecordV3[];
+    readonly continuation:
+      BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor | null;
+  }>;
+
 export type BackgroundAuthorizationSupersedeResult =
   | Readonly<{status: "superseded" | "existing"; record: BackgroundAuthorizationRecord}>
   | Readonly<{status: "stale"; current: BackgroundAuthorizationRecord | null}>;
@@ -373,6 +386,13 @@ export interface BackgroundAuthorizationRepository {
     readonly after?: BackgroundAuthorizationAwaitingDeviceCursor;
     readonly limit: number;
   }>): Promise<BackgroundAuthorizationAwaitingDevicePage>;
+  /** Optional for legacy/test repositories; production discovery is V3-only. */
+  listAwaitingTaskRuntimeRecipientPage?(input: Readonly<{
+    readonly now: number;
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage>;
   pruneTerminal(input: Readonly<{
     readonly now: number;
     readonly limit?: number;
@@ -2064,6 +2084,48 @@ function validateAwaitingDevicePageInput(input: Readonly<{
   return limit;
 }
 
+function validateAwaitingTaskRuntimeRecipientPageInput(input: Readonly<{
+  readonly now: number;
+  readonly throughUpdatedAt: number;
+  readonly after?: BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor;
+  readonly limit: number;
+}>): number {
+  timestamp("Task Runtime recipient page timestamp", input.now);
+  timestamp("Task Runtime recipient page watermark", input.throughUpdatedAt);
+  const limit = boundedLimit("Task Runtime recipient page limit", input.limit);
+  if (input.after !== undefined) {
+    timestamp(
+      "Task Runtime recipient page cursor timestamp",
+      input.after.updatedAt,
+    );
+    portable(
+      "Task Runtime recipient page cursor request id",
+      input.after.requestId,
+    );
+    if (input.after.updatedAt > input.throughUpdatedAt) {
+      throw new TypeError("Task Runtime recipient page cursor exceeds watermark");
+    }
+  }
+  return limit;
+}
+
+function isDueTaskRuntimeRecipient(
+  record: BackgroundAuthorizationRecord,
+  now: number,
+): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const snapshot = record.snapshot;
+  return snapshot.formatVersion === 3
+    && snapshot.credentialSubject.kind === "runtime"
+    && snapshot.credentialSubject.runtimeKind === "task"
+    && snapshot.credentialSubject.runtimeVersion === 1
+    && snapshot.state === "awaiting_recipient"
+    && snapshot.descriptorDigest === null
+    && record.descriptorBytes === null
+    && snapshot.recipient === null
+    && (snapshot.nextAttemptAt === null || snapshot.nextAttemptAt <= now)
+    && record.authoritySet !== undefined;
+}
+
 /** Validate the narrow creation half without rewriting any old request authority. */
 export function assertUnstartedProcessorSupersession(input: Readonly<{
   expected: BackgroundAuthorizationRecord; successor: BackgroundAuthorizationRecord; now: number;
@@ -2339,6 +2401,47 @@ export class InMemoryBackgroundAuthorizationRepository
       )
       .slice(0, limit)
       .map(parseBackgroundAuthorizationRecord);
+    const last = records.at(-1);
+    return Object.freeze({
+      records: Object.freeze(records),
+      continuation: records.length === limit && last !== undefined
+        ? Object.freeze({
+          updatedAt: last.snapshot.updatedAt,
+          requestId: last.snapshot.requestId,
+        })
+        : null,
+    });
+  }
+
+  async listAwaitingTaskRuntimeRecipientPage(input: Readonly<{
+    readonly now: number;
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage> {
+    await Promise.resolve();
+    const limit = validateAwaitingTaskRuntimeRecipientPageInput(input);
+    const records = [...this.#records.values()]
+      .filter((record): record is BackgroundAuthorizationTaskRuntimeRecordV3 => {
+        const after = input.after;
+        return isDueTaskRuntimeRecipient(record, input.now)
+          && record.snapshot.updatedAt <= input.throughUpdatedAt
+          && (after === undefined
+            || record.snapshot.updatedAt > after.updatedAt
+            || (
+              record.snapshot.updatedAt === after.updatedAt
+              && record.snapshot.requestId.localeCompare(after.requestId) > 0
+            ));
+      })
+      .sort((left, right) =>
+        left.snapshot.updatedAt - right.snapshot.updatedAt
+        || left.snapshot.requestId.localeCompare(right.snapshot.requestId)
+      )
+      .slice(0, limit)
+      .map((record) =>
+        parseBackgroundAuthorizationRecord(record) as
+          BackgroundAuthorizationTaskRuntimeRecordV3
+      );
     const last = records.at(-1);
     return Object.freeze({
       records: Object.freeze(records),
