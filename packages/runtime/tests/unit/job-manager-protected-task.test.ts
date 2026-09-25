@@ -74,6 +74,7 @@ function acceptanceSinks(
 
 describe("JobManager protected Task execution", () => {
   test("persists and links content-free state before opening transient input", async () => {
+    const longThreadId = `subagent:${"a".repeat(300)}`;
     const order: string[] = [];
     const persisted: PersistJobPayload[] = [];
     const updates: Array<{ status: JobStatus; fields: unknown }> = [];
@@ -118,7 +119,7 @@ describe("JobManager protected Task execution", () => {
 
     try {
       await jm.createProtectedTaskJob({
-        scheduling: scheduling(),
+        scheduling: scheduling(longThreadId),
         reference: reference(),
         executor,
         candidate,
@@ -143,7 +144,7 @@ describe("JobManager protected Task execution", () => {
         expectedOutput: `${sentinel}:expected`,
         taskId: TASK_ID,
         taskRunId: RUN_ID,
-        graphThreadId: THREAD_ID,
+        graphThreadId: longThreadId,
       });
       expect(JSON.stringify({ persisted, updates, serverEvents })).not.toContain(sentinel);
       expect(order).not.toContain("ineligible");

@@ -190,7 +190,6 @@ function assertProtectedTaskSchedulingFacts(
     || !CANONICAL_UUID.test(value.roomId)
     || (value.callingRoomId !== null && !CANONICAL_UUID.test(value.callingRoomId))
     || !PORTABLE_THREAD_ID.test(value.graphThreadId)
-    || new TextEncoder().encode(value.graphThreadId).length > 255
   ) {
     throw new TypeError("Protected Task Job scheduling facts are invalid");
   }
