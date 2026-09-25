@@ -14,8 +14,11 @@ import {
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
+  destroyDomainForegroundAuthorizationPlanV2,
+  parseDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorizationPlanV2,
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
@@ -36,6 +39,7 @@ import {
 } from "../../src/protected-execution/background-authorization/repository";
 import {
   createTaskRuntimeGrantClaim,
+  type TaskRuntimeRecipientDeviceBinding,
   type TaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
 import type { ProtectedTaskOccurrence } from "../../src/tasks/task-observer";
@@ -45,6 +49,8 @@ const OWNER = "10000000-0000-4000-8000-000000000001";
 const REQUESTOR = "20000000-0000-4000-8000-000000000002";
 const AGENT = "30000000-0000-4000-8000-000000000003";
 const ROOM = "40000000-0000-4000-8000-000000000004";
+const PRIVATE_TASK_ROOM = "40000000-0000-4000-8000-000000000014";
+const OPEN_ROOM = "40000000-0000-4000-8000-000000000024";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
 const NAMESPACE = "task-runtime-namespace";
@@ -95,14 +101,14 @@ function destroyAuthority(
   }
 }
 
-function occurrence(): ProtectedTaskOccurrence {
+function occurrence(callingRoomId: string | null = ROOM): ProtectedTaskOccurrence {
   return Object.freeze({
     task: Object.freeze({
       id: TASK,
       ownerId: OWNER,
       requestorId: REQUESTOR,
       agentId: AGENT,
-      callingRoomId: ROOM,
+      callingRoomId,
       contentRepresentation: "protected" as const,
       contentNamespaceId: NAMESPACE,
       contentRevision: 1,
@@ -183,12 +189,21 @@ async function fixture() {
       }]),
     activeNamespaceBindingCount: 1,
   });
+  const binding: TaskRuntimeRecipientDeviceBinding = Object.freeze({
+    userId: REQUESTOR,
+    humanActorId: REQUESTOR,
+    deviceId: "task-runtime-device",
+  });
   let currentAuthority: DomainForegroundAuthorizationPublicCurrentAuthorityV2
     | null = null;
+  let provenSourceRoomId = ROOM;
   let currentNamespaceRequirements = initialRecord()
     .authoritySet.namespaceRequirements;
   let grantPlan: DomainForegroundAuthorizationPlanV2 | null = null;
   let claimCasCount = 0;
+  let recipientCasBarrier: ReturnType<typeof Promise.withResolvers<void>>
+    | null = null;
+  let recipientCasArrivals = 0;
   let authorityLocksHeld = false;
   let clock = NOW + 1;
   let substituteGet: ((record: BackgroundAuthorizationRecord) =>
@@ -207,6 +222,14 @@ async function fixture() {
     },
     compareAndSwap: async (input): Promise<BackgroundAuthorizationCasResult> => {
       if (input.next.snapshot.state === "claimed") claimCasCount += 1;
+      if (
+        input.next.snapshot.state === "awaiting_device"
+        && recipientCasBarrier !== null
+      ) {
+        recipientCasArrivals += 1;
+        if (recipientCasArrivals === 2) recipientCasBarrier.resolve();
+        await recipientCasBarrier.promise;
+      }
       return repository.compareAndSwap(input);
     },
     acceptVerifiedResponse: (input) => repository.acceptVerifiedResponse(input),
@@ -215,6 +238,7 @@ async function fixture() {
     pruneTerminal: (input) => repository.pruneTerminal(input),
   };
   const executor: JobExecutor = async function* () { yield* []; };
+  const builtRecipientKeys: string[] = [];
   const basePlan = (
     value: ProtectedTaskOccurrence,
   ): TaskRuntimeGrantClaimPlan => ({
@@ -233,7 +257,7 @@ async function fixture() {
       requestorId: REQUESTOR,
       agentId: AGENT,
       roomId: ROOM,
-      callingRoomId: ROOM,
+      callingRoomId: value.task.callingRoomId,
       graphThreadId: value.run.graphThreadId,
     },
     executor,
@@ -245,16 +269,19 @@ async function fixture() {
       recipientKeyId: "task-runtime-recipient",
       expiresAt: NOW + 60_000,
     }),
-    buildRequest: ({ attempt }) => {
+    buildRequest: ({ attempt, binding: currentBinding, authority }) => {
+      builtRecipientKeys.push(Buffer.from(attempt.recipientPublicKey)
+        .toString("base64url"));
       grantPlan = createDomainForegroundAuthorizationPlan(crypto, {
         authorizationId: REQUEST,
-        policyRevision: 7,
+        policyRevision: authority.policyRevision,
         sessionId: `task-run:${RUN}`,
-        roomId: ROOM,
-        subjectHumanId: humanId(REQUESTOR),
-        committerDeviceId: cryptoDeviceId("task-runtime-device"),
-        committerDeviceSigningGeneration: 2,
-        hostAuthorizationRevision: authorizationRevision(6),
+        roomId: authority.sourceRoomId,
+        subjectHumanId: humanId(currentBinding.humanActorId),
+        committerDeviceId: cryptoDeviceId(currentBinding.deviceId),
+        committerDeviceSigningGeneration: authority.device.deviceGeneration,
+        hostAuthorizationRevision:
+          authorizationRevision(authority.device.securityRevision),
         recipientKind: "runtime",
         recipientPrincipalId: "nautilo_task_runtime",
         recipientAuthorizationRevision: authorizationRevision(0),
@@ -264,7 +291,7 @@ async function fixture() {
         issuedAt: NOW,
         deadlineAt: attempt.expiresAt,
         maximumSecretBytes: 4_096,
-        domains: [domain],
+        domains: authority.domains,
       });
       currentAuthority = {
         authorizationId: grantPlan.authorizationId,
@@ -294,7 +321,7 @@ async function fixture() {
         workPurpose: "task.execute",
         recipientGeneration: attempt.recipientGeneration,
         episodeId: grantPlan.sessionId,
-        sourceRoomId: ROOM,
+        sourceRoomId: authority.sourceRoomId,
         recipientKeyId: attempt.recipientKeyId,
         recipientPublicKey: attempt.recipientPublicKey,
         authorizationPlan: grantPlan,
@@ -314,26 +341,54 @@ async function fixture() {
     const prepared = basePlan(value);
     return substitutePlan === null ? prepared : substitutePlan(prepared);
   };
-  const coordinator = createTaskRuntimeGrantClaim({
-    repository: trackedRepository,
-    recipients,
-    plan,
-    now: () => clock,
-    claimId: () => "task-runtime-claim",
-    withCurrentAuthority: async ({ use }) => {
-      if (currentAuthority === null) return null;
-      const borrowed = copyAuthority(currentAuthority);
-      authorityLocksHeld = true;
-      try {
-        return await use({
-          foreground: borrowed,
-          namespaceRequirements: currentNamespaceRequirements,
-        });
-      } finally {
-        destroyAuthority(borrowed);
-        authorityLocksHeld = false;
-      }
-    },
+  const createCoordinator = (registry: TaskRuntimeRecipientRegistry) =>
+    createTaskRuntimeGrantClaim({
+      repository: trackedRepository,
+      recipients: registry,
+      plan,
+      now: () => clock,
+      claimId: () => "task-runtime-claim",
+      withCurrentAuthority: async ({ use }) => {
+        if (currentAuthority === null) return null;
+        const borrowed = copyAuthority(currentAuthority);
+        authorityLocksHeld = true;
+        try {
+          return await use({
+            foreground: borrowed,
+            namespaceRequirements: currentNamespaceRequirements,
+          });
+        } finally {
+          destroyAuthority(borrowed);
+          authorityLocksHeld = false;
+        }
+      },
+    });
+  const coordinator = createCoordinator(recipients);
+  const bindRecipient = (
+    owner = coordinator,
+    currentBinding: TaskRuntimeRecipientDeviceBinding = binding,
+    currentOccurrence: ProtectedTaskOccurrence = occurrence(),
+  ) => owner.bindAwaitingRecipientForDevice({
+    occurrence: currentOccurrence,
+    binding: currentBinding,
+    withCurrentAuthority: async ({ use }) => use({
+      device: {
+        userId: binding.userId,
+        humanActorId: binding.humanActorId,
+        deviceId: binding.deviceId,
+        deviceGeneration: 2,
+        signingPublicKey: signing.publicKey,
+        serverInstanceId: "task-runtime-server",
+        lineageGeneration: 1,
+        epoch: 1,
+        securityRevision: 6,
+        headDigest: bytes(6),
+      },
+      domains: [domain],
+      namespaceRequirements: currentNamespaceRequirements,
+      policyRevision: 7,
+      sourceRoomId: provenSourceRoomId,
+    }),
   });
   return {
     crypto,
@@ -342,6 +397,10 @@ async function fixture() {
     trackedRepository,
     recipients,
     coordinator,
+    createCoordinator,
+    binding,
+    bindRecipient,
+    builtRecipientKeys,
     plan,
     getPlan: () => grantPlan,
     getCurrent: () => currentAuthority,
@@ -350,6 +409,11 @@ async function fixture() {
     startInputs,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
+    setProvenSourceRoomId: (value: string) => { provenSourceRoomId = value; },
+    enableRecipientCasBarrier: () => {
+      recipientCasBarrier = Promise.withResolvers<void>();
+      recipientCasArrivals = 0;
+    },
     setCurrentNamespaceRequirements: (
       value: typeof currentNamespaceRequirements,
     ) => { currentNamespaceRequirements = value; },
@@ -410,13 +474,33 @@ async function acceptGrant(value: Fixture): Promise<void> {
   value.setClock(NOW + 3);
 }
 
+async function prepareAndBind(value: Fixture): Promise<void> {
+  expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+    .toEqual({ status: "awaiting_authorization" });
+  expect(value.recipients.size).toBe(0);
+  expect(await value.bindRecipient()).not.toBeNull();
+}
+
 describe("Task Runtime grant claim", () => {
   test("claims one accepted grant and opens transient input only inside a one-use candidate", async () => {
     const value = await fixture();
     expect(await value.coordinator.prepareOrClaimExact(occurrence()))
       .toEqual({ status: "awaiting_authorization" });
     const prepared = await value.repository.get(REQUEST);
-    expect(prepared?.snapshot.state).toBe("awaiting_device");
+    expect(prepared?.snapshot.state).toBe("awaiting_recipient");
+    expect(prepared?.snapshot.recipient).toBeNull();
+    expect(prepared?.descriptorBytes).toBeNull();
+    expect(value.recipients.size).toBe(0);
+
+    const binding = await value.bindRecipient();
+    if (binding === null) throw new Error("recipient was not bound");
+    const bound = await value.repository.get(REQUEST);
+    expect(bound?.snapshot.state).toBe("awaiting_device");
+    if (bound?.descriptorBytes === null || bound?.descriptorBytes === undefined) {
+      throw new Error("bound request bytes missing");
+    }
+    expect(binding.requestBytes).toEqual(bound.descriptorBytes);
+    expect(binding.requestBytes).not.toBe(bound.descriptorBytes);
     expect(JSON.stringify(prepared)).not.toContain(SENTINEL);
 
     await acceptGrant(value);
@@ -462,9 +546,148 @@ describe("Task Runtime grant claim", () => {
       .not.toContain(SENTINEL);
   });
 
-  test("stale durable start invalidates the candidate before protected input opens", async () => {
+  test("rejects a non-requestor before creating a recipient", async () => {
     const value = await fixture();
     await value.coordinator.prepareOrClaimExact(occurrence());
+    let authorityInvoked = false;
+
+    expect(await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(),
+      binding: {
+        ...value.binding,
+        userId: "70000000-0000-4000-8000-000000000007",
+      },
+      withCurrentAuthority: async () => {
+        authorityInvoked = true;
+        return null;
+      },
+    })).toBeNull();
+    expect(authorityInvoked).toBe(false);
+    expect(value.recipients.size).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("awaiting_recipient");
+  });
+
+  test("binds orphan and open-Room Tasks only to the proven source Room", async () => {
+    for (const scenario of [
+      { callingRoomId: null, sourceRoomId: PRIVATE_TASK_ROOM },
+      { callingRoomId: OPEN_ROOM, sourceRoomId: OPEN_ROOM },
+    ] as const) {
+      const value = await fixture();
+      const currentOccurrence = occurrence(scenario.callingRoomId);
+      value.setProvenSourceRoomId(scenario.sourceRoomId);
+      expect(await value.coordinator.prepareOrClaimExact(currentOccurrence))
+        .toEqual({ status: "awaiting_authorization" });
+
+      const bound = await value.bindRecipient(
+        value.coordinator,
+        value.binding,
+        currentOccurrence,
+      );
+      if (bound === null) throw new Error("source Room was not bound");
+      const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+        bound.requestBytes,
+      );
+      if (request === null) throw new Error("bound request did not decode");
+      const embeddedPlan = parseDomainForegroundAuthorizationPlanV2(
+        request.authorizationPlanBytes,
+      );
+      if (embeddedPlan === null) throw new Error("bound plan did not decode");
+      try {
+        expect(request.sourceRoomId).toBe(scenario.sourceRoomId);
+        expect(embeddedPlan.roomId).toBe(scenario.sourceRoomId);
+        if (scenario.callingRoomId === null) {
+          expect(request.sourceRoomId).not.toBe(scenario.callingRoomId);
+        }
+      } finally {
+        destroyDomainForegroundAuthorizationPlanV2(embeddedPlan);
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+        value.recipients.close();
+      }
+    }
+  });
+
+  test("rejects stale requestor Human or device binding without custody", async () => {
+    for (const changed of ["human", "device"] as const) {
+      const value = await fixture();
+      await value.coordinator.prepareOrClaimExact(occurrence());
+      const binding = {
+        ...value.binding,
+        ...(changed === "human"
+          ? { humanActorId: "70000000-0000-4000-8000-000000000007" }
+          : { deviceId: "other-task-runtime-device" }),
+      };
+
+      expect(await value.bindRecipient(value.coordinator, binding)).toBeNull();
+      expect(value.recipients.size).toBe(0);
+      expect((await value.repository.get(REQUEST))?.snapshot.state)
+        .toBe("awaiting_recipient");
+    }
+  });
+
+  test("deletes recipient custody when request construction fails", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    value.setSubstitutePlan((plan) => ({
+      ...plan,
+      buildRequest: () => {
+        throw new Error("request construction failed");
+      },
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.bindRecipient()).rejects.toThrow(
+      "request construction failed",
+    );
+    expect(value.recipients.size).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("awaiting_recipient");
+  });
+
+  test("one device wins a recipient race and the losing private key is deleted", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    const otherRecipients = new TaskRuntimeRecipientRegistry(value.crypto, {
+      now: () => NOW + 1,
+    });
+    const other = value.createCoordinator(otherRecipients);
+    value.enableRecipientCasBarrier();
+
+    const results = await Promise.all([
+      value.bindRecipient(),
+      value.bindRecipient(other),
+    ]);
+    expect(results.filter((result) => result !== null)).toHaveLength(1);
+    expect(results.filter((result) => result === null)).toHaveLength(1);
+    const winner = results.find((result) => result !== null);
+    if (winner === undefined || winner === null) {
+      throw new Error("recipient race had no winner");
+    }
+    expect(value.recipients.size + otherRecipients.size).toBe(1);
+    expect(value.builtRecipientKeys).toHaveLength(2);
+    expect(new Set(value.builtRecipientKeys).size).toBe(2);
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("awaiting_device");
+    if (
+      durable?.descriptorBytes === null
+      || durable?.descriptorBytes === undefined
+    ) throw new Error("winning request bytes missing");
+    expect(winner.requestBytes).toEqual(durable.descriptorBytes);
+    const winningKey = durable?.snapshot.recipient?.recipientPublicKey;
+    if (winningKey === undefined) throw new Error("winning recipient missing");
+    expect(value.builtRecipientKeys).toContain(winningKey);
+    const losingKey = value.builtRecipientKeys.find((key) =>
+      key !== winningKey
+    );
+    expect(losingKey).toBeDefined();
+    expect(winningKey).not.toBe(losingKey);
+    value.recipients.close();
+    otherRecipients.close();
+  });
+
+  test("stale durable start invalidates the candidate before protected input opens", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
     await acceptGrant(value);
     const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
     if (claimed.status !== "claimed") throw new Error("grant not claimed");
@@ -480,7 +703,7 @@ describe("Task Runtime grant claim", () => {
 
   test("rejects stale current authority before the durable claim", async () => {
     const value = await fixture();
-    await value.coordinator.prepareOrClaimExact(occurrence());
+    await prepareAndBind(value);
     await acceptGrant(value);
     const current = value.getCurrent();
     if (current === null) throw new Error("authority unavailable");
@@ -533,7 +756,7 @@ describe("Task Runtime grant claim", () => {
 
   test("rejects stale proven output Namespace facts before the durable claim", async () => {
     const value = await fixture();
-    await value.coordinator.prepareOrClaimExact(occurrence());
+    await prepareAndBind(value);
     await acceptGrant(value);
     value.setCurrentNamespaceRequirements(Object.freeze([Object.freeze({
       ...initialRecord().authoritySet.namespaceRequirements[0]!,
@@ -548,7 +771,7 @@ describe("Task Runtime grant claim", () => {
 
   test("rejects output Namespace drift after claim before protected work", async () => {
     const value = await fixture();
-    await value.coordinator.prepareOrClaimExact(occurrence());
+    await prepareAndBind(value);
     await acceptGrant(value);
     const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
     if (claimed.status !== "claimed") throw new Error("grant not claimed");
@@ -571,7 +794,7 @@ describe("Task Runtime grant claim", () => {
   test("rejects swapped durable claim identity and authorization bytes before work", async () => {
     for (const substitution of ["claim", "authorization"] as const) {
       const value = await fixture();
-      await value.coordinator.prepareOrClaimExact(occurrence());
+      await prepareAndBind(value);
       await acceptGrant(value);
       const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
       if (claimed.status !== "claimed") throw new Error("grant not claimed");
