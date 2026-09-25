@@ -169,7 +169,7 @@ test("Opus 5.5 research routes use automatic tool choice on continuation turns",
     factoryCalls.length = 0;
     boundToolOptions.length = 0;
     scenario = "researcher";
-    await createResearcherGraph({
+    await withServerFunding(() => createResearcherGraph({
       ...configuration,
       research_model: modelId,
       research_model_max_tokens: 1_111,
@@ -178,7 +178,7 @@ test("Opus 5.5 research routes use automatic tool choice on continuation turns",
       research_brief: "Use only RFC 1035.",
       raw_notes: ["Prior search cycle: RFC 1035 Section 3.2.1"],
       researcher_messages: [new AIMessage("Prior search cycle completed.")],
-    });
+    }));
 
     expect(boundToolOptions).toEqual([undefined]);
   }
@@ -235,10 +235,10 @@ test("uncapped generative roles use the model allowance while compression keeps 
   expect(cfg.final_report_model_max_tokens).toBeUndefined();
   expect(cfg.compression_model_max_tokens).toBe(2_222);
   const id = "openai:gpt-6-luna";
-  await createModel(id, cfg, { messages: [{ role: "user", content: "Write a complete report." }] });
+  await withServerFunding(() => createModel(id, cfg, { messages: [{ role: "user", content: "Write a complete report." }] }));
   expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(128_000);
-  await createModel(id, cfg, { maxTokens: 7_777, messages: [{ role: "user", content: "Write a report." }] });
+  await withServerFunding(() => createModel(id, cfg, { maxTokens: 7_777, messages: [{ role: "user", content: "Write a report." }] }));
   expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(7_777);
-  await createModel(id, cfg, { messages: [{ role: "user", content: "x".repeat(1_000_000 * 4) }] });
+  await withServerFunding(() => createModel(id, cfg, { messages: [{ role: "user", content: "x".repeat(1_000_000 * 4) }] }));
   expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(1_050_000 - 1_000_000 - 4096);
 });

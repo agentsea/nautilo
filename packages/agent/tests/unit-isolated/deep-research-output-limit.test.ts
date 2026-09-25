@@ -1,7 +1,18 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 import type { ChatModel } from "../../src/providers/types";
 import type { Configuration } from "../../src/subagents/deep-research/shared/config";
+
+import { runWithUsageContext } from "../../src/usage/usage-context";
+
+const trust = await import("@nautilo/trust");
+spyOn(trust, "assertCanUseServerProviderCredentials").mockImplementation(async (humanUserId) => {
+  expect(humanUserId).toBe("deep-research-human");
+});
+
+function withServerFunding<T>(fn: () => T): T {
+  return runWithUsageContext({ callType: "subagent", userId: "deep-research-human" }, fn);
+}
 
 const modelId = "anthropic:claude-opus-5-5";
 let modelCalls = 0;
@@ -65,10 +76,10 @@ test("researcher rejects a truncated Opus tool call before executing tools or co
       ...metadata,
     });
 
-    const result = await createResearcherGraph(configuration).invoke({
+    const result = await withServerFunding(() => createResearcherGraph(configuration).invoke({
       research_topic: "RFC 1035 TTL semantics",
       research_brief: "Use only RFC 1035.",
-    }).catch((error: unknown) => error);
+    })).catch((error: unknown) => error);
 
     expect(result).toBeInstanceOf(Error);
     expect((result as Error).name).toBe("ModelOutputLimitError");
@@ -85,7 +96,7 @@ test("supervisor rejects cutoff before completion, tool dispatch or child resear
     modelCalls = 0;
     reply = new AIMessage({ content: "Partial research", tool_calls: toolCalls,
       response_metadata: { finish_reason: "length" } });
-    const result = await createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." })
+    const result = await withServerFunding(() => createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." }))
       .catch((error: unknown) => error);
     expect(result).toBeInstanceOf(Error);
     expect((result as Error).name).toBe("ModelOutputLimitError");
@@ -100,7 +111,7 @@ test("compression cutoff rejects the parent research graph without accepting par
     new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "complete-1" }] }),
     new AIMessage({ content: "Partial summary", additional_kwargs: { stop_reason: "max_tokens" } }),
   ];
-  const result = await createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." })
+  const result = await withServerFunding(() => createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." }))
     .catch((error: unknown) => error);
   expect(result).toBeInstanceOf(Error);
   expect((result as Error).name).toBe("ModelOutputLimitError");
@@ -115,7 +126,7 @@ test("complete supervisor, researcher and compression responses still produce no
     new AIMessage({ content: "Complete summary", response_metadata: { finish_reason: "stop" } }),
     new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "complete-2" }] }),
   ];
-  const result = await createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." });
+  const result = await withServerFunding(() => createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." }));
   expect(result).toMatchObject({ notes: ["Complete summary"] });
   expect(modelCalls).toBe(4);
 });
@@ -135,9 +146,9 @@ for (const cancelAt of [1, 2, 3]) {
         throw cancellation;
       }
     };
-    const result = await createSupervisorGraph(configuration).invoke(
+    const result = await withServerFunding(() => createSupervisorGraph(configuration).invoke(
       { research_brief: "Use RFC 1035." }, { signal: controller.signal },
-    ).catch((error: unknown) => error);
+    )).catch((error: unknown) => error);
     expect(result).toBeInstanceOf(Error);
     expect(modelCalls).toBe(cancelAt);
     expect(controller.signal.aborted).toBe(true);
@@ -150,7 +161,7 @@ test("final synthesis rejects truncated output instead of returning it as a comp
   modelCalls = 0;
   reply = new AIMessage({ content: "Partial final report", response_metadata: { finish_reason: "length" } });
   const node = createFinalReportGenerationNode({ ...configuration, final_report_model: modelId });
-  const result = await node({ notes: ["Complete finding"], messages: [], research_brief: "Audit", report_language: "English" } as never)
+  const result = await withServerFunding(() => node({ notes: ["Complete finding"], messages: [], research_brief: "Audit", report_language: "English" } as never))
     .catch((error: unknown) => error);
   expect(result).toBeInstanceOf(Error);
   expect((result as Error).cause).toBeInstanceOf(Error);
@@ -162,7 +173,7 @@ test("oversized synthesis input fails before calling the provider without cuttin
   modelCalls = 0;
   const notes = ["x".repeat(4_100_000)];
   const node = createFinalReportGenerationNode({ ...configuration, final_report_model: modelId });
-  const result = await node({ notes, messages: [], research_brief: "Audit", report_language: "English" } as never)
+  const result = await withServerFunding(() => node({ notes, messages: [], research_brief: "Audit", report_language: "English" } as never))
     .catch((error: unknown) => error);
   expect(result).toBeInstanceOf(Error);
   expect(((result as Error).cause as Error).name).toBe("PreparedContextExceededError");
@@ -176,10 +187,10 @@ test("final synthesis rejects cancellation even if the provider returns partial 
   reply = new AIMessage("Partial final report");
   onInvoke = () => controller.abort(cancellation);
   const node = createFinalReportGenerationNode({ ...configuration, final_report_model: modelId });
-  const result = await node(
+  const result = await withServerFunding(() => node(
     { notes: ["Complete finding"], messages: [], research_brief: "Audit", report_language: "English" } as never,
     { signal: controller.signal },
-  ).catch((error: unknown) => error);
+  )).catch((error: unknown) => error);
   expect(result).toBe(cancellation);
   expect(modelCalls).toBe(1);
 });
