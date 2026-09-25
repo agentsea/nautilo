@@ -13,8 +13,50 @@ import {
 } from "./one-run-processor-transform-v1.ts";
 import {
   withTaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionEvidenceInputV1,
   type TaskRuntimeExecutionEvidenceV1,
 } from "./task-runtime-execution-evidence-v1.ts";
+
+type TaskRuntimeCurrentNamespaceAuthorityV1 = Readonly<{
+  readonly ordinal: number;
+  readonly namespaceId: string;
+  readonly domainId: string;
+  readonly operations: readonly ("decrypt" | "encrypt")[];
+  readonly expectedAccessRevision: number;
+  readonly expectedPolicyRevision: number;
+}>;
+
+function resultAuthorityIsCurrent(input: Readonly<{
+  readonly workId: string;
+  readonly result: TaskRuntimeExecutionEvidenceInputV1["result"];
+  readonly namespaces: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+  readonly current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+}>): boolean {
+  const resultNamespace = input.result.namespace;
+  const matchingNamespaces = input.namespaces.filter((requirement) =>
+    requirement.namespaceId === resultNamespace.namespaceId
+  );
+  const matchingDomains = input.current.domains.filter((domain) =>
+    domain.domainId === resultNamespace.domainId
+  );
+  const currentNamespace = matchingNamespaces[0];
+  return input.result.taskRunId === input.workId
+    && input.result.contentRevision === 1
+    && resultNamespace.operations.length === 1
+    && resultNamespace.operations[0] === "encrypt"
+    && resultNamespace.expectedPolicyRevision === input.current.policyRevision
+    && matchingNamespaces.length === 1
+    && currentNamespace !== undefined
+    && currentNamespace.domainId === resultNamespace.domainId
+    && currentNamespace.operations.length === 2
+    && currentNamespace.operations[0] === "decrypt"
+    && currentNamespace.operations[1] === "encrypt"
+    && currentNamespace.expectedAccessRevision
+      === resultNamespace.expectedAccessRevision
+    && currentNamespace.expectedPolicyRevision
+      === resultNamespace.expectedPolicyRevision
+    && matchingDomains.length === 1;
+}
 
 export type TaskRuntimeRecipientAttemptV1 = Readonly<{
   requestId: string;
@@ -253,6 +295,9 @@ export class TaskRuntimeRecipientRegistryV1 {
     claimExpiresAt: number;
     authorizationBytes: Uint8Array;
     current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    currentNamespaceRequirements:
+      readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+    result: TaskRuntimeExecutionEvidenceInputV1["result"];
     signal?: AbortSignal;
     operation(
       domains: readonly DomainForegroundSecretEntryV2[],
@@ -281,6 +326,12 @@ export class TaskRuntimeRecipientRegistryV1 {
       || input.current.recipientRuntimeGeneration !== input.recipientGeneration
       || input.current.recipientKeyId !== input.recipientKeyId
     ) return unavailable("recipient_key_mismatch");
+    if (!resultAuthorityIsCurrent({
+      workId: input.workId,
+      result: input.result,
+      namespaces: input.currentNamespaceRequirements,
+      current: input.current,
+    })) return unavailable("authority_stale");
     const now = this.#now();
     const deadline = Math.min(entry.attempt.expiresAt, input.claimExpiresAt);
     if (deadline <= now) {
@@ -326,6 +377,7 @@ export class TaskRuntimeRecipientRegistryV1 {
               hostAuthorizationRevision: input.current.hostAuthorizationRevision,
               recipientAuthorizationRevision:
                 input.current.recipientAuthorizationRevision,
+              result: input.result,
               domainRequirements: input.current.domains,
             },
             signal: controller.signal,

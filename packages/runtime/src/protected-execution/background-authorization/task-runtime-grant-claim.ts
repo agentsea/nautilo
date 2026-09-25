@@ -18,6 +18,12 @@ import type {
   StartProtectedTaskRunInput,
   StartProtectedTaskRunResult,
 } from "@nautilo/db";
+import {
+  deriveTaskContentCryptoObjectIdV1,
+} from "@nautilo/lattice-bridge";
+import type {
+  CurrentTaskRuntimeAuthority,
+} from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../job";
 import type {
@@ -43,14 +49,34 @@ import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "./repository";
 
+type HeldTaskRuntimeAuthority = Readonly<{
+  foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+  namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+}>;
+
 type CurrentTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   occurrence: ProtectedTaskOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   use(
-    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2,
+    current: HeldTaskRuntimeAuthority,
   ): Value | Promise<Value>;
 }>) => Promise<Value | null>;
+
+type TaskRuntimeResultBinding = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  contentRevision: 1;
+  objectId: string;
+  signerAgentId: string;
+  namespace: Readonly<{
+    namespaceId: string;
+    domainId: string;
+    operations: readonly ["encrypt"];
+    expectedAccessRevision: number;
+    expectedPolicyRevision: number;
+  }>;
+}>;
 
 export type TaskRuntimeGrantClaimPlan = Readonly<{
   initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -154,8 +180,25 @@ function sameDurablePlan(
 function assertPlan(
   occurrence: ProtectedTaskOccurrence,
   plan: TaskRuntimeGrantClaimPlan,
-): void {
+): TaskRuntimeResultBinding {
   const initial = plan.initialRecord;
+  const resultObjectId = deriveTaskContentCryptoObjectIdV1({
+    kind: "run_result",
+    taskId: occurrence.task.id,
+    taskRunId: occurrence.run.id,
+    contentRevision: 1,
+  });
+  const outputNamespaces = initial.authoritySet?.namespaceRequirements.filter(
+    (requirement) =>
+      requirement.namespaceId === occurrence.task.contentNamespaceId,
+  ) ?? [];
+  const outputNamespace = outputNamespaces[0];
+  const outputDomains = outputNamespace === undefined
+    ? []
+    : initial.authoritySet?.domainRequirements.filter((requirement) =>
+      requirement.domainId === outputNamespace.domainId
+    ) ?? [];
+  const outputDomain = outputDomains[0];
   if (
     !isTaskRuntimeRecord(initial)
     || !exactOccurrenceRecord(occurrence, initial)
@@ -171,6 +214,7 @@ function assertPlan(
     || initial.finishedAt !== null
     || plan.reference.taskId !== occurrence.task.id
     || plan.reference.taskRunId !== occurrence.run.id
+    || plan.reference.resultObjectId !== resultObjectId
     || plan.reference.inputObjectId !== occurrence.task.cryptoObjectId
     || plan.reference.authorizationRequestId !== initial.snapshot.requestId
     || plan.reference.policyRevision !== initial.expectedPolicyRevision
@@ -179,10 +223,117 @@ function assertPlan(
     || plan.scheduling.agentId !== occurrence.task.agentId
     || plan.scheduling.callingRoomId !== occurrence.task.callingRoomId
     || plan.scheduling.graphThreadId !== occurrence.run.graphThreadId
+    || outputNamespaces.length !== 1
+    || outputNamespace === undefined
+    || outputNamespace.domainId !== initial.domainId
+    || outputNamespace.operations.length !== 2
+    || outputNamespace.operations[0] !== "decrypt"
+    || outputNamespace.operations[1] !== "encrypt"
+    || outputNamespace.expectedAccessRevision
+      !== occurrence.task.cryptoAccessRevision
+    || outputNamespace.expectedAccessRevision
+      !== initial.expectedNamespaceAccessRevision
+    || outputNamespace.expectedPolicyRevision !== initial.expectedPolicyRevision
+    || outputDomains.length !== 1
+    || outputDomain === undefined
+    || outputDomain.expectedEpoch !== initial.expectedDomainEpoch
     || typeof plan.executor !== "function"
     || typeof plan.startProtectedTaskRun !== "function"
     || typeof plan.openTransientInput !== "function"
   ) throw new TypeError("Task Runtime grant plan disagrees with its occurrence");
+  return Object.freeze({
+    taskId: occurrence.task.id,
+    taskRunId: occurrence.run.id,
+    contentRevision: 1 as const,
+    objectId: resultObjectId,
+    signerAgentId: occurrence.task.agentId,
+    namespace: Object.freeze({
+      namespaceId: outputNamespace.namespaceId,
+      domainId: outputNamespace.domainId,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: outputNamespace.expectedAccessRevision,
+      expectedPolicyRevision: outputNamespace.expectedPolicyRevision,
+    }),
+  });
+}
+
+function resultBindingMatchesRecord(
+  result: TaskRuntimeResultBinding,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  const namespaces = record.authoritySet.namespaceRequirements.filter(
+    (requirement) => requirement.namespaceId === result.namespace.namespaceId,
+  );
+  const namespace = namespaces[0];
+  const domains = record.authoritySet.domainRequirements.filter(
+    (requirement) => requirement.domainId === result.namespace.domainId,
+  );
+  const domain = domains[0];
+  return record.snapshot.workId === result.taskRunId
+    && record.snapshot.namespaceId === result.namespace.namespaceId
+    && record.domainId === result.namespace.domainId
+    && record.expectedNamespaceAccessRevision
+      === result.namespace.expectedAccessRevision
+    && record.expectedPolicyRevision === result.namespace.expectedPolicyRevision
+    && namespaces.length === 1
+    && namespace !== undefined
+    && namespace.domainId === result.namespace.domainId
+    && namespace.operations.length === 2
+    && namespace.operations[0] === "decrypt"
+    && namespace.operations[1] === "encrypt"
+    && namespace.expectedAccessRevision
+      === result.namespace.expectedAccessRevision
+    && namespace.expectedPolicyRevision
+      === result.namespace.expectedPolicyRevision
+    && domains.length === 1
+    && domain !== undefined
+    && domain.expectedEpoch === record.expectedDomainEpoch;
+}
+
+function currentMatchesResult(
+  result: TaskRuntimeResultBinding,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  current: HeldTaskRuntimeAuthority,
+): boolean {
+  const namespaces = current.namespaceRequirements.filter((requirement) =>
+    requirement.namespaceId === result.namespace.namespaceId
+  );
+  const namespace = namespaces[0];
+  const domains = current.foreground.domains.filter((domain) =>
+    domain.domainId === result.namespace.domainId
+  );
+  const domain = domains[0];
+  const durableDomains = record.authoritySet.domainRequirements.filter(
+    (requirement) => requirement.domainId === result.namespace.domainId,
+  );
+  const durableNamespaces = record.authoritySet.namespaceRequirements.filter(
+    (requirement) => requirement.namespaceId === result.namespace.namespaceId,
+  );
+  const durableDomain = durableDomains[0];
+  const durableNamespace = durableNamespaces[0];
+  return resultBindingMatchesRecord(result, record)
+    && current.foreground.policyRevision
+      === result.namespace.expectedPolicyRevision
+    && namespaces.length === 1
+    && namespace !== undefined
+    && durableNamespaces.length === 1
+    && durableNamespace !== undefined
+    && namespace.ordinal === durableNamespace.ordinal
+    && namespace.domainId === result.namespace.domainId
+    && namespace.operations.length === 2
+    && namespace.operations[0] === "decrypt"
+    && namespace.operations[1] === "encrypt"
+    && namespace.expectedAccessRevision
+      === result.namespace.expectedAccessRevision
+    && namespace.expectedPolicyRevision
+      === result.namespace.expectedPolicyRevision
+    && domains.length === 1
+    && domain !== undefined
+    && durableDomains.length === 1
+    && durableDomain !== undefined
+    && domain.domainKeyGeneration === durableDomain.expectedEpoch
+    && domain.authorizationRevision
+      === durableDomain.expectedAuthorizationRevision;
 }
 
 function exactRequest(
@@ -299,6 +450,7 @@ function createCandidate(input: Readonly<{
   plan: TaskRuntimeGrantClaimPlan;
   dependencies: TaskRuntimeGrantClaimDependencies;
   claimId: string;
+  result: TaskRuntimeResultBinding;
 }>): ProtectedTaskExecutionCandidate {
   let state: "ready" | "starting" | "started" | "running" | "finished" =
     "ready";
@@ -376,6 +528,7 @@ function createCandidate(input: Readonly<{
           || current.snapshot.claimExpiresAt === null
           || current.acceptedMaterial === null
           || !exactOccurrenceRecord(input.occurrence, current)
+          || !resultBindingMatchesRecord(input.result, current)
         ) throw new Error("Task Runtime durable claim is no longer current");
         const request = requestFromRecord(current);
         if (request === null) {
@@ -386,8 +539,21 @@ function createCandidate(input: Readonly<{
             occurrence: input.occurrence,
             record: current,
             request,
-            use: (held) => currentMatchesRequest(held, request)
-              ? copyCurrentAuthority(held)
+            use: (held) => currentMatchesRequest(held.foreground, request)
+                && currentMatchesResult(input.result, current, held)
+              ? Object.freeze({
+                foreground: copyCurrentAuthority(held.foreground),
+                namespaceRequirements: Object.freeze(
+                  held.namespaceRequirements.map((requirement) => Object.freeze({
+                    ordinal: requirement.ordinal,
+                    namespaceId: requirement.namespaceId,
+                    domainId: requirement.domainId,
+                    operations: Object.freeze([...requirement.operations]),
+                    expectedAccessRevision: requirement.expectedAccessRevision,
+                    expectedPolicyRevision: requirement.expectedPolicyRevision,
+                  })),
+                ),
+              })
               : null,
           });
           if (authority === null) {
@@ -402,7 +568,9 @@ function createCandidate(input: Readonly<{
               claimId: input.claimId,
               claimExpiresAt: current.snapshot.claimExpiresAt,
               authorizationBytes: current.acceptedMaterial.responseBytes,
-              current: authority,
+              current: authority.foreground,
+              currentNamespaceRequirements: authority.namespaceRequirements,
+              result: input.result,
               operation: async (domains, signal) => {
                 const transientInput = await input.plan.openTransientInput({
                   occurrence: input.occurrence,
@@ -419,7 +587,7 @@ function createCandidate(input: Readonly<{
             }
             return opened.value;
           } finally {
-            destroyCurrentAuthority(authority);
+            destroyCurrentAuthority(authority.foreground);
           }
         } finally {
           destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
@@ -454,7 +622,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
     occurrence: ProtectedTaskOccurrence,
   ): Promise<ClaimProtectedTaskOccurrenceResult> {
     const plan = await this.dependencies.plan(occurrence);
-    assertPlan(occurrence, plan);
+    const result = assertPlan(occurrence, plan);
     const existing = await this.dependencies.repository.get(
       plan.initialRecord.snapshot.requestId,
     );
@@ -561,7 +729,10 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         record: current,
         request,
         use: async (authority) => {
-          if (!currentMatchesRequest(authority, request)) return null;
+          if (
+            !currentMatchesRequest(authority.foreground, request)
+            || !currentMatchesResult(result, current, authority)
+          ) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
             ...current,
             snapshot: claimBackgroundAuthorizationRequest(
@@ -588,6 +759,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         plan,
         dependencies: this.dependencies,
         claimId,
+        result,
       });
       const dispatch: ClaimedProtectedTaskOccurrence = Object.freeze({
         reference: plan.reference,

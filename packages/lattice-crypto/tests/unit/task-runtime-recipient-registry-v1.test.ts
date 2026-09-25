@@ -27,6 +27,33 @@ const NOW = 1_800_400_000_000;
 const REQUEST = "task-runtime-request";
 const WORK = "10000000-0000-4000-8000-000000000001";
 const KEY = "task-runtime-key";
+const RESULT = Object.freeze({
+  taskId: "10000000-0000-4000-8000-000000000002",
+  taskRunId: WORK,
+  contentRevision: 1 as const,
+  objectId: `task-run-result:v1:${"a".repeat(64)}`,
+  signerAgentId: "10000000-0000-4000-8000-000000000003",
+  namespace: Object.freeze({
+    namespaceId: "task-runtime-namespace",
+    domainId: "task-runtime-domain",
+    operations: Object.freeze(["encrypt"] as const),
+    expectedAccessRevision: 4,
+    expectedPolicyRevision: 7,
+  }),
+});
+const CURRENT_NAMESPACES = Object.freeze([Object.freeze({
+  ordinal: 0,
+  namespaceId: RESULT.namespace.namespaceId,
+  domainId: RESULT.namespace.domainId,
+  operations: Object.freeze(["decrypt", "encrypt"] as const),
+  expectedAccessRevision: RESULT.namespace.expectedAccessRevision,
+  expectedPolicyRevision: RESULT.namespace.expectedPolicyRevision,
+})]);
+
+const resultAuthority = () => ({
+  result: RESULT,
+  currentNamespaceRequirements: CURRENT_NAMESPACES,
+});
 
 function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
@@ -143,6 +170,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: value.authorizationBytes,
       current: value.current,
+      ...resultAuthority(),
       operation: async (_domains, _signal, evidence) => {
         await Promise.resolve();
         expect(() => assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence))
@@ -163,6 +191,7 @@ describe("Task Runtime recipient registry", () => {
           hostAuthorizationRevision: 6,
           recipientAuthorizationRevision: 0,
           operations: ["decrypt", "encrypt"],
+          result: RESULT,
         });
         expect(evidence.authorizationDigest)
           .toEqual(expectedAuthorizationDigest);
@@ -193,6 +222,66 @@ describe("Task Runtime recipient registry", () => {
     expectedAuthorizationDigest.fill(0);
   });
 
+  test("rejects result authority not proven by the current Namespace and Domain", async () => {
+    for (const changed of [
+      "run",
+      "access",
+      "policy",
+      "domain",
+      "missing_domain",
+    ] as const) {
+      const value = await fixture();
+      const authority = resultAuthority();
+      const result = changed === "run"
+        ? Object.freeze({ ...RESULT, taskRunId: "other-task-run" })
+        : changed === "policy"
+          ? Object.freeze({
+            ...RESULT,
+            namespace: Object.freeze({
+              ...RESULT.namespace,
+              expectedPolicyRevision: 8,
+            }),
+          })
+          : changed === "domain"
+            ? Object.freeze({
+              ...RESULT,
+              namespace: Object.freeze({
+                ...RESULT.namespace,
+                domainId: "other-task-runtime-domain",
+              }),
+            })
+            : authority.result;
+      const currentNamespaceRequirements = changed === "access"
+        ? Object.freeze([Object.freeze({
+          ...CURRENT_NAMESPACES[0]!,
+          expectedAccessRevision: 5,
+        })])
+        : authority.currentNamespaceRequirements;
+      const current = changed === "missing_domain"
+        ? { ...value.current, domains: Object.freeze([]) }
+        : value.current;
+      let invoked = false;
+
+      expect(await value.registry.withOpenedGrant({
+        requestId: REQUEST,
+        workId: WORK,
+        recipientGeneration: 0,
+        recipientKeyId: KEY,
+        claimId: "task-runtime-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current,
+        result,
+        currentNamespaceRequirements,
+        operation: () => {
+          invoked = true;
+        },
+      })).toEqual({ status: "unavailable", reason: "authority_stale" });
+      expect(invoked).toBe(false);
+      value.registry.close();
+    }
+  });
+
   test("permanently rejects mutated execution evidence", async () => {
     for (const changed of ["authorization", "authority"] as const) {
       const value = await fixture();
@@ -205,6 +294,7 @@ describe("Task Runtime recipient registry", () => {
         claimExpiresAt: NOW + 30_000,
         authorizationBytes: value.authorizationBytes,
         current: value.current,
+        ...resultAuthority(),
         operation: (_domains, _signal, evidence) => {
           const changedBytes = changed === "authorization"
             ? evidence.authorizationDigest
@@ -238,6 +328,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: value.authorizationBytes,
       current: value.current,
+      ...resultAuthority(),
       operation: (domains) => {
         observed = domains[0]!.domainKey[0]!;
         return "executed";
@@ -255,6 +346,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: value.authorizationBytes,
       current: value.current,
+      ...resultAuthority(),
       operation: () => "replayed",
     })).toEqual({ status: "unavailable", reason: "recipient_unavailable" });
   });
@@ -278,6 +370,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: aborted.authorizationBytes,
       current: aborted.current,
+      ...resultAuthority(),
       operation: (_domains, signal, evidence) => {
         expect(() => assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence))
           .not.toThrow();
@@ -301,6 +394,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: lateTimer.authorizationBytes,
       current: lateTimer.current,
+      ...resultAuthority(),
       operation: (_domains, signal, evidence) => {
         expect(signal.aborted).toBe(false);
         lateTimer.setNow(NOW + 30_000);
@@ -333,6 +427,7 @@ describe("Task Runtime recipient registry", () => {
         claimExpiresAt: NOW + 30_000,
         authorizationBytes,
         current: value.current,
+        ...resultAuthority(),
         operation: () => {
           throw new Error("substituted grant executed");
         },
@@ -367,6 +462,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: expiring.authorizationBytes,
       current: expiring.current,
+      ...resultAuthority(),
       operation: async (_domains, signal) => {
         expiryStarted.resolve();
         await new Promise<void>((_resolve, reject) => {
@@ -398,6 +494,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: callerAborted.authorizationBytes,
       current: callerAborted.current,
+      ...resultAuthority(),
       signal: callerController.signal,
       operation: async (_domains, signal) => {
         callerStarted.resolve();
@@ -429,6 +526,7 @@ describe("Task Runtime recipient registry", () => {
       claimExpiresAt: NOW + 30_000,
       authorizationBytes: running.authorizationBytes,
       current: running.current,
+      ...resultAuthority(),
       operation: async (_domains, signal) => {
         started.resolve();
         await new Promise<void>((_resolve, reject) => {

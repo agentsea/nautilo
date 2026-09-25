@@ -40,6 +40,20 @@ export type TaskRuntimeExecutionEvidenceV1 = Readonly<{
   readonly hostAuthorizationRevision: number;
   readonly recipientAuthorizationRevision: number;
   readonly operations: readonly ["decrypt", "encrypt"];
+  readonly result: Readonly<{
+    readonly taskId: string;
+    readonly taskRunId: string;
+    readonly contentRevision: 1;
+    readonly objectId: string;
+    readonly signerAgentId: string;
+    readonly namespace: Readonly<{
+      readonly namespaceId: string;
+      readonly domainId: string;
+      readonly operations: readonly ["encrypt"];
+      readonly expectedAccessRevision: number;
+      readonly expectedPolicyRevision: number;
+    }>;
+  }>;
   readonly domainRequirements:
     readonly TaskRuntimeExecutionDomainAuthorityV1[];
   readonly [taskRuntimeExecutionEvidenceBrand]: true;
@@ -60,6 +74,7 @@ export type TaskRuntimeExecutionEvidenceInputV1 = Readonly<{
   readonly sourceRoomId: string;
   readonly hostAuthorizationRevision: number;
   readonly recipientAuthorizationRevision: number;
+  readonly result: TaskRuntimeExecutionEvidenceV1["result"];
   readonly domainRequirements: readonly DomainForegroundAuthorityEntryV2[];
 }>;
 
@@ -149,6 +164,47 @@ function cloneEvidence(
   if (expiresAt !== Math.min(claimExpiresAt, recipientExpiresAt)) {
     throw new TypeError("Task Runtime execution expiry is not exact");
   }
+  if (
+    value.result.contentRevision !== 1
+    || value.result.taskRunId !== value.workId
+    || value.result.namespace.operations.length !== 1
+    || value.result.namespace.operations[0] !== "encrypt"
+  ) throw new TypeError("Task Runtime result binding is invalid");
+  const result = Object.freeze({
+    taskId: portable("Task Runtime result Task ID", value.result.taskId),
+    taskRunId: portable(
+      "Task Runtime result Task Run ID",
+      value.result.taskRunId,
+    ),
+    contentRevision: 1 as const,
+    objectId: portable(
+      "Task Runtime result object ID",
+      value.result.objectId,
+    ),
+    signerAgentId: portable(
+      "Task Runtime result signer Agent ID",
+      value.result.signerAgentId,
+    ),
+    namespace: Object.freeze({
+      namespaceId: portable(
+        "Task Runtime result Namespace ID",
+        value.result.namespace.namespaceId,
+      ),
+      domainId: portable(
+        "Task Runtime result Domain ID",
+        value.result.namespace.domainId,
+      ),
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: counter(
+        "Task Runtime result access revision",
+        value.result.namespace.expectedAccessRevision,
+      ),
+      expectedPolicyRevision: counter(
+        "Task Runtime result policy revision",
+        value.result.namespace.expectedPolicyRevision,
+      ),
+    }),
+  });
   return Object.freeze({
     purpose: "task.runtime.execution",
     requestId: portable("Task Runtime request ID", value.requestId),
@@ -184,6 +240,7 @@ function cloneEvidence(
       value.recipientAuthorizationRevision,
     ),
     operations: Object.freeze(["decrypt", "encrypt"]),
+    result,
     domainRequirements: Object.freeze(domainRequirements),
   }) as TaskRuntimeExecutionEvidenceV1;
 }

@@ -21,6 +21,7 @@ import {
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
 import type { StartProtectedTaskRunInput } from "@nautilo/db";
+import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 
 import type { JobExecutor } from "../../src/job";
 import {
@@ -50,7 +51,12 @@ const NAMESPACE = "task-runtime-namespace";
 const DOMAIN = "task-runtime-domain";
 const REQUEST = `task-run-authorization:${RUN}`;
 const INPUT_OBJECT = `task-definition:v1:${"a".repeat(64)}`;
-const RESULT_OBJECT = `task-run-result:v1:${"b".repeat(64)}`;
+const RESULT_OBJECT = deriveTaskContentCryptoObjectIdV1({
+  kind: "run_result",
+  taskId: TASK,
+  taskRunId: RUN,
+  contentRevision: 1,
+});
 const SENTINEL = "TASK_RUNTIME_TRANSIENT_SENTINEL";
 
 function bytes(fill: number): Uint8Array {
@@ -179,12 +185,16 @@ async function fixture() {
   });
   let currentAuthority: DomainForegroundAuthorizationPublicCurrentAuthorityV2
     | null = null;
+  let currentNamespaceRequirements = initialRecord()
+    .authoritySet.namespaceRequirements;
   let grantPlan: DomainForegroundAuthorizationPlanV2 | null = null;
   let claimCasCount = 0;
   let authorityLocksHeld = false;
   let clock = NOW + 1;
   let substituteGet: ((record: BackgroundAuthorizationRecord) =>
     BackgroundAuthorizationRecord) | null = null;
+  let substitutePlan: ((plan: TaskRuntimeGrantClaimPlan) =>
+    TaskRuntimeGrantClaimPlan) | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
   let startResult: "started" | "stale" = "started";
   const trackedRepository: BackgroundAuthorizationRepository = {
@@ -205,7 +215,9 @@ async function fixture() {
     pruneTerminal: (input) => repository.pruneTerminal(input),
   };
   const executor: JobExecutor = async function* () { yield* []; };
-  const plan = (value: ProtectedTaskOccurrence): TaskRuntimeGrantClaimPlan => ({
+  const basePlan = (
+    value: ProtectedTaskOccurrence,
+  ): TaskRuntimeGrantClaimPlan => ({
     initialRecord: initialRecord(),
     reference: {
       kind: "protected_task_run_v1",
@@ -298,6 +310,10 @@ async function fixture() {
       return { message: SENTINEL };
     },
   });
+  const plan = (value: ProtectedTaskOccurrence): TaskRuntimeGrantClaimPlan => {
+    const prepared = basePlan(value);
+    return substitutePlan === null ? prepared : substitutePlan(prepared);
+  };
   const coordinator = createTaskRuntimeGrantClaim({
     repository: trackedRepository,
     recipients,
@@ -309,7 +325,10 @@ async function fixture() {
       const borrowed = copyAuthority(currentAuthority);
       authorityLocksHeld = true;
       try {
-        return await use(borrowed);
+        return await use({
+          foreground: borrowed,
+          namespaceRequirements: currentNamespaceRequirements,
+        });
       } finally {
         destroyAuthority(borrowed);
         authorityLocksHeld = false;
@@ -331,6 +350,12 @@ async function fixture() {
     startInputs,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
+    setCurrentNamespaceRequirements: (
+      value: typeof currentNamespaceRequirements,
+    ) => { currentNamespaceRequirements = value; },
+    setSubstitutePlan: (value: typeof substitutePlan) => {
+      substitutePlan = value;
+    },
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
   };
 }
@@ -466,14 +491,81 @@ describe("Task Runtime grant claim", () => {
       now: () => NOW + 2,
       claimId: () => "stale-task-runtime-claim",
       withCurrentAuthority: async ({ use }) => use({
-        ...current,
-        recipientRuntimeGeneration: current.recipientRuntimeGeneration + 1,
+        foreground: {
+          ...current,
+          recipientRuntimeGeneration: current.recipientRuntimeGeneration + 1,
+        },
+        namespaceRequirements: initialRecord().authoritySet.namespaceRequirements,
       }),
     });
     const result = await staleCoordinator.prepareOrClaimExact(occurrence());
     expect(result).toEqual({ status: "inactive" });
     expect((await value.repository.get(REQUEST))?.snapshot.state)
       .toBe("grant_ready");
+  });
+
+  test("rejects a non-canonical result object or signer before persistence", async () => {
+    for (const substitution of ["object", "signer"] as const) {
+      const value = await fixture();
+      value.setSubstitutePlan((plan) => substitution === "object"
+        ? {
+          ...plan,
+          reference: {
+            ...plan.reference,
+            resultObjectId: `task-run-result:v1:${"f".repeat(64)}`,
+          },
+        }
+        : {
+          ...plan,
+          scheduling: {
+            ...plan.scheduling,
+            agentId: "70000000-0000-4000-8000-000000000007",
+          },
+        });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+        .rejects.toThrow("disagrees with its occurrence");
+      expect(await value.repository.get(REQUEST)).toBeNull();
+      expect(value.recipients.size).toBe(0);
+    }
+  });
+
+  test("rejects stale proven output Namespace facts before the durable claim", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    await acceptGrant(value);
+    value.setCurrentNamespaceRequirements(Object.freeze([Object.freeze({
+      ...initialRecord().authoritySet.namespaceRequirements[0]!,
+      expectedAccessRevision: 5,
+    })]));
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "inactive" });
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("grant_ready");
+  });
+
+  test("rejects output Namespace drift after claim before protected work", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    value.setCurrentNamespaceRequirements(Object.freeze([Object.freeze({
+      ...initialRecord().authoritySet.namespaceRequirements[0]!,
+      expectedPolicyRevision: 8,
+    })]));
+    let invoked = false;
+
+    expect(await claimed.dispatch.candidate.start("stale-namespace-job"))
+      .toEqual({ status: "started" });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async () => {
+      invoked = true;
+    })).rejects.toThrow("authority is no longer current");
+    expect(invoked).toBe(false);
+    expect(value.recipients.size).toBe(0);
   });
 
   test("rejects swapped durable claim identity and authorization bytes before work", async () => {
