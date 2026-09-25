@@ -334,6 +334,15 @@ export {
   type ProtectedTaskOccurrenceJobManager,
 } from "./tasks/protected-task-occurrence-coordinator";
 export {
+  runProtectedTaskNativeSegment,
+  type ProtectedTaskNativeExecution,
+  type ProtectedTaskNativeResultPublicationPort,
+  type ProtectedTaskNativeRunnerDependencies,
+  type ProtectedTaskNativeSegmentMode,
+  type ProtectedTaskNativeSegmentResult,
+  type RunProtectedTaskNativeSegmentInput,
+} from "./tasks/protected-task-native-runner";
+export {
   dispatchTaskRun,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,
