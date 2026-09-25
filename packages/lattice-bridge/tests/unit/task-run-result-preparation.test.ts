@@ -19,11 +19,39 @@ import {
   verifyNamespaceBindingProof,
   withTaskRuntimeCheckpointNamespace,
   type Rng,
+  type TrustedMinimumObjectAccessHead,
 } from "@nautilo/lattice-crypto";
 import {
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
+  encodeAgentRuntimeSignerPublicationV1,
 } from "@nautilo/lattice-crypto/wire";
+import type { NautiloApiClient } from "@nautilo/api-client/browser";
+
+import {
+  encodeClientDeviceProfileV2,
+  type OpenedClientDeviceProfileV2,
+} from "../../src/client-vault/profile-v2.ts";
+import {
+  createClientDeviceProfileV3Candidate,
+  destroyOpenedClientDeviceProfileV3,
+  encodeClientDeviceProfileV3,
+} from "../../src/client-vault/profile-v3.ts";
+import {
+  createClientDeviceProfileV4Candidate,
+  destroyOpenedClientDeviceProfileV4,
+  encodeClientDeviceProfileV4,
+} from "../../src/client-vault/profile-v4.ts";
+import type { ClientProfileCoordinates } from
+  "../../src/client-vault/types.ts";
+import { MemoryClientProfileVault } from
+  "../../src/testing/client-profile-vault.ts";
+import { createAuthorizedHumanTaskRunResultReaderV1 } from
+  "../../src/client/task/authorized-human-task-run-result.ts";
+import { createVaultHumanTaskRunResultReaderV1 } from
+  "../../src/client/task/vault-human-task-run-result.ts";
+import { ClassifiedDataOperationError } from
+  "../../src/transition/encryption-data-operation-owner.ts";
 
 import {
   withTaskRuntimeExecutionEvidenceV1,
@@ -318,6 +346,181 @@ describe("Task Runtime result preparation", () => {
     });
     plaintext.fill(0);
     for (const generation of keyring.generations) generation.key.fill(0);
+  });
+
+  test("a Browser-compatible Human vault opens the exact Agent result and rejects substitution", async () => {
+    const scenario = await setup(0x345);
+    const prepared = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) =>
+        prepareTaskRuntimeRunResult(prepareInput(scenario, evidence)),
+    });
+    const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared);
+    const deviceId = "task-result-manager";
+    const coordinates: ClientProfileCoordinates = Object.freeze({
+      serverScope: "https://nautilo.test",
+      userId: REQUESTER_ID,
+      humanActorId: REQUESTER_ID,
+      profileId: "profile:task-result-manager",
+      deviceId,
+      installationLineageDigest: "34".repeat(32),
+    });
+    const encryption = await scenario.crypto.generateEncryptionKeyPair();
+    const keyring = openNamespaceKeyring({
+      crypto: scenario.crypto,
+      domainRoot: scenario.aiDomainRoot,
+      envelope: scenario.aiEnvelope,
+      resolveHistoricalCommitter: () =>
+        scenario.namespaceCommitter.publicKey,
+    });
+    const profile: OpenedClientDeviceProfileV2 = Object.freeze({
+      formatVersion: 2,
+      deviceId,
+      signingPublicKey: scenario.manager.publicKey,
+      signingPrivateKey: scenario.manager.privateKey,
+      encryptionPublicKey: encryption.publicKey,
+      encryptionPrivateKey: encryption.privateKey,
+      trustedDeviceRevision: 2,
+      trustedHostAuthorizationRevision: 5,
+      deliveryHighWatermark: 1,
+      keyringDeliveries: Object.freeze([Object.freeze({
+        deliverySequence: 1,
+        operationId: "task-result-keyring",
+        namespaceId: NAMESPACE_ID,
+        keyClass: "ai" as const,
+        domainId: DOMAIN_ID,
+        domainEpoch: 4,
+        accessRevision: ACCESS_REVISION,
+        bindingHash: scenario.trustedHead.bindingHash,
+        currentGeneration: keyring.currentGeneration,
+        generations: keyring.generations,
+      })]),
+    });
+    const v2Bytes = encodeClientDeviceProfileV2(profile);
+    const v3 = await createClientDeviceProfileV3Candidate({
+      crypto: scenario.crypto,
+      currentProfileBytes: v2Bytes,
+      expectedDeviceId: deviceId,
+    });
+    const v3Bytes = encodeClientDeviceProfileV3(v3);
+    const v4 = await createClientDeviceProfileV4Candidate({
+      crypto: scenario.crypto,
+      currentProfileBytes: v3Bytes,
+      expectedDeviceId: deviceId,
+    });
+    const profileBytes = encodeClientDeviceProfileV4(v4);
+    destroyOpenedClientDeviceProfileV4(v4);
+    destroyOpenedClientDeviceProfileV3(v3);
+    v2Bytes.fill(0);
+    v3Bytes.fill(0);
+    for (const generation of keyring.generations) generation.key.fill(0);
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await vault.stageProfile({
+      coordinates,
+      stageId: "stage:result",
+      generation: 1,
+      profileBytes,
+      publicState: { clientKind: "browser", publicFingerprint: "34".repeat(32) },
+    });
+    await vault.activateProfile(coordinates, "stage:result");
+    profileBytes.fill(0);
+    const anchors = new Map<string, TrustedMinimumObjectAccessHead>();
+    const resultEnvelope = {
+      readVersion: 1 as const,
+      status: "ready" as const,
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      objectId: prepared.objectId,
+      resultRevision: 1 as const,
+      cryptoAccessRevision: 0 as const,
+      namespaceId: NAMESPACE_ID,
+      encryptedPayloadBytesBase64url: Buffer.from(
+        snapshot.object.payloadBytes.ciphertext,
+      ).toString("base64url"),
+      accessManifestBytesBase64url: Buffer.from(
+        snapshot.access.manifestBytes,
+      ).toString("base64url"),
+      accessManifestProofBytesBase64url: [] as [],
+      namespaceEnvelopeBytesBase64url: Buffer.from(
+        snapshot.access.envelopeBytes[0],
+      ).toString("base64url"),
+      signerEvidence: [{
+        kind: "agent_runtime_publication" as const,
+        evidenceBytesBase64url: Buffer.from(
+          encodeAgentRuntimeSignerPublicationV1(
+            scenario.initialized.signerPublication,
+          ),
+        ).toString("base64url"),
+      }],
+    };
+    let response = resultEnvelope;
+    const reader = createAuthorizedHumanTaskRunResultReaderV1({
+      api: {
+        getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
+      } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">,
+      device: createVaultHumanTaskRunResultReaderV1({
+        crypto: scenario.crypto,
+        vault,
+        coordinates,
+        subjectHumanId: REQUESTER_ID,
+        now: () => NOW,
+        resolveDeviceAdmissionStatus: () => Promise.resolve({
+          responseVersion: 1,
+          required: true,
+          status: "admitted",
+          deviceId,
+          deviceGeneration: 1,
+          expiresAt: NOW + 60_000,
+        }),
+        resolveTrustedIssuingDevicePublicKey: () =>
+          Promise.resolve(scenario.manager.publicKey),
+        createStageId: () => "stage:signer",
+        accessAnchors: {
+          load: (id) => Promise.resolve(anchors.get(id) ?? null),
+          advance: ({ expected, next }) => {
+            if ((anchors.get(next.objectId) ?? null) !== expected) {
+              return Promise.resolve(false);
+            }
+            anchors.set(next.objectId, {
+              ...next,
+              payloadHash: next.payloadHash.slice(),
+              manifestHash: next.manifestHash.slice(),
+            });
+            return Promise.resolve(true);
+          },
+        },
+      }),
+    });
+    const request = { taskId: TASK_ID, taskRunId: RUN_ID, agentId: AGENT_ID };
+    expect(await reader.read(request)).toEqual({
+      status: "ready",
+      payload: {
+        formatVersion: 1,
+        resultText: "Protected Task result",
+        lastError: null,
+      },
+    });
+    response = {
+      ...resultEnvelope,
+      namespaceId: "40000000-0000-4000-8000-000000000099",
+    };
+    for (const attempted of [
+      request,
+      { ...request, agentId: "60000000-0000-4000-8000-000000000099" },
+    ]) {
+      await reader.read(attempted).then(
+        () => { throw new Error("substituted result was accepted"); },
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+          if (!(error instanceof ClassifiedDataOperationError)) return;
+          expect(error.failureClass).toBe("integrity");
+        },
+      );
+      response = resultEnvelope;
+    }
   });
 
   test("rejects result, Namespace, and signer substitution before publication", async () => {
