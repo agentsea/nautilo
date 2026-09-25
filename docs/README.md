@@ -33,6 +33,7 @@ the repository.
   and the [document/media proposal](contributing/proposals/mobile-document-media-save.md).
 - **Security and data:** [browser crypto compatibility](crypto-browser-compatibility.md),
   [encrypted data ownership](encryption-data-operation-ownership.md),
+  [personal provider keys server policy](server-provider-policy.md),
   [security research](security-research.md), and
   [research limits and recovery](security-research-limits.md).
 - **Events:** [quiet events](quiet-events.md).

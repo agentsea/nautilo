@@ -105,6 +105,7 @@ describe("agent-role-grants SQL shape — public contract preserved", () => {
 
   test("preserves the M322 product-only access receipt boundary after broad grants", () => {
     expect(SENSITIVE_TABLES).toContain("content_access_operations");
+    expect(SENSITIVE_TABLES).toContain("server_provider_policy");
     expect(sql).toContain("'content_access_operations'");
     expect(sql.indexOf("'content_access_operations'")).toBeGreaterThan(
       sql.indexOf(
