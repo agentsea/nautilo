@@ -1079,6 +1079,17 @@ export type {
   EncryptedPayloadV2 as EncryptedPayload,
 } from "./object/payload.ts";
 export {
+  assertAuthenticPreparedTaskRuntimeResultObjectV1
+    as assertAuthenticPreparedTaskRuntimeResultObject,
+  prepareTaskRuntimeResultObjectV1 as prepareTaskRuntimeResultObject,
+} from "./object/task-runtime-result-preparation-v1.ts";
+export type {
+  PreparedTaskRuntimeResultObjectV1 as PreparedTaskRuntimeResultObject,
+  PrepareTaskRuntimeResultObjectV1Input as PrepareTaskRuntimeResultObjectInput,
+  TaskRuntimeResultNamespaceSourceV1 as TaskRuntimeResultNamespaceSource,
+  TaskRuntimeResultObjectAuthorityV1 as TaskRuntimeResultObjectAuthority,
+} from "./object/task-runtime-result-preparation-v1.ts";
+export {
   ObjectAccessPersistenceOutcomeUnknownV2
     as ObjectAccessPersistenceOutcomeUnknown,
   persistPreparedObjectAccessManifestGenesisV2

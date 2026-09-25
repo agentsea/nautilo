@@ -176,6 +176,10 @@ export * from "./task/task-operational-fields-digest-v1.ts";
 export * from "./task/task-content-shadow-saga.ts";
 export * from "./task/task-content-operation.ts";
 export {
+  prepareTaskRuntimeRunResult,
+  type PrepareTaskRuntimeRunResultInput,
+} from "./task/task-run-result-preparation.ts";
+export {
   commitMemoryMutationV1,
   type MemoryMutationCommitmentInput,
 } from "./memory/memory-mutation-commitment.ts";

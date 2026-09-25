@@ -144,6 +144,37 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  ...([
+    [
+      "assertAuthenticPreparedTaskRuntimeResultObjectV1",
+      "assertAuthenticPreparedTaskRuntimeResultObject",
+    ],
+    [
+      "prepareTaskRuntimeResultObjectV1",
+      "prepareTaskRuntimeResultObject",
+    ],
+  ] as const).map(([imported, exported]) => ({
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported,
+    exported,
+    typeOnly: false,
+  })),
+  ...([
+    "PreparedTaskRuntimeResultObject",
+    "TaskRuntimeResultNamespaceSource",
+    "TaskRuntimeResultObjectAuthority",
+  ] as const).map((name) => ({
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "PrepareTaskRuntimeResultObjectV1Input",
+    exported: "PrepareTaskRuntimeResultObjectInput",
+    typeOnly: true,
+  },
   {
     source: "./format/domain-foreground-authorization-v2.ts",
     imported: "verifyDomainForegroundAuthorizationV2",

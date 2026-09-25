@@ -1,6 +1,7 @@
 import {
   assertAuthenticPreparedAgentObjectAccessManifestGenesisSet,
   assertAuthenticPreparedHumanObjectAccessManifestGenesisSet,
+  assertAuthenticPreparedTaskRuntimeResultObject,
   encryptedObjectWriteRecord,
   verifyHumanTaskPublicationRequest,
   verifyHumanTaskPublicationRequestExactReplay,
@@ -9,6 +10,7 @@ import {
   type LatticeStorage,
   type PreparedAgentObjectAccessManifestGenesisSet,
   type PreparedHumanObjectAccessManifestGenesisSet,
+  type PreparedTaskRuntimeResultObject,
 } from "@nautilo/lattice-crypto";
 import {
   decodeEncryptedPayloadV2,
@@ -48,9 +50,16 @@ export type AgentTaskContentCryptoRevisionSnapshotV1 =
     access: PreparedAgentObjectAccessManifestGenesisSet;
   }>;
 
+export type TaskRuntimeResultContentCryptoRevisionSnapshotV1 =
+  CommonTaskContentCryptoRevisionSnapshotV1 & Readonly<{
+    signerKind: "agent_runtime";
+    access: PreparedTaskRuntimeResultObject["access"];
+  }>;
+
 export type TaskContentCryptoRevisionSnapshotV1 =
   | HumanTaskContentCryptoRevisionSnapshotV1
-  | AgentTaskContentCryptoRevisionSnapshotV1;
+  | AgentTaskContentCryptoRevisionSnapshotV1
+  | TaskRuntimeResultContentCryptoRevisionSnapshotV1;
 
 const snapshots = new WeakMap<
   PreparedTaskContentCryptoRevisionV1,
@@ -79,7 +88,7 @@ function validateCommon(input: TaskContentCryptoRevisionSnapshotV1) {
   if (input.access.envelopeBytes.length !== 1) {
     throw new Error("Prepared Task content requires one Namespace envelope");
   }
-  const envelopeBytes = input.access.envelopeBytes[0]!;
+  const envelopeBytes = input.access.envelopeBytes[0];
   const envelope = decodeNamespaceObjectEnvelopeV2(envelopeBytes);
   if (
     input.object.objectId !== objectId
@@ -125,7 +134,7 @@ function seal(
     sealedObjectId: input.object.objectId,
     sealedPayloadHash: sha256(input.object.payloadBytes.ciphertext),
     sealedManifestHash: sha256(input.access.manifestBytes),
-    sealedEnvelopeHash: sha256(input.access.envelopeBytes[0]!),
+    sealedEnvelopeHash: sha256(input.access.envelopeBytes[0]),
   }));
   return revision;
 }
@@ -343,6 +352,55 @@ export function createPreparedAgentTaskContentCryptoRevisionV1(
   return seal(input, common);
 }
 
+/** Mint an opaque Task result revision from live Task Runtime evidence. */
+export function createPreparedTaskRuntimeResultContentCryptoRevisionV1(
+  input: Readonly<{
+    coordinate: TaskContentCoordinateV1;
+    authority: TaskContentAuthorityV1;
+    prepared: PreparedTaskRuntimeResultObject;
+  }>,
+): PreparedTaskContentCryptoRevisionV1 {
+  assertAuthenticPreparedTaskRuntimeResultObject(input.prepared);
+  if (input.coordinate.kind !== "run_result") {
+    throw new TypeError("Task Runtime preparation requires a result coordinate");
+  }
+  const snapshot: TaskRuntimeResultContentCryptoRevisionSnapshotV1 =
+    Object.freeze({
+      signerKind: "agent_runtime",
+      coordinate: input.coordinate,
+      authority: input.authority,
+      object: input.prepared.object,
+      access: input.prepared.access,
+    });
+  const common = validateCommon(snapshot);
+  const preparedAuthority = input.prepared.access.authority;
+  if (
+    input.coordinate.taskId !== preparedAuthority.taskId
+    || input.coordinate.taskRunId !== preparedAuthority.taskRunId
+    || input.coordinate.contentRevision !== 1
+    || common.objectId !== preparedAuthority.objectId
+    || common.manifest.signer.kind !== "agent_runtime"
+    || common.manifest.signer.agentId !== preparedAuthority.agentId
+    || common.manifest.signer.runtimeGeneration
+      !== preparedAuthority.runtimeGeneration
+    || common.manifest.signer.signerKeyId !== preparedAuthority.signerKeyId
+    || common.manifest.hostAuthorizationRevision
+      !== preparedAuthority.agentAuthorizationRevision
+    || input.authority.namespaceId
+      !== preparedAuthority.namespace.namespaceId
+    || input.authority.domainId !== preparedAuthority.namespace.domainId
+    || input.authority.expectedAccessRevision
+      !== preparedAuthority.namespace.expectedAccessRevision
+    || input.authority.expectedPolicyRevision
+      !== preparedAuthority.namespace.expectedPolicyRevision
+    || !sameBytes(
+      common.manifest.payloadHash,
+      preparedAuthority.payloadHash,
+    )
+  ) throw new TypeError("Prepared Task Runtime result authority is invalid");
+  return seal(snapshot, common);
+}
+
 export function readPreparedTaskContentCryptoRevisionSnapshotV1(
   revision: PreparedTaskContentCryptoRevisionV1,
 ): TaskContentCryptoRevisionSnapshotV1 {
@@ -361,7 +419,7 @@ export function readPreparedTaskContentCryptoRevisionSnapshotV1(
     )
     || snapshot.access.envelopeBytes.length !== 1
     || !sameBytes(
-      sha256(snapshot.access.envelopeBytes[0]!),
+      sha256(snapshot.access.envelopeBytes[0]),
       snapshot.sealedEnvelopeHash,
     )
   ) {
