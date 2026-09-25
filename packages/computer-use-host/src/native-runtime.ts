@@ -2422,12 +2422,12 @@ export class CuaComputerUseAdapter {
         return unique;
       }, []);
       if (matches.length !== 1) {
-        const result = preEffect("ready", "safe", []);
+        const result = preEffect("ready", "safe", ["observe_again", "retry_same_request"]);
         return { ok: false, receipt: knownNotStarted(result), error: matches.length === 0 ? "That application is unavailable on this desktop." : "That application name is ambiguous on this desktop.", outcome: result };
       }
       const matchedApplication = matches[0]!;
       if (matchedApplication.bundleId === undefined) {
-        const result = preEffect("ready", "safe", []);
+        const result = preEffect("ready", "safe", ["observe_again", "retry_same_request"]);
         return { ok: false, receipt: knownNotStarted(result), error: "That application is unavailable on this desktop.", outcome: result };
       }
       if (request.signal?.aborted) {
@@ -2455,7 +2455,7 @@ export class CuaComputerUseAdapter {
         return { ok: false, receipt, error: "Application launch completion is unknown. Observe again; do not replay it.", outcome: receipt.outcome };
       }
       if (parsed.kind === "refused") {
-        const result = preEffect("ready", "safe", []);
+        const result = preEffect("ready", "safe", ["observe_again", "retry_same_request"]);
         return { ok: false, receipt: knownNotStarted(result), error: "The requested application is unavailable for launch.", outcome: result };
       }
       if (parsed.kind === "failed") {

@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Computer Use Host preserves known-no-effect application launch refusals as
+  recoverable results instead of rejecting its own recovery receipt.
+
 - Computer Use preserves valid decision context after browser-bind refusals and
   distinguishes local request errors from unavailable providers. Opaque targets
   remain indivisible; missing targets can use supported observation routes.

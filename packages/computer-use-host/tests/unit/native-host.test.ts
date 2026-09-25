@@ -8,7 +8,7 @@ import { createNativeCuaHost } from "../../src/native-host.ts";
 import * as nativeRuntime from "../../src/native-runtime.ts";
 import { createNativeComputerUseScopeFactory } from "../../src/native-contract-runtime.ts";
 import { COMPUTER_USE_HOST_VERSION } from "../../src/version.ts";
-import classificationReview from "../../reviews/0.1.27.json";
+import classificationReview from "../../reviews/0.1.28.json";
 
 function checkedPort(): CuaCheckedContextPort {
   return {

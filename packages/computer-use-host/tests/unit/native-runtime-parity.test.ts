@@ -483,6 +483,29 @@ describe("Cua semantic adapter foundation", () => {
     expect(JSON.stringify({ launched, observed })).not.toMatch(/Untitled window|helper|overlay|1512|window_id|com\.spotify/i);
   });
 
+  test("launch discovery refusals remain valid known-no-effect receipts through the Host", async () => {
+    const app = { pid: 0, name: "Example Editor", bundle_id: "org.example.editor", active: false, running: false };
+    for (const rows of [[], [app, { ...app, bundle_id: "org.example.other-editor" }], [{ ...app, bundle_id: null }]]) {
+      const checked = port([installedApps(rows)]);
+      const adapter = new CuaComputerUseAdapter({ port: checked.value });
+      const runtime = new CuaNativeContractRuntime({ adapter, scopeForAuthority: () => scope });
+      const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+      const response = await host.dispatch({
+        kind: "request", protocol: { major: 3, minor: 0 }, requestId: "unavailable-launch",
+        authority: { authorityLeaseId: "lease-1", authorityGeneration: 1 },
+        fence: { hostGeneration: "host-1", driverGeneration: "driver-1", cancellationGeneration: 1 },
+        contract: COMPUTER_USE_NATIVE_CONTRACTS.do,
+        arguments: { operation: { kind: "launch_app", app: { name: "Example Editor" } } },
+      });
+      expect(response).toMatchObject({ settlement: "not_completed", result: {
+        completionCertainty: "not_completed", launchProgress: { requested: false, processRunning: false, windowReady: false },
+        outcome: { phase: "pre_effect_dispatch", stateChangeCertainty: "not_changed", retrySafety: "safe", recovery: ["observe_again", "retry_same_request"] },
+      } });
+      expect(computerLaunchReceiptSchema.safeParse(response.result).success).toBe(true);
+      expect(checked.calls.map(call => call.name)).toEqual(["list_apps"]);
+    }
+  });
+
   test("joins Proton launch rows by exact pid and bundle authority rather than display-label punctuation", async () => {
     const rows = [
       rawWindowRow({ windowId: 680, appName: "ProtonVPN", title: "Proton VPN", width: 340, height: 632 }),
