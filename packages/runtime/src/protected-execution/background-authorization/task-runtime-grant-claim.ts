@@ -135,6 +135,7 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
     occurrence: ProtectedTaskOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     domains: readonly DomainForegroundSecretEntry[];
+    evidence: TaskRuntimeExecutionEvidence;
     signal: AbortSignal;
   }>): Promise<Record<string, unknown>>;
   publishResult(input: Readonly<{
@@ -730,6 +731,7 @@ function createCandidate(input: Readonly<{
                   occurrence: input.occurrence,
                   record: current,
                   domains,
+                  evidence,
                   signal,
                 });
                 signal.throwIfAborted();

@@ -330,11 +330,14 @@ async function fixture() {
         deadlineAt: attempt.expiresAt,
       });
     },
-    openTransientInput: async ({ domains, signal }) => {
+    openTransientInput: async ({ domains, evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
       expect(domains).toHaveLength(1);
       expect(domains[0]!.domainKey).toEqual(bytes(9));
+      expect(evidence.result.taskId).toBe(TASK);
+      expect(evidence.result.taskRunId).toBe(RUN);
+      expect(evidence.namespaceRequirements).toEqual(currentNamespaceRequirements);
       return { message: SENTINEL };
     },
     publishResult: async ({ payload, domains, evidence, signal }) => {
