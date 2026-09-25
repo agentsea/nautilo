@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 
 import {
   backupManifestSchema,
@@ -954,6 +958,122 @@ describe("restore full bundle", () => {
     expect(all).toContain("nautilo.sql.gz");
     expect(all).toContain("logto_nautilo.sql.gz");
     expect(all).not.toContain("artifacts.tgz");
+  });
+
+  test("data-only restore refuses custody mismatch before destructive schema reset", async () => {
+    const exec = makeFakeExec();
+    const bundlePath = writeBundle(join(home, "data-only-custody-mismatch"));
+    const sourceKeyId = "123e4567-e89b-42d3-a456-426614174000";
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      gzipSync([
+        "COPY public.nautilo_instance_identity (id, instance_id, created_at, server_instance_id, server_binding_generation) FROM stdin;",
+        `self\t\t2026-05-19 12:00:00+00\t${RESTORE_SERVER_INSTANCE_ID}\t1`,
+        String.raw`\.`,
+        "CREATE TABLE public.personal_provider_credentials (",
+        "    id uuid NOT NULL",
+        ");",
+        "COPY public.personal_provider_credentials (id, key_id) FROM stdin;",
+        `223e4567-e89b-42d3-a456-426614174000\t${sourceKeyId}`,
+        String.raw`\.`,
+        "",
+      ].join("\n")),
+    );
+    const targetRoot = join(home, ".nautilo", "runtime-config");
+    mkdirSync(targetRoot, { recursive: true });
+    writeFileSync(
+      join(targetRoot, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+        formatVersion: 1,
+        keyId: "323e4567-e89b-42d3-a456-426614174000",
+        keyHex: "ee".repeat(32),
+      })}\n`,
+    );
+    const driver = new ComposeDriver(
+      makeDeps([], { exec: exec.exec, localExec: exec.exec }),
+    );
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule cannot infer that.
+    await expect(
+      driver.restore(baseProfile, {
+        fromPath: bundlePath,
+        force: true,
+        mode: "data-only",
+      }),
+    ).rejects.toThrow(/custody identity does not match/);
+    expect(
+      exec.calls.some((call) => commandText(call).includes("DROP SCHEMA")),
+    ).toBe(false);
+  });
+
+  test("populated restore requires custody authentication proof after server restart", async () => {
+    const events: string[] = [];
+    const exec = makeFakeExec((call) => {
+      if (commandText(call).includes("start nautilo-server")) {
+        events.push("server-start");
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const bundlePath = writeBundle(join(home, "data-only-custody-health"));
+    const keyId = "123e4567-e89b-42d3-a456-426614174000";
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      gzipSync([
+        "COPY public.nautilo_instance_identity (id, instance_id, created_at, server_instance_id, server_binding_generation) FROM stdin;",
+        `self\t\t2026-05-19 12:00:00+00\t${RESTORE_SERVER_INSTANCE_ID}\t1`,
+        String.raw`\.`,
+        "CREATE TABLE public.personal_provider_credentials (",
+        "    id uuid NOT NULL",
+        ");",
+        "COPY public.personal_provider_credentials (id, key_id) FROM stdin;",
+        `223e4567-e89b-42d3-a456-426614174000\t${keyId}`,
+        String.raw`\.`,
+        "",
+      ].join("\n")),
+    );
+    const targetRoot = join(home, ".nautilo", "runtime-config");
+    mkdirSync(targetRoot, { recursive: true });
+    writeFileSync(
+      join(targetRoot, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+        formatVersion: 1,
+        keyId,
+        keyHex: "ee".repeat(32),
+      })}\n`,
+    );
+    const custodyFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/api/health/personal-provider-custody")) {
+        events.push("custody-health");
+        return new Response(
+          JSON.stringify({
+            status: "unavailable",
+            recordsExist: true,
+            code: "credential_authentication_failed",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/health")) {
+        events.push("health-poll");
+        return new Response("ok", { status: 200 });
+      }
+      return new Response('{"setupState":"new"}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const driver = new ComposeDriver(
+      makeDeps(events, { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
+    );
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule cannot infer that.
+    await expect(
+      driver.restore(baseProfile, {
+        fromPath: bundlePath,
+        force: true,
+        mode: "data-only",
+      }),
+    ).rejects.toThrow(/custody verification failed/);
+    expect(events).toEqual(["server-start", "health-poll", "custody-health"]);
+    expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(true);
   });
 
   test("mode=artifacts-only loads only the artifact volume", async () => {

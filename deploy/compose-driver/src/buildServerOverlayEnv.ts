@@ -3,6 +3,11 @@ import {
   type PasswordRecoveryDriver,
   type ResolvedInstance,
 } from "@nautilo/config";
+import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  serializePersonalProviderCustody,
+  type PersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 
 /**
  * The post-bootstrap `LOGTO_*` keys read off `~/.nautilo${suffix}/instance.env`.
@@ -80,6 +85,8 @@ export interface BuildServerOverlayEnvOptions {
   remotePairingPepper?: string | undefined;
   /** D468 — per-instance AES-256 key for protected Expo push tokens. */
   pushTokenEncryptionKey?: string | undefined;
+  /** Canonical host custody; null explicitly blocks inherited projections. */
+  personalProviderCustody?: PersonalProviderCustody | null | undefined;
   passwordRecoveryDriver?: PasswordRecoveryDriver | undefined;
 }
 
@@ -111,6 +118,13 @@ export function buildServerOverlayEnv(
   const pushTokenEncryptionKey = options.pushTokenEncryptionKey;
   if (pushTokenEncryptionKey !== undefined && pushTokenEncryptionKey.trim().length > 0) {
     out["NAUTILO_PUSH_TOKEN_ENCRYPTION_KEY"] = pushTokenEncryptionKey;
+  }
+
+  if (options.personalProviderCustody !== undefined) {
+    out[PERSONAL_PROVIDER_CUSTODY_ENV] =
+      options.personalProviderCustody === null
+        ? ""
+        : serializePersonalProviderCustody(options.personalProviderCustody);
   }
 
   const localhostOrigin = `http://localhost:${corePort}`;

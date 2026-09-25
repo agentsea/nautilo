@@ -70,7 +70,10 @@ export function rebindCloneEnvContent(input: {
     NAUTILO_PUBLIC_BASE_URL: input.target.server.url,
   };
 
-  let entries = parseEnvFile(input.sourceRaw).map((entry) => {
+  // A QA clone must never inherit spending authority from personal keys.
+  let entries = parseEnvFile(input.sourceRaw)
+    .filter((entry) => entry.type !== "pair" || entry.key !== "NAUTILO_PERSONAL_PROVIDER_CUSTODY")
+    .map((entry) => {
     if (
       entry.type === "pair" &&
       (entry.value === input.sourceRoot ||

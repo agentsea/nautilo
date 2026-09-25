@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { createMaintenanceReceipt } from "@nautilo/hosting";
-import type {
-  RailwayDesiredStateTarget,
-  RailwayGraphqlVariables,
-  RailwayOperation,
-  RailwayOperationData,
-  RailwayOperationVariables,
-  RailwayReconcileExecutorTransport,
-  RailwayTopology,
-  RailwayTransportResult,
+import {
+  RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX,
+  type RailwayDesiredStateTarget,
+  type RailwayGraphqlVariables,
+  type RailwayOperation,
+  type RailwayOperationData,
+  type RailwayOperationVariables,
+  type RailwayReconcileExecutorTransport,
+  type RailwayTopology,
+  type RailwayTransportResult,
 } from "@nautilo/railway-hosting";
 
 import type { RailwayMaintenanceState } from "../../src/lib/railway-maintenance-state";
@@ -89,6 +90,18 @@ class BackupTransport implements RailwayReconcileExecutorTransport {
     else if (operation.name === "RailwayVolumeInstanceBackupLock") data = { volumeInstanceBackupLock: true };
     else throw new Error(`unexpected operation ${operation.name}`);
     return { outcome: "success", data } as RailwayTransportResult<RailwayOperationData<Operation>>;
+  }
+}
+
+class CustodyTransport implements RailwayReconcileExecutorTransport {
+  readonly calls: { readonly name: string; readonly variables: unknown }[] = [];
+  execute<Operation extends RailwayOperation<string, RailwayGraphqlVariables, unknown>>(
+    operation: Operation,
+    variables: RailwayOperationVariables<Operation>,
+  ): Promise<RailwayTransportResult<RailwayOperationData<Operation>>> {
+    this.calls.push({ name: operation.name, variables: structuredClone(variables) });
+    if (operation.name !== "RailwayVariableCollectionUpsert") throw new Error(`unexpected operation ${operation.name}`);
+    return Promise.resolve({ outcome: "success", data: { variableCollectionUpsert: true } } as never);
   }
 }
 
@@ -247,6 +260,84 @@ describe("production Railway upgrade stage adapters", () => {
     expect(await adapters.verifyCandidateHttps(scoped.context)).toEqual({ outcome: "complete" });
     expect(urls).toEqual(["https://source.example.test/health/ready"]);
     expect((await scoped.context.loadState()).maintenanceReceipt.verification).toEqual({ subject: "candidate", verifiedAt: timestamp });
+  });
+
+  test("provisions custody after explicit new-image migration proof and before server deployment", async () => {
+    const transport = new CustodyTransport();
+    const base = fixture(transport);
+    const migrationId = `${RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX}maintenance-1`;
+    const candidate = { ...base.candidate, migration: { ...base.candidate.migration, migrationId } };
+    const topology = {
+      ...base.topology,
+      releaseId: candidate.releaseId,
+      migrationSchemaVersion: 2,
+      finalServices: candidate.services.map((service) => ({
+        name: service.name,
+        image: service.newImage,
+      })),
+    } as unknown as RailwayTopology;
+    const completedDeployments = candidate.services.slice(0, 2).map((service, index) => ({
+      name: service.name as "app-postgres" | "logto-postgres",
+      serviceId: service.serviceId,
+      deploymentId: `database-deployment-${String(index)}`,
+    }));
+    const before = initial();
+    let current: RailwayMaintenanceState = {
+      ...before,
+      candidateUpgrade: {
+        schemaVersion: 1,
+        releaseId: candidate.releaseId,
+        projectId: candidate.projectId,
+        environmentId: candidate.environmentId,
+        services: candidate.services,
+        migrationId,
+        migrationExecutionId: candidate.migration.executionId,
+        completedDeployments,
+        stage: "migration-proven",
+        migrationDeploymentId: "migration-deployment-1",
+      },
+    };
+    let provisions = 0;
+    const custody = JSON.stringify({
+      formatVersion: 1,
+      keyId: "00000000-0000-4000-8000-000000000001",
+      keyHex: "ab".repeat(32),
+    });
+    const adapters = createRailwayUpgradeStageAdapters({
+      ...base,
+      candidate,
+      topology,
+      provisionPersonalProviderCustody: async () => { provisions += 1; return custody; },
+    });
+    const candidateContext = {
+      state: current,
+      loadState: async () => current,
+      persistReceipt: async (receipt: RailwayMaintenanceState["maintenanceReceipt"]) => {
+        current = { ...current, maintenanceReceipt: receipt, revision: current.revision + 1 };
+        return current;
+      },
+      persistCandidateUpgrade: async (checkpoint: NonNullable<RailwayMaintenanceState["candidateUpgrade"]>) => {
+        current = { ...current, candidateUpgrade: checkpoint, revision: current.revision + 1 };
+        return current;
+      },
+      persistPostUpgradeSourceState: async () => { throw new Error("not reached"); },
+    };
+
+    expect(await adapters.candidateUpgrade(candidateContext)).toEqual({ outcome: "pending" });
+    expect(provisions).toBe(1);
+    expect(current.candidateUpgrade?.stage).toBe("source-ready");
+    expect(transport.calls).toEqual([{
+      name: "RailwayVariableCollectionUpsert",
+      variables: {
+        input: {
+          projectId: "project-1",
+          environmentId: "environment-1",
+          serviceId: "service-nautilo-server",
+          variables: { NAUTILO_PERSONAL_PROVIDER_CUSTODY: custody },
+          skipDeploys: true,
+        },
+      },
+    }]);
   });
 
   test("keeps bounded HTTPS exhaustion pending for both candidate and restored targets", async () => {

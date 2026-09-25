@@ -5,6 +5,13 @@ const sha256Hex = z.string().regex(
   "must be a SHA-256 hex digest",
 );
 
+const personalProviderCustodyBackupEvidenceSchema = z.object({
+  database: z.enum(["table-absent", "empty", "rows"]),
+  custody: z.enum(["missing", "valid", "invalid"]),
+  custodyKeyId: z.uuid().optional(),
+  rowKeyIds: z.array(z.uuid()).optional(),
+});
+
 const backupManifestV1Shape = {
   createdAt: z.string(),
   profileName: z.string(),
@@ -39,6 +46,9 @@ const backupManifestV1Shape = {
   }),
   https: z.enum(["off", "letsencrypt"]).optional(),
   sizesBytes: z.record(z.string(), z.number()).optional(),
+  // Optional so recovery bundles created before this evidence existed remain
+  // readable. This records opaque identities only, never custody key bytes.
+  personalProviderCustody: personalProviderCustodyBackupEvidenceSchema.optional(),
 };
 
 export const backupManifestV1Schema = z.object({

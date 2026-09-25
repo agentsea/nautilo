@@ -4,6 +4,10 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { resolveInstance } from "@nautilo/config";
 import {
+  assertPersonalProviderRestoreCustody, assertPersonalProviderCustodyHealth,
+  readPersonalProviderCredentialEvidenceFromDump,
+} from "@nautilo/operator-secrets";
+import {
   resolveSnapshotDir,
   resolveNautiloHome,
   resolveDotenvPath,
@@ -137,6 +141,16 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
 
   const fullBackup = await prepareFullDevRestore(dir);
   if (fullBackup) options = { ...options, requireLogto: true };
+
+  // Establish custody before the first destructive database operation. A
+  // missing recovery config is never permission to regenerate encrypted keys.
+  const personalEvidence = existsSync(dbPath)
+    ? await readPersonalProviderCredentialEvidenceFromDump(dbPath)
+    : undefined;
+  if (personalEvidence) {
+    const recoveredEnv = existsSync(dotEnvSrc) ? await readFile(dotEnvSrc, "utf8") : undefined;
+    assertPersonalProviderRestoreCustody({ database: personalEvidence, instanceEnvRaw: recoveredEnv });
+  }
 
   if (options.requireLogto) {
     if (!existsSync(logtoDbPath)) {
@@ -362,6 +376,11 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
     process.exit(1);
   }
 
+  if (personalEvidence?.state === "rows") {
+    const response = await fetch(new URL("/api/health/personal-provider-custody", resolveInstance().server.url));
+    if (!response.ok) throw new Error("Personal credential restore verification unavailable");
+    assertPersonalProviderCustodyHealth(await response.text(), personalEvidence.keyIds[0]!);
+  }
   console.log("\nRestore verified: runtime acceptance passed.");
 }
 

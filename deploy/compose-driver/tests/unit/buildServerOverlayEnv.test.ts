@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ResolvedInstance } from "@nautilo/config";
+import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 import { buildServerOverlayEnv } from "../../src/buildServerOverlayEnv.ts";
 
 function inst(corePort: number): ResolvedInstance {
@@ -118,6 +122,23 @@ describe("buildServerOverlayEnv", () => {
   test("does not emit a blank push-token encryption key", () => {
     const env = buildServerOverlayEnv(inst(4301), {}, { pushTokenEncryptionKey: "   " });
     expect(env["NAUTILO_PUSH_TOKEN_ENCRYPTION_KEY"]).toBeUndefined();
+  });
+
+  test("projects canonical personal-provider custody after inherited env layers", () => {
+    const custody = {
+      formatVersion: 1 as const,
+      keyId: "123e4567-e89b-42d3-a456-426614174000",
+      keyHex: "cd".repeat(32),
+    };
+    const env = buildServerOverlayEnv(inst(4301), {}, { personalProviderCustody: custody });
+    expect(env[PERSONAL_PROVIDER_CUSTODY_ENV]).toBe(
+      serializePersonalProviderCustody(custody),
+    );
+  });
+
+  test("projects blank custody when canonical host authority is unavailable", () => {
+    const env = buildServerOverlayEnv(inst(4301), {}, { personalProviderCustody: null });
+    expect(env[PERSONAL_PROVIDER_CUSTODY_ENV]).toBe("");
   });
 
   test("preserves a LOGTO_JWKS_URI that does not match the host pattern", () => {

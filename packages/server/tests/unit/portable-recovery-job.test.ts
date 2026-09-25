@@ -6,7 +6,7 @@ import {
   type PortableRecoveryObjectStore,
   type PortableRecoveryProcessRunner,
 } from "../../src/maintenance/portable-recovery-job";
-import { PORTABLE_RECOVERY_MEMBERS, writePortableRecovery } from "../../src/maintenance/portable-recovery-container";
+import { PORTABLE_RECOVERY_MEMBERS, readPortableRecovery, writePortableRecovery } from "../../src/maintenance/portable-recovery-container";
 
 const encoder = new TextEncoder();
 const key = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -14,13 +14,25 @@ const env = {
   s3Endpoint: "https://s3.example.test", s3Region: "test", s3Bucket: "test-bucket", s3AccessKeyId: "access", s3SecretAccessKey: "secret",
   key, sourceReleaseId: "release-test", appDatabaseUrl: "postgres://app:pa%3Ass@app-db:5432/nautilo", logtoDatabaseUrl: "postgres://logto:pw@logto-db:5432/logto_nautilo",
 } as const;
+const CUSTODY = JSON.stringify({
+  formatVersion: 1,
+  keyId: "10000000-0000-4000-8000-000000000001",
+  keyHex: "11".repeat(32),
+});
 
 async function* bytes(value: string): AsyncIterable<Uint8Array> { yield encoder.encode(value); }
 function child(value = ""): PortableRecoveryChild { return { stdout: bytes(value), completed: Promise.resolve() }; }
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) { result.set(part, offset); offset += part.byteLength; }
+  return result;
+}
 
 interface FakeFilesystem extends PortableRecoveryFilesystem {
   simulateHardKillAfterFirstPromotion(): void;
   writtenBytes(): readonly Uint8Array[];
+  readText(path: string): string | undefined;
 }
 
 function fakeFs(events: string[], failPromotionOnce = false): FakeFilesystem {
@@ -50,6 +62,10 @@ function fakeFs(events: string[], failPromotionOnce = false): FakeFilesystem {
       for (const path of [...directories]) if (path.startsWith("/volume/.portable-recovery/op/object/roots/artifacts")) directories.delete(path);
     },
     writtenBytes: () => written,
+    readText: (path) => {
+      const value = files.get(path);
+      return value === undefined ? undefined : new TextDecoder().decode(value);
+    },
   };
 }
 
@@ -81,8 +97,8 @@ function runner(events: string[], appRestoreToc = APP_RESTORE_TOC): PortableReco
   };
 }
 
-async function sealedBundle(): Promise<{ readonly body: Uint8Array; readonly receipt: { readonly ciphertextSha256: string; readonly ciphertextBytes: number } }> {
-  const writer = writePortableRecovery({ key, nonceSeed: new Uint8Array(32).fill(7), sourceRelease: "release-test", members: PORTABLE_RECOVERY_MEMBERS.map((name) => ({ name, chunks: bytes("") })) });
+async function sealedBundle(custody = ""): Promise<{ readonly body: Uint8Array; readonly receipt: { readonly ciphertextSha256: string; readonly ciphertextBytes: number } }> {
+  const writer = writePortableRecovery({ key, nonceSeed: new Uint8Array(32).fill(7), sourceRelease: "release-test", members: PORTABLE_RECOVERY_MEMBERS.map((name) => ({ name, chunks: bytes(name === "personal-provider-custody.json" ? custody : "") })) });
   const chunks: Uint8Array[] = [];
   for await (const chunk of writer.stream) chunks.push(chunk);
   const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
@@ -160,6 +176,128 @@ describe("portable recovery image job", () => {
     ]);
   });
 
+  test("carries custody inside the encrypted bundle and restores it without source environment custody", async () => {
+    const exportEvents: string[] = [];
+    let sealedBody: Uint8Array | undefined;
+    let sealedReceipt: { readonly ciphertextSha256: string; readonly ciphertextBytes: number } | undefined;
+    const exportStorage: PortableRecoveryObjectStore = {
+      publish: async ({ bundle, receipt }) => {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of bundle) chunks.push(chunk);
+        const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+        sealedBody = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) { sealedBody.set(chunk, offset); offset += chunk.byteLength; }
+        sealedReceipt = await receipt;
+        return { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealedReceipt };
+      },
+      download: async () => { throw new Error("not used"); },
+    };
+    await runPortableRecoveryJob({
+      direction: "export",
+      operationId: "op",
+      objectId: "object",
+      environment: { ...env, personalProviderCustody: CUSTODY },
+      fs: fakeFs(exportEvents),
+      runner: runner(exportEvents),
+      storage: exportStorage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+      random: () => new Uint8Array(32).fill(4),
+    });
+    if (sealedBody === undefined || sealedReceipt === undefined) throw new Error("bundle was not published");
+
+    const restoredMembers = new Map<string, Uint8Array[]>();
+    await readPortableRecovery({
+      source: bytesFrom(sealedBody),
+      key,
+      expectedReceipt: sealedReceipt,
+      onChunk: ({ member, plaintext }) => {
+        restoredMembers.set(member, [...(restoredMembers.get(member) ?? []), plaintext]);
+      },
+    });
+    const custodyBytes = restoredMembers.get("personal-provider-custody.json") ?? [];
+    expect(new TextDecoder().decode(concatBytes(custodyBytes))).toBe(CUSTODY);
+
+    const restoreEvents: string[] = [];
+    const restoreFs = fakeFs(restoreEvents);
+    const descriptor = { format: "nautilo-recovery-v1" as const, version: 1 as const, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealedReceipt };
+    const restoreStorage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({ descriptor, body: bytesFrom(sealedBody!) }),
+    };
+    await runPortableRecoveryJob({
+      direction: "restore",
+      operationId: "op",
+      objectId: "object",
+      environment: restoreEnvironment(sealedReceipt.ciphertextSha256),
+      fs: restoreFs,
+      runner: runner(restoreEvents),
+      storage: restoreStorage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    });
+    expect(restoreFs.readText("/volume/config/instance.env")).toBe(`NAUTILO_PERSONAL_PROVIDER_CUSTODY=${CUSTODY}\n`);
+    expect(restoreEvents.join("\n")).not.toContain(CUSTODY);
+
+    let resealedBody: Uint8Array | undefined;
+    const reexportStorage: PortableRecoveryObjectStore = {
+      publish: async ({ bundle, receipt }) => {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of bundle) chunks.push(chunk);
+        resealedBody = concatBytes(chunks);
+        const done = await receipt;
+        return { format: "nautilo-recovery-v1", version: 1, operationId: "op-2", objectId: "object-2", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...done };
+      },
+      download: async () => { throw new Error("not used"); },
+    };
+    await runPortableRecoveryJob({
+      direction: "export",
+      operationId: "op-2",
+      objectId: "object-2",
+      environment: env,
+      fs: restoreFs,
+      runner: runner(restoreEvents),
+      storage: reexportStorage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+      random: () => new Uint8Array(32).fill(5),
+    });
+    if (resealedBody === undefined) throw new Error("restored custody was not re-exported");
+    const resealedCustody: Uint8Array[] = [];
+    await readPortableRecovery({
+      source: bytesFrom(resealedBody),
+      key,
+      onChunk: ({ member, plaintext }) => {
+        if (member === "personal-provider-custody.json") resealedCustody.push(plaintext);
+      },
+    });
+    expect(new TextDecoder().decode(concatBytes(resealedCustody))).toBe(CUSTODY);
+  });
+
+  test("rejects malformed bundled custody without promoting it to target configuration", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle("not-json");
+    const fs = fakeFs(events);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking the target filesystem.
+    await expect(runPortableRecoveryJob({
+      direction: "restore",
+      operationId: "op",
+      objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256),
+      fs,
+      runner: runner(events),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+    expect(fs.readText("/volume/config/instance.env")).toBeUndefined();
+  });
+
   test("verifies sealed source before DB mutation, then repairs app and Logto before promotion", async () => {
     const events: string[] = [];
     const sealed = await sealedBundle();
@@ -213,7 +351,7 @@ describe("portable recovery image job", () => {
 
   test("retains a durable verified stage and completes the same operation after promotion interruption", async () => {
     const events: string[] = [];
-    const sealed = await sealedBundle();
+    const sealed = await sealedBundle(CUSTODY);
     const descriptor = { format: "nautilo-recovery-v1" as const, version: 1 as const, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt };
     const storage: PortableRecoveryObjectStore = {
       publish: async () => { throw new Error("not used"); },
@@ -231,6 +369,8 @@ describe("portable recovery image job", () => {
     }
     await runPortableRecoveryJob(input);
     expect(fresh).toBe(2);
+    expect(fs.readText("/volume/config/instance.env")).toBe(`NAUTILO_PERSONAL_PROVIDER_CUSTODY=${CUSTODY}\n`);
+    expect(events.filter((entry) => entry === "rename:/volume/config/.personal-provider-custody.next:/volume/config/instance.env")).toHaveLength(1);
     expect(events.filter((entry) => entry === "syncdir:/volume/.portable-recovery/op/object").length).toBeGreaterThan(0);
     expect(events.filter((entry) => entry === "rename:/volume/.portable-recovery/op/object/roots/apps/apps:/volume/apps").length).toBe(1);
   });

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { gzipSync } from "node:zlib";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 
 import {
@@ -698,7 +699,10 @@ describe("ComposeDriver upgrade orchestrator", () => {
       "auto-pre-upgrade-20260519T123456Z",
     );
     mkdirSync(bundleDir, { recursive: true });
-    writeFileSync(join(bundleDir, "nautilo.sql.gz"), "");
+    writeFileSync(
+      join(bundleDir, "nautilo.sql.gz"),
+      gzipSync("-- PostgreSQL database dump\n"),
+    );
     writeFileSync(join(bundleDir, "logto_nautilo.sql.gz"), "");
     writeFileSync(join(bundleDir, "artifacts.tgz"), "");
     writeFileSync(join(bundleDir, "instance.env"), "LOGTO_ENDPOINT=http://localhost:3301\n");

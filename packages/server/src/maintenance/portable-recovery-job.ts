@@ -19,6 +19,12 @@ import {
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
 import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  parsePersonalProviderCustody,
+  personalProviderCustodyFromEnvFile,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
+import {
   PORTABLE_RECOVERY_MEMBERS,
   readPortableRecovery,
   writePortableRecovery,
@@ -91,6 +97,8 @@ export interface PortableRecoveryJobEnvironment {
   readonly expectedCiphertextSha256?: string;
   readonly appDatabaseUrl: string;
   readonly logtoDatabaseUrl: string;
+  /** Present only when the source image has durable personal-provider custody. */
+  readonly personalProviderCustody?: string | undefined;
 }
 
 export interface PortableRecoveryChild {
@@ -168,6 +176,13 @@ function assertInput(input: RunPortableRecoveryJobInput): void {
     if (typeof input.environment[key] !== "string" || input.environment[key].trim() === "") fail("INVALID_ENVIRONMENT", "portable recovery environment is incomplete");
   }
   if (!SAFE_SOURCE_RELEASE_ID.test(input.environment.sourceReleaseId)) fail("INVALID_ENVIRONMENT", "portable recovery environment is invalid");
+  if (input.environment.personalProviderCustody !== undefined) {
+    try {
+      if (canonicalCustody(input.environment.personalProviderCustody) !== input.environment.personalProviderCustody) throw new Error();
+    } catch {
+      fail("INVALID_ENVIRONMENT", "portable recovery environment is invalid");
+    }
+  }
   if (input.direction === "restore" && !/^[a-f0-9]{64}$/.test(input.environment.expectedCiphertextSha256 ?? "")) fail("INVALID_ENVIRONMENT", "portable recovery expected receipt is invalid");
   if (input.direction === "export" && input.environment.expectedCiphertextSha256 !== undefined) fail("INVALID_ENVIRONMENT", "portable recovery expected receipt is invalid");
 }
@@ -288,6 +303,82 @@ function memberRoot(name: PortableRecoveryMemberName): PortableRecoveryRootName 
   return undefined;
 }
 
+function singleMember(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  let delivered = false;
+  return {
+    [Symbol.asyncIterator]: () => ({
+      next: () => {
+        if (delivered) return Promise.resolve({ done: true, value: undefined });
+        delivered = true;
+        return Promise.resolve({ done: false, value: bytes });
+      },
+    }),
+  };
+}
+
+function canonicalCustody(value: string): string {
+  return serializePersonalProviderCustody(parsePersonalProviderCustody(value));
+}
+
+async function sourcePersonalProviderCustody(
+  fs: PortableRecoveryFilesystem,
+  injected: string | undefined,
+): Promise<string | undefined> {
+  if (injected !== undefined) return canonicalCustody(injected);
+  const path = join(fs.root, "config", "instance.env");
+  if (!(await fs.exists(path))) return undefined;
+  try {
+    const body = new TextDecoder("utf-8", { fatal: true }).decode(await fs.readFile(path));
+    const raw = personalProviderCustodyFromEnvFile(body);
+    return raw === undefined ? undefined : canonicalCustody(raw);
+  } catch {
+    fail("VERIFICATION_FAILED", "portable recovery custody source is invalid");
+  }
+}
+
+async function restorePersonalProviderCustody(
+  fs: PortableRecoveryFilesystem,
+  memberPath: string,
+): Promise<void> {
+  if (!(await fs.exists(memberPath))) return;
+  const bytes = await fs.readFile(memberPath);
+  if (bytes.byteLength === 0) return;
+  if (bytes.byteLength > 1024) fail("VERIFICATION_FAILED", "portable recovery custody is invalid");
+  let recovered: string;
+  try {
+    recovered = canonicalCustody(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    fail("VERIFICATION_FAILED", "portable recovery custody is invalid");
+  }
+  const configRoot = join(fs.root, "config");
+  const target = join(configRoot, "instance.env");
+  let before = "";
+  if (await fs.exists(target)) {
+    try { before = new TextDecoder("utf-8", { fatal: true }).decode(await fs.readFile(target)); }
+    catch { fail("VERIFICATION_FAILED", "portable recovery custody target is invalid"); }
+  }
+  let current: string | undefined;
+  try { current = personalProviderCustodyFromEnvFile(before); }
+  catch { fail("VERIFICATION_FAILED", "portable recovery custody target is invalid"); }
+  if (current !== undefined) {
+    try {
+      if (canonicalCustody(current) !== recovered) fail("VERIFICATION_FAILED", "portable recovery custody target does not match");
+    } catch {
+      fail("VERIFICATION_FAILED", "portable recovery custody target is invalid");
+    }
+    return;
+  }
+  await fs.mkdir(configRoot, 0o700);
+  await fs.chmod(configRoot, 0o700);
+  const body = `${before}${before.length === 0 || before.endsWith("\n") ? "" : "\n"}${PERSONAL_PROVIDER_CUSTODY_ENV}=${recovered}\n`;
+  const next = join(configRoot, ".personal-provider-custody.next");
+  await fs.writeFile(next, new TextEncoder().encode(body), 0o600);
+  await fs.chmod(next, 0o600);
+  await fs.syncFile(next);
+  await fs.rename(next, target);
+  await fs.syncDirectory(configRoot);
+}
+
 function stagingPath(fs: PortableRecoveryFilesystem, operationId: string): string {
   return join(fs.root, ".portable-recovery", operationId);
 }
@@ -354,7 +445,9 @@ function assertDescriptorAuthority(identity: PortableRecoveryObjectIdentity, env
 
 async function hasMatchingStage(fs: PortableRecoveryFilesystem, path: string, identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Promise<boolean> {
   if (!(await fs.exists(join(path, "verified.json")))) return false;
-  for (const name of PORTABLE_RECOVERY_MEMBERS) if (!(await fs.exists(join(path, name)))) return false;
+  // The sixth custody member is optional so a stage created from a legacy
+  // five-member bundle remains resumable by a newer image.
+  for (const name of PORTABLE_RECOVERY_MEMBERS.slice(0, -1)) if (!(await fs.exists(join(path, name)))) return false;
   const actual = await fs.readFile(join(path, "verified.json"));
   const expected = stageMarker(identity, descriptor);
   if (actual.byteLength !== expected.byteLength) return false;
@@ -531,9 +624,14 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     // Validate every volume root before opening the remote upload. This keeps
     // unsafe source topology from becoming a partial object-store operation.
     for (const root of ROOTS) await assertSafeTree(stable.fs, join(stable.fs.root, root));
-    const members = PORTABLE_RECOVERY_MEMBERS.map((name) => {
+    const custody = await sourcePersonalProviderCustody(stable.fs, stable.environment.personalProviderCustody);
+    const memberNames = custody === undefined
+      ? PORTABLE_RECOVERY_MEMBERS.slice(0, -1)
+      : PORTABLE_RECOVERY_MEMBERS;
+    const members = memberNames.map((name) => {
       if (name === "app-postgres.dump") return { name, chunks: dumpSource({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.appDatabaseUrl, command: "pg_dump" }) };
       if (name === "logto-postgres.dump") return { name, chunks: dumpSource({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, command: "pg_dump16" }) };
+      if (name === "personal-provider-custody.json") return { name, chunks: singleMember(new TextEncoder().encode(custody)) };
       const root = memberRoot(name)!;
       return { name, chunks: tarSource({ fs: stable.fs, runner: stable.runner, root: stable.fs.root, name: root }) };
     });
@@ -622,6 +720,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     await runRestoreCommand({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, dumpPath: memberPaths.get("logto-postgres.dump")!, command: "pg_restore16", ownerRole: "logto" });
     await runSqlRepair({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, sql: LOGTO_TENANT_PASSWORD_RESYNC_SQL, command: "psql16" });
     await runSqlRepair({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, sql: LOGTO_TENANT_REGRANT_SQL, command: "psql16" });
+    await restorePersonalProviderCustody(stable.fs, memberPaths.get("personal-provider-custody.json")!);
     // A process can die between root renames. The verified tar members are the
     // authority, so normalize every resume back to exact empty targets and a
     // clean extraction tree before attempting promotion again.
@@ -680,6 +779,12 @@ export function readPortableRecoveryJobEnvironment(env: Readonly<Record<string, 
   if (!/^[A-Za-z0-9_-]{43}$/.test(keyText)) fail("INVALID_ENVIRONMENT", "portable recovery environment is invalid");
   const key = Uint8Array.from(Buffer.from(keyText, "base64url"));
   if (key.byteLength !== 32 || Buffer.from(key).toString("base64url") !== keyText) fail("INVALID_ENVIRONMENT", "portable recovery environment is invalid");
+  let personalProviderCustody: string | undefined;
+  const rawCustody = env[PERSONAL_PROVIDER_CUSTODY_ENV];
+  if (rawCustody !== undefined) {
+    try { personalProviderCustody = canonicalCustody(rawCustody); }
+    catch { fail("INVALID_ENVIRONMENT", "portable recovery environment is invalid"); }
+  }
   return {
     s3Endpoint: env["NAUTILO_RECOVERY_S3_ENDPOINT"]!, s3Region: env["NAUTILO_RECOVERY_S3_REGION"]!, s3Bucket: env["NAUTILO_RECOVERY_S3_BUCKET"]!,
     ...(env["NAUTILO_RECOVERY_S3_PREFIX"]?.trim() ? { s3Prefix: env["NAUTILO_RECOVERY_S3_PREFIX"] } : {}),
@@ -688,6 +793,7 @@ export function readPortableRecoveryJobEnvironment(env: Readonly<Record<string, 
     key, sourceReleaseId: env["NAUTILO_RECOVERY_SOURCE_RELEASE_ID"]!,
     ...(env["NAUTILO_RECOVERY_EXPECTED_SHA256"]?.trim() ? { expectedCiphertextSha256: env["NAUTILO_RECOVERY_EXPECTED_SHA256"] } : {}),
     appDatabaseUrl: env["NAUTILO_RECOVERY_APP_DATABASE_URL"]!, logtoDatabaseUrl: env["NAUTILO_RECOVERY_LOGTO_DATABASE_URL"]!,
+    ...(personalProviderCustody === undefined ? {} : { personalProviderCustody }),
   };
 }
 

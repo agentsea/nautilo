@@ -60,6 +60,26 @@ describe("env-writer", () => {
     }
   });
 
+  test("configuration reload never places personal custody in child environments", async () => {
+    dir = await mkdtemp(join(tmpdir(), "cg-custody-reload-"));
+    const envPath = join(dir, "instance.env");
+    const key = "NAUTILO_PERSONAL_PROVIDER_CUSTODY";
+    const previous = process.env[key];
+    const observed: Array<string | undefined> = [];
+    const unsubscribe = subscribeEnvReload(() => observed.push(process.env[key]));
+    try {
+      await writeFileAtomic(envPath, `${key}=synthetic-value\n`);
+      reloadEnvOverlay(envPath);
+      await reloadEnvAndStripRemovedRegistryKeys(envPath);
+      expect(observed).toEqual([undefined, undefined]);
+      expect(process.env[key]).toBeUndefined();
+    } finally {
+      unsubscribe();
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
   test("env reload listeners observe the replaced environment and can unsubscribe", async () => {
     dir = await mkdtemp(join(tmpdir(), "cg-ew-"));
     const envPath = join(dir, ".env");

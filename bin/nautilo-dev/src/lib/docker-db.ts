@@ -379,6 +379,7 @@ export const DATA_TABLES = [
   "public.server_context_config",
   "public.server_model_config",
   "public.server_provider_policy",
+  "public.personal_provider_credentials",
   "public.server_profile",
   // M274 — server transition policy, bounded aggregate telemetry, cumulative
   // epoch totals, and unconsumed one-shot observation admissions. These rows
@@ -815,6 +816,31 @@ export function buildRestoreMigrationEnv(
   };
 }
 
+/**
+ * A full archive preserves Drizzle's ledger schema with its source owner.
+ * Restore migrations run as `nautilo`, so adopt the existing ledger before
+ * Drizzle executes its idempotent CREATE SCHEMA / CREATE TABLE statements.
+ * Fresh databases have no `drizzle` schema yet and intentionally no-op here.
+ */
+export function buildRestoreOwnershipAndGrantsSql(): string {
+  return [
+    buildFullLegacyRoleRepairSql(),
+    `DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'drizzle') THEN
+    ALTER SCHEMA drizzle OWNER TO nautilo;
+    GRANT USAGE, CREATE ON SCHEMA drizzle TO nautilo;
+
+    IF to_regclass('drizzle.__drizzle_migrations') IS NOT NULL THEN
+      ALTER TABLE drizzle.__drizzle_migrations OWNER TO nautilo;
+      GRANT ALL PRIVILEGES ON TABLE drizzle.__drizzle_migrations TO nautilo;
+    END IF;
+  END IF;
+END
+$$;`,
+  ].join("\n\n");
+}
+
 /** Spawned-process shape for {@link runRestoreMigrations} (subset of SpawnSyncReturns). */
 export type RestoreMigrationSpawnFn = (
   cmd: string,
@@ -861,7 +887,7 @@ function repairOwnershipAndGrants(
 ): void {
   log("  Repairing DB ownership and app-role grants...");
   execSync(`docker exec -i ${pgContainer} psql -U ${DB_USER} -d ${DB_NAME} -v ON_ERROR_STOP=1`, {
-    input: buildFullLegacyRoleRepairSql(),
+    input: buildRestoreOwnershipAndGrantsSql(),
     maxBuffer: 32 * 1024 * 1024,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -888,6 +914,24 @@ function assertRestoreIntegrity(
     SELECT 'public_table_owners', CASE WHEN count(*) = 0 THEN 'ok' ELSE count(*)::text END
     FROM pg_tables
     WHERE schemaname = 'public' AND tableowner <> 'nautilo'
+    UNION ALL
+    SELECT 'drizzle_schema_owner', CASE WHEN owner_name = 'nautilo' THEN 'ok' ELSE COALESCE(owner_name, 'missing') END
+    FROM (
+      SELECT (
+        SELECT pg_catalog.pg_get_userbyid(nspowner)
+        FROM pg_namespace
+        WHERE nspname = 'drizzle'
+      ) AS owner_name
+    ) drizzle_schema
+    UNION ALL
+    SELECT 'drizzle_migrations_owner', CASE WHEN owner_name = 'nautilo' THEN 'ok' ELSE COALESCE(owner_name, 'missing') END
+    FROM (
+      SELECT (
+        SELECT tableowner
+        FROM pg_tables
+        WHERE schemaname = 'drizzle' AND tablename = '__drizzle_migrations'
+      ) AS owner_name
+    ) drizzle_ledger
     UNION ALL
     SELECT 'nautilo_profiles_select', CASE WHEN has_table_privilege('nautilo', 'public.profiles', 'SELECT') THEN 'ok' ELSE 'missing' END
     UNION ALL

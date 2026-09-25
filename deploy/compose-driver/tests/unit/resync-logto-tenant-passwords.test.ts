@@ -8,6 +8,7 @@ import {
 import * as nodeFs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 import {
   backupManifestSchema,
@@ -197,7 +198,7 @@ function validRemoteManifest(
 
 function writeFullRestoreBundle(root: string): string {
   mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "nautilo.sql.gz"), "");
+  writeFileSync(join(root, "nautilo.sql.gz"), gzipSync("-- PostgreSQL database dump\n"));
   writeFileSync(join(root, "logto_nautilo.sql.gz"), "");
   writeFileSync(join(root, "artifacts.tgz"), "");
   writeFileSync(join(root, "instance.env"), "LOGTO_ENDPOINT=http://localhost:3301\n");
