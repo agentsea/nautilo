@@ -35,7 +35,8 @@ describe("config", () => {
     expect(config.nautilo_flush_model).toBe("");
     expect(config.nautilo_reviewer_model).toBe("");
     expect(config.nautilo_browser_decision_intervention_limit).toBe(2);
-    expect(config.nautilo_token_budget_fraction).toBe(0.6);
+    expect(config).not.toHaveProperty("nautilo_token_budget_fraction");
+    expect(config).not.toHaveProperty("nautilo_window_keep_recent");
     expect(config.nautilo_memory_brief_char_limit).toBe(8000);
     expect(config.nautilo_memory_search_limit).toBe(10);
     expect(config.nautilo_session_search_limit).toBe(5);
@@ -324,8 +325,8 @@ describe("config", () => {
       models: {
         default: "anthropic:claude-sonnet-4-6",
         sessionSearch: "fireworks:accounts/fireworks/models/minimax-m3",
-        flush: "fireworks:accounts/fireworks/models/glm-5p2",
-        reviewer: "fireworks:accounts/fireworks/models/glm-5p2",
+        flush: "fireworks:accounts/fireworks/models/glm-5p3",
+        reviewer: "fireworks:accounts/fireworks/models/glm-5p3",
         webSearch: "fireworks:accounts/fireworks/models/minimax-m3",
         embedding: { model: "text-embedding-3-small", dimensions: 1536 },
       },
@@ -349,8 +350,8 @@ describe("config", () => {
       models: {
         default: "anthropic:claude-sonnet-4-6",
         sessionSearch: "fireworks:accounts/fireworks/models/minimax-m3",
-        flush: "fireworks:accounts/fireworks/models/glm-5p2",
-        reviewer: "fireworks:accounts/fireworks/models/glm-5p2",
+        flush: "fireworks:accounts/fireworks/models/glm-5p3",
+        reviewer: "fireworks:accounts/fireworks/models/glm-5p3",
         webSearch: "fireworks:accounts/fireworks/models/minimax-m3",
         embedding: { model: "text-embedding-3-small", dimensions: 1536 },
       },
@@ -383,8 +384,8 @@ describe("config", () => {
       models: {
         default: "openai:gpt-5.5-2026-04-23",
         sessionSearch: "fireworks:accounts/fireworks/models/minimax-m3",
-        flush: "fireworks:accounts/fireworks/models/glm-5p2",
-        reviewer: "fireworks:accounts/fireworks/models/glm-5p2",
+        flush: "fireworks:accounts/fireworks/models/glm-5p3",
+        reviewer: "fireworks:accounts/fireworks/models/glm-5p3",
         webSearch: "fireworks:accounts/fireworks/models/minimax-m3",
         embedding: { model: "text-embedding-3-small", dimensions: 1536 },
       },
@@ -402,8 +403,6 @@ describe("config", () => {
       history: {
         validationEnabled: true,
         pruningEnabled: false,
-        tokenBudgetFraction: 0.5,
-        windowKeepRecent: 15,
       },
       research: {
         searchProvider: "tavily",

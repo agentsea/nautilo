@@ -128,7 +128,7 @@ describe("assistant-models", () => {
     expect(getProviderFromModelId("bad")).toBe("unknown");
   });
 
-  test("D462's static Venice roster replaces the absent E2EE Qwen and adds Kimi K3", () => {
+  test("the static Venice roster replaces the absent E2EE Qwen and adds Kimi K3", () => {
     const ids = new Set(ASSISTANT_MODELS.map((model) => model.id));
     expect(ids).not.toContain("venice:e2ee-qwen3-5-122b-a10b");
     expect(ids).toContain("venice:e2ee-deepseek-v4-flash");
@@ -139,16 +139,10 @@ describe("assistant-models", () => {
     });
   });
 
-  test("deprecates the DeepSeek V4 Pro preview and enables the 0813 GA routes", () => {
-    for (const provider of ["fireworks", "openrouter"] as const) {
-      const oldId = provider === "fireworks"
-        ? "fireworks:accounts/fireworks/models/deepseek-v4-pro"
-        : "openrouter:deepseek/deepseek-v4-pro";
-      const newId = `${oldId}-0813`;
-
-      expect(getModelById(oldId)).toMatchObject({ enabled: false });
-      expect(getModelById(newId)).toMatchObject({ enabled: true });
-    }
+  test("retires the Fireworks DeepSeek V4 Pro route while retaining OpenRouter", () => {
+    expect(getModelById("fireworks:accounts/fireworks/models/deepseek-v4-pro-0813")).toBeUndefined();
+    expect(getModelById("openrouter:deepseek/deepseek-v4-pro")).toMatchObject({ enabled: false });
+    expect(getModelById("openrouter:deepseek/deepseek-v4-pro-0813")).toMatchObject({ enabled: true });
   });
 
   test("recognizes supported remote-only rows and their released costs", async () => {

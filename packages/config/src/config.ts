@@ -39,8 +39,6 @@ const MODEL_DEFAULTS = {
 const HISTORY_DEFAULTS = {
   validationEnabled: true,
   pruningEnabled: false,
-  tokenBudgetFraction: 0.6,
-  windowKeepRecent: 20,
 } as const;
 
 const MEMORY_DEFAULTS = {
@@ -173,8 +171,6 @@ const runtimeModelSchema = {
 const runtimeHistorySchema = {
   nautilo_history_validation_enabled: z.boolean().default(HISTORY_DEFAULTS.validationEnabled),
   nautilo_history_pruning_enabled: z.boolean().default(HISTORY_DEFAULTS.pruningEnabled),
-  nautilo_token_budget_fraction: z.number().min(0.1).max(0.9).default(HISTORY_DEFAULTS.tokenBudgetFraction),
-  nautilo_window_keep_recent: z.number().int().positive().max(100).default(HISTORY_DEFAULTS.windowKeepRecent),
 } satisfies z.ZodRawShape;
 
 const runtimeMemorySchema = {
@@ -509,8 +505,6 @@ const UserModelsSchema = z.object({
 const UserHistorySchema = z.object({
   validationEnabled: z.boolean().default(HISTORY_DEFAULTS.validationEnabled),
   pruningEnabled: z.boolean().default(HISTORY_DEFAULTS.pruningEnabled),
-  tokenBudgetFraction: z.number().min(0.1).max(0.9).default(HISTORY_DEFAULTS.tokenBudgetFraction),
-  windowKeepRecent: z.number().int().positive().max(100).default(HISTORY_DEFAULTS.windowKeepRecent),
 });
 
 const UserMemorySchema = z.object({
@@ -700,8 +694,6 @@ function normalizeHistory(user: NautiloUserConfig): Record<string, unknown> {
   return {
     nautilo_history_validation_enabled: user.history.validationEnabled,
     nautilo_history_pruning_enabled: user.history.pruningEnabled,
-    nautilo_token_budget_fraction: user.history.tokenBudgetFraction,
-    nautilo_window_keep_recent: user.history.windowKeepRecent,
   };
 }
 
@@ -849,10 +841,6 @@ function readHistoryFromEnv(source: RuntimeSource, env: Env): Record<string, unk
       source?.nautilo_history_validation_enabled ?? readBooleanEnv(env, "NAUTILO_HISTORY_VALIDATION_ENABLED"),
     nautilo_history_pruning_enabled:
       source?.nautilo_history_pruning_enabled ?? readBooleanEnv(env, "NAUTILO_HISTORY_PRUNING_ENABLED"),
-    nautilo_token_budget_fraction:
-      source?.nautilo_token_budget_fraction ?? readFloatEnv(env, "NAUTILO_TOKEN_BUDGET_FRACTION"),
-    nautilo_window_keep_recent:
-      source?.nautilo_window_keep_recent ?? readIntEnv(env, "NAUTILO_WINDOW_KEEP_RECENT"),
   };
 }
 

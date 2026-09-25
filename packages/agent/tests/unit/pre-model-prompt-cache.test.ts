@@ -5,7 +5,7 @@ import {
   SystemMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import { setConfigOverrides } from "@nautilo/config";
+import * as modelLimits from "../../src/providers/models";
 import { ToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { SECURITY_SCAN_INITIAL_LANES } from "@nautilo/types";
 import { preModelNode } from "../../src/nodes/pre-model";
@@ -336,7 +336,9 @@ test("research history projects checkpointed cycles without replacing the canoni
         entry: { kind: "checkpoint", summary: "Auth inspected; source notes saved.",
           nextWork: "Trace the importer.", openRecordIds: ["importer-review"], evidenceRefs: [] } }, codeEvidence: [] },
     }) })];
-  setConfigOverrides({ nautilo_token_budget_fraction: 0.1 });
+  const limits = spyOn(modelLimits, "resolveModelExecutionLimits").mockImplementation(async (modelId) => ({
+    modelId, catalogVersion: null, contextTokens: 24_096, maxOutputTokens: 8192, contextSource: "override", outputSource: "override",
+  }));
   try {
     const patch = await preModelNode(stateFor("anthropic:claude-sonnet-4-6", {
       messages: original, subagentRun: true, taskRun: true, toolWhitelist: ["security_scan", "file"],
@@ -374,7 +376,7 @@ test("research history projects checkpointed cycles without replacing the canoni
     expect(recoveryPrompt).toContain("During active context recovery, follow its requiredAction and allowed operations first");
     expect(recoveryPrompt).toContain("without workspace instructions, continue the original research brief");
     expect(recoveryPrompt).not.toContain("Re-read cited source windows when needed;");
-  } finally { setConfigOverrides({}); }
+  } finally { limits.mockRestore(); }
 });
 
 test("final research synthesis discloses budget-based conclusion projection without rewriting canonical pages", async () => {
@@ -404,7 +406,9 @@ test("final research synthesis discloses budget-based conclusion projection with
     ...Array.from({ length: 10 }, (_, index) => page(`earlier-conclusions-${index}`, false, index * 24)).flat(),
     ...page("final-page", true)];
   const canonical = JSON.stringify(original);
-  setConfigOverrides({ nautilo_token_budget_fraction: 0.1 });
+  const limits = spyOn(modelLimits, "resolveModelExecutionLimits").mockImplementation(async (modelId) => ({
+    modelId, catalogVersion: null, contextTokens: 24_096, maxOutputTokens: 8192, contextSource: "override", outputSource: "override",
+  }));
   try {
     const patch = await preModelNode(stateFor("anthropic:claude-sonnet-4-6", {
       messages: original, subagentRun: true, taskRun: true, toolWhitelist: ["security_scan", "file"],
@@ -422,7 +426,7 @@ test("final research synthesis discloses budget-based conclusion projection with
     expect(prepared).toContain("status, reportReady and nextCursor under finalPage");
     expect(prepared).toContain("recordIds:[one needed id], limit:1, finalize:false");
     expect(prepared).toContain("Do not replay the oversized full page");
-  } finally { setConfigOverrides({}); }
+  } finally { limits.mockRestore(); }
 });
 
 
@@ -553,8 +557,7 @@ test(`${phaseModel}: pre-eviction phase rebuilds only tool guidance, preserves v
     expect(computerGuidance).not.toBe("");
     expect(baseline.toolNames).toContain("computer_observe");
     expect(text(baseline.preparedMessages![0] as SystemMessage).split(computerGuidance)).toHaveLength(2);
-    const fraction = (await import("@nautilo/config")).fromRuntimeConfig().nautilo_token_budget_fraction;
-    const allowance = Math.floor(49152 * fraction) - estimateBoundToolTokens(fullTools);
+    const allowance = (49152 - 4096) - estimateBoundToolTokens(fullTools);
     const source = "s".repeat(Math.max(1, allowance - estimateTokenCount(baseline.preparedMessages!) - 1000) * 4);
     state.messages[2] = new ToolMessage({ ...(state.messages[2] as ToolMessage), content: source });
     const prior = await preModelNode(state);
@@ -572,7 +575,7 @@ test(`${phaseModel}: pre-eviction phase rebuilds only tool guidance, preserves v
     expect(system).not.toContain(createFileTool(state).description);
     expect(system).not.toContain(computerGuidance);
     expect(system.slice(0, entered.preparedStableSystemPrefixLength)).toContain(createSecurityScanTool(true).description);
-    expect(estimateTokenCount(entered.preparedMessages!)).toBeLessThanOrEqual(Math.floor(49152 * fraction) - estimateBoundToolTokens(projectSecurityResearchConsolidationTools(fullTools, true)));
+    expect(estimateTokenCount(entered.preparedMessages!)).toBeLessThanOrEqual((49152 - 4096) - estimateBoundToolTokens(projectSecurityResearchConsolidationTools(fullTools, true)));
     expect(JSON.stringify(state.messages)).toBe(canonical);
     expect(drain).not.toHaveBeenCalled();
     // A tighter provider allowance can exit the retained-workspace phase before
@@ -586,7 +589,7 @@ test(`${phaseModel}: pre-eviction phase rebuilds only tool guidance, preserves v
     const resizedSystem = text(resized.preparedMessages![0] as SystemMessage);
     expect(resizedSystem.slice(0, resized.preparedStableSystemPrefixLength).split(computerGuidance)).toHaveLength(2);
     expect(resizedSystem.split("VOLATILE_PROTECTED_CANARY")).toHaveLength(2);
-    expect(estimateTokenCount(resized.preparedMessages!)).toBeLessThanOrEqual(Math.floor(32768 * fraction) - estimateBoundToolTokens(fullTools));
+    expect(estimateTokenCount(resized.preparedMessages!)).toBeLessThanOrEqual((32768 - 4096) - estimateBoundToolTokens(fullTools));
     expect(JSON.stringify(state.messages)).toBe(canonical);
     limits.mockImplementation(async (modelId) => ({ modelId, catalogVersion: null,
       contextTokens: 49152, maxOutputTokens: 8192, contextSource: "override", outputSource: "override" }));
@@ -620,3 +623,17 @@ test(`${phaseModel}: pre-eviction phase rebuilds only tool guidance, preserves v
 });
 
 }
+
+
+test("ordinary preparation preserves complete older turns and message middles in canonical and provider history", async () => {
+  const longMessage = "BEGIN" + "x".repeat(1_200_000) + "MIDDLE_CANARY" + "y".repeat(1_200_000) + "END";
+  const original = [new HumanMessage(longMessage), new AIMessage("I retained the complete source."),
+    ...Array.from({ length: 12 }, (_, index) => [new HumanMessage(`Follow-up ${index}`), new AIMessage(`Reply ${index}`)]).flat()];
+  const patch = await preModelNode(stateFor("anthropic:claude-sonnet-4-6", { messages: original }));
+  expect(patch.messages).toBe(original);
+  expect(patch.preparedMessages?.some((message) => message.content === longMessage)).toBe(true);
+  for (let index = 0; index < 12; index++) {
+    expect(patch.preparedMessages?.some((message) => message.content === `Follow-up ${index}`)).toBe(true);
+  }
+  expect(JSON.stringify(patch.preparedMessages)).not.toContain("chars elided");
+});

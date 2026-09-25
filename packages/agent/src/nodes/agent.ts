@@ -5,7 +5,6 @@ import {
 export { buildForegroundModelControlPlan } from "../config/foreground-model-controls";
 import { projectSecurityResearchConsolidationTools } from "../tools/security/security-scan";
 import { budgetResearchContext, captureResearchContextPresentation, isResearchPreEvictionConsolidating } from "../tools/security/research-context-rollover";
-import { resolveModelExecutionLimits } from "../providers/models";
 import { taskReadResponseByteBudget, estimateTokenCount } from "../utils/history-manager";
 import type { HumanMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -20,7 +19,7 @@ import { log } from "@nautilo/logger";
 import { getToolCatalog } from "@nautilo/catalog";
 import { envelopeReadableNamespaces } from "@nautilo/trust";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
-import { invokeChatModelWithFallback, estimateBoundToolTokens } from "../utils/chat-model-invocation";
+import { invokeChatModelWithFallback, resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
 import { runWithUsageContext } from "../usage/usage-context";
 import { withholdSkipForExplicitSelection } from "./skip-gate";
 import {
@@ -123,7 +122,7 @@ export async function agentNode(
     liveMiniAppSession: effectiveLiveMiniAppSessionForState(state),
     auditActorId: state.memoryAccessEnvelope?.actorId ?? null,
     securityAuditClientMeta: state.securityAuditClientMeta,
-    // D079 Phase 2 — see pre-model.ts for rationale. Must match
+    // see pre-model.ts for rationale. Must match
     // the other two tool-factory sites (pre-model.ts, tools.ts)
     // so the `file` tool's ZoneContext is consistent across the
     // pre-model → agent → tools pipeline within a single turn.
@@ -133,7 +132,7 @@ export async function agentNode(
     // formats with the same IANA zone the prompt block uses. Kept in
     // lock-step with the other tool-factory sites (pre-model.ts, tools.ts).
     userTimezone: state.userTimezone,
-    // D087 Phase 2A — plumbed through so the `file` tool's
+    // plumbed through so the `file` tool's
     // DispatchContext carries agentId + roomId for the backup
     // subsystem's file_revisions FKs. Must stay in lock-step with
     // pre-model.ts and tools.ts (same three-site coupling as
@@ -196,25 +195,23 @@ export async function agentNode(
     tools,
   });
 
-  // D141 P3 — derive room-scoped lane key for `model.fallback` event
+  // derive room-scoped lane key for `model.fallback` event
   // emission. Same shape as `runtime/src/job.ts` derives for `job.status`:
   // `room:<uuid>`. Null when the turn has no room context (rare —
   // background jobs without a roomId; the fallback walk still works,
   // just no WS announcement).
   const fallbackLaneKey = state.roomId ? `room:${state.roomId}` : null;
 
-  // D331 — operator per-model reasoning-output override map (default ON).
+  // operator per-model reasoning-output override map (default ON).
   // Passed as a map so each fallback hop resolves its own model's setting.
   //
-  // D334 — direct OpenAI reasoning models implement that same "reasoning output"
-  // setting via the Responses API, because OpenAI rejects GPT-5.5 function tools
-  // with `reasoning_effort` on Chat Completions. This is intentionally always
-  // offered to foreground agent turns; the provider policy still gates it to
-  // direct `openai:*` + reasoning-capable + per-model reasoning enabled.
+  // Offer the existing Responses transport to every foreground turn. Direct
+  // GPT-6 keeps reasoning with tools even when reasoning output is hidden;
+  // earlier OpenAI models retain their existing output/headroom policy.
   kickServerModelConfigRefresh();
   const reasoningOverrides = getCachedServerModelConfigRow()?.reasoningOutput ?? {};
 
-  // Costs dashboard (D405): attribute this turn's token usage to the human,
+  // Costs dashboard: attribute this turn's token usage to the human,
   // room, and call-type. Nested subagent turns (subagentDepth > 0) meter as
   // `subagent`; top-level turns as `chat`. The usage callback attached in
   // createUniversalModel reads this ambient context at completion time.
@@ -233,8 +230,7 @@ export async function agentNode(
   let actualPreparedMessages = preparedMessages;
   if (researchContinuity && optionalResearchDraft) {
     const candidate = [...preparedMessages, optionalResearchDraft];
-    const allowance = Math.floor((await resolveModelExecutionLimits(requestedModelId)).contextTokens * config.nautilo_token_budget_fraction)
-      - estimateBoundToolTokens(tools);
+    const allowance = await resolvePreparedMessageBudget(requestedModelId, tools);
     const candidateTokens = estimateTokenCount(candidate);
     const included = candidateTokens <= allowance;
     if (included) actualPreparedMessages = candidate;
@@ -255,7 +251,7 @@ export async function agentNode(
         actualPreparedMessages,
         tools,
         requestedModelId,
-        // D141 P2 / LD-1 — thread user + agent so the resolver picks up the
+        // thread user + agent so the resolver picks up the
         // right per-agent override (falling back to per-user default).
         state.userId,
         state.agentId ?? null,
@@ -282,7 +278,7 @@ export async function agentNode(
               log(`[research-note-draft] event=retry_removed task=${state.currentTaskId} task_run=${state.currentTaskRunId} model=${modelId}`);
               return actualPreparedMessages;
             }
-            const budget = Math.floor(Math.min(maxMessageTokens, estimatedMessageTokens) * config.nautilo_token_budget_fraction);
+            const budget = Math.min(maxMessageTokens, estimatedMessageTokens);
             const recovered = budgetResearchContext({ ...state, ...recoveredState }, messages, budget);
             recoveredState = {
               researchContextRecovery: recovered.recovery,
@@ -315,8 +311,7 @@ export async function agentNode(
     // Protected dispatch persists this safe output. Use the actual responder's
     // window, including its tool-call response, rather than a larger requested
     // model's allowance after fallback.
-    taskReadPageBytes: taskReadResponseByteBudget({ modelId: modelUsed, tokenBudgetFraction: config.nautilo_token_budget_fraction },
-      Math.floor((await resolveModelExecutionLimits(modelUsed)).contextTokens * config.nautilo_token_budget_fraction) - estimateBoundToolTokens(tools),
+    taskReadPageBytes: taskReadResponseByteBudget(await resolvePreparedMessageBudget(modelUsed, tools),
       [...actualPreparedMessages, response]),
     taskReadPendingPages: state.taskReadPendingPages ?? [],
   };

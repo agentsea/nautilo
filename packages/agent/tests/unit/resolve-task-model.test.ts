@@ -129,9 +129,9 @@ describe("resolveTaskModel (M152)", () => {
     process.env["FIREWORKS_API_KEY"] = "x";
     process.env["OPENROUTER_API_KEY"] = "x";
     const { modelId } = resolveTaskModel({ baseModelId: BASE, profile: "cheapest" });
-    // Fireworks DeepSeek V4 Flash 0731 is the cheapest configured model with
-    // these keys in the audited release.
-    expect(modelId).toBe("fireworks:accounts/fireworks/models/deepseek-v4-flash-0731");
+    // The OpenRouter Flash route has the lowest catalog coefficient among
+    // the configured, signed models.
+    expect(modelId).toBe("openrouter:deepseek/deepseek-v4-flash");
   });
 
   test("most_private picks highest privacy grade among configured", () => {

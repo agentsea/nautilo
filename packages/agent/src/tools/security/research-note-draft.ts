@@ -16,7 +16,7 @@ import { securityReportReadiness } from "./report-readiness";
 const CANDIDATES = [
   "fireworks:accounts/fireworks/models/glm-5p3-flash",
   "openrouter:z-ai/glm-5.3-flash",
-  "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
+  "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
   "openrouter:deepseek/deepseek-v4-flash-0731",
 ] as const;
 

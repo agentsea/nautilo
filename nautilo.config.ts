@@ -51,8 +51,6 @@ const config = {
   history: {
     validationEnabled: true,
     pruningEnabled: false,
-    tokenBudgetFraction: 0.6,
-    windowKeepRecent: 20,
   },
 
   session: {
@@ -70,14 +68,13 @@ const config = {
     transcriptsDir: "home/transcripts",
   },
 
-  // Zone roots and app-internal data paths (D049 artifact-centric pivot).
+  // Zone roots and app-internal data paths.
   // `scratch/` is a SIBLING of `home/`, not a child — enables cleaning
   // ephemeral tool output without risking permanent work product.
   // `data/*` and `vault/` are app-internal; the relay never receives
   // providers for these zones (v8 §9.1 key-isolation).
   //
-  // No `inboxDir` — async ingestion (email / mobile / scanner) is
-  // deferred to ISSUE-D068 until real adapters ship.
+  // No `inboxDir` until async ingestion adapters ship.
   storage: {
     scratchDir: "scratch",
     dataDir: "data",
@@ -111,7 +108,7 @@ const config = {
     activationRetentionTurns: 3,
   },
 
-  // M071 — optional instance network/hostname overlay (see ISSUE-M071).
+  // Optional instance network/hostname overlay.
   // Values normalize into `nautilo_instance_network` / `nautilo_instance_hostname`
   // and merge into `resolveInstance()` below env overrides, above disk `instance.json`.
   //

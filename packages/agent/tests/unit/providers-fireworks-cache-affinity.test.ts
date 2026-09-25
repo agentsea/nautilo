@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createUniversalModel } from "../../src/providers/universal";
 
-const MODEL = "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
+const MODEL = "fireworks:accounts/fireworks/models/deepseek-v4p1-flash";
 const ROOM_ID = "22222222-2222-4222-8222-222222222222";
 
 function defaultHeaders(model: unknown): Record<string, string> | undefined {

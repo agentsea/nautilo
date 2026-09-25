@@ -1,5 +1,6 @@
 import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
 import { randomUUID } from "node:crypto";
+import { ModelOutputLimitError, modelResponseReachedOutputLimit } from "../graph/model-output-limit";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import type { NautiloState } from "../agent/state";
 import { applyToolResultsToStreaks, buildNoProgressKey, resetStreakForKey, NoProgressError } from "../graph/no-progress";
@@ -19,6 +20,11 @@ const MALFORMED_CALL_FEEDBACK = "Error: MALFORMED_TOOL_ARGUMENTS. This request w
  */
 export function modelOutputPreflightNode(state: NautiloState): Partial<NautiloState> {
   const last = state.messages.at(-1);
+  // The agent node has already published/persisted this partial response. Use
+  // the existing failed-task surface instead of reporting normal completion.
+  if (last && AIMessage.isInstance(last) && modelResponseReachedOutputLimit(last)) {
+    throw new ModelOutputLimitError();
+  }
   if (!last || !AIMessage.isInstance(last) || !last.invalid_tool_calls?.length) {
     let repairedStreaks = state.noProgressStreaks ?? new Map();
     if (last && AIMessage.isInstance(last)) {

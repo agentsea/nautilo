@@ -7,7 +7,7 @@ import { isSupportedModelCatalogProvider } from "./model-catalog/supported-provi
 import { resolveModelRole } from "./model-role-resolution";
 import { hasRunnableOpenRouterTransport } from "../providers/openrouter-transport";
 
-/** Venice upstream routing for privacy UX (see AUDIT-2026-05-06-d086-venice-catalog-routing). */
+/** Venice upstream routing for privacy UX. */
 export type VeniceRouting = "venice-hosted" | "western-anonymized" | "china-anonymized";
 
 export interface AssistantModelConfig {
@@ -22,22 +22,25 @@ export interface AssistantModelConfig {
 
 export const ASSISTANT_MODELS: AssistantModelConfig[] = [
   { id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet 4.6 (Anthropic)", priority: 1, enabled: true, costCoefficient: 1.0 },
-  // D363 — Claude Sonnet 5 (released 2026-06-30, API id `claude-sonnet-5`, 1M ctx).
+  // Claude Sonnet 5 (API id `claude-sonnet-5`, 1M ctx).
   // Enabled + selectable; priority 2 keeps Sonnet 4.6 as the catalog default
-  // (global-default flip is a separate call). Used as the repo-docs finalize model.
+  // (global-default flip is a separate call).
   { id: "anthropic:claude-sonnet-5", displayName: "Claude Sonnet 5 (Anthropic)", priority: 2, enabled: true, costCoefficient: 1.0 },
-  // D399 — Claude Fable 5 (API id `claude-fable-5`, 1M/128k; adaptive thinking always-on).
+  // Claude Fable 5 (API id `claude-fable-5`, 1M/128k; adaptive thinking always-on).
   // costCoefficient 3.3 ≈ $10/$50 vs Sonnet baseline $3/$15. Priority 2 — no default flip.
   { id: "anthropic:claude-fable-5", displayName: "Claude Fable 5 (Anthropic)", priority: 2, enabled: true, costCoefficient: 3.3 },
   { id: "anthropic:claude-opus-5", displayName: "Claude Opus 5 (Anthropic)", priority: 2, enabled: true, costCoefficient: 1.6 },
+  { id: "anthropic:claude-opus-5-5", displayName: "Claude Opus 5.5 (Anthropic)", priority: 2, enabled: true, costCoefficient: 1.33 },
   { id: "anthropic:claude-opus-4-8", displayName: "Claude Opus 4.8 (Anthropic)", priority: 2, enabled: true, costCoefficient: 1.6 },
   { id: "anthropic:claude-opus-4-7", displayName: "Claude Opus 4.7 (Anthropic)", priority: 13, enabled: true, costCoefficient: 1.6 },
-  // Stack 166 — GPT-5.6 frontier thinking family (sol/terra/luna). Sol is the
+  // GPT-5.6 frontier thinking family (sol/terra/luna). Sol is the
   // flagship tier ($5/$30, coeff 2.0 ≈ GPT-5.5), Terra the mid tier ($2.50/$15,
   // coeff 1.0 ≈ Sonnet baseline), Luna the fast/cheap tier ($1/$6, coeff 0.4).
   { id: "openai:gpt-5.6-sol", displayName: "GPT-5.6 Sol (OpenAI)", priority: 3, enabled: true, costCoefficient: 2.0 },
   { id: "openai:gpt-5.6-terra", displayName: "GPT-5.6 Terra (OpenAI)", priority: 4, enabled: true, costCoefficient: 1.0 },
   { id: "openai:gpt-5.6-luna", displayName: "GPT-5.6 Luna (OpenAI)", priority: 5, enabled: true, costCoefficient: 0.4 },
+  { id: "openai:gpt-6-sol", displayName: "GPT-6 Sol (OpenAI)", priority: 3, enabled: true, costCoefficient: 0.67 },
+  { id: "openai:gpt-6-luna", displayName: "GPT-6 Luna (OpenAI)", priority: 5, enabled: true, costCoefficient: 0.03 },
   { id: "openai:gpt-5.5-2026-04-23", displayName: "GPT-5.5 (OpenAI)", priority: 3, enabled: true, costCoefficient: 2.0 },
   { id: "openai:gpt-5.4-2026-03-05", displayName: "GPT-5.4 (OpenAI)", priority: 4, enabled: true, costCoefficient: 1.0 },
   { id: "google:gemini-2.5-pro", displayName: "Gemini 2.5 Pro (Google)", priority: 5, enabled: true, costCoefficient: 1.0 },
@@ -63,13 +66,6 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
     costCoefficient: 0.25,
   },
   {
-    id: "fireworks:accounts/fireworks/models/kimi-k2p6",
-    displayName: "Kimi K2.6 (Fireworks)",
-    priority: 9,
-    enabled: true,
-    costCoefficient: 0.2,
-  },
-  {
     id: "fireworks:accounts/fireworks/models/kimi-k3",
     displayName: "Kimi K3 (Fireworks)",
     priority: 9,
@@ -82,13 +78,6 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
     priority: 10,
     enabled: true,
     costCoefficient: 0.22,
-  },
-  {
-    id: "fireworks:accounts/fireworks/models/glm-5p2",
-    displayName: "GLM 5.2 (Fireworks)",
-    priority: 11,
-    enabled: true,
-    costCoefficient: 0.3,
   },
   {
     id: "fireworks:accounts/fireworks/models/glm-5p1",
@@ -110,20 +99,6 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
     priority: 114,
     enabled: false,
     costCoefficient: 2.0,
-  },
-  {
-    id: "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813",
-    displayName: "DeepSeek V4 Pro 0813 (Fireworks)",
-    priority: 14,
-    enabled: true,
-    costCoefficient: 0.3,
-  },
-  {
-    id: "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
-    displayName: "DeepSeek V4 Flash 0731 (Fireworks)",
-    priority: 15,
-    enabled: true,
-    costCoefficient: 0.1,
   },
   {
     id: "openrouter:deepseek/deepseek-v4-pro",
@@ -167,8 +142,11 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
     enabled: true,
     costCoefficient: 0.17,
   },
-  // --- Venice (D086) — curated 13, all disabled by default; NAUTILO_MODEL or Phase 5 picker.
-  // Coefficients vs Claude Sonnet 4.6 = 1.0 (AUDIT-2026-05-06).
+  { id: "openrouter:anthropic/claude-opus-5.5", displayName: "Claude Opus 5.5 (OpenRouter)", priority: 2, enabled: true, costCoefficient: 1.33 },
+  { id: "openrouter:openai/gpt-6-sol", displayName: "GPT-6 Sol (OpenRouter)", priority: 3, enabled: true, costCoefficient: 0.67 },
+  { id: "openrouter:openai/gpt-6-luna", displayName: "GPT-6 Luna (OpenRouter)", priority: 5, enabled: true, costCoefficient: 0.03 },
+  // --- Venice — curated routes disabled by default; NAUTILO_MODEL or model picker.
+  // Coefficients vs Claude Sonnet 4.6 = 1.0.
   { id: "venice:zai-org-glm-5-1", displayName: "GLM 5.1 Beta (Venice-hosted)", priority: 21, enabled: false, costCoefficient: 0.55, routing: "venice-hosted" },
   { id: "venice:e2ee-deepseek-v4-flash", displayName: "DeepSeek V4 Flash E2EE TEE (Venice-hosted, no vision)", priority: 22, enabled: false, costCoefficient: 0.05, routing: "venice-hosted" },
   { id: "venice:deepseek-v4-flash", displayName: "DeepSeek V4 Flash (Venice → DeepSeek)", priority: 23, enabled: false, costCoefficient: 0.1, routing: "western-anonymized" },
@@ -182,6 +160,9 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
   { id: "venice:claude-opus-4-7", displayName: "Claude Opus 4.7 (Venice → Anthropic)", priority: 30, enabled: false, costCoefficient: 3.0, routing: "western-anonymized" },
   { id: "venice:gemini-3-1-pro-preview", displayName: "Gemini 3.1 Pro Preview (Venice → Google)", priority: 31, enabled: false, costCoefficient: 1.5, routing: "western-anonymized" },
   { id: "venice:openai-gpt-55-pro", displayName: "GPT-5.5 Pro (Venice → OpenAI)", priority: 32, enabled: false, costCoefficient: 22.5, routing: "western-anonymized" },
+  { id: "venice:claude-opus-5-5", displayName: "Claude Opus 5.5 (Venice → Anthropic)", priority: 37, enabled: false, costCoefficient: 1.6, routing: "western-anonymized" },
+  { id: "venice:openai-gpt-6-sol", displayName: "GPT-6 Sol (Venice → OpenAI)", priority: 34, enabled: false, costCoefficient: 0.83, routing: "western-anonymized" },
+  { id: "venice:openai-gpt-6-luna", displayName: "GPT-6 Luna (Venice → OpenAI)", priority: 35, enabled: false, costCoefficient: 0.04, routing: "western-anonymized" },
   { id: "venice:qwen-3-6-plus", displayName: "Qwen 3.6 Plus (Venice → Alibaba)", priority: 33, enabled: false, costCoefficient: 0.38, routing: "china-anonymized" },
 ];
 
@@ -207,7 +188,7 @@ export function getDefaultModel(): AssistantModelConfig {
     if (!configured) throw new Error(`Resolved default model "${id}" is absent from the catalog`);
     return configured;
   }
-  // D281 — server-wide admin-configured default (DB-backed, live via cache).
+  // Server-wide admin-configured default (DB-backed, live via cache).
   // Precedence: explicit NAUTILO_MODEL env (operator host pin) > server config
   // > catalog auto-pick. Cache read is sync; kick a background refresh for TTL.
   kickServerModelConfigRefresh();
@@ -269,12 +250,12 @@ export function getSelectableModels(): AssistantModelConfig[] {
 }
 
 /**
- * @deprecated as of D141 P2 / LD-1.
+ * @deprecated The chat path now uses a user-defined fallback chain.
  *
  * The chat path no longer walks the catalog priority list — fallback
  * is now user-defined per `profiles.fallback_chain` /
  * `agents.customization.fallback.chain` and resolved at invocation
- * time by `resolveFallbackPolicy`. See ISSUE-D141 §LD-1 and
+ * time by `resolveFallbackPolicy` in
  * `packages/agent/src/utils/chat-model-invocation.ts`.
  *
  * This function is retained only for legacy catalog-shape callers and tests.

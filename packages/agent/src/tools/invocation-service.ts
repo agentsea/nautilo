@@ -9,7 +9,6 @@ import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
 import { deriveResearchWorkContext, parseResearchHandoffRequest, performResearchHandoff, researchWorkFinalizationError, researchScanRestartError, researchReviewMutationError } from "./security/research-work-context";
 import { isTaskReadErrorReceipt } from "./tasks/read-projection";
 import { researchContextRecoveryToolError, researchRuntimeRecoveryFacts } from "./security/research-context-rollover";
-import { getModelTokenLimit } from "../providers/models";
 import { unfinishedFileDiscovery } from "./security/discovery-continuation";
 import { securityScanProgressText, type RelaySecurityScanProgressMessage } from "@nautilo/relay";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
@@ -1540,9 +1539,7 @@ export function createNautiloToolInvocationSession(
             runtimeRecovery: researchRuntimeRecoveryFacts(state),
             // The allowance belongs to the entire tool batch. Parallel reads
             // share it rather than each consuming the next whole workspace.
-            maxPageBytes: Math.floor((state.researchContextPageBytes ?? Math.floor(
-              getModelTokenLimit(state.model || requestedModelId) * runtimeConfig.nautilo_token_budget_fraction,
-            )) / parallelContextReads),
+            maxPageBytes: Math.floor((state.researchContextPageBytes ?? 0) / parallelContextReads),
           });
           rawContent = JSON.stringify(page);
           if (!page.ok) fileStatus = "error";

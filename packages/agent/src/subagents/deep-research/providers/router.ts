@@ -1,3 +1,6 @@
+import { coerceMessageLikeToMessage, type BaseMessageLike } from "@langchain/core/messages";
+import type { StructuredTool } from "@langchain/core/tools";
+import { resolveCompletionBudget } from "../../../utils/chat-model-invocation";
 import type { Configuration } from "../shared/config";
 import type { ChatModel } from "../../../providers/types";
 import { createUniversalModel } from "../../../providers/universal";
@@ -76,7 +79,7 @@ function getBaseUrl(modelId: string, cfg: Configuration): string | undefined {
 export async function createModel(
   modelId: string,
   cfg: Configuration,
-  options?: { maxTokens?: number | undefined },
+  options?: { maxTokens?: number | undefined; useOpenAIResponsesApi?: boolean | undefined; messages?: BaseMessageLike[]; tools?: readonly StructuredTool[] },
 ): Promise<ChatModel> {
   await assertDeepResearchServerFunding("deep_research_model");
   const apiKey = getApiKey(modelId, cfg);
@@ -85,6 +88,12 @@ export async function createModel(
   if (apiKey) opts["apiKey"] = apiKey;
   if (baseUrl) opts["baseURL"] = baseUrl;
   if (cfg.anthropic_long_context_beta) opts["anthropicLongContextBeta"] = true;
-  if (options?.maxTokens !== undefined) opts["maxTokens"] = options.maxTokens;
+  if (options?.messages) {
+    const available = await resolveCompletionBudget(modelId, options.messages.map(coerceMessageLikeToMessage), options.tools);
+    opts["maxTokens"] = options.maxTokens === undefined ? available : Math.min(options.maxTokens, available);
+  } else if (options?.maxTokens !== undefined) opts["maxTokens"] = options.maxTokens;
+  if (options?.useOpenAIResponsesApi !== undefined) {
+    opts["useOpenAIResponsesApi"] = options.useOpenAIResponsesApi;
+  }
   return guardPaidModel(await createUniversalModel(modelId, opts));
 }

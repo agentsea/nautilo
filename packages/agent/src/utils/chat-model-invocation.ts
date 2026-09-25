@@ -16,8 +16,11 @@ import {
 } from "../runtime/turn-context";
 import { ProviderTimeoutError, formatProviderError, isProviderTimeoutError, isSafelyRetryableProviderTimeout } from "../providers/errors";
 import { getModelById } from "../config/assistant-models";
+import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { ModelUnavailableError, resolveRetainedModels } from "../config/eligible-models";
 import { createUniversalModel } from "../providers/universal";
+import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
+import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
 import {
   managedGatewayKeyIsPresent,
@@ -244,12 +247,22 @@ export interface PreparedContextRecoveryInput {
 export type RecoverPreparedContext = (input: PreparedContextRecoveryInput) =>
   BaseMessage[] | null | Promise<BaseMessage[] | null>;
 
+function preparedMessageBudget(contextTokens: number, tools: readonly StructuredTool[]): number {
+  return contextTokens - estimateBoundToolTokens(tools) - COMPLETION_SAFETY_MARGIN_TOKENS;
+}
+
+/** Shared preparation/invocation workspace, including bound tool schemas. Output uses its remainder. */
+export async function resolvePreparedMessageBudget(modelId: string, tools: readonly StructuredTool[] = []): Promise<number> {
+  const limits = await resolveModelExecutionLimits(modelId);
+  return preparedMessageBudget(limits.contextTokens, tools);
+}
+
 export async function resolveCompletionBudget(modelId: string, messages: BaseMessage[], tools: readonly StructuredTool[] = []): Promise<number> {
   const limits = await resolveModelExecutionLimits(modelId);
   const contextWindow = limits.contextTokens;
   const maxOutputTokens = limits.maxOutputTokens;
   const estimatedInput = estimateTokenCount(messages) + estimateBoundToolTokens(tools);
-  const available = contextWindow - estimatedInput - COMPLETION_SAFETY_MARGIN_TOKENS;
+  const available = preparedMessageBudget(contextWindow, tools) - estimateTokenCount(messages);
 
   if (available < 1) {
     throw new PreparedContextExceededError(modelId, estimatedInput, contextWindow);
@@ -393,7 +406,7 @@ async function invokeForegroundAttemptWithUsageContext(
   agentId: string | null,
   controls: ResolvedForegroundModelControls | undefined,
   serving: ResolvedFireworksKimiK3ServingProfile | undefined,
-  reasoningOutput: boolean,
+  useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
 ): Promise<AIMessage> {
@@ -408,7 +421,11 @@ async function invokeForegroundAttemptWithUsageContext(
     attemptPolicyOptions,
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
   );
-  if (!controls) return invoke();
+  const directGpt6Responses = useOpenAIResponsesApi && isDirectGpt6Model(modelId);
+  if (!controls && !directGpt6Responses) return invoke();
+  const effectiveReasoningEffort = directGpt6Responses
+    ? controls?.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+    : controls?.reasoningEffort;
   const parent = getUsageContext();
   return runWithUsageContext({
     callType: parent?.callType ?? "chat",
@@ -416,10 +433,10 @@ async function invokeForegroundAttemptWithUsageContext(
     roomId: parent?.roomId ?? null,
     ...(parent?.metadata ? { metadata: parent.metadata } : {}),
     modelControl: {
-      canonicalModelId: controls.canonicalModelId,
-      effectiveModelId: serving?.effectiveModelId ?? controls.canonicalModelId,
-      ...(controls.reasoningEffort === undefined ? {} : { requestedReasoningEffort: controls.reasoningEffort }),
-      ...(controls.reasoningEffort === undefined ? {} : { effectiveReasoningEffort: reasoningOutput ? controls.reasoningEffort : "off" }),
+      canonicalModelId: controls?.canonicalModelId ?? modelId,
+      effectiveModelId: serving?.effectiveModelId ?? modelId,
+      ...(controls?.reasoningEffort === undefined ? {} : { requestedReasoningEffort: controls.reasoningEffort }),
+      ...(effectiveReasoningEffort === undefined ? {} : { effectiveReasoningEffort }),
       ...(serving === undefined ? {} : { servingProfileId: serving.profileId }),
       ...(serving === undefined ? {} : { servingSelector: servingSelectorForUsage(serving) }),
     },
@@ -638,7 +655,7 @@ export async function invokeChatModelWithFallback(
     assertNotCancelled();
     const estimatedMessageTokens = estimateTokenCount(messages);
     const limits = await resolveModelExecutionLimits(currentModelId);
-    const maxMessageTokens = limits.contextTokens - estimateBoundToolTokens(tools) - COMPLETION_SAFETY_MARGIN_TOKENS;
+    const maxMessageTokens = preparedMessageBudget(limits.contextTokens, tools);
     if (maxMessageTokens < 1) return false;
     const recovered = await invokeOptions.recoverContext({
       messages, modelId: currentModelId, contextWindowTokens: limits.contextTokens,
@@ -737,6 +754,7 @@ export async function invokeChatModelWithFallback(
     // provider-error catch so authorization denial can never select a new
     // server-key model.
     await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+    let hasSelectedReasoningEffort = false;
     try {
       log(`[nautilo/agent] Attempting model: ${currentModelId}`);
       const controls = invokeOptions?.resolveForegroundControls?.(currentModelId);
@@ -745,6 +763,7 @@ export async function invokeChatModelWithFallback(
       }
       const serving = controls?.servingProfileId === undefined ? undefined : resolveFireworksKimiK3ServingProfile(currentModelId, controls.servingProfileId);
       const requestedReasoningEffort = controls?.reasoningEffort;
+      hasSelectedReasoningEffort = requestedReasoningEffort !== undefined;
       const reasoningOutput = resolveReasoningForModel(currentModelId) && !disableReasoningOutput && requestedReasoningEffort !== "off";
       const stableSystemPrefixLength = invokeOptions?.preparedStableSystemPrefixLength ?? 0;
       const openAIExplicitPromptCache =
@@ -804,7 +823,7 @@ export async function invokeChatModelWithFallback(
         agentId,
         controls,
         serving,
-        reasoningOutput,
+        invokeOptions?.useOpenAIResponsesApi === true,
         managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
         {
           ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
@@ -851,7 +870,11 @@ export async function invokeChatModelWithFallback(
         markModelInvokeFailure(currentModelId, classified.message);
       }
 
-      if (planChatModelInvokeRetry(classified, disableReasoningOutput) === "retry_same_model_no_reasoning") {
+      const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);
+      const mandatoryReasoning = catalogEntry && "controls" in catalogEntry && catalogEntry.controls?.reasoning?.mandatory === true;
+      if (!hasSelectedReasoningEffort && !mandatoryReasoning
+        && !(invokeOptions?.useOpenAIResponsesApi === true && isDirectGpt6Model(currentModelId))
+        && planChatModelInvokeRetry(classified, disableReasoningOutput) === "retry_same_model_no_reasoning") {
         log(
           `[nautilo/agent] Thinking config rejected for ${currentModelId}; retrying once with reasoning disabled`,
         );
