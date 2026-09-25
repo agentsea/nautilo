@@ -13,6 +13,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import {
+  ProtectedTaskRouteError,
   resolveProtectedTaskComposition,
   type ProtectedTaskComposition,
   type ProtectedTaskRouteAuthority,
@@ -25,16 +26,26 @@ function invalid(reply: FastifyReply) {
   return reply.code(400).send({ error: "Exact protected Task request required" });
 }
 
+async function protectedOperation<Value>(
+  reply: FastifyReply,
+  operation: () => Promise<Value>,
+): Promise<Readonly<{ ok: true; value: Value }> | Readonly<{ ok: false }>> {
+  try {
+    return Object.freeze({ ok: true as const, value: await operation() });
+  } catch (error) {
+    if (!(error instanceof ProtectedTaskRouteError)) throw error;
+    reply.code(error.statusCode).send({ error: error.code, message: error.message });
+    return Object.freeze({ ok: false as const });
+  }
+}
+
 function counter(value: unknown, minimum: number): number | null {
   if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : null;
 }
 
-/**
- * Dormant, explicit protected Task transport. Production registration remains
- * absent until current Human/device/Namespace authority can assemble its ports.
- */
+/** Exact protected Task transport for branded test or production composition. */
 export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
   composition: ProtectedTaskComposition;
   resolveAuthorizedRequest(
@@ -65,7 +76,7 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
     if (!parsed.success) return invalid(reply);
     const authorized = await resolve(request);
     if (authorized === null) return reply.code(403).send({ error: "Forbidden" });
-    const result = await authorized.ports.list({
+    const attempted = await protectedOperation(reply, () => authorized.ports.list({
       authority: authorized.authority,
       query: {
         ...(parsed.data.status === undefined ? {} : { status: parsed.data.status }),
@@ -74,7 +85,9 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
         ...(parsed.data.recentTerminalLimit === undefined
           ? {} : { recentTerminalLimit: parsed.data.recentTerminalLimit }),
       },
-    });
+    }));
+    if (!attempted.ok) return;
+    const result = attempted.value;
     const projected = protectedTaskContentListV1Schema.safeParse(result);
     if (!projected.success) {
       throw new TypeError("Protected Task list returned non-protected content");
@@ -118,13 +131,15 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
         reason: "unsupported_crypto_access_revision",
       }));
     }
-    const result = await authorized.ports.readDefinition({
+    const attempted = await protectedOperation(reply, () => authorized.ports.readDefinition({
       authority: authorized.authority,
       taskId: request.params.taskId,
       objectId,
       contentRevision,
       cryptoAccessRevision,
-    });
+    }));
+    if (!attempted.ok) return;
+    const result = attempted.value;
     if (
       result.taskId !== request.params.taskId
       || result.objectId !== objectId
@@ -149,13 +164,13 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
         : parsed.data.operation !== "update" || !UUID.test(taskId))) return invalid(reply);
     const authorized = await resolve(request);
     if (authorized === null) return reply.code(403).send({ error: "Forbidden" });
-    const result = protectedTaskPublicationPlanV1Schema.parse(
-      await authorized.ports.plan({
+    const attempted = await protectedOperation(reply, () => authorized.ports.plan({
         authority: authorized.authority,
         taskId,
         request: parsed.data,
-      }),
-    );
+      }));
+    if (!attempted.ok) return;
+    const result = protectedTaskPublicationPlanV1Schema.parse(attempted.value);
     if (
       result.operation !== parsed.data.operation
       || result.operationId !== parsed.data.operationId
@@ -178,10 +193,12 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
     if (!parsed.success) return invalid(reply);
     const authorized = await resolve(request);
     if (authorized === null) return reply.code(403).send({ error: "Forbidden" });
-    const result = await authorized.ports.publishCreate({
+    const attempted = await protectedOperation(reply, () => authorized.ports.publishCreate({
       authority: authorized.authority,
       prepared: parsed.data,
-    });
+    }));
+    if (!attempted.ok) return;
+    const result = attempted.value;
     if (result.taskId !== parsed.data.taskId) {
       throw new TypeError("Protected Task creation receipt was substituted");
     }
@@ -200,13 +217,13 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
       || parsed.data.taskId !== request.params.taskId) return invalid(reply);
     const authorized = await resolve(request);
     if (authorized === null) return reply.code(403).send({ error: "Forbidden" });
-    const result = taskContentSummaryV1Schema.parse(
-      await authorized.ports.publishUpdate({
+    const attempted = await protectedOperation(reply, () => authorized.ports.publishUpdate({
         authority: authorized.authority,
         taskId: request.params.taskId,
         prepared: parsed.data,
-      }),
-    );
+      }));
+    if (!attempted.ok) return;
+    const result = taskContentSummaryV1Schema.parse(attempted.value);
     if (
       result.id !== request.params.taskId
       || result.content.status !== "protected"

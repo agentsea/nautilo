@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TaskSummary } from "@nautilo/types";
 import { useTaskState } from "../../contexts/task-state/task-state-context";
 import { filterScheduledTasks } from "./scheduled-tasks-view-model";
@@ -9,13 +9,19 @@ import { createWorkbenchDataOperationOwner } from
   "../../lib/encryption-data-operation-policy";
 import {
   createWorkbenchProtectedHumanTaskController,
-  listOpenedProtectedScheduledTasks,
-  type OpenedProtectedScheduledTask,
+  listProtectedScheduledTasks,
+  type ProtectedScheduledTaskProjection,
 } from "../../lib/protected-human-task-controller";
 import { taskContentViewerScopeKey } from
   "../../modes/rooms/subagents/task-content-viewer-scope";
 
-export type ProtectedScheduledTaskRow = OpenedProtectedScheduledTask;
+export type ProtectedScheduledTaskRow = ProtectedScheduledTaskProjection;
+
+function isDormantProtectedTaskRoute(error: unknown): boolean {
+  if (error === null || typeof error !== "object" || !("status" in error)) return false;
+  const status = (error as { status?: unknown }).status;
+  return status === 404 || status === 405 || status === 501;
+}
 
 /**
  * D406 — data hook for the Scheduled tasks management page.
@@ -48,6 +54,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
     tasks: allTasks,
     loading,
     error,
+    lastSuccessfulAtMs,
     busyIds,
     refresh,
     pauseTask,
@@ -88,6 +95,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
     loading: boolean;
     error: string | null;
   }>>({ scopeKey: protectedScopeKey, rows: [], loading: false, error: null });
+  const dormantProtectedRouteScopeRef = useRef<string | null>(null);
 
   useEffect(() => {
     setDashboardPollingEnabled(enabled);
@@ -96,16 +104,24 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
 
   useEffect(() => {
     let current = true;
-    setProtectedState({
-      scopeKey: protectedScopeKey,
-      rows: [],
-      loading: enabled && protectedController !== undefined,
-      error: null,
-    });
-    if (!enabled || protectedController === undefined) {
+    if (dormantProtectedRouteScopeRef.current !== null
+      && dormantProtectedRouteScopeRef.current !== protectedScopeKey) {
+      dormantProtectedRouteScopeRef.current = null;
+    }
+    const canLoad = enabled && protectedController !== undefined
+      && dormantProtectedRouteScopeRef.current !== protectedScopeKey;
+    setProtectedState((previous) => previous.scopeKey === protectedScopeKey
+      ? { ...previous, loading: canLoad, error: null }
+      : {
+          scopeKey: protectedScopeKey,
+          rows: [],
+          loading: canLoad,
+          error: null,
+        });
+    if (!canLoad || protectedController === undefined) {
       return () => { current = false; };
     }
-    void listOpenedProtectedScheduledTasks(protectedController).then((opened) => {
+    void listProtectedScheduledTasks(protectedController).then((opened) => {
       if (!current) return;
       setProtectedState({
         scopeKey: protectedScopeKey,
@@ -115,6 +131,9 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
       });
     }).catch((cause: unknown) => {
       if (!current) return;
+      if (isDormantProtectedTaskRoute(cause)) {
+        dormantProtectedRouteScopeRef.current = protectedScopeKey;
+      }
       setProtectedState({
         scopeKey: protectedScopeKey,
         rows: [],
@@ -123,7 +142,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
       });
     });
     return () => { current = false; };
-  }, [enabled, protectedController, protectedScopeKey]);
+  }, [enabled, lastSuccessfulAtMs, protectedController, protectedScopeKey]);
 
   const tasks = useMemo(
     () => filterScheduledTasks(allTasks),

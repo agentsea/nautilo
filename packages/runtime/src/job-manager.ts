@@ -60,6 +60,15 @@ import {
   type MaintenanceGate,
   type MaintenanceAcceptanceAuthority,
 } from "./maintenance-controller";
+import {
+  assertProtectedTaskJobReferenceV1,
+  type ProtectedTaskJobReferenceV1,
+} from "./tasks/protected-task-job-reference";
+import type {
+  CreateProtectedTaskJobInput,
+  ProtectedTaskExecutionCandidate,
+  ProtectedTaskJobSchedulingFacts,
+} from "./tasks/protected-task-execution-candidate";
 
 /**
  * D420 — execution-local authority for work that has already crossed an
@@ -154,6 +163,43 @@ function defaultForegroundExecutionRoute(executor?: JobExecutor): ForegroundExec
     contention: "fork",
   };
 }
+
+const PROTECTED_TASK_SCHEDULING_FIELDS = Object.freeze([
+  "agentId",
+  "callingRoomId",
+  "graphThreadId",
+  "ownerId",
+  "requestorId",
+  "roomId",
+] as const);
+const CANONICAL_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const PORTABLE_THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
+
+function assertProtectedTaskSchedulingFacts(
+  value: ProtectedTaskJobSchedulingFacts,
+): void {
+  if (
+    value === null
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.keys(value).sort().join(",") !== PROTECTED_TASK_SCHEDULING_FIELDS.join(",")
+    || !CANONICAL_UUID.test(value.ownerId)
+    || !CANONICAL_UUID.test(value.requestorId)
+    || !CANONICAL_UUID.test(value.agentId)
+    || !CANONICAL_UUID.test(value.roomId)
+    || (value.callingRoomId !== null && !CANONICAL_UUID.test(value.callingRoomId))
+    || !PORTABLE_THREAD_ID.test(value.graphThreadId)
+  ) {
+    throw new TypeError("Protected Task Job scheduling facts are invalid");
+  }
+}
+
+type PendingProtectedTaskExecution = Readonly<{
+  reference: ProtectedTaskJobReferenceV1;
+  scheduling: ProtectedTaskJobSchedulingFacts;
+  candidate: ProtectedTaskExecutionCandidate;
+}>;
 
 /** Ordinary Human-to-Agent turns fork when their Agent checkpoint thread is busy. */
 export function ordinaryConversationExecutionRoute(): ForegroundExecutionRoute {
@@ -526,6 +572,9 @@ export class JobManager {
   >();
   /** D513 — opaque server-private candidate, installed before enqueue only. */
   private readonly virtualToForegroundCandidate = new Map<string, ForegroundTurnCandidate>();
+  /** Protected Task authority and transient-input builder; process-local only. */
+  private readonly virtualToProtectedTaskExecution =
+    new Map<string, PendingProtectedTaskExecution>();
 
   constructor(opts?: {
     laneLock?: LaneLock;
@@ -717,6 +766,126 @@ export class JobManager {
           };
         });
       });
+  }
+
+  /**
+   * Admit one protected Task occurrence without putting its content through
+   * the foreground coalescer. Only closed scheduling identity is retained by
+   * JobManager; the candidate reconstructs executor input under live authority
+   * after the Job row and acceptance link are durable.
+   */
+  async createProtectedTaskJob(
+    input: CreateProtectedTaskJobInput,
+    authority?: MaintenanceAcceptanceAuthority,
+    invocationAuthority?: AcceptedInvocationAuthority,
+  ): Promise<CreateForegroundJobResult> {
+    const rejectCandidate = (): void => {
+      try {
+        input.candidate?.onIneligible?.();
+      } catch {
+        // Invalid admission remains authoritative over cleanup diagnostics.
+      }
+    };
+    const keys = Object.keys(input).sort().join(",");
+    if (
+      keys !== "candidate,executor,reference,scheduling"
+      && keys !== "candidate,executor,modelAttribution,reference,scheduling"
+    ) {
+      rejectCandidate();
+      throw new TypeError("Protected Task Job input contains unknown or missing fields");
+    }
+    try {
+      assertProtectedTaskSchedulingFacts(input.scheduling);
+      assertProtectedTaskJobReferenceV1(input.reference);
+    } catch (error) {
+      rejectCandidate();
+      throw error;
+    }
+    if (
+      typeof input.executor !== "function"
+      || !input.candidate
+      || typeof input.candidate.run !== "function"
+      || typeof input.candidate.onIneligible !== "function"
+      || (input.modelAttribution !== undefined && input.modelAttribution !== "external")
+    ) {
+      rejectCandidate();
+      throw new TypeError("Protected Task Job execution candidate is invalid");
+    }
+
+    const { scheduling, reference, candidate } = input;
+    const laneKey = `task:${reference.taskId}`;
+    const safeInput: Record<string, unknown> = {
+      message: "",
+      ownerId: scheduling.ownerId,
+      requestorId: scheduling.requestorId,
+      agentId: scheduling.agentId,
+      roomId: scheduling.roomId,
+      callingRoomId: scheduling.callingRoomId ?? "",
+      currentTaskId: reference.taskId,
+      graphThreadId: scheduling.graphThreadId,
+      turnId: reference.taskRunId,
+      actorRole: "owner",
+      roomRoster: [],
+      taskId: reference.taskId,
+      taskRunId: reference.taskRunId,
+    };
+    const merged = jobInputToCoalescedInput(
+      safeInput,
+      laneKey,
+      scheduling.ownerId,
+      scheduling.requestorId,
+    );
+    const route: ForegroundExecutionRoute = Object.freeze({
+      executor: input.executor,
+      ...(input.modelAttribution === undefined
+        ? {}
+        : { modelAttribution: input.modelAttribution }),
+      coalescing: "separate" as const,
+      contention: "serialize" as const,
+    });
+
+    try {
+      await this.resolveGate().assertAcceptingNewWork(authority);
+      if (invocationAuthority) {
+        assertAcceptedInvocationAuthoritySubject(
+          invocationAuthority,
+          scheduling.requestorId,
+        );
+      }
+      this.clearStopIntent(scheduling.graphThreadId, scheduling.roomId);
+      const virtualJobId = randomUUID();
+      await this.acceptForegroundAcceptance(virtualJobId, "foreground");
+      const acceptedAuthority = authority ?? createMaintenanceAcceptanceAuthority();
+      const acceptedInvocationAuthority = invocationAuthority
+        ?? createAcceptedInvocationAuthority(scheduling.requestorId);
+      this.virtualToAuthority.set(virtualJobId, acceptedAuthority);
+      this.virtualToInvocationAuthority.set(
+        virtualJobId,
+        acceptedInvocationAuthority,
+      );
+      this.virtualToExecutionRoute.set(virtualJobId, route);
+      this.virtualToTaskId.set(virtualJobId, reference.taskId);
+      this.virtualToProtectedTaskExecution.set(virtualJobId, {
+        reference,
+        scheduling,
+        candidate,
+      });
+      this.onLaneFlush(laneKey, merged, [virtualJobId]);
+      eventBus.emit({ type: "job.coalesced", virtualJobId, laneKey });
+      return {
+        id: virtualJobId,
+        virtualJobId,
+        acceptanceAuthority: acceptedAuthority,
+        invocationAcceptanceAuthority: acceptedInvocationAuthority,
+      };
+    } catch (error) {
+      try {
+        candidate.onIneligible();
+      } catch {
+        // Candidate cleanup cannot replace the admission failure.
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1001,17 +1170,21 @@ export class JobManager {
     tryRes: Extract<TryAcquireResult, { acquired: true }>,
   ): Promise<void> {
     const { merged, virtualIds, route, initiatingClientSurface } = item;
-    const inputRecord = coalescedInputToJobInput(merged);
     const durableCandidate = virtualIds.length === 1
       ? this.virtualToForegroundCandidate.get(virtualIds[0]!)
+      : undefined;
+    const protectedTaskExecution = virtualIds.length === 1
+      ? this.virtualToProtectedTaskExecution.get(virtualIds[0]!)
       : undefined;
     const hasFullCandidate = virtualIds.some((virtualId) =>
       this.virtualToForegroundCandidate.get(virtualId)
         ?.durableJobInputDisposition === "full"
+      || this.virtualToProtectedTaskExecution.has(virtualId)
     );
     if (
       hasFullCandidate
       && durableCandidate?.durableJobInputReference === undefined
+      && protectedTaskExecution?.reference === undefined
     ) {
       this.failAcceptedForegroundBeforePersistence(
         virtualIds, merged.laneKey, threadId, merged.roomId,
@@ -1020,8 +1193,33 @@ export class JobManager {
       await this.releaseLaneAfterPrePersistenceFailure(tryRes);
       return;
     }
-    const durableInputReference = durableCandidate?.durableJobInputReference;
-    const durableInputDisposition = durableCandidate?.durableJobInputDisposition;
+    if (durableCandidate && protectedTaskExecution) {
+      this.failAcceptedForegroundBeforePersistence(
+        virtualIds, merged.laneKey, threadId, merged.roomId,
+        "invalid_full_reference",
+      );
+      await this.releaseLaneAfterPrePersistenceFailure(tryRes);
+      return;
+    }
+    const durableInputReference = protectedTaskExecution?.reference
+      ?? durableCandidate?.durableJobInputReference;
+    const durableInputDisposition = protectedTaskExecution
+      ? "full" as const
+      : durableCandidate?.durableJobInputDisposition;
+    const inputRecord: Record<string, unknown> = protectedTaskExecution
+      ? {
+          ownerId: protectedTaskExecution.scheduling.ownerId,
+          requestorId: protectedTaskExecution.scheduling.requestorId,
+          agentId: protectedTaskExecution.scheduling.agentId,
+          roomId: protectedTaskExecution.scheduling.roomId,
+          callingRoomId: protectedTaskExecution.scheduling.callingRoomId ?? "",
+          graphThreadId: protectedTaskExecution.scheduling.graphThreadId,
+          turnId: protectedTaskExecution.reference.taskRunId,
+          currentTaskId: protectedTaskExecution.reference.taskId,
+          taskId: protectedTaskExecution.reference.taskId,
+          taskRunId: protectedTaskExecution.reference.taskRunId,
+        }
+      : coalescedInputToJobInput(merged);
     const executor = route.executor;
     // M077 — `jobs.owner_id` is the authenticated human (`requestorId`) for
     // `GET /api/jobs/:id`; LangGraph input still carries memory-scoped
@@ -1138,6 +1336,7 @@ export class JobManager {
       virtualIds,
       merged.turnId,
     );
+    const armedProtectedTaskExecution = this.armProtectedTaskExecution(virtualIds);
 
     const authority = this.jobToAuthority.get(job.id)!;
     const invocationAuthority = this.jobToInvocationAuthority.get(job.id)!;
@@ -1160,7 +1359,57 @@ export class JobManager {
         ),
       );
     };
-    void (foregroundCandidate?.runMainTurn
+    const protectedExecute = armedProtectedTaskExecution
+      ? async () => {
+          let workCalls = 0;
+          let acceptingWork = true;
+          try {
+            const result = await armedProtectedTaskExecution.candidate.run(
+              (transientInput, authorizationSignal) => {
+                if (!acceptingWork || workCalls !== 0) {
+                  throw new Error("Protected Task execution candidate reused its one-shot work");
+                }
+                workCalls += 1;
+                const scheduling = armedProtectedTaskExecution.scheduling;
+                const reference = armedProtectedTaskExecution.reference;
+                const exactTransientInput: Record<string, unknown> = {
+                  ...transientInput,
+                  ownerId: scheduling.ownerId,
+                  requestorId: scheduling.requestorId,
+                  agentId: scheduling.agentId,
+                  roomId: scheduling.roomId,
+                  callingRoomId: scheduling.callingRoomId ?? "",
+                  currentTaskId: reference.taskId,
+                  graphThreadId: scheduling.graphThreadId,
+                  turnId: reference.taskRunId,
+                  taskId: reference.taskId,
+                  taskRunId: reference.taskRunId,
+                };
+                return runWithAcceptedWorkAuthorities(
+                  authority,
+                  invocationAuthority,
+                  () => runWithInitiatingClientSurface(
+                    initiatingClientSurface,
+                    () => job.executeProtectedTask(
+                      exactTransientInput,
+                      authorizationSignal,
+                    ),
+                  ),
+                );
+              },
+            );
+            if (workCalls !== 1) {
+              throw new Error("Protected Task execution candidate did not run its one-shot work");
+            }
+            return result;
+          } finally {
+            acceptingWork = false;
+          }
+        }
+      : null;
+    void (protectedExecute
+      ? protectedExecute()
+      : foregroundCandidate?.runMainTurn
       ? foregroundCandidate.runMainTurn(merged.turnId, execute)
       : execute())
       .catch(async (error: unknown) => {
@@ -1813,6 +2062,32 @@ export class JobManager {
         // Exact-client eligibility must never affect scheduler truth.
       }
     }
+    this.invalidateProtectedTaskExecutions(virtualIds);
+  }
+
+  private invalidateProtectedTaskExecutions(virtualIds: readonly string[]): void {
+    for (const virtualId of virtualIds) {
+      const execution = this.virtualToProtectedTaskExecution.get(virtualId);
+      this.virtualToProtectedTaskExecution.delete(virtualId);
+      try {
+        execution?.candidate.onIneligible();
+      } catch {
+        // Releasing process-local authority is subordinate to scheduler truth.
+      }
+    }
+  }
+
+  private armProtectedTaskExecution(
+    virtualIds: readonly string[],
+  ): PendingProtectedTaskExecution | undefined {
+    if (virtualIds.length !== 1) {
+      this.invalidateProtectedTaskExecutions(virtualIds);
+      return undefined;
+    }
+    const virtualId = virtualIds[0]!;
+    const execution = this.virtualToProtectedTaskExecution.get(virtualId);
+    this.virtualToProtectedTaskExecution.delete(virtualId);
+    return execution;
   }
 
   /**
@@ -2107,6 +2382,9 @@ export class JobManager {
     for (const threadId of this.pendingByThread.keys()) this.stoppedThreads.add(threadId);
     this.pendingByThread.clear();
     this.coalescer.dropAllLanes();
+    this.invalidateProtectedTaskExecutions([
+      ...this.virtualToProtectedTaskExecution.keys(),
+    ]);
     this.virtualToExecutionRoute.clear();
     this.virtualToInvocationAuthority.clear();
     this.virtualInvocationScopes.clear();
@@ -2234,6 +2512,9 @@ export class JobManager {
     this.virtualInvocationScopes.clear();
     this.virtualToExecutionRoute.clear();
     this.invalidateForegroundCandidates([...this.virtualToForegroundCandidate.keys()]);
+    this.invalidateProtectedTaskExecutions([
+      ...this.virtualToProtectedTaskExecution.keys(),
+    ]);
     this.virtualToTaskId.clear();
     this.bufferedRouteByLane.clear();
     this.bufferedInvocationSubjectByLane.clear();

@@ -36,6 +36,7 @@ import {
 } from "@nautilo/runtime";
 import {
   and,
+  actors,
   eq,
   inArray,
   getTaskById,
@@ -75,6 +76,32 @@ interface TasksRoutesDeps {
   /** Exact native custody hook; resolves only after a locally owned Stop is contained. */
   prepareStopTask?: (taskId: string) => Promise<boolean>;
   contentOwner: EncryptionDataOperationOwner;
+}
+
+function listTaskOptions(query: ListTasksQuery): Parameters<typeof listTasksForOwner>[2] {
+  const { status, includeTerminal, recentTerminalLimit } = query;
+  const requestedTerminalLimit = Number(recentTerminalLimit);
+  const terminalLimit = Number.isFinite(requestedTerminalLimit)
+    ? requestedTerminalLimit
+    : undefined;
+  const isTerminalStatus = status === "completed"
+    || status === "cancelled"
+    || status === "errored";
+  return status
+    ? {
+        status: status as NonNullable<NewTask["status"]>,
+        ...(isTerminalStatus ? {
+          includeRecentTerminal: true,
+          ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
+        } : {}),
+      }
+    : {
+        includeTerminal: includeTerminal === true || String(includeTerminal) === "true",
+        ...(includeTerminal === true || String(includeTerminal) === "true" ? {
+          includeRecentTerminal: true,
+          ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
+        } : {}),
+      };
 }
 
 async function readOrdinaryTaskProjection(
@@ -225,9 +252,12 @@ async function pendingInitialTaskDefinitions(
   const revisions = await db.select({
     taskId: taskDefinitionCryptoRevisions.taskId,
     disposition: taskDefinitionCryptoRevisions.disposition,
-  }).from(taskDefinitionCryptoRevisions).where(and(
+  }).from(taskDefinitionCryptoRevisions)
+    .innerJoin(actors, eq(actors.id, taskDefinitionCryptoRevisions.requesterHumanId))
+    .where(and(
     inArray(taskDefinitionCryptoRevisions.taskId, candidates.map((task) => task.id)),
-    eq(taskDefinitionCryptoRevisions.requesterHumanId, ownerId),
+    eq(actors.ownerId, ownerId),
+    eq(actors.kind, "user"),
     eq(taskDefinitionCryptoRevisions.contentRevision, 1),
   ));
   return new Map(revisions.map((revision) => [
@@ -317,6 +347,36 @@ export function toTaskContentSummaryV1(
       }
       : definition,
   };
+}
+
+/** Owner-scoped lifecycle projection for the protected Task transport. */
+export async function listProtectedTaskContentV1(
+  ownerId: string,
+  query: ListTasksQuery,
+): Promise<readonly TaskContentSummaryV1[]> {
+  const db = getServerDirectDb();
+  const tasks = await listTasksForOwner(db, ownerId, listTaskOptions(query));
+  const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
+  const protectedTasks = tasks.filter((task) =>
+    task.contentRepresentation !== "ordinary" || pendingDefinitions.has(task.id)
+  );
+  const [lastModels, agentNames] = await Promise.all([
+    getLatestRunModelByTask(db, protectedTasks.map((task) => task.id)),
+    getOwnerAgentDisplayNamesByAgentId(
+      db,
+      ownerId,
+      protectedTasks.map((task) => task.agentId),
+    ),
+  ]);
+  return protectedTasks.map((task) =>
+    toTaskContentSummaryV1(task, {
+      agentName: agentNames.get(task.agentId) ?? null,
+      lastModelId: lastModels.get(task.id) ?? null,
+      ...(pendingDefinitions.has(task.id)
+        ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
+        : {}),
+    })
+  );
 }
 
 function taskHarnessId(metadata: unknown): string | null {
@@ -483,37 +543,9 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       return reply.status(401).send({ error: "Authentication required" });
     }
 
-    const { status, includeTerminal, recentTerminalLimit } = request.query;
     // Push status to the store (exact-status filter, precedence over
-    // includeTerminal). Passing `{}` for a status query would make the store
-    // EXCLUDE terminal rows, so `?status=completed` always returned [].
-    const requestedTerminalLimit = Number(recentTerminalLimit);
-    const terminalLimit = Number.isFinite(requestedTerminalLimit)
-      ? requestedTerminalLimit
-      : undefined;
-    const isTerminalStatus = status === "completed" || status === "cancelled" || status === "errored";
-    const opts = status
-      ? {
-          status: status as NonNullable<NewTask["status"]>,
-          // A terminal status never becomes an unbounded HTTP history scan.
-          ...(isTerminalStatus
-            ? {
-                includeRecentTerminal: true,
-                ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
-              }
-            : {}),
-        }
-      : {
-          includeTerminal: includeTerminal === true || String(includeTerminal) === "true",
-          // Terminal history stays opt-in, but gets the Mobile default whenever
-          // it is requested without an explicit size.
-          ...(includeTerminal === true || String(includeTerminal) === "true"
-            ? {
-                includeRecentTerminal: true,
-                ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
-              }
-            : {}),
-        };
+    // includeTerminal). Terminal history remains bounded.
+    const opts = listTaskOptions(request.query);
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
@@ -544,26 +576,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
 
-    const { status, includeTerminal, recentTerminalLimit } = request.query;
-    const requestedTerminalLimit = Number(recentTerminalLimit);
-    const terminalLimit = Number.isFinite(requestedTerminalLimit)
-      ? requestedTerminalLimit : undefined;
-    const isTerminalStatus = status === "completed" || status === "cancelled" || status === "errored";
-    const opts = status
-      ? {
-          status: status as NonNullable<NewTask["status"]>,
-          ...(isTerminalStatus ? {
-            includeRecentTerminal: true,
-            ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
-          } : {}),
-        }
-      : {
-          includeTerminal: includeTerminal === true || String(includeTerminal) === "true",
-          ...(includeTerminal === true || String(includeTerminal) === "true" ? {
-            includeRecentTerminal: true,
-            ...(terminalLimit !== undefined ? { recentTerminalLimit: terminalLimit } : {}),
-          } : {}),
-        };
+    const opts = listTaskOptions(request.query);
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
     const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);

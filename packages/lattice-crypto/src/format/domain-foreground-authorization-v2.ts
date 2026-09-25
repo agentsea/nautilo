@@ -150,6 +150,18 @@ export interface DomainForegroundAuthorizationCurrentAuthorityV2 {
   readonly domains: readonly DomainForegroundAuthorityEntryV2[];
 }
 
+export type DomainForegroundAuthorizationPublicCurrentAuthorityV2 = Omit<
+  DomainForegroundAuthorizationCurrentAuthorityV2,
+  "recipientEncryptionPrivateKey"
+>;
+
+export type VerifyDomainForegroundAuthorizationResultV2 =
+  | Readonly<{ status: "verified" }>
+  | Readonly<{
+      status: "unavailable";
+      reason: "invalid" | "expired" | "authority_stale";
+    }>;
+
 export type OpenDomainForegroundAuthorizationResultV2<Value> =
   | Readonly<{ status: "opened"; value: Value }>
   | Readonly<{
@@ -948,7 +960,7 @@ export function destroyDomainForegroundAuthorizationV2(
 
 function currentMatches(
   plan: DomainForegroundAuthorizationPlanV2,
-  current: DomainForegroundAuthorizationCurrentAuthorityV2,
+  current: DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 ): boolean {
   if (
     plan.authorizationId !== current.authorizationId
@@ -980,6 +992,80 @@ function currentMatches(
       actualBytes.fill(0);
     }
   });
+}
+
+/** Verify a device grant before durable acceptance on any server instance.
+ * The recipient private key is intentionally absent; only the instance that
+ * owns that process-local key may subsequently open the accepted grant. */
+export function verifyDomainForegroundAuthorizationV2(
+  crypto: LatticeCrypto,
+  input: Readonly<{
+    authorizationBytes: Uint8Array;
+    now: number;
+    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    expectedOperations?: readonly ["decrypt"] | readonly ["decrypt", "encrypt"];
+  }>,
+): VerifyDomainForegroundAuthorizationResultV2 {
+  const authorization = parseDomainForegroundAuthorizationV2(
+    input.authorizationBytes,
+  );
+  if (authorization === null) {
+    return Object.freeze({ status: "unavailable", reason: "invalid" });
+  }
+  let plan: DomainForegroundAuthorizationPlanV2 | null = null;
+  let signing: Uint8Array | undefined;
+  try {
+    plan = parseDomainForegroundAuthorizationPlanV2(authorization.planBytes);
+    if (plan === null) {
+      return Object.freeze({ status: "unavailable", reason: "invalid" });
+    }
+    const expectedOperations = input.expectedOperations ?? ["decrypt", "encrypt"];
+    if (plan.operations.length !== expectedOperations.length
+      || plan.operations.some((operation, index) => operation !== expectedOperations[index])) {
+      return Object.freeze({ status: "unavailable", reason: "authority_stale" });
+    }
+    const planDigest = crypto.hash(authorization.planBytes);
+    const ciphertextDigest = crypto.hash(authorization.encryptedSecret);
+    const authorityDigest = domainForegroundAuthoritySetDigestV2(crypto, plan.domains);
+    const publicValid = same(planDigest, authorization.planDigest)
+      && same(ciphertextDigest, authorization.encryptedSecretDigest)
+      && same(authorityDigest, plan.domainAuthoritySetDigest)
+      && authorization.authorizationId === plan.authorizationId
+      && authorization.domainCount === plan.domainCount;
+    planDigest.fill(0);
+    ciphertextDigest.fill(0);
+    authorityDigest.fill(0);
+    if (!publicValid || !Number.isSafeInteger(input.now) || input.now < plan.issuedAt) {
+      return Object.freeze({ status: "unavailable", reason: "invalid" });
+    }
+    if (input.now >= plan.deadlineAt) {
+      return Object.freeze({ status: "unavailable", reason: "expired" });
+    }
+    if (!input.current.committerDeviceActive
+      || !input.current.recipientAuthorized
+      || !currentMatches(plan, input.current)) {
+      return Object.freeze({ status: "unavailable", reason: "authority_stale" });
+    }
+    assertBytes(
+      "Foreground signing public key",
+      input.current.committerDeviceSigningPublicKey,
+      V2_LIMITS.signingPublicKeyBytes,
+    );
+    signing = signingBytes(authorization);
+    return crypto.verify(
+      input.current.committerDeviceSigningPublicKey,
+      signing,
+      authorization.signature,
+    )
+      ? Object.freeze({ status: "verified" })
+      : Object.freeze({ status: "unavailable", reason: "invalid" });
+  } catch {
+    return Object.freeze({ status: "unavailable", reason: "invalid" });
+  } finally {
+    signing?.fill(0);
+    if (plan !== null) destroyDomainForegroundAuthorizationPlanV2(plan);
+    destroyDomainForegroundAuthorizationV2(authorization);
+  }
 }
 
 export async function withOpenedDomainForegroundAuthorizationV2<Value>(

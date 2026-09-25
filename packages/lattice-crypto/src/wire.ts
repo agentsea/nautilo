@@ -275,11 +275,14 @@ export {
   parseDomainForegroundAuthorizationV2,
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
+  verifyDomainForegroundAuthorizationV2,
 } from "./format/domain-foreground-authorization-v2.ts";
 export type {
   DomainForegroundAuthorizationPlanV2,
   DomainForegroundAuthorizationV2,
+  DomainForegroundAuthorizationPublicCurrentAuthorityV2,
   DomainForegroundRecipientKindV2,
+  VerifyDomainForegroundAuthorizationResultV2,
 } from "./format/domain-foreground-authorization-v2.ts";
 
 export {

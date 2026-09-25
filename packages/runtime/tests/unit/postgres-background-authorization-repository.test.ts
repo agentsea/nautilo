@@ -15,6 +15,7 @@ import {
   attachBackgroundAuthorizationRecipient,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
+  createBackgroundAuthorizationTaskRuntimeRequestV3,
   cancelBackgroundAuthorizationRequest,
 } from "../../src/protected-execution/background-authorization/lifecycle";
 import { PostgresBackgroundAuthorizationRepository } from "../../src/protected-execution/background-authorization/postgres-repository";
@@ -24,6 +25,7 @@ import {
   InMemoryBackgroundAuthorizationRepository,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
+  type BackgroundAuthorizationTaskRuntimeRecordV3,
   type ProcessorSignerAuthorizationEvidence,
 } from "../../src/protected-execution/background-authorization/repository";
 
@@ -183,6 +185,61 @@ function initialProcessorV2(): BackgroundAuthorizationRecord {
   };
 }
 
+function initialTaskRuntimeV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return {
+    ...initial(),
+    snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+      requestId: "request_task_runtime_v3",
+      workId: "10000000-0000-4000-8000-000000000907",
+      namespaceId: "namespace_a",
+      now: START,
+    }),
+    workIdentityHash: new Uint8Array(32).fill(4),
+    idempotencyKey: "idempotency_task_runtime_v3",
+    workKind: "task.execute",
+    purpose: "task.execute",
+    domainId: "domain_ab",
+    processorAuthorizationRevision: null,
+    expectedDomainEpoch: 3,
+    expectedNamespaceAccessRevision: 4,
+    expectedPolicyRevision: 5,
+    authoritySet: {
+      namespaceRequirements: [
+        {
+          ordinal: 0,
+          namespaceId: "namespace_a",
+          domainId: "domain_ab",
+          operations: ["decrypt", "encrypt"],
+          expectedAccessRevision: 4,
+          expectedPolicyRevision: 5,
+        },
+        {
+          ordinal: 1,
+          namespaceId: "namespace_b",
+          domainId: "domain_bc",
+          operations: ["decrypt"],
+          expectedAccessRevision: 6,
+          expectedPolicyRevision: 7,
+        },
+      ],
+      domainRequirements: [
+        {
+          ordinal: 0,
+          domainId: "domain_ab",
+          expectedEpoch: 3,
+          expectedAuthorizationRevision: 9,
+        },
+        {
+          ordinal: 1,
+          domainId: "domain_bc",
+          expectedEpoch: 10,
+          expectedAuthorizationRevision: 11,
+        },
+      ],
+    },
+  };
+}
+
 function reflectionDescriptor(
   requestId = "reflection_request",
   workId = "reflection-work",
@@ -286,10 +343,28 @@ function domainRows(record: BackgroundAuthorizationAgentRecordV2) {
     expected_epoch: requirement.expectedEpoch,
     expected_agent_authorization_revision:
       requirement.expectedAgentAuthorizationRevision,
+    expected_authorization_revision: null,
   }));
 }
 
-function namespaceRows(record: BackgroundAuthorizationAgentRecordV2) {
+function taskRuntimeDomainRows(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+) {
+  return record.authoritySet.domainRequirements.map((requirement) => ({
+    request_id: record.snapshot.requestId,
+    domain_id: requirement.domainId,
+    ordinal: requirement.ordinal,
+    expected_epoch: requirement.expectedEpoch,
+    expected_agent_authorization_revision: null,
+    expected_authorization_revision: requirement.expectedAuthorizationRevision,
+  }));
+}
+
+function namespaceRows(
+  record:
+    | BackgroundAuthorizationAgentRecordV2
+    | BackgroundAuthorizationTaskRuntimeRecordV3,
+) {
   return record.authoritySet.namespaceRequirements.map((requirement) => ({
     request_id: record.snapshot.requestId,
     namespace_id: requirement.namespaceId,
@@ -348,6 +423,8 @@ function recordRow(record: BackgroundAuthorizationRecord) {
     agent_authorization_revision: subject.kind === "agent"
       ? subject.authorizationRevision
       : null,
+    runtime_kind: subject.kind === "runtime" ? subject.runtimeKind : null,
+    runtime_version: subject.kind === "runtime" ? subject.runtimeVersion : null,
     expected_domain_epoch: record.expectedDomainEpoch,
     expected_namespace_access_revision: record.expectedNamespaceAccessRevision,
     expected_policy_revision: record.expectedPolicyRevision,
@@ -567,11 +644,11 @@ describe("Postgres background authorization repository", () => {
     expect(await loaded.repository.get(record.snapshot.requestId)).toEqual(
       record,
     );
-    expect(loaded.connection.statements.at(-2)).toContain(
-      "ORDER BY request_id, ordinal",
+    expect(normalizedSql(loaded.connection.statements.at(-2))).toContain(
+      "ORDER BY BACKGROUND_CRYPTO_AUTHORIZATION_DOMAIN_REQUIREMENTS.REQUEST_ID, BACKGROUND_CRYPTO_AUTHORIZATION_DOMAIN_REQUIREMENTS.ORDINAL",
     );
-    expect(loaded.connection.statements.at(-1)).toContain(
-      "ORDER BY request_id, ordinal",
+    expect(normalizedSql(loaded.connection.statements.at(-1))).toContain(
+      "ORDER BY BACKGROUND_CRYPTO_AUTHORIZATION_NAMESPACE_REQUIREMENTS.REQUEST_ID, BACKGROUND_CRYPTO_AUTHORIZATION_NAMESPACE_REQUIREMENTS.ORDINAL",
     );
 
     const corrupt = await setup([
@@ -584,6 +661,43 @@ describe("Postgres background authorization repository", () => {
       .toThrow("exactly cover Namespace Domains");
   });
 
+  test("v3 Task Runtime persists its exact authority set transactionally", async () => {
+    const record = initialTaskRuntimeV3();
+    const created = await setup([[recordRow(record)], [], []]);
+
+    expect(await created.repository.create(record)).toEqual({
+      status: "created",
+      record,
+    });
+    expect(created.connection.transactions).toBe(1);
+    const domainInsert = created.connection.statements.findIndex((statement) =>
+      normalizedSql(statement).startsWith(
+        "INSERT INTO BACKGROUND_CRYPTO_AUTHORIZATION_DOMAIN_REQUIREMENTS",
+      )
+    );
+    const namespaceInsert = created.connection.statements.findIndex(
+      (statement) => normalizedSql(statement).startsWith(
+        "INSERT INTO BACKGROUND_CRYPTO_AUTHORIZATION_NAMESPACE_REQUIREMENTS",
+      ),
+    );
+    expect(domainInsert).toBeGreaterThan(0);
+    expect(namespaceInsert).toBeGreaterThan(domainInsert);
+    expect(normalizedSql(created.connection.statements[domainInsert])).toContain(
+      "EXPECTED_AUTHORIZATION_REVISION",
+    );
+    expect(created.connection.parameters[domainInsert]).toContain(9);
+    expect(created.connection.parameters[domainInsert]).toContain(11);
+
+    const loaded = await setup([
+      [recordRow(record)],
+      taskRuntimeDomainRows(record).reverse(),
+      namespaceRows(record).reverse(),
+    ]);
+    expect(await loaded.repository.get(record.snapshot.requestId)).toEqual(
+      record,
+    );
+  });
+
   test("create has the same exact-idempotency result as the in-memory port", async () => {
     const record = initial();
     const memory = new InMemoryBackgroundAuthorizationRepository();
@@ -594,7 +708,7 @@ describe("Postgres background authorization repository", () => {
     expect(normalizedSql(postgres.connection.statements.at(-1))).toContain(
       "ON CONFLICT DO NOTHING",
     );
-    expect(postgres.connection.parameters.at(-1)).toHaveLength(48);
+    expect(postgres.connection.parameters.at(-1)).toHaveLength(50);
 
     const replay = await setup([[], [recordRow(record)]]);
     expect((await replay.repository.create(record)).status).toBe("existing");
@@ -903,8 +1017,8 @@ describe("Postgres background authorization repository", () => {
       requestId: "request_2",
     });
     const statement = normalizedSql(page.connection.statements.at(-1));
-    expect(page.connection.parameters.at(-1)?.slice(0, 2)).toEqual([1, 2]);
-    expect(statement).toContain("STATE = $3");
+    expect(page.connection.parameters.at(-1)?.slice(0, 3)).toEqual([1, 2, 3]);
+    expect(statement).toContain("STATE = $4");
     expect(statement).toContain("DESCRIPTOR_HASH IS NOT NULL");
     expect(statement).toContain("DESCRIPTOR_BYTES IS NOT NULL");
     expect(statement).toContain("RECIPIENT_KEY_ID IS NOT NULL");

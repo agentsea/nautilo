@@ -30,6 +30,20 @@ export {
 export type { BackgroundWorkDescriptorV1 } from "./work-descriptor-v1.ts";
 
 export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V1,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V1,
+  createTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+} from "./task-runtime-request-v1.ts";
+export type {
+  TaskRuntimeBackgroundAuthorizationRequestV1,
+  TaskRuntimeBackgroundAuthorizationWorkV1,
+} from "./task-runtime-request-v1.ts";
+
+export {
   MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V1,
   createBackgroundAuthorizationResponseV1,
   decodeBackgroundAuthorizationResponseV1,

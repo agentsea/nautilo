@@ -12,6 +12,7 @@ import {
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
+  createBackgroundAuthorizationTaskRuntimeRequestV3,
   failBackgroundAuthorizationRequest,
   markBackgroundAuthorizationGrantReady,
   markBackgroundAuthorizationRunning,
@@ -20,7 +21,7 @@ import {
   restartBackgroundAuthorizationAfterUncommittedPublication,
   scheduleBackgroundAuthorizationPublicationRetry,
   type BackgroundAuthorizationCredentialSubject,
-} from "../../src/protected-execution/background-authorization";
+} from "../../src/protected-execution/background-authorization/lifecycle";
 
 const NOW = 10_000;
 const DIGEST = "ab".repeat(32);
@@ -88,6 +89,66 @@ function grantReady(
 }
 
 describe("Wave 10 background authorization lifecycle", () => {
+  test("binds a v3 Task Runtime request to one exact TaskRun occurrence", () => {
+    const initial = createBackgroundAuthorizationTaskRuntimeRequestV3({
+      requestId: "task-runtime-request-1",
+      workId: "10000000-0000-4000-8000-000000000907",
+      namespaceId: "task-runtime-namespace-1",
+      now: NOW,
+    });
+    expect(initial).toMatchObject({
+      formatVersion: 3,
+      workId: "10000000-0000-4000-8000-000000000907",
+      credentialSubject: {
+        kind: "runtime",
+        runtimeKind: "task",
+        runtimeVersion: 1,
+      },
+      recipientGeneration: 0,
+      state: "awaiting_recipient",
+    });
+    expect(() => parseBackgroundAuthorizationRequestSnapshot({
+      ...initial,
+      credentialSubject: AGENT_SUBJECT,
+    })).toThrow("Invalid background authorization Agent subject");
+
+    const waiting = attachBackgroundAuthorizationRecipient(initial, {
+      recipientGeneration: 0,
+      recipientKeyId: "task-runtime-key-1",
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      descriptorDigest: DIGEST,
+      expiresAt: NOW + 60_000,
+      now: NOW + 1,
+    });
+    expect(() => markBackgroundAuthorizationGrantReady(waiting, {
+      kind: "agent",
+      requestId: waiting.requestId,
+      descriptorDigest: waiting.descriptorDigest!,
+      recipientKeyId: waiting.recipient!.recipientKeyId,
+      recipientPublicKey: waiting.recipient!.recipientPublicKey,
+      expiresAt: waiting.recipient!.expiresAt,
+      responseDigest: RESPONSE_DIGEST,
+      credentialDigest: CREDENTIAL_DIGEST,
+      issuingHumanId: "human-alice",
+      issuingDeviceId: "device-alice-1",
+      recipientGeneration: 0,
+      now: NOW + 2,
+    })).toThrow("credential family mismatch");
+
+    const rotated = advanceBackgroundAuthorizationGeneration(waiting, {
+      reason: "recipient_lost",
+      now: NOW + 2,
+      nextAttemptAt: NOW + 2,
+    });
+    expect(rotated).toMatchObject({
+      recipientGeneration: 1,
+      descriptorDigest: null,
+      recipient: null,
+      acceptedResponse: null,
+      state: "awaiting_recipient",
+    });
+  });
+
   test("creates an exact frozen awaiting-recipient snapshot for either subject kind", () => {
     const processor = initial();
     const agent = initial(AGENT_SUBJECT);

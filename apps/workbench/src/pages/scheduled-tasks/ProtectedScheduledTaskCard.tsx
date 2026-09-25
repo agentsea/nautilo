@@ -20,9 +20,12 @@ export function ProtectedScheduledTaskCard({
   onRemove(taskId: string): void;
 }>): ReactElement {
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const { task, prompt } = row;
+  const { task } = row;
   const enabled = isScheduleEnabled(task.status);
   const cadence = task.scheduleKind === "cron" ? task.cron || "recurring" : "once";
+  const unavailableLabel = row.availability === "unavailable"
+    ? protectedTaskUnavailableLabel(row.reason)
+    : null;
 
   return (
     <li className={`flex flex-col gap-1 border-b border-border px-6 py-3 ${enabled ? "" : "opacity-60"}`}
@@ -62,11 +65,36 @@ export function ProtectedScheduledTaskCard({
           )}
         </div>
       </div>
-      <p className="truncate text-[13px] text-foreground" title={prompt}>{prompt}</p>
+      {row.availability === "opened" ? (
+        <p className="truncate text-[13px] text-foreground" title={row.prompt}>
+          {row.prompt}
+        </p>
+      ) : (
+        <p className="text-[13px] text-foreground-muted" role="status">
+          {unavailableLabel}
+        </p>
+      )}
       <div className="flex items-center gap-3 text-[11px] text-foreground-muted">
         <span className="font-mono">{cadence}</span>
         <span>{enabled ? `next ${formatNextFire(task.nextFireAt)}` : "paused"}</span>
       </div>
     </li>
   );
+}
+
+function protectedTaskUnavailableLabel(
+  reason: Extract<ProtectedScheduledTaskRow, { availability: "unavailable" }>["reason"],
+): string {
+  switch (reason) {
+    case "waiting_for_authorization":
+      return "Waiting for an available authorized device. This task will unlock automatically.";
+    case "device_not_ready":
+      return "Waiting for this device to become ready. This task will unlock automatically.";
+    case "authority_changed":
+      return "Task access changed. Refresh to try again.";
+    case "unsupported_client":
+      return "This client cannot unlock the task.";
+    case "integrity_failure":
+      return "Task content could not be verified.";
+  }
 }

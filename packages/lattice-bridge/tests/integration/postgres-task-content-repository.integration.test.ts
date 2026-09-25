@@ -209,6 +209,7 @@ afterAll(async () => {
 describe.serial("Postgres protected Task content repository", () => {
   test("walks create, update, result, replay, and reconciliation through real product and crypto roles", async () => {
     const ownerId = randomUUID();
+    const humanActorId = randomUUID();
     const agentId = randomUUID();
     const namespaceValue = randomUUID();
     const domainId = randomUUID();
@@ -220,7 +221,7 @@ describe.serial("Postgres protected Task content repository", () => {
       authorityVersion: 1,
       kind: "requester_private_namespace",
       keyClass: "ai",
-      requesterHumanId: ownerId,
+      requesterHumanId: humanActorId,
       namespaceId: namespaceValue,
       domainId,
       expectedAccessRevision: 0,
@@ -237,11 +238,34 @@ describe.serial("Postgres protected Task content repository", () => {
     const app = client(appUrl);
     const cryptoDatabase = client(cryptoUrl);
     const objectIds: string[] = [];
+    const [originalPolicy] = await admin.unsafe<{
+      mode: string;
+      revision: number;
+      shadow_encryption_started_at: Date | null;
+    }[]>(
+      `SELECT mode, revision, shadow_encryption_started_at
+       FROM encryption_transition_policy WHERE id = 'server'`,
+    );
+    if (originalPolicy === undefined) {
+      throw new Error("Expected the server encryption policy fixture");
+    }
     try {
+      await admin.unsafe(
+        `UPDATE encryption_transition_policy
+         SET mode = 'encrypted_only', revision = 1,
+             shadow_encryption_started_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = 'server'`,
+      );
       await admin.begin(async (transaction) => {
         await transaction.unsafe(
           "INSERT INTO users (id, name) VALUES ($1, 'Task repository integration')",
           [ownerId],
+        );
+        await transaction.unsafe(
+          `INSERT INTO actors (id, owner_id, display_name, kind)
+           VALUES ($1, $2, 'Task repository Human', 'user')`,
+          [humanActorId, ownerId],
         );
         await transaction.unsafe(
           "INSERT INTO agents (id, handle) VALUES ($1, $2)",
@@ -455,7 +479,16 @@ describe.serial("Postgres protected Task content repository", () => {
       }
       await admin.unsafe("DELETE FROM namespaces WHERE id = $1", [namespaceValue]);
       await admin.unsafe("DELETE FROM agents WHERE id = $1", [agentId]);
+      await admin.unsafe("DELETE FROM actors WHERE id = $1", [humanActorId]);
       await admin.unsafe("DELETE FROM users WHERE id = $1", [ownerId]);
+      await admin.unsafe(
+        `UPDATE encryption_transition_policy
+         SET mode = $1, revision = $2, shadow_encryption_started_at = $3,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = 'server'`,
+        [originalPolicy.mode, originalPolicy.revision,
+          originalPolicy.shadow_encryption_started_at],
+      );
       signer.privateKey.fill(0);
       await Promise.all([app.end(), cryptoDatabase.end()]);
     }

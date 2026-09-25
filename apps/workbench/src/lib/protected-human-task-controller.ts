@@ -34,30 +34,46 @@ export interface WorkbenchProtectedHumanTaskController {
   }>): ReturnType<ReturnType<typeof createBrowserHumanTaskClient>["update"]>;
 }
 
-export type OpenedProtectedScheduledTask = Readonly<{
-  task: TaskContentSummaryV1;
-  prompt: string;
-  expectedOutput: string | null;
-}>;
+export type ProtectedScheduledTaskProjection =
+  | Readonly<{
+      availability: "opened";
+      task: TaskContentSummaryV1;
+      prompt: string;
+      expectedOutput: string | null;
+    }>
+  | Readonly<{
+      availability: "unavailable";
+      task: TaskContentSummaryV1;
+      reason: "waiting_for_authorization" | "device_not_ready"
+        | "authority_changed" | "unsupported_client" | "integrity_failure";
+    }>;
 
-export async function listOpenedProtectedScheduledTasks(
+export async function listProtectedScheduledTasks(
   controller: WorkbenchProtectedHumanTaskController,
-): Promise<readonly OpenedProtectedScheduledTask[]> {
+): Promise<readonly ProtectedScheduledTaskProjection[]> {
   const listed = await controller.list({ includeTerminal: true });
   const scheduled = listed.filter((task) =>
     task.scheduleKind === "cron" || task.scheduleKind === "one_shot"
   );
   const opened = await Promise.all(scheduled.map(async (task) => {
+    if (task.content.status === "unavailable") {
+      return Object.freeze({
+        availability: "unavailable" as const,
+        task,
+        reason: task.content.reason,
+      });
+    }
     const definition = await controller.open(task);
     if (definition.content.status !== "protected") return null;
     return Object.freeze({
+      availability: "opened" as const,
       task,
       prompt: definition.content.payload.prompt,
       expectedOutput: definition.content.payload.expectedOutput,
     });
   }));
   return Object.freeze(opened.filter(
-    (row): row is OpenedProtectedScheduledTask => row !== null,
+    (row): row is ProtectedScheduledTaskProjection => row !== null,
   ));
 }
 

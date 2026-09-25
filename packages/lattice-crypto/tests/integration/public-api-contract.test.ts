@@ -36,6 +36,7 @@ import type {
 import {
   LATTICE_LIMITS as canonicalLatticeLimits,
 } from "../../src/limits.ts";
+import { V2_LIMITS } from "../../src/v2-types/limits.ts";
 import {
   prepareHumanNamespaceRebindV2,
 } from "../../src/transition/namespace-rebind.ts";
@@ -116,6 +117,39 @@ type ExportDisposition = ExportIdentity & Readonly<{
 }>;
 
 const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
+  {
+    source: "./background/task-runtime-recipient-registry-v1.ts",
+    imported: "TaskRuntimeRecipientRegistryV1",
+    exported: "TaskRuntimeRecipientRegistry",
+    typeOnly: false,
+  },
+  ...([
+    "TaskRuntimeRecipientAttempt",
+    "TaskRuntimeRecipientCreationResult",
+    "TaskRuntimeRecipientDeadlineHandle",
+    "TaskRuntimeRecipientDeadlineScheduler",
+    "TaskRuntimeRecipientOpenResult",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-recipient-registry-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
+  {
+    source: "./format/domain-foreground-authorization-v2.ts",
+    imported: "verifyDomainForegroundAuthorizationV2",
+    exported: "verifyDomainForegroundAuthorizationV2",
+    typeOnly: false,
+  },
+  ...([
+    "DomainForegroundAuthorizationPublicCurrentAuthorityV2",
+    "VerifyDomainForegroundAuthorizationResultV2",
+  ] as const).map((name) => ({
+    source: "./format/domain-foreground-authorization-v2.ts",
+    imported: name,
+    exported: name,
+    typeOnly: true,
+  })),
   // M327's clean reflection-authority workflow closes the registry method's
   // public input and port types. Its descriptor records remain versioned wire.
   ...([
@@ -3925,6 +3959,7 @@ describe("M226 clean supported package API", () => {
 
   test("data-only wire limits are exact codec-owned aliases", () => {
     const versionedNames = [
+      "DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2",
       "HUMAN_MEMORY_EXACT_ACCESS_REQUEST_MAX_ENTRIES_V2",
       "MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2",
       "MAX_HUMAN_EXISTING_MESSAGE_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
@@ -3936,8 +3971,11 @@ describe("M226 clean supported package API", () => {
       "MAX_RETAINED_NAMESPACE_GENERATIONS_V2",
     ] as const;
     expect(Object.keys(wireLimits).sort()).toEqual([
+      "DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2",
       "HUMAN_MEMORY_EXACT_ACCESS_REQUEST_MAX_ENTRIES_V2",
       "LATTICE_LIMITS",
+      "MAX_AGENT_GRANT_DOMAINS_V2",
+      "MAX_AGENT_GRANT_NAMESPACES_V2",
       "MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2",
       "MAX_HUMAN_EXISTING_MESSAGE_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
       "MAX_HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_WIRE_BYTES_V1",
@@ -3950,6 +3988,8 @@ describe("M226 clean supported package API", () => {
     for (const name of versionedNames) {
       expect(wireLimits[name]).toBe(wire[name]);
     }
+    expect(wireLimits.MAX_AGENT_GRANT_DOMAINS_V2).toBe(V2_LIMITS.agentGrantDomains);
+    expect(wireLimits.MAX_AGENT_GRANT_NAMESPACES_V2).toBe(V2_LIMITS.agentGrantNamespaces);
     expect(wireLimits.LATTICE_LIMITS).toBe(canonicalLatticeLimits);
   });
 
