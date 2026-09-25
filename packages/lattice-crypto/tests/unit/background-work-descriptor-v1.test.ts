@@ -199,6 +199,7 @@ describe("BackgroundWorkDescriptorV1 canonical wire format", () => {
       ["memory.exit_flush", "memory.exit_flush"],
       ["task.dispatch", "task.dispatch"],
       ["task.execute", "task.execute"],
+      ["task.await_reply_resume", "task.await_reply_resume"],
       ["task.approval_resume", "task.approval_resume"],
     ];
 

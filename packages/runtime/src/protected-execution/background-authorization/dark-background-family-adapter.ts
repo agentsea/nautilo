@@ -33,10 +33,10 @@ export type DarkBackgroundSyntheticEntrypointId =
   | "task.dispatch.retry"
   | "task.execute"
   | "task.resume.unpause"
-  | "task.resume.approval";
+  | "task.resume.approval"
+  | "task.resume.await_reply";
 
 export type DarkBackgroundInventoryOnlyEntrypointId =
-  | "task.resume.await_reply"
   | "job.background.generic"
   | "job.background.deep_research";
 
@@ -59,9 +59,7 @@ export type DarkBackgroundEntrypointInventory =
     readonly sourcePath: string;
     readonly sourceAnchor: string;
     readonly productionCaller: "present";
-    readonly actorClassification:
-      | "configured_agent_protocol_gap"
-      | "unresolved_actor";
+    readonly actorClassification: "unresolved_actor";
     readonly subjectKind: "agent" | null;
     readonly workKind: null;
     readonly purpose: null;
@@ -72,11 +70,9 @@ export type DarkBackgroundEntrypointInventory =
  * Grounded Wave 10 inventory. These are synthetic adapters, not production
  * wiring.
  *
- * Two real gaps remain intentionally unadapted:
- * - await-reply resume has no distinct closed work-kind in the v1 protocol;
- * - generic/deep-research Jobs do not durably carry a configured Agent
- *   identity, so assigning either an Agent grant or a processor credential
- *   here would invent authority.
+ * Generic/deep-research Jobs remain intentionally unadapted because they do
+ * not durably carry a configured Agent identity, so assigning either an Agent
+ * grant or a processor credential here would invent authority.
  */
 export const DARK_BACKGROUND_ENTRYPOINT_INVENTORY = Object.freeze([
   {
@@ -177,14 +173,14 @@ export const DARK_BACKGROUND_ENTRYPOINT_INVENTORY = Object.freeze([
   },
   {
     entrypointId: "task.resume.await_reply",
-    adapterStatus: "inventory_only",
+    adapterStatus: "synthetic_adapter",
     sourcePath: "packages/server/src/messaging/await-resume.ts",
     sourceAnchor: "export async function maybeResumeAwaitingTask",
     productionCaller: "present",
-    actorClassification: "configured_agent_protocol_gap",
+    actorClassification: "configured_agent",
     subjectKind: "agent",
-    workKind: null,
-    purpose: null,
+    workKind: "task.await_reply_resume",
+    purpose: "task.await_reply_resume",
     deferredOwningWave: "wave14_agent_task_job_content",
   },
   {

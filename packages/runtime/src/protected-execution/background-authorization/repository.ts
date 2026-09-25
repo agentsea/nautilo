@@ -49,6 +49,7 @@ export const BACKGROUND_AUTHORIZATION_WORK_KINDS = Object.freeze([
   "memory.exit_flush",
   "task.dispatch",
   "task.execute",
+  "task.await_reply_resume",
   "task.approval_resume",
 ] as const);
 
@@ -70,6 +71,7 @@ export const BACKGROUND_AUTHORIZATION_PURPOSES = Object.freeze([
   "memory.exit_flush",
   "task.dispatch",
   "task.execute",
+  "task.await_reply_resume",
   "task.approval_resume",
 ] as const);
 
@@ -857,7 +859,11 @@ export function parseBackgroundAuthorizationRecord(
   if (
     snapshot.credentialSubject.kind === "runtime"
     && (
-      (value.workKind !== "task.dispatch" && value.workKind !== "task.execute")
+      (
+        value.workKind !== "task.dispatch"
+        && value.workKind !== "task.execute"
+        && value.workKind !== "task.await_reply_resume"
+      )
       || value.purpose !== value.workKind
     )
   ) {

@@ -498,6 +498,14 @@ describe("background authorization repository contract", () => {
       workKind: "task.dispatch",
       purpose: "task.dispatch",
     });
+    expect(parseBackgroundAuthorizationRecord({
+      ...record,
+      workKind: "task.await_reply_resume",
+      purpose: "task.await_reply_resume",
+    })).toMatchObject({
+      workKind: "task.await_reply_resume",
+      purpose: "task.await_reply_resume",
+    });
     expect(() => parseBackgroundAuthorizationRecord({
       ...record,
       workKind: "task.approval_resume",

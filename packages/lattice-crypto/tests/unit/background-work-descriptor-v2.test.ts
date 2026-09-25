@@ -177,6 +177,18 @@ describe("Agent background work descriptor v2", () => {
       .toEqual(crypto.hash(bytes));
   });
 
+  test("round-trips the closed await-reply resume work purpose", () => {
+    const value: BackgroundWorkDescriptorV2 = {
+      ...descriptor(),
+      workKind: "task.await_reply_resume",
+      purpose: "task.await_reply_resume",
+    };
+
+    expect(decodeBackgroundWorkDescriptorV2(
+      encodeBackgroundWorkDescriptorV2(value),
+    )).toEqual(value);
+  });
+
   test("keeps the merged Wave 11 synthetic encoding byte-stable", () => {
     const bytes = encodeBackgroundWorkDescriptorV2(descriptor());
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(
