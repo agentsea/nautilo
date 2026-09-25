@@ -43,6 +43,7 @@ import type {
 import type { ProtectedTaskOccurrence } from "../../tasks/task-observer";
 import {
   BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
   claimBackgroundAuthorizationRequest,
 } from "./lifecycle";
@@ -913,8 +914,41 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       return Object.freeze({ status: "awaiting_authorization" as const });
     }
 
-    if (current.snapshot.state === "awaiting_device") {
-      return Object.freeze({ status: "awaiting_authorization" as const });
+    if (current.snapshot.state === "awaiting_device"
+      || current.snapshot.state === "grant_ready") {
+      const now = this.#now();
+      const recipient = current.snapshot.recipient;
+      if (recipient !== null && (now >= recipient.expiresAt
+        || !activeRecipient(this.dependencies.recipients, current))) {
+        const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+          ...current,
+          snapshot: advanceBackgroundAuthorizationGeneration(
+            current.snapshot,
+            {
+              reason: now >= recipient.expiresAt
+                ? "attempt_expired" : "recipient_lost",
+              now,
+              nextAttemptAt: now,
+            },
+          ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          descriptorBytes: null,
+          acceptedMaterial: null,
+        };
+        const rotated = await this.dependencies.repository.compareAndSwap({
+          expectedRequestRevision: current.snapshot.requestRevision,
+          next,
+        });
+        if (rotated.status === "updated") {
+          this.dependencies.recipients.delete(
+            current.snapshot.requestId,
+            current.snapshot.recipientGeneration,
+          );
+        }
+        return Object.freeze({ status: "awaiting_authorization" as const });
+      }
+      if (current.snapshot.state === "awaiting_device") {
+        return Object.freeze({ status: "awaiting_authorization" as const });
+      }
     }
     if (current.snapshot.state === "claimed" || current.snapshot.state === "running") {
       return Object.freeze({ status: "already_claimed" as const });

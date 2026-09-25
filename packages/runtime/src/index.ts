@@ -316,7 +316,14 @@ export {
 } from "./workstation-dispatch-plan";
 export { botThreadId } from "./conductor/thread-id";
 // M142 — Task primitive async engine (Phase 2a).
-export { TaskObserver, type TaskObserverDeps } from "./tasks/task-observer";
+export {
+  TaskObserver,
+  type TaskObserverDeps,
+  type ProtectedTaskOccurrence,
+} from "./tasks/task-observer";
+export {
+  isCurrentProtectedTaskRunForGrant,
+} from "./tasks/protected-task-current-run";
 export {
   ProtectedTaskOccurrenceCoordinator,
   createProtectedTaskOccurrenceCoordinator,

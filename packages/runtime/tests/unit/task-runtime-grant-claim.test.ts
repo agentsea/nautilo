@@ -482,6 +482,39 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 }
 
 describe("Task Runtime grant claim", () => {
+  test("rotates an unconsumed request after its process-local recipient is lost", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const recovered = value.createCoordinator(
+      new TaskRuntimeRecipientRegistry(value.crypto, { now: () => NOW + 4 }),
+    );
+
+    expect(await recovered.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("awaiting_recipient");
+    expect(durable?.snapshot.recipientGeneration).toBe(1);
+    expect(durable?.snapshot.lastRetryReason).toBe("recipient_lost");
+    expect(durable?.descriptorBytes).toBeNull();
+    expect(durable?.acceptedMaterial).toBeNull();
+    expect(value.claimCasCount()).toBe(0);
+  });
+
+  test("rotates an expired device request even if the old process still holds its key", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    value.setClock(NOW + 60_000);
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("awaiting_recipient");
+    expect(durable?.snapshot.recipientGeneration).toBe(1);
+    expect(durable?.snapshot.lastRetryReason).toBe("attempt_expired");
+    expect(value.recipients.size).toBe(0);
+  });
+
   test("claims one accepted grant and opens transient input only inside a one-use candidate", async () => {
     const value = await fixture();
     expect(await value.coordinator.prepareOrClaimExact(occurrence()))
