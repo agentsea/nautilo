@@ -196,6 +196,7 @@ test("accepts an exact signed Task Runtime response and wakes awaiting work", as
   const connection = {query: async () => []};
   const service = createProductionBackgroundAuthorizationComposition({
     crypto, now: () => now,
+    context: (async () => ({canonicalRunner: {}})) as unknown as Dependencies["context"],
     restricted: (() => connection) as unknown as Dependencies["restricted"],
     currentDevice: async () => ({...device, signingPublicKey: signing.publicKey.slice()}),
     repository: (async () => ({
