@@ -362,6 +362,19 @@ export async function getTaskRuns(
     .orderBy(asc(taskRuns.startedAt));
 }
 
+/** Reload one TaskRun by both identities before protected dispatch. */
+export async function getTaskRunForTask(
+  db: DirectDatabase,
+  taskId: string,
+  taskRunId: string,
+): Promise<TaskRun | undefined> {
+  const [row] = await db.select().from(taskRuns).where(and(
+    eq(taskRuns.id, taskRunId),
+    eq(taskRuns.taskId, taskId),
+  )).limit(1);
+  return row;
+}
+
 /**
  * M152 — the `model_id` of each task's MOST RECENT run, for a set of task ids.
  * Used by list surfaces (`task list`, `GET /api/tasks`) to show which model a

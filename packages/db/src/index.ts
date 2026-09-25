@@ -593,6 +593,7 @@ export {
   updateTaskIfCurrent,
   insertTaskRun,
   getTaskRuns,
+  getTaskRunForTask,
   getLatestRunModelByTask,
   getAgentDisplayNamesByAgentId,
   getOwnerAgentDisplayNamesByAgentId,
