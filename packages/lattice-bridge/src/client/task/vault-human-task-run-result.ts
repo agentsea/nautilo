@@ -116,11 +116,10 @@ export function createVaultHumanTaskRunResultReaderV1(
         );
       }
 
-      let payload: ReturnType<typeof decodeEncryptedPayloadV2>;
-      let manifest: ReturnType<typeof decodeObjectAccessManifestV5>;
+      let payload: ReturnType<typeof decodeEncryptedPayloadV2> | undefined;
       let namespaceEnvelope: ReturnType<
         typeof decodeNamespaceObjectEnvelopeV2
-      >;
+      > | undefined;
       let canonicalPayload: Uint8Array | undefined;
       let canonicalManifest: Uint8Array | undefined;
       let canonicalEnvelope: Uint8Array | undefined;
@@ -129,7 +128,7 @@ export function createVaultHumanTaskRunResultReaderV1(
       let nextAnchor: TrustedMinimumObjectAccessHead | undefined;
       try {
         payload = decodeEncryptedPayloadV2(envelope.encryptedPayloadBytes);
-        manifest = decodeObjectAccessManifestV5(envelope.accessManifestBytes);
+        const manifest = decodeObjectAccessManifestV5(envelope.accessManifestBytes);
         namespaceEnvelope = decodeNamespaceObjectEnvelopeV2(
           envelope.namespaceEnvelopeBytes,
         );
@@ -161,6 +160,8 @@ export function createVaultHumanTaskRunResultReaderV1(
           || namespaceEnvelope.context.keyClass !== "ai") {
           throw new TypeError("Task result ciphertext or signer was substituted");
         }
+        const authenticatedPayload = payload;
+        const authenticatedNamespaceEnvelope = namespaceEnvelope;
         const agentSigner = manifest.signer;
         if (agentSigner.kind !== "agent_runtime") {
           throw new TypeError("Task result signer was substituted");
@@ -250,19 +251,19 @@ export function createVaultHumanTaskRunResultReaderV1(
                 namespaceId: envelope.namespaceId,
                 keyClass: "ai",
                 requiredAccessRevision:
-                  namespaceEnvelope.context.bindingRevisionAtWrap,
+                  authenticatedNamespaceEnvelope.context.bindingRevisionAtWrap,
                 requiredGeneration:
-                  namespaceEnvelope.context.keyGeneration,
+                  authenticatedNamespaceEnvelope.context.keyGeneration,
                 operation: (keyring) => {
                   const generation = keyring.generations.find((entry) =>
                     entry.generation
-                      === namespaceEnvelope.context.keyGeneration);
+                      === authenticatedNamespaceEnvelope.context.keyGeneration);
                   return generation === undefined ? null
                     : decryptObjectThroughNamespace(
                       dependencies.crypto,
                       generation.key,
-                      namespaceEnvelope,
-                      payload,
+                      authenticatedNamespaceEnvelope,
+                      authenticatedPayload,
                     );
                 },
               });
@@ -296,6 +297,8 @@ export function createVaultHumanTaskRunResultReaderV1(
         );
       } finally {
         opened?.fill(0);
+        payload?.ciphertext.fill(0);
+        namespaceEnvelope?.wrappedDek.fill(0);
         signerEvidenceBytes?.fill(0);
         canonicalPayload?.fill(0);
         canonicalManifest?.fill(0);
