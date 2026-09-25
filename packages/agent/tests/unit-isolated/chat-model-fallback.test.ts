@@ -41,7 +41,7 @@ const B = "openai:gpt-5.5-2026-04-23";
 const C = "google:gemini-2.5-pro";
 const X = "openai:gpt-5.6-sol";
 const G6 = "openai:gpt-6-astra";
-const F = "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
+const F = "fireworks:accounts/fireworks/models/deepseek-v4p1-flash";
 // vision-skip tests — T1/T2 are real catalog IDs that
 // `modelSupportsInput(_, "image")` returns false for (OpenRouter Kimi
 // K2.6 and GLM 5.2 are text-only under the current signed catalog).

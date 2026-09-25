@@ -10,6 +10,7 @@ import type { ChatModel } from "../../../providers/types";
 import { ToolMessage, AIMessage } from "@langchain/core/messages";
 import { extractTextFromResponse } from "../shared/utils";
 import { getModelTokenLimit } from "../../../providers/models";
+import { ModelOutputLimitError, modelResponseReachedOutputLimit } from "../../../graph/model-output-limit";
 import { isTokenLimitError } from "../../../utils/errors";
 import { invokeWithRetry } from "../../../utils/invoke";
 import { hasNativeWebsearch } from "../shared/native_search";
@@ -80,11 +81,6 @@ async function researcher(
     const guidance = `If coverage is sufficient to write a confident, well-cited answer, call ResearchComplete now; otherwise continue targeted searches and use think_tool after each search to reflect.`;
     const sysLines = [topicLine, briefLine, status, rule, guidance].filter(Boolean) as string[];
     systemPrompt = `${systemPrompt}\n\n${sysLines.join("\n")}`;
-    const model = await createModel(cfg.research_model, cfg, {
-      maxTokens: cfg.research_model_max_tokens,
-      useOpenAIResponsesApi: true,
-    });
-
     const callbacks = config?.callbacks;
     let extractedCallbacks: unknown[] | undefined;
     if (Array.isArray(callbacks)) {
@@ -97,15 +93,16 @@ async function researcher(
     const baseTools: DynamicStructuredTool[] = await get_langchain_tools(cfg, extractedCallbacks);
     const lcTools = [...baseTools, researchCompleteTool, thinkTool];
 
-    if (!model.bindTools) throw new Error("Model does not support tool binding");
-
     const firstTurn = existingMessages.length === 0;
     const maxToolMsgs = Math.max(1, cfg.max_tool_messages);
     const windowed = firstTurn ? [] : existingMessages.slice(-maxToolMsgs);
-    const toolBoundModel: ChatModel<BaseMessageLike, unknown> = firstTurn
-      ? model.bindTools(lcTools)
-      : model.bindTools(lcTools, { tool_choice: "required" });
-
+    // Opus 5.5 rejects forced tool choice. The existing research prompt and
+    // LangGraph loop still request and execute tools with automatic selection.
+    const requiresAutomaticToolChoice = [
+      "anthropic:claude-opus-5-5",
+      "openrouter:anthropic/claude-opus-5.5",
+      "venice:claude-opus-5-5",
+    ].includes(cfg.research_model);
     let messages: BaseMessageLike[];
 
     if (existingMessages.length === 0) {
@@ -140,6 +137,16 @@ async function researcher(
       messages = [{ role: "system", content: systemPrompt }, ...windowed];
     }
 
+    const model = await createModel(cfg.research_model, cfg, {
+      maxTokens: cfg.research_model_max_tokens,
+      useOpenAIResponsesApi: true,
+      messages, tools: lcTools,
+    });
+    if (!model.bindTools) throw new Error("Model does not support tool binding");
+    const toolBoundModel: ChatModel<BaseMessageLike, unknown> = firstTurn || requiresAutomaticToolChoice
+      ? model.bindTools(lcTools)
+      : model.bindTools(lcTools, { tool_choice: "required" });
+
     const response = await invokeWithRetry<BaseMessageLike, unknown>(toolBoundModel, messages, {
       label: "researcher.invoke",
       attempts: 3,
@@ -150,6 +157,7 @@ async function researcher(
     if (!AIMessage.isInstance(aiResponse as BaseMessage)) throw new Error("Model response is not an AIMessage");
     return { researcher_messages: [aiResponse] };
   } catch (e) {
+    if (config?.signal?.aborted) throw e;
     warn(`[researcher] research step failed: ${e instanceof Error ? e.message : String(e)}`);
     return { researcher_messages: existingMessages };
   }
@@ -163,6 +171,9 @@ async function researcherTools(
   const messages = Array.isArray(state.researcher_messages) ? state.researcher_messages : [];
   const candidate = messages[messages.length - 1];
   const lastMessage = candidate && AIMessage.isInstance(candidate as BaseMessage) ? (candidate as AIMessage) : undefined;
+  if (lastMessage && modelResponseReachedOutputLimit(lastMessage)) {
+    throw new ModelOutputLimitError();
+  }
 
   if (!lastMessage?.tool_calls?.length) {
     const native = cfg.prefer_native_search ? hasNativeWebsearch(lastMessage) : false;
@@ -277,9 +288,14 @@ async function compressResearch(
         const resp: unknown = await model.invoke(messages, {
           ...(config?.signal ? { signal: config.signal } : {}),
         });
+        config?.signal?.throwIfAborted();
+        if (AIMessage.isInstance(resp) && modelResponseReachedOutputLimit(resp)) {
+          throw new ModelOutputLimitError();
+        }
         const out: string = extractTextFromResponse(resp);
         return { compressed_research: appendDroppedNotesNotice(out, droppedCount), raw_notes: rawNotes };
       } catch (err) {
+        if (err instanceof ModelOutputLimitError) throw err;
         if (config?.signal?.aborted) throw err;
         if (isTokenLimitError(err) && takeCount > 3) {
           takeCount = Math.max(3, Math.floor(takeCount * 0.8));
@@ -294,6 +310,7 @@ async function compressResearch(
       }
     }
   } catch (e) {
+    if (e instanceof ModelOutputLimitError) throw e;
     if (config?.signal?.aborted) throw e;
     warn(`[researcher] compression failed: ${e instanceof Error ? e.message : String(e)}`);
   }

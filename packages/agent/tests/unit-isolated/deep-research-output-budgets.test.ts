@@ -7,6 +7,7 @@ import { runWithUsageContext } from "../../src/usage/usage-context";
 
 const MODEL = "openrouter:moonshotai/kimi-k3";
 const factoryCalls: Array<{ modelId: string; options: Record<string, unknown> }> = [];
+const boundToolOptions: Array<Record<string, unknown> | undefined> = [];
 let scenario: "router" | "researcher" | "compression-cancel" | "agent" = "router";
 let compressionSignal: AbortSignal | undefined;
 let compressionStarted: Promise<void>;
@@ -14,7 +15,7 @@ let markCompressionStarted: () => void;
 
 function modelFor(maxTokens: unknown): ChatModel {
   const model: ChatModel = {
-    bindTools: () => model,
+    bindTools: (_tools, options) => { boundToolOptions.push(options); return model; },
     async invoke(_messages, config?: RunnableConfig) {
       if ((scenario === "researcher" || scenario === "compression-cancel") && maxTokens === 1_111) {
         return new AIMessage({
@@ -112,6 +113,7 @@ function withServerFunding<T>(fn: () => T): T {
 
 beforeEach(() => {
   factoryCalls.length = 0;
+  boundToolOptions.length = 0;
   scenario = "router";
   compressionSignal = undefined;
   fundingAssertion.mockClear();
@@ -156,6 +158,32 @@ test("researcher and compression use their distinct budgets when model IDs match
   expect(fundingAssertion).toHaveBeenCalledTimes(4);
 });
 
+test("Opus 5.5 research routes use automatic tool choice on continuation turns", async () => {
+  const modelIds = [
+    "anthropic:claude-opus-5-5",
+    "openrouter:anthropic/claude-opus-5.5",
+    "venice:claude-opus-5-5",
+  ];
+
+  for (const modelId of modelIds) {
+    factoryCalls.length = 0;
+    boundToolOptions.length = 0;
+    scenario = "researcher";
+    await createResearcherGraph({
+      ...configuration,
+      research_model: modelId,
+      research_model_max_tokens: 1_111,
+    }).invoke({
+      research_topic: "RFC 1035 TTL semantics",
+      research_brief: "Use only RFC 1035.",
+      raw_notes: ["Prior search cycle: RFC 1035 Section 3.2.1"],
+      researcher_messages: [new AIMessage("Prior search cycle completed.")],
+    });
+
+    expect(boundToolOptions).toEqual([undefined]);
+  }
+});
+
 test("clarification and final synthesis use their role budgets when model IDs match", async () => {
   scenario = "agent";
   const result = await withServerFunding(() => createDeepResearchGraph(undefined, configuration).invoke({
@@ -195,4 +223,22 @@ test("graph cancellation reaches compression transport and rejects promptly", as
   expect(error).toBeInstanceOf(Error);
   expect(fundingAssertion).toHaveBeenCalledTimes(4);
   expect(performance.now() - abortedAt).toBeLessThan(250);
+});
+
+
+test("uncapped generative roles use the model allowance while compression keeps its own budget", async () => {
+  const { fromRuntimeConfig } = await import("../../src/subagents/deep-research/shared/config");
+  const cfg = fromRuntimeConfig({ ...configuration, supervisor_model_max_tokens: undefined,
+    research_model_max_tokens: undefined, final_report_model_max_tokens: undefined }, { env: {} });
+  expect(cfg.supervisor_model_max_tokens).toBeUndefined();
+  expect(cfg.research_model_max_tokens).toBeUndefined();
+  expect(cfg.final_report_model_max_tokens).toBeUndefined();
+  expect(cfg.compression_model_max_tokens).toBe(2_222);
+  const id = "openai:gpt-6-luna";
+  await createModel(id, cfg, { messages: [{ role: "user", content: "Write a complete report." }] });
+  expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(128_000);
+  await createModel(id, cfg, { maxTokens: 7_777, messages: [{ role: "user", content: "Write a report." }] });
+  expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(7_777);
+  await createModel(id, cfg, { messages: [{ role: "user", content: "x".repeat(1_000_000 * 4) }] });
+  expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(1_050_000 - 1_000_000 - 4096);
 });

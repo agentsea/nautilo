@@ -12,16 +12,14 @@ import {
   validateMessageHistory,
 } from "@nautilo/message-invariants";
 import { securityScanToolResultSchema, type SecurityScanLedgerRecord, type SecurityScanResultEnvelope } from "@nautilo/types";
-import { getModelTokenLimit } from "../providers/models";
 import { projectBrowserHistory } from "../tools/browser/browser-history";
 import { projectOversizedTaskRead, taskReadPageFingerprint, pageSchema, type TaskReadPendingPage } from "../tools/tasks/read-projection";
 
 export interface HistoryConfig {
   validationEnabled: boolean;
   pruningEnabled: boolean;
-  tokenBudgetFraction: number;
-  windowKeepRecent: number;
-  modelId: string;
+  /** Available history tokens after system instructions, tools and invocation reserve. */
+  maxMessageTokens: number;
   /** A restricted research Task can reload accepted notes from its existing scan ledger. */
   researchContinuity?: boolean;
 }
@@ -33,34 +31,17 @@ export interface ProcessedHistory {
   validation: { repairs: string[] };
   pruning: { pruned: string[] };
   windowing: { removedCount: number; researchReloadRequired?: boolean; researchConclusionsProjected?: boolean; researchConclusionsOverview?: boolean };
-  /** Tier 2 — count of individual messages whose content was clamped. */
+  /** Count of Task pages projected with an exact continuation. */
   clamping: { clampedCount: number };
 }
 
-/**
- * Tier 2 — no single message may exceed this fraction of the token
- * budget. Turn-count windowing keeps the last N turns but never shrinks an
- * individual message, so one oversized message (e.g. a huge tool result) can
- * exceed the model's context window and wedge a room. This clamp is the
- * defensive backstop: it elides the MIDDLE of any over-budget message's string
- * content (keeping head+tail) so no single message can dominate the window.
- */
-const PER_MESSAGE_MAX_BUDGET_FRACTION = 0.3;
-/** Floor so the clamp never produces a uselessly tiny message. */
-const PER_MESSAGE_MIN_CHARS = 2_000;
-
-/** Reuse the existing per-message projection policy without truncating Task data. */
+/** Share the remaining workspace with the next turn using the existing paged Task protocol. */
 export function taskReadResponseByteBudget(
-  config: Pick<HistoryConfig, "tokenBudgetFraction" | "modelId">,
   maxMessageTokens: number,
   preparedMessages: BaseMessage[],
 ): number {
-  const tokenBudget = Math.floor(getModelTokenLimit(config.modelId) * config.tokenBudgetFraction);
-  const perMessageBudget = Math.max(PER_MESSAGE_MIN_CHARS, Math.floor(tokenBudget * PER_MESSAGE_MAX_BUDGET_FRACTION) * 4);
-  // Share the actual remaining workspace with the next model turn. The page
-  // measures its entire escaped UTF-8 envelope, not just the inner text.
-  const freeWorkspaceBytes = Math.floor(Math.max(0, maxMessageTokens - estimateTokenCount(preparedMessages)) / 2) * 4;
-  return Math.min(perMessageBudget, freeWorkspaceBytes);
+  // The page measures its entire escaped UTF-8 envelope, not just inner text.
+  return Math.floor(Math.max(0, maxMessageTokens - estimateTokenCount(preparedMessages)) / 2) * 4;
 }
 
 /** Preserve omitted ranges across ordinary history windowing without storing source again. */
@@ -306,77 +287,22 @@ export function windowResearchHistory(
 
 function windowMessages(
   messages: BaseMessage[],
-  config: Pick<HistoryConfig, "tokenBudgetFraction" | "windowKeepRecent" | "modelId" | "researchContinuity">,
+  config: Pick<HistoryConfig, "maxMessageTokens" | "researchContinuity">,
 ): { messages: BaseMessage[]; removedCount: number; researchReloadRequired?: boolean; researchConclusionsProjected?: boolean; researchConclusionsOverview?: boolean } {
-  if (messages.length === 0) return { messages: [], removedCount: 0 };
-
-  const tokenLimit = getModelTokenLimit(config.modelId);
-  const tokenBudget = Math.floor(tokenLimit * config.tokenBudgetFraction);
-  if (estimateTokenCount(messages) <= tokenBudget) return { messages: [...messages], removedCount: 0 };
-
-  if (config.researchContinuity) return windowResearchHistory(messages, tokenBudget);
-
-  const hasSystemMsg = messages[0] instanceof SystemMessage;
-  const contentStart = hasSystemMsg ? 1 : 0;
-  const turnBoundaries: number[] = [];
-  for (let i = contentStart; i < messages.length; i++) {
-    if (messages[i] instanceof HumanMessage) turnBoundaries.push(i);
+  if (config.researchContinuity && estimateTokenCount(messages) > config.maxMessageTokens) {
+    return windowResearchHistory(messages, config.maxMessageTokens);
   }
-  if (turnBoundaries.length === 0) return { messages: [...messages], removedCount: 0 };
-
-  const turnsToKeep = Math.max(1, Math.ceil(config.windowKeepRecent / 4));
-  const turnsToRemove = Math.max(0, turnBoundaries.length - turnsToKeep);
-  if (turnsToRemove === 0) return { messages: [...messages], removedCount: 0 };
-
-  const safeStart = turnBoundaries[turnsToRemove]!;
-  const result: BaseMessage[] = [];
-  if (hasSystemMsg) result.push(messages[0]!);
-  for (let i = safeStart; i < messages.length; i++) result.push(messages[i]!);
-  return { messages: result, removedCount: safeStart - contentStart };
+  // Ordinary history has no durable checkpoint/reload contract. Preserve every
+  // complete message; invocation reports context exhaustion if it cannot fit.
+  return { messages: [...messages], removedCount: 0 };
 }
 
-/** Elide the middle of an over-budget string, keeping head + tail + a marker. */
-function clampString(
-  content: string,
-  maxChars: number,
-  recovery = "re-read the source (e.g. file:read on the full-output path)",
-): string {
-  const head = Math.floor(maxChars / 2);
-  const tail = maxChars - head;
-  const omitted = content.length - head - tail;
-  return (
-    content.slice(0, head) +
-    `\n\n…[${omitted} chars elided to protect the context window — re-read the source ` +
-    `${recovery} if you need the middle]…\n\n` +
-    content.slice(content.length - tail)
-  );
-}
-
-/**
- * Tier 2 — clamp the content of any SINGLE message that alone exceeds
- * `PER_MESSAGE_MAX_BUDGET_FRACTION` of the token budget. Pure transform:
- *
- * - No-op for every message under budget.
- * - Handles `ToolMessage`, `HumanMessage`, and raw Task result `AIMessage`s.
- * Ordinary model `AIMessage`s remain exempt because their selected model
- * already bounded them and clamping could decouple tool calls.
- * - Elides the MIDDLE (head+tail+marker); NEVER drops a message and NEVER
- * touches `tool_call_id` / `id` / role — tool-call/tool-result pairing and
- * message count are preserved.
- * - REBUILDS via the real constructor (same idiom as message-invariants'
- * `removeToolCallsFromAIMessage`), never mutating the graph-state objects and
- * keeping `lc_kwargs` consistent for provider serialization.
- */
-function clampOversizedMessages(
+/** Project only Task pages with exact replay metadata; never cut arbitrary message text. */
+function projectTaskReadMessages(
   messages: BaseMessage[],
-  config: Pick<HistoryConfig, "tokenBudgetFraction" | "modelId" | "researchContinuity">,
+  config: Pick<HistoryConfig, "maxMessageTokens" | "researchContinuity">,
 ): { messages: BaseMessage[]; clampedCount: number; taskReadOriginals: WeakMap<BaseMessage, BaseMessage> } {
-  const tokenLimit = getModelTokenLimit(config.modelId);
-  const tokenBudget = Math.floor(tokenLimit * config.tokenBudgetFraction);
-  const perMessageMaxChars = Math.max(
-    PER_MESSAGE_MIN_CHARS,
-    Math.floor(tokenBudget * PER_MESSAGE_MAX_BUDGET_FRACTION) * 4, // ~4 chars/token (mirrors estimateTokenCount)
-  );
+  const perMessageMaxChars = Math.max(0, config.maxMessageTokens) * 4;
 
   let clampedCount = 0;
   const taskReadOriginals = new WeakMap<BaseMessage, BaseMessage>();
@@ -396,24 +322,16 @@ function clampOversizedMessages(
       || HumanMessage.isInstance(msg))) return msg;
     if (typeof msg.content !== "string") return msg; // skip multimodal/array content
     if (msg.content.length <= perMessageMaxChars) return msg;
-    // Room context is already model-window-budgeted before it becomes a
-    // single transient HumanMessage. Re-clamping it here would silently reduce
-    // the configured percentage and could split a protected complete turn.
-    if (msg.additional_kwargs?.["nautilo_room_context_budgeted"] === true) return msg;
-
-    if (msg instanceof ToolMessage) {
-      let projectedTaskRead: Record<string, unknown> | null = null;
-      if (msg.name === "task" && paired?.name === "task" && paired.args["command"] === "read") {
-        let value: unknown = null;
-        try { value = JSON.parse(msg.content); } catch { /* Older checkpoints may already contain a lossy clamp. */ }
-        projectedTaskRead = projectOversizedTaskRead(value, paired.args, perMessageMaxChars) ?? {
-          version: "task-read-v1", kind: "error", code: "task_read_budget_unavailable",
-          message: "The Task data and exact replay header do not fit this window. No content was shown. Reserve response space and retry the original task.read selection; continuation must recover omitted pages before advancing.",
-        };
-      }
+    if (msg instanceof ToolMessage && msg.name === "task" && paired?.name === "task" && paired.args["command"] === "read") {
+      let value: unknown = null;
+      try { value = JSON.parse(msg.content); } catch { /* Older checkpoints may already contain a lossy clamp. */ }
+      const projectedTaskRead = projectOversizedTaskRead(value, paired.args, perMessageMaxChars) ?? {
+        version: "task-read-v1", kind: "error", code: "task_read_budget_unavailable",
+        message: "The Task data and exact replay header do not fit this window. No content was shown. Reserve response space and retry the original task.read selection; continuation must recover omitted pages before advancing.",
+      };
       clampedCount += 1;
       const projected = new ToolMessage({
-        content: projectedTaskRead ? JSON.stringify(projectedTaskRead) : clampString(msg.content, perMessageMaxChars),
+        content: JSON.stringify(projectedTaskRead),
         tool_call_id: msg.tool_call_id,
         ...(msg.name !== undefined ? { name: msg.name } : {}),
         ...(msg.id !== undefined ? { id: msg.id } : {}),
@@ -422,35 +340,9 @@ function clampOversizedMessages(
         ...(msg.artifact !== undefined ? { artifact: msg.artifact as unknown } : {}),
         ...(msg.status !== undefined ? { status: msg.status } : {}),
       });
-      if (projectedTaskRead) taskReadOriginals.set(projected, msg);
+      taskReadOriginals.set(projected, msg);
       return projected;
     }
-    if (msg instanceof HumanMessage) {
-      clampedCount += 1;
-      return new HumanMessage({
-        content: clampString(msg.content, perMessageMaxChars),
-        ...(msg.name !== undefined ? { name: msg.name } : {}),
-        ...(msg.id !== undefined ? { id: msg.id } : {}),
-        additional_kwargs: msg.additional_kwargs,
-        response_metadata: msg.response_metadata,
-      });
-    }
-    if (AIMessage.isInstance(msg) && msg.id?.startsWith("task-result:")) {
-      clampedCount += 1;
-      const clamped = new AIMessage({
-        content: clampString(
-          msg.content,
-          perMessageMaxChars,
-          "use task read for the corresponding full canonical task result",
-        ),
-        additional_kwargs: msg.additional_kwargs,
-        response_metadata: msg.response_metadata,
-        ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls } : {}),
-      });
-      clamped.id = msg.id;
-      return clamped;
-    }
-    // AIMessage / SystemMessage / other roles: leave untouched.
     return msg;
   });
 
@@ -468,9 +360,8 @@ export function processHistory(messages: BaseMessage[], config: HistoryConfig): 
     clamping: { clampedCount: 0 },
   };
 
-  // Layer 0 — Per-message clamp ( Tier 2). Runs first so no single
-  // oversized message survives into windowing/validation or the invoke.
-  const clamped = clampOversizedMessages(current, config);
+  // Lossless paging is allowed only for the existing Task-read protocol.
+  const clamped = projectTaskReadMessages(current, config);
   current = clamped.messages;
   result.clamping.clampedCount = clamped.clampedCount;
 

@@ -1,5 +1,5 @@
 /**
- * D141 Phase 1 — Friendly error translator.
+ * Friendly error translator.
  *
  * Public surface for translating raw upstream-provider / agent-side
  * errors into the seven user-visible categories the chat UI is allowed
@@ -28,11 +28,11 @@
  * Wire-in is at the single user-facing chokepoint:
  * `packages/runtime/src/job.ts`'s `Job.run()` catch block. Every
  * agent-thrown error funnels through that one site on its way to
- * the `job.status: failed` ServerEvent. See ISSUE-D141 for the full
- * design rationale and the four-phase plan.
+ * the `job.status: failed` ServerEvent.
  */
 
 import { classifyError, type ErrorCategory } from "./errors";
+import { ModelOutputLimitError } from "../graph/model-output-limit";
 import { formatProviderError } from "../providers/errors";
 import {
   isGraphRecursionError,
@@ -69,7 +69,7 @@ export type FriendlyErrorCategory =
 /**
  * Stable provider-error code, 1:1 with {@link FriendlyErrorCategory}.
  *
- * Per ISSUE-D141 §LD-9, every user-visible model/provider error gets a
+ * Every user-visible model/provider error gets a
  * stable code that travels in the bracket-suffixed chat sentence
  * (`"... [MDL003]"`) and as a structured field on the `[nautilo/job]`
  * server-log line. The code is what bridges a reporter's "I saw [MDL003]
@@ -103,13 +103,13 @@ export interface FriendlyError {
    * at `runtime/src/job.ts` brackets this code into the user-visible
    * message (`"... [MDL003]"`) and emits it as a structured token on
    * the server-log line so `rg "MDL003" server.log` lands on every
-   * occurrence. See ISSUE-D141 §LD-9.
+   * occurrence.
    */
   code: MdlCode;
   /**
    * Full upstream-provider detail string (status, type, code, param,
    * message, allowlisted headers) extracted by `formatProviderError`.
-   * **SERVER-LOG ONLY** in D141-P1.
+   * **SERVER-LOG ONLY**.
    *
    * SECURITY: `providers/errors.ts`'s docstring forbids putting this
    * string in any user-facing message because `error.message` can
@@ -119,9 +119,7 @@ export interface FriendlyError {
    * `detailsForLog` there would cross-user-leak prompt content. So
    * the wire-in at `runtime/src/job.ts` writes this string to
    * `server.log` (via `[nautilo/job]` log line) but NEVER to a WS
-   * event. A future user-scoped error-details event (Stack 17 /
-   * D141-P3) can carry it to the request originator only. See
-   * ISSUE-D141 §"Locked Decisions" LD-8.
+   * event. Any future details view must be scoped to the request originator.
    */
   detailsForLog: string;
 }
@@ -349,6 +347,14 @@ export function toFriendlyError(error: unknown): FriendlyError {
       category: "unknown",
       code: "MDL007",
       detailsForLog: STRICT_SHADOW_PROTECTED_CONTENT_REQUIRED_CODE,
+    };
+  }
+  if (error instanceof ModelOutputLimitError || (error instanceof Error && error.name === "ModelOutputLimitError")) {
+    return {
+      message: new ModelOutputLimitError().message,
+      category: "unknown",
+      code: "MDL007",
+      detailsForLog: "model_output_limit",
     };
   }
   if (isEmptyTerminalResponseError(error)) {

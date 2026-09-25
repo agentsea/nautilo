@@ -3,7 +3,6 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage }
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
-import { fromRuntimeConfig } from "@nautilo/config";
 import * as db from "@nautilo/db";
 import type { NautiloState } from "../../src/agent/state";
 import { agentNode } from "../../src/nodes/agent";
@@ -44,14 +43,12 @@ test("protected model output carries task paging debt and actual smaller-model b
   const canonical: BaseMessage[] = [new HumanMessage("Inspect the child's complete report."), new AIMessage({ content: "", tool_calls: [{ id: "prior-read", name: "task", args }] }), original];
   const calls = ["left", "right"].map((id) => ({ id, name: "task", args: { command: "read", taskId: "child-task", continueRead: true } }));
   const response = new AIMessage({ content: "Recover the omitted report input.", tool_calls: calls });
-  const fraction = fromRuntimeConfig().nautilo_token_budget_fraction;
   let expectedBudget = 0;
   let initialBudget = 0;
   const provider = spyOn(invocation, "invokeChatModelWithFallback").mockImplementation(async (messages, tools) => {
     expect(JSON.stringify(messages)).toContain("private runtime-only configuration");
     expect(JSON.stringify(messages)).not.toContain(page.text);
-    expectedBudget = taskReadResponseByteBudget({ modelId: modelUsed, tokenBudgetFraction: fraction },
-      Math.floor(actualContextTokens * fraction) - invocation.estimateBoundToolTokens(tools), [...messages, response]);
+    expectedBudget = taskReadResponseByteBudget(await invocation.resolvePreparedMessageBudget(modelUsed, tools), [...messages, response]);
     return { modelUsed, response };
   });
   const checkpoint = { messages: canonical, preparedMessages: [], soulFile: "", memoryBrief: "", skills: [], userId: "owner", personaId: "owner", agentId: "agent", roomId: "", turnId: "turn", actorRole: "owner",
@@ -64,7 +61,7 @@ test("protected model output carries task paging debt and actual smaller-model b
       prepareModelInput: (state) => {
         const replay = projectOversizedTaskRead(page, args, 4000)!;
         const prepared = [new SystemMessage(state.soulFile), ...canonical.slice(0, -1), new ToolMessage({ ...original, content: JSON.stringify(replay) })];
-        initialBudget = taskReadResponseByteBudget({ modelId: state.model ?? "openai:gpt-5.6-sol", tokenBudgetFraction: fraction }, 500_000, prepared);
+        initialBudget = taskReadResponseByteBudget(500_000, prepared);
         return { preparedMessages: prepared, messages: canonical, taskReadPageBytes: initialBudget,
           taskReadPendingPages: pendingTaskReadPages(canonical, prepared) };
       }, invokeModel: agentNode,

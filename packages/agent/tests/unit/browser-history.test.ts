@@ -257,9 +257,7 @@ describe("browser history provider projection", () => {
     const processed = processHistory(messages, {
       validationEnabled: true,
       pruningEnabled: true,
-      tokenBudgetFraction: 0.9,
-      windowKeepRecent: 100,
-      modelId: "openai:gpt-5.6-sol",
+      maxMessageTokens: 900_000,
     });
 
     expect(compacted(processed.messages[2]!)).toMatchObject({ sourceToolCallId: "old" });

@@ -298,3 +298,35 @@ describe("direct GPT-6 Responses function continuation", () => {
     }
   });
 });
+
+
+test("streaming output-limit completion retains partial text, status, and usage", async () => {
+  const responses = model(true);
+  const partial = { ...textResponse("partial", usage(), "Partial"), status: "incomplete",
+    incomplete_details: { reason: "max_output_tokens" } };
+  setCompletion(responses, async () => (async function* () {
+    yield { type: "response.output_text.delta", item_id: "message-partial", output_index: 0, content_index: 0, delta: "Partial" };
+    yield { type: "response.incomplete", response: partial };
+  })());
+  const result = await responses.invoke([new HumanMessage("Long reply")]);
+  expect(result.text).toBe("Partial");
+  expect(result.response_metadata["status"]).toBe("incomplete");
+  expect(result.response_metadata["incomplete_details"]).toEqual({ reason: "max_output_tokens" });
+  expect(extracted(result)).toMatchObject({ inputTokens: 100, outputTokens: 7 });
+});
+
+for (const yieldsAfterAbort of [false, true]) {
+  test(`stream cancellation rejects partial output when another event follows: ${yieldsAfterAbort}`, async () => {
+    const responses = model(true);
+    const controller = new AbortController();
+    const cancellation = new Error("Generation cancelled");
+    setCompletion(responses, async () => (async function* () {
+      yield { type: "response.output_text.delta", item_id: "message-partial", output_index: 0, content_index: 0, delta: "Partial" };
+      controller.abort(cancellation);
+      if (yieldsAfterAbort) yield { type: "response.completed", response: textResponse("partial", usage()) };
+    })());
+    const result = await responses.invoke([new HumanMessage("Reply")], { signal: controller.signal })
+      .catch((error: unknown) => error);
+    expect(result).toBe(cancellation);
+  });
+}

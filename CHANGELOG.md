@@ -43,9 +43,30 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Workbench/Desktop and Mobile. Status uses authenticated chat connections and
   app activity; failed reads show unavailable. Multiple connected devices are
   combined, and Agent controls retain their existing behavior.
+- Preserve complete conversation text instead of cutting message middles or
+  dropping old turns at a fixed percentage of model context. Preparation and
+  output allocation share the selected model's context budget; oversized input
+  reports context exhaustion. Existing Task and research paging remain available.
+- Let Deep Research planning, research and final synthesis use the selected
+  model's available output allowance unless explicitly capped. Final synthesis
+  no longer retries by cutting findings. Cutoff supervisor, compression and final
+  report responses fail research instead of becoming accepted findings.
+
 - Preserve reasoning for direct GPT-6 Astra, Sol, and Luna tool calls through
   the existing Responses integration, including research and memory helpers.
   Hidden reasoning output no longer disables effort or changes their transport.
+
+- Add Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna to the model catalog for
+  Anthropic/OpenAI, OpenRouter, and Venice, with per-route capabilities,
+  context/output limits, selection metadata, and cost estimates.
+  Expose supported reasoning levels through the existing model controls, and
+  preserve selected effort independently of reasoning visibility.
+- Keep Opus 5.5 requests compatible with mandatory thinking and full output
+  budgets. Main-chat responses that reach a provider output limit retain the
+  partial reply and show an explicit incomplete-task error before tool execution.
+- Retire the Fireworks DeepSeek V4 Flash 0731, DeepSeek V4 Pro 0813, and GLM 5.2
+  catalog routes; the Fireworks replacements already in the catalog remain
+  available. New Deep Research defaults use Fireworks GLM 5.3.
 
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
   Mobile for users with the `manage_rooms` permission. It addresses current Human

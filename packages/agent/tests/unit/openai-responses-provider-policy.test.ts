@@ -271,7 +271,7 @@ describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
 
   it("does not enable Responses for Fireworks when the flag is set", async () => {
     const llm = await createFireworks({
-      modelId: "fireworks:accounts/fireworks/models/glm-5p2",
+      modelId: "fireworks:accounts/fireworks/models/glm-5p3",
       apiKey: "test-key",
       maxTokens: 8192,
       reasoningOutput: true,

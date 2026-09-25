@@ -1,9 +1,9 @@
 /**
- * D143 Phase P5 — cross-package composition: approval-ask resume cycles
+ * Cross-package approval-ask resume cycles
  * with a fixed tool_call_id must not leave duplicate ToolMessages in
  * checkpoint `messages` / `preparedMessages` (LangGraph #4397 family).
  *
- * The L5-AR1 fixture uses the cloud `file` tool with `zone: "workspace"`
+ * The fixture uses the cloud `file` tool with `zone: "workspace"`
  * (distinct paths under the temp workspaceRoot) so gated tools reach
  * approval without a connected relay; `once` resume may execute writes.
  */
@@ -56,14 +56,12 @@ const fastCoalesce = { coalescerWindowMs: 45, coalescerFirstSegmentQuietMs: 45 }
 const historyProbeConfig: HistoryConfig = {
   validationEnabled: true,
   pruningEnabled: false,
-  tokenBudgetFraction: 0.6,
-  windowKeepRecent: 20,
-  modelId: "anthropic:claude-sonnet-4-6",
+  maxMessageTokens: 900_000,
 };
 
 const DUP_ID = "toolu_TEST_DUP_1";
-const CYCLE_ONE_FILE = "d143-cycle-one.txt";
-const CYCLE_TWO_FILE = "d143-cycle-two.txt";
+const CYCLE_ONE_FILE = "approval-resume-cycle-one.txt";
+const CYCLE_TWO_FILE = "approval-resume-cycle-two.txt";
 
 let userId: string;
 let agentId: string;
@@ -92,7 +90,7 @@ function structuredSshPrepareResponse(
 ): StructuredSshPrepareResponse {
   return {
     version: 2,
-    requestId: `d500-request-${preparationId}`,
+    requestId: `structured-ssh-request-${preparationId}`,
     toolCallId: input.toolCallId,
     approvedRequestDigest: input.approvedRequestDigest,
     operation: input.operation,
@@ -103,10 +101,10 @@ function structuredSshPrepareResponse(
       agentId: input.agentId,
       executionEntrypoint: "foreground.main",
       instanceId: input.instanceId,
-      relayId: "d500-relay",
-      relaySessionId: "d500-relay-session",
-      desktopSessionId: "d500-desktop-session",
-      pairingGenerationRef: "d500-pairing-generation",
+      relayId: "structured-ssh-relay",
+      relaySessionId: "structured-ssh-relay-session",
+      desktopSessionId: "structured-ssh-desktop-session",
+      pairingGenerationRef: "structured-ssh-pairing-generation",
       capabilityRevision: 1,
     },
     preparationId,
@@ -158,7 +156,7 @@ async function parkStructuredSshReview(
       new AIMessage({ content: "", tool_calls: [sshCall] }),
     ],
     approvedToolCalls: [sshCall],
-    requiredHostRelays: { [toolCallId]: "d500-relay" },
+    requiredHostRelays: { [toolCallId]: "structured-ssh-relay" },
     userId,
     personaId: "owner",
     actorRole: "owner",
@@ -180,10 +178,10 @@ async function parkStructuredSshReview(
       kind: "local_electron",
       userId,
       actorId: userId,
-      relayId: "d500-relay",
-      desktopSessionId: "d500-desktop-session",
-      pairingGeneration: "d500-pairing-generation",
-      requestId: "d500-request",
+      relayId: "structured-ssh-relay",
+      desktopSessionId: "structured-ssh-desktop-session",
+      pairingGeneration: "structured-ssh-pairing-generation",
+      requestId: "structured-ssh-request",
     },
   }, "post_model");
 
@@ -222,15 +220,15 @@ function maxToolDupCount(messages: BaseMessage[]): number {
 }
 
 /**
- * Reviewer-blocker assertion helper (D143 post-extension): counts the
+ * Counts the
  * maximum number of AIMessages that claim the same tool_call_id in
  * their tool_calls[] arrays. The Anthropic-side invariant requires
  * this to be ≤ 1 — multiple AIMessage sources for one tool_call_id
  * means multiple `tool_use` blocks share an id across the conversation,
  * which Anthropic rejects with "messages.X: tool_use already has a
  * result" / "Too many tool_result blocks" depending on the resulting
- * pair shape. The original D143 ship only validated the ToolMessage
- * side; this counter validates the AIMessage side too.
+ * pair shape. This counter validates the AIMessage side as well as the
+ * ToolMessage side.
  */
 function maxAIMessageToolCallDupCount(messages: BaseMessage[]): number {
   const counts = new Map<string, number>();
@@ -271,14 +269,14 @@ beforeAll(async () => {
   setConfigOverrides({ nautilo_security_level: "standard" });
 
   jobManager = new JobManager(fastCoalesce);
-  const env = await setupAgentTestEnv("d143-approval-dedupe");
+  const env = await setupAgentTestEnv("approval-resume-approval-dedupe");
   userId = env.userId;
   agentId = env.agentId;
   initPolicyResolver(createApprovalVerbTestPolicy(userId));
 
   await new PinChallengeProvider({ persistPath: null }).enroll(userId, "1234");
 
-  workspaceRoot = join(tmpdir(), `d143-approval-dedupe-${Date.now()}`);
+  workspaceRoot = join(tmpdir(), `approval-resume-approval-dedupe-${Date.now()}`);
   await fsp.mkdir(workspaceRoot, { recursive: true });
 });
 
@@ -297,7 +295,7 @@ afterAll(async () => {
   setAgentEventSink(null);
   setConfigOverrides({});
 
-  // M037 — drop any standing approvals this user accumulated; the
+  // Drop any standing approvals this user accumulated; the
   // `standing_approvals.created_by → users.id` FK has no cascade, so a
   // leftover rule would block cleanupTestUser's user delete.
   {
@@ -314,8 +312,8 @@ afterAll(async () => {
   await fsp.rm(workspaceRoot, { recursive: true, force: true });
 });
 
-describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
-  test("L5-AR1: two approval-ask resume cycles — no duplicate tool_call_id in checkpoint", async () => {
+describe("approval-ask resume and checkpoint deduplication", () => {
+  test("two approval-ask resume cycles leave no duplicate tool_call_id in checkpoint", async () => {
     const stub = createStubProvider({
       responses: [
         {
@@ -348,7 +346,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
 
     const { events, cleanup } = collectEvents(eventBus);
     try {
-      const threadId = `d143-dup-${Date.now()}`;
+      const threadId = `approval-resume-dup-${Date.now()}`;
       const laneKey = `lane:${threadId}`;
 
       const turn1 = randomUUID();
@@ -374,7 +372,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
         eventBus,
         humanTurnId: turn1,
       });
-      // M037: use "once" so the second cycle re-prompts (an "always"/"room"
+      // Use "once" so the second cycle re-prompts (an "always"/"room"
       // rule would auto-approve the sibling-signature second call, collapsing
       // this two-cycle checkpoint-dedupe test to a single ask).
       await resumeGraphWithAskReply(threadId, "once", processor1, threadId);
@@ -424,10 +422,10 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
         expect(maxAIMessageToolCallDupCount(preparedMessages)).toBeLessThanOrEqual(1);
       }
 
-      expect(() => assertMessageInvariants(messages, "d143.checkpoint.messages")).not.toThrow();
+      expect(() => assertMessageInvariants(messages, "approval-resume.checkpoint.messages")).not.toThrow();
       if (preparedMessages.length > 0) {
         expect(() =>
-          assertMessageInvariants(preparedMessages, "d143.checkpoint.preparedMessages"),
+          assertMessageInvariants(preparedMessages, "approval-resume.checkpoint.preparedMessages"),
         ).not.toThrow();
       }
 
@@ -445,7 +443,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     expect(stub.remaining).toBe(0);
   });
 
-  test("L5-AR2: assertMessageInvariants throws on duplicate ToolMessages (cross-package smoke)", () => {
+  test("assertMessageInvariants throws on duplicate ToolMessages (cross-package smoke)", () => {
     const prev = process.env["NODE_ENV"];
     process.env["NODE_ENV"] = "test";
     try {
@@ -455,7 +453,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
             new ToolMessage({ content: "a", tool_call_id: "toolu_COLLIDE" }),
             new ToolMessage({ content: "b", tool_call_id: "toolu_COLLIDE" }),
           ],
-          "l5-ar2.duplicate_smoke",
+          "approval-resume.duplicate_smoke",
         ),
       ).toThrow(/duplicate ToolMessage/);
     } finally {
@@ -464,13 +462,13 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     }
   });
 
-  test("D500: a completed read in a batch remains checkpointed before a later identity interrupt", async () => {
+  test("STRUCTURED-SSH: a completed read in a batch remains checkpointed before a later identity interrupt", async () => {
     const stub = createStubProvider({
       responses: [{ type: "text", content: "Identity verification completed." }],
     });
     __setStubModelForTests(stub.asChatModel());
 
-    const threadId = `d500-batch-checkpoint-${Date.now()}`;
+    const threadId = `structured-ssh-batch-checkpoint-${Date.now()}`;
     const config = { configurable: { thread_id: threadId }, version: "v2" as const };
     const graph = createNautiloGraph(
       createCheckpointSaver(),
@@ -482,8 +480,8 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
       userId,
       agentId,
     );
-    const completedReadId = "d500-completed-read";
-    const laterInterruptId = "d500-later-identity";
+    const completedReadId = "structured-ssh-completed-read";
+    const laterInterruptId = "structured-ssh-later-identity";
     const batch = [
       { id: completedReadId, name: "discover_tools", args: { query: "identity" }, type: "tool_call" as const },
       { id: laterInterruptId, name: "verify_identity", args: { claim: "owner" }, type: "tool_call" as const },
@@ -539,11 +537,11 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     expect(messages.filter(
       (message) => message instanceof ToolMessage && message.tool_call_id === laterInterruptId,
     )).toHaveLength(1);
-    expect(() => assertMessageInvariants(messages, "d500.batch-checkpoint.resume")).not.toThrow();
+    expect(() => assertMessageInvariants(messages, "structured-ssh.batch-checkpoint.resume")).not.toThrow();
     expect(stub.remaining).toBe(0);
   });
 
-  test("D500: Auto-Approve runs a prior read and chained trusted SSH calls without an interrupt or replay", async () => {
+  test("STRUCTURED-SSH: Auto-Approve runs a prior read and chained trusted SSH calls without an interrupt or replay", async () => {
     const stub = createStubProvider({
       responses: [{ type: "text", content: "Both exact SSH commands completed." }],
     });
@@ -552,12 +550,12 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     const preparations: StructuredSshPrepareResponse[] = [];
     const dispatches: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
     setRelayRegistry({
-      findByCapabilityForUser: () => ["d500-relay"],
+      findByCapabilityForUser: () => ["structured-ssh-relay"],
       getCapabilities: () => null,
       prepareStructuredSsh: async (_relayId, input) => {
         const prepared = structuredSshPrepareResponse(
           input,
-          `d500-auto-approve-preparation-${preparations.length + 1}`,
+          `structured-ssh-auto-approve-preparation-${preparations.length + 1}`,
           {
             approval: {
               requestedDestination: input.approvedRequest.args.destination,
@@ -579,11 +577,11 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
       },
     });
 
-    const threadId = `d500-auto-approve-batch-${Date.now()}`;
+    const threadId = `structured-ssh-auto-approve-batch-${Date.now()}`;
     const config = { configurable: { thread_id: threadId }, version: "v2" as const };
-    const completedReadId = "d500-auto-approve-prior-read";
-    const firstSshId = "d500-auto-approve-first-ssh";
-    const secondSshId = "d500-auto-approve-second-ssh";
+    const completedReadId = "structured-ssh-auto-approve-prior-read";
+    const firstSshId = "structured-ssh-auto-approve-first-ssh";
+    const secondSshId = "structured-ssh-auto-approve-second-ssh";
     const batch = [
       // The captured failure used search_memory. This fixture instead uses
       // discover_tools, the nearest existing deterministic core read: an exact
@@ -608,7 +606,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
         args: {
           destination: { host: "deploy.example.test", user: "deploy" },
           program: "printf",
-          argv: ["d500 chained SSH"],
+          argv: ["structured-ssh chained SSH"],
         },
         type: "tool_call" as const,
       },
@@ -632,7 +630,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
           new AIMessage({ content: "", tool_calls: batch }),
         ],
         approvedToolCalls: batch,
-        requiredHostRelays: { [firstSshId]: "d500-relay", [secondSshId]: "d500-relay" },
+        requiredHostRelays: { [firstSshId]: "structured-ssh-relay", [secondSshId]: "structured-ssh-relay" },
         userId,
         personaId: "owner",
         actorRole: "owner",
@@ -650,10 +648,10 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
           kind: "local_electron",
           userId,
           actorId: userId,
-          relayId: "d500-relay",
-          desktopSessionId: "d500-desktop-session",
-          pairingGeneration: "d500-pairing-generation",
-          requestId: "d500-auto-approve-request",
+          relayId: "structured-ssh-relay",
+          desktopSessionId: "structured-ssh-desktop-session",
+          pairingGeneration: "structured-ssh-pairing-generation",
+          requestId: "structured-ssh-auto-approve-request",
         },
       }, "post_model");
 
@@ -694,7 +692,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     }
   });
 
-  test("D500: delayed unknown-host approval refreshes unchanged preparation and dispatches exactly once", async () => {
+  test("STRUCTURED-SSH: delayed unknown-host approval refreshes unchanged preparation and dispatches exactly once", async () => {
     const stub = createStubProvider({
       responses: [{ type: "text", content: "The exact SSH command completed." }],
     });
@@ -703,10 +701,10 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     const preparations: StructuredSshPrepareResponse[] = [];
     const dispatches: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
     setRelayRegistry({
-      findByCapabilityForUser: () => ["d500-relay"],
+      findByCapabilityForUser: () => ["structured-ssh-relay"],
       getCapabilities: () => null,
       prepareStructuredSsh: async (_relayId, input) => {
-        const prepared = structuredSshPrepareResponse(input, `d500-preparation-${preparations.length + 1}`);
+        const prepared = structuredSshPrepareResponse(input, `structured-ssh-preparation-${preparations.length + 1}`);
         preparations.push(prepared);
         return prepared;
       },
@@ -716,12 +714,12 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
       },
     });
 
-    const threadId = `d500-delayed-unchanged-${Date.now()}`;
-    const toolCallId = "d500-delayed-unchanged-call";
+    const threadId = `structured-ssh-delayed-unchanged-${Date.now()}`;
+    const toolCallId = "structured-ssh-delayed-unchanged-call";
     try {
       const { graph, config, approval } = await parkStructuredSshReview(threadId, toolCallId);
       expect(approval.structuredSsh?.hostTrust).toBe("unknown");
-      expect(approval.structuredSsh?.preparationId).toBe("d500-preparation-1");
+      expect(approval.structuredSsh?.preparationId).toBe("structured-ssh-preparation-1");
       expect(preparations).toHaveLength(1);
       expect(dispatches).toHaveLength(0);
 
@@ -758,7 +756,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
       expect(dispatches).toHaveLength(1);
       expect(dispatches[0]).toMatchObject({
         executionClass: "structured-ssh",
-        sshBinding: { toolCallId, preparationId: "d500-preparation-2" },
+        sshBinding: { toolCallId, preparationId: "structured-ssh-preparation-2" },
       });
       expect(resumedEvents.filter((event) => event.type === "approval.ask")).toHaveLength(0);
 
@@ -773,7 +771,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     }
   });
 
-  test("D500: changed refreshed host trust re-parks an exact review before dispatch", async () => {
+  test("STRUCTURED-SSH: changed refreshed host trust re-parks an exact review before dispatch", async () => {
     const stub = createStubProvider({
       responses: [{ type: "text", content: "This response must not run before renewed review." }],
     });
@@ -782,12 +780,12 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
     const preparations: StructuredSshPrepareResponse[] = [];
     const dispatches: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
     setRelayRegistry({
-      findByCapabilityForUser: () => ["d500-relay"],
+      findByCapabilityForUser: () => ["structured-ssh-relay"],
       getCapabilities: () => null,
       prepareStructuredSsh: async (_relayId, input) => {
         const prepared = preparations.length === 0
-          ? structuredSshPrepareResponse(input, "d500-preparation-before-change")
-          : structuredSshPrepareResponse(input, "d500-preparation-after-change", {
+          ? structuredSshPrepareResponse(input, "structured-ssh-preparation-before-change")
+          : structuredSshPrepareResponse(input, "structured-ssh-preparation-after-change", {
               approval: {
                 requestedDestination: input.approvedRequest.args.destination,
                 host: "deploy.example.test",
@@ -808,8 +806,8 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
       },
     });
 
-    const threadId = `d500-refresh-changed-${Date.now()}`;
-    const toolCallId = "d500-refresh-changed-call";
+    const threadId = `structured-ssh-refresh-changed-${Date.now()}`;
+    const toolCallId = "structured-ssh-refresh-changed-call";
     try {
       const { graph, config, approval } = await parkStructuredSshReview(threadId, toolCallId);
       const resumedEvents: ServerEvent[] = [];
@@ -839,7 +837,7 @@ describe("D143 — approval-ask resume + Layer 1/3/4 dedupe (L5)", () => {
       expect(refreshedReviews[0]?.approvalId).not.toBe(approval.approvalId);
       expect(refreshedReviews[0]?.structuredSsh).toMatchObject({
         toolCallId,
-        preparationId: "d500-preparation-after-change",
+        preparationId: "structured-ssh-preparation-after-change",
         hostTrust: "changed",
         hostKeyFingerprint: "SHA256:D500CHANGEDFINGERPRINT",
         previousHostKeyFingerprint: "SHA256:D500INITIALFINGERPRINT",

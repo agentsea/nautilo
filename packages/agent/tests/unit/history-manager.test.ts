@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SECURITY_SCAN_INITIAL_LANES, type SecurityScanLedgerRecord } from "@nautilo/types";
 import { securityResearchAppendix } from "../../src/tools/security/research-appendix";
-import { getModelTokenLimit } from "../../src/providers/models";
 import {
   AIMessage,
   HumanMessage,
@@ -17,9 +16,7 @@ import {
 const defaultConfig: HistoryConfig = {
   validationEnabled: true,
   pruningEnabled: false,
-  tokenBudgetFraction: 0.6,
-  windowKeepRecent: 20,
-  modelId: "anthropic:claude-sonnet-4-6",
+  maxMessageTokens: 200_000,
 };
 
 describe("history-manager", () => {
@@ -85,19 +82,15 @@ describe("history-manager", () => {
   });
 });
 
-describe("history-manager — D276 Tier 2 per-message clamp", () => {
-  // Use a catalogued 262K-context model so a 500k-char message exceeds the
-  // per-message share of the configured history budget.
+describe("history-manager preserves complete ordinary messages", () => {
   const cfg: HistoryConfig = {
     validationEnabled: true,
     pruningEnabled: false,
-    tokenBudgetFraction: 0.6,
-    windowKeepRecent: 20,
-    modelId: "openrouter:moonshotai/kimi-k2.6",
+    maxMessageTokens: 262_144,
   };
   const HUGE = "x".repeat(500_000);
 
-  test("clamps an oversized tool result: head+tail+marker, pairing + ids preserved, message NOT dropped", () => {
+  test("preserves oversized tool results including their middle, pairing and IDs", () => {
     const ai = new AIMessage({
       content: "",
       tool_calls: [{ id: "tc_big", name: "run_shell", args: { command: "seq 1 500000" } }],
@@ -105,7 +98,7 @@ describe("history-manager — D276 Tier 2 per-message clamp", () => {
     const toolResult = new ToolMessage({ content: HUGE, tool_call_id: "tc_big", name: "run_shell" });
     const result = processHistory([new HumanMessage("go"), ai, toolResult], cfg);
 
-    expect(result.clamping.clampedCount).toBe(1);
+    expect(result.clamping.clampedCount).toBe(0);
     expect(result.messages.length).toBe(3); // never dropped
     expect(result.validation.repairs).toEqual([]); // pairing intact
 
@@ -113,14 +106,21 @@ describe("history-manager — D276 Tier 2 per-message clamp", () => {
     expect(clampedTool).toBeDefined();
     expect(clampedTool.tool_call_id).toBe("tc_big"); // id untouched
     const content = clampedTool.content as string;
-    expect(content.length).toBeLessThan(HUGE.length);
-    expect(content).toContain("chars elided to protect the context window");
-    expect(content.startsWith("x")).toBe(true); // head kept
-    expect(content.endsWith("x")).toBe(true); // tail kept
+    expect(content).toBe(HUGE);
 
     // AIMessage tool_calls untouched.
     const clampedAi = result.messages.find((m) => m instanceof AIMessage) as AIMessage;
     expect(clampedAi.tool_calls?.[0]?.id).toBe("tc_big");
+  });
+
+  test("does not discard older turns even when the supplied workspace is exhausted", () => {
+    const messages = Array.from({ length: 40 }, (_, index) => [
+      new HumanMessage(`Question ${index}: ${HUGE}`), new AIMessage(`Answer ${index}`),
+    ]).flat();
+    const result = processHistory(messages, { ...cfg, maxMessageTokens: 100 });
+    expect(result.messages).toEqual(messages);
+    expect(result.windowing.removedCount).toBe(0);
+    expect(result.clamping.clampedCount).toBe(0);
   });
 
   test("no-op for normal-sized messages", () => {
@@ -129,15 +129,14 @@ describe("history-manager — D276 Tier 2 per-message clamp", () => {
     expect((result.messages[1] as AIMessage).content).toBe("hi");
   });
 
-  test("projects a full raw task result into the actual caller model budget", () => {
+  test("preserves full raw Task results", () => {
     const taskResult = new AIMessage({ content: HUGE, id: "task-result:run-1" });
     const result = processHistory([new HumanMessage("go"), taskResult], cfg);
 
-    expect(result.clamping.clampedCount).toBe(1);
+    expect(result.clamping.clampedCount).toBe(0);
     const projected = result.messages[1] as AIMessage;
     expect(projected.id).toBe("task-result:run-1");
-    expect(projected.content).toContain("use task read for the corresponding full canonical task result");
-    expect((projected.content as string).length).toBeLessThan(HUGE.length);
+    expect(projected.content).toBe(HUGE);
   });
 
   test("does not touch a SystemMessage even if oversized", () => {
@@ -158,14 +157,14 @@ describe("history-manager — D276 Tier 2 per-message clamp", () => {
     expect(result.messages[0]!.content).toBe(HUGE);
   });
 
-  test("still clamps a generic transient block that was not Room-budgeted", () => {
+  test("preserves a generic transient block without a Room budget", () => {
     const transient = new HumanMessage({
       content: HUGE,
       additional_kwargs: { nautilo_transient_context: true },
     });
     const result = processHistory([transient], cfg);
-    expect(result.clamping.clampedCount).toBe(1);
-    expect((result.messages[0]!.content as string).length).toBeLessThan(HUGE.length);
+    expect(result.clamping.clampedCount).toBe(0);
+    expect(result.messages[0]!.content).toBe(HUGE);
   });
 
   test("skips multimodal (array) content — no corruption of content blocks", () => {
@@ -182,7 +181,7 @@ describe("history-manager — D276 Tier 2 per-message clamp", () => {
 describe("research Task checkpoint continuity", () => {
   const author = { taskId: "10000000-0000-4000-8000-000000000001",
     taskRunId: "10000000-0000-4000-8000-000000000002", modelId: null };
-  const config: HistoryConfig = { ...defaultConfig, tokenBudgetFraction: 0.01, researchContinuity: true };
+  const config: HistoryConfig = { ...defaultConfig, maxMessageTokens: 2_000, researchContinuity: true };
   function cycle(id: string, operation: string, output: unknown) {
     return [new AIMessage({ content: "", tool_calls: [{ id, name: "security_scan",
       args: { version: "security-scan-v1", operation, ...(operation === "record"
@@ -374,7 +373,7 @@ describe("research Task checkpoint continuity", () => {
     const first = conclusionPage("conclusion-page", records, false);
     const messages = [new HumanMessage("Synthesize findings."), ...checkpoint(), ...first, ...conclusionPage("tail", [], true)];
     const result = processHistory(messages, config);
-    const budget = Math.floor(getModelTokenLimit(config.modelId) * config.tokenBudgetFraction);
+    const budget = config.maxMessageTokens;
     expect(estimateTokenCount(messages)).toBeGreaterThan(budget);
     expect(estimateTokenCount(result.messages)).toBeLessThanOrEqual(budget);
     expect(result.windowing.researchConclusionsOverview).toBe(true);
@@ -391,14 +390,14 @@ describe("research Task checkpoint continuity", () => {
     expect(appendix).toContain("finding-23");
   });
   test("one valid maximum-size latest final page fits through recoverable projection and a one-record reload", () => {
-    const actualConfig = { ...config, tokenBudgetFraction: 0.1 };
+    const actualConfig = { ...config, maxMessageTokens: 20_000 };
     const records = Array.from({ length: 100 }, (_, index) => conclusion(`latest-finding-${index}`, "finding", true));
     const final = conclusionPage("latest-full-page", records, true);
     delete (final[0] as AIMessage).tool_calls![0]!.args["continueResults"];
     const messages = [new HumanMessage("Report the complete audit."), ...final];
     const canonical = JSON.stringify(messages);
     const appendix = securityResearchAppendix(messages);
-    const budget = Math.floor(getModelTokenLimit(actualConfig.modelId) * actualConfig.tokenBudgetFraction);
+    const budget = actualConfig.maxMessageTokens;
     expect(estimateTokenCount(messages)).toBeGreaterThan(budget);
     const result = processHistory(messages, actualConfig);
     expect(estimateTokenCount(result.messages)).toBeLessThanOrEqual(budget);
@@ -428,7 +427,7 @@ describe("research Task checkpoint continuity", () => {
   });
   test("projecting an oversized latest nonterminal final page retains its exact continuation authority", () => {
     const final = conclusionPage("awaiting-next-page", Array.from({ length: 100 }, (_, index) => conclusion(`next-finding-${index}`, "finding", true)), false);
-    const result = processHistory([new HumanMessage("Retrieve final report inputs."), ...final], { ...config, tokenBudgetFraction: 0.1 });
+    const result = processHistory([new HumanMessage("Retrieve final report inputs."), ...final], { ...config, maxMessageTokens: 20_000 });
     const projected = result.messages.find((message) => ToolMessage.isInstance(message)) as ToolMessage;
     expect(JSON.parse(projected.content as string)).toMatchObject({ finalPage: {
       status: { scanId: "scan_test", state: "completed" }, nextCursor: "next", reportReady: false,

@@ -5,7 +5,6 @@ import {
 export { buildForegroundModelControlPlan } from "../config/foreground-model-controls";
 import { projectSecurityResearchConsolidationTools } from "../tools/security/security-scan";
 import { budgetResearchContext, captureResearchContextPresentation, isResearchPreEvictionConsolidating } from "../tools/security/research-context-rollover";
-import { resolveModelExecutionLimits } from "../providers/models";
 import { taskReadResponseByteBudget, estimateTokenCount } from "../utils/history-manager";
 import type { HumanMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -20,7 +19,7 @@ import { log } from "@nautilo/logger";
 import { getToolCatalog } from "@nautilo/catalog";
 import { envelopeReadableNamespaces } from "@nautilo/trust";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
-import { invokeChatModelWithFallback, estimateBoundToolTokens } from "../utils/chat-model-invocation";
+import { invokeChatModelWithFallback, resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
 import { runWithUsageContext } from "../usage/usage-context";
 import { withholdSkipForExplicitSelection } from "./skip-gate";
 import {
@@ -231,8 +230,7 @@ export async function agentNode(
   let actualPreparedMessages = preparedMessages;
   if (researchContinuity && optionalResearchDraft) {
     const candidate = [...preparedMessages, optionalResearchDraft];
-    const allowance = Math.floor((await resolveModelExecutionLimits(requestedModelId)).contextTokens * config.nautilo_token_budget_fraction)
-      - estimateBoundToolTokens(tools);
+    const allowance = await resolvePreparedMessageBudget(requestedModelId, tools);
     const candidateTokens = estimateTokenCount(candidate);
     const included = candidateTokens <= allowance;
     if (included) actualPreparedMessages = candidate;
@@ -280,7 +278,7 @@ export async function agentNode(
               log(`[research-note-draft] event=retry_removed task=${state.currentTaskId} task_run=${state.currentTaskRunId} model=${modelId}`);
               return actualPreparedMessages;
             }
-            const budget = Math.floor(Math.min(maxMessageTokens, estimatedMessageTokens) * config.nautilo_token_budget_fraction);
+            const budget = Math.min(maxMessageTokens, estimatedMessageTokens);
             const recovered = budgetResearchContext({ ...state, ...recoveredState }, messages, budget);
             recoveredState = {
               researchContextRecovery: recovered.recovery,
@@ -313,8 +311,7 @@ export async function agentNode(
     // Protected dispatch persists this safe output. Use the actual responder's
     // window, including its tool-call response, rather than a larger requested
     // model's allowance after fallback.
-    taskReadPageBytes: taskReadResponseByteBudget({ modelId: modelUsed, tokenBudgetFraction: config.nautilo_token_budget_fraction },
-      Math.floor((await resolveModelExecutionLimits(modelUsed)).contextTokens * config.nautilo_token_budget_fraction) - estimateBoundToolTokens(tools),
+    taskReadPageBytes: taskReadResponseByteBudget(await resolvePreparedMessageBudget(modelUsed, tools),
       [...actualPreparedMessages, response]),
     taskReadPendingPages: state.taskReadPendingPages ?? [],
   };

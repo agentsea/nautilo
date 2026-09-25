@@ -5,7 +5,7 @@ import {
   type SelectionAxis,
   type ComboSpec,
 } from "@nautilo/types";
-// D429 Phase 1 — `IntelligenceTier` now lives canonically in `@nautilo/trust`
+// `IntelligenceTier` lives canonically in `@nautilo/trust`
 // (below every consumer) so the resolved catalog type can reference it without
 // a cycle. Re-exported here to keep `@nautilo/agent`'s existing import paths
 // stable; the unions are structurally identical.
@@ -25,11 +25,17 @@ export const MODEL_INTELLIGENCE_TIER: Record<string, IntelligenceTier> = {
   "anthropic:claude-opus-4-8": "frontier",
   "anthropic:claude-opus-4-7": "frontier",
   "openai:gpt-5.6-sol": "frontier",
+  "openai:gpt-6-sol": "frontier",
   "openai:gpt-5.5-2026-04-23": "frontier",
   "anthropic:claude-sonnet-4-6": "frontier",
   "anthropic:claude-sonnet-5": "frontier",
   "anthropic:claude-fable-5": "frontier",
   "anthropic:claude-opus-5": "frontier",
+  "anthropic:claude-opus-5-5": "frontier",
+  "openrouter:anthropic/claude-opus-5.5": "frontier",
+  "venice:claude-opus-5-5": "frontier",
+  "openrouter:openai/gpt-6-sol": "frontier",
+  "venice:openai-gpt-6-sol": "frontier",
   "google:gemini-3.1-pro-preview": "frontier",
   "venice:claude-opus-4-7": "frontier",
   "venice:openai-gpt-55-pro": "frontier",
@@ -42,13 +48,9 @@ export const MODEL_INTELLIGENCE_TIER: Record<string, IntelligenceTier> = {
   "openai:gpt-5.4-2026-03-05": "strong",
   "google:gemini-2.5-pro": "strong",
   "fireworks:accounts/fireworks/models/deepseek-v4-pro": "strong",
-  "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "strong",
-  "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": "strong",
   "openrouter:deepseek/deepseek-v4-pro": "strong",
   "openrouter:deepseek/deepseek-v4-pro-0813": "strong",
-  "fireworks:accounts/fireworks/models/kimi-k2p6": "strong",
   "openrouter:moonshotai/kimi-k2.6": "strong",
-  "fireworks:accounts/fireworks/models/glm-5p2": "strong",
   "fireworks:accounts/fireworks/models/glm-5p1": "strong",
   "openrouter:z-ai/glm-5.1": "strong",
   "venice:deepseek-v4-pro": "strong",
@@ -60,6 +62,9 @@ export const MODEL_INTELLIGENCE_TIER: Record<string, IntelligenceTier> = {
   // mid
   "openrouter:minimax/minimax-m2.7": "mid",
   "openai:gpt-5.6-luna": "mid",
+  "openai:gpt-6-luna": "mid",
+  "openrouter:openai/gpt-6-luna": "mid",
+  "venice:openai-gpt-6-luna": "mid",
   "google:gemini-3-flash-preview": "mid",
   "google:gemini-3.1-flash-lite-preview": "mid",
   "venice:minimax-m27": "mid",

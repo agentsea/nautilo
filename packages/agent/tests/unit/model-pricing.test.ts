@@ -33,6 +33,14 @@ describe("model pricing", () => {
     expect(estimateCostUsd(id, { inputTokens: 2_000_000, cachedInputTokens: 1_000_000, outputTokens: 1_000_000 })).toBeCloseTo(6.06, 6);
   });
 
+  test("Fireworks DeepSeek V4.1 Flash uses the published serverless rates", () => {
+    const id = "fireworks:accounts/fireworks/models/deepseek-v4p1-flash";
+    expect(resolveModelPrice(id)).toEqual({ source: "explicit", price: {
+      inputPerMtok: 0.22, cachedInputPerMtok: 0.007, outputPerMtok: 0.66,
+    } });
+    expect(estimateCostUsd(id, { inputTokens: 2_000_000, cachedInputTokens: 1_000_000, outputTokens: 1_000_000 })).toBeCloseTo(0.887, 6);
+  });
+
   test("estimateCostUsd computes tokens × price", () => {
     // 1M input @ $3 + 1M output @ $15 = $18
     const cost = estimateCostUsd("anthropic:claude-sonnet-4-6", {
@@ -264,7 +272,7 @@ describe("cache-aware pricing", () => {
 
   test("Jev Choice uses the reviewed OpenRouter input-only rate", () => {
     const id = "openrouter:typesafe/jev-1.13";
-    expect(PRICING_VERSION).toBe("2026-09-20.1");
+    expect(PRICING_VERSION).toBe("2026-09-23.1");
     expect(hasExplicitPrice(id)).toBe(true);
     expect(resolveModelPrice(id)).toEqual({
       source: "catalog_decision",

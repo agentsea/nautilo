@@ -69,7 +69,7 @@ const ROWS: Array<{ modelId: string; envKey: string; alsoNeeds?: string }> = [
     envKey: "GOOGLE_API_KEY",
   },
   {
-    modelId: "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
+    modelId: "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
     envKey: "FIREWORKS_API_KEY",
   },
   { modelId: "openrouter:openai/gpt-5.6-luna", envKey: "OPENROUTER_API_KEY" },

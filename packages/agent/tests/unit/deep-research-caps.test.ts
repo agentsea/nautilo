@@ -48,8 +48,10 @@ describe("deep-research caps", () => {
     expect(spModel).toHaveBeenCalledWith(
       "test:supervisor",
       expect.objectContaining({ supervisor_model_max_tokens: 4321 }),
-      { maxTokens: 4321, useOpenAIResponsesApi: true },
+      expect.objectContaining({ maxTokens: 4321, useOpenAIResponsesApi: true }),
     );
+    expect(spModel.mock.calls[0]?.[2]?.messages?.slice(1)).toEqual(existing);
+    expect(spModel.mock.calls[0]?.[2]?.tools?.map((tool) => tool.name)).toEqual(["ConductResearch", "ResearchComplete", "think_tool"]);
     expect(existing).toEqual([{ role: "user", content: "prior plan step" }]);
   });
 
