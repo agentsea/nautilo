@@ -1979,10 +1979,11 @@ export async function startProtectedTaskRun(
 const PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY =
   "nautilo.protectedTaskRunTerminal.v1";
 const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
+const TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1 = 1024 * 1024;
 
 export type ProtectedTaskRunTerminalOutcome = "completed" | "errored";
 
-export type ProtectedTaskRunTerminalInput = Readonly<{
+type TaskRunTerminalInputCommon = Readonly<{
   taskId: string;
   taskRunId: string;
   scheduleKind: "now" | "one_shot" | "cron";
@@ -1990,12 +1991,31 @@ export type ProtectedTaskRunTerminalInput = Readonly<{
   requestDigest: Uint8Array;
   resultObjectId: string;
   resultRevision: 1;
-  /** Full-only. Shadow dual requires a separate atomic ordinary-content adapter. */
-  resultRepresentation: "protected";
   outcome: ProtectedTaskRunTerminalOutcome;
   completedAt: Date;
   requiredRunStatus: "running";
 }>;
+
+export type ProtectedTaskRunTerminalInput = TaskRunTerminalInputCommon &
+  Readonly<{
+    /** Full-only; this operation never accepts or writes plaintext. */
+    resultRepresentation: "protected";
+  }>;
+
+export type DualTaskRunResultPayloadV1 = Readonly<{
+  formatVersion: 1;
+  resultText: string | null;
+  lastError: string | null;
+}>;
+
+export type DualTaskRunTerminalInput = TaskRunTerminalInputCommon & Readonly<{
+  resultRepresentation: "dual";
+  ordinaryResult: DualTaskRunResultPayloadV1;
+}>;
+
+type TaskRunTerminalInput =
+  | ProtectedTaskRunTerminalInput
+  | DualTaskRunTerminalInput;
 
 export type ProtectedTaskRunTerminalResult =
   | Readonly<{ status: "transitioned" | "exact_replay" }>
@@ -2018,7 +2038,7 @@ type ProtectedTaskRunTerminalReceipt = Readonly<{
   requestDigest: string;
   resultObjectId: string;
   resultRevision: 1;
-  resultRepresentation: "protected";
+  resultRepresentation: "protected" | "dual";
   outcome: ProtectedTaskRunTerminalOutcome;
   completedAt: string;
 }>;
@@ -2034,7 +2054,7 @@ function terminalRequestDigestHex(value: Uint8Array): string {
 }
 
 function terminalReceipt(
-  input: ProtectedTaskRunTerminalInput,
+  input: TaskRunTerminalInput,
 ): ProtectedTaskRunTerminalReceipt {
   return Object.freeze({
     version: 1,
@@ -2051,7 +2071,11 @@ function terminalReceipt(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function exactTerminalReceipt(
@@ -2078,6 +2102,15 @@ function exactTerminalReceipt(
 function assertProtectedTaskRunTerminalInput(
   input: ProtectedTaskRunTerminalInput,
 ): void {
+  assertTaskRunTerminalInput(input);
+  if (input.resultRepresentation !== "protected") {
+    throw new TypeError("Protected Task result terminal binding is malformed");
+  }
+}
+
+function assertTaskRunTerminalInput(
+  input: TaskRunTerminalInput,
+): void {
   if (
     !input.taskId
     || !input.taskRunId
@@ -2087,6 +2120,7 @@ function assertProtectedTaskRunTerminalInput(
     || !TASK_RUN_RESULT_OBJECT_ID.test(input.resultObjectId)
     || input.resultRevision !== 1
     || input.resultRepresentation !== "protected"
+      && input.resultRepresentation !== "dual"
     || input.outcome !== "completed" && input.outcome !== "errored"
     || input.scheduleKind !== "now"
       && input.scheduleKind !== "one_shot"
@@ -2097,11 +2131,74 @@ function assertProtectedTaskRunTerminalInput(
   ) throw new TypeError("Protected Task result terminal binding is malformed");
 }
 
-function exactProtectedTaskDefinition(
+function assertWellFormedTaskResultText(value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new TypeError("Dual Task result contains malformed Unicode");
+      }
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw new TypeError("Dual Task result contains malformed Unicode");
+    }
+  }
+}
+
+function canonicalDualTaskRunResult(
+  value: DualTaskRunResultPayloadV1,
+): DualTaskRunResultPayloadV1 {
+  if (!isRecord(value)) {
+    throw new TypeError("Dual Task result payload must be an object");
+  }
+  const fields = ["formatVersion", "resultText", "lastError"];
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== fields.length) {
+    throw new TypeError("Dual Task result payload has an invalid field set");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      typeof key !== "string"
+      || !fields.includes(key)
+      || descriptor === undefined
+      || !descriptor.enumerable
+      || !("value" in descriptor)
+    ) throw new TypeError("Dual Task result payload has an invalid field set");
+  }
+  if (
+    value["formatVersion"] !== 1
+    || value["resultText"] !== null && typeof value["resultText"] !== "string"
+    || value["lastError"] !== null && typeof value["lastError"] !== "string"
+    || value["resultText"] === null && value["lastError"] === null
+  ) throw new TypeError("Dual Task result payload is invalid");
+  if (value["resultText"] !== null) {
+    assertWellFormedTaskResultText(value["resultText"]);
+  }
+  if (value["lastError"] !== null) {
+    assertWellFormedTaskResultText(value["lastError"]);
+  }
+  const canonical = `{"formatVersion":1,` +
+    `"resultText":${JSON.stringify(value["resultText"])},` +
+    `"lastError":${JSON.stringify(value["lastError"])}}`;
+  if (new TextEncoder().encode(canonical).length
+    > TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1) {
+    throw new RangeError("Dual Task result payload exceeds its wire limit");
+  }
+  return Object.freeze({
+    formatVersion: 1,
+    resultText: value["resultText"],
+    lastError: value["lastError"],
+  });
+}
+
+function exactTaskDefinition(
   task: Task,
   revision: TaskDefinitionCryptoRevision | undefined,
+  representation: "protected" | "dual",
 ): boolean {
-  return task.contentRepresentation === "protected"
+  return task.contentRepresentation === representation
     && task.contentNamespaceId !== null
     && task.contentRevision > 0
     && task.cryptoObjectId !== null
@@ -2109,15 +2206,16 @@ function exactProtectedTaskDefinition(
     && task.cryptoRequiredNamespaceFingerprint !== null
     && task.cryptoRequiredNamespaceFingerprint.length === 32
     && task.cryptoMappingState === "verified"
-    && task.prompt === ""
-    && task.expectedOutput === null
     && task.lastError === null
+    && (representation !== "protected" || (
+      task.prompt === "" && task.expectedOutput === null
+    ))
     && revision !== undefined
     && revision.taskId === task.id
     && revision.contentNamespaceId === task.contentNamespaceId
     && revision.contentRevision === task.contentRevision
     && revision.cryptoObjectId === task.cryptoObjectId
-    && revision.representation === "protected"
+    && revision.representation === representation
     && revision.payloadVersion === 1
     && revision.cryptoAccessRevision === task.cryptoAccessRevision
     && sameBytes(
@@ -2133,7 +2231,7 @@ function protectedTaskJobPolicyRevision(
   task: Task,
   run: TaskRun,
   job: Job | undefined,
-  input: ProtectedTaskRunTerminalInput,
+  input: TaskRunTerminalInput,
 ): number | null {
   if (
     job === undefined
@@ -2163,7 +2261,7 @@ function protectedTaskJobPolicyRevision(
 function exactResultReservation(
   task: Task,
   revision: TaskRunResultCryptoRevision | undefined,
-  input: ProtectedTaskRunTerminalInput,
+  input: TaskRunTerminalInput,
 ): boolean {
   return revision !== undefined
     && revision.taskId === input.taskId
@@ -2194,7 +2292,8 @@ function exactResultReservation(
 function exactTerminalRunMapping(
   run: TaskRun,
   revision: TaskRunResultCryptoRevision,
-  input: ProtectedTaskRunTerminalInput,
+  input: TaskRunTerminalInput,
+  ordinaryResult: DualTaskRunResultPayloadV1 | null,
 ): boolean {
   const unmapped = run.resultRepresentation === "ordinary"
     && run.resultContentNamespaceId === null
@@ -2217,8 +2316,33 @@ function exactTerminalRunMapping(
     && run.resultCryptoMappingState === "verified"
     && revision.completion === "complete"
     && revision.disposition === "mapped";
-  return run.resultText === null && run.lastError === null && (unmapped || mapped);
+  const exactOrdinary = ordinaryResult === null
+    ? run.resultText === null && run.lastError === null
+    : run.resultText === ordinaryResult.resultText
+      && run.lastError === ordinaryResult.lastError;
+  return exactOrdinary && (unmapped || mapped);
 }
+
+function pristineTerminalRun(
+  run: TaskRun,
+  revision: TaskRunResultCryptoRevision,
+): boolean {
+  return run.resultText === null
+    && run.lastError === null
+    && run.resultRepresentation === "ordinary"
+    && run.resultContentNamespaceId === null
+    && run.resultRevision === 0
+    && run.resultCryptoObjectId === null
+    && run.resultCryptoAccessRevision === 0
+    && run.resultCryptoRequiredNamespaceFingerprint === null
+    && run.resultCryptoMappingState === "unmapped"
+    && revision.disposition === "active";
+}
+
+type TaskRunTerminalPlan = Readonly<{
+  input: TaskRunTerminalInput;
+  ordinaryResult: DualTaskRunResultPayloadV1 | null;
+}>;
 
 /**
  * Content-free terminal CAS for one protected Task result. The linked Job
@@ -2229,6 +2353,33 @@ export async function terminalizeProtectedTaskRunResult(
   input: ProtectedTaskRunTerminalInput,
 ): Promise<ProtectedTaskRunTerminalResult> {
   assertProtectedTaskRunTerminalInput(input);
+  return terminalizeTaskRunResult(db, Object.freeze({
+    input,
+    ordinaryResult: null,
+  }));
+}
+
+/** Shadow-only dual product callback; the ordinary sibling is written once. */
+export async function terminalizeDualTaskRunResult(
+  db: DirectDatabase,
+  input: DualTaskRunTerminalInput,
+): Promise<ProtectedTaskRunTerminalResult> {
+  assertTaskRunTerminalInput(input);
+  if (input.resultRepresentation !== "dual") {
+    throw new TypeError("Dual Task result terminal binding is malformed");
+  }
+  const ordinaryResult = canonicalDualTaskRunResult(input.ordinaryResult);
+  return terminalizeTaskRunResult(db, Object.freeze({
+    input,
+    ordinaryResult,
+  }));
+}
+
+async function terminalizeTaskRunResult(
+  db: DirectDatabase,
+  plan: TaskRunTerminalPlan,
+): Promise<ProtectedTaskRunTerminalResult> {
+  const { input, ordinaryResult } = plan;
   const receipt = terminalReceipt(input);
   return db.transaction(async (tx) => {
     const [task] = await tx.select().from(tasks)
@@ -2252,7 +2403,11 @@ export async function terminalizeProtectedTaskRunResult(
         eq(taskDefinitionCryptoRevisions.taskId, task.id),
         eq(taskDefinitionCryptoRevisions.contentRevision, task.contentRevision),
       )).limit(1).for("share");
-    if (!exactProtectedTaskDefinition(task, definitionRevision)) {
+    if (!exactTaskDefinition(
+      task,
+      definitionRevision,
+      input.resultRepresentation,
+    )) {
       return terminalRejected("conflict");
     }
 
@@ -2273,7 +2428,9 @@ export async function terminalizeProtectedTaskRunResult(
     if (
       !policy
       || policy.revision !== policyRevision
-      || policy.mode !== "encrypted_only"
+      || policy.mode !== (input.resultRepresentation === "dual"
+        ? "shadow_encryption"
+        : "encrypted_only")
     ) return terminalRejected("authority_changed");
 
     if (task.scheduleKind !== input.scheduleKind) {
@@ -2289,7 +2446,7 @@ export async function terminalizeProtectedTaskRunResult(
       if (
         !exactTerminalReceipt(existingReceipt, receipt)
         || run.completedAt?.getTime() !== input.completedAt.getTime()
-        || !exactTerminalRunMapping(run, resultRevision!, input)
+        || !exactTerminalRunMapping(run, resultRevision!, input, ordinaryResult)
         || !["running", "completed"].includes(job!.status)
       ) return terminalRejected("conflict");
       return Object.freeze({ status: "exact_replay" as const });
@@ -2308,7 +2465,7 @@ export async function terminalizeProtectedTaskRunResult(
       job!.status !== "running"
       || existingReceipt !== undefined
       || run.completedAt !== null
-      || !exactTerminalRunMapping(run, resultRevision!, input)
+      || !pristineTerminalRun(run, resultRevision!)
     ) return terminalRejected("conflict");
 
     const jobMetadata = isRecord(job!.metadata) ? job!.metadata : {};
@@ -2323,6 +2480,10 @@ export async function terminalizeProtectedTaskRunResult(
     const [updatedRun] = await tx.update(taskRuns).set({
       status: input.outcome,
       completedAt: new Date(input.completedAt.getTime()),
+      ...(ordinaryResult === null ? {} : {
+        resultText: ordinaryResult.resultText,
+        lastError: ordinaryResult.lastError,
+      }),
     }).where(and(
       eq(taskRuns.id, run.id),
       eq(taskRuns.taskId, task.id),
@@ -2340,7 +2501,7 @@ export async function terminalizeProtectedTaskRunResult(
       }).where(and(
         eq(tasks.id, task.id),
         eq(tasks.status, "running"),
-        eq(tasks.contentRepresentation, "protected"),
+        eq(tasks.contentRepresentation, input.resultRepresentation),
         isNull(tasks.lastError),
       )).returning();
       if (!updatedTask) throw new Error("Protected Task terminal CAS lost its Task");

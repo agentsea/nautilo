@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
+  terminalizeDualTaskRunResult,
   terminalizeProtectedTaskRunResult,
+  type DualTaskRunTerminalInput,
   type ProtectedTaskRunTerminalInput,
 } from "../../src/queries/tasks";
 import {
@@ -51,6 +53,30 @@ function input(
     outcome: "completed",
     completedAt,
     requiredRunStatus: "running",
+    ...overrides,
+  };
+}
+
+function dualInput(
+  overrides: Partial<DualTaskRunTerminalInput> = {},
+): DualTaskRunTerminalInput {
+  return {
+    taskId: ids.task,
+    taskRunId: ids.run,
+    scheduleKind: "one_shot",
+    operationId: `task-run-result:${ids.run}`,
+    requestDigest: digest,
+    resultObjectId,
+    resultRevision: 1,
+    resultRepresentation: "dual",
+    outcome: "completed",
+    completedAt,
+    requiredRunStatus: "running",
+    ordinaryResult: {
+      formatVersion: 1,
+      resultText: "canonical dual result",
+      lastError: null,
+    },
     ...overrides,
   };
 }
@@ -478,5 +504,194 @@ describe("protected TaskRun result terminal CAS", () => {
       harness({ loseTaskUpdate: true }).db,
       input(),
     )).rejects.toThrow("lost its Task");
+  });
+
+  test("writes Shadow ordinary result content in the same dual terminal CAS", async () => {
+    const fixture = harness({
+      task: task({
+        contentRepresentation: "dual",
+        prompt: "ordinary task definition",
+        expectedOutput: "ordinary expectation",
+      }),
+      definitionRevision: definitionRevision({ representation: "dual" }),
+      resultRevision: resultRevision({ representation: "dual" }),
+      policy: policy({ mode: "shadow_encryption" }),
+    });
+    const ordinaryResult = {
+      formatVersion: 1 as const,
+      resultText: "canonical dual result",
+      lastError: null,
+    };
+
+    expect(await terminalizeDualTaskRunResult(fixture.db, dualInput({
+      ordinaryResult,
+    }))).toEqual({ status: "transitioned" });
+    expect(fixture.writes[0]?.patch).toEqual({
+      metadata: {
+        [receiptKey]: exactReceipt({ resultRepresentation: "dual" }),
+      },
+    });
+    expect(fixture.writes[1]).toEqual({
+      table: taskRuns,
+      patch: {
+        status: "completed",
+        completedAt,
+        resultText: ordinaryResult.resultText,
+        lastError: ordinaryResult.lastError,
+      },
+    });
+    expect(fixture.writes[2]?.table).toBe(tasks);
+    expect(JSON.stringify(fixture.writes[0]?.patch)).not.toContain(
+      ordinaryResult.resultText,
+    );
+  });
+
+  test("keeps cron pending while atomically storing a dual error", async () => {
+    const fixture = harness({
+      task: task({
+        scheduleKind: "cron",
+        status: "pending",
+        contentRepresentation: "dual",
+        prompt: "ordinary cron definition",
+      }),
+      definitionRevision: definitionRevision({ representation: "dual" }),
+      resultRevision: resultRevision({ representation: "dual" }),
+      policy: policy({ mode: "shadow_encryption" }),
+    });
+    const ordinaryResult = {
+      formatVersion: 1 as const,
+      resultText: null,
+      lastError: "canonical dual error",
+    };
+
+    expect(await terminalizeDualTaskRunResult(fixture.db, dualInput({
+      scheduleKind: "cron",
+      outcome: "errored",
+      ordinaryResult,
+    }))).toEqual({ status: "transitioned" });
+    expect(fixture.writes.map((write) => write.table)).toEqual([jobs, taskRuns]);
+    expect(fixture.writes[1]?.patch).toMatchObject({
+      status: "errored",
+      resultText: null,
+      lastError: ordinaryResult.lastError,
+    });
+  });
+
+  test("dual replay requires the exact ordinary values and mapped receipt", async () => {
+    const ordinaryResult = dualInput().ordinaryResult;
+    const fixture = harness({
+      task: task({
+        status: "completed",
+        contentRepresentation: "dual",
+        prompt: "ordinary task definition",
+      }),
+      run: run({
+        status: "completed",
+        completedAt,
+        resultText: ordinaryResult.resultText,
+        lastError: ordinaryResult.lastError,
+        resultRepresentation: "dual",
+        resultContentNamespaceId: ids.namespace,
+        resultRevision: 1,
+        resultCryptoObjectId: resultObjectId,
+        resultCryptoAccessRevision: 0,
+        resultCryptoRequiredNamespaceFingerprint: fingerprint,
+        resultCryptoMappingState: "verified",
+      }),
+      job: job({
+        status: "completed",
+        completedAt,
+        metadata: {
+          [receiptKey]: exactReceipt({ resultRepresentation: "dual" }),
+        },
+      }),
+      definitionRevision: definitionRevision({ representation: "dual" }),
+      resultRevision: resultRevision({
+        representation: "dual",
+        completion: "complete",
+        disposition: "mapped",
+      }),
+      policy: policy({ mode: "shadow_encryption" }),
+    });
+
+    expect(await terminalizeDualTaskRunResult(fixture.db, dualInput()))
+      .toEqual({ status: "exact_replay" });
+    expect(await terminalizeDualTaskRunResult(fixture.db, dualInput({
+      ordinaryResult: {
+        formatVersion: 1,
+        resultText: "different result",
+        lastError: null,
+      },
+    }))).toEqual({ status: "rejected", reason: "conflict" });
+    expect(fixture.writes).toEqual([]);
+  });
+
+  test("dual publication requires dual ledgers and the current Shadow fence", async () => {
+    const base = {
+      task: task({
+        contentRepresentation: "dual",
+        prompt: "ordinary task definition",
+      }),
+      definitionRevision: definitionRevision({ representation: "dual" }),
+      resultRevision: resultRevision({ representation: "dual" }),
+      policy: policy({ mode: "shadow_encryption" }),
+    } as const;
+    for (const options of [
+      { ...base, definitionRevision: definitionRevision() },
+      { ...base, resultRevision: resultRevision() },
+      { ...base, policy: policy({ mode: "encrypted_only" }) },
+    ]) {
+      const fixture = harness(options);
+      expect(await terminalizeDualTaskRunResult(fixture.db, dualInput()))
+        .toMatchObject({ status: "rejected" });
+      expect(fixture.writes).toEqual([]);
+    }
+  });
+
+  test("validates and snapshots canonical dual payload before transaction", async () => {
+    let transactions = 0;
+    const closedDb = {
+      transaction: () => {
+        transactions += 1;
+        throw new Error("transaction must stay closed");
+      },
+    } as unknown as DirectDatabase;
+    expect(terminalizeDualTaskRunResult(closedDb, dualInput({
+      ordinaryResult: {
+        formatVersion: 1,
+        resultText: null,
+        lastError: null,
+      },
+    }))).rejects.toThrow("payload is invalid");
+    expect(terminalizeDualTaskRunResult(closedDb, dualInput({
+      ordinaryResult: {
+        formatVersion: 1,
+        resultText: "result",
+        lastError: null,
+        extra: "plaintext",
+      } as unknown as DualTaskRunTerminalInput["ordinaryResult"],
+    }))).rejects.toThrow("field set");
+    expect(transactions).toBe(0);
+
+    const ordinaryResult = {
+      formatVersion: 1 as const,
+      resultText: "snapshotted result",
+      lastError: null,
+    };
+    const fixture = harness({
+      task: task({
+        contentRepresentation: "dual",
+        prompt: "ordinary task definition",
+      }),
+      definitionRevision: definitionRevision({ representation: "dual" }),
+      resultRevision: resultRevision({ representation: "dual" }),
+      policy: policy({ mode: "shadow_encryption" }),
+    });
+    const publication = terminalizeDualTaskRunResult(fixture.db, dualInput({
+      ordinaryResult,
+    }));
+    ordinaryResult.resultText = "mutated result";
+    expect(await publication).toEqual({ status: "transitioned" });
+    expect(fixture.writes[1]?.patch["resultText"]).toBe("snapshotted result");
   });
 });
