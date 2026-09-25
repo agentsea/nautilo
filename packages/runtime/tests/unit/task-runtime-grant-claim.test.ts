@@ -211,6 +211,7 @@ async function fixture() {
   let substitutePlan: ((plan: TaskRuntimeGrantClaimPlan) =>
     TaskRuntimeGrantClaimPlan) | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
+  const publishedResults: string[] = [];
   let startResult: "started" | "stale" = "started";
   const trackedRepository: BackgroundAuthorizationRepository = {
     create: (record) => repository.create(record),
@@ -336,6 +337,13 @@ async function fixture() {
       expect(domains[0]!.domainKey).toEqual(bytes(9));
       return { message: SENTINEL };
     },
+    publishResult: async ({ payload, domains, evidence, signal }) => {
+      expect(authorityLocksHeld).toBe(false);
+      signal.throwIfAborted();
+      expect(domains).toHaveLength(1);
+      expect(evidence.result.taskRunId).toBe(RUN);
+      if (payload.resultText !== null) publishedResults.push(payload.resultText);
+    },
   });
   const plan = (value: ProtectedTaskOccurrence): TaskRuntimeGrantClaimPlan => {
     const prepared = basePlan(value);
@@ -407,6 +415,7 @@ async function fixture() {
     claimCasCount: () => claimCasCount,
     authorityLocksHeld: () => authorityLocksHeld,
     startInputs,
+    publishedResults,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
     setProvenSourceRoomId: (value: string) => { provenSourceRoomId = value; },
@@ -565,12 +574,23 @@ describe("Task Runtime grant claim", () => {
       cryptoRequiredNamespaceFingerprint: bytes(7),
       jobReference: value.plan(occurrence()).reference,
     }]);
-    await result.dispatch.candidate.run(async (input, signal) => {
+    await result.dispatch.candidate.run(async (input, signal, publication) => {
       expect(value.authorityLocksHeld()).toBe(false);
       signal.throwIfAborted();
       transient.push(input);
+      await publication.publish({
+        formatVersion: 1,
+        resultText: "protected result",
+        lastError: null,
+      });
+      expect(() => publication.publish({
+        formatVersion: 1,
+        resultText: "duplicate",
+        lastError: null,
+      })).toThrow("one-use");
     });
     expect(transient[0]).toEqual({ message: SENTINEL });
+    expect(value.publishedResults).toEqual(["protected result"]);
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(result.dispatch.candidate.run(async () => {}))
       .rejects.toThrow("one-use");

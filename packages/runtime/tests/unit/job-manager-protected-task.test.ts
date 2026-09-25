@@ -18,6 +18,7 @@ const ROOM_ID = "40000000-0000-4000-8000-000000000004";
 const TASK_ID = "50000000-0000-4000-8000-000000000005";
 const RUN_ID = "60000000-0000-4000-8000-000000000006";
 const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
+const publication = Object.freeze({ publish: async () => {} });
 
 function reference(
   taskId = TASK_ID,
@@ -105,7 +106,7 @@ describe("JobManager protected Task execution", () => {
       async run(work) {
         order.push("open");
         return work({ message: sentinel, expectedOutput: `${sentinel}:expected` },
-          new AbortController().signal);
+          new AbortController().signal, publication);
       },
       onIneligible() {
         order.push("ineligible");
@@ -155,6 +156,7 @@ describe("JobManager protected Task execution", () => {
         taskRunId: RUN_ID,
         graphThreadId: longThreadId,
       });
+      expect(executorInput).toHaveProperty("protectedTaskResultPublication", publication);
       expect(JSON.stringify({ persisted, updates, serverEvents })).not.toContain(sentinel);
       expect(order).not.toContain("ineligible");
     } finally {
@@ -183,7 +185,7 @@ describe("JobManager protected Task execution", () => {
     });
     const candidate = (message: string): ProtectedTaskExecutionCandidate => ({
       start: async () => ({ status: "started" }),
-      run: (work) => work({ message }, new AbortController().signal),
+      run: (work) => work({ message }, new AbortController().signal, publication),
       onIneligible: () => {},
     });
     const secondRunId = "70000000-0000-4000-8000-000000000007";
@@ -234,7 +236,7 @@ describe("JobManager protected Task execution", () => {
         },
         async run(work) {
           opened += 1;
-          return work({ message: "must-not-open" }, new AbortController().signal);
+          return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
         onIneligible() {
           ineligible += 1;
@@ -274,7 +276,7 @@ describe("JobManager protected Task execution", () => {
         },
         async run(work) {
           opened += 1;
-          return work({ message: "must-not-open" }, new AbortController().signal);
+          return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
         onIneligible() {
           ineligible += 1;
@@ -310,7 +312,7 @@ describe("JobManager protected Task execution", () => {
         },
         async run(work) {
           opened += 1;
-          return work({ message: "must-not-open" }, new AbortController().signal);
+          return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
         onIneligible() {},
       },
@@ -347,6 +349,7 @@ describe("JobManager protected Task execution", () => {
           run: (work) => work(
             { message: "protected-message" },
             new AbortController().signal,
+            publication,
           ),
           onIneligible() {},
         },
@@ -392,7 +395,7 @@ describe("JobManager protected Task execution", () => {
           start: async () => ({ status: "started" }),
           async run(work) {
             opened += 1;
-            return work({ message: "must-not-open" }, new AbortController().signal);
+            return work({ message: "must-not-open" }, new AbortController().signal, publication);
           },
           onIneligible() {
             ineligible += 1;
@@ -430,7 +433,7 @@ describe("JobManager protected Task execution", () => {
           start: async () => ({ status: "started" }),
           async run(work) {
             opened += 1;
-            return work({ message: "must-not-open" }, new AbortController().signal);
+            return work({ message: "must-not-open" }, new AbortController().signal, publication);
           },
           onIneligible() {
             ineligible += 1;

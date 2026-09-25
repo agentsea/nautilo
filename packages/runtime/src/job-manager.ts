@@ -1417,7 +1417,7 @@ export class JobManager {
           let acceptingWork = true;
           try {
             const result = await armedProtectedTaskExecution.candidate.run(
-              (transientInput, authorizationSignal) => {
+              (transientInput, authorizationSignal, publication) => {
                 if (!acceptingWork || workCalls !== 0) {
                   throw new Error("Protected Task execution candidate reused its one-shot work");
                 }
@@ -1436,6 +1436,7 @@ export class JobManager {
                   turnId: reference.taskRunId,
                   taskId: reference.taskId,
                   taskRunId: reference.taskRunId,
+                  protectedTaskResultPublication: publication,
                 };
                 return runWithAcceptedWorkAuthorities(
                   authority,

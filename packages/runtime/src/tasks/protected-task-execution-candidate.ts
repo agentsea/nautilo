@@ -1,4 +1,5 @@
 import type { JobExecutor } from "../job";
+import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import type { ProtectedTaskJobReferenceV1 } from "./protected-task-job-reference";
 
 /** Closed scheduling identity allowed outside a protected Task authorization. */
@@ -30,6 +31,9 @@ export interface ProtectedTaskExecutionCandidate {
     work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
+      publication: Readonly<{
+        publish(payload: TaskRunResultPayloadV1): Promise<void>;
+      }>,
     ) => Promise<T>,
   ): Promise<T>;
   onIneligible(): void;

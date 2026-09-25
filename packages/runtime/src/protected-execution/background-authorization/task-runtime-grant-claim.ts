@@ -4,7 +4,9 @@ import {
   TaskRuntimeRecipientRegistry,
   type DomainForegroundSecretEntry,
   type TaskRuntimeRecipientAttempt,
+  type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
+import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -135,6 +137,14 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
     domains: readonly DomainForegroundSecretEntry[];
     signal: AbortSignal;
   }>): Promise<Record<string, unknown>>;
+  publishResult(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    payload: TaskRunResultPayloadV1;
+    domains: readonly DomainForegroundSecretEntry[];
+    evidence: TaskRuntimeExecutionEvidence;
+    signal: AbortSignal;
+  }>): Promise<void>;
 }>;
 
 export interface TaskRuntimeGrantClaimDependencies {
@@ -332,6 +342,7 @@ function assertPlan(
     || typeof plan.executor !== "function"
     || typeof plan.startProtectedTaskRun !== "function"
     || typeof plan.openTransientInput !== "function"
+    || typeof plan.publishResult !== "function"
   ) throw new TypeError("Task Runtime grant plan disagrees with its occurrence");
   return Object.freeze({
     taskId: occurrence.task.id,
@@ -648,6 +659,9 @@ function createCandidate(input: Readonly<{
     async run<Value>(work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
+      publication: Readonly<{
+        publish(payload: TaskRunResultPayloadV1): Promise<void>;
+      }>,
     ) => Promise<Value>): Promise<Value> {
       if (state === "ready") {
         throw new Error("Task Runtime execution candidate has not started");
@@ -711,7 +725,7 @@ function createCandidate(input: Readonly<{
               current: authority.foreground,
               currentNamespaceRequirements: authority.namespaceRequirements,
               result: input.result,
-              operation: async (domains, signal) => {
+              operation: async (domains, signal, evidence) => {
                 const transientInput = await input.plan.openTransientInput({
                   occurrence: input.occurrence,
                   record: current,
@@ -719,7 +733,39 @@ function createCandidate(input: Readonly<{
                   signal,
                 });
                 signal.throwIfAborted();
-                return work(transientInput, signal);
+                let publicationCalls = 0;
+                let publicationOpen = true;
+                const pendingPublications: Promise<void>[] = [];
+                const publication = Object.freeze({
+                  publish: (payload: TaskRunResultPayloadV1): Promise<void> => {
+                    if (!publicationOpen || publicationCalls !== 0) {
+                      throw new Error("Task Runtime result publication is one-use");
+                    }
+                    publicationCalls += 1;
+                    signal.throwIfAborted();
+                    const pending = input.plan.publishResult({
+                      occurrence: input.occurrence,
+                      record: current,
+                      payload,
+                      domains,
+                      evidence,
+                      signal,
+                    });
+                    pendingPublications.push(pending);
+                    return pending;
+                  },
+                });
+                try {
+                  const result = await work(transientInput, signal, publication);
+                  await Promise.all(pendingPublications);
+                  signal.throwIfAborted();
+                  return result;
+                } catch (error) {
+                  await Promise.allSettled(pendingPublications);
+                  throw error;
+                } finally {
+                  publicationOpen = false;
+                }
               },
             });
             if (opened.status !== "opened") {

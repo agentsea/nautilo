@@ -72,9 +72,11 @@ function claimed(
       run: async <T>(work: (
         input: Record<string, unknown>,
         signal: AbortSignal,
+        publication: Readonly<{ publish(payload: import("@nautilo/lattice-bridge").TaskRunResultPayloadV1): Promise<void> }>,
       ) => Promise<T>) => work(
         { message: "transient" },
         new AbortController().signal,
+        { publish: async () => {} },
       ),
       onIneligible,
     }),
