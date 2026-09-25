@@ -1,5 +1,5 @@
 /**
- * Draggable panel divider (D077 Phase 2).
+ * Draggable panel divider.
  *
  * Sits at the boundary between two grid columns as an absolutely-
  * positioned 6px vertical hit strip. Pointer drag updates a CSS var
@@ -43,9 +43,11 @@ interface Props {
    *  left (for the browser divider only). Shell passes 48 when the
    *  rail is visible, 0 otherwise. */
   railOffsetPx?: number;
+  /** Fixed column to the right of the context panel, when present. */
+  rightOffsetPx?: number;
 }
 
-export function PanelDivider({ kind, sizes, railOffsetPx = 0 }: Props) {
+export function PanelDivider({ kind, sizes, railOffsetPx = 0, rightOffsetPx = 0 }: Props) {
   // Drag state — refs, not React state, so pointermove updates stay
   // off the render path.
   const draggingRef = useRef(false);
@@ -177,7 +179,7 @@ export function PanelDivider({ kind, sizes, railOffsetPx = 0 }: Props) {
   const positional =
     kind === "browser"
       ? { left: buildBrowserDividerLeft(railOffsetPx) }
-      : { right: buildContextDividerRight() };
+      : { right: buildContextDividerRight(rightOffsetPx) };
 
   return (
     <div

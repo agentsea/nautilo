@@ -28,7 +28,7 @@ const agentMember = (actorId: string, name: string): RoomMemberDto => ({
   roomRole: "member",
 });
 
-describe("D352 buildAuthorLabels", () => {
+describe("buildAuthorLabels", () => {
   test("maps human userId -> displayName", () => {
     const labels = buildAuthorLabels([human("u-1", "Alice"), human("u-2", "Bob")]);
     expect(labels.get("u-1")).toBe("Alice");
@@ -47,7 +47,7 @@ describe("D352 buildAuthorLabels", () => {
   });
 });
 
-describe("D352 (A) center + reader-rail mounts carry author/member context", () => {
+describe("center and reader chat mounts carry author/member context", () => {
   test("SlackShapeRoom wraps Conversation in RoomAuthorScope", () => {
     expect(slackSource).toContain('import { RoomAuthorScope }');
     expect(slackSource).toMatch(/<RoomAuthorScope members=\{members\}>[\s\S]*<Conversation \/>[\s\S]*<\/RoomAuthorScope>/);
@@ -62,13 +62,12 @@ describe("D352 (A) center + reader-rail mounts carry author/member context", () 
 
   test("workbench-shell wraps the reader-rail Conversation in RoomAuthorScope", () => {
     expect(shellSource).toContain('import { RoomAuthorScope }');
-    expect(shellSource).toMatch(
-      /<RoomAuthorScope members=\{activeRoomMembers\}>[\s\S]*?<Conversation chromeDensity="readerRail" \/>[\s\S]*?<\/RoomAuthorScope>/,
-    );
+    const scope = shellSource.match(/<RoomAuthorScope members=\{activeRoomMembers\}>([\s\S]*?)<\/RoomAuthorScope>/)?.[1];
+    expect(scope).toMatch(/<Conversation\b[\s\S]*?chromeDensity="readerRail"[\s\S]*?\/>/);
   });
 });
 
-describe("D352 (B) Conversation self-sources author context when unwrapped", () => {
+describe("Conversation self-sources author context when unwrapped", () => {
   test("Conversation gates on AuthorContext and falls back to a self-sourced scope", () => {
     expect(conversationSource).toContain("function SelfSourcedAuthorScope");
     expect(conversationSource).toContain("function ConversationBody");

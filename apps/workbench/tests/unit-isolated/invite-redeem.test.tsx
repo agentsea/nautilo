@@ -16,6 +16,7 @@ const apiStub = {
   previewInvite: mock(() => Promise.resolve(null)),
   prepareLogtoSignup: mock(() => Promise.resolve({ url: "", state: "", expiresAt: "" })),
   bindLogtoUser: mock(() => Promise.resolve({ ok: true })),
+  getEnrollmentReview: mock(() => Promise.resolve({ required: false, paused: false, state: "not_requested" as const, message: null, revision: 0 })),
   completeInviteProfile: mock(() => Promise.resolve({ ok: true as const, recoveryCodes: [], landingRoomId: null })),
   previewOwnerClaim: mock(() => Promise.resolve(null)),
   prepareOwnerClaimAuth: mock(() => Promise.resolve({ continuation: "new-owner" as const, state: "opaque-state", handle: "operator" })),

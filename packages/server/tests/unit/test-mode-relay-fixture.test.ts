@@ -73,7 +73,7 @@ describe("isolated smoke Relay credential", () => {
           protocolVersion: RELAY_PROTOCOL_VERSION,
           ...(token === undefined ? {} : { token }),
           capabilities: { profile: "desktop-agent", canRunShell: true },
-        }, { register: async (_id, userId) => { users.push(userId); } });
+        }, { register: async (_id, userId) => { users.push(userId); }, getUserId: () => null, unregisterConnection: async () => {} });
         if (token !== deriveTestModeRelayCredential(testToken)) {
           expect(events).toContainEqual({ closeCode: 4401 });
         } else {

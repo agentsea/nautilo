@@ -493,8 +493,8 @@ describe("rooms routes (M065)", () => {
         kind: "user" as const,
         displayName: "Owner",
         userId: "usr-owner",
-        handle: "owner",
-        federatedId: "@owner@remote.example.com",
+        handle: "user",
+        federatedId: "@user@example.test",
       },
       {
         actorId: "act-genie",
@@ -1109,6 +1109,18 @@ describe("POST /api/rooms — Blocker 2 reachability gate", () => {
       [CALLER_USER],
       [TARGET_USER],
     ]);
+  });
+
+  test("an active ban prevents direct Human addition without publishing a membership change", async () => {
+    addRoomMemberMock.mockRejectedValueOnce(new trustModule.ModerationError("active_ban"));
+    const app = makeApp("household", CALLER_ACTOR, CALLER_USER);
+    const res = await app.inject({ method: "POST", url: `/api/rooms/${UUID_A}/members`,
+      payload: { kind: "user", userId: TARGET_USER, roomRole: "member" } });
+    expect(res.statusCode).toBe(403);
+    expect(res.json<{ code: string }>()).toEqual({ code: "active_ban" });
+    expect(publishRoomMembersChangedMock).not.toHaveBeenCalled();
+    expect(refreshRoomSubscriptionsMock).not.toHaveBeenCalled();
+    expect(writeSecurityAuditEventMock).not.toHaveBeenCalled();
   });
 
   test("adding a Human invalidates that Human's Room catalogue", async () => {

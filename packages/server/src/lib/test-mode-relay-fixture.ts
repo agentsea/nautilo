@@ -15,6 +15,8 @@ export function installTestModeRelayFixture(testToken: string): () => void {
     Promise.reject(new Error("The isolated Relay fixture does not provide device-management routes"));
   const fixture: RelayTokenStore = {
     findActiveByHash: (hash) => Promise.resolve(hash === tokenHash ? row : null),
+    withRegistrationAdmission: (candidate, publish) => candidate.id === row.id && candidate.userId === row.userId
+      && candidate.actorId === row.actorId ? publish() : Promise.resolve(null),
     touchLastSeen: async () => {},
     insertToken: unsupported,
     pairForInstallation: unsupported,

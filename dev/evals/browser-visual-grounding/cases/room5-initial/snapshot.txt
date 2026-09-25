@@ -1,0 +1,35 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e4]
+    - heading "Room #5: Quite a complex form" [level=1, ref=e2]
+    - generic
+      - LabelText
+        - StaticText "Name"
+      - generic [ref=e5] clickable [onclick]
+        - textbox "Name" [ref=e9]
+    - generic
+      - LabelText
+        - StaticText "Favorite animal"
+      - generic [ref=e6] clickable [onclick]
+        - combobox "Favorite animal" [expanded=false, ref=e10]: ​
+    - group
+      - heading "Favorite color" [level=6, ref=e7]
+      - radiogroup "favorite-color"
+        - LabelText [ref=e11] clickable [cursor:pointer]
+          - radio "Red" [checked=false, ref=e15]
+          - StaticText "Red"
+        - LabelText [ref=e12] clickable [cursor:pointer]
+          - radio "Yellow" [checked=false, ref=e16]
+          - StaticText "Yellow"
+        - LabelText [ref=e13] clickable [cursor:pointer]
+          - radio "Blue" [checked=false, ref=e17]
+          - StaticText "Blue"
+    - generic [ref=e8] clickable [onclick]
+      - LabelText
+        - StaticText "Birth date"
+      - generic [ref=e14] clickable [onclick]
+        - textbox "Birth date" [ref=e18]
+        - button "Choose date" [ref=e19]
+    - button "SUBMIT" [ref=e3]
+    - paragraph
+      - StaticText "The code word will be revealed upon completing the task!"

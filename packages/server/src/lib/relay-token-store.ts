@@ -15,12 +15,15 @@
 import { createHash } from "node:crypto";
 import {
   and,
+  sql,
+  moderationAccessAllowedSql,
   getSharedDirectDb,
   db,
   desc,
   eq,
   isNull,
   relayTokens,
+  users,
   remoteControllerBindings,
   remotePairingChallenges,
 } from "@nautilo/db";
@@ -147,6 +150,11 @@ export interface RelayTokenStore {
 
   /** Look up an active (non-revoked) row by hash. */
   findActiveByHash(tokenHash: string): Promise<RelayTokenRow | null>;
+
+  /** Hold current Human admission and exact pairing authority until the socket
+   * is published. Adapters without this fence cannot register a connection.
+   */
+  withRegistrationAdmission?<T>(row: RelayTokenRow, publish: () => Promise<T>): Promise<T | null>;
 
   /** Bump `last_seen_at` to NOW for the given token id. Best-effort —
    *  failures are swallowed by the caller. */
@@ -311,11 +319,31 @@ function makeDefaultStore(): RelayTokenStore {
         .where(
           and(
             eq(relayTokens.tokenHash, tokenHash),
+            moderationAccessAllowedSql(sql`${relayTokens.userId}`),
             isNull(relayTokens.revokedAt),
           ),
         )
         .limit(1);
       return rows[0] ?? null;
+    },
+
+    async withRegistrationAdmission(row, publish) {
+      return getSharedDirectDb().transaction(async tx => {
+        // Same Human lock as moderation/enrollment; NO KEY UPDATE also lets a
+        // concurrent pairing insertion finish its FK check before token locking.
+        const [human] = await tx.select({ id: users.id }).from(users)
+          .where(eq(users.id, row.userId)).for("no key update");
+        if (!human) return null;
+        const [pairing] = await tx.select({ id: relayTokens.id }).from(relayTokens)
+          .where(and(eq(relayTokens.id, row.id), eq(relayTokens.userId, row.userId),
+            eq(relayTokens.actorId, row.actorId), isNull(relayTokens.revokedAt))).for("share");
+        if (!pairing) return null;
+        // Evaluate after lock waits using a fresh statement snapshot.
+        const [admission] = await tx.select({ allowed: moderationAccessAllowedSql(sql`${users.id}`) })
+          .from(users).where(and(eq(users.id, row.userId), isNull(users.disabledAt)));
+        if (!admission?.allowed) return null;
+        return publish();
+      });
     },
 
     async touchLastSeen(tokenId) {

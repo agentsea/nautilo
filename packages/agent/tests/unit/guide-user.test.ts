@@ -290,3 +290,9 @@ test("Memory health discovery resolves the operational card without replacing re
   expect(discoverGuideUserTargets("automatic memory review")[0]?.target).toBe("admin.memory");
   expect(discoverGuideUserTargets("remembered information")[0]?.target).toBe("memory");
 });
+
+test("community moderation and joining review discover the installed admin destination", () => {
+  for (const query of ["ban member", "pause joins", "joining requests", "enrollment approval"]) {
+    expect(discoverGuideUserTargets(query)[0]?.target).toBe("admin.moderation");
+  }
+});

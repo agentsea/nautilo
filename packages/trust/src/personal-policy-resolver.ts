@@ -522,7 +522,9 @@ export class PersonalPolicyResolver implements PolicyResolver {
     let writableNamespaces: string[] = [];
 
     if (roomId) {
-      const room = await getRoomWithAccess(roomId);
+      // Rebuilds also cross this boundary: an old Room id or retained Server
+      // membership must not reconstruct access after moderation withdrawal.
+      const room = await getRoomWithAccess(roomId, actorId);
       if (room) {
         writableNamespaces = [room.namespaceId];
         const supersetNamespaces = await findReadableNamespacesForSubset(

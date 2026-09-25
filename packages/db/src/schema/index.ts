@@ -1,6 +1,7 @@
 export * from "./users";
 export * from "./users-public";
 export * from "./human-blocks";
+export * from "./moderation";
 export * from "./content-reports";
 export * from "./message-deletion-receipts";
 export * from "./mobile-user-agreement-acceptances";

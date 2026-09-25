@@ -10,6 +10,7 @@ import {
 } from "./admin-sections";
 import { ServerSection } from "./sections/server-section";
 import { UsersSection } from "./sections/users-section";
+import { ModerationSection } from "./sections/moderation-section";
 import { InvitesSection } from "./sections/invites-section";
 import { AuditLogSection } from "./sections/audit-log-section";
 import { ModelsSection } from "./sections/models-section";
@@ -218,6 +219,8 @@ export function AdminPage() {
                 return <CostsSummarySection key={s.id} />;
               case "users":
                 return <UsersSection key={s.id} />;
+              case "moderation":
+                return <ModerationSection key={s.id} />;
               case "invites":
                 return <InvitesSection key={s.id} />;
               case "reports":

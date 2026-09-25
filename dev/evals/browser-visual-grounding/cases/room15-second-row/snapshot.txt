@@ -1,0 +1,40 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e4]
+    - heading "Room 15: 5×5 Jigsaw Puzzle" [level=1, ref=e2]
+    - paragraph
+      - StaticText "Arrange the puzzle pieces to complete the image. Each piece is numbered from 1 to 25. The pieces must be placed in numerical order from left to right, top to bottom. If you place a piece incorrectly, you can click on it to remove it from the grid and try again. A secret code will be revealed when the puzzle is completed correctly."
+    - generic
+      - group [ref=e5] clickable [cursor:pointer, onclick]
+        - StaticText "1"
+      - group [ref=e6] clickable [cursor:pointer, onclick]
+        - StaticText "2"
+      - group [ref=e7] clickable [cursor:pointer, onclick]
+        - StaticText "3"
+      - group [ref=e8] clickable [cursor:pointer, onclick]
+        - StaticText "4"
+      - group [ref=e9] clickable [cursor:pointer, onclick]
+        - StaticText "5"
+      - group [ref=e10] clickable [cursor:pointer, onclick]
+        - StaticText "6"
+      - group [ref=e11] clickable [cursor:pointer, onclick]
+        - StaticText "7"
+    - StaticText "20"
+    - StaticText "18"
+    - StaticText "21"
+    - StaticText "24"
+    - StaticText "8"
+    - StaticText "19"
+    - StaticText "25"
+    - StaticText "15"
+    - StaticText "16"
+    - StaticText "23"
+    - StaticText "13"
+    - StaticText "11"
+    - StaticText "14"
+    - StaticText "17"
+    - StaticText "12"
+    - StaticText "22"
+    - StaticText "9"
+    - StaticText "10"
+    - button "RESET PUZZLE" [ref=e3]

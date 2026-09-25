@@ -1,3 +1,4 @@
+import { createReceiptRecoveryPump } from "../lib/receipt-recovery";
 import {
   deliverForegroundMemoryMutationEffect,
   type CommittedForegroundMemoryEffectReceipt,
@@ -45,15 +46,11 @@ export function createForegroundMemoryEffectRecovery(input: Readonly<{
   onPassFailure?: () => void;
 }>): ForegroundMemoryEffectRecovery {
   const deliver = input.deliver ?? deliverForegroundMemoryMutationEffect;
-  let stopped = false;
-  let requested = false;
-  let current: Promise<void> | null = null;
-
-  const pass = async (): Promise<void> => {
+  const pass = async (isStopped: () => boolean): Promise<void> => {
     const maximum = await input.store.snapshotMaximumSequence();
     if (maximum === null) return;
     let cursor = 0;
-    while (!stopped) {
+    while (!isStopped()) {
       const receipt = await input.store.nextPending(cursor, maximum);
       if (receipt === null) return;
       cursor = receipt.sequence;
@@ -71,33 +68,7 @@ export function createForegroundMemoryEffectRecovery(input: Readonly<{
     }
   };
 
-  const pump = (): void => {
-    if (stopped || current !== null) return;
-    requested = false;
-    current = pass().catch(() => {
-      // The durable receipt remains pending for a later wake or restart.
-      input.onPassFailure?.();
-    }).finally(() => {
-      current = null;
-      if (requested && !stopped) pump();
-    });
-  };
-
-  const request = (): void => {
-    if (stopped) return;
-    requested = true;
-    pump();
-  };
-
-  return Object.freeze({
-    start: request,
-    wake: request,
-    async stop() {
-      stopped = true;
-      requested = false;
-      await current;
-    },
-  });
+  return createReceiptRecoveryPump({ runPass: pass, onPassFailure: input.onPassFailure });
 }
 
 export function createPostgresForegroundMemoryEffectRecoveryStore(

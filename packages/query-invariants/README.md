@@ -1,6 +1,6 @@
 # Query inventory guard
 
-This package implements ISSUE-M223 Phase 1. It statically inventories direct
+This package statically inventories direct
 SQL statements and `sql` fragments across application, operator, and test
 source. Schema-derived Drizzle builder calls are intentionally outside this
 baseline: the guard measures the direct-SQL surface being retired or contained.
@@ -16,7 +16,8 @@ classification. It deterministically selects the first, median, and last
 locator for every live consumer owner, then pins a code-reviewed decision to
 each SQL fingerprint. This is a stratified diagnostic sample, not a statistical
 confidence interval; it exposes classification error without pretending that
-21 observations prove the other candidates safe to migrate.
+the sampled observations prove the other candidates safe to migrate. Owners
+with fewer than three candidates contribute each candidate once.
 
 `baseline/reviewed-query-decisions.jsonl` is the separate human-reviewed layer
 for every live consumer-owned observation that the syntax pass leaves
@@ -31,6 +32,12 @@ observations. After reviewing every reported delta, run
 `bun run db:query-inventory` to regenerate
 `baseline/query-inventory.jsonl`. Its one-record-per-line format keeps query
 deltas reviewable. Do not hand-edit the generated baseline.
+
+The inventory and code-grounded review decisions are tracked with the source.
+The same strict check runs locally before push and in pull-request CI, so every
+checkout can reproduce the review. Keep private planning references, personal
+data, and credentials out of these public artifacts. Source changes require
+reviewing and committing the resulting inventory and decision changes together.
 
 The guard fails closed for database calls whose SQL expression cannot be
 resolved statically. Migrations stored as standalone `.sql` files are not query

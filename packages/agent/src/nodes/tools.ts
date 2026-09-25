@@ -1,5 +1,5 @@
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
-import { browserDecisionHandoffMessage, browserDecisionPlanError, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
+import { browserDecisionHandoffMessage, browserDecisionPlanError, browserObservationFromResult, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -157,6 +157,39 @@ type ToolCompletion = Readonly<{
   message: ToolMessage;
   snapshot: NautiloToolInvocationSnapshot;
 }>;
+
+export const BROWSER_DECISION_OBSERVATION_METADATA_KEY =
+  "nautilo_browser_decision_observation";
+
+/** Strip any adapter-supplied value, then mint the trusted marker explicitly. */
+export function serverAuthoredBrowserDecisionObservationMetadata(
+  additionalKwargs: ToolMessage["additional_kwargs"] | undefined,
+  marked: boolean,
+): ToolMessage["additional_kwargs"] {
+  const {
+    [BROWSER_DECISION_OBSERVATION_METADATA_KEY]: _untrustedMarker,
+    ...trusted
+  } = additionalKwargs ?? {};
+  return {
+    ...trusted,
+    ...(marked ? { [BROWSER_DECISION_OBSERVATION_METADATA_KEY]: true } : {}),
+  };
+}
+
+/** Identify only observations captured inside a delegated browser episode. */
+export function isDelegatedBrowserDecisionObservation(
+  call: Pick<ApprovedToolCall, "id" | "name" | "args">,
+  result: ToolMessage,
+): boolean {
+  const isBrowserCall = call.name.startsWith("browser_")
+    || call.name === "control_connected_web_operation";
+  if (!isBrowserCall) return false;
+  const delegated = interpretBrowserDecisionCall(call).kind === "plan"
+    || call.id?.startsWith("browser-choice:") === true;
+  return delegated
+    && readToolInvocationStatus(result) === "success"
+    && browserObservationFromResult(result.name, result.content) !== null;
+}
 
 /** Scheduling permission is signed release metadata, never inferred from a tool name. */
 function isCoordinatedRead(state: NautiloState, call: ApprovedToolCall): boolean {
@@ -355,18 +388,29 @@ async function invokeToolCall(
     args: admitted.args,
     authorityRef: admitted.authorityRef,
   });
+  const trustedResultAdditionalKwargs =
+    serverAuthoredBrowserDecisionObservationMetadata(result.additionalKwargs, false);
   const ordinaryMessage = new ToolMessage({
     content: result.content,
     tool_call_id: result.callId,
     name: result.toolName,
     status: result.status,
-    ...(result.additionalKwargs ? { additional_kwargs: result.additionalKwargs } : {}),
+    ...(Object.keys(trustedResultAdditionalKwargs).length > 0
+      ? { additional_kwargs: trustedResultAdditionalKwargs }
+      : {}),
   });
   assignStableToolMessageId(ordinaryMessage);
   ordinaryMessage.additional_kwargs = {
     ...(ordinaryMessage.additional_kwargs ?? {}),
     nautilo_tool_status: result.status,
   };
+  const delegatedBrowserObservation = isDelegatedBrowserDecisionObservation(
+    nextCall,
+    ordinaryMessage,
+  );
+  if (delegatedBrowserObservation) {
+    ordinaryMessage.additional_kwargs[BROWSER_DECISION_OBSERVATION_METADATA_KEY] = true;
+  }
   let message = ordinaryMessage;
   if (protectedComposition.liveShadowToolBoundary !== undefined) {
     try {
@@ -389,6 +433,10 @@ async function invokeToolCall(
       // forward; never invoke the tool again to recover protected parity.
     }
   }
+  message.additional_kwargs = serverAuthoredBrowserDecisionObservationMetadata(
+    message.additional_kwargs,
+    delegatedBrowserObservation,
+  );
   const snapshot = session.snapshot();
   if (requireUnchangedSnapshot && JSON.stringify(snapshot) !== JSON.stringify(initialSnapshot)) {
     throw new Error("Computer Use read changed invocation state without a reviewed merge contract");

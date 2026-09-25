@@ -62,6 +62,7 @@ export interface CreateServerRealtimeOptions {
   onStateChange?: RealtimeStateHandler;
   onError?: RealtimeErrorHandler;
   onAuthRejected?: (reason: AuthRejectedReason) => void;
+  isIdle?: () => boolean;
 }
 
 /**
@@ -80,6 +81,7 @@ export function createServerRealtime({
   onStateChange,
   onError,
   onAuthRejected,
+  isIdle,
 }: CreateServerRealtimeOptions): RealtimeClient {
   const wsUrl = wsUrlFromBase(baseUrl);
   return createWsRealtimeClient(wsUrl, {
@@ -89,6 +91,7 @@ export function createServerRealtime({
     onError,
     onStateChange,
     onAuthRejected,
+    isIdle,
     initiatingClientSurface: initiatingClientSurfaceForMobile(platformCapabilities),
     getToken: () => ensureValidToken(serverId, baseUrl),
   });

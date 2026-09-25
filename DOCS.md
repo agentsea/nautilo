@@ -70,6 +70,8 @@ operate, package, or release the public source tree.
   internal QA configuration and routing boundaries.
 - [`docs/security-research-limits.md`](docs/security-research-limits.md)
 - [`docs/quiet-events.md`](docs/quiet-events.md)
+- [`docs/community-moderation.md`](docs/community-moderation.md) — admission,
+  delegated person controls, and the repeatable moderation test loop.
 - [`docs/video-generation-recovery.md`](docs/video-generation-recovery.md)
 - [`docs/video-media-browser.md`](docs/video-media-browser.md)
 - [`docs/contributing/ci.md`](docs/contributing/ci.md)

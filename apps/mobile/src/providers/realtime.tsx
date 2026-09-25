@@ -10,6 +10,8 @@
 // keep feature modules from mistaking the first connection for recovery.
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createServerRealtime, type AuthRejectedReason } from "@/lib/realtime";
+import { observeMobileHumanActivity } from "@/lib/human-activity";
+import { createHumanActivityTracker } from "@nautilo/realtime-client";
 import { emitAuthDead } from "@/lib/auth-events";
 import {
   clearClientActionSession,
@@ -58,7 +60,7 @@ const RealtimeContext = createContext<RealtimeValue | null>(null);
 
 export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const { activeServer } = useServers();
-  const { status, viewerState, refreshViewer } = useAuth();
+  const { status, viewer, viewerState, refreshViewer } = useAuth();
 
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [publishedOpenState, setPublishedOpenState] = useState(() => initialRealtimeOpenState(null));
@@ -101,6 +103,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     }
 
     const serverId = currentScopeId!;
+    const humanActivity = createHumanActivityTracker();
+    const stopObservingActivity = observeMobileHumanActivity(() => humanActivity.recordInteraction());
     openStateRef.current = initialRealtimeOpenState(serverId);
     setPublishedOpenState(initialRealtimeOpenState(serverId));
     const generation = ++connectionGenerationRef.current;
@@ -109,6 +113,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     const client = createServerRealtime({
       baseUrl: activeServer.serverUrl,
       serverId,
+      isIdle: () => humanActivity.isIdle(),
       onEvent: (event) => {
         if (!isCurrent()) return;
         // Fan-out: one bad subscriber must not kill the dispatch loop.
@@ -177,6 +182,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     clientRef.current = client;
 
     return () => {
+      stopObservingActivity();
       if (isCurrent()) connectionGenerationRef.current += 1;
       connectionEventGenerationRef.current += 1;
       client.close();
@@ -185,7 +191,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       connectionStateRef.current = "idle";
       setConnectionState("idle");
     };
-  }, [activeServer, status, refreshViewer]);
+  }, [activeServer, status, viewer?.userId, refreshViewer]);
 
   // AppState — suspend the socket on background/inactive, resume on active.
   // Independent of the client lifecycle above so it never re-creates the

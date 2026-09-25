@@ -123,7 +123,6 @@ COPY packages/hosting/package.json               packages/hosting/package.json
 COPY packages/instance-discovery/package.json    packages/instance-discovery/package.json
 COPY packages/lattice-bridge/package.json        packages/lattice-bridge/package.json
 COPY packages/lattice-crypto/package.json        packages/lattice-crypto/package.json
-COPY packages/limit-invariants/package.json      packages/limit-invariants/package.json
 COPY packages/loffice/package.json               packages/loffice/package.json
 COPY packages/logger/package.json                packages/logger/package.json
 COPY packages/mcp-client/package.json            packages/mcp-client/package.json

@@ -5,12 +5,12 @@ import { buildSrcdoc } from "../../../src/viewers/html/srcdoc";
 const EXPECTED_CSP =
   "default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdnjs.cloudflare.com https://d3js.org https://ajax.googleapis.com; style-src 'unsafe-inline'; img-src data: blob: https://cdn.jsdelivr.net https://unpkg.com https://esm.sh https://cdnjs.cloudflare.com https://d3js.org https://ajax.googleapis.com; font-src data:; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
-let nextBlob: Blob = new Blob(["<p>ok</p>"], { type: "text/html" });
-const bytesMock = mock(async () => nextBlob);
+let nextBytes: ArrayBuffer = new TextEncoder().encode("<p>ok</p>").buffer;
+const bytesMock = mock(async () => nextBytes);
 
 mock.module("../../../src/lib/api", () => ({
   apiClient: {
-    getWorkspaceArtifactBytes: bytesMock,
+    getWorkspaceArtifactBytesArrayBuffer: bytesMock,
   },
 }));
 
@@ -25,9 +25,8 @@ mock.module("../../../src/lib/desktop", () => ({
       readFile: readFileMock,
     },
   },
-  // Stack 19 Phase 6.9.6 fix: partial mocks of lib/desktop omit Stack
-  // 19's new runtime exports under Bun's mock-hoisting → other tests
-  // importing them get `Export named 'X' not found`. Stubs MUST
+  // Partial mocks of lib/desktop omit runtime exports under Bun's
+  // mock hoisting, so other tests importing them fail. Stubs must
   // call-through to `window.nautiloDesktop` (see forgot-password
   // sibling for full rationale).
   getShellStateOnBoot: () => {
@@ -137,13 +136,12 @@ describe("htmlViewerAdapter load", () => {
     bytesMock.mockClear();
     statMock.mockClear();
     readFileMock.mockClear();
-    nextBlob = new Blob(["<p>ok</p>"], { type: "text/html" });
+    nextBytes = new TextEncoder().encode("<p>ok</p>").buffer;
   });
 
   test("artifact over-cap returns too_large (.html)", async () => {
-    nextBlob = new Blob([new Uint8Array(HTML_VIEWER_MAX_BYTES + 1)], { type: "text/html" });
     const r = await htmlViewerAdapter.load(
-      { kind: "artifact", id: "big", path: "a.html", mimeType: "text/html" },
+      { kind: "artifact", id: "big", path: "a.html", mimeType: "text/html", sizeBytes: HTML_VIEWER_MAX_BYTES + 1 },
       { maxTextBytes: 1000 },
     );
     expect(r.kind).toBe("too_large");
@@ -167,9 +165,10 @@ describe("htmlViewerAdapter load", () => {
   });
 
   test("happy artifact path returns ready srcDoc", async () => {
+    const signal = new AbortController().signal;
     const r = await htmlViewerAdapter.load(
       { kind: "artifact", id: "id1", path: "a.html", mimeType: "text/html" },
-      { maxTextBytes: 1000 },
+      { maxTextBytes: 1000, signal },
     );
     expect(r.kind).toBe("ready");
     if (r.kind === "ready") {
@@ -177,6 +176,10 @@ describe("htmlViewerAdapter load", () => {
       expect(srcDoc.toLowerCase()).toContain("<!doctype html>");
       expect(srcDoc).toContain('<script type="module">');
     }
+    expect(bytesMock).toHaveBeenCalledWith("id1", expect.objectContaining({
+      maxBytes: HTML_VIEWER_MAX_BYTES,
+      signal,
+    }));
   });
 });
 

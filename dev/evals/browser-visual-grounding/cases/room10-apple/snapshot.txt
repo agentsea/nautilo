@@ -1,0 +1,41 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e5]
+    - heading "Room #10: Fill the Table" [level=1, ref=e2]
+    - paragraph
+      - StaticText "Fill in the 2x2 table with the following values:"
+      - LineBreak "\n"
+      - LineBreak "\n"
+      - StaticText "Row 1: \"Apple\" in column 1, \"42\" in column 2"
+      - LineBreak "\n"
+      - StaticText "Row 2: \"Banana\" in column 1, \"17\" in column 2"
+      - LineBreak "\n"
+      - LineBreak "\n"
+      - StaticText "Enter the exact values as shown (case-sensitive)."
+    - table "editable table"
+      - rowgroup
+        - row
+          - columnheader "#" [ref=e12]
+          - columnheader "Fruit" [ref=e13]
+          - columnheader "Number" [ref=e14]
+      - row
+        - cell "1" [ref=e6]
+        - cell "Apple" [ref=e7]
+          - generic [ref=e15] clickable [onclick]
+            - textbox "Row 1, Column 1" [ref=e19]: Apple
+              - StaticText "Apple"
+        - cell "Row 1, Column 2" [ref=e8]
+          - generic [ref=e16] clickable [onclick]
+            - textbox "Row 1, Column 2" [ref=e20]
+      - row
+        - cell "2" [ref=e9]
+        - cell "Row 2, Column 1" [ref=e10]
+          - generic [ref=e17] clickable [onclick]
+            - textbox "Row 2, Column 1" [ref=e21]
+        - cell "Row 2, Column 2" [ref=e11]
+          - generic [ref=e18] clickable [onclick]
+            - textbox "Row 2, Column 2" [ref=e22]
+    - button "CHECK VALUES" [ref=e3]
+    - button "RESET TABLE" [ref=e4]
+    - paragraph
+      - StaticText "The code word will be revealed when the table is correctly filled."

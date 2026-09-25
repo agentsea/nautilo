@@ -412,7 +412,8 @@ function loadSharedAgentExecutionAuthoritySnapshot(
             COUNT(*) FILTER (WHERE actor.kind = 'user')::int AS human_count,
             COUNT(*) FILTER (WHERE actor.kind = 'agent')::int AS agent_count,
             BOOL_OR(actor.kind = 'user' AND actor.id::text = $2
-              AND actor.owner_id = $3::uuid) AS subject_current,
+              AND actor.owner_id = $3::uuid
+              AND public.moderation_access_allowed(actor.owner_id, room.id)) AS subject_current,
             BOOL_OR(actor.kind = 'agent' AND actor.agent_id = $4::uuid)
               AS agent_current,
             NOT EXISTS (
@@ -1285,6 +1286,10 @@ export class PostgresLiveShadowTurnPlanner {
               LIMIT 1
            ) representative ON true
           WHERE invocation.invocation_id = $1
+            AND EXISTS (SELECT 1 FROM actors invoking_human
+              WHERE invoking_human.id::text = invocation.invoking_human_id
+                AND invoking_human.kind = 'user'
+                AND public.moderation_access_allowed(invoking_human.owner_id, room.id))
           LIMIT 2`,
         [input.invocationId],
       );
@@ -1553,6 +1558,10 @@ export class PostgresLiveShadowTurnPlanner {
             LIMIT 1
          ) representative ON true
         WHERE invocation.invocation_id = $1
+            AND EXISTS (SELECT 1 FROM actors invoking_human
+              WHERE invoking_human.id::text = invocation.invoking_human_id
+                AND invoking_human.kind = 'user'
+                AND public.moderation_access_allowed(invoking_human.owner_id, room.id))
         LIMIT 2`,
       [input.invocationId],
     );

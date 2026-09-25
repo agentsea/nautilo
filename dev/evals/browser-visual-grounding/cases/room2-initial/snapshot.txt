@@ -1,0 +1,8 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e4]
+    - heading "Room #2: Button" [level=1, ref=e2]
+    - button "CLICK ON ME!" [ref=e3]
+      - StaticText "CLICK ON ME!"
+    - paragraph
+      - StaticText "The code word will be revealed upon completing the task!"

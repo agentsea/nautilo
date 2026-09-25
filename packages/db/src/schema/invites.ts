@@ -1,13 +1,17 @@
 import {
   index,
+  check,
   integer,
   pgTable,
+  pgPolicy,
+  pgRole,
   primaryKey,
   text,
   timestamp,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { users } from "./users";
 import { groups } from "./trust";
 import { rooms } from "./rooms";
@@ -78,13 +82,25 @@ export const inviteRedemptions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     boundAt: timestamp("bound_at").notNull().defaultNow(),
+    boundAdmissionEpoch: integer("bound_admission_epoch").notNull().default(0),
     completedAt: timestamp("completed_at"),
+    completionAdmissionEpoch: integer("completion_admission_epoch"),
+    joinMessage: text("join_message"),
+    reviewState: text("review_state", { enum: ["pending", "approved", "rejected"] }),
+    reviewRevision: integer("review_revision").notNull().default(0),
+    reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.inviteId, table.userId] }),
     index("idx_invite_redemptions_user_id").on(table.userId),
+    index("invite_redemptions_review_idx").on(table.reviewState, table.inviteId, table.userId),
+    check("invite_redemptions_review_message", sql`(${table.reviewState} IS NULL AND ${table.joinMessage} IS NULL AND ${table.reviewRevision} = 0)
+      OR (${table.reviewState} IS NOT NULL AND ${table.reviewState} IN ('pending', 'approved', 'rejected') AND ${table.joinMessage} IS NOT NULL
+        AND length(btrim(${table.joinMessage})) > 0 AND ${table.reviewRevision} > 0)`),
+    pgPolicy("invite_redemptions_product", { for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true` }),
   ],
-);
+).enableRLS();
 
 export type InviteRedemption = typeof inviteRedemptions.$inferSelect;
 export type NewInviteRedemption = typeof inviteRedemptions.$inferInsert;

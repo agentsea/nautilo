@@ -2105,8 +2105,29 @@
     {
       "idx": 300,
       "version": "7",
-      "when": 1790187670812,
-      "tag": "0300_square_blonde_phantom",
+      "when": 1790259001844,
+      "tag": "0300_flimsy_kingpin",
+      "breakpoints": true
+    },
+    {
+      "idx": 301,
+      "version": "7",
+      "when": 1790262499423,
+      "tag": "0301_left_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1790262808877,
+      "tag": "0302_dizzy_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 303,
+      "version": "7",
+      "when": 1790322939705,
+      "tag": "0303_square_blonde_phantom",
       "breakpoints": true
     }
   ]

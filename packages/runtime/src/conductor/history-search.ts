@@ -274,6 +274,12 @@ export async function searchRoomHistory(
     `,
     visibilityPredicate: sql`
       AND s.thread_id NOT LIKE 'subagent:%'
+      AND (sm.metadata->>'nautilo_browser_decision_observation') IS DISTINCT FROM 'true'
+      AND NOT (
+        sm.tool_name IN ('browser_snapshot', 'browser_screenshot')
+        AND COALESCE(sm.metadata->'nautilo_tool_result'->>'toolCallId', '') LIKE 'browser-choice:%'
+        AND sm.metadata->'nautilo_tool_result'->>'toolStatus' = 'success'
+      )
       ${deafFilter}
     `,
   });
@@ -404,6 +410,8 @@ export async function allRoomMessages(
           eq(sessions.roomId, args.roomId),
           sql`${sessions.threadId} NOT LIKE 'subagent:%'`,
           inArray(sessionMessages.role, ["user", "assistant", "tool"]),
+          sql`(${sessionMessages.metadata}->>'nautilo_browser_decision_observation') IS DISTINCT FROM 'true'`,
+          sql`NOT (${sessionMessages.toolName} IN ('browser_snapshot', 'browser_screenshot') AND COALESCE(${sessionMessages.metadata}->'nautilo_tool_result'->>'toolCallId', '') LIKE 'browser-choice:%' AND ${sessionMessages.metadata}->'nautilo_tool_result'->>'toolStatus' = 'success')`,
           args.excludeMessageId != null
             ? sql`${sessionMessages.id} <> ${args.excludeMessageId}`
             : undefined,
@@ -497,6 +505,12 @@ export async function recentBoundedRoomMessages(
         AND sm.transcript_origin = 'main'
         AND sm.role IN ('user', 'assistant', 'tool')
         AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task' AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'
+        AND (sm.metadata->>'nautilo_browser_decision_observation') IS DISTINCT FROM 'true'
+        AND NOT (
+          sm.tool_name IN ('browser_snapshot', 'browser_screenshot')
+          AND COALESCE(sm.metadata->'nautilo_tool_result'->>'toolCallId', '') LIKE 'browser-choice:%'
+          AND sm.metadata->'nautilo_tool_result'->>'toolStatus' = 'success'
+        )
         ${exclusiveBound}
         ${triggeringFingerprintFilter}
         ${deafFilter}

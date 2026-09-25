@@ -1,0 +1,17 @@
+- generic [ref=e1] clickable [onclick]
+  - generic
+    - link "Back to Home" [ref=e4]
+    - heading "Room #3: Simple form" [level=1, ref=e2]
+    - generic
+      - LabelText
+        - StaticText "Name"
+      - generic [ref=e5] clickable [onclick]
+        - textbox "Name" [ref=e7]
+    - generic
+      - LabelText
+        - StaticText "Favorite animal"
+      - generic [ref=e6] clickable [onclick]
+        - combobox "Favorite animal" [expanded=false, ref=e8]: ​
+    - button "SUBMIT" [ref=e3]
+    - paragraph
+      - StaticText "The code word will be revealed upon completing the task!"

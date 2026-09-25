@@ -221,6 +221,9 @@ describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
     );
     expect(queries).toHaveLength(1);
     expect(parameterValues(queries[0]!)).toContain(75);
+    const queryText = JSON.stringify(queries[0]);
+    expect(queryText).toContain("nautilo_browser_decision_observation");
+    expect(queryText).toContain("browser-choice:%");
   });
 });
 

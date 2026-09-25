@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "id": "room3-initial",
+  "description": "AgentSea Gym room 3 initial state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room3",
+  "capturedAt": "2026-09-21T07:46:57.920Z",
+  "captureDurationMs": 92,
+  "evidencePairWindowMs": 63,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room #3: Simple form"
+    },
+    "e3": {
+      "role": "button",
+      "name": "SUBMIT"
+    },
+    "e4": {
+      "role": "link",
+      "name": "Back to Home"
+    },
+    "e5": {
+      "role": "generic",
+      "name": ""
+    },
+    "e6": {
+      "role": "generic",
+      "name": ""
+    },
+    "e7": {
+      "role": "textbox",
+      "name": "Name"
+    },
+    "e8": {
+      "role": "combobox",
+      "name": "Favorite animal"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 588,
+    "sha256": "8dd445a5d91f08f3969e110b76c98ca557b3812c1f1f7eaf516c3b062d54ee52"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 50447,
+    "sha256": "1735a339248170fe9fc47073ae1f3c2fccd0c4af8022a6a52fa326698f363792"
+  }
+}

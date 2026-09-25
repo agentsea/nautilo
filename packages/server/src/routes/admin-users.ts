@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { normalizeAdminDirectoryLimit as normalizeLimit } from "../lib/admin-directory-pagination";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -130,17 +131,6 @@ function decodeCursor(raw: string | undefined): Cursor | null {
   } catch {
     return null;
   }
-}
-
-function normalizeLimit(raw: number | string | undefined): number | null {
-  const parsed =
-    typeof raw === "number"
-      ? raw
-      : typeof raw === "string"
-        ? Number(raw)
-        : 50;
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) return null;
-  return parsed;
 }
 
 function literalSearchPattern(value: string): string {

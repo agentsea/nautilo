@@ -946,14 +946,6 @@
         "typescript": "5.9.3",
       },
     },
-    "packages/limit-invariants": {
-      "name": "@nautilo/limit-invariants",
-      "version": "0.1.0",
-      "devDependencies": {
-        "@types/node": "24.10.4",
-        "typescript": "5.9.3",
-      },
-    },
     "packages/loffice": {
       "name": "@nautilo/loffice",
       "version": "0.1.0",
@@ -2528,8 +2520,6 @@
     "@nautilo/lattice-bridge": ["@nautilo/lattice-bridge@workspace:packages/lattice-bridge"],
 
     "@nautilo/lattice-crypto": ["@nautilo/lattice-crypto@workspace:packages/lattice-crypto"],
-
-    "@nautilo/limit-invariants": ["@nautilo/limit-invariants@workspace:packages/limit-invariants"],
 
     "@nautilo/local": ["@nautilo/local@workspace:bin/nautilo-local"],
 

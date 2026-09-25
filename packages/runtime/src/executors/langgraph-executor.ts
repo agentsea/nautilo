@@ -1006,6 +1006,11 @@ export async function* langgraphExecutor(
     ordinals: new Map<string, number>(),
   });
   const savedFingerprints = new Set<string>();
+  const inputMetadata =
+    input["metadata"] && typeof input["metadata"] === "object"
+      ? (input["metadata"] as Record<string, unknown>)
+      : undefined;
+  const isTaskOriginated = inputMetadata?.["originatedBy"] === "task";
 
   const persistOptsBase = {
     ...(supervisionMetadata === undefined
@@ -1023,8 +1028,10 @@ export async function* langgraphExecutor(
     trustedExecutionEntrypoint: foregroundActivationState.trustedExecutionEntrypoint,
     notificationContext: {
       mentionedHumanUserIds: [],
-      causalHumanUserId,
-      causalHumanTurnId: causalHumanUserId ? turnId || null : null,
+      // A Task wake has a requesting Human, but its synthetic input is not a
+      // Human-authored turn eligible for an assistant causal pair.
+      causalHumanUserId: isTaskOriginated ? null : causalHumanUserId,
+      causalHumanTurnId: isTaskOriginated ? null : causalHumanUserId ? turnId || null : null,
     },
   };
   // preserve the user-sent workspace artifact focus lane through the
@@ -1052,12 +1059,7 @@ export async function* langgraphExecutor(
   // internal wakes retain an audit input without publishing a fake
   // Human message. Never apply the input metadata to an entire output batch:
   // browser supervision uses internalToolMetadata for tool plumbing only, while
-  // a deliberate tool-free answer stays visible. Task report-back is unchanged.
-  const inputMetadata =
-    input["metadata"] && typeof input["metadata"] === "object"
-      ? (input["metadata"] as Record<string, unknown>)
-      : undefined;
-  const isTaskOriginated = inputMetadata?.["originatedBy"] === "task";
+  // a deliberate tool-free answer stays visible. Task report-back stays visible.
   const isAdvancedVideoWorkcard = inputMetadata?.["originatedBy"] === "advanced_video_workcard";
 
   // skip persisting the human row when it already exists (the bot is

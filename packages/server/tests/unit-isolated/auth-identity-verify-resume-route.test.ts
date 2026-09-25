@@ -82,9 +82,11 @@ import {
 } from "../../src/routes/live-shadow-message-composition";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 
 const OWNER_ACTOR_ID = "owner-actor-id";
 const OWNER_ID = "owner-user-id";
+await installResumeInvocationAuthority(OWNER_ID);
 const VALID_PIN = "654321";
 
 async function waitForCallCount(

@@ -68,6 +68,19 @@ describe("D302 P4 — humanAlreadyPersisted survives coalescer round-trip", () =
 });
 
 describe("D547 — background Task authority survives coalescer round-trip", () => {
+  test("preserves the initiating Human when the Agent owner differs", () => {
+    const coalesced = jobInputToCoalescedInput(
+      { message: "return the scheduled reminder", ownerId: "agent-owner" },
+      "task:scheduled",
+      "agent-owner",
+      "requesting-human",
+    );
+    expect(coalescedInputToJobInput(coalesced)).toMatchObject({
+      ownerId: "agent-owner",
+      requestorId: "requesting-human",
+    });
+  });
+
   test("preserves the server-authored current Task and originating Room", () => {
     const coalesced = jobInputToCoalescedInput(
       {

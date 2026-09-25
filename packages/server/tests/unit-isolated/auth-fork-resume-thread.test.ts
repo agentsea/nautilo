@@ -83,6 +83,7 @@ import { forkCoordinator } from "@nautilo/runtime";
 import { authRoutes } from "../../src/routes/auth";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 
 // M170 — spy on the real singleton (no module override; markForkCompletedByCheckpoint
 // no-ops for an unknown/non-fork thread, so calling it in the test is safe).
@@ -111,6 +112,7 @@ async function waitForCallCount(
 }
 
 beforeAll(async () => {
+  await installResumeInvocationAuthority(OWNER_ID);
   sessionStore = new SessionStore(undefined, { persistPath: null });
   app = Fastify({ logger: false });
   installLocalAuthPreHandlerStub(app, sessionStore);

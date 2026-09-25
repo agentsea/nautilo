@@ -91,6 +91,7 @@ function makeTx() {
         throw new Error(`unexpected tx select ${String(table)} #${usersSelects}`);
       },
     }),
+    update: () => ({ set: () => ({ where: async () => {} }) }),
     insert: (table: unknown) => {
       expect(table).toBe(inviteRedemptions);
       return {
@@ -124,6 +125,9 @@ function getSharedDirectDb() {
 beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb,
+    serverAdmission: { userId: "userId" },
+    moderationAccessAllowedSql: () => ({}),
+    sql: () => ({}),
     hasClaimedOwner: async () => false,
     inviteRedemptions,
     invites,
@@ -152,6 +156,9 @@ beforeAll(() => {
     seedPersonalPrivateRoomInTx: async () => ({ roomId: "room-2" }),
   }));
   mock.module("@nautilo/trust", () => ({
+    prepareModerationEnrollmentInTx: async () => 0,
+    completeModerationEnrollmentInTx: async () => 0,
+    ModerationError: class extends Error {},
     hashPin: async () => "hash",
     generateRecoveryCodesInTx: async () => [],
     findLocalUserByHandle: async () => null,

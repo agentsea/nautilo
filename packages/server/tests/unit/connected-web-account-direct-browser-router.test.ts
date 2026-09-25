@@ -57,6 +57,10 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
   let currentOperation = operation();
   let currentBinding = binding();
   let decisionSnapshot = '- button "Continue" [ref=e1]';
+  let decisionRefs: Readonly<Record<string, { readonly role: string; readonly name: string }>> = {
+    e1: { role: "button", name: "Continue" },
+  };
+  let decisionPageUrl = `${ORIGIN}/page`;
   let decisionFailure = false;
   const calls = {
     started: [] as Array<{ profileId: string; timeoutMinutes: number }>,
@@ -147,10 +151,10 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
       },
       observe: async () => {
         if (decisionFailure) throw new Error("invalid observation");
-        return { snapshot: decisionSnapshot, refs: { e1: { role: "button", name: "Continue" } } };
+        return { snapshot: decisionSnapshot, refs: decisionRefs };
       },
       bindPinnedTarget: async () => undefined,
-      readPinnedUrl: async () => { calls.pinnedUrlReads += 1; return `${ORIGIN}/page`; },
+      readPinnedUrl: async () => { calls.pinnedUrlReads += 1; return decisionPageUrl; },
       closePrivateDaemons: async () => { calls.cleanupOrder.push("daemon"); },
     },
     resolveCdpWebSocketUrl: async () => RESOLVED_CDP,
@@ -169,12 +173,15 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
     setOperation: (value: ConnectedWebOperation) => { currentOperation = value; },
     setBinding: (value: ConnectedWebAccountBinding) => { currentBinding = value; },
     setDecisionSnapshot: (value: string) => { decisionSnapshot = value; },
+    setDecisionRefs: (value: Readonly<Record<string, { readonly role: string; readonly name: string }>>) => { decisionRefs = value; },
+    setDecisionPageUrl: (value: string) => { decisionPageUrl = value; },
     setDecisionFailure: (value: boolean) => { decisionFailure = value; },
   };
 }
 
 const admission = {
   ownerUserId: "owner-1",
+  fundingHumanUserId: "human-1",
   accountId: "account-1",
   operationId: "operation-1",
   expectedControlEpoch: 4,
@@ -217,10 +224,18 @@ test("direct router denies a paid saved-profile start before provider or durable
   });
   const error = await router.acquire(admission).catch((cause: unknown) => cause);
   expect(error).toMatchObject({ code: "unavailable", message: "direct browser control unavailable" });
-  expect(checks).toEqual([["owner-1", "connected_web_direct_browser"]]);
+  expect(checks).toEqual([["human-1", "connected_web_direct_browser"]]);
   expect(calls.started).toEqual([]);
   expect(calls.rotated).toEqual([]);
   expect(calls.allocated).toEqual([]);
+});
+
+test("direct router rejects absent Human funding identity before provider or durable mutation", async () => {
+  const { router, calls } = makeRouter();
+  const error = await router.acquire({ ...admission, fundingHumanUserId: " " }).catch((cause: unknown) => cause);
+  expect(error).toMatchObject({ code: "unavailable" });
+  expect(calls.started).toEqual([]);
+  expect(calls.rotated).toEqual([]);
 });
 
 test("direct router attaches only the one active browser proven by the exact hosted Agent session", async () => {
@@ -316,7 +331,7 @@ test("direct router CAS-fences a hosted/checking handoff after provider start an
 test("direct router stops its newly created browser when initial navigation fails", async () => {
   const { router, calls } = makeRouter({ navigateSavedProfileBrowser: async () => { throw new Error("navigation failed"); } });
   const failed = await router.acquire({
-    ownerUserId: "owner-1", accountId: "account-1", operationId: "operation-1", expectedControlEpoch: 4, source: "saved_profile",
+    ownerUserId: "owner-1", fundingHumanUserId: "human-1", accountId: "account-1", operationId: "operation-1", expectedControlEpoch: 4, source: "saved_profile",
   }).then(() => null, (cause: unknown) => cause);
   expect(failed).toMatchObject({ code: "unavailable" });
   expect(calls.started).toHaveLength(1);
@@ -413,6 +428,159 @@ test("decision mutations refresh and consume the exact server-owned observation 
   await lease.close();
 });
 
+test("decision target freshness accepts unrelated DOM changes and rebinds a renumbered semantic ref", async () => {
+  const context = makeRouter();
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- heading "Updated status" [ref=e1]\n- button "Continue" [ref=e9]');
+  context.setDecisionRefs({
+    e1: { role: "heading", name: "Updated status" },
+    e9: { role: "button", name: "Continue" },
+  });
+
+  await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, observation.observationId);
+
+  expect(context.calls.invoked).toHaveLength(1);
+  expect(context.calls.invoked[0]!.argv.slice(-2)).toEqual(["click", "@e9"]);
+  await lease.close();
+});
+
+test("decision target freshness rebinds both endpoints of a drag", async () => {
+  const context = makeRouter();
+  context.setDecisionSnapshot('- listitem "Source" [ref=e1]\n- listitem "Destination" [ref=e2]');
+  context.setDecisionRefs({
+    e1: { role: "listitem", name: "Source" },
+    e2: { role: "listitem", name: "Destination" },
+  });
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- listitem "Destination" [ref=e4]\n- listitem "Source" [ref=e7]');
+  context.setDecisionRefs({
+    e4: { role: "listitem", name: "Destination" },
+    e7: { role: "listitem", name: "Source" },
+  });
+
+  await lease.invokeDecision(
+    { toolName: "browser_drag", args: { from: "@e1", to: "@e2" } },
+    observation.observationId,
+  );
+
+  expect(context.calls.invoked).toHaveLength(1);
+  expect(context.calls.invoked[0]!.argv.slice(-3)).toEqual(["drag", "@e7", "@e4"]);
+  await lease.close();
+});
+
+test("decision target freshness preserves an exact ref when duplicate labels and the complete ref map are unchanged", async () => {
+  const context = makeRouter();
+  context.setDecisionSnapshot('- button "Continue" [ref=e1]\n- button "Continue" [ref=e2]');
+  context.setDecisionRefs({
+    e1: { role: "button", name: "Continue" },
+    e2: { role: "button", name: "Continue" },
+  });
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+
+  await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e2" } }, observation.observationId);
+
+  expect(context.calls.invoked).toHaveLength(1);
+  expect(context.calls.invoked[0]!.argv.slice(-2)).toEqual(["click", "@e2"]);
+  await lease.close();
+});
+
+test("decision target freshness rejects reordered rows with unchanged duplicate button refs", async () => {
+  const context = makeRouter();
+  context.setDecisionSnapshot('- row "Alice"\n  - button "Delete" [ref=e1]\n- row "Bob"\n  - button "Delete" [ref=e2]');
+  context.setDecisionRefs({
+    e1: { role: "button", name: "Delete" },
+    e2: { role: "button", name: "Delete" },
+  });
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- row "Bob"\n  - button "Delete" [ref=e1]\n- row "Alice"\n  - button "Delete" [ref=e2]');
+
+  expect(await lease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    observation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(context.calls.invoked).toHaveLength(0);
+  await lease.close();
+});
+
+test("decision target freshness does not rebind one of two old duplicates to a surviving button", async () => {
+  const context = makeRouter();
+  context.setDecisionSnapshot('- row "Alice"\n  - button "Delete" [ref=e1]\n- row "Bob"\n  - button "Delete" [ref=e2]');
+  context.setDecisionRefs({
+    e1: { role: "button", name: "Delete" },
+    e2: { role: "button", name: "Delete" },
+  });
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- row "Bob"\n  - button "Delete" [ref=e9]');
+  context.setDecisionRefs({ e9: { role: "button", name: "Delete" } });
+
+  expect(await lease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    observation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(context.calls.invoked).toHaveLength(0);
+  await lease.close();
+});
+
+test("decision target freshness rejects changed and ambiguous semantic targets before mutation", async () => {
+  const changed = makeRouter();
+  const changedLease = await changed.router.acquire(admission);
+  const changedObservation = await changedLease.observeDecision();
+  changed.setDecisionRefs({ e1: { role: "button", name: "Delete" } });
+  expect(await changedLease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    changedObservation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(changed.calls.invoked).toHaveLength(0);
+  await changedLease.close();
+
+  const ambiguous = makeRouter();
+  const ambiguousLease = await ambiguous.router.acquire(admission);
+  const ambiguousObservation = await ambiguousLease.observeDecision();
+  ambiguous.setDecisionRefs({
+    e4: { role: "button", name: "Continue" },
+    e7: { role: "button", name: "Continue" },
+  });
+  expect(await ambiguousLease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    ambiguousObservation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(ambiguous.calls.invoked).toHaveLength(0);
+  await ambiguousLease.close();
+});
+
+test("decision freshness rejects a same-origin page change before mutation", async () => {
+  const context = makeRouter();
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionPageUrl(`${ORIGIN}/different-page`);
+
+  expect(await lease.invokeDecision(
+    { toolName: "browser_click", args: { ref: "@e1" } },
+    observation.observationId,
+  ).then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
+  expect(context.calls.invoked).toHaveLength(0);
+  await lease.close();
+});
+
+test("decision freshness allows a page-level action across unrelated DOM changes", async () => {
+  const context = makeRouter();
+  const lease = await context.router.acquire(admission);
+  const observation = await lease.observeDecision();
+  context.setDecisionSnapshot('- heading "Animated update" [ref=e8]');
+  context.setDecisionRefs({ e8: { role: "heading", name: "Animated update" } });
+
+  await lease.invokeDecision({ toolName: "browser_press", args: { key: "ArrowDown" } }, observation.observationId);
+
+  expect(context.calls.invoked).toHaveLength(1);
+  expect(context.calls.invoked[0]!.argv.slice(-2)).toEqual(["press", "ArrowDown"]);
+  await lease.close();
+});
+
 test("ordinary commands and failed re-observation invalidate saved decision authority", async () => {
   const first = makeRouter();
   const lease = await first.router.acquire(admission);
@@ -422,6 +590,7 @@ test("ordinary commands and failed re-observation invalidate saved decision auth
     .then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
   const next = await lease.observeDecision();
   first.setDecisionSnapshot("- button Changed [ref=e1]");
+  first.setDecisionRefs({ e1: { role: "button", name: "Changed" } });
   expect(await lease.invokeDecision({ toolName: "browser_click", args: { ref: "@e1" } }, next.observationId)
     .then(() => null, (error: unknown) => error)).toMatchObject({ code: "observation_stale" });
   expect(first.calls.invoked).toHaveLength(1);

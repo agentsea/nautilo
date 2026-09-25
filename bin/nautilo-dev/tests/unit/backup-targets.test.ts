@@ -20,6 +20,25 @@ function collectSchemaTableNames(): string[] {
 }
 
 describe("backup restore target allowlists", () => {
+  test("restores moderation authority after its foreign-key parents", () => {
+    const parents: Record<string, string[]> = {
+      group_moderation_scopes: ["groups", "rooms"],
+      moderation_subjects: ["users"],
+      moderation_actions: ["moderation_subjects"],
+      moderation_restrictions: ["moderation_subjects", "moderation_actions"],
+      server_admission: ["users", "moderation_actions"],
+      server_moderation_policy: ["users"],
+    };
+    for (const [child, dependencies] of Object.entries(parents)) {
+      const childIndex = DATA_TABLES.indexOf(`public.${child}`);
+      expect(childIndex).toBeGreaterThanOrEqual(0);
+      for (const parent of dependencies) {
+        const parentIndex = DATA_TABLES.indexOf(`public.${parent}`);
+        expect(parentIndex).toBeGreaterThanOrEqual(0);
+        expect(parentIndex).toBeLessThan(childIndex);
+      }
+    }
+  });
   test("restores immutable M322 retry receipts unchanged after every foreign-key parent", () => {
     const receipts = "public.content_access_operations";
     const receiptIndex = DATA_TABLES.indexOf(receipts);

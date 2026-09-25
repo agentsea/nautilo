@@ -34,8 +34,11 @@ Repeated state/action/result transitions, including cycles, consume the existing
 intervention budget; different actions with unchanged text do not automatically
 count as failures. Verified milestones reset the budget and transition evidence.
 
-Only current and preceding structured observations stay expanded in the model
-prompt. Older canonical receipts remain retrievable with `historyToolCallId`;
+The decision loop may use its current and preceding structured observations,
+but observations captured for that loop do not enter the Genie's model prompt
+or later Room context. Its handoff carries compact execution evidence and the
+Genie takes a fresh ordinary snapshot when independent verification needs page
+state. Captures made outside delegation retain their ordinary history behavior;
 historical refs never authorize current input. Error receipts stay intact.
 
 When those runtime checks find no runnable decision model, the optional plan and its prompt guidance

@@ -13,6 +13,7 @@ export interface MessageActionRailProps {
   readonly alwaysVisible: boolean;
   /** Persistent message metadata that shares the footer ahead of the rail. */
   readonly leading?: ReactNode;
+  readonly moderation?: ReactNode;
   readonly onReact: (emoji: string) => void;
   readonly onReply: () => void;
   readonly onReplyInThread: () => void;
@@ -97,6 +98,7 @@ export function MessageActionRail(props: MessageActionRailProps): ReactElement {
             </button>
           );
         })}
+        {props.moderation}
       </div>
     </div>
   );

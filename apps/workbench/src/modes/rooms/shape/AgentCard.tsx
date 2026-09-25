@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { ReactElement } from "react";
-import type { AgentResponseMode, RoomMemberDto } from "@nautilo/types";
+import type { AgentResponseMode, HumanPresenceStatus, RoomMemberDto } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
 import { useToast } from "../../../components/toast";
 import { useProfile } from "../../../hooks/use-profile";
@@ -8,11 +8,12 @@ import { useVoiceControls } from "../../../adapters/runtime-contexts";
 import { extractSoulEssence } from "../../../components/soul-extract";
 import { clampSoulPreview } from "../../../components/soul-preview";
 import { MemberFocusAvatar } from "./MemberFocusAvatar";
+import { HumanPresence } from "./HumanPresence";
 import { memberTypeSuffix } from "./members-panel-model";
 import type { RoomFocusState } from "./use-room-focus";
 
 /**
- * D278 §4.7.4 — a member card in the always-on group-room Members panel.
+ * A member card in the always-on group-room Members panel.
  *
  * For a **bot**, the whole card is the **single-click focus** control (the
  * primary affordance): click toggles your private focus on that bot. Focus
@@ -40,6 +41,7 @@ export function AgentCard({
   viewerIsAdmin,
   viewerUserId,
   onModeChanged,
+  presence,
 }: {
   readonly member: RoomMemberDto;
   readonly roomId: string;
@@ -47,6 +49,7 @@ export function AgentCard({
   readonly viewerIsAdmin: boolean;
   readonly viewerUserId: string | null;
   readonly onModeChanged?: () => void;
+  readonly presence?: HumanPresenceStatus | undefined;
 }): ReactElement {
   const toast = useToast();
   const { response } = useProfile();
@@ -85,10 +88,11 @@ export function AgentCard({
       >
         <MemberFocusAvatar member={member} focus={focus} interactive={false} />
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-xs font-medium text-foreground">{member.displayName}</span>
-          <span className="text-[10px] uppercase tracking-wide text-foreground-muted">
-            Person · {suffix}
-          </span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs font-medium text-foreground">{member.displayName}</span>
+            <HumanPresence status={presence} />
+          </div>
+          <span className="text-[10px] uppercase tracking-wide text-foreground-muted">Person · {suffix}</span>
         </div>
       </div>
     );
@@ -114,7 +118,7 @@ export function AgentCard({
   // viewer's own agent. We surface that toggle on the card of the agent the
   // session actually voices (the viewer's primary/own agent) — flipping it
   // here is the same session as the 1:1 room. `canControlVoice` is the SEAM:
-  // when D284 lands per-(room,bot) voice, the parent flips this true per agent
+  // When voice is scoped per room and agent, the parent can enable this per agent
   // and swaps `voice` for a per-agent source — no markup change. Until then,
   // if the viewer can't control an agent's voice, the row is simply hidden
   // (no disabled/"coming soon" state).
@@ -264,7 +268,7 @@ function agentOwnerCue(member: RoomMemberDto, viewerUserId: string | null): stri
  * R2b-lite — per-agent voice row. Today it binds to the single global voice
  * session (`useVoiceControls`), surfaced only on the card of an agent the
  * viewer controls; flipping it here is the same session as the 1:1 room. This
- * is the SEAM for D284: when per-(room,bot) voice lands, the parent passes a
+ * When voice is scoped per room and agent, the parent can pass a
  * per-agent `enabled`/`onToggle`/`onStop` and renders this row for any agent —
  * no markup change here.
  */

@@ -1,3 +1,4 @@
+export * from "./human-presence";
 export * from "./api";
 export * from "./workspace-media";
 export * from "./workspace-logical-path";
@@ -61,3 +62,5 @@ export * from "./protected-room-topology";
 
 export type { EmbeddingProvider, EmbeddingWithProvenanceV1 } from "./embedding";
 export * from "./voice-stream";
+
+export * from "./moderation";

@@ -1,6 +1,8 @@
 export * from "./schema/index";
+export { moderationAccessAllowedSql, moderationBanAbsentSql, moderationEffectiveHumanActorIdsSql } from "./queries/moderation-admission";
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";
+export * from "./queries/invocation-origin-access";
 export { createEventFeedPreferenceStore } from "./queries/event-feed-preferences";
 export * from "./queries/media-generations";
 export * from "./queries/connected-apps";

@@ -674,7 +674,7 @@ export async function discoverQueryInventory(repositoryRoot: string): Promise<Qu
   }
   return {
     schemaVersion: QUERY_INVENTORY_SCHEMA_VERSION,
-    purpose: "ISSUE-M223 Phase 1 baseline of direct database query call sites and SQL fragments.",
+    purpose: "Baseline of direct database query call sites and SQL fragments.",
     observations: observations.sort((left, right) => compareText(left.locator, right.locator)),
   };
 }
@@ -762,7 +762,10 @@ function expectedFullDrizzleSample(inventory: QueryInventoryDocument): QueryObse
   }
   return [...byOwner.entries()].sort(([left], [right]) => compareText(left, right)).flatMap(([, entries]) => {
     const sorted = entries.sort((left, right) => compareText(left.locator, right.locator));
-    return [sorted[0]!, sorted[Math.floor(sorted.length / 2)]!, sorted.at(-1)!];
+    return [...new Map(
+      [sorted[0]!, sorted[Math.floor(sorted.length / 2)]!, sorted.at(-1)!]
+        .map((observation) => [observation.locator, observation] as const),
+    ).values()];
   });
 }
 

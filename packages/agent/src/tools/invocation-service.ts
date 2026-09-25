@@ -1,7 +1,8 @@
 import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
 import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
-import { browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
+import { browserDecisionObservationSchema, browserDecisionPlanError, browserDecisionPlanSchema, currentBrowserDecision, interpretBrowserDecisionCall, interpretBrowserDecisionPlanArgs } from "../graph/browser-decision";
+import { browserVisualObservationFromRelay, browserVisualTargetBindingSchema } from "../graph/browser-visual-observation";
 import { readResearchContext } from "./security/research-context";
 import { localToolControlFailure } from "./security/research-control-feedback";
 import { SECURITY_SCAN_MAX_RESULTS } from "@nautilo/types";
@@ -2215,6 +2216,7 @@ type RelayDispatchOutcome =
         kind: "browser_screenshot_vision" | "computer_observation_vision" | "computer_use_host_vision";
         text: string;
         image: { mime: string; base64: string };
+        visualObservation?: unknown;
       };
     }
   | {
@@ -2308,6 +2310,7 @@ function isRelayVisionResult(
   kind: "browser_screenshot_vision" | "computer_observation_vision" | "computer_use_host_vision";
   text: string;
   image: { mime: string; base64: string };
+  visualObservation?: unknown;
 } {
   if (value === null || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
@@ -2318,6 +2321,14 @@ function isRelayVisionResult(
   if (image === null || typeof image !== "object") return false;
   const img = image as Record<string, unknown>;
   return typeof img["base64"] === "string" && typeof img["mime"] === "string";
+}
+
+function isRelayBrowserVisualObservationResult(
+  value: unknown,
+): value is { kind: "browser_visual_observation"; visualObservation: unknown } {
+  return value !== null && typeof value === "object" &&
+    (value as Record<string, unknown>)["kind"] === "browser_visual_observation" &&
+    "visualObservation" in value;
 }
 
 function relayVisionResultHeader(
@@ -2338,6 +2349,7 @@ function buildRelayMultimodalToolMessage(
     kind: "browser_screenshot_vision" | "computer_observation_vision" | "computer_use_host_vision";
     text: string;
     image: { mime: string; base64: string };
+    visualObservation?: unknown;
   },
 ): { tm: ToolMessage; contentForEvent: string } {
   const { kind, text, image } = multimodal;
@@ -3350,7 +3362,9 @@ async function executeViaRelayRaw(
     readonly resolvedModelId?: string;
   } = {},
 ): Promise<RelayDispatchOutcome> {
-  const browserPlan = tc.name === "browser_snapshot" ? interpretBrowserDecisionPlanArgs(tc.args) : null;
+  const browserPlan = tc.name === "browser_snapshot" || tc.name === "browser_screenshot"
+    ? interpretBrowserDecisionPlanArgs(tc.args)
+    : null;
   if (browserPlan?.kind === "invalid") {
     return { ok: false, errorMessage: browserDecisionPlanError(
       browserPlan.error, browserPlan.code, browserPlan.instruction,
@@ -4274,6 +4288,7 @@ async function executeViaRelayRaw(
   }
   const dispatchSignal = dispatchAbortController?.signal ?? opts.signal;
 
+  let expectsBrowserVisualObservation = false;
   try {
     const dispatchAllowedRoots =
       isStructuredSsh || isStructuredSshOutput
@@ -4288,11 +4303,11 @@ async function executeViaRelayRaw(
         : relayCaps?.allowedRoots;
     const relayDispatchArgs = { ...dispatchArgs };
     if (tc.name.startsWith("browser_")) {
-      if (tc.name === "browser_snapshot" && browserPlan?.kind === "plan") {
+      if ((tc.name === "browser_snapshot" || tc.name === "browser_screenshot") && browserPlan?.kind === "plan") {
         const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
         if (source?.tool_calls && (source.tool_calls.length !== 1 || source.tool_calls[0]?.id !== (opts.toolCallId ?? tc.id))) {
           return { ok: false, errorMessage: browserDecisionPlanError(null, "decision_plan_requires_singleton",
-            "Send browser_snapshot with decisionPlan as its own tool call, after preceding tools finish. No browser request was sent for this delegation; other calls in the batch may execute normally.") };
+            `Send ${tc.name} with decisionPlan as its own tool call, after preceding tools finish. No browser request was sent for this delegation; other calls in the batch may execute normally.`) };
         }
         if (!resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly })) {
           return { ok: false, errorMessage: "Routine browser decisions are unavailable. Omit decisionPlan and use ordinary browser tools; no browser request was sent." };
@@ -4300,9 +4315,11 @@ async function executeViaRelayRaw(
       }
       // Model-visible plans remain in the graph; only server-owned bindings cross the relay.
       delete relayDispatchArgs["decisionPlan"];
-      if (tc.name === "browser_snapshot" && browserPlan?.kind === "plan" && browserPlan.source === "top_level") {
+      if ((tc.name === "browser_snapshot" || tc.name === "browser_screenshot") && browserPlan?.kind === "plan" && browserPlan.source === "top_level") {
         for (const key of Object.keys(browserDecisionPlanSchema.shape)) delete relayDispatchArgs[key];
       }
+      delete relayDispatchArgs["_visualObservation"];
+      delete relayDispatchArgs["_visualTarget"];
       delete relayDispatchArgs["_requiredSession"];
       delete relayDispatchArgs["_requiredObservationId"];
       if (hasTaskContinuation && taskContinuation.browserSessionId) {
@@ -4310,7 +4327,8 @@ async function executeViaRelayRaw(
       }
       const decision = currentBrowserDecision(state);
       const pending = decision?.pending;
-      if (pending && pending.call.id === (opts.toolCallId ?? tc.id)) {
+      const isPendingDecisionCall = pending?.call.id === (opts.toolCallId ?? tc.id);
+      if (pending && isPendingDecisionCall) {
         if (decision?.phase !== "waiting" || pending.call.name !== tc.name
           || JSON.stringify(pending.call.args) !== JSON.stringify(tc.args)
           || !resolveBrowserDecisionModel({ turnId: state.turnId, fullEncryptionOnly: opts.fullEncryptionOnly }, decision.modelId)
@@ -4320,7 +4338,42 @@ async function executeViaRelayRaw(
         }
         relayDispatchArgs["_requiredSession"] = pending.browserSessionId;
         if (pending.observationId !== null) relayDispatchArgs["_requiredObservationId"] = pending.observationId;
+        const isVisualTargetAction = tc.name === "browser_mouse"
+          || (tc.name === "browser_type" && tc.args["ref"] === undefined
+            && typeof tc.args["x"] === "number" && typeof tc.args["y"] === "number"
+            && tc.args["space"] === "image");
+        const requiresVisualTarget = isVisualTargetAction && decision?.target === undefined
+          && decision?.observation?.visual !== undefined;
+        if (requiresVisualTarget && pending.visualTarget === undefined) {
+          return { ok: false, errorMessage: "Browser visual target binding is unavailable; return to the Genie for fresh observation." };
+        }
+        if (pending.visualTarget !== undefined) {
+          const visualTarget = browserVisualTargetBindingSchema.safeParse(pending.visualTarget);
+          if (!isVisualTargetAction || !visualTarget.success || decision?.target !== undefined
+            || decision?.observation?.visual === undefined) {
+            return { ok: false, errorMessage: "Browser visual target binding changed; return to the Genie for fresh observation." };
+          }
+          // Geometry remains relay-private. It is attached only after the
+          // selected pending call and its observation/session binding pass.
+          relayDispatchArgs["_visualTarget"] = visualTarget.data;
+        }
       }
+      const isCoordinateVisualType = tc.name === "browser_type"
+        && tc.args["ref"] === undefined
+        && typeof tc.args["x"] === "number"
+        && typeof tc.args["y"] === "number"
+        && tc.args["space"] === "image";
+      if (isCoordinateVisualType
+        && (!isPendingDecisionCall || decision?.target !== undefined || decision?.observation?.visual === undefined)) {
+        return {
+          ok: false,
+          errorMessage: "Screenshot-coordinate typing is available only to the active embedded visual decision bound to its fresh observation. No browser request was sent.",
+        };
+      }
+      expectsBrowserVisualObservation = tc.name === "browser_screenshot"
+        && (browserPlan?.kind === "plan" || (pending?.call.id === (opts.toolCallId ?? tc.id)
+          && pending?.call.name === "browser_screenshot"));
+      if (expectsBrowserVisualObservation) relayDispatchArgs["_visualObservation"] = true;
     }
     const result = await _relayRegistry.dispatch(relayId, {
       toolName: isStructuredSsh ? "ssh" : tc.name,
@@ -4476,8 +4529,36 @@ async function executeViaRelayRaw(
       };
     }
 
+    if (expectsBrowserVisualObservation) {
+      try {
+        if (!isRelayBrowserVisualObservationResult(result.result) && !isRelayVisionResult(result.result)) {
+          throw new Error("Missing visual observation");
+        }
+        const visual = browserVisualObservationFromRelay(result.result.visualObservation);
+        const observation = browserDecisionObservationSchema.parse({
+          version: 1,
+          snapshot: visual.snapshot,
+          refs: {},
+          pageUrl: visual.pageUrl,
+          browserSessionId: visual.browserSessionId,
+          observationId: visual.observationId,
+          visual: visual.visual,
+        });
+        return {
+          ok: true,
+          rawContent: JSON.stringify({
+            instruction: "Delegated screenshot processed locally. Raw pixels are not retained; use the extracted observation for decisions and take a fresh ordinary screenshot if Genie later needs pixels.",
+            observation,
+          }),
+        };
+      } catch {
+        return { ok: false, errorMessage: "Error: browser_screenshot returned an invalid local visual observation.",
+          browserFailure: "browser_observation_invalid" };
+      }
+    }
+
     if (isRelayVisionResult(result.result)) {
-      const { kind, text, image } = result.result;
+      const { kind, image, text } = result.result;
       return {
         ok: true,
         multimodal: { kind, text, image: { mime: image.mime, base64: image.base64 } },

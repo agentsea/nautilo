@@ -40,6 +40,7 @@ const VENDORED_TOOL_BINARY_NAMES = new Set([
   "openhue",
   "rg",
   "nautilo-screen-recording-permission",
+  "nautilo-browser-visual-grounding",
   "nautilo-window-presence",
 ]);
 

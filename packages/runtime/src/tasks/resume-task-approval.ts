@@ -118,6 +118,7 @@ export async function authorizeTaskApprovalResume(
     await assertInvocation({
       humanUserId: found.task.requestorId,
       origin: "foreground_resume",
+      taskId: found.task.id,
       agentId: found.task.agentId,
       ...(found.task.targetRoomId ? { roomId: found.task.targetRoomId } : {}),
     });
@@ -145,6 +146,21 @@ export async function authorizeTaskApprovalResume(
       code: error.code,
       capability: error.capability,
     };
+  }
+  // The owner may respond on another Human's Task, but cannot exercise a
+  // response after their own access has been withdrawn.
+  if (found.task.requestorId !== args.sessionUserId) {
+    try {
+      await assertInvocation({
+        humanUserId: args.sessionUserId,
+        origin: "foreground_resume",
+        agentId: found.task.agentId,
+        ...(found.task.targetRoomId ? { roomId: found.task.targetRoomId } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof AgentInvocationDeniedError)) throw error;
+      return { ok: false, status: 403, error: error.code, code: error.code, capability: error.capability };
+    }
   }
   return { ok: true, task: found.task, run: found.run };
 }

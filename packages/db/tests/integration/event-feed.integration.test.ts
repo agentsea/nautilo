@@ -134,6 +134,26 @@ afterAll(async () => {
 });
 
 describe("M323 persistent event feed PostgreSQL storage", () => {
+  test("moderation receipts persist only for the moderator, including unread and read-state isolation", async () => {
+    const moderator = await createPerson("moderator");
+    const member = await createPerson("ordinary-member");
+    const input: EventFeedRecordInput = {
+      key: occurrenceKey("moderation"), type: "moderation.action", actorKind: "human",
+      actorId: moderator.actorId, recipientUserIds: [moderator.userId],
+      data: { operationId: randomUUID(), action: "ban", userId: member.userId },
+    };
+    const saved = await storage.record(input);
+    if (saved.status !== "stored") throw new Error("Expected moderation event");
+    expect((await storage.list(moderator.userId)).events[0]?.type).toBe("moderation.action");
+    expect(await storage.countUnread(moderator.userId)).toBe(1);
+    // A duplicate never adds recipients, even if a buggy caller widens its audience.
+    expect((await storage.record({ ...input, recipientUserIds: [moderator.userId, member.userId] })).status).toBe("duplicate");
+    expect((await storage.list(member.userId)).events).toEqual([]);
+    expect(await storage.countUnread(member.userId)).toBe(0);
+    const failure = await storage.setRead(member.userId, saved.eventId, true).then(() => null, (cause: unknown) => cause);
+    expectQueryCode(failure, "not_found");
+    expect((await storage.list(moderator.userId)).events).toHaveLength(1);
+  });
   test("resource invalidation reaches historical recipients by exact Artifact, without changing read state", async () => {
     const actor = await createPerson("artifact-author");
     const recipient = await createPerson("artifact-recipient");

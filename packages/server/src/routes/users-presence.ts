@@ -3,20 +3,19 @@ import { warn } from "@nautilo/logger";
 import { getUserLastSeenAt } from "@nautilo/trust";
 
 /**
- * D124 — counterpart presence read-side route.
+ * Legacy last-seen read route. The current Room member UIs do not call it.
  *
  * Returns `{ lastSeenAt: ISO-8601 string | null }` for `users.id`.
  * `null` covers both "user does not exist" AND "user has no recorded
  * presence yet" — we do NOT distinguish (existence-leak guard, mirrors
  * the read-state route's 404-for-everything pattern).
  *
- * The `last_seen_at` column is bumped by the per-request preHandler
- * `scheduleLastSeenBump` (coalesced 30s per user). The client polls
- * this route every 30s via `useLastSeen`.
+ * The `last_seen_at` column is bumped by authenticated HTTP requests,
+ * coalesced per user. It is historical request activity, not a live
+ * online/idle/offline signal.
  *
- * TODO(stack-3 follow-up): gate on shared-room membership so users
- * can't enumerate presence for arbitrary user ids. M1 ships ungated
- * (auth-only) — same threat surface as any "online status" indicator.
+ * This legacy route is auth-only. A Room member-presence view must enforce
+ * current Room membership rather than rely on this per-user read.
  */
 export function usersPresenceRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/api/users/:id/presence", async (request, reply) => {

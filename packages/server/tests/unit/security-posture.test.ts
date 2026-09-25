@@ -1052,6 +1052,32 @@ describe("GET /api/security/audit-log", () => {
     expect(body.hasMore).toBe(false);
   });
 
+  test("moderation audit filtering preserves existing owner visibility without granting guests access", async () => {
+    writeSecurityAuditEvent(auditLogPath, {
+      kind: "moderation_action", ts: "2026-04-24T12:00:00.000Z", actorId: null,
+      ip: "unknown", userAgent: undefined, correlationId: "committed-operation",
+      requesterUserId: "requesting-human", subjectId: "moderation-subject", action: "ban", roomId: null,
+    });
+    writeSecurityAuditEvent(auditLogPath, {
+      kind: "capability_check_failed", ts: "2026-04-24T12:01:00.000Z", actorId: OWNER_ACTOR_ID,
+      ip: "unknown", userAgent: undefined, capability: "manage_server_security", attemptedRoute: "fixture",
+    });
+    const res = await app.inject({ method: "GET", url: "/api/security/audit-log?kinds=moderation_action",
+      headers: { Authorization: `Bearer ${ownerToken}` } });
+    expect(res.statusCode).toBe(200);
+    const body: { events: readonly SecurityAuditEvent[] } = res.json();
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0]?.kind).toBe("moderation_action");
+    const guest = await app.inject({ method: "GET", url: "/api/security/audit-log?kinds=moderation_action",
+      headers: { Authorization: `Bearer ${householdToken}` } });
+    expect(guest.statusCode).toBe(403);
+    userCaps.set(HOUSEHOLD_USER_ID, ["view_audit_log"]);
+    const admin = await app.inject({ method: "GET", url: "/api/security/audit-log?kinds=moderation_action",
+      headers: { Authorization: `Bearer ${householdToken}` } });
+    expect(admin.statusCode).toBe(200);
+    expect(admin.json<{ events: unknown[] }>().events).toEqual([]);
+  });
+
   test("audit continuation returns 400 when malformed and 409 when stale", async () => {
     writeSecurityAuditEvent(auditLogPath, {
       kind: "posture_changed",

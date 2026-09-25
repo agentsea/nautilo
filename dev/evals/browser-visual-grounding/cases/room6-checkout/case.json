@@ -1,0 +1,926 @@
+{
+  "schemaVersion": 1,
+  "id": "room6-checkout",
+  "description": "AgentSea Gym room 6 checkout state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room6",
+  "capturedAt": "2026-09-21T07:39:04.933Z",
+  "captureDurationMs": 120,
+  "evidencePairWindowMs": 81,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e10": {
+      "role": "textbox",
+      "name": "Continuous"
+    },
+    "e100": {
+      "role": "option",
+      "name": "October"
+    },
+    "e101": {
+      "role": "option",
+      "name": "November"
+    },
+    "e102": {
+      "role": "option",
+      "name": "December"
+    },
+    "e103": {
+      "role": "option",
+      "name": "2046"
+    },
+    "e104": {
+      "role": "option",
+      "name": "2045"
+    },
+    "e105": {
+      "role": "option",
+      "name": "2044"
+    },
+    "e106": {
+      "role": "option",
+      "name": "2043"
+    },
+    "e107": {
+      "role": "option",
+      "name": "2042"
+    },
+    "e108": {
+      "role": "option",
+      "name": "2041"
+    },
+    "e109": {
+      "role": "option",
+      "name": "2040"
+    },
+    "e11": {
+      "role": "button",
+      "name": ""
+    },
+    "e110": {
+      "role": "option",
+      "name": "2039"
+    },
+    "e111": {
+      "role": "option",
+      "name": "2038"
+    },
+    "e112": {
+      "role": "option",
+      "name": "2037"
+    },
+    "e113": {
+      "role": "option",
+      "name": "2036"
+    },
+    "e114": {
+      "role": "option",
+      "name": "2035"
+    },
+    "e115": {
+      "role": "option",
+      "name": "2034"
+    },
+    "e116": {
+      "role": "option",
+      "name": "2033"
+    },
+    "e117": {
+      "role": "option",
+      "name": "2032"
+    },
+    "e118": {
+      "role": "option",
+      "name": "2031"
+    },
+    "e119": {
+      "role": "option",
+      "name": "2030"
+    },
+    "e12": {
+      "role": "combobox",
+      "name": ""
+    },
+    "e120": {
+      "role": "option",
+      "name": "2029"
+    },
+    "e121": {
+      "role": "option",
+      "name": "2028"
+    },
+    "e122": {
+      "role": "option",
+      "name": "2027"
+    },
+    "e123": {
+      "role": "option",
+      "name": "2026"
+    },
+    "e124": {
+      "role": "option",
+      "name": "2025"
+    },
+    "e125": {
+      "role": "option",
+      "name": "2024"
+    },
+    "e126": {
+      "role": "option",
+      "name": "2023"
+    },
+    "e127": {
+      "role": "option",
+      "name": "2022"
+    },
+    "e128": {
+      "role": "option",
+      "name": "2021"
+    },
+    "e129": {
+      "role": "option",
+      "name": "2020"
+    },
+    "e13": {
+      "role": "combobox",
+      "name": ""
+    },
+    "e130": {
+      "role": "option",
+      "name": "2019"
+    },
+    "e131": {
+      "role": "option",
+      "name": "2018"
+    },
+    "e132": {
+      "role": "option",
+      "name": "2017"
+    },
+    "e133": {
+      "role": "option",
+      "name": "2016"
+    },
+    "e134": {
+      "role": "option",
+      "name": "2015"
+    },
+    "e135": {
+      "role": "option",
+      "name": "2014"
+    },
+    "e136": {
+      "role": "option",
+      "name": "2013"
+    },
+    "e137": {
+      "role": "option",
+      "name": "2012"
+    },
+    "e138": {
+      "role": "option",
+      "name": "2011"
+    },
+    "e139": {
+      "role": "option",
+      "name": "2010"
+    },
+    "e14": {
+      "role": "button",
+      "name": ""
+    },
+    "e140": {
+      "role": "option",
+      "name": "2009"
+    },
+    "e141": {
+      "role": "option",
+      "name": "2008"
+    },
+    "e142": {
+      "role": "option",
+      "name": "2007"
+    },
+    "e143": {
+      "role": "option",
+      "name": "2006"
+    },
+    "e144": {
+      "role": "option",
+      "name": "2005"
+    },
+    "e145": {
+      "role": "option",
+      "name": "2004"
+    },
+    "e146": {
+      "role": "option",
+      "name": "2003"
+    },
+    "e147": {
+      "role": "option",
+      "name": "2002"
+    },
+    "e148": {
+      "role": "option",
+      "name": "2001"
+    },
+    "e149": {
+      "role": "option",
+      "name": "2000"
+    },
+    "e15": {
+      "role": "button",
+      "name": "30"
+    },
+    "e150": {
+      "role": "option",
+      "name": "1999"
+    },
+    "e151": {
+      "role": "option",
+      "name": "1998"
+    },
+    "e152": {
+      "role": "option",
+      "name": "1997"
+    },
+    "e153": {
+      "role": "option",
+      "name": "1996"
+    },
+    "e154": {
+      "role": "option",
+      "name": "1995"
+    },
+    "e155": {
+      "role": "option",
+      "name": "1994"
+    },
+    "e156": {
+      "role": "option",
+      "name": "1993"
+    },
+    "e157": {
+      "role": "option",
+      "name": "1992"
+    },
+    "e158": {
+      "role": "option",
+      "name": "1991"
+    },
+    "e159": {
+      "role": "option",
+      "name": "1990"
+    },
+    "e16": {
+      "role": "button",
+      "name": "31"
+    },
+    "e160": {
+      "role": "option",
+      "name": "1989"
+    },
+    "e161": {
+      "role": "option",
+      "name": "1988"
+    },
+    "e162": {
+      "role": "option",
+      "name": "1987"
+    },
+    "e163": {
+      "role": "option",
+      "name": "1986"
+    },
+    "e164": {
+      "role": "option",
+      "name": "1985"
+    },
+    "e165": {
+      "role": "option",
+      "name": "1984"
+    },
+    "e166": {
+      "role": "option",
+      "name": "1983"
+    },
+    "e167": {
+      "role": "option",
+      "name": "1982"
+    },
+    "e168": {
+      "role": "option",
+      "name": "1981"
+    },
+    "e169": {
+      "role": "option",
+      "name": "1980"
+    },
+    "e17": {
+      "role": "button",
+      "name": "1"
+    },
+    "e170": {
+      "role": "option",
+      "name": "1979"
+    },
+    "e171": {
+      "role": "option",
+      "name": "1978"
+    },
+    "e172": {
+      "role": "option",
+      "name": "1977"
+    },
+    "e173": {
+      "role": "option",
+      "name": "1976"
+    },
+    "e174": {
+      "role": "option",
+      "name": "1975"
+    },
+    "e175": {
+      "role": "option",
+      "name": "1974"
+    },
+    "e176": {
+      "role": "option",
+      "name": "1973"
+    },
+    "e177": {
+      "role": "option",
+      "name": "1972"
+    },
+    "e178": {
+      "role": "option",
+      "name": "1971"
+    },
+    "e179": {
+      "role": "option",
+      "name": "1970"
+    },
+    "e18": {
+      "role": "button",
+      "name": "2"
+    },
+    "e180": {
+      "role": "option",
+      "name": "1969"
+    },
+    "e181": {
+      "role": "option",
+      "name": "1968"
+    },
+    "e182": {
+      "role": "option",
+      "name": "1967"
+    },
+    "e183": {
+      "role": "option",
+      "name": "1966"
+    },
+    "e184": {
+      "role": "option",
+      "name": "1965"
+    },
+    "e185": {
+      "role": "option",
+      "name": "1964"
+    },
+    "e186": {
+      "role": "option",
+      "name": "1963"
+    },
+    "e187": {
+      "role": "option",
+      "name": "1962"
+    },
+    "e188": {
+      "role": "option",
+      "name": "1961"
+    },
+    "e189": {
+      "role": "option",
+      "name": "1960"
+    },
+    "e19": {
+      "role": "button",
+      "name": "3"
+    },
+    "e190": {
+      "role": "option",
+      "name": "1959"
+    },
+    "e191": {
+      "role": "option",
+      "name": "1958"
+    },
+    "e192": {
+      "role": "option",
+      "name": "1957"
+    },
+    "e193": {
+      "role": "option",
+      "name": "1956"
+    },
+    "e194": {
+      "role": "option",
+      "name": "1955"
+    },
+    "e195": {
+      "role": "option",
+      "name": "1954"
+    },
+    "e196": {
+      "role": "option",
+      "name": "1953"
+    },
+    "e197": {
+      "role": "option",
+      "name": "1952"
+    },
+    "e198": {
+      "role": "option",
+      "name": "1951"
+    },
+    "e199": {
+      "role": "option",
+      "name": "1950"
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room #6: Far, far away"
+    },
+    "e20": {
+      "role": "button",
+      "name": "4"
+    },
+    "e200": {
+      "role": "option",
+      "name": "1949"
+    },
+    "e201": {
+      "role": "option",
+      "name": "1948"
+    },
+    "e202": {
+      "role": "option",
+      "name": "1947"
+    },
+    "e203": {
+      "role": "option",
+      "name": "1946"
+    },
+    "e204": {
+      "role": "option",
+      "name": "1945"
+    },
+    "e205": {
+      "role": "option",
+      "name": "1944"
+    },
+    "e206": {
+      "role": "option",
+      "name": "1943"
+    },
+    "e207": {
+      "role": "option",
+      "name": "1942"
+    },
+    "e208": {
+      "role": "option",
+      "name": "1941"
+    },
+    "e209": {
+      "role": "option",
+      "name": "1940"
+    },
+    "e21": {
+      "role": "button",
+      "name": "5"
+    },
+    "e210": {
+      "role": "option",
+      "name": "1939"
+    },
+    "e211": {
+      "role": "option",
+      "name": "1938"
+    },
+    "e212": {
+      "role": "option",
+      "name": "1937"
+    },
+    "e213": {
+      "role": "option",
+      "name": "1936"
+    },
+    "e214": {
+      "role": "option",
+      "name": "1935"
+    },
+    "e215": {
+      "role": "option",
+      "name": "1934"
+    },
+    "e216": {
+      "role": "option",
+      "name": "1933"
+    },
+    "e217": {
+      "role": "option",
+      "name": "1932"
+    },
+    "e218": {
+      "role": "option",
+      "name": "1931"
+    },
+    "e219": {
+      "role": "option",
+      "name": "1930"
+    },
+    "e22": {
+      "role": "button",
+      "name": "6"
+    },
+    "e220": {
+      "role": "option",
+      "name": "1929"
+    },
+    "e221": {
+      "role": "option",
+      "name": "1928"
+    },
+    "e222": {
+      "role": "option",
+      "name": "1927"
+    },
+    "e223": {
+      "role": "option",
+      "name": "1926"
+    },
+    "e23": {
+      "role": "button",
+      "name": "7"
+    },
+    "e24": {
+      "role": "button",
+      "name": "8"
+    },
+    "e25": {
+      "role": "button",
+      "name": "9"
+    },
+    "e26": {
+      "role": "button",
+      "name": "10"
+    },
+    "e27": {
+      "role": "button",
+      "name": "11"
+    },
+    "e28": {
+      "role": "button",
+      "name": "12"
+    },
+    "e29": {
+      "role": "button",
+      "name": "13"
+    },
+    "e3": {
+      "role": "LabelText",
+      "name": ""
+    },
+    "e30": {
+      "role": "button",
+      "name": "14"
+    },
+    "e31": {
+      "role": "button",
+      "name": "15"
+    },
+    "e32": {
+      "role": "button",
+      "name": "16"
+    },
+    "e33": {
+      "role": "button",
+      "name": "17"
+    },
+    "e34": {
+      "role": "button",
+      "name": "18"
+    },
+    "e35": {
+      "role": "button",
+      "name": "19"
+    },
+    "e36": {
+      "role": "button",
+      "name": "20"
+    },
+    "e37": {
+      "role": "button",
+      "name": "21"
+    },
+    "e38": {
+      "role": "button",
+      "name": "22"
+    },
+    "e39": {
+      "role": "button",
+      "name": "23"
+    },
+    "e4": {
+      "role": "button",
+      "name": "SUBMIT"
+    },
+    "e40": {
+      "role": "button",
+      "name": "24"
+    },
+    "e41": {
+      "role": "button",
+      "name": "25"
+    },
+    "e42": {
+      "role": "button",
+      "name": "26"
+    },
+    "e43": {
+      "role": "button",
+      "name": "27"
+    },
+    "e44": {
+      "role": "button",
+      "name": "28"
+    },
+    "e45": {
+      "role": "button",
+      "name": "29"
+    },
+    "e46": {
+      "role": "button",
+      "name": "30"
+    },
+    "e47": {
+      "role": "button",
+      "name": "1"
+    },
+    "e48": {
+      "role": "button",
+      "name": "2"
+    },
+    "e49": {
+      "role": "button",
+      "name": "3"
+    },
+    "e5": {
+      "role": "link",
+      "name": "Back to Home"
+    },
+    "e50": {
+      "role": "button",
+      "name": "27"
+    },
+    "e51": {
+      "role": "button",
+      "name": "28"
+    },
+    "e52": {
+      "role": "button",
+      "name": "29"
+    },
+    "e53": {
+      "role": "button",
+      "name": "30"
+    },
+    "e54": {
+      "role": "button",
+      "name": "1"
+    },
+    "e55": {
+      "role": "button",
+      "name": "2"
+    },
+    "e56": {
+      "role": "button",
+      "name": "3"
+    },
+    "e57": {
+      "role": "button",
+      "name": "4"
+    },
+    "e58": {
+      "role": "button",
+      "name": "5"
+    },
+    "e59": {
+      "role": "button",
+      "name": "6"
+    },
+    "e6": {
+      "role": "generic",
+      "name": ""
+    },
+    "e60": {
+      "role": "button",
+      "name": "7"
+    },
+    "e61": {
+      "role": "button",
+      "name": "8"
+    },
+    "e62": {
+      "role": "button",
+      "name": "9"
+    },
+    "e63": {
+      "role": "button",
+      "name": "10"
+    },
+    "e64": {
+      "role": "button",
+      "name": "11"
+    },
+    "e65": {
+      "role": "button",
+      "name": "12"
+    },
+    "e66": {
+      "role": "button",
+      "name": "13"
+    },
+    "e67": {
+      "role": "button",
+      "name": "14"
+    },
+    "e68": {
+      "role": "button",
+      "name": "15"
+    },
+    "e69": {
+      "role": "button",
+      "name": "16"
+    },
+    "e7": {
+      "role": "generic",
+      "name": ""
+    },
+    "e70": {
+      "role": "button",
+      "name": "17"
+    },
+    "e71": {
+      "role": "button",
+      "name": "18"
+    },
+    "e72": {
+      "role": "button",
+      "name": "19"
+    },
+    "e73": {
+      "role": "button",
+      "name": "20"
+    },
+    "e74": {
+      "role": "button",
+      "name": "21"
+    },
+    "e75": {
+      "role": "button",
+      "name": "22"
+    },
+    "e76": {
+      "role": "button",
+      "name": "23"
+    },
+    "e77": {
+      "role": "button",
+      "name": "24"
+    },
+    "e78": {
+      "role": "button",
+      "name": "25"
+    },
+    "e79": {
+      "role": "button",
+      "name": "26"
+    },
+    "e8": {
+      "role": "generic",
+      "name": ""
+    },
+    "e80": {
+      "role": "button",
+      "name": "27"
+    },
+    "e81": {
+      "role": "button",
+      "name": "28"
+    },
+    "e82": {
+      "role": "button",
+      "name": "29"
+    },
+    "e83": {
+      "role": "button",
+      "name": "30"
+    },
+    "e84": {
+      "role": "button",
+      "name": "31"
+    },
+    "e85": {
+      "role": "checkbox",
+      "name": "Pet-friendly"
+    },
+    "e86": {
+      "role": "textbox",
+      "name": "Location"
+    },
+    "e87": {
+      "role": "generic",
+      "name": ""
+    },
+    "e88": {
+      "role": "generic",
+      "name": ""
+    },
+    "e89": {
+      "role": "textbox",
+      "name": "Check-in"
+    },
+    "e9": {
+      "role": "textbox",
+      "name": "Early"
+    },
+    "e90": {
+      "role": "textbox",
+      "name": "Check-out"
+    },
+    "e91": {
+      "role": "option",
+      "name": "January"
+    },
+    "e92": {
+      "role": "option",
+      "name": "February"
+    },
+    "e93": {
+      "role": "option",
+      "name": "March"
+    },
+    "e94": {
+      "role": "option",
+      "name": "April"
+    },
+    "e95": {
+      "role": "option",
+      "name": "May"
+    },
+    "e96": {
+      "role": "option",
+      "name": "June"
+    },
+    "e97": {
+      "role": "option",
+      "name": "July"
+    },
+    "e98": {
+      "role": "option",
+      "name": "August"
+    },
+    "e99": {
+      "role": "option",
+      "name": "September"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 10054,
+    "sha256": "3da9db8c6ebec596705ced21985f419feddcf5fd22afacc18f2d4e6ff8cfbb15"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 93782,
+    "sha256": "86cd1f9efce38ac6d535628fd560f877efbf6ef74f218c4bfce66536b2028d4e"
+  }
+}

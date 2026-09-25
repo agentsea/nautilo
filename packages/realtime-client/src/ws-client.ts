@@ -92,6 +92,8 @@ export interface RealtimeClientOptions {
    * Set to 0 to disable heartbeat (tests).
    */
   heartbeatIntervalMs?: number | undefined;
+  /** Local Human activity snapshot at ping time; omitted for older callers. */
+  isIdle?: (() => boolean) | undefined;
   /**
    * Reconnect if no inbound message for this long (ms). Default 75_000
    * (= 5 × the ping interval). Any inbound message (pong, event) resets the
@@ -187,6 +189,7 @@ export function createWsRealtimeClient(
     reconnectBaseMs = DEFAULT_RECONNECT_BASE_MS,
     reconnectMaxMs = DEFAULT_RECONNECT_MAX_MS,
     heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
+    isIdle,
     heartbeatTimeoutMs = DEFAULT_HEARTBEAT_TIMEOUT_MS,
     outboundQueueLimit = DEFAULT_OUTBOUND_QUEUE_LIMIT,
   } = options;
@@ -247,7 +250,7 @@ export function createWsRealtimeClient(
       }
       if (ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(JSON.stringify({ type: "ping" }));
+          ws.send(JSON.stringify(isIdle ? { type: "ping", idle: isIdle() } : { type: "ping" }));
         } catch (err) {
           onError?.(err instanceof Error ? err : new Error(String(err)));
         }

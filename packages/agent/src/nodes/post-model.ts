@@ -1,11 +1,12 @@
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
+import { actors, and, eq, getTaskById, roomMembers, taskRuns } from "@nautilo/db";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { interrupt, task } from "@langchain/langgraph";
 import { randomUUID } from "node:crypto";
 import type { NautiloState } from "../agent/state";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
-import type { PolicyResolver, ToolAccessDecision } from "@nautilo/trust";
+import { findLocalUserByHandle, type PolicyResolver, type ToolAccessDecision } from "@nautilo/trust";
 import { getToolCatalog } from "@nautilo/catalog";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
 import type { ProtectedAgentMemoryAccessPort } from "@nautilo/lattice-bridge";
@@ -94,6 +95,7 @@ import {
   type ComputerUseRootGrantResolver,
 } from "../runtime/computer-use-admission";
 import { getLocalMcpToolRuntime } from "../tools/mcp/local-mcp-runtime";
+import { getTaskToolRuntime } from "../tools/tasks/task-tool-runtime";
 import {
   isRecallRecordsToolAvailable,
   recallRecordsToolContextForState,
@@ -149,6 +151,8 @@ interface IdentityChallengeEnrollPinPayload {
  * before. Production wires this from `createNautiloGraph`'s deps.
  */
 export interface PostModelDeps {
+  /** Server-verified redundant self-contact check for an existing scheduled Task. */
+  isRedundantScheduledSelfContact?: (state: NautiloState, call: ToolCall) => Promise<boolean>;
   /** Live Server policy selection; never inferred from protected-port absence. */
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
   protectedMemoryAccessPortForState?: (
@@ -224,6 +228,69 @@ export interface PostModelDeps {
    * and a non-admission always leaves the contained path intact.
    */
   resolveUncontainedHostCommandsDispatch?: UncontainedHostCommandsDispatchResolver;
+}
+
+const SCHEDULED_SELF_CONTACT_FEEDBACK =
+  "No separate message was sent. This scheduled Task already returns your final answer to the requesting Human's original conversation. Finish with the reminder or result; Nautilo will deliver it through that saved route. Do not retry ask_peer for this delivery.";
+
+async function isRedundantScheduledSelfContact(state: NautiloState, call: ToolCall): Promise<boolean> {
+  if (call.name !== "ask_peer" || state.taskRun !== true || state.subagentRun !== true
+    || state.trustedExecutionEntrypoint !== "background.task"
+    || !state.currentTaskId || !state.currentTaskRunId || !state.langgraphThreadId
+    || !state.callingRoomId || !state.causalHumanUserId || !state.agentId || !state.roomId
+    || state.awaitResponse) return false;
+
+  const args = call.args as Record<string, unknown> | null | undefined;
+  const handle = typeof args?.["peer_handle"] === "string"
+    ? args["peer_handle"].trim().replace(/^@/, "") : "";
+  const returnInstructions = args?.["return_instructions"];
+  if (!handle || typeof args?.["message_to_peer"] !== "string"
+    || !args["message_to_peer"].trim()
+    || typeof returnInstructions !== "string"
+    || !/\b(?:no|without)\s+(?:human\s+)?(?:reply|response)\b|\b(?:reply|response)(?:\s+from\s+(?:the\s+)?requester)?\s+(?:is\s+)?not\s+(?:needed|required|necessary)\b/i.test(returnInstructions)
+    || (args["tools"] !== undefined && (!Array.isArray(args["tools"]) || args["tools"].length > 0))
+    || (args["artifact_ids"] !== undefined
+      && (!Array.isArray(args["artifact_ids"]) || args["artifact_ids"].length > 0))
+    || (args["include_focused_artifacts"] !== undefined && args["include_focused_artifacts"] !== false)
+  ) return false;
+
+  try {
+    const { db } = getTaskToolRuntime();
+    const scheduledTask = await getTaskById(db, state.currentTaskId);
+    if (scheduledTask?.preset !== "schedule"
+      || scheduledTask.ownerId !== state.userId
+      || scheduledTask.requestorId !== state.causalHumanUserId
+      || scheduledTask.agentId !== state.agentId
+      || scheduledTask.callingRoomId !== state.callingRoomId
+      || scheduledTask.targetRoomId !== state.roomId
+      || scheduledTask.awaitResponse
+      || !["wake", "raw", "raw_and_wake"].includes(scheduledTask.resultDelivery)) return false;
+
+    const [run] = await db.select({ id: taskRuns.id }).from(taskRuns).where(and(
+      eq(taskRuns.id, state.currentTaskRunId),
+      eq(taskRuns.taskId, scheduledTask.id),
+      eq(taskRuns.graphThreadId, state.langgraphThreadId),
+    )).limit(1);
+    if (!run) return false;
+    // Replacing a private DM with the saved return route is safe only when
+    // that route has exactly the same Human and Agent audience.
+    const callingMembers = await db.select({
+      kind: actors.kind,
+      userId: actors.ownerId,
+      agentId: actors.agentId,
+    }).from(roomMembers).innerJoin(actors, eq(roomMembers.actorId, actors.id))
+      .where(eq(roomMembers.roomId, scheduledTask.callingRoomId));
+    if (callingMembers.length !== 2
+      || !callingMembers.some((member) => member.kind === "user"
+        && member.userId === scheduledTask.requestorId)
+      || !callingMembers.some((member) => member.kind === "agent"
+        && member.agentId === scheduledTask.agentId)) return false;
+    const peer = await findLocalUserByHandle(handle);
+    return peer?.id === scheduledTask.requestorId;
+  } catch {
+    // A missing runtime or failed identity read must never waive peer approval.
+    return false;
+  }
 }
 
 /**
@@ -484,6 +551,7 @@ export function createPostModelNode(
     let pending: ToolCall[] = [];
     const forbidden: Array<{ tc: ToolCall; reason?: string }> = [];
     const prerequisiteFailures = new Map<ToolCall, string>();
+    const correctiveFeedback = new Map<ToolCall, string>();
     const protectedMemoryEntries = new Map<ToolCall, ProveItToolInfo>();
     const memoryPreparationFailures = new Map<ToolCall, string>();
     const protectedMemoryAccessPort = deps?.protectedMemoryAccessPortForState?.(state);
@@ -536,6 +604,12 @@ export function createPostModelNode(
         }
         warn(`[post_model] Tool ${tc.name} forbidden: not available in actor catalog snapshot`);
         forbidden.push({ tc, reason: "not available in actor catalog snapshot" });
+        continue;
+      }
+      if (tc.name === "ask_peer"
+        && await (deps?.isRedundantScheduledSelfContact ?? isRedundantScheduledSelfContact)(state, tc)) {
+        correctiveFeedback.set(tc, SCHEDULED_SELF_CONTACT_FEEDBACK);
+        forbidden.push({ tc, reason: "scheduled result already has a return route" });
         continue;
       }
       let decision: ToolAccessDecision = tc.name === "recall_records"
@@ -1289,6 +1363,7 @@ export function createPostModelNode(
           content: semanticComputerDenied
             ? "Computer Use is unavailable because its live Desktop authorization or provider route is no longer current. Do not retry this tool or ask the Human to enable a separate tool permission. Refresh Computer Use readiness, then start a fresh foreground request."
             : prerequisiteFailures.get(f.tc)
+              ?? correctiveFeedback.get(f.tc)
               ?? memoryPreparationFailures.get(f.tc)
               ?? `This tool is not available to you. You do not have permission to use ${f.tc.name}.`,
           tool_call_id: f.tc.id ?? `forbidden_${f.tc.name}_${Date.now()}`,

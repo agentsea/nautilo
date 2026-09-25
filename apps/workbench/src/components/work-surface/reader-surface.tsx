@@ -129,6 +129,7 @@ export function ReaderSurface({
   artifactBytes?: ArtifactViewerByteSource;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const displayedTargetRef = useRef<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const [openError, setOpenError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -159,7 +160,7 @@ export function ReaderSurface({
     setOpenWithAppsResult({ targetIdentity: associationIdentity, apps: [] });
     if (installedApps.kind !== "ready" || isXlsxPath(file.path)) return;
 
-    // D390 — for HTML-association candidates we MUST read the content: a native
+    // For HTML-association candidates we must read the content: a native
     // Nautilo document manifest is authoritative over any app's bare-`.html`
     // extension claim. `matchingReadyAppsForFileWithContent` encapsulates the
     // precedence (manifest → content-only/suppress extension; no manifest →
@@ -218,6 +219,7 @@ export function ReaderSurface({
   useEffect(() => {
     if (file.kind === "fs") {
       if (!isUnderRoot(file.rootPath, file.path)) {
+        displayedTargetRef.current = null;
         setState({ kind: "error", message: "Path is not under the expected folder." });
         return;
       }
@@ -228,13 +230,28 @@ export function ReaderSurface({
         const dot = name.lastIndexOf(".");
         return dot > 0 && dot < name.length - 1 ? name.slice(dot).toLowerCase() : null;
       })();
+      displayedTargetRef.current = null;
       setState({ kind: "unsupported", ext });
       return;
     }
     let cancelled = false;
+    let timedOut = false;
     const controller = new AbortController();
     const deadlineAt = Date.now() + BINARY_PREVIEW_LOAD_TIMEOUT_MS;
-    setState({ kind: "loading" });
+    const targetIdentity = file.kind === "artifact"
+      ? `artifact:${file.roomId ?? ""}:${file.id}:${file.path}`
+      : `fs:${file.rootPath}:${file.path}`;
+    const deadlineTimer = setTimeout(() => {
+      if (cancelled) return;
+      timedOut = true;
+      controller.abort(new DOMException("Preview timed out. Try again.", "TimeoutError"));
+      displayedTargetRef.current = null;
+      setState({ kind: "error", message: "Preview timed out. Try again." });
+    }, BINARY_PREVIEW_LOAD_TIMEOUT_MS);
+    // A changed artifact revision refreshes in place. Keep the last readable
+    // document mounted while its next version is fetched.
+    setState((current) => current.kind === "ready" && displayedTargetRef.current === targetIdentity
+      ? current : { kind: "loading" });
 
     // A load can lose the race with app startup / reconnect: right after
     // an Electron restart the reader re-opens its last target and fires
@@ -247,36 +264,50 @@ export function ReaderSurface({
     const retryDelaysMs = [400, 800, 1600, 3000];
 
     void (async () => {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const result: ViewerLoadResult = await adapter.load(file, {
-            maxTextBytes: MAX_TEXT_PREVIEW_BYTES,
-            signal: controller.signal,
-            deadlineAt,
-            ...(artifactBytes === undefined ? {} : { artifactBytes }),
-          });
-          if (cancelled) return;
-          if (result.kind === "ready") setState({ ...result, adapter });
-          else setState(result);
-          return;
-        } catch (err) {
-          if (cancelled) return;
-          const delay = retryDelaysMs[attempt];
-          if (!controller.signal.aborted && isNetworkLoadError(err) && delay !== undefined) {
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            if (cancelled) return;
-            continue;
+      try {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const result: ViewerLoadResult = await adapter.load(file, {
+              maxTextBytes: MAX_TEXT_PREVIEW_BYTES,
+              signal: controller.signal,
+              deadlineAt,
+              ...(artifactBytes === undefined ? {} : { artifactBytes }),
+            });
+            if (cancelled || timedOut) return;
+            if (result.kind === "ready") {
+              displayedTargetRef.current = targetIdentity;
+              setState({ ...result, adapter });
+            } else {
+              displayedTargetRef.current = null;
+              setState(result);
+            }
+            return;
+          } catch (err) {
+            if (cancelled || timedOut) return;
+            const delay = retryDelaysMs[attempt];
+            if (!controller.signal.aborted && isNetworkLoadError(err) && delay !== undefined) {
+              await new Promise((resolve) => setTimeout(resolve, delay));
+              if (cancelled || timedOut) return;
+              continue;
+            }
+            setState({
+              kind: "error",
+              message: controller.signal.reason instanceof DOMException &&
+                controller.signal.reason.name === "TimeoutError"
+                ? "Preview timed out. Try again."
+                : err instanceof Error ? err.message : String(err),
+            });
+            displayedTargetRef.current = null;
+            return;
           }
-          setState({
-            kind: "error",
-            message: err instanceof Error ? err.message : String(err),
-          });
-          return;
         }
+      } finally {
+        clearTimeout(deadlineTimer);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(deadlineTimer);
       controller.abort(new DOMException("Reader selection changed.", "AbortError"));
     };
   }, [adapter, artifactBytes, file, retryNonce]);

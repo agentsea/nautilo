@@ -212,8 +212,13 @@ import { composeDesktopNonComputerUseCapabilities } from "./relay-capabilities.t
 import {
   DesktopRelaySession,
   type BrowserCoordinateScalePort,
+  type BrowserVisualObservationPort,
   type DesktopRelayGoogleOAuthContext,
 } from "./desktop-relay-session.ts";
+import {
+  extractBrowserVisualObservation,
+  resolveBrowserVisualGroundingHelper,
+} from "./browser-visual-observation.ts";
 import {
   agentBrowserInstallHint,
   browserDispatchSession,
@@ -2106,6 +2111,8 @@ export interface DispatchHandlerOptions {
   readonly mediaSessions?: MediaSessionsPort | undefined;
   /** Session-local browser screenshot coordinate scale owner. */
   readonly browserCoordinateScales?: BrowserCoordinateScalePort | undefined;
+  /** Session-local one-shot browser visual observation owner. */
+  readonly browserVisualObservations?: BrowserVisualObservationPort | undefined;
   /** Exact immutable OAuth tuple captured by this relay session. */
   readonly googleOAuthContext?: DesktopRelayGoogleOAuthContext | null | undefined;
   /** Retirement fence checked before local credential side effects. */
@@ -2156,12 +2163,15 @@ export function makeDispatchHandler(
     return (req, signal) => settleBoundWork(dispatch(req, signal));
   }
   const standaloneSession = options.mediaSessions === undefined ||
-    options.browserCoordinateScales === undefined
+    options.browserCoordinateScales === undefined ||
+    options.browserVisualObservations === undefined
     ? new DesktopRelaySession({ serverUrl: "" })
     : null;
   const mediaSessions = options.mediaSessions ?? standaloneSession!.mediaSessions;
   const browserCoordinateScales = options.browserCoordinateScales ??
     standaloneSession!.browserCoordinateScales;
+  const browserVisualObservations = options.browserVisualObservations ??
+    standaloneSession!.browserVisualObservations;
   const googleOAuthContext = options.googleOAuthContext ?? null;
   const isSessionClosed = options.isSessionClosed ?? (() => false);
   const isProduction =
@@ -2255,6 +2265,9 @@ export function makeDispatchHandler(
     snapshotStore: options.browserPageSnapshotStore,
     getCoordinateScale: browserCoordinateScales.get,
     setCoordinateScale: browserCoordinateScales.set,
+    getVisualObservation: browserVisualObservations.get,
+    setVisualObservation: browserVisualObservations.set,
+    deleteVisualObservation: browserVisualObservations.delete,
     exec: async (binary, argv, execOptions) =>
       await execFileAsync(binary, argv, execOptions),
     pruneCaptures: () => {
@@ -2265,13 +2278,27 @@ export function makeDispatchHandler(
       );
     },
     capturePath: () => captureFilePath(BROWSER_CAPTURE_DIR, BROWSER_CAPTURE_PREFIX),
+    removeCapture: (capturePath) => {
+      try { fsSync.rmSync(capturePath, { force: true }); } catch { /* best-effort owned temp cleanup */ }
+    },
     readCapturePng: (capturePath) => fsSync.readFileSync(capturePath),
     captureDimensions: parsePngIhdrDimensions,
-    visionFromPng: (capturePath, text) => visionResultFromPng({
+    extractVisualObservation: async (capturePath, image, signal) => {
+      const helperPath = resolveBrowserVisualGroundingHelper({
+        platform: process.platform,
+        isPackaged: await resolveElectronIsPackaged(),
+        resourcesPath: process.resourcesPath ?? null,
+        devVendorRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "vendor"),
+      });
+      if (helperPath === null) throw new Error("Apple Vision browser grounding helper is unavailable");
+      return await extractBrowserVisualObservation({ helperPath, imagePath: capturePath, image, ...(signal ? { signal } : {}) });
+    },
+    visionFromPng: (capturePath, text, visualObservation) => visionResultFromPng({
       path: capturePath,
       text,
       kind: "browser_screenshot_vision",
       maxBytes: BROWSER_VISION_PNG_MAX_BYTES,
+      ...(visualObservation === undefined ? {} : { visualObservation }),
     }),
   });
   const googleWorkspace = createGoogleWorkspaceDispatchHandler({
@@ -3604,6 +3631,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       browserPageSnapshotStore: candidateSession.browserPageSnapshotStore,
       mediaSessions: candidateSession.mediaSessions,
       browserCoordinateScales: candidateSession.browserCoordinateScales,
+      browserVisualObservations: candidateSession.browserVisualObservations,
       googleOAuthContext: candidateSession.googleOAuthContext,
       isSessionClosed: () => candidateSession.closed,
       settleBoundWork: (work) => candidateSession.settleBoundWork(work),

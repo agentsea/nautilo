@@ -408,8 +408,7 @@ function boundedDesktopSmokeFailureEvidence(run: Run): string {
   const diagnostics = fileOutput
     .split("\n")
     .filter((line) => line.includes("[cold-boot]"))
-    .join("\n")
-    .slice(-4_000);
+    .join("\n");
   return [
     `stdoutBytes=${Buffer.byteLength(run.stdout)} stderrBytes=${Buffer.byteLength(run.stderr)} tupleLogBytes=${Buffer.byteLength(fileOutput)}`,
     diagnostics ? `coldBootDiagnostics:\n${diagnostics}` : "coldBootDiagnostics=<none>",
