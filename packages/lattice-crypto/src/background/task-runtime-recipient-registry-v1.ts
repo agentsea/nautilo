@@ -15,16 +15,11 @@ import {
   withTaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionEvidenceInputV1,
   type TaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionNamespaceAuthorityV1,
 } from "./task-runtime-execution-evidence-v1.ts";
 
-type TaskRuntimeCurrentNamespaceAuthorityV1 = Readonly<{
-  readonly ordinal: number;
-  readonly namespaceId: string;
-  readonly domainId: string;
-  readonly operations: readonly ("decrypt" | "encrypt")[];
-  readonly expectedAccessRevision: number;
-  readonly expectedPolicyRevision: number;
-}>;
+type TaskRuntimeCurrentNamespaceAuthorityV1 =
+  TaskRuntimeExecutionNamespaceAuthorityV1;
 
 function resultAuthorityIsCurrent(input: Readonly<{
   readonly workId: string;
@@ -379,6 +374,7 @@ export class TaskRuntimeRecipientRegistryV1 {
                 input.current.recipientAuthorizationRevision,
               result: input.result,
               domainRequirements: input.current.domains,
+              namespaceRequirements: input.currentNamespaceRequirements,
             },
             signal: controller.signal,
             now: this.#now,

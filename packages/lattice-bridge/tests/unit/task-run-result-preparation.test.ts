@@ -209,6 +209,14 @@ async function setup(seed = 1, configuredNamespaceId = NAMESPACE_ID) {
       activeNamespaceBindingSetDigest: bytes(0x63),
       activeNamespaceBindingCount: 1,
     })]),
+    namespaceRequirements: Object.freeze([Object.freeze({
+      ordinal: 0,
+      namespaceId: configuredNamespaceId,
+      domainId: DOMAIN_ID,
+      operations: Object.freeze(["decrypt", "encrypt"] as const),
+      expectedAccessRevision: ACCESS_REVISION,
+      expectedPolicyRevision: POLICY_REVISION,
+    })]),
   } satisfies TaskRuntimeExecutionEvidenceInputV1);
   return {
     crypto,

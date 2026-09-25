@@ -407,6 +407,7 @@ export type {
 export type {
   TaskRuntimeExecutionDomainAuthorityV1 as TaskRuntimeExecutionDomainAuthority,
   TaskRuntimeExecutionEvidenceV1 as TaskRuntimeExecutionEvidence,
+  TaskRuntimeExecutionNamespaceAuthorityV1 as TaskRuntimeExecutionNamespaceAuthority,
 } from "./background/task-runtime-execution-evidence-v1.ts";
 export type {
   OneRunProcessorTransformResultV1 as OneRunProcessorTransformResult,

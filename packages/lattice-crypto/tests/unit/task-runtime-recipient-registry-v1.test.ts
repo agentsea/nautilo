@@ -196,6 +196,7 @@ describe("Task Runtime recipient registry", () => {
         expect(evidence.authorizationDigest)
           .toEqual(expectedAuthorizationDigest);
         expect(evidence.domainRequirements).toEqual([value.current.domains[0]!]);
+        expect(evidence.namespaceRequirements).toEqual(CURRENT_NAMESPACES);
 
         const clone = {
           ...evidence,

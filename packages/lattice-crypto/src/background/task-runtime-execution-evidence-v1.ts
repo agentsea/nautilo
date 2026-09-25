@@ -23,6 +23,15 @@ export type TaskRuntimeExecutionDomainAuthorityV1 = Readonly<{
   readonly activeNamespaceBindingCount: number;
 }>;
 
+export type TaskRuntimeExecutionNamespaceAuthorityV1 = Readonly<{
+  readonly ordinal: number;
+  readonly namespaceId: string;
+  readonly domainId: string;
+  readonly operations: readonly ("decrypt" | "encrypt")[];
+  readonly expectedAccessRevision: number;
+  readonly expectedPolicyRevision: number;
+}>;
+
 export type TaskRuntimeExecutionEvidenceV1 = Readonly<{
   readonly purpose: "task.runtime.execution";
   readonly requestId: string;
@@ -56,6 +65,8 @@ export type TaskRuntimeExecutionEvidenceV1 = Readonly<{
   }>;
   readonly domainRequirements:
     readonly TaskRuntimeExecutionDomainAuthorityV1[];
+  readonly namespaceRequirements:
+    readonly TaskRuntimeExecutionNamespaceAuthorityV1[];
   readonly [taskRuntimeExecutionEvidenceBrand]: true;
 }>;
 
@@ -76,6 +87,8 @@ export type TaskRuntimeExecutionEvidenceInputV1 = Readonly<{
   readonly recipientAuthorizationRevision: number;
   readonly result: TaskRuntimeExecutionEvidenceV1["result"];
   readonly domainRequirements: readonly DomainForegroundAuthorityEntryV2[];
+  readonly namespaceRequirements:
+    readonly TaskRuntimeExecutionNamespaceAuthorityV1[];
 }>;
 
 type EvidenceState = {
@@ -145,12 +158,48 @@ function domainRequirement(
   });
 }
 
+function namespaceRequirement(
+  value: TaskRuntimeExecutionNamespaceAuthorityV1,
+): TaskRuntimeExecutionNamespaceAuthorityV1 {
+  if (!(value.operations.length === 1
+      && (value.operations[0] === "decrypt" || value.operations[0] === "encrypt"))
+    && !(value.operations.length === 2
+      && value.operations[0] === "decrypt"
+      && value.operations[1] === "encrypt")) {
+    throw new TypeError("Task Runtime Namespace operations are invalid");
+  }
+  return Object.freeze({
+    ordinal: counter("Task Runtime Namespace ordinal", value.ordinal),
+    namespaceId: portable("Task Runtime Namespace ID", value.namespaceId),
+    domainId: portable("Task Runtime Namespace Domain ID", value.domainId),
+    operations: Object.freeze([...value.operations]),
+    expectedAccessRevision: counter(
+      "Task Runtime Namespace access revision",
+      value.expectedAccessRevision,
+    ),
+    expectedPolicyRevision: counter(
+      "Task Runtime Namespace policy revision",
+      value.expectedPolicyRevision,
+    ),
+  });
+}
+
 function cloneEvidence(
   value: TaskRuntimeExecutionEvidenceInputV1 | TaskRuntimeExecutionEvidenceV1,
 ): TaskRuntimeExecutionEvidenceV1 {
   const domainRequirements = value.domainRequirements.map(domainRequirement);
+  const namespaceRequirements = value.namespaceRequirements.map(namespaceRequirement);
   if (domainRequirements.length < 1) {
     throw new RangeError("Task Runtime execution requires a Domain authority");
+  }
+  if (namespaceRequirements.length < 1
+    || namespaceRequirements.some((requirement, index) =>
+      requirement.ordinal !== index
+      || requirement.expectedPolicyRevision !== value.policyRevision
+      || !domainRequirements.some((domain) => domain.domainId === requirement.domainId))
+    || new Set(namespaceRequirements.map((requirement) => requirement.namespaceId)).size
+      !== namespaceRequirements.length) {
+    throw new TypeError("Task Runtime Namespace requirements are invalid");
   }
   const expiresAt = counter("Task Runtime execution expiry", value.expiresAt);
   const claimExpiresAt = counter(
@@ -205,6 +254,19 @@ function cloneEvidence(
       ),
     }),
   });
+  const resultRequirements = namespaceRequirements.filter((requirement) =>
+    requirement.namespaceId === result.namespace.namespaceId);
+  const resultRequirement = resultRequirements[0];
+  if (resultRequirements.length !== 1
+    || resultRequirement === undefined
+    || resultRequirement.domainId !== result.namespace.domainId
+    || resultRequirement.expectedAccessRevision
+      !== result.namespace.expectedAccessRevision
+    || resultRequirement.expectedPolicyRevision
+      !== result.namespace.expectedPolicyRevision
+    || !resultRequirement.operations.includes("encrypt")) {
+    throw new TypeError("Task Runtime result Namespace requirement is invalid");
+  }
   return Object.freeze({
     purpose: "task.runtime.execution",
     requestId: portable("Task Runtime request ID", value.requestId),
@@ -242,6 +304,7 @@ function cloneEvidence(
     operations: Object.freeze(["decrypt", "encrypt"]),
     result,
     domainRequirements: Object.freeze(domainRequirements),
+    namespaceRequirements: Object.freeze(namespaceRequirements),
   }) as TaskRuntimeExecutionEvidenceV1;
 }
 
@@ -256,6 +319,7 @@ function fingerprint(value: TaskRuntimeExecutionEvidenceV1): string {
       activeNamespaceBindingSetDigest:
         bytesToHex(entry.activeNamespaceBindingSetDigest),
     })),
+    namespaceRequirements: value.namespaceRequirements,
   });
 }
 
