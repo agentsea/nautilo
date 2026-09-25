@@ -31,6 +31,11 @@ import {
 let capturedStreamInput: unknown;
 let capturedCheckpointSaver: unknown;
 let capturedInitiatingSurface: string;
+let ordinaryAppendCalls: number;
+
+const protectedTaskTranscriptPort = {
+  publishBatch: async () => {},
+};
 
 const subEnvelope: MemoryAccessEnvelope = {
   memoryMode: "namespace",
@@ -58,7 +63,10 @@ beforeAll(async () => {
   }));
   mock.module("../../src/store/session-store", () => ({
     SUBAGENT_GRAPH_THREAD_PREFIX: "subagent:",
-    appendTranscriptMessages: async () => ({ insertedRows: [] }),
+    appendTranscriptMessages: async () => {
+      ordinaryAppendCalls += 1;
+      return { insertedRows: [] };
+    },
   }));
   mock.module("../../src/agent/graph", () => ({
     createNautiloGraph: (checkpointSaver: unknown) => {
@@ -90,6 +98,7 @@ beforeEach(() => {
   capturedStreamInput = undefined;
   capturedCheckpointSaver = undefined;
   capturedInitiatingSurface = "unknown";
+  ordinaryAppendCalls = 0;
 });
 
 const baseOpts = {
@@ -229,9 +238,11 @@ describe("runScopeSubagentUntilPause stream-entry invariants (M169 R3/R4)", () =
       currentTaskRunId: "task-run-1",
       subagentThreadId: "subagent:parent-thread:protected",
       taskRunCheckpointSaver: saver,
+      protectedTaskTranscriptPort,
     });
 
     expect(capturedCheckpointSaver).toBe(saver);
+    expect(ordinaryAppendCalls).toBe(0);
   });
 
   test.each([
@@ -245,6 +256,7 @@ describe("runScopeSubagentUntilPause stream-entry invariants (M169 R3/R4)", () =
       ...baseOpts,
       ...identity,
       taskRunCheckpointSaver: encryptedSaver(),
+      protectedTaskTranscriptPort,
     })).rejects.toThrow("requires an exact trusted background Task identity and graph thread");
   });
 
