@@ -343,6 +343,11 @@ export {
   type RunProtectedTaskNativeSegmentInput,
 } from "./tasks/protected-task-native-runner";
 export {
+  completeProtectedTaskRunResult,
+  type CompleteProtectedTaskRunResultDependencies,
+  type CompleteProtectedTaskRunResultInput,
+} from "./tasks/protected-task-result-completion";
+export {
   dispatchTaskRun,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,
