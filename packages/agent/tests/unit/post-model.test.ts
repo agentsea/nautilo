@@ -303,6 +303,41 @@ describe("D563 run_shell long-wait approval intent", () => {
 // ===========================================================================
 
 describe("postModelNode (with resolver)", () => {
+  test("corrects scheduled requester self-contact before approval and preserves a sibling call", async () => {
+    const call = { id: "self-reminder", name: "ask_peer", args: {
+      peer_handle: "requester_example",
+      message_to_peer: "Your reminder is due.",
+      return_instructions: "Confirm delivery; no reply is needed.",
+    } };
+    const state = makeState([new AIMessage({ content: "", tool_calls: [
+      call,
+      { id: "read-sibling", name: "search_memory", args: { query: "context" } },
+    ] })]);
+    state.taskRun = true;
+    state.subagentRun = true;
+    state.trustedExecutionEntrypoint = "background.task";
+    let checked = 0;
+    const result = await createPostModelNode(makeMockResolver({
+      ask_peer: { type: "require_approval", route: { type: "prove_it", approvers: ["test-owner"] } },
+      search_memory: { type: "allow" },
+    }), {
+      ...NO_MATCH,
+      isRedundantScheduledSelfContact: async (_state, candidate) => {
+        checked += 1;
+        return candidate.id === call.id;
+      },
+    })(state);
+
+    expect(checked).toBe(1);
+    expect(result.approvedToolCalls?.map((entry) => entry.id)).toEqual(["read-sibling"]);
+    expect(result.approvalDenied).toBe(true);
+    const correction = result.messages?.at(-1) as ToolMessage;
+    expect(correction.tool_call_id).toBe(call.id);
+    expect(correction.content).toContain("No separate message was sent");
+    expect(correction.content).toContain("final answer");
+    expect(correction.content).not.toContain("denied by owner");
+  });
+
   test("approved tools go to approvedToolCalls", async () => {
     const resolver = makeMockResolver({
       search_memory: { type: "allow" },
