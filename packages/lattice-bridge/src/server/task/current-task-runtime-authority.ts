@@ -13,8 +13,11 @@ import {
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
+  destroyDomainForegroundAuthorizationV2,
   destroyDomainForegroundAuthorizationPlanV2,
+  parseDomainForegroundAuthorizationV2,
   parseDomainForegroundAuthorizationPlanV2,
+  verifyDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
@@ -68,6 +71,30 @@ export type TaskRuntimeAuthoritySubject = Readonly<{
   userId: string;
   humanActorId: string;
   deviceId: string;
+}>;
+
+/** Durable V3 facts authenticated at response acceptance, without its bearer. */
+export type AcceptedTaskRuntimeAuthorizationV3 = Readonly<{
+  descriptorBytes: Uint8Array;
+  descriptorDigest: string;
+  requestId: string;
+  workId: string;
+  workKind: TaskRuntimeBackgroundAuthorizationRequestV1["workKind"];
+  workPurpose: TaskRuntimeBackgroundAuthorizationRequestV1["workPurpose"];
+  recipientGeneration: number;
+  recipientKeyId: string;
+  recipientPublicKeyBase64url: string;
+  expectedPolicyRevision: number;
+  namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+  domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+  authorizationId: string;
+  authorizationBytes: Uint8Array;
+  authorizationDigest: string;
+  authorizationExpiresAt: number;
+  issuingHumanId: string;
+  issuingDeviceId: string;
+  issuingDeviceAuthorizationRevision: number;
+  issuerSigningPublicKeyHash: Uint8Array;
 }>;
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -150,11 +177,10 @@ function requirementsAreCanonical(
       requirement.domainId === namespaceDomainIds[index]);
 }
 
-export function matchesCurrentTaskRuntimeAuthority(input: Readonly<{
+function matchesCurrentTaskRuntimeAuthorityWithoutAdmission(input: Readonly<{
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   plan: DomainForegroundAuthorizationPlanV2;
   subject: TaskRuntimeAuthoritySubject;
-  admission: StenographerRequestAdmission;
   device: CurrentDeviceAdmissionAuthority;
   namespaces: readonly TaskRuntimeNamespaceAuthorityRequirement[];
   domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
@@ -166,11 +192,9 @@ export function matchesCurrentTaskRuntimeAuthority(input: Readonly<{
     request,
     plan,
     subject,
-    admission,
     device,
     namespaces,
-    domainRequirements,
-    domains,
+    domainRequirements, domains,
   } = input;
   return input.now >= request.issuedAt
     && input.now < request.deadlineAt
@@ -204,14 +228,62 @@ export function matchesCurrentTaskRuntimeAuthority(input: Readonly<{
         && requirement.expectedEpoch === domain.domainKeyGeneration
         && requirement.expectedAuthorizationRevision
           === domain.authorizationRevision;
-    })
-    && matchesStenographerRequestAdmission(admission, device, input.now);
+    });
+}
+
+export function matchesCurrentTaskRuntimeAuthority(input: Readonly<{
+  request: TaskRuntimeBackgroundAuthorizationRequestV1;
+  plan: DomainForegroundAuthorizationPlanV2;
+  subject: TaskRuntimeAuthoritySubject;
+  admission: StenographerRequestAdmission;
+  device: CurrentDeviceAdmissionAuthority;
+  namespaces: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+  domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+  domains: readonly DomainForegroundAuthorityEntry[];
+  policyRevision: number;
+  now: number;
+}>): boolean {
+  return matchesCurrentTaskRuntimeAuthorityWithoutAdmission(input)
+    && matchesStenographerRequestAdmission(
+      input.admission,
+      input.device,
+      input.now,
+    );
 }
 
 function retainBytes(value: object, owned: Uint8Array[]): void {
   for (const field of Object.values(value)) {
     if (field instanceof Uint8Array) owned.push(field);
   }
+}
+
+function hex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function acceptedRecordMatchesRequest(input: Readonly<{
+  accepted: AcceptedTaskRuntimeAuthorizationV3;
+  request: TaskRuntimeBackgroundAuthorizationRequestV1;
+  plan: DomainForegroundAuthorizationPlanV2;
+  descriptorDigest: string;
+  authorizationDigest: string;
+}>): boolean {
+  const { accepted, request, plan } = input;
+  return accepted.descriptorDigest === input.descriptorDigest
+    && accepted.requestId === request.requestId
+    && accepted.workId === request.workId
+    && accepted.workKind === request.workKind
+    && accepted.workPurpose === request.workPurpose
+    && accepted.recipientGeneration === request.recipientGeneration
+    && accepted.recipientKeyId === request.recipientKeyId
+    && accepted.recipientPublicKeyBase64url
+      === Buffer.from(request.recipientPublicKey).toString("base64url")
+    && accepted.expectedPolicyRevision === plan.policyRevision
+    && accepted.authorizationId === plan.authorizationId
+    && accepted.authorizationDigest === input.authorizationDigest
+    && accepted.authorizationExpiresAt === request.deadlineAt
+    && accepted.issuingHumanId === plan.subjectHumanId
+    && accepted.issuingDeviceId === plan.committerDeviceId;
 }
 
 /**
@@ -362,6 +434,248 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
     }, { isolationLevel: "read committed" });
   } finally {
     owned.forEach((bytes) => bytes.fill(0));
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  }
+}
+
+/**
+ * Rechecks an already accepted Task V3 authorization under short canonical
+ * locks. Unlike the device list/respond owner above, this execution owner uses
+ * the durable accepted record and its signed authorization, never the original
+ * HTTP admission or bearer.
+ */
+export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
+  input: Readonly<{
+    runner: ConversationProductCanonicalTransactionRunner;
+    restricted: PostgresJsBridgeConnection;
+    crypto: LatticeCrypto;
+    serverScope: string;
+    subject: TaskRuntimeAuthoritySubject;
+    accepted: AcceptedTaskRuntimeAuthorizationV3;
+    now(): number;
+    signal?: AbortSignal;
+    use(
+      authority: CurrentTaskRuntimeAuthority,
+      product: PostgresJsBridgeConnection,
+      restricted: PostgresJsBridgeConnection,
+    ): Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const descriptorBytes = Uint8Array.from(input.accepted.descriptorBytes);
+  const authorizationBytes = Uint8Array.from(input.accepted.authorizationBytes);
+  const issuerSigningPublicKeyHash = Uint8Array.from(
+    input.accepted.issuerSigningPublicKeyHash,
+  );
+  const accepted = Object.freeze({
+    ...input.accepted,
+    descriptorBytes,
+    authorizationBytes,
+    issuerSigningPublicKeyHash,
+    namespaceRequirements: copyNamespaceRequirements(
+      input.accepted.namespaceRequirements,
+    ),
+    domainRequirements: copyDomainRequirements(
+      input.accepted.domainRequirements,
+    ),
+  });
+  const descriptorDigestBytes = input.crypto.hash(descriptorBytes);
+  const descriptorDigest = hex(descriptorDigestBytes);
+  descriptorDigestBytes.fill(0);
+  const authorizationDigestBytes = input.crypto.hash(authorizationBytes);
+  const authorizationDigest = hex(authorizationDigestBytes);
+  authorizationDigestBytes.fill(0);
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    descriptorBytes,
+  );
+  if (request === null) {
+    descriptorBytes.fill(0);
+    authorizationBytes.fill(0);
+    issuerSigningPublicKeyHash.fill(0);
+    throw new TypeError("Accepted Task Runtime descriptor is invalid");
+  }
+  const plan = parseDomainForegroundAuthorizationPlanV2(
+    request.authorizationPlanBytes,
+  );
+  if (plan === null) {
+    descriptorBytes.fill(0);
+    authorizationBytes.fill(0);
+    issuerSigningPublicKeyHash.fill(0);
+    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    throw new TypeError("Accepted Task Runtime plan is invalid");
+  }
+  const signed = parseDomainForegroundAuthorizationV2(authorizationBytes);
+  if (signed === null) {
+    descriptorBytes.fill(0);
+    authorizationBytes.fill(0);
+    issuerSigningPublicKeyHash.fill(0);
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    throw new TypeError("Accepted Task Runtime authorization is invalid");
+  }
+  const owned: Uint8Array[] = [];
+  try {
+    const namespaces = accepted.namespaceRequirements;
+    const domainRequirements = accepted.domainRequirements;
+    if (!requirementsAreCanonical(namespaces, domainRequirements)
+      || !acceptedRecordMatchesRequest({
+        accepted,
+        request,
+        plan,
+        descriptorDigest,
+        authorizationDigest,
+      })
+      || signed.authorizationId !== accepted.authorizationId
+      || !sameBytes(signed.planBytes, request.authorizationPlanBytes)
+      || issuerSigningPublicKeyHash.length !== 32) {
+      throw new TypeError("Accepted Task Runtime record is inconsistent");
+    }
+    input.signal?.throwIfAborted();
+    return await input.runner.transaction(async (tx, executor) => {
+      const policy = await acquireEncryptionConsumptionFence(tx);
+      if (policy.mode === "plaintext_only"
+        || policy.revision !== plan.policyRevision
+        || input.now() < request.issuedAt
+        || input.now() >= request.deadlineAt
+        || input.now() >= accepted.authorizationExpiresAt
+        || namespaces.some((requirement) =>
+          requirement.expectedPolicyRevision !== policy.revision)) return null;
+      const product = inTransaction(executor);
+      return new PostgresNamespaceProductAuthority(product)
+        .withCurrentReadableNamespaceSet({
+          subjectUserId: input.subject.userId,
+          subjectHumanId: input.subject.humanActorId,
+          sourceRoomId: request.sourceRoomId,
+          namespaceIds: namespaces.map((requirement) =>
+            requirement.namespaceId),
+          use: async (entries) => {
+            if (entries.length !== namespaces.length) return null;
+            for (const [index, entry] of entries.entries()) {
+              const requirement = namespaces[index];
+              const current = inspectNamespaceProductAuthoritySnapshot(
+                entry.authority,
+              );
+              try {
+                if (requirement === undefined
+                  || entry.namespaceId !== requirement.namespaceId
+                  || current.accessRevision
+                    !== requirement.expectedAccessRevision) return null;
+              } finally {
+                current.audienceFingerprint.fill(0);
+              }
+            }
+            input.signal?.throwIfAborted();
+            return input.restricted.transactionOnce(async (restrictedTx) => {
+              const restricted = inTransaction(restrictedTx);
+              const device = await new PostgresDeviceAdmissionRepository(
+                await verifyCryptoPostgresHandle(restricted),
+                input.crypto,
+              ).currentAuthorityForDelegation(input.subject);
+              if (device === null) return null;
+              retainBytes(device, owned);
+              const inspected = await new PostgresDomainKeyAuthorityRepository(
+                restricted,
+                input.crypto,
+                input.serverScope,
+              ).inspectForegroundAuthority({
+                namespaceIds: namespaces.map((requirement) =>
+                  requirement.namespaceId),
+                keyClass: "ai",
+                subjectHumanId: input.subject.humanActorId,
+                deviceId: input.subject.deviceId,
+              });
+              if (inspected.status !== "ready") return null;
+              for (const domain of inspected.domains) retainBytes(domain, owned);
+              const signingPublicKeyHash = input.crypto.hash(
+                device.signingPublicKey,
+              );
+              const exactAcceptedDevice =
+                accepted.issuingHumanId === device.humanActorId
+                && accepted.issuingDeviceId === device.deviceId
+                && accepted.issuingDeviceAuthorizationRevision
+                  === device.securityRevision
+                && plan.committerDeviceSigningGeneration
+                  === device.deviceGeneration
+                && plan.hostAuthorizationRevision === device.securityRevision
+                && sameBytes(
+                  issuerSigningPublicKeyHash,
+                  signingPublicKeyHash,
+                );
+              signingPublicKeyHash.fill(0);
+              if (!exactAcceptedDevice
+                || inspected.committerDeviceId !== device.deviceId
+                || inspected.committerDeviceSigningGeneration
+                  !== device.deviceGeneration
+                || inspected.hostAuthorizationRevision
+                  !== device.securityRevision
+                || !matchesCurrentTaskRuntimeAuthorityWithoutAdmission({
+                  request,
+                  plan,
+                  subject: input.subject,
+                  device,
+                  namespaces,
+                  domainRequirements,
+                  domains: inspected.domains,
+                  policyRevision: policy.revision,
+                  now: input.now(),
+                })) return null;
+              const verified = verifyDomainForegroundAuthorizationV2(
+                input.crypto,
+                {
+                  authorizationBytes,
+                  now: input.now(),
+                  current: {
+                    authorizationId: plan.authorizationId,
+                    policyRevision: policy.revision,
+                    sessionId: plan.sessionId,
+                    roomId: plan.roomId,
+                    subjectHumanId: plan.subjectHumanId,
+                    committerDeviceId: plan.committerDeviceId,
+                    committerDeviceSigningGeneration:
+                      plan.committerDeviceSigningGeneration,
+                    committerDeviceSigningPublicKey: device.signingPublicKey,
+                    committerDeviceActive: true,
+                    hostAuthorizationRevision: plan.hostAuthorizationRevision,
+                    recipientKind: plan.recipientKind,
+                    recipientPrincipalId: plan.recipientPrincipalId,
+                    recipientAuthorizationRevision:
+                      plan.recipientAuthorizationRevision,
+                    recipientRuntimeGeneration:
+                      plan.recipientRuntimeGeneration,
+                    recipientKeyId: plan.recipientKeyId,
+                    recipientAuthorized: true,
+                    domains: inspected.domains,
+                  },
+                },
+              );
+              if (verified.status !== "verified") return null;
+              input.signal?.throwIfAborted();
+              const result = await input.use({
+                device,
+                plan,
+                domains: inspected.domains,
+                namespaceRequirements: namespaces,
+                policyRevision: policy.revision,
+              }, product, restricted);
+              input.signal?.throwIfAborted();
+              const finishedAt = input.now();
+              if (finishedAt >= request.deadlineAt
+                || finishedAt >= accepted.authorizationExpiresAt) {
+                throw new Error(
+                  "Accepted Task Runtime authority expired before commit",
+                );
+              }
+              return result;
+            }, { isolationLevel: "read committed" });
+          },
+        });
+    }, { isolationLevel: "read committed" });
+  } finally {
+    owned.forEach((bytes) => bytes.fill(0));
+    descriptorBytes.fill(0);
+    authorizationBytes.fill(0);
+    issuerSigningPublicKeyHash.fill(0);
+    destroyDomainForegroundAuthorizationV2(signed);
     destroyDomainForegroundAuthorizationPlanV2(plan);
     destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
   }

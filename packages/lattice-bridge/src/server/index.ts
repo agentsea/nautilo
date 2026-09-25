@@ -919,6 +919,8 @@ export {withCurrentStenographerAuthority, matchesCurrentStenographerAuthority, m
 export { matchesCurrentReflectionAuthority, withCurrentReflectionAuthority } from "./journal/current-reflection-authority.ts";
 export {
   withCurrentTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeAuthority,
+  type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
   type TaskRuntimeDomainAuthorityRequirement,
