@@ -155,6 +155,13 @@ describe("current Task Runtime authority", () => {
       ...input,
       domains: [{ ...value.domain, domainKeyGeneration: 3 }],
     })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({
+      ...input,
+      namespaces: value.namespaceRequirements.map((requirement) => ({
+        ...requirement,
+        expectedPolicyRevision: value.plan.policyRevision + 1,
+      })),
+    })).toBe(false);
   });
 
   test("admits an open source through shared product authority before restricted locks", async () => {
@@ -276,5 +283,32 @@ describe("current Task Runtime authority", () => {
     expect(events.slice(0, 2)).toEqual(["policy lock", "policy"]);
     expect(events.at(-1)).toBe("restricted");
     expect(events.filter((event) => event === "product").length).toBeGreaterThan(0);
+
+    let substitutedUseCalled = false;
+    const restrictedEvents = events.filter((event) => event === "restricted").length;
+    const substituted = await withCurrentTaskRuntimeAuthority({
+      runner,
+      restricted,
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      admission: value.admission,
+      request: value.request,
+      namespaceRequirements: value.namespaceRequirements.map((requirement) => ({
+        ...requirement,
+        expectedAccessRevision: requirement.expectedAccessRevision + 1,
+      })),
+      domainRequirements: value.domainRequirements,
+      now: () => NOW + 1,
+      use: async () => {
+        substitutedUseCalled = true;
+        return "substituted";
+      },
+    } as unknown as Parameters<typeof withCurrentTaskRuntimeAuthority>[0]);
+    expect(substituted).toBeNull();
+    expect(substitutedUseCalled).toBe(false);
+    expect(events.filter((event) => event === "restricted").length)
+      .toBe(restrictedEvents);
   });
+
 });

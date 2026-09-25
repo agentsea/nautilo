@@ -59,6 +59,8 @@ export type CurrentTaskRuntimeAuthority = Readonly<{
   device: CurrentDeviceAdmissionAuthority;
   plan: DomainForegroundAuthorizationPlanV2;
   domains: readonly DomainForegroundAuthorityEntry[];
+  namespaceRequirements:
+    readonly TaskRuntimeNamespaceAuthorityRequirement[];
   policyRevision: number;
 }>;
 
@@ -107,8 +109,12 @@ function copyNamespaceRequirements(
   requirements: readonly TaskRuntimeNamespaceAuthorityRequirement[],
 ): readonly TaskRuntimeNamespaceAuthorityRequirement[] {
   return Object.freeze(requirements.map((requirement) => Object.freeze({
-    ...requirement,
+    ordinal: requirement.ordinal,
+    namespaceId: requirement.namespaceId,
+    domainId: requirement.domainId,
     operations: Object.freeze([...requirement.operations]),
+    expectedAccessRevision: requirement.expectedAccessRevision,
+    expectedPolicyRevision: requirement.expectedPolicyRevision,
   })));
 }
 
@@ -334,6 +340,7 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
                 device,
                 plan,
                 domains: inspected.domains,
+                namespaceRequirements: namespaces,
                 policyRevision: policy.revision,
               }, product, restricted);
               input.signal?.throwIfAborted();
