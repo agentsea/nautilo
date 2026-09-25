@@ -405,6 +405,10 @@ export type {
   TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
+  TaskRuntimeExecutionDomainAuthorityV1 as TaskRuntimeExecutionDomainAuthority,
+  TaskRuntimeExecutionEvidenceV1 as TaskRuntimeExecutionEvidence,
+} from "./background/task-runtime-execution-evidence-v1.ts";
+export type {
   OneRunProcessorTransformResultV1 as OneRunProcessorTransformResult,
   ProcessorCredentialClaimPortV1 as ProcessorCredentialClaimPort,
   ProcessorCredentialClaimV1 as ProcessorCredentialClaim,

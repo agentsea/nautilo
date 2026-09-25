@@ -1520,6 +1520,8 @@ export const CLEAN_TYPE_EXPORTS = [
   "SharedAgentLiveShadowExecutionInput",
   "SharedAgentLiveShadowMessagePlan",
   "SharedAgentLiveShadowMessageRequest",
+  "TaskRuntimeExecutionDomainAuthority",
+  "TaskRuntimeExecutionEvidence",
   "TaskRuntimeRecipientAttempt",
   "TaskRuntimeRecipientCreationResult",
   "TaskRuntimeRecipientDeadlineHandle",

@@ -135,6 +135,15 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  ...([
+    "TaskRuntimeExecutionDomainAuthority",
+    "TaskRuntimeExecutionEvidence",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-execution-evidence-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
   {
     source: "./format/domain-foreground-authorization-v2.ts",
     imported: "verifyDomainForegroundAuthorizationV2",

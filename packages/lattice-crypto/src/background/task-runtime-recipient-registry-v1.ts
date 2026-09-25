@@ -11,6 +11,10 @@ import { V2_LIMITS } from "../v2-types/limits.ts";
 import {
   PROCESSOR_TRANSFORM_MAX_LIVE_RECIPIENTS_V1,
 } from "./one-run-processor-transform-v1.ts";
+import {
+  withTaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionEvidenceV1,
+} from "./task-runtime-execution-evidence-v1.ts";
 
 export type TaskRuntimeRecipientAttemptV1 = Readonly<{
   requestId: string;
@@ -253,6 +257,7 @@ export class TaskRuntimeRecipientRegistryV1 {
     operation(
       domains: readonly DomainForegroundSecretEntryV2[],
       signal: AbortSignal,
+      evidence: TaskRuntimeExecutionEvidenceV1,
     ): Value | PromiseLike<Value>;
   }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
     assertPortableId("Task Runtime recipient request id", input.requestId);
@@ -303,7 +308,34 @@ export class TaskRuntimeRecipientRegistryV1 {
         },
         operation: async (domains) => {
           controller.signal.throwIfAborted();
-          const value = await input.operation(domains, controller.signal);
+          const authorizationDigest = this.crypto.hash(input.authorizationBytes);
+          const value = await withTaskRuntimeExecutionEvidenceV1({
+            evidence: {
+              requestId: input.requestId,
+              workId: input.workId,
+              claimId: input.claimId,
+              claimExpiresAt: input.claimExpiresAt,
+              recipientExpiresAt: entry.attempt.expiresAt,
+              expiresAt: deadline,
+              recipientGeneration: input.recipientGeneration,
+              recipientKeyId: input.recipientKeyId,
+              authorizationDigest,
+              policyRevision: input.current.policyRevision,
+              episodeId: input.current.sessionId,
+              sourceRoomId: input.current.roomId,
+              hostAuthorizationRevision: input.current.hostAuthorizationRevision,
+              recipientAuthorizationRevision:
+                input.current.recipientAuthorizationRevision,
+              domainRequirements: input.current.domains,
+            },
+            signal: controller.signal,
+            now: this.#now,
+            execute: (evidence) => input.operation(
+              domains,
+              controller.signal,
+              evidence,
+            ),
+          }).finally(() => authorizationDigest.fill(0));
           controller.signal.throwIfAborted();
           return value;
         },
