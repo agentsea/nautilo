@@ -20,6 +20,7 @@ import {
   type DomainForegroundAuthorizationPlanV2,
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
+import type { StartProtectedTaskRunInput } from "@nautilo/db";
 
 import type { JobExecutor } from "../../src/job";
 import {
@@ -184,6 +185,8 @@ async function fixture() {
   let clock = NOW + 1;
   let substituteGet: ((record: BackgroundAuthorizationRecord) =>
     BackgroundAuthorizationRecord) | null = null;
+  const startInputs: StartProtectedTaskRunInput[] = [];
+  let startResult: "started" | "stale" = "started";
   const trackedRepository: BackgroundAuthorizationRepository = {
     create: (record) => repository.create(record),
     get: async (requestId) => {
@@ -222,6 +225,10 @@ async function fixture() {
       graphThreadId: value.run.graphThreadId,
     },
     executor,
+    startProtectedTaskRun: async (input) => {
+      startInputs.push(input);
+      return { status: startResult };
+    },
     recipientAttempt: () => ({
       recipientKeyId: "task-runtime-recipient",
       expiresAt: NOW + 60_000,
@@ -321,6 +328,8 @@ async function fixture() {
     getCurrent: () => currentAuthority,
     claimCasCount: () => claimCasCount,
     authorityLocksHeld: () => authorityLocksHeld,
+    startInputs,
+    setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
   };
@@ -396,6 +405,24 @@ describe("Task Runtime grant claim", () => {
     expect(JSON.stringify(durable)).not.toContain(SENTINEL);
 
     const transient: Record<string, unknown>[] = [];
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(result.dispatch.candidate.run(async () => {}))
+      .rejects.toThrow("has not started");
+    expect(await result.dispatch.candidate.start("protected-job-1"))
+      .toEqual({ status: "started" });
+    expect(value.startInputs).toEqual([{
+      taskId: TASK,
+      taskRunId: RUN,
+      graphThreadId: `subagent:${TASK}:${RUN}`,
+      jobId: "protected-job-1",
+      contentRepresentation: "protected",
+      contentNamespaceId: NAMESPACE,
+      contentRevision: 1,
+      cryptoObjectId: INPUT_OBJECT,
+      cryptoAccessRevision: 4,
+      cryptoRequiredNamespaceFingerprint: bytes(7),
+      jobReference: value.plan(occurrence()).reference,
+    }]);
     await result.dispatch.candidate.run(async (input, signal) => {
       expect(value.authorityLocksHeld()).toBe(false);
       signal.throwIfAborted();
@@ -408,6 +435,22 @@ describe("Task Runtime grant claim", () => {
     expect(value.recipients.size).toBe(0);
     expect(JSON.stringify(await value.repository.get(REQUEST)))
       .not.toContain(SENTINEL);
+  });
+
+  test("stale durable start invalidates the candidate before protected input opens", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    value.setStartResult("stale");
+
+    expect(await claimed.dispatch.candidate.start("stale-job"))
+      .toEqual({ status: "stale" });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async () => {}))
+      .rejects.toThrow("one-use");
+    expect(value.recipients.size).toBe(0);
   });
 
   test("rejects stale current authority before the durable claim", async () => {
@@ -458,6 +501,8 @@ describe("Task Runtime grant claim", () => {
               },
           };
       });
+      expect(await claimed.dispatch.candidate.start(`protected-job-${substitution}`))
+        .toEqual({ status: "started" });
       // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
       await expect(claimed.dispatch.candidate.run(async () => {
         invoked = true;

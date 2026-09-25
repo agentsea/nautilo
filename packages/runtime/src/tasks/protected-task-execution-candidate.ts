@@ -11,12 +11,21 @@ export type ProtectedTaskJobSchedulingFacts = Readonly<{
   graphThreadId: string;
 }>;
 
+export type ProtectedTaskExecutionStartResult =
+  | Readonly<{ status: "started" }>
+  | Readonly<{ status: "stale" }>;
+
 /**
  * One process-local accepted authority. Implementations open the protected
  * Task definition inside `run`, release all plaintext and capability material
  * before it returns, and cannot be reconstructed from the durable reference.
  */
 export interface ProtectedTaskExecutionCandidate {
+  /**
+   * Attach the already-persisted content-free Job to the exact TaskRun before
+   * protected input can be opened. This transition is one-shot.
+   */
+  start(jobId: string): Promise<ProtectedTaskExecutionStartResult>;
   run<T>(
     work: (
       transientInput: Record<string, unknown>,

@@ -68,6 +68,7 @@ function claimed(
     }),
     executor,
     candidate: Object.freeze({
+      start: async () => ({ status: "started" as const }),
       run: async <T>(work: (
         input: Record<string, unknown>,
         signal: AbortSignal,

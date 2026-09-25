@@ -14,6 +14,10 @@ import {
 import type {
   DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
+import type {
+  StartProtectedTaskRunInput,
+  StartProtectedTaskRunResult,
+} from "@nautilo/db";
 
 import type { JobExecutor } from "../../job";
 import type {
@@ -54,6 +58,9 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   scheduling: ProtectedTaskJobSchedulingFacts;
   executor: JobExecutor;
   modelAttribution?: "external";
+  startProtectedTaskRun(
+    input: StartProtectedTaskRunInput,
+  ): Promise<StartProtectedTaskRunResult>;
   recipientAttempt(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
@@ -173,6 +180,7 @@ function assertPlan(
     || plan.scheduling.callingRoomId !== occurrence.task.callingRoomId
     || plan.scheduling.graphThreadId !== occurrence.run.graphThreadId
     || typeof plan.executor !== "function"
+    || typeof plan.startProtectedTaskRun !== "function"
     || typeof plan.openTransientInput !== "function"
   ) throw new TypeError("Task Runtime grant plan disagrees with its occurrence");
 }
@@ -292,19 +300,67 @@ function createCandidate(input: Readonly<{
   dependencies: TaskRuntimeGrantClaimDependencies;
   claimId: string;
 }>): ProtectedTaskExecutionCandidate {
-  let state: "ready" | "running" | "finished" = "ready";
+  let state: "ready" | "starting" | "started" | "running" | "finished" =
+    "ready";
+  let released = false;
   const release = (): void => {
+    if (released) return;
+    released = true;
     input.dependencies.recipients.delete(
       input.claimed.snapshot.requestId,
       input.claimed.snapshot.recipientGeneration,
     );
   };
   return Object.freeze({
+    async start(jobId: string): Promise<StartProtectedTaskRunResult> {
+      if (state !== "ready") {
+        throw new Error("Task Runtime execution candidate is one-use");
+      }
+      state = "starting";
+      try {
+        const result = await input.plan.startProtectedTaskRun({
+          taskId: input.occurrence.task.id,
+          taskRunId: input.occurrence.run.id,
+          graphThreadId: input.occurrence.run.graphThreadId,
+          jobId,
+          contentRepresentation:
+            input.occurrence.task.contentRepresentation,
+          contentNamespaceId: input.occurrence.task.contentNamespaceId,
+          contentRevision: input.occurrence.task.contentRevision,
+          cryptoObjectId: input.occurrence.task.cryptoObjectId,
+          cryptoAccessRevision: input.occurrence.task.cryptoAccessRevision,
+          cryptoRequiredNamespaceFingerprint:
+            input.occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
+          jobReference: input.plan.reference,
+        });
+        if (state !== "starting") {
+          release();
+          return Object.freeze({ status: "stale" as const });
+        }
+        if (result.status === "stale") {
+          state = "finished";
+          release();
+          return result;
+        }
+        if (result.status !== "started") {
+          throw new TypeError("Task Runtime start returned an invalid result");
+        }
+        state = "started";
+        return result;
+      } catch (error) {
+        state = "finished";
+        release();
+        throw error;
+      }
+    },
     async run<Value>(work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
     ) => Promise<Value>): Promise<Value> {
-      if (state !== "ready") {
+      if (state === "ready") {
+        throw new Error("Task Runtime execution candidate has not started");
+      }
+      if (state !== "started") {
         throw new Error("Task Runtime execution candidate is one-use");
       }
       state = "running";
@@ -374,7 +430,7 @@ function createCandidate(input: Readonly<{
       }
     },
     onIneligible(): void {
-      if (state !== "ready") return;
+      if (state === "running" || state === "finished") return;
       state = "finished";
       release();
     },
