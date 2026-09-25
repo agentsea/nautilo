@@ -16,8 +16,16 @@ import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
 import { taskRuns, type TaskRun, type NewTaskRun } from "../schema/task-runs";
 import { profiles } from "../schema/profiles";
-import { jobs } from "../schema/jobs";
-import { taskDefinitionCryptoRevisions } from "../schema/task-definition-crypto-revisions";
+import { jobs, type Job } from "../schema/jobs";
+import {
+  taskDefinitionCryptoRevisions,
+  type TaskDefinitionCryptoRevision,
+} from "../schema/task-definition-crypto-revisions";
+import {
+  taskRunResultCryptoRevisions,
+  type TaskRunResultCryptoRevision,
+} from "../schema/task-run-result-crypto-revisions";
+import { encryptionTransitionPolicy } from "../schema/encryption-transition";
 
 type TaskStatus = NonNullable<NewTask["status"]>;
 type TaskRunStatus = NonNullable<NewTaskRun["status"]>;
@@ -1965,6 +1973,379 @@ export async function startProtectedTaskRun(
       throw new Error("Protected Task start lost its locked Task");
     }
     return { status: "started" } as const;
+  });
+}
+
+const PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY =
+  "nautilo.protectedTaskRunTerminal.v1";
+const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
+
+export type ProtectedTaskRunTerminalOutcome = "completed" | "errored";
+
+export type ProtectedTaskRunTerminalInput = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  scheduleKind: "now" | "one_shot" | "cron";
+  operationId: string;
+  requestDigest: Uint8Array;
+  resultObjectId: string;
+  resultRevision: 1;
+  /** Full-only. Shadow dual requires a separate atomic ordinary-content adapter. */
+  resultRepresentation: "protected";
+  outcome: ProtectedTaskRunTerminalOutcome;
+  completedAt: Date;
+  requiredRunStatus: "running";
+}>;
+
+export type ProtectedTaskRunTerminalResult =
+  | Readonly<{ status: "transitioned" | "exact_replay" }>
+  | Readonly<{
+      status: "rejected";
+      reason:
+        | "authority_changed"
+        | "conflict"
+        | "not_found"
+        | "not_running"
+        | "run_terminal"
+        | "task_terminal";
+    }>;
+
+type ProtectedTaskRunTerminalReceipt = Readonly<{
+  version: 1;
+  taskId: string;
+  taskRunId: string;
+  operationId: string;
+  requestDigest: string;
+  resultObjectId: string;
+  resultRevision: 1;
+  resultRepresentation: "protected";
+  outcome: ProtectedTaskRunTerminalOutcome;
+  completedAt: string;
+}>;
+
+function terminalRejected(
+  reason: Extract<ProtectedTaskRunTerminalResult, { status: "rejected" }>["reason"],
+): ProtectedTaskRunTerminalResult {
+  return Object.freeze({ status: "rejected" as const, reason });
+}
+
+function terminalRequestDigestHex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function terminalReceipt(
+  input: ProtectedTaskRunTerminalInput,
+): ProtectedTaskRunTerminalReceipt {
+  return Object.freeze({
+    version: 1,
+    taskId: input.taskId,
+    taskRunId: input.taskRunId,
+    operationId: input.operationId,
+    requestDigest: terminalRequestDigestHex(input.requestDigest),
+    resultObjectId: input.resultObjectId,
+    resultRevision: input.resultRevision,
+    resultRepresentation: input.resultRepresentation,
+    outcome: input.outcome,
+    completedAt: input.completedAt.toISOString(),
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactTerminalReceipt(
+  value: unknown,
+  expected: ProtectedTaskRunTerminalReceipt,
+): boolean {
+  if (!isRecord(value)) return false;
+  if (
+    Object.keys(value).sort().join(",")
+      !== "completedAt,operationId,outcome,requestDigest,resultObjectId,resultRepresentation,resultRevision,taskId,taskRunId,version"
+  ) return false;
+  return value["version"] === expected.version
+    && value["taskId"] === expected.taskId
+    && value["taskRunId"] === expected.taskRunId
+    && value["operationId"] === expected.operationId
+    && value["requestDigest"] === expected.requestDigest
+    && value["resultObjectId"] === expected.resultObjectId
+    && value["resultRevision"] === expected.resultRevision
+    && value["resultRepresentation"] === expected.resultRepresentation
+    && value["outcome"] === expected.outcome
+    && value["completedAt"] === expected.completedAt;
+}
+
+function assertProtectedTaskRunTerminalInput(
+  input: ProtectedTaskRunTerminalInput,
+): void {
+  if (
+    !input.taskId
+    || !input.taskRunId
+    || input.operationId !== `task-run-result:${input.taskRunId}`
+    || !(input.requestDigest instanceof Uint8Array)
+    || input.requestDigest.length !== 32
+    || !TASK_RUN_RESULT_OBJECT_ID.test(input.resultObjectId)
+    || input.resultRevision !== 1
+    || input.resultRepresentation !== "protected"
+    || input.outcome !== "completed" && input.outcome !== "errored"
+    || input.scheduleKind !== "now"
+      && input.scheduleKind !== "one_shot"
+      && input.scheduleKind !== "cron"
+    || !(input.completedAt instanceof Date)
+    || !Number.isFinite(input.completedAt.getTime())
+    || input.requiredRunStatus !== "running"
+  ) throw new TypeError("Protected Task result terminal binding is malformed");
+}
+
+function exactProtectedTaskDefinition(
+  task: Task,
+  revision: TaskDefinitionCryptoRevision | undefined,
+): boolean {
+  return task.contentRepresentation === "protected"
+    && task.contentNamespaceId !== null
+    && task.contentRevision > 0
+    && task.cryptoObjectId !== null
+    && task.cryptoAccessRevision >= 0
+    && task.cryptoRequiredNamespaceFingerprint !== null
+    && task.cryptoRequiredNamespaceFingerprint.length === 32
+    && task.cryptoMappingState === "verified"
+    && task.prompt === ""
+    && task.expectedOutput === null
+    && task.lastError === null
+    && revision !== undefined
+    && revision.taskId === task.id
+    && revision.contentNamespaceId === task.contentNamespaceId
+    && revision.contentRevision === task.contentRevision
+    && revision.cryptoObjectId === task.cryptoObjectId
+    && revision.representation === "protected"
+    && revision.payloadVersion === 1
+    && revision.cryptoAccessRevision === task.cryptoAccessRevision
+    && sameBytes(
+      revision.requiredNamespaceFingerprint,
+      task.cryptoRequiredNamespaceFingerprint,
+    )
+    && revision.completion === "complete"
+    && revision.disposition === "mapped"
+    && revision.failureCode === null;
+}
+
+function protectedTaskJobPolicyRevision(
+  task: Task,
+  run: TaskRun,
+  job: Job | undefined,
+  input: ProtectedTaskRunTerminalInput,
+): number | null {
+  if (
+    job === undefined
+    || job.id !== run.jobId
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.result !== null
+    || job.message !== null
+    || !isRecord(job.input)
+    || Object.keys(job.input).sort().join(",")
+      !== "authorizationRequestId,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
+    || job.input["kind"] !== "protected_task_run_v1"
+    || job.input["taskId"] !== input.taskId
+    || job.input["taskRunId"] !== input.taskRunId
+    || job.input["inputObjectId"] !== task.cryptoObjectId
+    || job.input["resultObjectId"] !== input.resultObjectId
+    || typeof job.input["authorizationRequestId"] !== "string"
+    || job.input["authorizationRequestId"].length === 0
+    || !Number.isSafeInteger(job.input["policyRevision"])
+    || (job.input["policyRevision"] as number) < 1
+  ) return null;
+  return job.input["policyRevision"] as number;
+}
+
+function exactResultReservation(
+  task: Task,
+  revision: TaskRunResultCryptoRevision | undefined,
+  input: ProtectedTaskRunTerminalInput,
+): boolean {
+  return revision !== undefined
+    && revision.taskId === input.taskId
+    && revision.taskRunId === input.taskRunId
+    && revision.contentNamespaceId === task.contentNamespaceId
+    && revision.resultRevision === input.resultRevision
+    && revision.operationId === input.operationId
+    && sameBytes(revision.requestDigest, input.requestDigest)
+    && revision.requesterHumanId === task.requestorId
+    && revision.anchorNamespaceId === task.contentNamespaceId
+    && revision.cryptoObjectId === input.resultObjectId
+    && revision.representation === input.resultRepresentation
+    && revision.payloadVersion === 1
+    && revision.cryptoAccessRevision === 0
+    && task.cryptoRequiredNamespaceFingerprint !== null
+    && sameBytes(
+      revision.requiredNamespaceFingerprint,
+      task.cryptoRequiredNamespaceFingerprint,
+    )
+    && revision.failureCode === null
+    && (
+      revision.disposition === "active"
+        && (revision.completion === "pending" || revision.completion === "complete")
+      || revision.disposition === "mapped" && revision.completion === "complete"
+    );
+}
+
+function exactTerminalRunMapping(
+  run: TaskRun,
+  revision: TaskRunResultCryptoRevision,
+  input: ProtectedTaskRunTerminalInput,
+): boolean {
+  const unmapped = run.resultRepresentation === "ordinary"
+    && run.resultContentNamespaceId === null
+    && run.resultRevision === 0
+    && run.resultCryptoObjectId === null
+    && run.resultCryptoAccessRevision === 0
+    && run.resultCryptoRequiredNamespaceFingerprint === null
+    && run.resultCryptoMappingState === "unmapped"
+    && revision.disposition === "active";
+  const mapped = run.resultRepresentation === input.resultRepresentation
+    && run.resultContentNamespaceId === revision.contentNamespaceId
+    && run.resultRevision === input.resultRevision
+    && run.resultCryptoObjectId === input.resultObjectId
+    && run.resultCryptoAccessRevision === revision.cryptoAccessRevision
+    && run.resultCryptoRequiredNamespaceFingerprint !== null
+    && sameBytes(
+      run.resultCryptoRequiredNamespaceFingerprint,
+      revision.requiredNamespaceFingerprint,
+    )
+    && run.resultCryptoMappingState === "verified"
+    && revision.completion === "complete"
+    && revision.disposition === "mapped";
+  return run.resultText === null && run.lastError === null && (unmapped || mapped);
+}
+
+/**
+ * Content-free terminal CAS for one protected Task result. The linked Job
+ * carries only an exact idempotency receipt; TaskRun remains lifecycle owner.
+ */
+export async function terminalizeProtectedTaskRunResult(
+  db: DirectDatabase,
+  input: ProtectedTaskRunTerminalInput,
+): Promise<ProtectedTaskRunTerminalResult> {
+  assertProtectedTaskRunTerminalInput(input);
+  const receipt = terminalReceipt(input);
+  return db.transaction(async (tx) => {
+    const [task] = await tx.select().from(tasks)
+      .where(eq(tasks.id, input.taskId)).limit(1).for("update");
+    if (!task) return terminalRejected("not_found");
+
+    const [run] = await tx.select().from(taskRuns).where(and(
+      eq(taskRuns.id, input.taskRunId),
+      eq(taskRuns.taskId, input.taskId),
+    )).limit(1).for("update");
+    if (!run) return terminalRejected("not_found");
+
+    if (run.jobId === null) return terminalRejected("conflict");
+    const [job] = await tx.select().from(jobs)
+      .where(eq(jobs.id, run.jobId)).limit(1).for("update");
+    const policyRevision = protectedTaskJobPolicyRevision(task, run, job, input);
+    if (policyRevision === null) return terminalRejected("conflict");
+
+    const [definitionRevision] = await tx.select()
+      .from(taskDefinitionCryptoRevisions).where(and(
+        eq(taskDefinitionCryptoRevisions.taskId, task.id),
+        eq(taskDefinitionCryptoRevisions.contentRevision, task.contentRevision),
+      )).limit(1).for("share");
+    if (!exactProtectedTaskDefinition(task, definitionRevision)) {
+      return terminalRejected("conflict");
+    }
+
+    const [resultRevision] = await tx.select()
+      .from(taskRunResultCryptoRevisions).where(and(
+        eq(taskRunResultCryptoRevisions.operationId, input.operationId),
+        eq(taskRunResultCryptoRevisions.taskId, input.taskId),
+        eq(taskRunResultCryptoRevisions.taskRunId, input.taskRunId),
+        eq(taskRunResultCryptoRevisions.resultRevision, input.resultRevision),
+      )).limit(1).for("share");
+    if (!exactResultReservation(task, resultRevision, input)) {
+      return terminalRejected("conflict");
+    }
+
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server"))
+      .limit(1).for("share");
+    if (
+      !policy
+      || policy.revision !== policyRevision
+      || policy.mode !== "encrypted_only"
+    ) return terminalRejected("authority_changed");
+
+    if (task.scheduleKind !== input.scheduleKind) {
+      return terminalRejected("authority_changed");
+    }
+    const taskStatus = input.scheduleKind === "cron" ? "pending" : input.outcome;
+    const taskIsExactTerminal = task.status === taskStatus;
+    const runIsExactTerminal = run.status === input.outcome;
+    const existingReceipt = isRecord(job!.metadata)
+      ? job!.metadata[PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY]
+      : undefined;
+    if (taskIsExactTerminal && runIsExactTerminal) {
+      if (
+        !exactTerminalReceipt(existingReceipt, receipt)
+        || run.completedAt?.getTime() !== input.completedAt.getTime()
+        || !exactTerminalRunMapping(run, resultRevision!, input)
+        || !["running", "completed"].includes(job!.status)
+      ) return terminalRejected("conflict");
+      return Object.freeze({ status: "exact_replay" as const });
+    }
+    if (TERMINAL_TASK_STATUSES.includes(
+      task.status as (typeof TERMINAL_TASK_STATUSES)[number],
+    )) return terminalRejected("task_terminal");
+    if (TERMINAL_TASK_RUN_STATUSES.includes(
+      run.status as (typeof TERMINAL_TASK_RUN_STATUSES)[number],
+    )) return terminalRejected("run_terminal");
+    if (
+      task.status !== (input.scheduleKind === "cron" ? "pending" : "running")
+      || run.status !== input.requiredRunStatus
+    ) return terminalRejected("not_running");
+    if (
+      job!.status !== "running"
+      || existingReceipt !== undefined
+      || run.completedAt !== null
+      || !exactTerminalRunMapping(run, resultRevision!, input)
+    ) return terminalRejected("conflict");
+
+    const jobMetadata = isRecord(job!.metadata) ? job!.metadata : {};
+    const [updatedJob] = await tx.update(jobs).set({
+      metadata: {
+        ...jobMetadata,
+        [PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY]: receipt,
+      },
+    }).where(and(eq(jobs.id, job!.id), eq(jobs.status, "running"))).returning();
+    if (!updatedJob) throw new Error("Protected Task terminal CAS lost its Job");
+
+    const [updatedRun] = await tx.update(taskRuns).set({
+      status: input.outcome,
+      completedAt: new Date(input.completedAt.getTime()),
+    }).where(and(
+      eq(taskRuns.id, run.id),
+      eq(taskRuns.taskId, task.id),
+      eq(taskRuns.jobId, job!.id),
+      eq(taskRuns.status, input.requiredRunStatus),
+      isNull(taskRuns.resultText),
+      isNull(taskRuns.lastError),
+    )).returning();
+    if (!updatedRun) throw new Error("Protected Task terminal CAS lost its TaskRun");
+
+    if (input.scheduleKind !== "cron") {
+      const [updatedTask] = await tx.update(tasks).set({
+        status: input.outcome,
+        updatedAt: new Date(input.completedAt.getTime()),
+      }).where(and(
+        eq(tasks.id, task.id),
+        eq(tasks.status, "running"),
+        eq(tasks.contentRepresentation, "protected"),
+        isNull(tasks.lastError),
+      )).returning();
+      if (!updatedTask) throw new Error("Protected Task terminal CAS lost its Task");
+    }
+    return Object.freeze({ status: "transitioned" as const });
   });
 }
 
