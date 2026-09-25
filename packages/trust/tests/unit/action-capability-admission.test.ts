@@ -558,6 +558,7 @@ test("M254 invocation admission and authority mint sites stay mechanically inven
     "packages/server/src/routes/jobs.ts",
     "packages/server/src/routes/ordinary-content-access-recovery.ts",
     "packages/server/src/routes/task-content-access-recovery.ts",
+    "packages/server/src/routes/task-protected-composition.ts",
     "packages/server/src/routes/tasks.ts",
     "packages/server/src/routes/workspace-artifacts.ts",
     "packages/trust/src/action-capability-admission.ts",
@@ -676,6 +677,11 @@ const EXECUTION_PRIMITIVE_INVENTORY: ReadonlyArray<{
         file: "packages/server/src/app.ts",
         count: 1,
         classification: "accepted_continuation",
+      },
+      {
+        file: "packages/server/src/routes/task-protected-composition.ts",
+        count: 1,
+        classification: "external_new_admission",
       },
       {
         file: "packages/server/src/routes/tasks.ts",

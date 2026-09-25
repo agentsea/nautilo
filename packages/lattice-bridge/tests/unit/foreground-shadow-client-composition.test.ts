@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createBrowserBackgroundAuthorizationClientV2,
   createBrowserHumanPeerLiveShadowMessageReceiver,
   createBrowserLiveShadowMessageClient,
   createBrowserLiveShadowMessageReceiver,
@@ -12,6 +13,7 @@ import {
   deriveBrowserCryptoDeviceId,
 } from "../../src/client/browser/index.ts";
 import {
+  createElectronBackgroundAuthorizationClientV2,
   createElectronHumanPeerLiveShadowMessageReceiver,
   createElectronHumanMemoryClient,
   createElectronForegroundShadowCustody,
@@ -147,6 +149,21 @@ describe("foreground Shadow client composition", () => {
     });
 
     expect(publicShape(electron)).toEqual(publicShape(browser));
+  });
+
+  test("constructs one shared automatic background responder for Browser and Electron", () => {
+    const browser = createBrowserBackgroundAuthorizationClientV2({
+      ...browserBase,
+      api: constructionOnlyDomainApi as never,
+    });
+    const electron = createElectronBackgroundAuthorizationClientV2({
+      ...electronBase,
+      api: constructionOnlyDomainApi as never,
+    });
+
+    expect(publicShape(electron)).toEqual(publicShape(browser));
+    expect(browser.deviceId).toBe(deriveBrowserCryptoDeviceId(identity));
+    expect(electron.deviceId).toBe(deriveElectronCryptoDeviceId(identity));
   });
 
   test("keeps disabled Browser and Electron sends byte-equivalent on zero custody", async () => {

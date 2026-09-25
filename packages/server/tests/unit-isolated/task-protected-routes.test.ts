@@ -11,6 +11,8 @@ import type {
 import {
   createProtectedTaskTestAuthority,
   createProtectedTaskTestComposition,
+  ProtectedTaskRouteError,
+  resolveOwnedProtectedTaskAuthority,
   type ProtectedTaskRouteAuthority,
   type ProtectedTaskRoutePorts,
 } from "../../src/routes/task-protected-composition";
@@ -20,6 +22,7 @@ const TASK = "91000000-0000-4000-8000-000000000001";
 const HUMAN = "91000000-0000-4000-8000-000000000002";
 const ACTOR = "91000000-0000-4000-8000-000000000003";
 const AGENT = "91000000-0000-4000-8000-000000000004";
+const OTHER_AGENT = "91000000-0000-4000-8000-000000000007";
 const ROOM = "91000000-0000-4000-8000-000000000005";
 const NAMESPACE = "91000000-0000-4000-8000-000000000006";
 const DOMAIN = "task-domain:one";
@@ -28,6 +31,7 @@ const OBJECT = `task:v1:${TASK}:1`;
 
 const authority: ProtectedTaskRouteAuthority = Object.freeze({
   userId: HUMAN, subjectHumanId: HUMAN, actorId: ACTOR, agentId: AGENT,
+  deviceId: "device:test", deviceGeneration: 1,
 });
 
 const summary = {
@@ -138,7 +142,29 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
   return { app, client, calls };
 }
 
-describe("dormant protected Task routes", () => {
+describe("protected Task routes", () => {
+  test("resolves an owner Task through its stored agent instead of the active agent", () => {
+    const resolved = resolveOwnedProtectedTaskAuthority(authority, {
+      ownerId: HUMAN,
+      agentId: OTHER_AGENT,
+    });
+    expect(resolved).toEqual({ ...authority, agentId: OTHER_AGENT });
+    expect(resolved?.subjectHumanId).toBe(authority.subjectHumanId);
+    expect(resolved?.deviceId).toBe(authority.deviceId);
+    expect(authority.agentId).toBe(AGENT);
+  });
+
+  test("keeps cross-owner Task agent resolution closed", () => {
+    expect(resolveOwnedProtectedTaskAuthority(authority, {
+      ownerId: "91000000-0000-4000-8000-000000000008",
+      agentId: OTHER_AGENT,
+    })).toBeNull();
+    expect(resolveOwnedProtectedTaskAuthority(authority, {
+      ownerId: HUMAN,
+      agentId: AGENT,
+    })).toBe(authority);
+  });
+
   test("carries plans, exact ciphertext, and prepared publications through one authority", async () => {
     const state = fixture();
     const list = await state.client.listProtectedTaskContentV1({ includeTerminal: true });
@@ -258,5 +284,33 @@ describe("dormant protected Task routes", () => {
       expect(response.headers["cache-control"]).toBe("private, no-store");
       expect(response.headers.vary).toBe("Authorization");
     }
+  });
+
+  test("maps closed production failures without leaking ciphertext", async () => {
+    const state = fixture({
+      plan: async () => {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_authority_unavailable",
+          "Task authority is unavailable",
+        );
+      },
+    });
+    const response = await state.app.inject({
+      method: "POST",
+      url: "/api/protected/tasks/publication-plan",
+      payload: {
+        requestVersion: 1,
+        operation: "create",
+        operationId: "task:create:error",
+        task: {},
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string; message: string }>()).toEqual({
+      error: "task_authority_unavailable",
+      message: "Task authority is unavailable",
+    });
+    expect(response.body).not.toContain("cipher");
   });
 });

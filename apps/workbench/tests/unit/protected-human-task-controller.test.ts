@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { TaskContentSummaryV1 } from "@nautilo/types";
 import {
   openProtectedTaskById,
-  listOpenedProtectedScheduledTasks,
+  listProtectedScheduledTasks,
   readWorkbenchTaskForViewer,
   type WorkbenchProtectedHumanTaskController,
 } from "../../src/lib/protected-human-task-controller";
@@ -65,13 +65,44 @@ test("protected scheduled rows stay separate and open their protected definition
     },
   } as WorkbenchProtectedHumanTaskController;
 
-  const rows = await listOpenedProtectedScheduledTasks(controller);
+  const rows = await listProtectedScheduledTasks(controller);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.prompt).toBe("private schedule");
+  expect(rows[0]).toMatchObject({
+    availability: "opened",
+    prompt: "private schedule",
+  });
   expect(calls).toEqual([
     "protected-list",
     `protected-open:${scheduled.id}`,
   ]);
+});
+
+test("protected scheduled rows remain visible while device authorization is pending", async () => {
+  const waiting = {
+    id: "30000000-0000-4000-8000-000000000250",
+    scheduleKind: "cron",
+    cron: "0 9 * * *",
+    content: {
+      dtoVersion: 1,
+      status: "unavailable",
+      reason: "waiting_for_authorization",
+    },
+  } as TaskContentSummaryV1;
+  let openCalls = 0;
+  const controller = {
+    list: async () => [waiting],
+    open: async () => {
+      openCalls += 1;
+      throw new Error("unavailable Task must not be opened");
+    },
+  } as unknown as WorkbenchProtectedHumanTaskController;
+
+  expect(await listProtectedScheduledTasks(controller)).toEqual([{
+    availability: "unavailable",
+    task: waiting,
+    reason: "waiting_for_authorization",
+  }]);
+  expect(openCalls).toBe(0);
 });
 
 test("viewer preserves proven ordinary Tasks while gating protected reads by policy", async () => {

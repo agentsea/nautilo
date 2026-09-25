@@ -140,7 +140,7 @@ describe("tasks HTTP API (M146)", () => {
         operationId: `task:pending:${randomUUID()}`,
         requestDigest: new Uint8Array(32),
         authorityFingerprint: new Uint8Array(32),
-        requesterHumanId: fx.ownerId,
+        requesterHumanId: fx.ownerActorId,
         anchorNamespaceId: namespace.id,
         cryptoObjectId: deriveTaskContentCryptoObjectIdV1({
           kind: "definition", taskId: task.id, contentRevision: 1,
@@ -390,7 +390,7 @@ describe("tasks HTTP API (M146)", () => {
         operationId: `task:mixed:${randomUUID()}`,
         requestDigest: new Uint8Array(32).fill(1),
         authorityFingerprint: new Uint8Array(32).fill(2),
-        requesterHumanId: fx.ownerId,
+        requesterHumanId: fx.ownerActorId,
         anchorNamespaceId: namespace.id,
         cryptoObjectId: objectId,
         representation: "protected",

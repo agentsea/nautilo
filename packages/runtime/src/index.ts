@@ -318,6 +318,15 @@ export { botThreadId } from "./conductor/thread-id";
 // M142 — Task primitive async engine (Phase 2a).
 export { TaskObserver, type TaskObserverDeps } from "./tasks/task-observer";
 export {
+  ProtectedTaskOccurrenceCoordinator,
+  createProtectedTaskOccurrenceCoordinator,
+  type ClaimedProtectedTaskOccurrence,
+  type ClaimProtectedTaskOccurrenceResult,
+  type ProtectedTaskOccurrenceClaimPort,
+  type ProtectedTaskOccurrenceCoordinatorDeps,
+  type ProtectedTaskOccurrenceJobManager,
+} from "./tasks/protected-task-occurrence-coordinator";
+export {
   dispatchTaskRun,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,

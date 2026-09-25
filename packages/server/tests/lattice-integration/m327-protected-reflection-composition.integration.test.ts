@@ -1713,6 +1713,7 @@ async function authorizeReflectionRequest(
       issuer,
       signingPrivateKey: fixture.signing.privateKey,
       policyRevision: fixture.policyRevision,
+      hostAuthorizationRevision: currentDevice.securityRevision,
     }),
   });
   expect(response.status).toBe("ready");
@@ -1974,6 +1975,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           issuer,
           signingPrivateKey: fixture.signing.privateKey,
           policyRevision: fixture.policyRevision,
+          hostAuthorizationRevision: currentDevice.securityRevision,
         }),
       });
       expect(response.status).toBe("ready");

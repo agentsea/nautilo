@@ -56,6 +56,7 @@ export {
   type BackgroundAuthorizationAcceptResponseResult,
   type BackgroundAuthorizationAcceptedMaterial,
   type BackgroundAuthorizationAuthoritySetV2,
+  type BackgroundAuthorizationAuthoritySetV3,
   type BackgroundAuthorizationCasResult,
   type BackgroundAuthorizationCreateResult,
   type BackgroundAuthorizationPurpose,
@@ -65,6 +66,8 @@ export {
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecordV1,
   type BackgroundAuthorizationAgentRecordV2,
+  type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationVerifiedRuntimeResponseV3,
   type BackgroundAuthorizationRecordV2,
   type BackgroundAuthorizationProcessorRecordV2,
   type BackgroundAuthorizationRepository,
@@ -95,6 +98,13 @@ export {
   type ProcessorRecipientDescriptorFactory,
   type ProcessorRecipientExpiryRetryResult,
 } from "./prepare-processor-recipient";
+
+export {
+  TaskRuntimeGrantClaim,
+  createTaskRuntimeGrantClaim,
+  type TaskRuntimeGrantClaimDependencies,
+  type TaskRuntimeGrantClaimPlan,
+} from "./task-runtime-grant-claim";
 
 export {
   DARK_BACKGROUND_DEFAULT_PENDING_DELAY_MS,

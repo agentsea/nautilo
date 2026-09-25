@@ -11,12 +11,13 @@ import { readTaskPreparation } from "@nautilo/types";
  * Phase 2 can pass either a pooled `DirectDatabase` or a transaction-
  * scoped handle) rather than reaching for a module-level singleton.
  */
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, or, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
 import { taskRuns, type TaskRun, type NewTaskRun } from "../schema/task-runs";
 import { profiles } from "../schema/profiles";
 import { jobs } from "../schema/jobs";
+import { taskDefinitionCryptoRevisions } from "../schema/task-definition-crypto-revisions";
 
 type TaskStatus = NonNullable<NewTask["status"]>;
 type TaskRunStatus = NonNullable<NewTaskRun["status"]>;
@@ -1536,6 +1537,23 @@ export async function claimDueTasks(
   });
 }
 
+/** A pending protected Task cannot be dispatched while any reserved next
+ * definition revision has not reached product mapping. Failed revisions stay
+ * closed for repair instead of running old content with newer operations. */
+export function protectedTaskPublicationIdlePredicate(db: DirectDatabase) {
+  return notExists(
+    db.select({ taskId: taskDefinitionCryptoRevisions.taskId })
+      .from(taskDefinitionCryptoRevisions)
+      .where(and(
+        eq(taskDefinitionCryptoRevisions.taskId, tasks.id),
+        eq(
+          taskDefinitionCryptoRevisions.contentRevision,
+          sql`${tasks.contentRevision} + 1`,
+        ),
+      )),
+  );
+}
+
 /**
  * Claim only due Tasks whose protected representation is complete and current.
  * Plain scheduling keeps its independent `claimDueTasks` path.
@@ -1555,6 +1573,7 @@ export async function claimDueProtectedTasks(
           eq(tasks.status, "pending"),
           inArray(tasks.contentRepresentation, ["dual", "protected"]),
           eq(tasks.cryptoMappingState, "verified"),
+          protectedTaskPublicationIdlePredicate(db),
           lte(tasks.nextFireAt, now),
           isNull(tasks.fireLockId),
         ),

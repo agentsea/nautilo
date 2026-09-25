@@ -76,6 +76,14 @@
       "command": "bun test --bail=1 --timeout 60000 tests/unit/one-run-processor-transform.test.ts tests/unit/processor-object-signer-v1.test.ts tests/unit/one-run-processor-transform-v2.test.ts tests/unit/processor-publication-reconciliation-v2.test.ts tests/unit/processor-output-repair-v2.test.ts tests/unit/reflection-authority-reprojection-v2.test.ts"
     },
     {
+      "name": "background-task-recipient",
+      "tier": "critical",
+      "mutate": [
+        "src/background/task-runtime-recipient-registry-v1.ts"
+      ],
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts"
+    },
+    {
       "name": "background-work-manifest",
       "tier": "critical",
       "mutate": [

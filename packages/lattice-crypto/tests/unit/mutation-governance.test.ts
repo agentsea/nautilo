@@ -152,8 +152,8 @@ describe("M229 mutation governance", () => {
     const eligible = deriveMutationSourceInventory(
       new URL("../..", import.meta.url).pathname,
     );
-    expect(parsed.scopes).toHaveLength(29);
-    expect(eligible).toHaveLength(126);
+    expect(parsed.scopes).toHaveLength(30);
+    expect(eligible).toHaveLength(127);
     expect(parsed.scopes.filter((scope) =>
       scope.name.startsWith("background-")
     ).map((scope) => ({
@@ -183,6 +183,11 @@ describe("M229 mutation governance", () => {
         "src/background/publication-reconciliation-v2.ts",
         "src/background/output-repair-v2.ts",
         "src/background/reflection-authority-reprojection-v2.ts",
+      ],
+    }, {
+      name: "background-task-recipient",
+      targets: [
+        "src/background/task-runtime-recipient-registry-v1.ts",
       ],
     }, {
       name: "background-work-manifest",
