@@ -188,6 +188,7 @@ function fixture(options: Readonly<{
     prepared: prepared(),
     requestDigest: new Uint8Array(32).fill(9),
     outcome: "completed" as const,
+    scheduleKind: "now" as const,
     completedAt: COMPLETED_AT,
   });
   return { calls, input, terminalInputs };
@@ -213,6 +214,7 @@ describe("protected Task result publication", () => {
     expect(state.terminalInputs).toEqual([{
       taskId: TASK_ID,
       taskRunId: RUN_ID,
+      scheduleKind: "now",
       operationId: `task-run-result:${RUN_ID}`,
       requestDigest: new Uint8Array(32).fill(9),
       resultObjectId: deriveTaskContentCryptoObjectIdV1(coordinate()),
@@ -220,7 +222,7 @@ describe("protected Task result publication", () => {
       resultRepresentation: "protected",
       outcome: "completed",
       completedAt: COMPLETED_AT,
-      requireRunningPair: true,
+      requiredRunStatus: "running",
       policyRevalidationToken: 19,
     }]);
   });
@@ -240,16 +242,31 @@ describe("protected Task result publication", () => {
       "outcome",
       "policyRevalidationToken",
       "requestDigest",
-      "requireRunningPair",
+      "requiredRunStatus",
       "resultObjectId",
       "resultRepresentation",
       "resultRevision",
+      "scheduleKind",
       "taskId",
       "taskRunId",
     ]);
     expect("resultText" in terminal).toBe(false);
     expect("lastError" in terminal).toBe(false);
     expect("jobInput" in terminal).toBe(false);
+  });
+
+  test("keeps recurring parent semantics separate from exact running-run fence", async () => {
+    const state = fixture();
+    await publishProtectedTaskRunResult({
+      ...state.input,
+      scheduleKind: "cron",
+    });
+
+    expect(state.terminalInputs[0]).toMatchObject({
+      scheduleKind: "cron",
+      requiredRunStatus: "running",
+      taskRunId: RUN_ID,
+    });
   });
 
   test("uses one stable operation identity and accepts an exact replay", async () => {

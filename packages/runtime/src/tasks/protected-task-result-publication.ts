@@ -49,6 +49,8 @@ export interface ProtectedTaskRunTerminalPort {
   terminalize(input: Readonly<{
     taskId: string;
     taskRunId: string;
+    /** Verify the persisted Task schedule and its matching live status. */
+    scheduleKind: "now" | "one_shot" | "cron";
     operationId: string;
     requestDigest: Uint8Array;
     resultObjectId: string;
@@ -56,7 +58,8 @@ export interface ProtectedTaskRunTerminalPort {
     resultRepresentation: "protected";
     outcome: ProtectedTaskRunResultOutcome;
     completedAt: Date;
-    requireRunningPair: true;
+    /** The exact run must be running even while a cron parent stays pending. */
+    requiredRunStatus: "running";
     policyRevalidationToken: number;
   }>): Promise<ProtectedTaskRunTerminalResult>;
 }
@@ -83,6 +86,7 @@ export type PublishProtectedTaskRunResultInput = Readonly<{
   prepared: PreparedTaskContentCryptoRevisionV1;
   requestDigest: Uint8Array;
   outcome: ProtectedTaskRunResultOutcome;
+  scheduleKind: "now" | "one_shot" | "cron";
   completedAt: Date;
 }>;
 
@@ -106,6 +110,7 @@ function validate(input: PublishProtectedTaskRunResultInput): Readonly<{
   resultObjectId: string;
   authority: TaskContentAuthorityV1;
   outcome: ProtectedTaskRunResultOutcome;
+  scheduleKind: "now" | "one_shot" | "cron";
   completedAt: Date;
 }> {
   assertProtectedTaskJobReferenceV1(input.reference);
@@ -152,6 +157,13 @@ function validate(input: PublishProtectedTaskRunResultInput): Readonly<{
   if (input.outcome !== "completed" && input.outcome !== "errored") {
     throw new TypeError("Protected Task result outcome is invalid");
   }
+  if (
+    input.scheduleKind !== "now"
+    && input.scheduleKind !== "one_shot"
+    && input.scheduleKind !== "cron"
+  ) {
+    throw new TypeError("Protected Task result schedule is invalid");
+  }
   return Object.freeze({
     coordinate: Object.freeze({ ...coordinate }),
     operationId: operationId(coordinate.taskRunId),
@@ -159,6 +171,7 @@ function validate(input: PublishProtectedTaskRunResultInput): Readonly<{
     resultObjectId: input.prepared.objectId,
     authority: Object.freeze({ ...input.authority }),
     outcome: input.outcome,
+    scheduleKind: input.scheduleKind,
     completedAt: new Date(input.completedAt.getTime()),
   });
 }
@@ -198,6 +211,7 @@ export async function publishProtectedTaskRunResult(
       const terminal = await input.terminal.terminalize(Object.freeze({
         taskId: exact.coordinate.taskId,
         taskRunId: exact.coordinate.taskRunId,
+        scheduleKind: exact.scheduleKind,
         operationId: exact.operationId,
         requestDigest: exact.requestDigest.slice(),
         resultObjectId: exact.resultObjectId,
@@ -205,7 +219,7 @@ export async function publishProtectedTaskRunResult(
         resultRepresentation: "protected",
         outcome: exact.outcome,
         completedAt: new Date(exact.completedAt.getTime()),
-        requireRunningPair: true,
+        requiredRunStatus: "running",
         policyRevalidationToken: context.revalidationToken,
       }));
       if (
