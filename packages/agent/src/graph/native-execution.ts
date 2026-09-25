@@ -4,7 +4,7 @@ import { z } from "zod";
 import { CUA_MACOS_KEY_PATTERN, desktopStateObservationSchema, windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 import { canonicalizeComputerUseJson } from "@nautilo/computer-use-contracts";
 import type { ToolCall } from "@langchain/core/messages/tool";
-import type { NativeDecisionState } from "./native-decision";
+import { outstandingNativeEffects, type NativeDecisionState } from "./native-decision";
 import { computerUseHostToolDefinition } from "../config/computer-use-catalogue/host-tool-admission";
 import { nativeControlProgress, nativeObservationDelta } from "./native-observation-delta";
 
@@ -14,6 +14,7 @@ const referenceSchema = z.object({ $valueRef: z.object({
   slice: z.object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }).strict().optional(),
 }).strict() }).strict();
 export const nativeExecutionReplySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("reconcile"), callId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal("call"), tool: z.string().min(1), arguments: z.record(z.string(), z.json()) }).strict(),
   z.object({ kind: z.literal("genie"), reason: z.enum(["composition", "reasoning", "intent", "missing_capability", "unresolved_effect"]), question: z.string().min(1) }).strict(),
   z.object({ kind: z.literal("complete"), summary: z.string().min(1), checks: z.array(z.object({
@@ -70,7 +71,7 @@ export function nativeExecutionInputReferences(value: unknown): z.infer<typeof r
  * never automatically completes a workflow. No model-authored paths/checks. */
 export function nativeExecutionCompletionChoice(decision: NativeDecisionState): Extract<NativeExecutionReply, { kind: "complete" }> | undefined {
   const execution = decision.execution;
-  if (!execution?.freshRead || execution.mustObserve || decision.unresolved.length) return;
+  if (!execution?.freshRead || execution.mustObserve || outstandingNativeEffects(decision).length) return;
   const roots = { ...execution, values: decision.plan.values };
   const expected = (execution.boundInputs ?? []).map(ref => ({ ref, value: bindNativeExecutionValue(ref, roots) }))
     .filter(row => typeof row.value === "string" && row.value.length > 0);
@@ -114,10 +115,10 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonicalizeComputerUseJson(left)) === JSON.stringify(canonicalizeComputerUseJson(right));
 }
 
-function scopedAppendFact(decision: NativeDecisionState): Extract<NativeExecutionReply, { kind: "complete" }>["checks"][number] | undefined {
+function scopedAppendFact(decision: NativeDecisionState, reconciling = false): Extract<NativeExecutionReply, { kind: "complete" }>["checks"][number] | undefined {
   const execution = decision.execution;
   const mutation = execution?.textMutation;
-  if (!execution?.freshRead || execution.mustObserve || decision.unresolved.length || !mutation || mutation.settlement !== "completed"
+  if (!execution?.freshRead || execution.mustObserve || (!reconciling && outstandingNativeEffects(decision).length) || !mutation || (!reconciling && mutation.settlement !== "completed")
     || mutation.before === null || mutation.scope === null) return;
   const window = windowStateObservationSchema.safeParse(execution.observation).data;
   const controls = window?.controlCollection?.controls;
@@ -129,6 +130,47 @@ function scopedAppendFact(decision: NativeDecisionState): Extract<NativeExecutio
   if (typeof text !== "string" || !text.length || matching[0]!.control.state.value !== mutation.before + text) return;
   return { path: ["controlCollection", "controls", matching[0]!.index, "state", "value"], comparison: "appends",
     expected: mutation.input, appendBefore: mutation.before };
+}
+
+/** A reconciliation is an assessment of a fresh, scoped transition, never a
+ * rewritten delivery receipt. Text insertion requires exact code-owned delta
+ * evidence; a model's impression of a screenshot cannot settle duplicate input.
+ * Other effects may be assessed from retained before/after scope and pixels.
+ * Absence/unchanged state never issues permission to replay. */
+export function nativeReconciliationChoices(decision: NativeDecisionState): Array<{ callId: string; basis: "scoped_text_delta" | "model_interpretation"; evidence: unknown }> {
+  const execution = decision.execution;
+  if (!execution?.freshRead || execution.mustObserve || !execution.observationCallId || decision.humanTakeover) return [];
+  const after = windowStateObservationSchema.safeParse(execution.observation).data;
+  if (!after || after.outcome.externalInterference === "user_input") return [];
+  return outstandingNativeEffects(decision).flatMap<{ callId: string; basis: "scoped_text_delta" | "model_interpretation"; evidence: unknown }>(entry => {
+    const operation = schemaRecord(entry.operation);
+    const before = windowStateObservationSchema.safeParse(entry.before).data;
+    if (!before || !sameJson(before.target, after.target)) return [];
+    if (["type_text", "set_value"].includes(String(operation["kind"]))) {
+      const fact = operation["kind"] === "type_text" && outstandingNativeEffects(decision).length === 1 ? scopedAppendFact(decision, true) : undefined;
+      return fact ? [{ callId: entry.callId, basis: "scoped_text_delta" as const,
+        evidence: nativeExecutionCompletionEvidence({ kind: "complete", summary: "Assess exact insertion", checks: [fact] }, { ...execution, values: decision.plan.values }) }] : [];
+    }
+    const delta = nativeObservationDelta(before.controlCollection?.controls ?? [], after.controlCollection?.controls ?? []);
+    if (!delta.addedOrChanged.length && !delta.removedOrChanged.length && sameJson(before.evidence, after.evidence)) return [];
+    return [{ callId: entry.callId, basis: "model_interpretation" as const, evidence: {
+      action: entry.source ?? null, receipt: entry.receipt, window: after.evidence,
+      beforeCompleteness: before.completeness, afterCompleteness: after.completeness, delta,
+      qualification: "Same observed window, not persistent control identity. Interpret the requested effect using this transition and fresh image when available. A changed tree alone is not proof; missing/unchanged/ambiguous evidence cannot settle it.",
+    } }];
+  });
+}
+
+export function nativeExecutionReplayKey(call: Pick<ToolCall, "name" | "args">, observation: unknown): string {
+  const { target: _target, deliveryMode: _deliveryMode, delayMs: _delayMs, ...operation } = schemaRecord(call.args["operation"]);
+  const window = windowStateObservationSchema.safeParse(observation).data;
+  const writing = operation["kind"] === "type_text" || operation["kind"] === "set_value";
+  const controls = window?.controlCollection?.controls ?? [];
+  const selected = controls.find(control => control.target && sameJson(control.target, _target));
+  // Input effects stay fenced despite rotated handles, changed field values,
+  // delivery mode, or switching insertion/replacement spelling.
+  return progressDigest([call.name, writing ? { kind: "write_value", value: operation["text"] ?? operation["value"] } : operation,
+    window?.target ?? null, !writing && selected ? controlScope(selected, controls) : null]);
 }
 
 /** Public context for a separate whole-goal judgment. Exact payload equality is
@@ -260,7 +302,7 @@ export function projectNativeExecutionObservation(value: unknown, path: (string 
 
 export function nativeExecutionCompletion(reply: Extract<NativeExecutionReply, { kind: "complete" }>, decision: NativeDecisionState): boolean {
   const execution = decision.execution;
-  if (!execution?.freshRead || execution.mustObserve || !execution.observation || decision.unresolved.length) return false;
+  if (!execution?.freshRead || execution.mustObserve || !execution.observation || outstandingNativeEffects(decision).length) return false;
   return reply.checks.every(check => {
     // A fact compared to itself is not a postcondition. Expectations must come
     // from the request/authored inputs or explicit boolean/numeric predicates.
@@ -343,12 +385,13 @@ export function settleNativeExecution(decision: NativeDecisionState, call: ToolC
     || payload["completionCertainty"] === "partially_completed" || outcome["stateChangeCertainty"] === "unknown"
     || (settlement !== "completed" && payload["completionCertainty"] !== "not_completed" && outcome["stateChangeCertainty"] !== "not_changed"));
   const receipt = { settlement, ...(payload["completionCertainty"] ? { completionCertainty: payload["completionCertainty"] } : {}), outcome };
-  const operation: unknown = call.args["operation"];
-  const unresolved = unknown ? [...decision.unresolved, { callId: call.id, operation, receipt, replayKey: "unclassified" }] : decision.unresolved;
+  const operation: unknown = call.args["operation"] ?? null;
+  const action = actionEvidence(call, execution.observation, decision.plan.values);
+  const unresolved = unknown ? [...decision.unresolved, { callId: call.id, operation, receipt,
+    replayKey: nativeExecutionReplayKey(call, execution.observation), before: execution.observation, source: action }] : decision.unresolved;
   const humanTakeover = decision.humanTakeover === true || outcome["externalInterference"] === "user_input";
   const handoff = humanTakeover ? "human_takeover" : paginationError ?? (["revoked", "cancelled", "fenced"].includes(settlement) ? settlement
-    : read && settlement === "completed" && unresolved.length ? "unresolved_effect_requires_verification" : null);
-  const action = actionEvidence(call, execution.observation, decision.plan.values);
+    : null);
   const write = schemaRecord(operation);
   const beforeWindow = !read && write["kind"] === "type_text"
     ? windowStateObservationSchema.safeParse(execution.observation).data : undefined;
@@ -396,7 +439,7 @@ export function settleNativeExecution(decision: NativeDecisionState, call: ToolC
   return { ...decision, humanTakeover, pending: null, generation: decision.generation + 1, phase: reason ? "handoff" : "interpret", reason, unresolved,
     ...(nextWindow ? { observation: nextWindow } : {}),
     history: [...history, { action: call.name, settlement, evidence: { ...receipt, source: action,
-      operation: typeof call.args["operation"] === "string" ? call.args["operation"] : schemaRecord(call.args["operation"])["kind"],
+      operation: typeof operation === "string" ? operation : schemaRecord(operation)["kind"] ?? null,
       argumentsDigest: createHash("sha256").update(JSON.stringify(call.args)).digest("hex"),
     } }],
     recovery: { ...decision.recovery, events, before: after ?? decision.recovery.before,

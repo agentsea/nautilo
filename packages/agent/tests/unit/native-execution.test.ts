@@ -3,7 +3,7 @@ import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langcha
 import type { NautiloState } from "../../src/agent/state";
 import { createNativeDecisionNode } from "../../src/nodes/native-decision";
 import { nativeExecutionObservation } from "../../src/nodes/native-execution";
-import { nativeDecisionDispatchError, settleNativeDecision } from "../../src/graph/native-decision";
+import { nativeDecisionDispatchError, nativeDecisionContinuationMessage, outstandingNativeEffects, settleNativeDecision } from "../../src/graph/native-decision";
 import { bindNativeExecutionValue, mergeNativeDesktopPage, nativeExecutionCompletion, nativeExecutionCompletionChoice, nativeExecutionCompletionEvidence,
   nativeExecutionStringsBound, projectNativeExecutionObservation, settleNativeExecution, type NativeExecutionReply } from "../../src/graph/native-execution";
 import { configureRuntimeModelCatalog, resetRuntimeModelCatalog, getActiveModelCatalogSync, hydrateRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
@@ -15,6 +15,9 @@ import { computerResultDurableSidecar, projectSemanticComputerResult } from "../
 import { invokeNativeExecution, type NativeExecutionInput } from "../../src/providers/native-execution";
 import type { ChatModel } from "../../src/providers/types";
 import type { ChoiceInput, ChoiceResult } from "../../src/providers/choice";
+import { ChoiceRequestError } from "../../src/providers/choice";
+import { decisionStateSchema } from "../../src/providers/decision";
+import { nativeReconciliationChoices } from "../../src/graph/native-execution";
 
 const selectedChoice = (input: ChoiceInput, selectedId: string): ChoiceResult => ({
   selectedId, requestedModelId: input.modelId, resolvedModelId: input.modelId,
@@ -35,6 +38,130 @@ function recoveryWindow(revision: number, value = "unchanged") {
     outcome: { version: 1, phase: "observe", retrySafety: "never", stateChangeCertainty: "not_applicable", providerCondition: "ready", targetCondition: "current", recovery: [] },
   };
 }
+
+test("a browser-bind refusal without an operation produces valid in-memory Choice context", async () => {
+  const current = await entered();
+  const settled = settleNativeExecution(current.nativeDecision!, {
+    id: "bind", name: "computer_browser_bind_window", args: { window: target },
+  }, { settlement: "not_completed", result: { completionCertainty: "not_completed",
+    outcome: { stateChangeCertainty: "not_changed", recovery: ["use_native_window"] } } });
+  expect(decisionStateSchema.safeParse({ recentActions: settled.history }).success).toBe(true);
+  expect(settled.history.at(-1)?.evidence).toMatchObject({ operation: null });
+  let calls = 0;
+  await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    interpretNative: async input => {
+      calls++;
+      // Validate before JSON serialization: serialization would hide undefined.
+      expect(decisionStateSchema.safeParse(input.state).success).toBe(true);
+      return response({ kind: "genie", reason: "intent", question: "Synthetic test complete" });
+    },
+  })({ ...state(), nativeDecision: { ...settled, execution: { ...settled.execution!, mustObserve: false } } }, config);
+  expect(calls).toBe(1);
+});
+
+test("invalid local Choice input is not mislabeled interpreter unavailability", async () => {
+  const current = await entered();
+  const next = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    interpretNative: async () => { throw new ChoiceRequestError("invalid_request"); },
+  })({ ...state(), nativeDecision: current.nativeDecision! }, config);
+  expect(next.nativeDecision?.reason).toBe("execution_choice_invalid_request");
+});
+
+test("fresh scoped exact insertion reconciles uncertainty without changing its receipt or permitting replay", async () => {
+  const current = await entered();
+  const poem = "Exact supplied line 🌊";
+  let decision: NonNullable<NautiloState["nativeDecision"]> = { ...current.nativeDecision!, plan: { ...current.nativeDecision!.plan, values: { poem } } };
+  const before = recoveryWindow(0, "Before\n");
+  const read = { id: "before", name: "computer_observe", args: { operation: "window_state", target } };
+  decision = settleNativeExecution(decision, read, { settlement: "completed", result: before });
+  decision.execution!.boundInputs = [ref("values", ["poem"])];
+  decision = settleNativeExecution(decision, { id: "write", name: "computer_do", args: {
+    operation: { kind: "type_text", target: before.controlCollection.controls[0]!.target, text: poem },
+  } }, { settlement: "unknown_completion", result: { completionCertainty: "unknown_completion" } });
+  const unknown = decision;
+  for (const bad of ["Before\n", poem, "Before\n" + poem + poem, "Before\nExact"]) {
+    const fresh = settleNativeExecution(unknown, { ...read, id: "after" }, { settlement: "completed", result: recoveryWindow(1, bad) });
+    expect(nativeReconciliationChoices(fresh)).toEqual([]);
+    expect(nativeExecutionCompletionChoice(fresh)).toBeUndefined();
+  }
+  const after = recoveryWindow(1, "Before\n" + poem);
+  const wrong = settleNativeExecution(unknown, { ...read, id: "after" }, { settlement: "completed", result: {
+    ...after, target: { ...target, reference: `dtgt_${"w".repeat(43)}` },
+  } });
+  expect(nativeReconciliationChoices(wrong)).toEqual([]);
+  decision = settleNativeExecution(unknown, { ...read, id: "after" }, { settlement: "completed", result: after });
+  expect(nativeReconciliationChoices(decision)).toMatchObject([{ callId: "write", basis: "scoped_text_delta" }]);
+  const result = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    interpretNative: async input => {
+      expect(input.reconciliation).toHaveLength(1);
+      expect(decisionStateSchema.safeParse(input.state).success).toBe(true);
+      return response({ kind: "reconcile", callId: "write" });
+    },
+  })({ ...current, nativeDecision: decision }, config);
+  const resolved = result.nativeDecision!;
+  expect(outstandingNativeEffects(resolved)).toHaveLength(0);
+  expect(resolved.unresolved[0]!.receipt).toEqual(unknown.unresolved[0]!.receipt);
+  expect(resolved.unresolved[0]!.resolution).toMatchObject({ observationCallId: "after", basis: "scoped_text_delta" });
+  expect(nativeExecutionCompletionChoice(resolved)?.checks.some(check => check.comparison === "appends")).toBe(true);
+  const repeated = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    interpretNative: async () => response({ kind: "call", tool: "computer_do", arguments: { operation: {
+      kind: "type_text", target: ref("observation", ["controlCollection", "controls", 0, "target"]), text: ref("values", ["poem"]),
+    } } }),
+  })({ ...current, nativeDecision: resolved }, config);
+  expect(repeated.nativeDecision?.reason).toBe("execution_uncertain_effect_replay_forbidden");
+  expect(repeated.nativeDecision?.pending).toBeNull();
+});
+
+test("uncertain non-text effects require changed same-window evidence and retain a fallible interpretation label", async () => {
+  const current = await entered();
+  const read = { id: "before", name: "computer_observe", args: { operation: "window_state", target } };
+  const before = recoveryWindow(0);
+  const observed = settleNativeExecution(current.nativeDecision!, read, { settlement: "completed", result: before });
+  const uncertain = settleNativeExecution(observed, { id: "click", name: "computer_do", args: {
+    operation: { kind: "click", target: before.controlCollection.controls[0]!.target },
+  } }, { settlement: "unknown_completion", result: { completionCertainty: "unknown_completion" } });
+  const unchanged = settleNativeExecution(uncertain, { ...read, id: "same" }, { settlement: "completed", result: recoveryWindow(1) });
+  expect(nativeReconciliationChoices(unchanged)).toEqual([]);
+  const changed = settleNativeExecution(uncertain, { ...read, id: "after" }, { settlement: "completed", result: recoveryWindow(2, "New content") });
+  expect(nativeReconciliationChoices(changed)).toMatchObject([{ callId: "click", basis: "model_interpretation" }]);
+  const invalid = await createNativeDecisionNode({ fullEncryptionOnlyForState: () => false,
+    interpretNative: async () => response({ kind: "reconcile", callId: "foreign" }),
+  })({ ...current, nativeDecision: changed }, config);
+  expect(invalid.nativeDecision?.reason).toBe("execution_reconciliation_not_grounded");
+  expect(outstandingNativeEffects(invalid.nativeDecision!)).toHaveLength(1);
+  expect(nativeReconciliationChoices({ ...changed, humanTakeover: true })).toEqual([]);
+});
+
+test("explicit continuation retains authored bytes and uncertainty only for the same authorized workflow", async () => {
+  const current = await entered();
+  const poem = "Original\r\n🌊 supplied content";
+  const saved = { ...current.nativeDecision!, owner: { userId: current.userId, roomId: current.roomId, agentId: current.agentId },
+    phase: "handoff" as const, humanTakeover: true, plan: { ...current.nativeDecision!.plan, values: { poem } } };
+  const resumed = { ...current, turnId: "resume-turn", nativeDecision: saved };
+  const notice = nativeDecisionContinuationMessage(resumed)!;
+  expect(notice.additional_kwargs["nautilo_transient_context"]).toBe(true);
+  expect(notice.content).not.toContain(poem);
+  expect(notice.content).toContain(saved.turnId);
+  for (const foreign of [{ userId: "other" }, { roomId: "other" }, { agentId: "other" }])
+    expect(nativeDecisionContinuationMessage({ ...resumed, ...foreign })).toBeNull();
+  const call = { id: "resume-read", name: "computer_observe", args: { operation: "desktop_state",
+    decisionPlan: { execution: "workflow", goal: saved.plan.goal, resumeFrom: saved.turnId } } };
+  expect(nativeDecisionDispatchError(resumed, call)).toBeNull();
+  expect(nativeDecisionDispatchError({ ...resumed, userId: "other" }, call)).toBe("native_resume_reference_invalid_or_content_changed");
+  expect(nativeDecisionDispatchError(resumed, { ...call, args: { ...call.args,
+    decisionPlan: { ...call.args.decisionPlan, values: { poem: "Rewritten" } } } })).toBe("native_resume_reference_invalid_or_content_changed");
+  const raw = JSON.stringify({ kind: "result", protocol: { major: 3, minor: 0 }, requestId: call.id,
+    fence: { hostGeneration: "host-fixture", driverGeneration: "driver-fixture", cancellationGeneration: 1 },
+    contract: COMPUTER_USE_NATIVE_CONTRACTS.observe, settlement: "completed", result: inventoryPage(0, 0) });
+  const next = settleNativeDecision({ ...resumed, messages: [...resumed.messages, new AIMessage({ content: "", tool_calls: [call] })] },
+    [call], [new ToolMessage({ name: call.name, tool_call_id: call.id, content: projectSemanticComputerResult(call.name, raw),
+      additional_kwargs: computerResultDurableSidecar(call.name, raw) })], [], saved.modelId)!;
+  expect(next.plan.values["poem"]).toBe(poem);
+  expect(next.turnId).toBe(resumed.turnId);
+  expect(next.humanTakeover).toBe(false);
+  expect(next.execution?.freshRead).toBe(true);
+  expect(next.pending).toBeNull();
+});
 
 test("workflow recovery compares semantic progress across fresh IDs and chooses another operation route", async () => {
   let decision = (await entered()).nativeDecision!;
@@ -601,7 +728,7 @@ test("composition routes once to Genie and resumes through a checked workflow de
   expect(verification.nativeDecision?.pending?.args).toEqual({ operation: "window_state", target });
   const retained = settleNativeExecution(verification.nativeDecision!, verification.nativeDecision!.pending!,
     { settlement: "completed", result: readPayload.result });
-  expect(retained.reason).toBe("unresolved_effect_requires_verification");
+  expect(retained.phase).toBe("interpret");
   expect(retained.unresolved).toHaveLength(1);
   expect(selections).toBe(2);
   expect(reviewCalls).toBe(2);
@@ -635,7 +762,7 @@ test("unknown effects, cancelled work and human takeover cannot become repeated 
   const blocked = await node({ ...current, nativeDecision: unknown }, config);
   expect(blocked.nativeDecision?.reason).toBe("execution_fresh_verification_required");
   const reread = settleNativeExecution(unknown, { id: "read", name: "computer_observe", args: {} }, { settlement: "completed", result: { value: "exact" } });
-  expect(reread.phase).toBe("handoff");
+  expect(reread.phase).toBe("interpret");
   expect(reread.unresolved).toHaveLength(1);
   for (const settlement of ["cancelled", "revoked", "fenced"]) expect(settleNativeExecution(current.nativeDecision!, call, { settlement, result: {} }).phase).toBe("handoff");
   expect(settleNativeExecution(current.nativeDecision!, call, { settlement: "completed", result: { outcome: { externalInterference: "user_input" } } }).reason).toBe("human_takeover");

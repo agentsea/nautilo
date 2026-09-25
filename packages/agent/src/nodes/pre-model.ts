@@ -1,4 +1,5 @@
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
+import { nativeDecisionContinuationMessage } from "../graph/native-decision";
 import { assertResearchDesktopAvailable } from "../tools/invocation-service";
 import { projectSecurityResearchConsolidationTools } from "../tools/security/security-scan";
 import { SystemMessage, AIMessage, ToolMessage, HumanMessage, type BaseMessage } from "@langchain/core/messages";
@@ -1255,6 +1256,8 @@ export async function preModelNode(
   const preparedBeforeModality = compactionHint
     ? [systemMessage, ...providerProjectedHistory, compactionHint]
     : [systemMessage, ...providerProjectedHistory];
+  const nativeContinuation = tools.some(tool => tool.name === "computer_observe") ? nativeDecisionContinuationMessage(state) : null;
+  if (nativeContinuation) preparedBeforeModality.push(nativeContinuation);
   const modalitySafe = sanitizeImagesForModel(preparedBeforeModality, requestedModelId);
   // Direct OpenAI accepts system/developer messages in sequence. Moving a new
   // runtime handoff into the leading prompt invalidates the conversation cache.

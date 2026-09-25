@@ -6,13 +6,15 @@ import { mergeMessagesPreservingInvariants } from "@nautilo/message-invariants";
 import type { NautiloState } from "../agent/state";
 import { resolveNativeDecisionModel } from "../config/native-decision-model";
 import { activeComputerUseHostToolDefinitions, computerUseHostToolDefinition, resolveComputerUseHostToolRequest } from "../config/computer-use-catalogue/host-tool-admission";
-import { nativeDecisionHandoffMessage, nativeDecisionResult, type NativeDecisionState } from "../graph/native-decision";
+import { nativeDecisionHandoffMessage, nativeDecisionResult, outstandingNativeEffects, type NativeDecisionState } from "../graph/native-decision";
 import { bindNativeExecutionValue, nativeExecutionStringsBound, nativeExecutionCompletion, nativeExecutionCompletionChoice,
   nativeExecutionInputReferences, nativeFreshRead, projectNativeExecutionObservation, usesNativeReadArguments } from "../graph/native-execution";
+import { nativeReconciliationChoices, nativeExecutionReplayKey } from "../graph/native-execution";
 import { invokeNativeExecution } from "../providers/native-execution";
 import { runWithUsageContext } from "../usage/usage-context";
 import { isImageContentBlock } from "../utils/message-modalities";
 import { classifyError } from "../utils/errors";
+import { ChoiceRequestError } from "../providers/choice";
 import { desktopStateObservationSchema, windowStateObservationSchema, computerLaunchReceiptSchema } from "@nautilo/computer-use-contracts/native";
 import { nextChoiceContinuation } from "../graph/choice-coverage";
 
@@ -30,7 +32,7 @@ export function nativeExecutionObservation(state: NautiloState, decision: Native
   const execution = decision.execution!;
   const observation = execution.observation;
   const window = windowStateObservationSchema.safeParse(observation).data;
-  if (!window || !execution.freshRead || execution.mustObserve || decision.unresolved.length || decision.humanTakeover) return observation;
+  if (!window || !execution.freshRead || execution.mustObserve || outstandingNativeEffects(decision).length || decision.humanTakeover) return observation;
   const windows = new Map<string, ReturnType<typeof desktopStateObservationSchema.parse>["targets"][number]>();
   let current = false;
   for (const message of [...state.messages].reverse()) {
@@ -98,7 +100,7 @@ export async function nativeExecutionNode(state: NautiloState, decision: NativeD
       messages: mergeMessagesPreservingInvariants(state.messages, [new AIMessage({ content: "", tool_calls: [proposal],
         additional_kwargs: { nautilo_native_decision: { role: "runtime", operation: "verify_effect", modelCalls: 0 } } })]) };
   }
-  const inventory = execution.freshRead && !execution.mustObserve && !decision.unresolved.length
+  const inventory = execution.freshRead && !execution.mustObserve && !outstandingNativeEffects(decision).length
     ? desktopStateObservationSchema.safeParse(execution.observation).data : undefined;
   if (inventory?.continuation && definitions.some(tool => tool.name === "computer_observe")) {
     const continuation = nextChoiceContinuation({ complete: inventory.completeness === "complete",
@@ -136,6 +138,7 @@ export async function nativeExecutionNode(state: NautiloState, decision: NativeD
       roots,
       completion: nativeExecutionCompletionChoice(decision),
       completionNominated,
+      reconciliation: nativeReconciliationChoices(decision),
       onProgress: progress => { telemetry = { role: "execution", operation: "select", modelId: decision.controller?.modelId ?? decision.modelId,
         imageCount: images.length, ...progress }; },
       capabilities: definitions.map(tool => ({ name: tool.name, description: tool.entry.projection.modelDescription,
@@ -150,7 +153,7 @@ export async function nativeExecutionNode(state: NautiloState, decision: NativeD
         recentActions: decision.history, mustObserve: execution.mustObserve, readbackFailed: execution.readbackFailed ?? false,
         continuation: { observationGeneration: decision.generation, freshRead: execution.freshRead,
           question: execution.question, reason: decision.reason, unchangedOrFailedTransitions: decision.recovery.events },
-        unresolvedEffects: decision.unresolved.map(entry => entry.receipt) }, images,
+        unresolvedEffects: outstandingNativeEffects(decision).map(entry => entry.receipt) }, images,
     }));
     providerReturned = true;
     const reply = selected.decision;
@@ -169,6 +172,19 @@ export async function nativeExecutionNode(state: NautiloState, decision: NativeD
     if (reply.kind === "genie") {
       return handoff(`execution_${reply.reason}`, reply.question);
     }
+    if (reply.kind === "reconcile") {
+      const candidate = nativeReconciliationChoices(decision).find(entry => entry.callId === reply.callId);
+      if (!candidate || !execution.observationCallId) return handoff("execution_reconciliation_not_grounded");
+      const next: NativeDecisionState = { ...decision, phase: "interpret", reason: null, pending: null,
+        unresolved: decision.unresolved.map(entry => entry.callId === reply.callId ? { ...entry,
+          resolution: { generation: decision.generation, observationCallId: execution.observationCallId!, basis: candidate.basis } } : entry),
+        execution: { ...execution, ...(candidate.basis === "scoped_text_delta" && execution.textMutation
+          ? { textMutation: { ...execution.textMutation, settlement: "completed" } } : {}) },
+      };
+      return update(next, new AIMessage({ content: "", additional_kwargs: { nautilo_native_decision: {
+        ...telemetry, operation: "reconcile_effect", basis: candidate.basis, generation: decision.generation,
+      } } }));
+    }
     if (reply.kind === "complete") {
       if (!nativeExecutionCompletion(reply, decision)) return handoff("execution_completion_not_verified");
       return update({ ...decision, phase: "complete", reason: null, pending: null }, new AIMessage({ id: `native-complete:${randomUUID()}`,
@@ -177,12 +193,14 @@ export async function nativeExecutionNode(state: NautiloState, decision: NativeD
     const definition = definitions.find(tool => tool.name === reply.tool);
     if (!definition) return handoff("execution_tool_not_exposed");
     const read = definition.entry.descriptor.effectClass === "read";
-    if (!read && (execution.mustObserve || decision.unresolved.length)) return handoff("execution_fresh_verification_required");
+    if (!read && (execution.mustObserve || outstandingNativeEffects(decision).length)) return handoff("execution_fresh_verification_required");
     if (!read && usesNativeReadArguments(reply.arguments)) return handoff("execution_historical_input_not_authority");
     const args = bindNativeExecutionValue(reply.arguments, roots);
     if (!nativeExecutionStringsBound(reply.arguments, args, definition.entry.publicSchemas.input.jsonSchema)) return handoff("execution_unbound_input");
     const admitted = resolveComputerUseHostToolRequest(reply.tool, args);
     if (!admitted) return handoff("execution_operation_not_admitted");
+    if (!read && decision.unresolved.some(entry => entry.replayKey === nativeExecutionReplayKey(
+      { name: reply.tool, args: admitted.arguments }, execution.observation))) return handoff("execution_uncertain_effect_replay_forbidden");
     const proposal = { id: `native-execute:${randomUUID()}`, type: "tool_call" as const, name: reply.tool, args: admitted.arguments };
     const boundInputs = [...new Map([...(execution.boundInputs ?? []), ...nativeExecutionInputReferences(reply.arguments)]
       .map(ref => [JSON.stringify(ref), ref])).values()];
@@ -190,12 +208,13 @@ export async function nativeExecutionNode(state: NautiloState, decision: NativeD
       id: `native-decision:${randomUUID()}`, content: "", tool_calls: [proposal], additional_kwargs: { nautilo_native_decision: telemetry },
     }));
   } catch (error) {
-    const category = classifyError(error).category;
+    const category = error instanceof ChoiceRequestError ? error.code : classifyError(error).category;
     // Preserve attempt accounting and the existing sanitized classification.
     // Never copy provider bodies, echoed content, or headers into model history.
     telemetry = { ...(telemetry ?? { role: "execution", operation: "error", modelId: decision.controller?.modelId ?? decision.modelId, usage: null }),
       elapsedMs: performance.now() - started, errorCategory: category };
     return handoff(config.signal.aborted ? "run_cancelled"
+      : error instanceof ChoiceRequestError ? `execution_choice_${error.code}`
       : !providerReturned && category !== "UNKNOWN" ? `execution_provider_${category.toLowerCase()}` : "execution_interpretation_unavailable");
   }
 }

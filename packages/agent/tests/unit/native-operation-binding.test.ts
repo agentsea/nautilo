@@ -11,6 +11,43 @@ const pairedCapability: NativeBindingCapability = { name: "paired_inputs", descr
   schema: { type: "object", properties: { mode: { const: "insert" }, title: { type: "string" }, body: { type: "string" } },
     required: ["mode", "title", "body"], additionalProperties: false } };
 const pairedRoots = { request: "Use the supplied title and body", values: { title: "Title 🌊", body: "Exact\r\nbody — do not rewrite" }, observation: null };
+
+test("missing opaque target never becomes context or reference binding questions", async () => {
+  const capability: NativeBindingCapability = { name: "fixture_control", description: "Control an observed target", effectClass: "write",
+    schema: { type: "object", properties: { target: { type: "object", properties: {
+      context: { type: "string", pattern: "^ctx_" }, reference: { type: "string", pattern: "^target_" },
+    }, required: ["context", "reference"], additionalProperties: false } }, required: ["target"], additionalProperties: false } };
+  let calls = 0;
+  const reply = await selectNativeOperation({ capabilities: [capability], roots: {
+    request: "Activate the intended target", values: {}, observation: { context: "ctx_root", label: "target_not_authority" },
+  }, state: {}, modelId: "fixture", signal: new AbortController().signal, choose: async input => {
+    calls++;
+    expect(calls).toBe(1);
+    expect(JSON.stringify(input)).not.toContain("Bind fixture_control.target.context");
+    return answer(input, input.choices.find(row => row.description.includes("select/customize inputs"))!.id);
+  } });
+  expect(reply).toMatchObject({ kind: "genie", reason: "missing_capability" });
+  expect(calls).toBe(1);
+});
+
+test("missing native authority chooses a supported acquisition route without a Genie round trip", async () => {
+  const capabilities: NativeBindingCapability[] = [{ name: "fixture_action", description: "Click a fresh control", effectClass: "write",
+    schema: { type: "object", properties: { target: { type: "object", properties: { context: { type: "string" }, reference: { type: "string" } },
+      required: ["context", "reference"] } }, required: ["target"] } },
+  { name: "fixture_read", description: "Acquire current controls", effectClass: "read",
+    schema: { type: "object", properties: { operation: { const: "discover" } }, required: ["operation"] } }];
+  let calls = 0;
+  const result = await selectNativeOperation({ capabilities, roots: { request: "Activate the requested control", values: {}, observation: null },
+    state: {}, modelId: "fixture", signal: new AbortController().signal, choose: async input => {
+      calls++;
+      const prefix = calls === 1 ? "fixture_action:" : "fixture_read:";
+      expect(calls).toBeLessThanOrEqual(2);
+      if (calls === 2) expect(JSON.stringify(input.state)).toContain("Acquire missing target evidence");
+      return answer(input, input.choices.find(row => row.description.startsWith(prefix))!.id);
+    } });
+  expect(result).toEqual({ kind: "call", tool: "fixture_read", arguments: { operation: "discover" } });
+  expect(calls).toBe(2);
+});
 function pairedAnswer(input: DecisionInput, override?: string): DecisionResult {
   const state = input.state as { bindingSources: Record<string, string> };
   return { requestedModelId: input.modelId, resolvedModelId: input.modelId, usage: { inputTokens: 7, outputTokens: 2, actualCostUsd: 0.01 },

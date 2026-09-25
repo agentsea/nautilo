@@ -7,6 +7,15 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Computer Use preserves valid decision context after browser-bind refusals and
+  distinguishes local request errors from unavailable providers. Opaque targets
+  remain indivisible; missing targets can use supported observation routes.
+- Delegated native workflows can assess uncertain effects from fresh scoped
+  evidence while retaining original receipts and replay protection. Explicit,
+  owner-scoped continuation reuses authored content without rewriting it.
+  Internal handoff guidance remains out of chat; decision telemetry records
+  selected IDs and precise request failures.
+
 - Explicitly delegated native Computer Use workflows can use an eligible
   Jev-style Choice model for grounded operations, input binding and completion
   review. The optional DeepSeek V4.1 Flash interpreter handles visual evidence,

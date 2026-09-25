@@ -23,6 +23,7 @@ export interface NativeExecutionInput {
   roots?: NativeExecutionRoots;
   completion?: Extract<NativeExecutionReply, { kind: "complete" }> | undefined;
   completionNominated?: boolean | undefined;
+  reconciliation?: Array<{ callId: string; evidence: unknown }>;
   images?: Exclude<BaseMessage["content"], string>;
   onProgress?: (progress: { modelCalls: number; usage: NativeExecutionResult["usage"]; modelUsage: NativeModelUsage[] }) => void;
 }
@@ -40,6 +41,8 @@ interface NativeModelAttempt {
   stage: string; route: "choice" | "typed_choice" | "interpreter"; candidateCount: number;
   sourceCount: number | null; textBytes: number; imageBytes: number; elapsedMs: number | null;
   outcome: "pending" | "returned" | "failed" | "cancelled";
+  selections?: Array<{ question: string; id: string }>;
+  errorCode?: string;
 }
 interface NativeModelUsage { modelId: string; modelCalls: number; usage: NativeExecutionResult["usage"]; attempts: NativeModelAttempt[] }
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
@@ -107,7 +110,7 @@ export async function invokeNativeExecution(input: NativeExecutionInput, createM
         cannot: "Treat an unknown effect as not executed, gain authority by replanning or discard the user's original constraints" },
     } };
   const decision = await selectNativeOperation({ capabilities: input.capabilities, roots: input.roots,
-    state, completion: input.completion, completionNominated: input.completionNominated,
+    state, completion: input.completion, completionNominated: input.completionNominated, reconciliation: input.reconciliation,
     ...(operationChoice ? { operationDecision: { modelId: choiceModel.id, maxChoices: choiceModel.decision!.maxChoices,
       choose: async request => {
         request.signal.throwIfAborted();
@@ -120,8 +123,12 @@ export async function invokeNativeExecution(input: NativeExecutionInput, createM
           account(measuredAttempt.row, { ...result.usage, cacheReadTokens: null, cacheWriteTokens: null });
           measured = true;
           measuredAttempt.attemptRow.outcome = "returned";
+          measuredAttempt.attemptRow.selections = [{ question: stageOf(request.state), id: result.selectedId }];
           request.signal.throwIfAborted();
           return result;
+        } catch (error) {
+          if (error instanceof ChoiceRequestError) measuredAttempt.attemptRow.errorCode = error.code;
+          throw error;
         } finally {
           if (!measured) account(measuredAttempt.row, unknownUsage);
           if (request.signal.aborted) measuredAttempt.attemptRow.outcome = "cancelled";
@@ -143,8 +150,13 @@ export async function invokeNativeExecution(input: NativeExecutionInput, createM
           account(measuredAttempt.row, { ...result.usage, cacheReadTokens: null, cacheWriteTokens: null });
           measured = true;
           measuredAttempt.attemptRow.outcome = "returned";
+          measuredAttempt.attemptRow.selections = Object.entries(result.answers).flatMap(([question, answer]) =>
+            answer.type === "choice" ? [{ question, id: answer.choice }] : []);
           input.signal.throwIfAborted();
           return result;
+        } catch (error) {
+          if (error instanceof ChoiceRequestError) measuredAttempt.attemptRow.errorCode = error.code;
+          throw error;
         } finally {
           if (!measured) account(measuredAttempt.row, unknownUsage);
           if (request.signal.aborted) measuredAttempt.attemptRow.outcome = "cancelled";
@@ -189,9 +201,11 @@ export async function invokeNativeExecution(input: NativeExecutionInput, createM
         measuredAttempt.attemptRow.outcome = "returned";
         input.signal.throwIfAborted();
         const selectedId = parseChoiceIdResponse(response, request.choices.map(choice => choice.id));
+        measuredAttempt.attemptRow.selections = [{ question: stageOf(request.state), id: selectedId }];
         return { selectedId, requestedModelId: admitted.id, resolvedModelId: admitted.id,
           usage: { inputTokens: current.inputTokens ?? 0, outputTokens: current.outputTokens ?? 0, actualCostUsd: current.actualCostUsd } };
       } catch (error) {
+        if (error instanceof ChoiceRequestError) measuredAttempt.attemptRow.errorCode = error.code;
         // A failed transport may still have incurred usage. Missing accounting
         // is unknown, never a zero-cost attempt or a complete subtotal.
         if (!measured) account(measuredAttempt.row, unknownUsage);

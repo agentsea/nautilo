@@ -52,7 +52,7 @@ export async function selectInputBinding(options: {
     id: `binding_${sequence++}`, description, value, ...(evidence === undefined ? {} : { evidence }),
   });
   const recovery: BoundChoice<Selection>[] = [
-    { id: "reobserve", description: "No offered input fits: refresh or expand the available sources", control: true, value: { kind: "recover", reason: "refresh_sources" } },
+    { id: "reobserve", description: "Refresh stale evidence in the retained observation scope; this does not expand scope or resolve ambiguity in already available evidence", control: true, value: { kind: "recover", reason: "refresh_sources" } },
     { id: "defer_to_genie", description: "The input needs new composition, intent or reasoning from Genie", control: true, value: { kind: "recover", reason: "needs_reasoning" } },
   ];
   const select = async (choices: BoundChoice<Selection>[], extra: Record<string, unknown> = {}) => {
@@ -63,7 +63,8 @@ export async function selectInputBinding(options: {
     };
     const run = () => selectBoundChoice<Selection | typeof interpretation>({
       modelId: interpreting ? options.interpretation!.modelId : options.modelId, signal: options.signal,
-      ...(interpreting || options.maxChoices === undefined ? {} : { maxChoices: options.maxChoices }), instructions,
+      ...(interpreting || options.maxChoices === undefined ? {} : { maxChoices: options.maxChoices }),
+      instructions: `${instructions} When offered, interpret_with_middle is the preferred escape for visual interpretation or moderate ambiguity resolvable from the supplied evidence; absent composition or truly unknown intent belongs to Genie. Reobserve only refreshes the retained scope and must not substitute for acquiring a different scope.`,
       state: { ...options.context, request: options.request, operation: options.operation, field: options.field, schema: options.schema,
         // Once a source/start is selected, its exact textual boundaries are
         // available directly. Repeating the screenshot cannot refine them.

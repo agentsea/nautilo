@@ -3,6 +3,7 @@ import { z } from "zod";
 /** Server-owned intent. This metadata never crosses the Computer Use Host protocol. */
 export const nativeDecisionPlanSchema = z.object({
   execution: z.literal("workflow").optional().describe("Delegate the whole native workflow to the eligible Choice-led loop, including app/window discovery and routine recovery. The fast interpreter is optional and used only when needed. Omit for control selection within one observed window."),
+  resumeFrom: z.string().min(1).optional().describe("An issued retained-workflow reference from the current runtime continuation notice. Resume that workflow's exact authored values and effects after fresh observation; omit for unrelated work. Never retranscribe retained values."),
   goal: z.string().trim().min(1).describe("Complete remaining UI goal, preserving known app/document names and other semantic referents from the request or verified context. Match those hints against fresh observations; historical targets are not authority."),
   constraints: z.array(z.string()).default([]),
   values: z.record(z.string(), z.string()).default({}).describe("Exact supplied values keyed by purpose. Bind missing text/value only in the requested type_text/set_value templates; never widen an explicit actions list or guess from UI content."),

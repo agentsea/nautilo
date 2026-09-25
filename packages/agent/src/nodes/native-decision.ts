@@ -10,7 +10,7 @@ import { chooseBrowserAction } from "../graph/browser-choice";
 import { invokeChoice, ChoiceRequestError, type ChoiceInput, type ChoiceResult } from "../providers/choice-driver";
 import { runWithUsageContext } from "../usage/usage-context";
 import { nativeExecutionNode, type NativeExecutionDeps } from "./native-execution";
-import { currentNativeDecision, nativeDecisionCandidates, nativeDecisionEvidence, nativeDecisionHandoffMessage,
+import { currentNativeDecision, outstandingNativeEffects, nativeDecisionCandidates, nativeDecisionEvidence, nativeDecisionHandoffMessage,
   projectNativeDecisionMenu, type NativeDecisionState } from "../graph/native-decision";
 
 export function createNativeDecisionNode(deps: NativeExecutionDeps & {
@@ -53,7 +53,7 @@ export function createNativeDecisionNode(deps: NativeExecutionDeps & {
     let call = { name: "computer_observe", args: decision.observeArgs };
     let receipt: Record<string, unknown> = { operation: "reobserve" };
     if (decision.phase === "decide") {
-      if (decision.unresolved.some((entry) => entry.replayKey === "unclassified")) return handoff("unresolved_effect_requires_verification");
+      if (outstandingNativeEffects(decision).some((entry) => entry.replayKey === "unclassified")) return handoff("unresolved_effect_requires_verification");
       if (!decision.observation) return handoff("fresh_observation_required");
       const candidates = nativeDecisionCandidates(decision);
       const sources = () => JSON.stringify([state.nativeDecision, decision.plan, decision.observation, decision.execution, decision.unresolved]);

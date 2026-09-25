@@ -17,6 +17,13 @@ export interface NativeBindingCapability { name: string; description: string; ef
 interface Operation { tool: string; schema: RecordValue; description: string }
 interface Source extends BindingSource { template: unknown }
 
+/** Provider authority is indivisible. Schema fields describe a handle, not
+ * model-selectable strings from which a new handle may be assembled. */
+function isTargetSchema(schema: unknown): boolean {
+  const fields = record(record(schema)["properties"]);
+  return fields["reference"] !== undefined && fields["context"] !== undefined;
+}
+
 /** Flatten schema alternatives, not operations × targets × payloads. The root
  * validator remains authoritative for constraints shared by alternatives. */
 function alternatives(schema: unknown, root = schema, seen = new Set<string>()): RecordValue[] {
@@ -122,6 +129,7 @@ function readyBindings(schema: unknown, sources: readonly Source[], root: unknow
     && fits(source.value, schema))
     .map(source => ({ template: source.template }));
   if (direct.length) return { bindings: direct, variable: true };
+  if (isTargetSchema(spec)) return { bindings: [], variable: true };
   const variants = alternatives(schema, root);
   if (variants.length > 1 || spec["$ref"]) return { bindings: variants.flatMap(variant => readyBindings(variant, sources, root, fits, observedInputs).bindings), variable: true };
   const constants = protocolChoices(spec);
@@ -158,7 +166,7 @@ function optionalConstantBindings(binding: ReadyBinding, schema: RecordValue): R
 }
 
 class BindingRecovery extends Error {
-  constructor(readonly reason: "refresh" | "missing_capability" | "reasoning" | "interpreter_unavailable") { super(reason); }
+  constructor(readonly reason: "refresh" | "missing_capability" | "target_acquisition" | "reasoning" | "interpreter_unavailable") { super(reason); }
 }
 
 /** The model selects only issued IDs. This builds an ordinary proposal, never
@@ -169,6 +177,7 @@ export async function selectNativeOperation(options: {
   completion?: Extract<NativeExecutionReply, { kind: "complete" }> | undefined;
   /** A bound selector already nominated completion; still requires fresh facts and review. */
   completionNominated?: boolean | undefined;
+  reconciliation?: Array<{ callId: string; evidence: unknown }> | undefined;
   maxChoices?: number; choose: (input: ChoiceInput) => Promise<ChoiceResult>;
   /** Choice-first action/routing decision, only inside explicit CUA delegation. */
   operationDecision?: { modelId: string; maxChoices: number; choose: (input: ChoiceInput) => Promise<ChoiceResult> };
@@ -292,7 +301,7 @@ export async function selectNativeOperation(options: {
       ...readyBindings(fields[name], sources, fields[name], fits, "targets") }));
     const varying = projected.filter(field => field.variable || field.optional);
     const escapes = { customize: "The exact input needs another source, shape or request substring; use the ordinary binder",
-      reobserve: "Evidence is insufficient; refresh the retained scope or ask Genie for the missing scope",
+      reobserve: "The retained observation is stale; refresh that same scope. For another scope choose customize to acquire it; for ambiguity in available evidence choose customize to use the fast interpreter",
       defer_to_genie: "Genie must resolve intent or author missing content" };
     // This shortcut does not remove unsupported shapes, optional inputs or
     // large collections. They keep the existing complete-coverage binder.
@@ -385,6 +394,7 @@ export async function selectNativeOperation(options: {
     // not a semantic choice between observed targets or supplied content.
     if (Array.isArray(spec["enum"]) && spec["enum"].length === 1) return structuredClone(spec["enum"][0]);
     const candidates = sources.filter(source => fits(source.value, schema));
+    if (isTargetSchema(spec) && !candidates.length) throw new BindingRecovery("target_acquisition");
     const variants = alternatives(schema);
     if (variants.length > 1 && !candidates.length) {
       const picked = await select(variants.map(variant => choice(JSON.stringify(outline(variant)), variant)), `Choose the input shape for ${path}`);
@@ -460,6 +470,10 @@ export async function selectNativeOperation(options: {
     const operations = nativeBindingOperations(options.capabilities, options.state["mustObserve"] === true
       || (Array.isArray(options.state["unresolvedEffects"]) && options.state["unresolvedEffects"].length > 0));
     const menu: BoundChoice<Operation | NativeExecutionReply>[] = [];
+    for (const entry of options.reconciliation ?? []) menu.push({
+      ...choice("Reconcile this uncertain effect ONLY if fresh scoped transition evidence establishes that its intended effect occurred. This retains the uncertain receipt and forbids replay; it is not whole-goal completion. Unchanged, unrelated, partial or ambiguous evidence is insufficient. Otherwise select a relevant read, interpretation or Genie handoff.",
+        { kind: "reconcile" as const, callId: entry.callId }), evidence: entry.evidence,
+    });
     for (const operation of operations) {
       const capability = options.capabilities.find(row => row.name === operation.tool)!;
       const complete = readyBindings(operation.schema, sources, capability.schema, fits, "targets").bindings
@@ -522,8 +536,39 @@ export async function selectNativeOperation(options: {
     return { kind: "call", tool: operation.tool, arguments: args as Extract<NativeExecutionReply, { kind: "call" }>["arguments"] };
   } catch (error) {
     if (!(error instanceof BindingRecovery)) throw error;
+    if (error.reason === "target_acquisition") {
+      // Missing authority is an evidence-acquisition step, not a string field
+      // to manufacture or a reason to remove the original capability. Offer
+      // all currently bindable read routes; the next fresh state rebuilds the
+      // complete operation menu. No unchanged recursive binder retry.
+      const targetsAvailable = (schema: unknown, root: unknown): boolean => {
+        const variants = alternatives(schema, root);
+        if (variants.length > 1 || record(schema)["$ref"]) return variants.some(branch => targetsAvailable(branch, root));
+        if (isTargetSchema(schema)) return sources.some(source => fits(source.value, schema));
+        const spec = record(schema);
+        const fields = record(spec["properties"]);
+        return !Array.isArray(spec["required"]) || spec["required"].every(name => typeof name === "string" && targetsAvailable(fields[name], root));
+      };
+      const acquisition = nativeBindingOperations(options.capabilities, true).filter(operation => {
+        const capability = options.capabilities.find(row => row.name === operation.tool)!;
+        return targetsAvailable(operation.schema, capability.schema);
+      });
+      if (acquisition.length) {
+        try {
+          const operation = await select(acquisition.map(operation => choice(operation.description, operation)),
+            `Acquire missing target evidence for ${decisionStage}; choose a supported read that exposes the required target, not an unchanged refresh`, true, "operation");
+          const args = await bind(operation.schema, operation.tool, operation.description);
+          const capability = options.capabilities.find(row => row.name === operation.tool)!;
+          if (!fits(bindNativeExecutionValue(args, roots), capability.schema)) throw new Error("invalid_native_bound_arguments");
+          return { kind: "call", tool: operation.tool, arguments: args as Extract<NativeExecutionReply, { kind: "call" }>["arguments"] };
+        } catch (acquisitionError) {
+          if (!(acquisitionError instanceof BindingRecovery)) throw acquisitionError;
+          if (acquisitionError.reason === "refresh" && refresh) return refresh;
+        }
+      }
+    }
     if (error.reason === "refresh" && refresh) return refresh;
-    return { kind: "genie", reason: error.reason === "refresh" || error.reason === "interpreter_unavailable" ? "missing_capability" : error.reason,
+    return { kind: "genie", reason: error.reason === "refresh" || error.reason === "interpreter_unavailable" || error.reason === "target_acquisition" ? "missing_capability" : error.reason,
       question: (error.reason === "interpreter_unavailable" ? "This decision needs interpretation, but the optional fast interpreter is unavailable. Genie should inspect the retained request and fresh evidence, preserving completed work and exact supplied inputs."
         : error.reason === "refresh" ? "More or different evidence is needed and no compatible retained read exists. Acquire the intended scope using ordinary tools; retain completed work and do not replay uncertain effects."
         : error.reason === "reasoning" ? "Resolve the retained request or verify its complete outcome from the fresh evidence; retain completed work and supplied content."

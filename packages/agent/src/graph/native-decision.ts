@@ -13,13 +13,14 @@ import { nativeDecisionHostArguments, parseNativeDecisionPlan, type NativeDecisi
 import { resolveGraphExecutionPolicy } from "./execution-policy";
 import type { ChoiceInput } from "../providers/choice";
 import { nativeObservationDelta } from "./native-observation-delta";
-import { settleNativeExecution, type NativeExecution } from "./native-execution";
+import { settleNativeExecution, nativeExecutionReplayKey, type NativeExecution } from "./native-execution";
 import { createChoiceMenuProjector } from "./bound-choice";
 
 type Observation = z.infer<typeof windowStateObservationSchema>;
 type Control = NonNullable<Observation["controlCollection"]>["controls"][number];
 export interface NativeDecisionState {
   turnId: string;
+  owner?: { userId: string; roomId: string; agentId: string };
   modelId: string;
   plan: NativeDecisionPlan;
   observeArgs: Record<string, unknown>;
@@ -36,7 +37,12 @@ export interface NativeDecisionState {
   controller?: { modelId: string; attemptedGeneration: number; active: boolean };
   history: Array<{ action: string; settlement: string; evidence: unknown; repetitions?: number }>;
   /** Retained across observation and redelegation; fresh handles do not settle an effect. */
-  unresolved: Array<{ callId: string; operation: unknown; receipt: unknown; replayKey: string }>;
+  unresolved: Array<{ callId: string; operation: unknown; receipt: unknown; replayKey: string;
+    /** Private evidence retained only for this delegated run's reconciliation. */
+    before?: Record<string, unknown> | null;
+    source?: unknown;
+    resolution?: { generation: number; observationCallId: string; basis: "scoped_text_delta" | "model_interpretation" };
+  }>;
   recovery: { limit: number; events: number; transitions: string[]; before: string | null };
 }
 export interface NativeDecisionCandidate {
@@ -52,6 +58,29 @@ export interface NativeDecisionCandidate {
 }
 export function currentNativeDecision(state: NautiloState): NativeDecisionState | null {
   return state.nativeDecision?.turnId === state.turnId ? state.nativeDecision : null;
+}
+
+export function outstandingNativeEffects(decision: NativeDecisionState) {
+  return decision.unresolved.filter(entry => !entry.resolution);
+}
+
+function retainedWorkflow(state: NautiloState): NativeDecisionState | null {
+  const saved = state.nativeDecision;
+  return saved?.execution && saved.phase !== "complete" && saved.owner
+    && saved.owner.userId === state.userId && saved.owner.roomId === state.roomId && saved.owner.agentId === state.agentId
+    ? saved : null;
+}
+
+/** Invocation-only guidance, not a new Room message or an entry router. */
+export function nativeDecisionContinuationMessage(state: NautiloState): SystemMessage | null {
+  const saved = retainedWorkflow(state);
+  if (!saved || saved.turnId === state.turnId) return null;
+  return new SystemMessage({ additional_kwargs: { nautilo_transient_context: true }, content: JSON.stringify({
+    kind: "native_workflow_continuation", resumeFrom: saved.turnId, goal: saved.plan.goal,
+    retainedValues: Object.entries(saved.plan.values).map(([name, value]) => ({ name, characters: value.length, sha256: digest(value) })),
+    outstandingEffects: outstandingNativeEffects(saved).map(entry => ({ callId: entry.callId, receipt: entry.receipt })),
+    instruction: "Only if the Human asks to continue this CUA workflow, issue fresh computer_observe with decisionPlan.execution=workflow and this exact resumeFrom reference. Code restores the original authored values; omit them from values, do not compose or copy them again. Completed effects and uncertainty remain retained; acquire fresh targets and never replay uncertain input. Unrelated messages follow ordinary Genie behavior and must not resume this workflow.",
+  }) });
 }
 
 /** Model context contains semantic rows, never executable handles or driver bytes. */
@@ -201,6 +230,13 @@ export function nativeDecisionCandidates(decision: NativeDecisionState): NativeD
 
 /** Repeat selection validation at ordinary admission and dispatch, not just prompting. */
 export function nativeDecisionDispatchError(state: NautiloState, call: ToolCall): string | null {
+  const plan = parseNativeDecisionPlan(call.name, call.args);
+  if (plan?.resumeFrom) {
+    const retained = retainedWorkflow(state);
+    if (!retained || retained.turnId !== plan.resumeFrom || plan.execution !== "workflow"
+      || Object.entries(plan.values).some(([name, value]) => Object.hasOwn(retained.plan.values, name) && retained.plan.values[name] !== value))
+      return "native_resume_reference_invalid_or_content_changed";
+  }
   const decision = currentNativeDecision(state);
   if (decision?.humanTakeover && computerUseHostToolDefinition(call.name)) return "native_human_takeover_wait_for_user";
   const pending = decision?.pending;
@@ -211,7 +247,10 @@ export function nativeDecisionDispatchError(state: NautiloState, call: ToolCall)
     if (!decision.execution.tools.includes(call.name) || !state.toolNames?.includes(call.name)
       || !resolveComputerUseHostToolRequest(call.name, call.args)) return "native_execution_tool_unavailable";
     if (computerUseHostToolDefinition(call.name)?.entry.descriptor.effectClass !== "read"
-      && (decision.execution.mustObserve || decision.unresolved.length)) return "native_execution_effect_not_current";
+      && (decision.execution.mustObserve || outstandingNativeEffects(decision).length)) return "native_execution_effect_not_current";
+    if (computerUseHostToolDefinition(call.name)?.entry.descriptor.effectClass !== "read"
+      && decision.unresolved.some(entry => entry.replayKey === nativeExecutionReplayKey(call, decision.execution!.observation)))
+      return "native_execution_uncertain_effect_replay_forbidden";
     return null; // Exact pending bytes were bound before entering ordinary preflights.
   }
   if (call.name === "computer_observe") return null;
@@ -265,7 +304,7 @@ export function projectNativeDecisionMenu(input: ChoiceInput, decision: NativeDe
 }
 
 export function nativeDecisionHandoffMessage(decision: NativeDecisionState): SystemMessage {
-  return new SystemMessage({ id: `native-handoff:${randomUUID()}`, content: JSON.stringify({
+  return new SystemMessage({ id: `native-handoff:${randomUUID()}`, additional_kwargs: { nautilo_transient_context: true }, content: JSON.stringify({
     kind: "native_decision_handoff", reason: decision.reason, goal: decision.plan.goal,
     ...(decision.humanTakeover ? { instruction: "Computer Use is paused because local input was reported. Tell the Human that completed steps are retained and wait for them to resume. Do not reobserve, relaunch, retry, or redelegate in this turn. A later Human turn starts with fresh observation; never replay uncertain effects. This report does not identify which application received the input." } : {
       ...(decision.execution ? { question: decision.execution.question,
@@ -273,7 +312,9 @@ export function nativeDecisionHandoffMessage(decision: NativeDecisionState): Sys
       instruction: "Inspect current evidence and independently verify completion. Use ordinary Computer Use for visual grounding or diagnosis. Repair missing exact arguments before redelegating remaining work. A fresh target is not proof that an uncertain mutation did not happen; do not replay it.",
       ...(decision.reason === "native_decision_no_progress" ? { recovery: "Changing observation type or redelegating does not reset recovery. Use a genuinely different evidence-backed recovery route, or explain the unresolved prerequisite and wait. A successful launch followed by an empty window list is not evidence that the process needs launching again. Prefer an exact window's offered recovery over repeated broad scans." } : {}),
     }),
-    ...(decision.unresolved.length ? { unresolved: decision.unresolved } : {}),
+    ...(outstandingNativeEffects(decision).length ? { unresolved: outstandingNativeEffects(decision).map(entry => ({
+      callId: entry.callId, receipt: entry.receipt, replayKey: entry.replayKey,
+    })) } : {}),
   }) });
 }
 function handoff(decision: NativeDecisionState, reason: string): NativeDecisionState {
@@ -300,13 +341,20 @@ export function nativeDecisionResult(result: ToolMessage): Record<string, unknow
 }
 
 export function settleNativeDecision(state: NautiloState, calls: readonly ToolCall[], results: readonly ToolMessage[], remaining: readonly ToolCall[], modelId: string): NativeDecisionState | null {
-  const current = currentNativeDecision(state);
+  let current = currentNativeDecision(state);
   const call = calls[0]; const result = results[0];
   if (remaining.length || calls.length !== 1 || results.length !== 1 || !call?.id || !result
     || result.tool_call_id !== call.id || result.name !== call.name) return current ? handoff(current, "ordinary_genie_control") : null;
   const continues = current?.phase === "waiting" && current.pending?.id === call.id
     && current.pending.name === call.name && sameJson(current.pending.args, call.args);
   const plan = parseNativeDecisionPlan(call.name, call.args);
+  if (plan?.resumeFrom) {
+    const retained = retainedWorkflow(state);
+    if (!retained || retained.turnId !== plan.resumeFrom || plan.execution !== "workflow"
+      || Object.entries(plan.values).some(([name, value]) => Object.hasOwn(retained.plan.values, name) && retained.plan.values[name] !== value))
+      return current ? handoff(current, "native_resume_reference_invalid_or_content_changed") : null;
+    current = { ...retained, humanTakeover: retained.turnId === state.turnId && retained.humanTakeover === true };
+  }
   const source = [...state.messages].reverse().find((message) => AIMessage.isInstance(message));
   const starts = plan && modelId && state.turnId && source?.tool_calls?.length === 1 && source.tool_calls[0]?.id === call.id;
   if (!continues && !starts) {
@@ -322,7 +370,8 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
   const controller = starts && plan.execution === "workflow"
     ? resolveNativeControllerModel(current?.controller?.modelId) : null;
   let next: NativeDecisionState = starts ? {
-    turnId: state.turnId, modelId, plan,
+    turnId: state.turnId, modelId, plan: { ...plan, values: { ...current?.plan.values, ...plan.values } },
+    ...(state.userId && state.roomId && state.agentId ? { owner: { userId: state.userId, roomId: state.roomId, agentId: state.agentId } } : {}),
     observeArgs: nativeDecisionHostArguments(call.name, call.args) as Record<string, unknown>,
     observation: null, phase: "decide", pending: null, reason: null, generation: (current?.generation ?? 0) + 1,
     history: current?.history ?? [], unresolved: current?.unresolved ?? [],
@@ -331,6 +380,8 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
     ...(plan.execution === "workflow" ? { execution: {
       request: current?.execution?.request ?? plan.goal, tools: state.toolNames ?? [],
       observation: null, observationCallId: null, freshRead: false, mustObserve: false, question: null,
+      ...(current?.execution?.boundInputs ? { boundInputs: current.execution.boundInputs } : {}),
+      ...(current?.execution?.textMutation ? { textMutation: current.execution.textMutation } : {}),
       ...(current?.execution?.progressByRead ? { progressByRead: current.execution.progressByRead } : {}),
     }, ...(controller ? { controller: { modelId: controller.id, attemptedGeneration: (current?.generation ?? 0) + 1, active: true } } : {}) } : {}),
   } : { ...current!, pending: null };
@@ -368,7 +419,7 @@ export function settleNativeDecision(state: NautiloState, calls: readonly ToolCa
     }
     next = { ...next, observation: parsed.data, observeArgs: { ...next.observeArgs, target: parsed.data.target }, generation: next.generation + 1,
       ...(next.controller ? { controller: { ...next.controller, active: false } } : {}) };
-    if (next.unresolved.some((entry) => entry.replayKey === "unclassified")) return handoff(next, "unresolved_effect_requires_verification");
+    if (outstandingNativeEffects(next).some((entry) => entry.replayKey === "unclassified")) return handoff(next, "unresolved_effect_requires_verification");
     const after = digest(nativeDecisionEvidence(parsed.data));
     const transition = digest([next.recovery.before, next.history.at(-1), after]);
     const repeated = next.recovery.transitions.includes(transition);
