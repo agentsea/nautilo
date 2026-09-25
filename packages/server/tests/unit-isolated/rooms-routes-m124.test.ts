@@ -38,7 +38,7 @@ import { roomsRoutes, type RoomsRouteService } from "../../src/routes/rooms";
 const REAL_AUDIT_LOG_MODULE = { ...auditLogModule };
 const REAL_TRUST_MODULE = { ...trustModule };
 import type { RoomDetailPayload, RoomSummaryRow } from "@nautilo/trust";
-import { MembershipOpError } from "@nautilo/trust";
+import { MembershipOpError, ModerationError } from "@nautilo/trust";
 import type { RoomMembershipSystemEventPayload } from "@nautilo/types";
 import type { HumanMembershipEventProducer } from "../../src/event-feed/membership-producer";
 
@@ -560,6 +560,16 @@ describe("POST /api/rooms/:id/join (M124 MR6)", () => {
     expect(order).toEqual(["resolve", "refresh", "publish"]);
   });
 
+  test("an active ban returns 403 without membership publication or audit", async () => {
+    joinOpenRoomSpy.mockRejectedValueOnce(new ModerationError("active_ban"));
+    const app = makeApp(SELF_ACTOR, USER_ID);
+    const res = await app.inject({ method: "POST", url: `/api/rooms/${UUID_ROOM}/join` });
+    expect(res.statusCode).toBe(403);
+    expect(res.json<{ code: string }>()).toEqual({ code: "active_ban" });
+    expect(publishRoomMembersChangedMock).not.toHaveBeenCalled();
+    expect(writeSecurityAuditEventMock).not.toHaveBeenCalled();
+  });
+
   test("non-open room → 403 not_open", async () => {
     joinOpenRoomSpy.mockImplementationOnce(() => {
       throw new MembershipOpError("not_open");
@@ -587,6 +597,17 @@ describe("POST /api/rooms/:id/join (M124 MR6)", () => {
 });
 
 describe("POST /api/rooms/resolve-landing open-Room repair", () => {
+  test.each(["existing", "discoverable"])("a ban racing the %s landing selection returns 403 without publication", async (source) => {
+    joinOpenRoomSpy.mockRejectedValueOnce(new ModerationError("active_ban"));
+    if (source === "discoverable") listDiscoverableSpy.mockResolvedValueOnce([summaryRow(UUID_ROOM)]);
+    const app = makeApp(SELF_ACTOR, USER_ID, source === "existing" ? [summaryRow(UUID_ROOM)] : []);
+    const res = await app.inject({ method: "POST", url: "/api/rooms/resolve-landing" });
+    expect(res.statusCode).toBe(403);
+    expect(res.json<{ code: string }>()).toEqual({ code: "active_ban" });
+    expect(publishRoomMembersChangedMock).not.toHaveBeenCalled();
+    expect(writeSecurityAuditEventMock).not.toHaveBeenCalled();
+  });
+
   test("an actual join through the existing-room branch emits its receipt", async () => {
     const produce = mock(async () => {});
     joinOpenRoomSpy.mockResolvedValueOnce({

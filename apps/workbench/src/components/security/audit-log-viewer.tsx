@@ -5,6 +5,9 @@ import { useCan } from "../../hooks/use-can";
 
 /** Mirrors `SecurityAuditEventKind` from packages/server security-audit-log.ts */
 export const SECURITY_AUDIT_EVENT_KINDS = [
+  "moderation_action",
+  "moderation_policy_changed",
+  "enrollment_review_decided",
   "posture_changed",
   "capability_check_failed",
   "pin_check_failed",
@@ -108,6 +111,18 @@ function auditField(value: unknown, fallback = "unknown"): string {
 
 function AuditEventDetail({ event }: { readonly event: SecurityAuditEvent }) {
   switch (event.kind) {
+    case "moderation_policy_changed":
+      return "Server moderation policy changed";
+    case "enrollment_review_decided":
+      return "Community joining request reviewed";
+    case "moderation_action":
+      return (
+        <p className="mt-1 text-xs text-foreground">
+          Moderation: {auditField(event.action)} · {event.roomId === null ? "Server" : "Room"}
+          {" · Requested by "}<span className="font-mono">{auditField(event.requesterUserId, "Unavailable")}</span>
+          {" · Operation "}<span className="font-mono">{auditField(event.correlationId)}</span>
+        </p>
+      );
     case "user_disabled":
       return (
         <p className="mt-1 text-xs text-foreground">

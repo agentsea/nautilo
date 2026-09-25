@@ -50,6 +50,23 @@ function unmount() {
 }
 
 describe("VoicePlaybackStopPill", () => {
+  test("remains available when a reply is buffering between sentences", () => {
+    const stopVoice = mock(() => {});
+    act(() => {
+      root.render(<VoicePlaybackStopPill enabled playing={false} canStop onStop={stopVoice} />);
+    });
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="voice-playback-stop"]');
+    expect(button?.disabled).toBe(false);
+    expect(container.textContent).toContain("Speech in progress");
+    act(() => { button?.click(); });
+    expect(stopVoice).toHaveBeenCalledTimes(1);
+    act(() => {
+      root.render(<VoicePlaybackStopPill enabled playing={false} canStop={false} onStop={stopVoice} />);
+    });
+    expect(container.querySelector('[data-testid="voice-playback-stop-pill"]')).toBeNull();
+    unmount();
+  });
+
   test("is hidden unless voice playback is active", () => {
     act(() => {
       root.render(<VoicePlaybackStopPill enabled playing={false} onStop={() => {}} />);

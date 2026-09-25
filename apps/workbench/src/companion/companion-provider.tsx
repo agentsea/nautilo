@@ -53,6 +53,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
         createCapture: createBrowserSpeechCapture,
         prepare: () => latest.current.voice?.prepare(),
         enable: roomId => latest.current.voice?.enable(roomId),
+        setEnabled: enabled => latest.current.voice?.setEnabled(enabled),
         release: roomId => latest.current.voice?.release(roomId),
         stopTalking: () => latest.current.voice?.stopTalking(),
       },
@@ -83,12 +84,17 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     });
     return () => { removeAction(); removeClosed(); removeChanges?.(); removeAuth(); removeAdmission(); controller.stop(); };
   }, [controller, changes]);
+  const boundRoomId = snapshot?.binding.roomId;
+  useEffect(() => {
+    if (!controller || !boundRoomId) return;
+    return changes?.subscribeToRoom(boundRoomId, event => controller.ingestEvent(boundRoomId, event));
+  }, [controller, changes, boundRoomId]);
   useEffect(() => {
     if (snapshot && voice?.enabled && voice.roomId === snapshot.binding.roomId && voice.pinnedRoomId !== snapshot.binding.roomId) {
       voice.enable(snapshot.binding.roomId);
     }
-    controller?.updateMedia(voice?.roomId ?? null, voice?.enabled ?? false, voice?.playing ?? false);
-  }, [controller, voice?.roomId, voice?.pinnedRoomId, voice?.enabled, voice?.playing, snapshot?.binding.roomId]);
+    controller?.updateMedia(voice?.roomId ?? null, voice?.enabled ?? false, voice?.playing ?? false, voice?.canStopTalking ?? false);
+  }, [controller, voice?.roomId, voice?.pinnedRoomId, voice?.enabled, voice?.playing, voice?.canStopTalking, snapshot?.binding.roomId]);
   useEffect(() => {
     if (snapshot) controller?.invalidate(snapshot.binding.roomId);
   }, [controller, tasks, canAttach, snapshot?.binding.roomId]);
@@ -114,12 +120,12 @@ export function FloatGenieButton() {
   const [enabling, setEnabling] = useState(false);
   if (!controller) return null;
   const active = snapshot?.binding;
-  const label = active ? `Dock ${active.name} back in Nautilo` : `Float ${binding?.name ?? "Genie"}`;
+  const label = active ? `Floating — attach ${active.name} back in Nautilo` : "Float Genie";
   return <span className="relative inline-flex">
     <button type="button" disabled={(!binding && !active) || enabling}
       aria-label={label} aria-pressed={!!active}
       title={error ?? (active ? `${active.name} is floating. Click to turn off.` : binding ? `Float ${binding.name} when you leave Nautilo` : "Select a Genie in this Room to float her.")}
-      className={`relative grid h-7 w-7 place-items-center rounded-full transition-colors disabled:opacity-30 ${active ? "text-online bg-online/10 hover:bg-online/15" : "text-foreground-muted hover:bg-background-element hover:text-foreground"}`}
+      className={`inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border px-2 text-xs transition-colors disabled:opacity-30 ${active ? "text-online bg-online/10 hover:bg-online/15" : "text-foreground-muted bg-background-element hover:text-foreground"}`}
       onClick={() => {
         setError(null);
         if (active) { controller.stop(); return; }
@@ -128,7 +134,8 @@ export function FloatGenieButton() {
         void controller.enable(binding).catch(reason => setError(reason instanceof Error ? reason.message : "Could not float Genie.")).finally(() => setEnabling(false));
       }}>
       <ExternalLink size={14} aria-hidden />
-      {active && <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-online" aria-hidden />}
+      <span>{active ? "Floating" : "Float Genie"}</span>
+      {active && <span className="h-1.5 w-1.5 rounded-full bg-online" aria-hidden />}
     </button>
     {error && <span role="alert" className="absolute right-0 top-full z-10 mt-1 w-56 rounded-md bg-background-element p-2 text-xs text-error">{error}</span>}
   </span>;

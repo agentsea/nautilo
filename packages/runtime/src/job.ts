@@ -222,6 +222,8 @@ export class Job {
     authorizationSignal?: AbortSignal,
   ): Promise<void> {
     if (!this._id) throw new Error("Must call persist() before execute()");
+    // A delayed foreground candidate must never revive a cancelled Job.
+    if (this.isTerminal()) return;
 
     this.abortController = new AbortController();
     const protectedSession = getCurrentLiveShadowTurnContext()?.session;
@@ -432,11 +434,14 @@ export class Job {
     });
   }
 
+  private cancellationPersistencePending = false;
+
   async cancel(
     message = "Cancelled by user",
     cause: "cancelled" | "process_lost" = "cancelled",
   ): Promise<void> {
-    if (this.isTerminal()) return;
+    if (this.isTerminal() && !this.cancellationPersistencePending) return;
+    this.cancellationPersistencePending = true;
     this.cancellationCause = cause;
     const visibleMessage = this.hasFullSinkDisposition()
       ? FULL_JOB_CANCELLED_MESSAGE
@@ -447,6 +452,7 @@ export class Job {
       await this.setStatus("cancelled", {
         message: visibleMessage,
       });
+      this.cancellationPersistencePending = false;
       return;
     }
 
@@ -460,6 +466,7 @@ export class Job {
         : undefined,
       this.publicationPolicy(),
     );
+    this.cancellationPersistencePending = false;
     eventBus.emit({
       type: "job.status",
       jobId: this.id,

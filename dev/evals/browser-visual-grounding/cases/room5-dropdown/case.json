@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "room5-dropdown",
+  "description": "AgentSea Gym room 5 favorite-animal dropdown open",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room5",
+  "capturedAt": "2026-09-21T07:37:50.164Z",
+  "captureDurationMs": 95,
+  "evidencePairWindowMs": 64,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "listbox",
+      "name": "Favorite animal"
+    },
+    "e2": {
+      "role": "option",
+      "name": "Cat"
+    },
+    "e3": {
+      "role": "option",
+      "name": "Dog"
+    },
+    "e4": {
+      "role": "option",
+      "name": "Frog"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 220,
+    "sha256": "8f0599531fb4ccd6a052c8e8b1e82791cca5c65d22b07fcbf5a1bb34fd6e363d"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 75218,
+    "sha256": "becbae09de71c6a9247a18a2dcad0b88567d7e160c2e1657424a2e28f95d613d"
+  }
+}

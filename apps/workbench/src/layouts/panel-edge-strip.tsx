@@ -1,5 +1,5 @@
 /**
- * Panel edge strip (D077 accordion).
+ * Panel edge strip for collapsed panels.
  *
  * Rendered only when the corresponding panel is collapsed. Thin seam
  * at the screen edge that expands on hover to reveal a chevron pointing
@@ -16,9 +16,8 @@
  *   - hover: 24px wide, chevron centered, primary/15 background
  *
  * Positioning: absolute against the shell's grid container (parent sets
- * `position: relative`). We sit at the extreme screen edge rather than
- * at the formerly-occupied column boundary so the restore target is
- * always predictable — "click the edge of the window to bring it back."
+ * `position: relative`). The context strip sits at the right edge of its
+ * slot, immediately before a separate members rail when one is present.
  */
 
 import { useState } from "react";
@@ -44,6 +43,8 @@ interface Props {
    * restore to its last non-hidden state (rail or full).
    */
   onExpand?: () => void;
+  /** Keep the restore strip beside an independent right-hand members rail. */
+  rightOffsetPx?: number;
 }
 
 export function PanelEdgeStrip({
@@ -52,6 +53,7 @@ export function PanelEdgeStrip({
   label: labelOverride,
   forceCollapsed,
   onExpand,
+  rightOffsetPx = 0,
 }: Props) {
   const [hovered, setHovered] = useState(false);
 
@@ -67,7 +69,7 @@ export function PanelEdgeStrip({
     (kind === "browser" ? "Show file browser" : "Show context panel");
   const chevron = kind === "browser" ? "›" : "‹";
   const edgeStyle =
-    kind === "browser" ? { left: 0 } : { right: 0 };
+    kind === "browser" ? { left: 0 } : { right: rightOffsetPx };
   const borderStyle: React.CSSProperties =
     kind === "browser"
       ? { borderRight: "1px solid var(--border)" }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getSharedDirectDb, messageDeletionReceipts } from "@nautilo/db";
+import { acquireRoomWriteLock, getSharedDirectDb, messageDeletionReceipts, type DirectDatabase } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { eventBus } from "@nautilo/runtime";
 import {
@@ -24,17 +24,27 @@ export async function deleteMessageWithConvergence(input: {
   messageId: number;
   actorUserId: string;
   actorId: string | null;
-  source: "room_message" | "content_report";
-  authority: MessageDeleteAuthority | "report_action";
+  source: "room_message" | "content_report" | "moderation_ban";
+  authority: MessageDeleteAuthority | "report_action" | "server_ban";
   reportId?: string;
+  moderationOperationId?: string;
+  /** Revalidate trusted scope under the Room lock and, for a protected row,
+   * provide its current content-free classification to canonical deletion. */
+  verifyInTx?: (tx: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0]) => Promise<void | {
+    subthreadReplyClassification: "counted" | "excluded";
+  }>;
   operationId?: string;
   logContext?: string;
 }): Promise<void> {
   const context = input.logContext ?? "room message";
   const operationId = input.operationId ?? randomUUID();
   const db = getSharedDirectDb();
-  const { wasUnread, orphanedTurnId, rootSummary } = await db.transaction(async (tx) =>
-    deleteMessageHardInTx(tx, input.messageId, {
+  const { wasUnread, orphanedTurnId, rootSummary } = await db.transaction(async (tx) => {
+    await acquireRoomWriteLock(tx, input.roomId);
+    const structuralProjection = await input.verifyInTx?.(tx);
+    return deleteMessageHardInTx(tx, input.messageId, {
+      preserveThreadOnModerationDelete: input.source === "moderation_ban",
+      ...(structuralProjection ? { protectedStructuralProjection: structuralProjection } : {}),
       afterDeleteEffects: async ({ effects }) => {
         if (effects.roomId !== input.roomId) throw new Error("Message Room changed during deletion");
         await tx.insert(messageDeletionReceipts).values({
@@ -46,11 +56,12 @@ export async function deleteMessageWithConvergence(input: {
           source: input.source,
           authority: input.authority,
           reportId: input.reportId ?? null,
+          moderationOperationId: input.moderationOperationId ?? null,
           outcome: "deleted",
         });
       },
-    }),
-  );
+    });
+  });
 
   if (orphanedTurnId) {
     await cleanupRetainedAttachmentsForTurn(orphanedTurnId).catch((error) =>

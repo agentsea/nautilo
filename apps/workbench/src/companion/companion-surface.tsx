@@ -1,8 +1,8 @@
-import { useEffect, useRef, type CSSProperties, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, type PointerEvent, type ReactNode } from "react";
 import { ArrowUp, AudioLines, CircleAlert, Expand, LoaderCircle, Mic, Minimize2, MoreHorizontal, VolumeX, X } from "lucide-react";
 import "./companion.css";
 
-export type CompanionView = "orb" | "waveform" | "prompt" | "chat";
+export type CompanionView = "orb" | "prompt" | "chat";
 export type CompanionState = "idle" | "listening" | "thinking" | "speaking" | "muted" | "error";
 export interface CompanionSurfaceProps {
   view: CompanionView;
@@ -19,9 +19,14 @@ export interface CompanionSurfaceProps {
   onView: (view: CompanionView) => void;
   onDrag: (phase: "start" | "move" | "end" | "cancel") => void;
   talkLabel: string;
+  talkStopsSpeech?: boolean;
   submitLabel: string;
   busy?: boolean;
   compactControls?: ReactNode;
+  primaryCue?: ReactNode;
+  primaryDisabled?: boolean;
+  preview?: ReactNode;
+  headerControls?: ReactNode;
   toolbar?: ReactNode;
   composer?: ReactNode;
   transcript?: ReactNode;
@@ -41,7 +46,7 @@ export function CompanionSurface(props: CompanionSurfaceProps) {
     previousView.current = view;
     // Move keyboard focus with the user's density change, without taking focus
     // from another application when the companion first appears.
-    if (view === "orb" || view === "waveform") compactButton.current?.focus();
+    if (view === "orb") compactButton.current?.focus();
     else input.current?.focus();
   }, [view]);
   function down(event: PointerEvent<HTMLElement>) {
@@ -68,38 +73,41 @@ export function CompanionSurface(props: CompanionSurfaceProps) {
   const dragHandlers = { onPointerDown: down, onPointerMove: move, onPointerUp: up, onPointerCancel: cancel, onLostPointerCapture: cancel };
   function talk() {
     if (suppressClick.current) { suppressClick.current = false; return; }
-    props.onTalk();
+    if (!props.primaryDisabled) props.onTalk();
   }
-  const StateIcon = state === "error" ? CircleAlert : state === "speaking" ? VolumeX : state === "thinking" ? LoaderCircle : state === "listening" ? AudioLines : Mic;
-  const compact = view === "orb" || view === "waveform";
+  const StateIcon = props.talkStopsSpeech || state === "speaking" ? VolumeX : state === "error" ? CircleAlert : state === "thinking" ? LoaderCircle : state === "listening" ? AudioLines : Mic;
+  const compact = view === "orb";
   const visual = <div className="companion-avatar" aria-hidden>{props.avatar}</div>;
   return (
     <section className={`companion companion-${view}`} data-state={state} aria-label={`${props.name} companion`}>
       {compact ? (
         <>
-        <button className="companion-compact" {...dragHandlers} onClick={talk} aria-label={`${props.talkLabel} — ${props.name}`} title={`${props.talkLabel} · Right-click or Shift+F10 for controls`}>
-          {visual}{view === "waveform" && <Waveform state={state} />}
+        <div className="companion-compact-body">
+        <button ref={compactButton} className="companion-compact" {...dragHandlers} onClick={talk} aria-disabled={props.primaryDisabled || undefined} aria-label={`${props.talkLabel} — ${props.name}`} title={`${props.status} · ${props.talkLabel} · Right-click for controls`}>
+          {visual}{props.primaryCue}
           {view === "orb" && <span className="companion-ring" aria-hidden />}
           <span className="sr-only" role="status">{props.status}</span>
         </button>
-        <button ref={compactButton} type="button" className="companion-state-icon" onClick={props.onTalk} aria-label={props.talkLabel} title={props.talkLabel}>
-          <StateIcon size={16} className={state === "thinking" ? "companion-spinner" : undefined} />
-        </button>
+        {!props.compactControls && <button type="button" className="companion-state-icon" onClick={props.onTalk} aria-label={props.talkLabel} title={props.talkLabel}>
+          <StateIcon size={16} className={StateIcon === LoaderCircle ? "companion-spinner" : undefined} />
+        </button>}
         {props.compactControls}
         {props.onClose && <button type="button" className="companion-small-close" onClick={props.onClose} aria-label="Stop floating and attach Genie" title="Stop floating and attach Genie"><X size={11} /></button>}
         <button className="companion-small-expand" onClick={() => props.onView("chat")} aria-label="Expand Genie" title="Expand Genie"><Expand size={11} /></button>
+        </div>
         </>
       ) : (
         <>
           <header className="companion-header" {...dragHandlers} title="Drag Genie">
             {props.onClose && <button type="button" className="companion-icon" onClick={props.onClose} aria-label="Stop floating and attach Genie" title="Stop floating and attach Genie"><X size={16} /></button>}
             {visual}
-            <div className="companion-identity"><strong>{props.name}</strong><span role="status">{props.status}</span></div>
-            <button className="companion-icon" aria-label={view === "chat" ? "Collapse to bubble" : "Expand chat"} onClick={() => props.onView(view === "chat" ? "orb" : "chat")}>
+            <div className="companion-identity"><strong>{props.name}</strong>{props.headerControls ?? <span role="status">{props.status}</span>}</div>
+            <button className="companion-icon" aria-label={view === "chat" ? "Collapse conversation" : "Show conversation"} onClick={() => props.onView(view === "chat" ? "prompt" : "chat")}>
               {view === "chat" ? <Minimize2 size={16} /> : <Expand size={16} />}
             </button>
             <button className="companion-icon" onClick={props.onMenu} aria-label="Companion controls"><MoreHorizontal size={18} /></button>
           </header>
+          {view === "prompt" && props.preview}
           {view === "chat" && props.toolbar}
           {view === "chat" && (props.transcript ?? <div className="companion-messages">{props.children}</div>)}
           {props.composer ?? <form className="companion-composer" onSubmit={event => { event.preventDefault(); props.onSubmit(); input.current?.focus(); }}>
@@ -111,8 +119,4 @@ export function CompanionSurface(props: CompanionSurfaceProps) {
       )}
     </section>
   );
-}
-
-function Waveform({ state }: { state: CompanionState }) {
-  return <div className="companion-wave" aria-hidden>{Array.from({ length: 13 }, (_, i) => <i key={i} style={{ "--bar": `${8 + Math.sin(i * 1.7) ** 2 * 21}px`, "--delay": `${i * -0.075}s` } as CSSProperties} />)}<span className={`companion-wave-dot ${state}`} /></div>;
 }

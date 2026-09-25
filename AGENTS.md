@@ -93,10 +93,10 @@ bun run lint:unused
 ```
 
 [CI](.github/workflows/ci.yml) and
-[`dev/scripts/ci-gates.sh`](dev/scripts/ci-gates.sh) also run the relevant
-invariant inventories and affected package graph. Do not equate one focused
-suite with all of CI. Report exact checks, skips, prerequisites, and failures.
-Do not weaken checks to obtain a green result.
+[`dev/scripts/ci-gates.sh`](dev/scripts/ci-gates.sh) also run the required
+repository invariants, query inventory, and affected package graph. Do not
+equate one focused suite with all of CI. Report exact checks, skips,
+prerequisites, and failures. Do not weaken checks to obtain a green result.
 
 Run local Git hooks normally. Explicit maintainer authorization may select a
 workflow that bypasses a local push hook while retaining full remote CI.
@@ -109,15 +109,16 @@ A local constant, comment, legacy observation, or existing test is not policy
 authority for a timeout, retry, truncation, retention, page/batch size, payload,
 or concurrency ceiling.
 
-Run `bun run limits:check` when adding or changing a production/operator
-boundary. Investigate producer-to-consumer behavior and record the evidenced
-decision in local, ignored `*.limit-audit.*` files. Never commit audit inventories,
-decision ledgers, generated reports, or `*.agent-notes.*` working notes. Public
-CI compares source revisions and requires an exact-commit `limit-policy-reviewed`
-status for new or changed limits; maintainers publish it with the limit package
-`review` command only after the strict local check passes. Scanner output is an observation,
-not a policy decision. Surface unresolved policy choices rather than inventing
-authority. See [limit tooling](packages/limit-invariants/README.md) for commands.
+Before wrapping up a pull request, mechanically identify constants introduced
+by added code. Investigate each constant's producer-to-consumer behavior, then
+present the Human with a clean list of new constants, rationale, concrete
+options, and a recommendation. The choice remains Human judgment.
+
+Use the separate `$check-constants` agent skill for this review. Keep the query
+inventory and its reviewed decisions tracked so another checkout can reproduce
+the database query check. Review their content for private planning references,
+personal data, and credentials before committing. Keep `*.agent-notes.*`
+working notes local.
 
 Partial results must disclose completeness and continuation. Termination must
 preserve truthful state, cleanup, and safe recovery.

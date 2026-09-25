@@ -1,4 +1,4 @@
-export const views = ["orb", "waveform", "prompt", "chat"] as const;
+export const views = ["orb", "prompt", "chat"] as const;
 export const docks = ["free", "top", "bottom", "left", "right"] as const;
 export const states = ["idle", "listening", "thinking", "speaking", "muted", "error"] as const;
 export const visuals = ["nautilo", "persona"] as const;

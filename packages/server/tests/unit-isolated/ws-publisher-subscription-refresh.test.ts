@@ -1,5 +1,5 @@
 /**
- * M075 / D246 — `refreshRoomSubscriptionsForUser` must reload room IDs without
+ * `refreshRoomSubscriptionsForUser` must reload room IDs without
  * paying the compact roster query cost (internal subscription refresh only).
  */
 import { describe, expect, mock, test } from "bun:test";
@@ -75,7 +75,7 @@ function eventType(payload: string): string | undefined {
   return typeof type === "string" ? type : undefined;
 }
 
-describe("refreshRoomSubscriptionsForUser (M075 skip-roster reload)", () => {
+describe("refreshRoomSubscriptionsForUser (skip-roster reload)", () => {
   test("requests room IDs with includeRoster: false and updates every tab", async () => {
     listRoomsSpy.mockClear();
 
@@ -83,11 +83,12 @@ describe("refreshRoomSubscriptionsForUser (M075 skip-roster reload)", () => {
     const tabB = makeClient();
     const otherUser = makeClient();
 
-    addClient(tabA as unknown as WsWebSocket, {
+    const sharedMeta = {
       userId: "user-refresh",
       actorId: "actor-refresh",
       roomIds: new Set(["00000000-0000-4000-8000-000000000001"]),
-    });
+    };
+    addClient(tabA as unknown as WsWebSocket, sharedMeta);
     addClient(tabB as unknown as WsWebSocket, {
       userId: "user-refresh",
       actorId: "actor-refresh",
@@ -100,6 +101,9 @@ describe("refreshRoomSubscriptionsForUser (M075 skip-roster reload)", () => {
     });
 
     await refreshRoomSubscriptionsForUser("user-refresh", "actor-refresh");
+
+    // Voice delivery and authenticated routing retain this exact metadata object.
+    expect([...sharedMeta.roomIds]).toEqual([ROOM_A, ROOM_B]);
 
     expect(listRoomsSpy).toHaveBeenCalledTimes(1);
     expect(listRoomsSpy).toHaveBeenCalledWith("actor-refresh", {

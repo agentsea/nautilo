@@ -48,6 +48,10 @@ import type { ForkRunMetadata } from "./fork/fork-metadata";
 import {
   assertAcceptedInvocationAuthoritySubject,
   createAcceptedInvocationAuthority,
+  getAcceptedInvocationAuthoritySubject,
+  getAcceptedInvocationAuthorityOrigin,
+  bindAcceptedInvocationAuthorityOrigin,
+  isInvocationAccessAllowed,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import {
@@ -428,6 +432,40 @@ export interface MaintenanceCancellationResult {
   terminalizedAcceptances: number;
 }
 
+type InvocationWorkScope = Readonly<{
+  roomId?: string;
+  taskId?: string;
+  taskRunId?: string;
+  originRoomId?: string;
+  originTaskId?: string;
+}>;
+
+type InvocationTaskStop = (input: {
+  humanUserId: string; taskId: string; taskRunId: string;
+}) => Promise<void>;
+
+function invocationWorkScope(input: Record<string, unknown>, authority?: AcceptedInvocationAuthority): InvocationWorkScope {
+  return {
+    ...(typeof input["roomId"] === "string" && input["roomId"] ? { roomId: input["roomId"] } : {}),
+    ...(typeof input["taskId"] === "string" ? { taskId: input["taskId"] } : {}),
+    ...(typeof input["taskRunId"] === "string" ? { taskRunId: input["taskRunId"] } : {}),
+    ...(authority ? getAcceptedInvocationAuthorityOrigin(authority) : {}),
+  };
+}
+
+function acceptedInputOrigin(input: Record<string, unknown>): { originRoomId?: string; originTaskId?: string } {
+  const scope = invocationWorkScope(input);
+  return scope.taskId ? { originTaskId: scope.taskId } : scope.roomId ? { originRoomId: scope.roomId } : {};
+}
+
+function bindInvocationOrigin(humanUserId: string, input: Record<string, unknown>, authority?: AcceptedInvocationAuthority): AcceptedInvocationAuthority {
+  if (authority) {
+    assertAcceptedInvocationAuthoritySubject(authority, humanUserId);
+    return bindAcceptedInvocationAuthorityOrigin(authority, acceptedInputOrigin(input));
+  }
+  return createAcceptedInvocationAuthority(humanUserId, acceptedInputOrigin(input));
+}
+
 export class JobManager {
   private active = new Map<string, Job>();
   /**
@@ -507,6 +545,11 @@ export class JobManager {
   /** M254 — Human-bound authority retained with accepted virtual work. */
   private readonly virtualToInvocationAuthority =
     new Map<string, AcceptedInvocationAuthority>();
+  private readonly virtualInvocationScopes = new Map<string, InvocationWorkScope & { withdrawn: boolean }>();
+  private readonly checkInvocationAccess: typeof isInvocationAccessAllowed;
+  private readonly invocationTaskStop: InvocationTaskStop | undefined;
+  /** Retained through failed durable cancellation; bounded by accepted work. */
+  private readonly pendingInvocationJobStops = new Map<string, { job: Job; humanUserId: string; reason: string }>();
   /** M254 — invocation authority propagated through an executing Job. */
   private readonly jobToInvocationAuthority =
     new Map<string, AcceptedInvocationAuthority>();
@@ -570,6 +613,9 @@ export class JobManager {
      * calls `stopTask` with the task-run DB handle.
      */
     taskStopSink?: (taskId: string) => Promise<void>;
+    /** Production uses fresh DB authority; injected tests remain DB-free. */
+    checkInvocationAccess?: typeof isInvocationAccessAllowed;
+    invocationTaskStop?: InvocationTaskStop;
     /**
      * D420 (Wave 2 task 2.2.1) — maintenance admission gate. Defaults to the
      * runtime singleton (permissive until `createApp` wires the production
@@ -584,6 +630,8 @@ export class JobManager {
     this.updateJobStatusFn = opts?.updateStatus ?? updateJobStatus;
     this.acceptanceSinks = opts?.acceptanceSinks ?? defaultAcceptanceSinks;
     this.taskStopSink = opts?.taskStopSink ?? null;
+    this.checkInvocationAccess = opts?.checkInvocationAccess ?? (() => Promise.resolve(true));
+    this.invocationTaskStop = opts?.invocationTaskStop;
     this.maintenanceGate = opts?.maintenanceGate ?? null;
     this.coalescer = new LaneCoalescer(
       opts?.setTimer ?? setTimeout,
@@ -657,7 +705,7 @@ export class JobManager {
         return this.acceptForegroundAcceptance(virtualJobId, "foreground").then(() => {
           const acceptedAuthority = authority ?? createMaintenanceAcceptanceAuthority();
           const acceptedInvocationAuthority =
-            invocationAuthority ?? createAcceptedInvocationAuthority(requestorId);
+            bindInvocationOrigin(requestorId, input, invocationAuthority);
           // The durable ledger insert is the acceptance boundary. Mint a fresh
           // authority only after it succeeds, unless a prior accepted
           // continuation explicitly carried one in.
@@ -666,6 +714,7 @@ export class JobManager {
             virtualJobId,
             acceptedInvocationAuthority,
           );
+          this.virtualInvocationScopes.set(virtualJobId, { ...invocationWorkScope(input, acceptedInvocationAuthority), withdrawn: false });
           this.virtualToExecutionRoute.set(virtualJobId, route);
           if (foregroundTurnCandidate) {
             this.virtualToForegroundCandidate.set(virtualJobId, foregroundTurnCandidate);
@@ -884,12 +933,13 @@ export class JobManager {
         return this.acceptForegroundAcceptance(virtualJobId, "system_report_back").then(() => {
           const acceptedAuthority = authority ?? createMaintenanceAcceptanceAuthority();
           const acceptedInvocationAuthority =
-            invocationAuthority ?? createAcceptedInvocationAuthority(requestorId);
+            bindInvocationOrigin(requestorId, input, invocationAuthority);
           this.virtualToAuthority.set(virtualJobId, acceptedAuthority);
           this.virtualToInvocationAuthority.set(
             virtualJobId,
             acceptedInvocationAuthority,
           );
+          this.virtualInvocationScopes.set(virtualJobId, { ...invocationWorkScope(input, acceptedInvocationAuthority), withdrawn: false });
           this.virtualToExecutionRoute.set(virtualJobId, route);
           const taskId = taskIdFromInput(input);
           if (taskId) this.virtualToTaskId.set(virtualJobId, taskId);
@@ -948,6 +998,7 @@ export class JobManager {
         this.virtualToExecutionRoute.delete(virtualId);
         this.virtualToTaskId.delete(virtualId);
         this.virtualToInvocationAuthority.delete(virtualId);
+        this.virtualInvocationScopes.delete(virtualId);
       }
       log(
         `[lane] serialization_thread_missing lane=${laneKey} turn=${merged.turnId} — refusing to dispatch (no graphThreadId)`,
@@ -1045,6 +1096,11 @@ export class JobManager {
           break;
         }
 
+        if (q.length === 0) {
+          if (tryRes.acquired) await tryRes.release();
+          continue;
+        }
+
         // BLOCKER #1 (M085, re-keyed): even with the lock free, an earlier
         // fork may be paused (approval / prove_it) or pending splice. Running
         // a main turn on the parent checkpoint now would put a later sequence
@@ -1054,8 +1110,8 @@ export class JobManager {
           forkCoordinator.hasUnreconciledLowerTurns(threadId) &&
           q[0]?.route.contention === "fork"
         ) {
-          await tryRes.release();
           const item = q.shift()!;
+          await tryRes.release();
           log(
             `[lane] thread=${threadId} serialized user=${item.merged.requestorId} action=fork reason=unreconciled`,
           );
@@ -1300,7 +1356,7 @@ export class JobManager {
         invocationAuthority,
         () => runWithInitiatingClientSurface(
           initiatingClientSurface,
-          () => job.execute(authorizationSignal),
+          () => this.executeWithCurrentInvocationAccess(job, invocationAuthority, authorizationSignal),
         ),
       );
     };
@@ -1581,7 +1637,7 @@ export class JobManager {
         invocationAuthority,
         () => runWithInitiatingClientSurface(
           initiatingClientSurface,
-          () => job.execute(authorizationSignal),
+          () => this.executeWithCurrentInvocationAccess(job, invocationAuthority, authorizationSignal),
         ),
       );
     };
@@ -1700,7 +1756,7 @@ export class JobManager {
 
     await job.persist();
     const acceptedInvocationAuthority =
-      invocationAuthority ?? createAcceptedInvocationAuthority(requestorId);
+      bindInvocationOrigin(requestorId, acceptedInput, invocationAuthority);
     this.active.set(job.id, job);
     this.jobToAuthority.set(job.id, acceptedAuthority);
     this.jobToInvocationAuthority.set(job.id, acceptedInvocationAuthority);
@@ -1708,7 +1764,7 @@ export class JobManager {
     void runWithAcceptedWorkAuthorities(
       acceptedAuthority,
       acceptedInvocationAuthority,
-      () => runWithInitiatingClientSurface("unknown", () => job.execute()),
+      () => runWithInitiatingClientSurface("unknown", () => this.executeWithCurrentInvocationAccess(job, acceptedInvocationAuthority)),
     )
       .finally(() => {
         if (job.isTerminal()) {
@@ -1721,6 +1777,121 @@ export class JobManager {
       .catch(() => {});
 
     return job;
+  }
+
+  private async stopInvocationTask(humanUserId: string, scope: InvocationWorkScope): Promise<void> {
+    if (!scope.taskId) return;
+    if (!scope.taskRunId || !this.invocationTaskStop) {
+      throw new Error("Exact Task invocation cancellation unavailable");
+    }
+    await this.invocationTaskStop({ humanUserId, taskId: scope.taskId, taskRunId: scope.taskRunId });
+  }
+
+  private async cancelInvocationJob(job: Job, humanUserId: string, reason: string = WORK_ACCEPTANCE_REASONS.accessWithdrawn): Promise<void> {
+    this.pendingInvocationJobStops.set(job.id, { job, humanUserId, reason });
+    await this.stopInvocationTask(humanUserId, invocationWorkScope(job.input));
+    await job.cancel(reason);
+    this.pendingInvocationJobStops.delete(job.id);
+  }
+
+  private async executeWithCurrentInvocationAccess(
+    job: Job, authority: AcceptedInvocationAuthority, signal?: AbortSignal,
+  ): Promise<void> {
+    if (job.isTerminal()) return;
+    const humanUserId = getAcceptedInvocationAuthoritySubject(authority);
+    let allowed = false;
+    let reason: string = WORK_ACCEPTANCE_REASONS.accessWithdrawn;
+    try {
+      allowed = await this.checkInvocationAccess({ humanUserId, ...invocationWorkScope(job.input, authority) });
+    } catch {
+      reason = "Cancelled because current invocation access could not be verified";
+    }
+    if (!allowed) {
+      try {
+        await this.cancelInvocationJob(job, humanUserId, reason);
+      } catch {
+        // Keep the exact work in the pending index for receipt recovery. No
+        // executor starts, and a failed Task write cannot be mistaken for Stop.
+        log("[invocation] durable cancellation pending; execution withheld");
+      }
+      return;
+    }
+    if (!job.isTerminal()) await job.execute(signal);
+  }
+
+  /** Every process checks its own accepted work against shared current authority.
+   * No receipt cursor or winner on another server can suppress this sweep.
+   */
+  async reconcileAllInvocationAccess(): Promise<void> {
+    const humans = new Set<string>();
+    for (const authority of this.virtualToInvocationAuthority.values()) humans.add(getAcceptedInvocationAuthoritySubject(authority));
+    for (const authority of this.jobToInvocationAuthority.values()) humans.add(getAcceptedInvocationAuthoritySubject(authority));
+    for (const pending of this.pendingInvocationJobStops.values()) humans.add(pending.humanUserId);
+    const failures: unknown[] = [];
+    for (const human of humans) {
+      try { await this.reconcileInvocationAccess(human); }
+      catch (error) { failures.push(error); }
+    }
+    if (failures.length > 0) throw failures[0];
+  }
+
+  /** Reconcile only the initiating Human, using current access rather than replaying a ban. */
+  async reconcileInvocationAccess(humanUserId: string): Promise<void> {
+    const virtual = [...this.virtualToInvocationAuthority].flatMap(([id, authority]) => {
+      if (getAcceptedInvocationAuthoritySubject(authority) !== humanUserId) return [];
+      const scope = this.virtualInvocationScopes.get(id);
+      return scope ? [{ id, scope }] : [];
+    });
+    const jobs = new Map<string, Job>();
+    for (const [id, authority] of this.jobToInvocationAuthority) {
+      if (getAcceptedInvocationAuthoritySubject(authority) !== humanUserId) continue;
+      const job = this.active.get(id);
+      if (job) jobs.set(id, job);
+    }
+    for (const [id, pending] of this.pendingInvocationJobStops) {
+      if (pending.humanUserId === humanUserId) jobs.set(id, pending.job);
+    }
+
+    const errors: unknown[] = [];
+    const denied: Array<{ id: string; scope: InvocationWorkScope }> = [];
+    for (const { id, scope } of virtual) {
+      try {
+        if (!scope.withdrawn && await this.checkInvocationAccess({ humanUserId, ...scope })) continue;
+        // A concurrent dispatch may have linked this unit during the query.
+        // Its own execution gate then owns the fresh check.
+        if (this.virtualInvocationScopes.get(id) !== scope) continue;
+        scope.withdrawn = true;
+        denied.push({ id, scope });
+      } catch (error) { errors.push(error); }
+    }
+    const ids = new Set(denied.map(item => item.id));
+    for (const lane of this.coalescer.removeVirtualJobs(ids)) {
+      this.bufferedRouteByLane.delete(lane);
+      this.bufferedInvocationSubjectByLane.delete(lane);
+      this.bufferedCoalescingBoundaryByLane.delete(lane);
+    }
+    for (const queue of this.pendingByThread.values()) {
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        if (queue[index]!.virtualIds.every(id => ids.has(id))) queue.splice(index, 1);
+      }
+    }
+    const stopped: string[] = [];
+    for (const { id, scope } of denied) {
+      try { await this.stopInvocationTask(humanUserId, scope); stopped.push(id); }
+      catch (error) { errors.push(error); }
+    }
+    try {
+      await this.terminalizeUserStoppedVirtualIds(stopped, WORK_ACCEPTANCE_REASONS.accessWithdrawn);
+    } catch (error) { errors.push(error); }
+    for (const job of jobs.values()) {
+      try {
+        if (!this.pendingInvocationJobStops.has(job.id)
+          && (job.isTerminal() || await this.checkInvocationAccess({ humanUserId,
+            ...invocationWorkScope(job.input, this.jobToInvocationAuthority.get(job.id)) }))) continue;
+        await this.cancelInvocationJob(job, humanUserId, this.pendingInvocationJobStops.get(job.id)?.reason);
+      } catch (error) { errors.push(error); }
+    }
+    if (errors.length > 0) throw errors[0];
   }
 
   getJob(id: string): Job | undefined {
@@ -1812,6 +1983,12 @@ export class JobManager {
     maintenance: MaintenanceAcceptanceAuthority;
     invocation: AcceptedInvocationAuthority;
   }> {
+    if (virtualIds.some(id => this.virtualInvocationScopes.get(id)?.withdrawn)) {
+      throw new Error("Accepted invocation access withdrawn");
+    }
+    // Keep references across the ledger await: durable cancellation can clear
+    // the indexes before the in-flight link returns.
+    const invocationScopes = virtualIds.map(id => this.virtualInvocationScopes.get(id));
     const acceptanceIds = virtualIds.map((virtualId) => {
       const acceptanceId = this.virtualToAcceptance.get(virtualId);
       if (!acceptanceId) {
@@ -1852,6 +2029,9 @@ export class JobManager {
       acceptanceIds,
       jobId,
     );
+    if (invocationScopes.some(scope => scope?.withdrawn)) {
+      throw new Error("Accepted invocation access withdrawn during linkage");
+    }
     if (linkedCount !== acceptanceIds.length) {
       // Dispatch-vs-Stop race: a concurrent user Stop terminalized some of the
       // expected acceptances as user_cancelled (or a prior link/terminalize
@@ -1866,6 +2046,7 @@ export class JobManager {
       this.virtualToAcceptance.delete(virtualId);
       this.virtualToAuthority.delete(virtualId);
       this.virtualToInvocationAuthority.delete(virtualId);
+      this.virtualInvocationScopes.delete(virtualId);
       this.virtualToExecutionRoute.delete(virtualId);
       this.virtualToTaskId.delete(virtualId);
     }
@@ -2015,6 +2196,7 @@ export class JobManager {
    */
   private async terminalizeUserStoppedVirtualIds(
     virtualIds: readonly string[],
+    reason: WorkAcceptanceReason = WORK_ACCEPTANCE_REASONS.userStop,
   ): Promise<number> {
     this.invalidateForegroundCandidates(virtualIds);
     if (virtualIds.length === 0) return 0;
@@ -2026,7 +2208,7 @@ export class JobManager {
     if (acceptanceIds.length === 0) return 0;
     const terminalized = await this.acceptanceSinks.userCancelAcceptedWork(
       acceptanceIds,
-      WORK_ACCEPTANCE_REASONS.userStop,
+      reason,
     );
     // Clear only the resolved mappings (those that had an acceptance binding).
     for (const virtualId of virtualIds) {
@@ -2034,6 +2216,7 @@ export class JobManager {
         this.virtualToAcceptance.delete(virtualId);
         this.virtualToAuthority.delete(virtualId);
         this.virtualToInvocationAuthority.delete(virtualId);
+        this.virtualInvocationScopes.delete(virtualId);
         this.virtualToExecutionRoute.delete(virtualId);
         this.virtualToTaskId.delete(virtualId);
         this.failedPrePersistenceScope.delete(virtualId);
@@ -2045,7 +2228,9 @@ export class JobManager {
   /** Drop only the non-durable M254 projection when accepted work is abandoned. */
   private abandonInvocationAuthorities(virtualIds: readonly string[]): void {
     for (const virtualId of virtualIds) {
+      if (this.virtualInvocationScopes.get(virtualId)?.withdrawn) continue;
       this.virtualToInvocationAuthority.delete(virtualId);
+      this.virtualInvocationScopes.delete(virtualId);
     }
   }
 
@@ -2203,6 +2388,7 @@ export class JobManager {
     ]);
     this.virtualToExecutionRoute.clear();
     this.virtualToInvocationAuthority.clear();
+    this.virtualInvocationScopes.clear();
     this.bufferedRouteByLane.clear();
     this.bufferedInvocationSubjectByLane.clear();
     this.bufferedCoalescingBoundaryByLane.clear();
@@ -2324,6 +2510,7 @@ export class JobManager {
     this.failedPrePersistenceScope.clear();
     this.virtualToAuthority.clear();
     this.virtualToInvocationAuthority.clear();
+    this.virtualInvocationScopes.clear();
     this.virtualToExecutionRoute.clear();
     this.invalidateForegroundCandidates([...this.virtualToForegroundCandidate.keys()]);
     this.invalidateProtectedTaskExecutions([
@@ -2614,6 +2801,7 @@ export class JobManager {
       invocationAuthority,
       scope.humanUserId,
     );
+    invocationAuthority = bindInvocationOrigin(scope.humanUserId, { roomId: scope.roomId, ...(scope.taskRun ?? {}) }, invocationAuthority);
     await this.resolveGate().assertAcceptingNewWork(maintenanceAuthority);
     const acceptedMaintenanceAuthority =
       maintenanceAuthority ?? createMaintenanceAcceptanceAuthority();
@@ -2668,7 +2856,7 @@ export class JobManager {
       await runWithAcceptedWorkAuthorities(
         acceptedMaintenanceAuthority,
         invocationAuthority,
-        () => runWithInitiatingClientSurface("unknown", () => job.execute()),
+        () => runWithInitiatingClientSurface("unknown", () => this.executeWithCurrentInvocationAccess(job, invocationAuthority)),
       );
       if (resumeFailed) {
         if (resumeError instanceof Error) throw resumeError;
@@ -2862,5 +3050,14 @@ const productionTaskStopSink = async (taskId: string): Promise<void> => {
 export const jobManager = new JobManager({
   acceptanceSinks: productionAcceptanceSinks,
   taskStopSink: productionTaskStopSink,
+  checkInvocationAccess: isInvocationAccessAllowed,
+  invocationTaskStop: async ({ humanUserId, taskId, taskRunId }) => {
+    const { stopTask } = await import("./tasks/lifecycle");
+    const { getTaskRunDb } = await import("./tasks/task-runtime-context");
+    const result = await stopTask({ db: getTaskRunDb(), jobManager }, taskId, { humanUserId, taskRunId });
+    if (!result.ok && result.status !== "authority_changed" && result.status !== "not_found") {
+      throw new Error("Task invocation cancellation pending");
+    }
+  },
 });
 _jobManagerForTaskStop = jobManager;

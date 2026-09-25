@@ -181,13 +181,13 @@ export class ConnectedWebOperationDirectRuntime implements ConnectedWebOperation
   }
 
   private async acquireControl(actor: ConnectedWebOperationToolActorContext, input: Pick<ConnectedWebOperationDirectToolInput, "operationId" | "expectedControlEpoch">): Promise<ConnectedWebOperationSafeProjection | null> {
-    if (!this.ready) return null;
+    if (!this.ready || !actor.causalHumanUserId?.trim()) return null;
     const operation = await this.load(actor, input);
     if (!operation || operation.accountId === null || operation.actionOperationId !== null || operation.effectIdempotencyKey !== null
       || operation.lifecycle === "terminal" || operation.driver === "direct") return null;
     try {
       const lease = await this.options.router.acquire({
-        ownerUserId: operation.ownerUserId, accountId: operation.accountId, operationId: operation.id,
+        ownerUserId: operation.ownerUserId, fundingHumanUserId: actor.causalHumanUserId, accountId: operation.accountId, operationId: operation.id,
         // Management has already cancelled the hosted Agent run and proved it
         // terminal before entering this method.  A hosted run may tear down its
         // browser as part of that cancellation, so trying to attach to the old

@@ -281,9 +281,16 @@ export interface AppendTranscriptResult {
 
 /** Match live quiet-supervision presentation while retaining the exact tool audit. */
 export function transcriptMetadataForMessage(message: BaseMessage, options: AppendTranscriptOptions): Record<string, unknown> | null {
-  const metadata = options.internalToolMetadata && (
+  let metadata = options.internalToolMetadata && (
     message instanceof ToolMessage || (AIMessage.isInstance(message) && message.tool_calls?.length)
   ) ? options.internalToolMetadata : options.metadata ?? null;
+  if (message instanceof ToolMessage
+    && message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
+    metadata = {
+      ...(metadata ?? {}),
+      nautilo_browser_decision_observation: true,
+    };
+  }
   return withTranscriptToolPresentation(message, metadata);
 }
 
@@ -948,7 +955,7 @@ export async function getRoomMessagesBeforeCursor(args: {
  *
  * Returns messages from every `sessions` row with `room_id = :roomId` whose
  * `owner_id` matches a human `room_members` actor for that room. Subagent
- * transcript sessions stay excluded via {@link excludeSubagentTranscriptSessions}.
+ * transcript sessions and scheduled Tasks' internal output stay out of Room history.
  *
  * **Access:** the route must still verify the *viewer* is a member of the
  * room (e.g. {@link getRoomGraphThreadForOwnerSession} or a direct
@@ -1007,7 +1014,9 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
           // `metadata` is NULL on every pre-existing row, and a bare `<> 'task'`
           // evaluates to NULL (not-true) → it would silently drop the entire
           // normal transcript. `IS DISTINCT FROM` treats NULL as "not task".
-          sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'`,
+          // A scheduled Task can execute on this same bot session. Its tagged
+          // internal answer stays hidden; peer Task replies remain visible.
+          sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'scheduled_task_internal'`,
           // D430 — hide known react tool rows. Legacy NULL tool names remain
           // visible because the schema cannot distinguish their historical tool.
           sql`${sessionMessages.toolName} IS DISTINCT FROM 'react'`,
@@ -1337,6 +1346,24 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
  */
 export function visibleTranscriptContent(message: BaseMessage): string {
   if (message instanceof ToolMessage) {
+    if (message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
+      let receipt: Record<string, unknown> = {};
+      if (message.name === "control_connected_web_operation" && typeof message.content === "string") {
+        try {
+          const parsed = JSON.parse(message.content) as Record<string, unknown>;
+          if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const { observation: _observation, ...rest } = parsed;
+            receipt = rest;
+          }
+        } catch { /* The server-authored observation marker requires a parsed result. */ }
+      }
+      return JSON.stringify({
+        ...receipt,
+        version: 1,
+        delegatedObservationOmitted: true,
+        notice: "Internal browser-decision observation omitted from the durable transcript.",
+      });
+    }
     const durableComputerResult = durableComputerResultText(message);
     if (durableComputerResult !== null) return durableComputerResult;
   }

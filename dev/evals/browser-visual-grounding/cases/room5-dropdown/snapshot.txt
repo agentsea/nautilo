@@ -1,0 +1,8 @@
+- generic
+  - listbox "Favorite animal" [ref=e1]
+    - option "Cat" [ref=e2]
+      - StaticText "Cat"
+    - option "Dog" [ref=e3]
+      - StaticText "Dog"
+    - option "Frog" [selected, ref=e4]
+      - StaticText "Frog"

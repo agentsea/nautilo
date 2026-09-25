@@ -34,6 +34,7 @@ import {
   parseMobilePushNotification,
   shouldSuppressForegroundPush,
   shouldPresentForegroundPush,
+  shouldSwitchToPushServer,
   type ImportantMessageEnvelope,
   type InboundUrlIntent,
   type MobilePushIntentResolution,
@@ -210,7 +211,9 @@ export function InboundIntentProvider({ children }: { readonly children: ReactNo
         || before.lifecycleRevision !== lifecycleRevision
       ) return false;
       const generation = ++interactionGenerationRef.current;
-      await switchTo(serverId);
+      if (shouldSwitchToPushServer(activeServerRef.current, { id: serverId, serverUrl })) {
+        await switchTo(serverId);
+      }
       const after = await loadServerRegistrationSnapshot(serverId);
       const registry = await loadRegistry();
       return interactionGenerationRef.current === generation

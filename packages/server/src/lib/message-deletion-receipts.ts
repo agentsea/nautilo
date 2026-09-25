@@ -3,13 +3,14 @@ import {
   desc,
   eq,
   getSharedDirectDb,
-  lt,
   messageDeletionReceipts,
   or,
   type MessageDeletionReceipt,
 } from "@nautilo/db";
+import { getTableColumns, lt, sql } from "drizzle-orm";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EXACT_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 export class InvalidMessageDeletionQuery extends Error {
   constructor() {
@@ -32,7 +33,7 @@ export interface MessageDeletionReceiptPage {
   nextCursor: string | null;
 }
 
-function decodeCursor(raw: string): { committedAt: Date; operationId: string } {
+function decodeCursor(raw: string): { committedAt: string; operationId: string } {
   try {
     const value: unknown = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
     if (!value || typeof value !== "object") throw new Error("invalid cursor");
@@ -40,8 +41,12 @@ function decodeCursor(raw: string): { committedAt: Date; operationId: string } {
     if (typeof row["committedAt"] !== "string" || typeof row["operationId"] !== "string") {
       throw new Error("invalid cursor");
     }
-    const committedAt = new Date(row["committedAt"]);
-    if (Number.isNaN(committedAt.getTime()) || !UUID.test(row["operationId"])) {
+    const committedAt = row["committedAt"];
+    const parsed = new Date(committedAt);
+    if (!EXACT_UTC_TIMESTAMP.test(committedAt)
+      || Number.isNaN(parsed.getTime())
+      || parsed.toISOString().slice(0, 23) !== committedAt.slice(0, 23)
+      || !UUID.test(row["operationId"])) {
       throw new Error("invalid cursor");
     }
     return { committedAt, operationId: row["operationId"] };
@@ -79,32 +84,40 @@ export async function listMessageDeletionReceipts(
   const limit = query.limit === undefined ? 50 : Number(query.limit);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new InvalidMessageDeletionQuery();
   const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
+  const cursorTime = cursor === undefined
+    ? undefined : sql`${cursor.committedAt}::timestamptz`;
   const conditions = [
     query.roomId === undefined ? undefined : eq(messageDeletionReceipts.roomId, query.roomId),
     messageId === undefined ? undefined : eq(messageDeletionReceipts.messageId, messageId),
     query.operationId === undefined ? undefined : eq(messageDeletionReceipts.operationId, query.operationId),
     query.actorId === undefined ? undefined : eq(messageDeletionReceipts.actorId, query.actorId),
-    cursor === undefined ? undefined : or(
-      lt(messageDeletionReceipts.committedAt, cursor.committedAt),
+    cursor === undefined || cursorTime === undefined ? undefined : or(
+      lt(messageDeletionReceipts.committedAt, cursorTime),
       and(
-        eq(messageDeletionReceipts.committedAt, cursor.committedAt),
+        eq(messageDeletionReceipts.committedAt, cursorTime),
         lt(messageDeletionReceipts.operationId, cursor.operationId),
       ),
     ),
   ].filter((condition) => condition !== undefined);
   const rows = await getSharedDirectDb()
-    .select()
+    .select({
+      ...getTableColumns(messageDeletionReceipts),
+      cursorCommittedAt: sql<string>`to_char(${messageDeletionReceipts.committedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+    })
     .from(messageDeletionReceipts)
     .where(and(...conditions))
     .orderBy(desc(messageDeletionReceipts.committedAt), desc(messageDeletionReceipts.operationId))
     .limit(limit + 1);
-  const receipts = rows.slice(0, limit);
-  const last = receipts.at(-1);
+  const receipts = rows.slice(0, limit).map(({ cursorCommittedAt, ...receipt }) => {
+    void cursorCommittedAt;
+    return receipt;
+  });
+  const last = rows[limit - 1];
   return {
     receipts,
     nextCursor: rows.length > limit && last
       ? Buffer.from(JSON.stringify({
-          committedAt: last.committedAt.toISOString(),
+          committedAt: last.cursorCommittedAt,
           operationId: last.operationId,
         })).toString("base64url")
       : null,

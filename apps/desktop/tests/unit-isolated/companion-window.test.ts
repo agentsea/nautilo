@@ -251,3 +251,23 @@ test("fullscreen presence hides the bubble with stale panel focus and fences lat
   expect(child.destroyed).toBe(true);
   presence = async () => false;
 });
+
+
+test("voice bubble forwards talk without changing size; panel sizes share the binding", () => {
+  const generation = call("enable", ownerEvent, binding);
+  const child = Window.all.at(-1)!;
+  const event = { sender: child.webContents, senderFrame: child.webContents.mainFrame };
+  expect(child.bounds.width).toBe(88); expect(child.bounds.height).toBe(88);
+  call("command", event, generation, { type: "talk" });
+  expect(contents.sent.at(-1)).toEqual(["companion:action", generation, { type: "talk" }]);
+  expect(call("state", event).view).toBe("orb");
+  call("command", event, generation, { type: "sound", enabled: false });
+  expect(contents.sent.at(-1)).toEqual(["companion:action", generation, { type: "sound", enabled: false }]);
+  call("command", event, generation, { type: "view", value: "prompt" });
+  expect(child.bounds.width).toBe(380); expect(child.bounds.height).toBe(216);
+  call("command", event, generation, { type: "view", value: "chat" });
+  expect(child.bounds.height).toBe(460);
+  call("command", event, generation, { type: "view", value: "orb" });
+  expect(child.bounds.height).toBe(88);
+  expect(call("state", event).generation).toBe(generation);
+});

@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { users } from "../schema/users";
+import { serverAdmission } from "../schema/moderation";
 import { and, asc, count, eq, isNull } from "drizzle-orm";
 import { slugifyToHandle } from "@nautilo/config";
 import { resolveDirectDatabaseConnectionString } from "../config/direct-database";
@@ -39,7 +40,7 @@ export async function seedDefaultOwner(
       print("Creating default owner account...");
       const [owner] = await db
         .insert(users)
-        .values({ name: "user", email: "owner@example.com" })
+        .values({ name: "user", email: "user@example.com" })
         .returning({ id: users.id });
       if (!owner) throw new Error("Failed to create default owner");
       ownerId = owner.id;
@@ -61,6 +62,9 @@ export async function seedDefaultOwner(
       if (!firstUser) throw new Error("Users table unexpectedly empty");
       ownerId = firstUser.id;
     }
+
+    // Repeated startup must never readmit a withdrawn account.
+    await db.insert(serverAdmission).values({ userId: ownerId, admitted: true }).onConflictDoNothing();
 
     // M042C — auto-derive handle if missing. The onboarding wizard
     // writes the chosen handle on fresh installs (`PUT /api/owner/handle`);
@@ -97,7 +101,7 @@ export async function seedDefaultOwner(
  *
  * M047: the collision check scopes to `users.server IS NULL` (local
  * users only). Foreign-origin stubs for federated Humans
- * (`@alice@remote.com`) are a distinct identity — `(handle, server)`
+ * are a distinct identity — `(handle, server)`
  * pair — and must not block the local owner from picking the same
  * local-part handle.
  */

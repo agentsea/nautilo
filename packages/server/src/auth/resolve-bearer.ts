@@ -115,6 +115,7 @@ export type ResolveBearerReason =
   // gate turns it into an `auth.rejected` close. Distinct from
   // `logto.unknown_sub` so logs/audit can tell "disabled" from "no row".
   | "user_disabled"
+  | "server_access_withdrawn"
   | "exception";
 
 interface ResolveBearerSuccessBase {
@@ -281,6 +282,9 @@ export function buildResolveBearer(
 
         if (principal.disabledAt !== null) {
           return { ok: false, reason: "user_disabled" };
+        }
+        if (!principal.serverAccessAllowed) {
+          return { ok: false, reason: "server_access_withdrawn" };
         }
         if (!principal.federatedId) {
           return { ok: false, reason: "logto.no_federated_id" };

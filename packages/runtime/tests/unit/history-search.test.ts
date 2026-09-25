@@ -27,6 +27,8 @@ describe("searchRoomHistory", () => {
     expect(queryText).toContain("plainto_tsquery('english'");
     expect(queryText).toContain("room_silence_state");
     expect(queryText).toContain("content_search");
+    expect(queryText).toContain("nautilo_browser_decision_observation");
+    expect(queryText).toContain("browser-choice:%");
   });
 
   test("does not execute for invalid shared-search input", async () => {

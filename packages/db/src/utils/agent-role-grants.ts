@@ -7,6 +7,8 @@ const TARGET_DB = "nautilo";
 export const SENSITIVE_TABLES = [
   "feed_events",
   "feed_recipients",
+  // Server-wide provider admission is owned by the product control plane.
+  "server_provider_policy",
   "credentials",
   "recovery_codes",
   "logto_account_security",
@@ -21,6 +23,13 @@ export const SENSITIVE_TABLES = [
   // replay history, not Agent runtime authority. Keep them denied after the
   // broad legacy/default grants are reconciled.
   "content_access_operations",
+  "group_moderation_scopes",
+  "moderation_subjects",
+  "moderation_restrictions",
+  "moderation_actions",
+  "server_admission",
+  "server_moderation_policy",
+  "invite_redemptions",
   ...CRYPTO_STORAGE_TABLE_NAMES,
   ...DOMAIN_KEY_AUTHORITY_TABLE_NAMES,
   // M257 — durable Reflection state is product-owned. Organizer/Sleep reach

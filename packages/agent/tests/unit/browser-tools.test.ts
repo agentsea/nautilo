@@ -61,16 +61,18 @@ describe("browser_click tool", () => {
 });
 
 describe("browser_type tool", () => {
-  test("builds with ref, text, and optional clear schema", () => {
+  test("builds with ref typing and decision-bound coordinate typing variants", () => {
     const tool = createBrowserTypeTool();
     expect(tool.name).toBe("browser_type");
-    expect(tool.schema.shape.ref).toBeDefined();
-    expect(tool.schema.shape.text).toBeDefined();
-    expect(tool.schema.shape.clear).toBeDefined();
     expect(tool.schema.safeParse({ ref: "@e5", text: "hello" }).success).toBe(true);
     expect(tool.schema.safeParse({ ref: "@e5", text: "hello", clear: true }).success).toBe(
       true,
     );
+    expect(tool.schema.safeParse({ x: 100, y: 200, space: "image", text: "hello", clear: false }).success).toBe(true);
+    expect(tool.schema.safeParse({ x: 100, y: 200, space: "image", text: "hello", clear: true }).success).toBe(false);
+    expect(tool.schema.safeParse({ text: "hello" }).success).toBe(false);
+    expect(tool.schema.safeParse({ ref: "@e5", x: 100, y: 200, space: "image", text: "hello" }).success).toBe(false);
+    expect(tool.schema.safeParse({ x: 100, y: 200, space: "css", text: "hello" }).success).toBe(false);
   });
 
   test("func rejects as relay stub", () => {
@@ -190,6 +192,20 @@ describe("browser_screenshot tool", () => {
     expect(tool.name).toBe("browser_screenshot");
     expect(tool.schema.shape.appId).toBeDefined();
     expect(tool.schema.safeParse({}).success).toBe(true);
+  });
+
+  test("exposes visual delegation only in an eligible turn", () => {
+    expect(createBrowserScreenshotTool().schema.shape.decisionPlan).toBeUndefined();
+    const prior = process.env["OPENROUTER_API_KEY"];
+    process.env["OPENROUTER_API_KEY"] = "visual-decision-test";
+    try {
+      const tool = createBrowserScreenshotTool({ turnId: "turn-1", fullEncryptionOnly: false });
+      expect(tool.schema.shape.decisionPlan).toBeDefined();
+      expect(tool.description).toContain("local visual extractor");
+    } finally {
+      if (prior === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = prior;
+    }
   });
 
   test("func rejects as relay stub", () => {
@@ -322,7 +338,7 @@ describe("browser tools catalog registration", () => {
     }
   });
 
-  test("text browser tools carry scanInvisibleUnicode:strip through catalog metadata", () => {
+  test("browser tools with page-derived text carry scanInvisibleUnicode:strip through catalog metadata", () => {
     // Regression: the metadata projection (toMetadata) must preserve this flag,
     // or nodes/tools.ts can't strip zero-width chars and live web reads get
     // blocked when document content includes U+200B.
@@ -333,6 +349,7 @@ describe("browser tools catalog registration", () => {
       "browser_press",
       "browser_read",
       "browser_read_page",
+      "browser_screenshot",
       "browser_get",
       "browser_scroll",
       "browser_back",
@@ -355,7 +372,7 @@ describe("browser tools catalog registration", () => {
     const entry = catalog.get("browser_screenshot");
     expect(entry).toBeDefined();
     expect(entry!.requiredModelCapabilities).toEqual(["image"]);
-    expect(entry!.scanInvisibleUnicode).toBeUndefined();
+    expect(entry!.scanInvisibleUnicode).toBe("strip");
   });
 
   test("browser_snapshot registered as low-impact relay tool without approval", () => {

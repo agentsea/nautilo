@@ -1,3 +1,7 @@
+import { createModerationAuditSink, createModerationEffectRecovery, createPostgresModerationRecoveryStore,
+  installModerationEffectRecoveryLifecycle } from "./lib/moderation-recovery";
+import { deleteBannedCommunityMessages } from "./messaging/moderation-message-cleanup";
+import { convergeModerationRealtime } from "./realtime/moderation-convergence";
 import {createProductionProtectedReflectionSemantics} from "./reflection/protected-semantic-composition";
 import {createProductionProtectedReflectionSearchComposition} from "./reflection/protected-search-composition";
 import type {DurableSleepSemanticPort} from "@nautilo/reflection/durable";
@@ -10,10 +14,11 @@ import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSe
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
 import { createEventFeed } from "@nautilo/event-feed";
 import type { ServerEvent } from "@nautilo/types";
-import { createEventFeedStorage, createEventFeedPreferenceStore, listArtifactFeedRecipientUserIds } from "@nautilo/db";
+import { moderationAccessAllowedSql, sql, users, createEventFeedStorage, createEventFeedPreferenceStore, listArtifactFeedRecipientUserIds } from "@nautilo/db";
 import { eventFeedRoutes } from "./routes/event-feed";
 import { eventFeedPreferenceRoutes } from "./routes/event-feed-preferences";
 import { publishEventFeedChanged } from "./realtime/ws-publisher";
+import { createModerationEventProducer } from "./event-feed/moderation-producer";
 import { createHumanMembershipEventProducer } from "./event-feed/membership-producer";
 import { createArtifactEventProducer } from "./event-feed/artifact-producer";
 import { createArtifactFeedInvalidator } from "./event-feed/artifact-invalidation";
@@ -79,6 +84,9 @@ import {
 } from "./friendly-errors/mobile-web-not-served";
 import { healthRoutes, markReady } from "./routes/health";
 import { publicJoinRoutes } from "./routes/public-join";
+import { readServerModerationPolicy } from "@nautilo/trust";
+import { moderationRoutes } from "./routes/moderation";
+import { enrollmentReviewRoutes } from "./routes/enrollment-review";
 import { wsRoutes } from "./routes/ws";
 import { chatRoutes, defaultChatRoutesDeps, type ChatRoutesDeps } from "./routes/chat";
 import {
@@ -259,6 +267,7 @@ import { setupStatusRoutes } from "./routes/setup-status";
 import { serverIconRoutes } from "./routes/server-icon";
 import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
+import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
 import { messageBackfillRoutes } from "./routes/message-backfill";
@@ -1575,6 +1584,13 @@ export async function createApp(options?: CreateAppOptions) {
           statusCode: 401,
           code: "user_disabled",
           publicError: "Unauthorized",
+        });
+      }
+      if (result.reason === "server_access_withdrawn") {
+        throw Object.assign(new Error("Server access is unavailable for this account."), {
+          statusCode: 403,
+          code: "server_access_withdrawn",
+          publicError: "Forbidden",
         });
       }
       const reason =
@@ -2948,6 +2964,7 @@ export async function createApp(options?: CreateAppOptions) {
       await reflectionSleepController.setEnabled(config.reflectionSleepEnabled);
     },
   });
+  serverProviderPolicyRoutes(app);
   encryptionTransitionRoutes(app, {
     publishPolicyChanged: publishEncryptionPolicyChanged,
     maintenanceController: publishingMaintenanceController,
@@ -3510,6 +3527,9 @@ export async function createApp(options?: CreateAppOptions) {
       userId,
       humanActorId,
     }) => {
+      const [access] = await getServerDirectDb().select({ allowed: moderationAccessAllowedSql(sql`${users.id}`) })
+        .from(users).where(eq(users.id, userId));
+      if (access?.allowed !== true) return { status: "required", reason: "server_access_withdrawn" };
       const policy = await getEncryptionTransitionPolicy(getServerDirectDb());
       if (policy.mode === "plaintext_only") return { status: "admitted" };
       const credentialDigest = decodeCanonicalBase64url(
@@ -3841,6 +3861,7 @@ export async function createApp(options?: CreateAppOptions) {
   // task run never holds a human room's lane. The generic selector reloads the
   // sealed server-authored harness descriptor; Native Tasks return undefined
   // and preserve their existing executor. Stopped on app close.
+  let moderationEffectRecovery: ReturnType<typeof createModerationEffectRecovery> | null = null;
   const taskObserver = new TaskObserver({
     db: getServerDirectDb(),
     jobManager,
@@ -3851,6 +3872,12 @@ export async function createApp(options?: CreateAppOptions) {
     convergeCreatedRoomCatalog: convergeHumanRoomCatalogs,
     onMaintenance: async () => {
       liveMiniAppSessionRegistry.expire();
+      // Every process owns its accepted work. A receipt handled on another
+      // process cannot stand in for this shared-authority recheck. Reuse the
+      // observer lifecycle, including ticks while maintenance gates new work.
+      moderationEffectRecovery?.wake();
+      try { await jobManager.reconcileAllInvocationAccess(); }
+      catch { warn("[moderation] local work reconciliation remains pending"); }
       // A canonical save can outlive a transient DB finalizer failure. Retry
       // only already-resolved, model-finished bindings on the existing
       // observer tick; unresolved Human reviews stay parked untouched.
@@ -4299,6 +4326,37 @@ export async function createApp(options?: CreateAppOptions) {
   const artifactFeedListener = (event: ServerEvent) => { void invalidateArtifactFeed(event); };
   eventBus.on(artifactFeedListener);
   const relaySocketLifecycle = relayRoutes(app, relayRegistry);
+  const moderationDelivery = {
+    issuer: process.env["LOGTO_ISSUER"] ?? "",
+    appendAudit: createModerationAuditSink(securityAuditLogPath),
+    notify: createModerationEventProducer({ feed: eventFeed }),
+    deleteCommunityMessages: deleteBannedCommunityMessages,
+    converge: async (operationId: string): Promise<"pending"> => {
+      await convergeModerationRealtime(operationId, { relayRegistry, relaySockets: relaySocketLifecycle, work: jobManager });
+      // Local completion cannot acknowledge another process or a parked Task.
+      return "pending";
+    },
+  };
+  moderationRoutes(app, {
+    delivery: moderationDelivery,
+    reviewDecided: (callerUserId, review) => {
+      writeSecurityAuditEvent(securityAuditLogPath, { kind: "enrollment_review_decided", ts: new Date().toISOString(),
+        actorId: null, ip: "unknown", userAgent: undefined, requesterUserId: callerUserId, ...review });
+      return Promise.resolve();
+    },
+    policyChanged: (callerUserId, policy) => {
+      writeSecurityAuditEvent(securityAuditLogPath, { kind: "moderation_policy_changed", ts: new Date().toISOString(),
+        actorId: null, ip: "unknown", userAgent: undefined, requesterUserId: callerUserId, ...policy });
+      moderationEffectRecovery?.wake();
+      return Promise.resolve();
+    },
+  });
+  moderationEffectRecovery = createModerationEffectRecovery({
+    store: createPostgresModerationRecoveryStore(),
+    effects: moderationDelivery,
+    onPassFailure: () => warn("[moderation] effect recovery failed; durable receipts remain pending"),
+  });
+  installModerationEffectRecoveryLifecycle(app, moderationEffectRecovery);
   acpReadinessRoutes(app, {
     relay: relayRegistry,
     resolveHost: async (userId, requestedRelayId) => {
@@ -4512,7 +4570,9 @@ export async function createApp(options?: CreateAppOptions) {
   });
   publicJoinRoutes(app, {
     inviteToken: process.env["NAUTILO_PUBLIC_JOIN_INVITE_TOKEN"],
+    isEnrollmentOpen: async () => !(await readServerModerationPolicy()).joinsPaused,
   });
+  enrollmentReviewRoutes(app);
   invitesRoutes(app, {
     onHumanRoomJoined: humanMembershipEventProducer,
     ownerId: ownerId ?? "",

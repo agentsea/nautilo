@@ -1,13 +1,15 @@
 import { type ReactElement } from "react";
 import type { AvatarRef } from "@nautilo/types";
+import type { HumanPresenceStatus } from "@nautilo/types";
 import { AuthenticatedAvatar } from "../../../components/avatar/authenticated-image";
 import { UserAvatar } from "../../../components/avatar/UserAvatar";
 import type { RoomFocusState } from "./use-room-focus";
 import { FocusCountdownRing } from "./FocusCountdownRing";
 import { focusTooltipLabel } from "./focus-reason";
+import { HumanPresence } from "./HumanPresence";
 
 /**
- * D278 §4.7.4 — the shared focus-ring avatar. Used by BOTH the members drawer
+ * Shared focus-ring avatar used by the members drawer
  * (`MemberRow`) and the compact column (`MembersColumn`) so the two stay in
  * sync ("one component, two modes").
  *
@@ -30,6 +32,8 @@ export function MemberFocusAvatar({
   size = "md",
   interactive = true,
   roomId,
+  presence,
+  showPresence = false,
 }: {
   readonly member: AvatarMember;
   readonly focus: RoomFocusState;
@@ -41,6 +45,8 @@ export function MemberFocusAvatar({
    * nest a button in a button. Default true (compact column taps the avatar).
    */
   readonly interactive?: boolean;
+  readonly presence?: HumanPresenceStatus | undefined;
+  readonly showPresence?: boolean;
 }): ReactElement {
   const dim = size === "sm" ? "h-8 w-8" : "h-7 w-7";
   const sizePx = size === "sm" ? 32 : 28;
@@ -64,8 +70,9 @@ export function MemberFocusAvatar({
 
   if (member.kind !== "agent") {
     return (
-      <span className={base} aria-hidden title={member.displayName}>
-        {inner}
+      <span className={`relative ${base}`} aria-hidden={!showPresence} title={member.displayName}>
+        {showPresence ? <span aria-hidden>{inner}</span> : inner}
+        {showPresence ? <HumanPresence status={presence} compact name={member.displayName} /> : null}
       </span>
     );
   }

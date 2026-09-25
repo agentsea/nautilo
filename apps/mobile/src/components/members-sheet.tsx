@@ -1,16 +1,12 @@
-// D408 Wave 3 — Members sheet (mobile-surface-map §6.5.3). The chat app-bar's
-// [👥] button opens this. Two modes:
+// Mobile room members sheet, opened from the chat app bar. It has two modes:
 //   • roster — fresh `getRoom` roster on open; avatar + name + role label
 //     (Person/Bot · admin/member, "You" on the viewer's own row). Footer:
 //     "Add people or agents" (admin only) + "Leave group" (any member).
 //   • add — searchable multi-select of people/agents NOT already in the room
 //     (mirrors chat/new.tsx directory search); each pick → addRoomMember with
 //     roomRole "member"; refresh roster after adds.
-// Read + add + leave only — per-member role/response-mode/conductor toggles are
-// DEFERRED (out of this stack's scope). Live `room_members_changed` WS is
-// DEFERRED too — the roster re-fetches on open and after each add/leave.
-// Mirrors the model-switcher-sheet structure + theming (useAppTheme +
-// createStyles). Avatars via MessageAvatar. No hardcoded colors.
+// Membership changes refresh the roster when this sheet opens and after an
+// add or leave. The sheet follows the app's shared bottom-sheet styling.
 import { Ionicons } from "@expo/vector-icons";
 import { BottomSheetScrollView, BottomSheetTextInput } from "@gorhom/bottom-sheet";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -30,6 +26,7 @@ import {
   type MobileReportTarget,
 } from "@/components/report-content-sheet";
 import { getApiClient } from "@/lib/api";
+import { humanPresenceLabel, humanStatusInRoom, useRoomPresence } from "@/hooks/use-room-presence";
 import {
   directoryKindsForViewer,
   filterDirectoryEntriesForViewer,
@@ -102,6 +99,7 @@ export function MembersSheet({
 
   // Add-mode state.
   const [mode, setMode] = useState<"roster" | "add">("roster");
+  const presence = useRoomPresence({ visible: visible && mode === "roster", serverUrl, roomId, viewerActorId });
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -411,6 +409,8 @@ export function MembersSheet({
             {members.map((m) => {
               const isSelf = m.actorId === viewerActorId;
               const label = roleLabel(m, isSelf);
+              const humanStatus = m.kind === "user" ? humanStatusInRoom(presence, m.actorId) : undefined;
+              const statusLabel = humanPresenceLabel(humanStatus);
               return (
                 <Pressable
                   key={m.actorId}
@@ -418,7 +418,9 @@ export function MembersSheet({
                   disabled={m.kind !== "user" || isSelf}
                   onPress={() => handleHumanMember(m)}
                   accessibilityRole={m.kind === "user" && !isSelf ? "button" : undefined}
-                  accessibilityLabel={m.kind === "user" && !isSelf ? `Actions for ${m.displayName}` : undefined}>
+                  accessibilityLabel={m.kind === "user"
+                    ? isSelf ? `${m.displayName}: ${statusLabel}` : `Actions for ${m.displayName}, ${statusLabel}`
+                    : undefined}>
                   {serverUrl ? (
                     <MessageAvatar
                       serverUrl={serverUrl}
@@ -433,9 +435,21 @@ export function MembersSheet({
                     <View style={styles.avatarFallback} />
                   )}
                   <View style={styles.rowMeta}>
-                    <Text style={styles.rowName} numberOfLines={1}>
-                      {m.displayName}
-                    </Text>
+                    <View style={styles.rowNameLine}>
+                      <Text style={styles.rowName} numberOfLines={1}>{m.displayName}</Text>
+                      {m.kind === "user" ? (
+                        <View style={styles.presenceWrap}>
+                          {humanStatus ? <View style={[styles.presenceDot, {
+                            backgroundColor: humanStatus === "online"
+                              ? t.color.status.success
+                              : humanStatus === "idle"
+                                ? t.color.status.warning
+                                : t.color.text.muted,
+                          }]} /> : null}
+                          <Text style={styles.presenceText}>{humanStatus ? statusLabel : "—"}</Text>
+                        </View>
+                      ) : null}
+                    </View>
                     {m.handle ? (
                       <Text style={styles.rowSub} numberOfLines={1}>
                         @{m.handle}
@@ -655,7 +669,11 @@ function createStyles(t: AppTheme) {
       backgroundColor: t.color.surface.element,
     },
     rowMeta: { flex: 1, gap: t.spacing.xs / 2 },
-    rowName: { color: t.color.text.foreground, ...t.typography.bodyStrong },
+    rowNameLine: { flexDirection: "row", alignItems: "center", gap: t.spacing.sm },
+    rowName: { color: t.color.text.foreground, ...t.typography.bodyStrong, flexShrink: 1 },
+    presenceWrap: { flexDirection: "row", alignItems: "center", gap: t.spacing.xs },
+    presenceDot: { width: 6, height: 6, borderRadius: 3 },
+    presenceText: { color: t.color.text.muted, ...t.typography.caption },
     rowSub: { color: t.color.text.muted, ...t.typography.caption },
     roleLabel: { color: t.color.text.dim, ...t.typography.caption },
     divider: {

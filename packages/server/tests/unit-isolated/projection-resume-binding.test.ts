@@ -23,6 +23,7 @@ import type { ProjectionResumeBinding } from "@nautilo/agent";
 import { authRoutes, projectionResumeAllowed } from "../../src/routes/auth";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 
 const INITIATOR = {
   actorId: "initiator-actor",
@@ -52,6 +53,7 @@ const auditEvents: unknown[] = [];
 let binding: ProjectionResumeBinding = bound;
 
 beforeAll(async () => {
+  await installResumeInvocationAuthority(INITIATOR.userId);
   sessions = new SessionStore(undefined, { persistPath: null });
   app = Fastify({ logger: false });
   installLocalAuthPreHandlerStub(app, sessions);

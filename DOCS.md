@@ -61,6 +61,8 @@ operate, package, or release the public source tree.
 - [`docs/relay-host-ownership.md`](docs/relay-host-ownership.md) — relay
   transport, Desktop-session, CUA Host, fixed-handler, process-cache, and
   Electron-authority ownership.
+- [`docs/server-provider-policy.md`](docs/server-provider-policy.md) — default-off
+  administrator control for future personal provider credentials.
 - [`docs/background-authorization-transport.md`](docs/background-authorization-transport.md)
 - [`docs/encryption-data-operation-ownership.md`](docs/encryption-data-operation-ownership.md)
 - [`docs/mobile-time-and-workspace-sharing.md`](docs/mobile-time-and-workspace-sharing.md)
@@ -68,6 +70,8 @@ operate, package, or release the public source tree.
   internal QA configuration and routing boundaries.
 - [`docs/security-research-limits.md`](docs/security-research-limits.md)
 - [`docs/quiet-events.md`](docs/quiet-events.md)
+- [`docs/community-moderation.md`](docs/community-moderation.md) — admission,
+  delegated person controls, and the repeatable moderation test loop.
 - [`docs/video-generation-recovery.md`](docs/video-generation-recovery.md)
 - [`docs/video-media-browser.md`](docs/video-media-browser.md)
 - [`docs/contributing/ci.md`](docs/contributing/ci.md)

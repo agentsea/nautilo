@@ -19,3 +19,10 @@ test("speech does not mask pending sends, running work or cancellation", () => {
 test("transcription does not claim that the message has been sent", () => {
   expect(companionStatus({ ...snapshot, capture: "transcribing" })).toBe("Transcribing…");
 });
+
+test("recording instructions distinguish microphone off from sending", () => {
+  expect(companionStatus({ ...snapshot, capture: "listening" })).toBe("Listening · turn mic off to review");
+  expect(companionStatus({ ...snapshot, capture: "listening" })).toBe("Listening · turn mic off to review");
+  expect(companionStatus({ ...snapshot, capture: "listening" })).toBe("Listening · turn mic off to review");
+  expect(companionStatus({ ...snapshot, canStopTalking: true, speaking: false })).toBe("Speech in progress");
+});

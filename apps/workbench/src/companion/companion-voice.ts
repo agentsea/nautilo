@@ -6,8 +6,10 @@ export const CompanionVoiceContext = createContext<{
   pinnedRoomId: string | null;
   enabled: boolean;
   playing: boolean;
+  canStopTalking: boolean;
   prepare(): void;
   enable(roomId: string): void;
   release(roomId: string): void;
+  setEnabled(enabled: boolean): void;
   stopTalking(): void;
 } | null>(null);

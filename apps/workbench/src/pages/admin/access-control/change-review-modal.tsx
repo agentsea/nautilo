@@ -11,6 +11,7 @@ function actionLabel(operation: AccessControlMutationOperation): string {
     case "role.delete": return "Delete custom role";
     case "group.create": return `Create custom group “${operation.label}”`;
     case "group.rename": return "Rename custom group";
+    case "group.set_moderation_scopes": return "Set Room moderation scope";
     case "group.set_roles": return "Set custom group roles";
     case "group.transfer_owner": return "Transfer custom group ownership";
     case "group.delete": return "Delete custom group";

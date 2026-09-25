@@ -1,6 +1,6 @@
 import { reapplyHappyDomGlobals } from "../../../tests/bun-dom-preload";
-import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, jest, mock, test } from "bun:test";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import type { PublicMiniAppDto } from "@nautilo/api-client/browser";
 import type { OpenFileTarget } from "../browser-column/open-file-target";
 import type { InstalledAppsState } from "../../apps/use-installed-apps";
@@ -180,6 +180,36 @@ beforeEach(() => {
 });
 
 describe("ReaderSurface app-open actions", () => {
+  test("a loader that ignores abort still times out and cannot overwrite Retry", async () => {
+    jest.useFakeTimers();
+    try {
+      let finishLoad: ((result: { kind: "ready"; data: {} }) => void) | undefined;
+      previewLoad.mockImplementationOnce(() => new Promise((resolve) => {
+        finishLoad = resolve;
+      }));
+      const view = render(<ReaderSurface file={artifactTarget} onClose={() => {}} />);
+      expect(view.getByText("Loading file...")).toBeTruthy();
+
+      await act(async () => {
+        jest.advanceTimersByTime(35_000);
+      });
+      expect(view.getByText("Preview timed out. Try again.")).toBeTruthy();
+      expect(view.getByRole("button", { name: "Retry" })).toBeTruthy();
+
+      await act(async () => {
+        finishLoad?.({ kind: "ready", data: {} });
+      });
+      expect(view.getByText("Preview timed out. Try again.")).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Retry" }));
+      });
+      expect(view.getByTestId("preview")).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("reloads preview bytes when the shell advances a local file reload token", async () => {
     const view = render(
       <ReaderSurface file={plainHtmlTarget} onClose={() => {}} />,
@@ -191,6 +221,25 @@ describe("ReaderSurface app-open actions", () => {
     );
 
     await waitFor(() => expect(previewLoad).toHaveBeenCalledTimes(2));
+  });
+
+  test("keeps the current document visible while a new artifact revision loads", async () => {
+    let finishRefresh: ((result: { kind: "ready"; data: {} }) => void) | undefined;
+    previewLoad.mockImplementationOnce(async () => ({ kind: "ready", data: {} }));
+    previewLoad.mockImplementationOnce(() => new Promise((resolve) => {
+      finishRefresh = resolve;
+    }));
+    const view = render(<ReaderSurface file={artifactTarget} onClose={() => {}} />);
+    await waitFor(() => expect(view.getByTestId("preview")).toBeTruthy());
+
+    view.rerender(
+      <ReaderSurface file={{ ...artifactTarget, reloadToken: 2 }} onClose={() => {}} />,
+    );
+    await waitFor(() => expect(previewLoad).toHaveBeenCalledTimes(2));
+    expect(view.getByTestId("preview")).toBeTruthy();
+
+    finishRefresh?.({ kind: "ready", data: {} });
+    await waitFor(() => expect(view.getByTestId("preview")).toBeTruthy());
   });
 
   test("shows primary Open in app for HTML artifact with spreadsheet manifest", async () => {

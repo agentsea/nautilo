@@ -28,6 +28,7 @@ const DEFAULT_PRINCIPAL: CanonicalPrincipal = {
   logtoSub: "logto-sub-default",
   userId: "user-default",
   disabledAt: null,
+  serverAccessAllowed: true,
   actorId: "actor-default",
   actorDisplayName: "Actor",
   handle: "user",
@@ -176,6 +177,15 @@ describe("buildResolveBearer", () => {
     const result = await resolve("valid-jwt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("user_disabled");
+  });
+
+  test("withdrawn admission rejects every resolution depth before RBAC or policy", async () => {
+    resolveCanonicalPrincipalByLogtoSubSpy.mockImplementation(async () => ({ ...DEFAULT_PRINCIPAL, serverAccessAllowed: false }));
+    const resolve = buildResolveBearer({ policyResolver: makePolicyResolver() });
+    for (const depth of ["identity", "rbac", "policy"] as const) {
+      expect(await resolve("valid-jwt", { depth })).toEqual({ ok: false, reason: "server_access_withdrawn" });
+    }
+    expect(projectUserRbacSpy).not.toHaveBeenCalled();
   });
 
   test("missing federated id → reason=logto.no_federated_id", async () => {

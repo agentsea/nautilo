@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "room15-second-row",
+  "description": "AgentSea Gym room 15 second-row state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room15",
+  "capturedAt": "2026-09-21T07:43:43.307Z",
+  "captureDurationMs": 141,
+  "evidencePairWindowMs": 111,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e10": {
+      "role": "group",
+      "name": ""
+    },
+    "e11": {
+      "role": "group",
+      "name": ""
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room 15: 5×5 Jigsaw Puzzle"
+    },
+    "e3": {
+      "role": "button",
+      "name": "RESET PUZZLE"
+    },
+    "e4": {
+      "role": "link",
+      "name": "Back to Home"
+    },
+    "e5": {
+      "role": "group",
+      "name": ""
+    },
+    "e6": {
+      "role": "group",
+      "name": ""
+    },
+    "e7": {
+      "role": "group",
+      "name": ""
+    },
+    "e8": {
+      "role": "group",
+      "name": ""
+    },
+    "e9": {
+      "role": "group",
+      "name": ""
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 1553,
+    "sha256": "cc950de275000906e3b9ec236ee4be0decbef778d37742430765a584c49bdce7"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 287323,
+    "sha256": "8976262907e9217e941fdaddf0dd947ea8970ae17cd7201699aee2d1e112730b"
+  }
+}

@@ -33,6 +33,12 @@ const reviews = parseReviewedQueryDecisions(await readFile(reviewsPath, "utf8"))
 const fullDrizzleSample = parseFullDrizzleSample(await readFile(fullDrizzleSamplePath, "utf8"));
 if (mode === "--write") {
   await writeFile(baselinePath, serializeQueryInventory(actual), "utf8");
+  // A complete refresh incorporates all prior additions into the baseline.
+  await writeFile(addendumPath, serializeQueryInventory({
+    schemaVersion: actual.schemaVersion,
+    purpose: "Additive query observations alongside the tracked baseline",
+    observations: [],
+  }), "utf8");
   console.log(`Wrote ${actual.observations.length} query observations to ${baselinePath}`);
   console.log(JSON.stringify(queryInventorySummary(actual), null, 2));
 } else if (mode === "--write-addendum") {

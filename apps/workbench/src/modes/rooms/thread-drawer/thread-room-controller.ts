@@ -32,6 +32,7 @@ import type { ReactionAggregate } from "../shape/reactions/ReactionStrip";
  */
 export interface ThreadRoomMessage {
   id: string;
+  assistantMessageKey?: string;
   logicalMessageKey?: string;
   role: string;
   content: string;
@@ -41,7 +42,7 @@ export interface ThreadRoomMessage {
   sourceUserId?: string;
   authorAgentId?: string;
   attachments?: MessageAttachmentRef[];
-  /** D359 — id of the child-row this optimistic/persisted message quotes. */
+  /** id of the child-row this optimistic/persisted message quotes. */
   replyToMessageId?: number | null;
   /** Local-only id used until the canonical persisted message id is known. */
   optimisticRequestId?: string;
@@ -49,6 +50,7 @@ export interface ThreadRoomMessage {
 
 export interface ThreadStreamBuffer {
   id: string;
+  assistantMessageKey?: string;
   turnId: string | null;
   authorAgentId: string | null;
   content: string;
@@ -223,6 +225,8 @@ function isThreadEventForRoom(
 ): boolean {
   if (isProtectedMessageRealtimeEventV2(event)) return false;
   if (!state.roomId || event.type === "thread.summary.changed") return false;
+  if (event.type === "message.deleted" && eventRoomId(event, resolveRoomId) === state.parentRoomId
+    && state.anchor?.id === String(event.messageId)) return true;
   if (event.type === "message.updated") {
     const roomId = eventRoomId(event, resolveRoomId);
     const anchorMatch =
@@ -309,6 +313,7 @@ function optimisticRequestId(message: ThreadMessageLike): string | undefined {
 
 function runtimeTextMessage(message: ThreadRoomMessage): ThreadMessageLike {
   const custom: Record<string, unknown> = { sentAt: message.createdAt };
+  if (message.assistantMessageKey) custom.assistantMessageKey = message.assistantMessageKey;
   if (message.sourceUserId) custom.sourceUserId = message.sourceUserId;
   if (message.authorAgentId) custom.authorAgentId = message.authorAgentId;
   if (message.logicalMessageKey) {
@@ -419,7 +424,7 @@ function applyThreadEvent(
         } as ThreadMessageLike;
       };
       const anchor =
-        state.anchor?.logicalMessageKey === event.logicalMessageKey &&
+        state.anchor?.role !== "system" && state.anchor?.logicalMessageKey === event.logicalMessageKey &&
         event.editRevision > (state.anchor.editRevision ?? 0)
           ? {
               ...state.anchor,
@@ -443,6 +448,7 @@ function applyThreadEvent(
       const role = event.role === "ai" ? "assistant" : event.role === "human" ? "user" : event.role;
       const persistedMessage: ThreadRoomMessage = {
         id: event.messageId,
+        ...(event.assistantMessageKey ? { assistantMessageKey: event.assistantMessageKey } : {}),
         ...(event.logicalMessageKey
           ? { logicalMessageKey: event.logicalMessageKey }
           : {}),
@@ -464,21 +470,15 @@ function applyThreadEvent(
       // the last token chunk, so reconcile by the same author when its content
       // extends the in-flight buffer as well as on exact equality. This keeps
       // one bubble through stream → persisted reconciliation.
+      const matchesStream = (stream: ThreadStreamBuffer) => {
+        if (role !== "assistant") return false;
+        if (event.assistantMessageKey && stream.assistantMessageKey) return event.assistantMessageKey === stream.assistantMessageKey;
+        if (event.authorAgentId && stream.authorAgentId && event.authorAgentId !== stream.authorAgentId) return false;
+        return stream.content === event.content || (stream.content.length > 0 && event.content.startsWith(stream.content));
+      };
+      const matchingStream = Object.values(state.streams).find(matchesStream);
       const streams = Object.fromEntries(
-        Object.entries(state.streams).filter(([, stream]) => !(
-          stream.done ||
-          stream.content === event.content ||
-          (event.authorAgentId !== undefined &&
-            stream.authorAgentId === event.authorAgentId &&
-            event.content.startsWith(stream.content))
-        )),
-      );
-      const matchingStream = Object.values(state.streams).find((stream) =>
-        stream.done ||
-        stream.content === event.content ||
-        (event.authorAgentId !== undefined &&
-          stream.authorAgentId === event.authorAgentId &&
-          event.content.startsWith(stream.content)),
+        Object.entries(state.streams).filter(([, stream]) => stream !== matchingStream),
       );
       return {
         ...state,
@@ -494,6 +494,7 @@ function applyThreadEvent(
     }
     case "message.tokens": {
       const previous = Object.values(state.streams).find((stream) =>
+        (event.assistantMessageKey ? stream.assistantMessageKey === event.assistantMessageKey : !stream.done) &&
         stream.turnId === (event.turnId ?? null) &&
         stream.authorAgentId === (event.authorAgentId ?? null),
       );
@@ -504,6 +505,7 @@ function applyThreadEvent(
         role: "assistant",
         content,
         createdAt: new Date().toISOString(),
+        ...(event.assistantMessageKey ? { assistantMessageKey: event.assistantMessageKey } : {}),
         ...(event.authorAgentId ? { authorAgentId: event.authorAgentId } : {}),
       };
       return {
@@ -513,6 +515,7 @@ function applyThreadEvent(
           ...state.streams,
           [id]: {
             id,
+            ...(event.assistantMessageKey ? { assistantMessageKey: event.assistantMessageKey } : {}),
             turnId: event.turnId ?? null,
             authorAgentId: event.authorAgentId ?? null,
             content,
@@ -521,12 +524,18 @@ function applyThreadEvent(
         },
       };
     }
-    case "message.deleted":
+    case "message.deleted": {
+      if (state.anchor?.id === String(event.messageId)) {
+        const anchor = { id: state.anchor.id, role: "system", content: "Message removed by moderation", createdAt: state.anchor.createdAt,
+          replyCount: state.anchor.replyCount, lastReplyAt: state.anchor.lastReplyAt, summaryRevision: state.anchor.summaryRevision };
+        return { ...state, anchor, detail: state.detail ? { ...state.detail, anchor } : null };
+      }
       return {
         ...state,
         messages: state.messages.filter((message) => message.id !== String(event.messageId)),
         runtimeMessages: state.runtimeMessages.filter((message) => String(message.id) !== String(event.messageId)),
       };
+    }
     case "reaction.added":
       return {
         ...state,
@@ -672,6 +681,62 @@ function applyThreadEvent(
   }
 }
 
+/** Shared history/live reconciliation for secondary Room views. */
+export function reconcileThreadRoomHistory(
+  state: ThreadRoomControllerState,
+  messages: readonly ThreadRoomMessage[],
+  runtimeMessages: readonly ThreadMessageLike[],
+): ThreadRoomControllerState {
+  const hydratedMessages = messages.filter(
+    (message) => typeof message.content === "string",
+  );
+  const hydratedRuntimeMessages = runtimeMessages.filter(
+    (message) => message.content != null,
+  );
+  const persistedToolIds = new Set(hydratedRuntimeMessages.flatMap(message =>
+    typeof message.content === "string" ? [] : message.content.filter(part => part.type === "tool-call").map(part => part.toolCallId)));
+  const reconciledStreamIds = new Set(
+    Object.values(state.streams)
+      .filter((stream) =>
+        stream.done &&
+        hydratedMessages.some((message) =>
+          message.role === "assistant" &&
+          !state.messages.some(previous => previous.id === message.id) &&
+          message.content.startsWith(stream.content) &&
+          (
+            !stream.authorAgentId ||
+            !message.authorAgentId ||
+            message.authorAgentId === stream.authorAgentId
+          ),
+        ),
+      )
+      .map((stream) => stream.id),
+  );
+  return {
+    ...state,
+    phase: "ready",
+    // A Room websocket frame can legitimately arrive while the
+    // detail/history request is still pending. The snapshot remains
+    // authoritative for matching canonical ids, but must not replace a
+    // live-only persisted row (or stream/tool projection) outright.
+    messages: mergeHydratedRoomMessages(hydratedMessages, state.messages),
+    runtimeMessages: mergeHydratedRoomMessages(
+      hydratedRuntimeMessages,
+      state.runtimeMessages.filter(
+        (message) => !reconciledStreamIds.has(String(message.id)) && !(
+          String(message.id).startsWith("tool-") && persistedToolIds.has(String(message.id).slice(5))
+        ),
+      ),
+    ),
+    streams: Object.fromEntries(
+      Object.entries(state.streams).filter(
+        ([streamId]) => !reconciledStreamIds.has(streamId),
+      ),
+    ),
+    error: null,
+  };
+}
+
 export function threadRoomReducer(
   state: ThreadRoomControllerState,
   action: ThreadRoomAction,
@@ -697,54 +762,15 @@ export function threadRoomReducer(
       return { ...state, connected: action.connected };
     case "hydrated": {
       if (state.roomId !== action.roomId) return state;
-      const hydratedMessages = action.messages.filter(
-        (message) => typeof message.content === "string",
-      );
-      const hydratedRuntimeMessages = action.runtimeMessages.filter(
-        (message) => message.content != null,
-      );
-      const reconciledStreamIds = new Set(
-        Object.values(state.streams)
-          .filter((stream) =>
-            stream.done &&
-            hydratedMessages.some((message) =>
-              message.role === "assistant" &&
-              message.content.startsWith(stream.content) &&
-              (
-                !stream.authorAgentId ||
-                !message.authorAgentId ||
-                message.authorAgentId === stream.authorAgentId
-              ),
-            ),
-          )
-          .map((stream) => stream.id),
-      );
       return {
-        ...state,
-        phase: "ready",
+        ...reconcileThreadRoomHistory(state, action.messages, action.runtimeMessages),
         parentRoomId: action.detail.parentRoomId,
         detail: action.detail,
         anchor: action.detail.anchor,
-        // D459 — a child websocket frame can legitimately arrive while the
-        // detail/history request is still pending. The snapshot remains
-        // authoritative for matching canonical ids, but must not replace a
-        // live-only persisted row (or stream/tool projection) outright.
-        messages: mergeHydratedRoomMessages(hydratedMessages, state.messages),
-        runtimeMessages: mergeHydratedRoomMessages(
-          hydratedRuntimeMessages,
-          state.runtimeMessages.filter(
-            (message) => !reconciledStreamIds.has(String(message.id)),
-          ),
-        ),
-        streams: Object.fromEntries(
-          Object.entries(state.streams).filter(
-            ([streamId]) => !reconciledStreamIds.has(streamId),
-          ),
-        ),
         activeJobIds: action.activeJobIds,
-        error: null,
       };
     }
+
     case "hydrate.failed":
       return state.roomId === action.roomId
         ? { ...state, phase: "error", error: action.error }
@@ -792,14 +818,14 @@ export function threadRoomReducer(
       const id = action.messageId === null ? null : String(action.messageId);
       const messages = id === null
         ? state.messages
-        : state.messages.map((message) =>
+        : state.messages.filter(message => message.optimisticRequestId !== action.requestId || !state.messages.some(candidate => candidate.id === id)).map((message) =>
             message.optimisticRequestId === action.requestId
               ? { ...message, id, optimisticRequestId: undefined }
               : message,
           );
       const runtimeMessages = id === null
         ? state.runtimeMessages
-        : state.runtimeMessages.map((message) => optimisticRequestId(message) === action.requestId
+        : state.runtimeMessages.filter(message => optimisticRequestId(message) !== action.requestId || !state.runtimeMessages.some(candidate => String(candidate.id) === id)).map((message) => optimisticRequestId(message) === action.requestId
           ? { ...message, id, metadata: { ...(message.metadata ?? {}), custom: { ...((message.metadata as { custom?: Record<string, unknown> } | undefined)?.custom ?? {}), optimisticRequestId: undefined } } } as ThreadMessageLike
           : message);
       return {

@@ -57,6 +57,7 @@ import type { MediaGenerationApproval } from "@nautilo/types";
 import { authRoutes } from "../../src/routes/auth";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 
 const OWNER_ID = "d525-owner";
 let app: FastifyInstance;
@@ -79,7 +80,8 @@ const mediaGeneration: MediaGenerationApproval = {
 };
 
 beforeAll(async () => {
-  const runResumeJobLifecycle = realRuntime.jobManager.runResumeJobLifecycle.bind(realRuntime.jobManager);
+  const resumeJobs = await installResumeInvocationAuthority(OWNER_ID);
+  const runResumeJobLifecycle = resumeJobs.runResumeJobLifecycle.bind(resumeJobs);
   spyOn(realRuntime.jobManager, "runResumeJobLifecycle").mockImplementation((...args) => {
     const completion = runResumeJobLifecycle(...args);
     pendingResumeLifecycles.push(completion);

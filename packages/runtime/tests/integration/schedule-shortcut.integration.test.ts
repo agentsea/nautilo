@@ -24,12 +24,15 @@ import { randomUUID } from "node:crypto";
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import {
   tasks,
+  users,
+  serverAdmission,
   actors,
   namespaces,
   rooms,
   roomMembers,
   sessions,
   sessionMessages,
+  sessionMessageDirectedRecipients,
   jobs,
   getTaskById,
   getTaskRuns,
@@ -70,6 +73,7 @@ import {
 import { setupAgentTestEnv, closeAgentDb } from "./agent-helpers";
 import { createStubProvider } from "./helpers/stub-provider";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import type { ServerEvent } from "@nautilo/types";
 import {
   createAgentTurnTaskCreationProvenance,
   getPlaintextTaskCreationAdmission,
@@ -80,7 +84,9 @@ const TZ = "America/New_York";
 let userId: string;
 let agentId: string;
 let agentActorId: string;
+let userActorId: string;
 let db: DirectDatabase;
+let requesterHandle: string;
 
 const createdRoomIds: string[] = [];
 const createdNamespaceIds: string[] = [];
@@ -107,6 +113,9 @@ beforeAll(async () => {
   userId = env.userId;
   agentId = env.agentId;
   db = getDirectDb();
+  await db.insert(serverAdmission).values({ userId, admitted: true });
+  requesterHandle = `reminder_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  await db.update(users).set({ handle: requesterHandle }).where(eq(users.id, userId));
   setTaskRunDb(db);
   setTaskRunJobManager(jobManager);
 
@@ -116,6 +125,12 @@ beforeAll(async () => {
     .where(and(eq(actors.ownerId, userId), eq(actors.kind, "agent")))
     .limit(1);
   agentActorId = aa!.id;
+  const [userActor] = await db
+    .insert(actors)
+    .values({ ownerId: userId, kind: "user", displayName: "Owner", trustState: "verified" })
+    .returning({ id: actors.id });
+  userActorId = userActor!.id;
+  createdUserActorIds.push(userActorId);
 
   // The `schedule` tool reaches the runtime createTask via the DI seam. A no-op
   // observer kick is fine: one_shot/cron do NOT kick (only `now` does) — we tick
@@ -180,7 +195,7 @@ afterAll(async () => {
 });
 
 function setStub(
-  responses: Array<{ type: "text"; content: string }>,
+  responses: Parameters<typeof createStubProvider>[0]["responses"],
 ): ReturnType<typeof createStubProvider> {
   const provider = createStubProvider({ responses });
   __setStubModelForTests(provider.asChatModel());
@@ -189,19 +204,13 @@ function setStub(
 
 /** Real room with the owner (kind='user' actor) + the agent as members so
  *  `last_in_namespace` resolves here and the wake reply persists under RLS. */
-async function createCallingRoom(label: string): Promise<string> {
+async function createCallingRoom(label: string, existingNamespaceId?: string): Promise<string> {
   const ts = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const [ns] = await db
+  const namespaceId = existingNamespaceId ?? (await db
     .insert(namespaces)
     .values({ scope: "private", label: `m145-${label}-${ts}` })
-    .returning({ id: namespaces.id });
-  createdNamespaceIds.push(ns!.id);
-
-  const [userActor] = await db
-    .insert(actors)
-    .values({ ownerId: userId, kind: "user", displayName: "Owner", trustState: "verified" })
-    .returning({ id: actors.id });
-  createdUserActorIds.push(userActor!.id);
+    .returning({ id: namespaces.id }))[0]!.id;
+  if (!existingNamespaceId) createdNamespaceIds.push(namespaceId);
 
   const roomId = randomUUID();
   await db.insert(rooms).values({
@@ -210,11 +219,11 @@ async function createCallingRoom(label: string): Promise<string> {
     type: "private",
     label,
     graphThreadId: `room:${roomId}`,
-    namespaceId: ns!.id,
-    humanActorIds: [userActor!.id],
+    namespaceId,
+    humanActorIds: [userActorId],
   });
   createdRoomIds.push(roomId);
-  await db.insert(roomMembers).values({ roomId, actorId: userActor!.id, roomRole: "admin" });
+  await db.insert(roomMembers).values({ roomId, actorId: userActorId, roomRole: "admin" });
   await db.insert(roomMembers).values({ roomId, actorId: agentActorId, roomRole: "member" });
   await ensureSession({
     threadId: `room:${roomId}:bot:${agentId}`,
@@ -233,6 +242,7 @@ function makeObserver(now?: () => Date): TaskObserver {
 function tool(roomId: string) {
   return createScheduleTool({
     ownerId: userId,
+    causalHumanUserId: userId,
     agentId,
     roomId,
     userTimezone: TZ,
@@ -321,22 +331,136 @@ describe.skipIf(taskSuiteSkipReason !== null)(
     // Wait until due, then tick.
     await new Promise((r) => setTimeout(r, 1_300));
     const obs = makeObserver();
-    await obs.tick();
+    const roomEvents: ServerEvent[] = [];
+    const onRoomEvent = (event: ServerEvent) => {
+      if ("laneKey" in event && event.laneKey === `room:${roomId}`) roomEvents.push(event);
+    };
+    eventBus.on(onRoomEvent);
+    try {
+      await obs.tick();
 
-    const runs = await pollRun(taskId, (rs) => rs.some((r) => r.status === "completed"));
-    expect(runs.length).toBe(1);
+      const runs = await pollRun(taskId, (rs) => rs.some((r) => r.status === "completed"));
+      expect(runs.length).toBe(1);
 
-    // The agent speaks the reminder unprompted in the calling room (wake reply).
-    const contents = await pollRoomMessages(roomId, (c) =>
-      c.some((x) => x.includes("SCHED_WAKE_S1")),
-    );
-    expect(contents.some((c) => c.includes("SCHED_WAKE_S1"))).toBe(true);
+      // The agent speaks the reminder unprompted in the calling room (wake reply).
+      const contents = await pollRoomMessages(roomId, (c) =>
+        c.some((x) => x.includes("SCHED_WAKE_S1")),
+      );
+      expect(contents.filter((c) => c.includes("SCHED_WAKE_S1"))).toHaveLength(1);
+      // When the execution Room is also the calling Room, its internal Task
+      // transcript must not surface beside the wake, even over live events.
+      expect(contents.filter((c) => c.includes("SCHED_RUN_S1"))).toHaveLength(0);
+      expect(roomEvents.filter((event) => event.type === "message.new"
+        && "content" in event && typeof event.content === "string"
+        && event.content.includes("SCHED_RUN_S1"))).toHaveLength(0);
+      expect(roomEvents.filter((event) => event.type === "message.tokens"
+        && event.turnId === runs[0]?.id)).toHaveLength(0);
 
-    // One-shot does not reschedule → terminal.
-    const task = await getTaskById(db, taskId);
-    expect(task?.status).toBe("completed");
+      // One-shot does not reschedule → terminal.
+      const task = await getTaskById(db, taskId);
+      expect(task?.status).toBe("completed");
+    } finally {
+      eventBus.off(onRoomEvent);
+      await obs.stop();
+    }
+  }, 60_000);
 
-    await obs.stop();
+  test("saved reminder corrects a no-reply requester message and completes via wake", async () => {
+    const roomId = await createCallingRoom("self-reminder");
+    const provider = setStub([
+      { type: "tool_call", name: "discover_tools", args: { query: "ask_peer" } },
+      { type: "tool_call", name: "activate_tools", args: { names: ["ask_peer"], families: [] } },
+      { type: "tool_call", name: "ask_peer", args: {
+        peer_handle: requesterHandle,
+        message_to_peer: "It is time to water the plants.",
+        return_instructions: "Confirm delivery; no reply from the requester is necessary.",
+        tools: [],
+      } },
+      { type: "tool_call", name: "ask_peer", args: {
+        peer_handle: requesterHandle,
+        message_to_peer: "Which plants need water?",
+        return_instructions: "Wait for the requester's answer.",
+        tools: [],
+      } },
+      { type: "tool_call", name: "ask_peer", args: {
+        peer_handle: "someone_else",
+        message_to_peer: "It is time to water the plants.",
+        return_instructions: "No reply is needed.",
+        tools: [],
+      } },
+      { type: "tool_call", name: "ask_peer", args: {
+        peer_handle: requesterHandle,
+        message_to_peer: "Here is the plan.",
+        return_instructions: "No reply is needed.",
+        artifact_ids: ["synthetic-artifact"],
+        tools: [],
+      } },
+      { type: "text", content: "It is time to water the plants." },
+      { type: "text", content: "Reminder: water the plants." },
+    ]);
+    const at = new Date(Date.now() + 1_200).toISOString();
+    const out: string = await tool(roomId).invoke({
+      message: "Remind me to water the plants",
+      when: { kind: "once", at },
+    });
+    const { taskId } = JSON.parse(out) as { taskId: string };
+    const saved = await getTaskById(db, taskId);
+    expect(saved).toMatchObject({
+      preset: "schedule", targetChat: "last_in_namespace", resultDelivery: "wake",
+      toolsMode: "auto", callingRoomId: roomId,
+    });
+    const [callingRoom] = await db.select({ namespaceId: rooms.namespaceId })
+      .from(rooms).where(eq(rooms.id, roomId)).limit(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const executionRoomId = await createCallingRoom("reminder-execution", callingRoom!.namespaceId);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    const observer = makeObserver();
+    try {
+      await observer.tick();
+      const runs = await pollRun(taskId, (rows) => rows.some((row) => row.status === "completed"));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.resultText).toContain("It is time to water the plants.");
+      expect((await getTaskById(db, taskId))?.targetRoomId).toBe(executionRoomId);
+      expect(executionRoomId).not.toBe(roomId);
+      const contents = await pollRoomMessages(roomId,
+        (rows) => rows.some((content) => content.includes("Reminder: water the plants.")));
+      expect(contents.filter((content) => content.includes("Reminder: water the plants."))).toHaveLength(1);
+      const { messages } = await getRoomMessagesAcrossMemberSessions({
+        ownerId: userId, roomId, beforeCreatedAt: new Date(Date.now() + 60_000),
+        beforeId: 2_147_483_647, limit: 200,
+      });
+      const reminder = messages.find((message) => message.content?.includes("Reminder: water the plants."));
+      expect(reminder).toBeDefined();
+      const reminderMessageId = Number(reminder!.id);
+      expect(Number.isSafeInteger(reminderMessageId)).toBe(true);
+      const directed = await db.select({ recipientId: sessionMessageDirectedRecipients.recipientId,
+        reason: sessionMessageDirectedRecipients.reason })
+        .from(sessionMessageDirectedRecipients)
+        .where(eq(sessionMessageDirectedRecipients.messageId, reminderMessageId));
+      expect(directed).toContainEqual({ recipientId: userId, reason: "direct_room" });
+      expect(provider.invocations.some(({ messages }) => messages.some((message) =>
+        typeof message.content === "string" && message.content.includes("No separate message was sent"),
+      ))).toBe(true);
+      for (const invocationIndex of [4, 5, 6]) {
+        const feedback = provider.invocations[invocationIndex]?.messages.at(-1)?.content;
+        expect(typeof feedback === "string" && feedback.includes("No separate message was sent")).toBe(false);
+      }
+      expect(provider.invocations.some(({ messages }) => messages.some((message) =>
+        typeof message.content === "string" && message.content.includes("Your final answer is returned automatically"),
+      ))).toBe(true);
+      const peerTasks = await db.select({ prompt: tasks.prompt }).from(tasks).where(eq(tasks.preset, "ask_peer"));
+      // The redundant delivery created none; the legitimate follow-up and
+      // different-recipient calls still take the ordinary peer Task path.
+      expect(peerTasks).toHaveLength(2);
+      expect(peerTasks.some((task) => task.prompt.includes("Which plants need water?"))).toBe(true);
+      expect(peerTasks.some((task) => task.prompt.includes("@someone_else"))).toBe(true);
+      expect(peerTasks.some((task) => task.prompt.includes(`@${requesterHandle}`)
+        && task.prompt.includes('"It is time to water the plants."'))).toBe(false);
+      expect(provider.remaining).toBe(0);
+    } finally {
+      await observer.stop();
+    }
   }, 60_000);
 
   test("S2: cron authored via tool → cron row in ctx tz; past-due (catch-up) fires once + reschedules forward", async () => {

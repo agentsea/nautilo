@@ -34,6 +34,8 @@ const TRUST_BYPASS_ROUTE_TEMPLATES = [
   "/api/invites/:token/prepare-logto-signup",
   "/api/bind-logto-user",
   "/api/invites/:token/complete-profile",
+  // Inline verified OIDC bearer plus the exact Invite/Human redemption binding.
+  "/api/invites/:token/enrollment-review",
   // Hosted first-owner claim capability is accepted only in these
   // protected POST bodies. They mirror the browser-mediated invite flow:
   // preview/prepare are anonymous-capability operations, and complete

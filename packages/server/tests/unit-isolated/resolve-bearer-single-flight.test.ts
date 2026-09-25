@@ -22,6 +22,7 @@ const DEFAULT_PRINCIPAL: CanonicalPrincipal = {
   logtoSub: "logto-sub-default",
   userId: "user-default",
   disabledAt: null,
+  serverAccessAllowed: true,
   actorId: "actor-default",
   actorDisplayName: "Actor",
   handle: "user",

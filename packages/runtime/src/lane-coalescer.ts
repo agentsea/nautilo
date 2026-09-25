@@ -242,6 +242,7 @@ export interface CoalescedInput {
 
 interface BufferEntry {
   inputs: CoalescedInput[];
+  inputVirtualIds: string[][];
   flushTimer: ReturnType<typeof setTimeout> | null;
   virtualJobIds: string[];
 }
@@ -277,6 +278,7 @@ export class LaneCoalescer {
     if (!existing) {
       const entry: BufferEntry = {
         inputs: [input],
+        inputVirtualIds: [[virtualJobId]],
         flushTimer: this.setTimer(() => {
           this.flush(input.laneKey);
         }, this.firstSegmentQuietMs),
@@ -287,6 +289,7 @@ export class LaneCoalescer {
     }
     if (existing.flushTimer) this.clearTimer(existing.flushTimer);
     existing.inputs.push(input);
+    existing.inputVirtualIds.push([virtualJobId]);
     existing.virtualJobIds.push(virtualJobId);
     existing.flushTimer = this.setTimer(() => {
       this.flush(input.laneKey);
@@ -302,6 +305,7 @@ export class LaneCoalescer {
     if (existing?.flushTimer) this.clearTimer(existing.flushTimer);
     const entry: BufferEntry = {
       inputs: [merged],
+      inputVirtualIds: [[...virtualJobIds]],
       flushTimer: this.setTimer(() => {
         this.flush(laneKey);
       }, this.windowMs),
@@ -341,6 +345,27 @@ export class LaneCoalescer {
    */
   dropLaneVirtualIds(laneKey: string): string[] | null {
     return this.consumeLane(laneKey);
+  }
+
+  /** Remove exact accepted segments without dropping later sends on the lane. */
+  removeVirtualJobs(ids: ReadonlySet<string>): string[] {
+    const emptied: string[] = [];
+    for (const [lane, entry] of this.buffers) {
+      for (let i = entry.inputs.length - 1; i >= 0; i -= 1) {
+        // A rebuffered merged segment is indivisible. Never drop a segment
+        // containing a newer acceptance that was not selected for removal.
+        if (entry.inputVirtualIds[i]!.every(id => ids.has(id))) {
+          entry.inputs.splice(i, 1);
+          entry.inputVirtualIds.splice(i, 1);
+        }
+      }
+      entry.virtualJobIds = entry.inputVirtualIds.flat();
+      if (entry.inputs.length === 0) {
+        this.consumeLane(lane);
+        emptied.push(lane);
+      }
+    }
+    return emptied;
   }
 
   private consumeLane(laneKey: string): string[] | null {
@@ -623,6 +648,7 @@ export function coalescedInputToJobInput(c: CoalescedInput): Record<string, unkn
       ? { retainedAttachmentIds: c.retainedAttachmentIds }
       : {}),
     ownerId: c.ownerId,
+    requestorId: c.requestorId,
     ...(c.causalHumanUserId
       ? { causalHumanUserId: c.causalHumanUserId }
       : {}),

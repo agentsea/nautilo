@@ -217,6 +217,14 @@ export const DATA_TABLES = [
   // be verified, resumed, or explicitly revoked instead of silently lost.
   "public.connected_web_accounts",
   "public.rooms",
+  // Preserve bans, admission epochs and scoped grants across snapshot restore.
+  // Subjects precede immutable actions; restrictions/admission reference actions.
+  "public.group_moderation_scopes",
+  "public.moderation_subjects",
+  "public.moderation_actions",
+  "public.moderation_restrictions",
+  "public.server_admission",
+  "public.server_moderation_policy",
   // Restore operation custody and reported activity after all owner,
   // account, Genie, and Room parents; effects precede their operation links.
   "public.connected_web_action_operations",
@@ -370,6 +378,7 @@ export const DATA_TABLES = [
   "public.session_notifications",
   "public.server_context_config",
   "public.server_model_config",
+  "public.server_provider_policy",
   "public.server_profile",
   // M274 — server transition policy, bounded aggregate telemetry, cumulative
   // epoch totals, and unconsumed one-shot observation admissions. These rows

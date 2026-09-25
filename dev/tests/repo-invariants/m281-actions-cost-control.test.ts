@@ -245,6 +245,7 @@ describe("M281 GitHub Actions cost controls", () => {
 
   test("gives Knip enough heap without broadening every lint subprocess", async () => {
     const ci = await workflow("ci.yml");
+    const rootPackage = JSON.parse(await source("package.json")) as { scripts: Record<string, string> };
     const lintSteps = ci.jobs.lint?.steps ?? [];
     const knip = lintSteps.find((step) => step.name === "Unused exports (knip)");
 
@@ -252,11 +253,14 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(knip?.env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=6144",
     });
+    expect(rootPackage.scripts["lint:unused"]).toContain(`NODE_OPTIONS=${knip?.env?.NODE_OPTIONS}`);
     expect(ci.jobs.lint?.env?.NODE_OPTIONS).toBeUndefined();
   });
 
   test("bounds typecheck heap with optional larger-runner concurrency", async () => {
     const ci = await workflow("ci.yml");
+    const rootPackage = JSON.parse(await source("package.json")) as { scripts: Record<string, string> };
+    const localGates = await source("dev/scripts/ci-gates.sh");
     const typecheckJob = ci.jobs.typecheck;
     const typecheck = typecheckJob?.steps?.find((step) => step.name === "Typecheck");
 
@@ -266,6 +270,10 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(typecheck?.env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=5120",
     });
+    expect(rootPackage.scripts.typecheck).toContain(`NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
+    expect(rootPackage.scripts.typecheck).toContain("TURBO_CONCURRENCY=${TURBO_CONCURRENCY:-1}");
+    expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
+    expect(localGates).toContain('export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"');
   });
 
   test("Desktop smoke uses bounded history and the exact PR base without breaking manual dispatch", async () => {

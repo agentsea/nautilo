@@ -28,8 +28,9 @@ export function CryptoDeviceAdmissionBoundary({
   const [serverUrl, setServerUrl] = useState("");
   const [serverBusy, setServerBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const activeServerUrl = activeServer?.serverUrl ?? null;
   const admissionKey = status === "signed-in" && activeServer !== null
-    ? `${activeServer.id}\0${viewer?.userId ?? "identity-pending"}`
+    ? `${activeServer.id}\0${activeServer.serverUrl}\0${viewer?.userId ?? "identity-pending"}`
     : null;
   const [decision, setDecision] = useState<AdmissionDecision | null>(null);
   const admission: Admission = admissionKey === null
@@ -40,11 +41,11 @@ export function CryptoDeviceAdmissionBoundary({
 
   useEffect(() => {
     let current = true;
-    if (admissionKey === null || activeServer === null) {
+    if (admissionKey === null || activeServerUrl === null) {
       return () => { current = false; };
     }
     const key = admissionKey;
-    const client = getApiClient(activeServer.serverUrl);
+    const client = getApiClient(activeServerUrl);
     const inspectPolicy = (): void => {
       void client.admin.encryptionTransition.getPolicy().then((policy) => {
         if (current) {
@@ -69,7 +70,7 @@ export function CryptoDeviceAdmissionBoundary({
       clearInterval(timer);
       client.setDeviceAdmissionRequiredHandler(null);
     };
-  }, [activeServer, admissionKey]);
+  }, [activeServerUrl, admissionKey]);
 
   if (admission === "plaintext") return <>{children}</>;
 

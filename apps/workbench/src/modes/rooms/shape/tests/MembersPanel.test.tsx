@@ -1,5 +1,5 @@
 /**
- * D193 — MembersPanel SSR smoke + role-gate variants.
+ * MembersPanel SSR smoke + role-gate variants.
  *
  * Covers SSR behavior plus focused interactive room-management flows. Broader
  * integration smoke coverage remains outside this unit suite.
@@ -65,6 +65,7 @@ mock.module("../../../../lib/api", () => ({
       conductorMode: manageDetailConductorMode,
       members: manageDetailMembers,
     }),
+    getRoomPresence: async () => ({ members: [] }),
     listAddableUsersForRoom: async () => addableUsers,
     listAddableAgentsForRoom: async () => addableAgents,
     addRoomMember,
@@ -157,7 +158,7 @@ const agent = (
   ...(mode != null ? { agentResponseMode: mode } : {}),
 });
 
-describe("MembersPanel — D193 P5", () => {
+describe("MembersPanel — room management", () => {
   test("does not notify parent membership changes for initial open refresh", async () => {
     manageDetailMembers = [human("u1", "Room Admin", "admin")];
     const onMembershipChanged = mock(() => undefined);

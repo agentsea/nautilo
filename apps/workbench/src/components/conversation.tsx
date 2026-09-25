@@ -129,6 +129,7 @@ import {
 import { ConversationTranscriptRows } from "./conversation-transcript-rows";
 import { ReactionStrip } from "../modes/rooms/shape/reactions/ReactionStrip";
 import { useMessageReactions } from "../modes/rooms/shape/reactions/use-message-reactions";
+import { MessageModerationControl, MessageModerationProvider } from "./message-actions/MessageModerationControl";
 import { MessageActionRail } from "./message-actions/MessageActionRail";
 import { buildMessageActions } from "./message-actions/message-actions";
 import {
@@ -652,10 +653,10 @@ export function Conversation(props: ConversationProps) {
   // fixed per mount (the parent either wraps or not), so this branch is stable
   // across renders and never violates hook order.
   const hasAuthorProvider = useContext(AuthorContext) !== null;
-  if (hasAuthorProvider) return <ConversationBody {...props} />;
+  if (hasAuthorProvider) return <MessageModerationProvider><ConversationBody {...props} /></MessageModerationProvider>;
   return (
     <SelfSourcedAuthorScope>
-      <ConversationBody {...props} />
+      <MessageModerationProvider><ConversationBody {...props} /></MessageModerationProvider>
     </SelfSourcedAuthorScope>
   );
 }
@@ -2953,6 +2954,7 @@ function Composer({
         <VoicePlaybackStopPill
           enabled={voice.enabled}
           playing={voice.playing}
+          canStop={voice.canStopTalking}
           onStop={voice.stop}
         />
         <MentionAwareLexicalComposerInput
@@ -3980,6 +3982,10 @@ function Message({
       descriptors={railDescriptors}
       alwaysVisible={isLatestMessage}
       leading={threadReplyAffordance}
+      moderation={role === "user" && messageId !== null && authorUserId && !isOwnUserMessage
+        && (interactive || childMessageEligible)
+        && (can("ban_server_members") || can("kick_server_members"))
+        ? <MessageModerationControl key={authorUserId} userId={authorUserId} displayName={userAuthorLabel} /> : undefined}
       onReact={(emoji) => {
         if (messageId !== null) {
           toggleReaction(messageId, emoji, userSelfEmojis.has(emoji));

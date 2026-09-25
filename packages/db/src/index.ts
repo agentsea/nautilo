@@ -1,6 +1,8 @@
 export * from "./schema/index";
+export { moderationAccessAllowedSql, moderationBanAbsentSql, moderationEffectiveHumanActorIdsSql } from "./queries/moderation-admission";
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";
+export * from "./queries/invocation-origin-access";
 export { createEventFeedPreferenceStore } from "./queries/event-feed-preferences";
 export * from "./queries/media-generations";
 export * from "./queries/connected-apps";
@@ -399,6 +401,14 @@ export {
   type ServerContextConfigPatch,
   type ServerContextConfigDb,
 } from "./utils/server-context-config-queries";
+export {
+  resolveServerProviderPolicy,
+  getServerProviderPolicy,
+  upsertServerProviderPolicy,
+  type ResolvedServerProviderPolicy,
+  type ServerProviderPolicyChange,
+  type ServerProviderPolicyDb,
+} from "./utils/server-provider-policy-queries";
 export {
   LIVE_SHADOW_ENCRYPTION_TRANSITION_MODES,
   UnsupportedEncryptionTransitionStateError,

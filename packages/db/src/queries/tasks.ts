@@ -488,11 +488,13 @@ export interface TerminalTaskLifecycleTransition {
   /** True only for the transaction which won the Task-row terminal transition. */
   transitioned: boolean;
   /** Distinguishes a same-terminal report-back retry from a Stop winner. */
-  outcome: "transitioned" | "same_terminal" | "task_terminal" | "run_terminal" | "not_running" | "writer_review_pending" | "not_found";
+  outcome: "transitioned" | "same_terminal" | "task_terminal" | "run_terminal" | "not_running" | "writer_review_pending" | "not_found" | "authority_changed";
 }
 
 export interface TransitionTaskLifecycleTerminalInput {
   taskId: string;
+  /** Selective cancellation may only stop this Human's exact current run. */
+  expectedInvocation?: { humanUserId: string; taskRunId: string };
   /** Omit for a recurring-run finalization that leaves its Task pending. */
   taskStatus?: Extract<TaskStatus, (typeof TERMINAL_TASK_STATUSES)[number]>;
   /** Terminal Task metadata intentionally allowed to lifecycle callers. */
@@ -533,6 +535,19 @@ export async function transitionTaskLifecycleTerminal(
       .limit(1)
       .for("update");
     if (!task) return { task: undefined, run: undefined, transitioned: false, outcome: "not_found" };
+    if (input.expectedInvocation) {
+      const [expected] = await tx.select({ id: taskRuns.id }).from(taskRuns)
+        .where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.id, input.expectedInvocation.taskRunId))).for("update");
+      // Compare database timestamps without JS millisecond truncation. An
+      // ambiguous tie is not authority to stop either run.
+      const [newer] = expected ? await tx.select({ id: taskRuns.id }).from(taskRuns).where(and(
+        eq(taskRuns.taskId, task.id), sql`${taskRuns.id} <> ${expected.id}::uuid`,
+        sql`${taskRuns.startedAt} >= (SELECT started_at FROM task_runs WHERE id = ${expected.id}::uuid)`,
+      )).limit(1) : [];
+      if (task.requestorId !== input.expectedInvocation.humanUserId || !expected || newer) {
+        return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
+      }
+    }
     // Older callers and narrow test fixtures may not hydrate JSON metadata.
     // Treat that as no reservation; canonical persisted rows always carry it.
     const metadata = task.metadata && typeof task.metadata === "object" && !Array.isArray(task.metadata)

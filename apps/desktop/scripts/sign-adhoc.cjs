@@ -5,6 +5,7 @@ const {
   CUA_DRIVER_RELATIVE_PATH, CUA_DRIVER_ENTITLEMENTS, CUA_DRIVER_IDENTIFIER,
   COMPUTER_USE_HOST_RELATIVE_PATH, COMPUTER_USE_HOST_ENTITLEMENTS, COMPUTER_USE_HOST_IDENTIFIER,
   SCREEN_RECORDING_PERMISSION_RELATIVE_PATH, SCREEN_RECORDING_PERMISSION_ENTITLEMENTS, SCREEN_RECORDING_PERMISSION_IDENTIFIER,
+  BROWSER_VISUAL_GROUNDING_RELATIVE_PATH, BROWSER_VISUAL_GROUNDING_ENTITLEMENTS, BROWSER_VISUAL_GROUNDING_IDENTIFIER,
   WINDOW_PRESENCE_RELATIVE_PATH, WINDOW_PRESENCE_ENTITLEMENTS, WINDOW_PRESENCE_IDENTIFIER,
 } = require("./native-helper-contract.cjs");
 
@@ -31,10 +32,11 @@ function exactOptions(original, entitlements, identifier, label) {
   };
 }
 
-function wrapOptionsForFile(appPath, originalOptionsForFile, cuaEntitlements = CUA_DRIVER_ENTITLEMENTS, screenEntitlements = SCREEN_RECORDING_PERMISSION_ENTITLEMENTS, hostEntitlements = COMPUTER_USE_HOST_ENTITLEMENTS) {
+function wrapOptionsForFile(appPath, originalOptionsForFile, cuaEntitlements = CUA_DRIVER_ENTITLEMENTS, screenEntitlements = SCREEN_RECORDING_PERMISSION_ENTITLEMENTS, hostEntitlements = COMPUTER_USE_HOST_ENTITLEMENTS, browserVisualEntitlements = BROWSER_VISUAL_GROUNDING_ENTITLEMENTS) {
   const exactCuaDriverPath = resolve(appPath, CUA_DRIVER_RELATIVE_PATH);
   const exactScreenRecordingPermissionPath = resolve(appPath, SCREEN_RECORDING_PERMISSION_RELATIVE_PATH);
   const exactComputerUseHostPath = resolve(appPath, COMPUTER_USE_HOST_RELATIVE_PATH);
+  const exactBrowserVisualPath = resolve(appPath, BROWSER_VISUAL_GROUNDING_RELATIVE_PATH);
   return (filePath) => {
     const original = originalOptionsForFile?.(filePath) ?? null;
     const exactPath = resolve(filePath);
@@ -56,6 +58,9 @@ function wrapOptionsForFile(appPath, originalOptionsForFile, cuaEntitlements = C
     }
     if (exactPath === exactComputerUseHostPath) {
       return exactOptions(original, hostEntitlements, COMPUTER_USE_HOST_IDENTIFIER, "Computer Use Host");
+    }
+    if (exactPath === exactBrowserVisualPath) {
+      return exactOptions(original, browserVisualEntitlements, BROWSER_VISUAL_GROUNDING_IDENTIFIER, "Browser visual grounding helper");
     }
     return original;
   };
@@ -90,3 +95,5 @@ module.exports.COMPUTER_USE_HOST_RELATIVE_PATH = COMPUTER_USE_HOST_RELATIVE_PATH
 module.exports.COMPUTER_USE_HOST_IDENTIFIER = COMPUTER_USE_HOST_IDENTIFIER;
 module.exports.SCREEN_RECORDING_PERMISSION_RELATIVE_PATH = SCREEN_RECORDING_PERMISSION_RELATIVE_PATH;
 module.exports.SCREEN_RECORDING_PERMISSION_IDENTIFIER = SCREEN_RECORDING_PERMISSION_IDENTIFIER;
+module.exports.BROWSER_VISUAL_GROUNDING_RELATIVE_PATH = BROWSER_VISUAL_GROUNDING_RELATIVE_PATH;
+module.exports.BROWSER_VISUAL_GROUNDING_IDENTIFIER = BROWSER_VISUAL_GROUNDING_IDENTIFIER;

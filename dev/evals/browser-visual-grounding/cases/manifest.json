@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "room10-apple"
+    },
+    {
+      "id": "room11-profile"
+    },
+    {
+      "id": "room15-second-row"
+    },
+    {
+      "id": "room2-initial"
+    },
+    {
+      "id": "room3-initial"
+    },
+    {
+      "id": "room5-dropdown"
+    },
+    {
+      "id": "room5-initial"
+    },
+    {
+      "id": "room6-checkout"
+    }
+  ]
+}

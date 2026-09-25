@@ -17,6 +17,9 @@ import {
   getSharedDirectDb,
   hasClaimedOwner,
   inviteRedemptions,
+  serverAdmission,
+  moderationAccessAllowedSql,
+  sql,
   invites,
   users,
   actors,
@@ -47,6 +50,9 @@ import {
   seedPersonalPrivateRoomInTx,
 } from "@nautilo/db";
 import {
+  prepareModerationEnrollmentInTx,
+  completeModerationEnrollmentInTx,
+  ModerationError,
   hashPin,
   generateRecoveryCodesInTx,
   findLocalUserByHandle,
@@ -685,11 +691,15 @@ export async function redeemInviteAtomically(
           if (resolvedLandingRoomId.joinedExistingRoom) joinedExistingRoomId = resolvedLandingRoomId.roomId;
         }
 
+        const admissionEpoch = await prepareModerationEnrollmentInTx(tx, user.id, process.env["LOGTO_ISSUER"], locked.targetRoomId);
+        await completeModerationEnrollmentInTx(tx, user.id, process.env["LOGTO_ISSUER"], locked.targetRoomId, admissionEpoch, locked.id);
         await tx
           .insert(inviteRedemptions)
           .values({
             inviteId: locked.id,
             userId: user.id,
+            boundAdmissionEpoch: admissionEpoch,
+            completionAdmissionEpoch: admissionEpoch,
             boundAt: profileNow,
             completedAt: profileNow,
           })
@@ -820,10 +830,10 @@ export async function redeemInviteAtomically(
           deps.onLogtoCleanupFailed?.(logtoSub, reason);
         }
       }
-      if (err instanceof RedeemAbort) {
+      if (err instanceof RedeemAbort || err instanceof ModerationError) {
         return {
           ok: false,
-          httpStatus: err.status,
+          httpStatus: err instanceof RedeemAbort ? err.status : 403,
           error: err.code,
           code: err.code,
         };
@@ -950,6 +960,7 @@ export async function redeemInviteWithLogtoSub(
         .where(eq(users.externalId, logtoSub))
         .limit(1);
       if (raceUser) {
+        const admissionEpoch = await prepareModerationEnrollmentInTx(tx, raceUser.id, process.env["LOGTO_ISSUER"], locked.targetRoomId);
         const [binding] = await tx
           .select({ userId: inviteRedemptions.userId })
           .from(inviteRedemptions)
@@ -961,7 +972,14 @@ export async function redeemInviteWithLogtoSub(
           )
           .limit(1);
         if (!binding) {
-          throw new RedeemAbort(409, "logto_subject_already_bound");
+          if (locked.kind !== "server" || admissionEpoch === 0) throw new RedeemAbort(409, "logto_subject_already_bound");
+          const [admission] = await tx.select().from(serverAdmission).where(eq(serverAdmission.userId, raceUser.id));
+          if (admission?.admitted !== false) {
+            throw new RedeemAbort(409, "logto_subject_already_bound");
+          }
+          // A withdrawn Human may bind a fresh Invite, preserving their graph.
+          // An old binding keeps its epoch and cannot become a new admission.
+          await tx.insert(inviteRedemptions).values({ inviteId: locked.id, userId: raceUser.id, boundAdmissionEpoch: admissionEpoch });
         }
         const [raceActor] = await tx
           .select({ id: actors.id })
@@ -1134,9 +1152,11 @@ export async function redeemInviteWithLogtoSub(
           label: "Personal",
         });
       }
+      const admissionEpoch = await prepareModerationEnrollmentInTx(tx, user.id, process.env["LOGTO_ISSUER"], locked.targetRoomId);
+      await tx.update(serverAdmission).set({ admitted: false }).where(eq(serverAdmission.userId, user.id));
       await tx
         .insert(inviteRedemptions)
-        .values({ inviteId: locked.id, userId: user.id })
+        .values({ inviteId: locked.id, userId: user.id, boundAdmissionEpoch: admissionEpoch })
         .onConflictDoNothing({
           target: [inviteRedemptions.inviteId, inviteRedemptions.userId],
         });
@@ -1159,10 +1179,10 @@ export async function redeemInviteWithLogtoSub(
       logtoSub,
     };
   } catch (err) {
-    if (err instanceof RedeemAbort) {
+    if (err instanceof RedeemAbort || err instanceof ModerationError) {
       return {
         ok: false,
-        httpStatus: err.status,
+        httpStatus: err instanceof RedeemAbort ? err.status : 403,
         error: err.code,
         code: err.code,
       };
@@ -1227,7 +1247,7 @@ export async function completeInviteProfile(
     };
   }
   const [redemptionRow] = await probeDb
-    .select({ completedAt: inviteRedemptions.completedAt })
+    .select({ completedAt: inviteRedemptions.completedAt, boundAdmissionEpoch: inviteRedemptions.boundAdmissionEpoch, completionAdmissionEpoch: inviteRedemptions.completionAdmissionEpoch })
     .from(inviteRedemptions)
     .where(
       and(
@@ -1253,29 +1273,7 @@ export async function completeInviteProfile(
     };
   }
 
-  // A completed per-Human redemption is the idempotency receipt. Aggregate
-  // `used_count` cannot identify which Human completed a reusable Invite.
-  if (userRow.handle !== null && redemptionRow.completedAt !== null) {
-    if (inviteRow.kind === "claim") {
-      // A process may have committed the profile transaction but crashed
-      // before writing the local retirement sentinel. Retrying the completed
-      // profile is safe and heals that durable boundary.
-      finalizeBootstrapClaimRetirement(userRow.id, undefined, deps);
-    }
-    return {
-      ok: true,
-      recoveryCodes: [],
-      newUserId: userRow.id,
-      newActorId: actorRow.id,
-      landingRoomId: await findCompletedLandingRoom(
-        probeDb,
-        inviteRow,
-        userRow.id,
-        actorRow.id,
-      ),
-    };
-  }
-  if (inviteRow.revokedAt) {
+  if (inviteRow.revokedAt && redemptionRow.completedAt === null) {
     return { ok: false, httpStatus: 410, error: "revoked", code: "revoked" };
   }
 
@@ -1298,6 +1296,7 @@ export async function completeInviteProfile(
         .select({ id: users.id, handle: users.handle })
         .from(users)
         .where(eq(users.externalId, logtoSub))
+        .for("update")
         .limit(1);
       if (!user) throw new RedeemAbort(409, "not_bound");
 
@@ -1309,7 +1308,7 @@ export async function completeInviteProfile(
       if (!actor) throw new RedeemAbort(500, "user_actor_invariant");
 
       const [redemption] = await tx
-        .select({ completedAt: inviteRedemptions.completedAt })
+        .select({ completedAt: inviteRedemptions.completedAt, boundAdmissionEpoch: inviteRedemptions.boundAdmissionEpoch, completionAdmissionEpoch: inviteRedemptions.completionAdmissionEpoch })
         .from(inviteRedemptions)
         .where(
           and(
@@ -1320,7 +1319,10 @@ export async function completeInviteProfile(
         .for("update")
         .limit(1);
       if (!redemption) throw new RedeemAbort(409, "not_bound");
+      const admissionEpoch = await prepareModerationEnrollmentInTx(tx, user.id, process.env["LOGTO_ISSUER"], locked.targetRoomId);
       if (redemption.completedAt !== null) {
+        const [access] = await tx.select({ allowed: moderationAccessAllowedSql(sql`${users.id}`) }).from(users).where(eq(users.id, user.id));
+        if (!access?.allowed || admissionEpoch !== (redemption.completionAdmissionEpoch ?? 0)) throw new ModerationError("admission_withdrawn");
         return {
           recoveryCodes: [] as string[],
           newUserId: user.id,
@@ -1347,6 +1349,25 @@ export async function completeInviteProfile(
         && await hasClaimedOwner(tx as unknown as DirectDatabase)
       ) {
         throw new RedeemAbort(410, "used_up");
+      }
+
+      await completeModerationEnrollmentInTx(tx, user.id, process.env["LOGTO_ISSUER"], locked.targetRoomId, redemption.boundAdmissionEpoch, locked.id);
+
+      if (admissionEpoch > 0) {
+        if (locked.kind !== "server" || !locked.targetGroupId) throw new RedeemAbort(409, "invite_target_unavailable");
+        const [targetGroup] = await tx.select({ id: groups.id }).from(groups).where(eq(groups.id, locked.targetGroupId));
+        if (!targetGroup) throw new RedeemAbort(409, "invite_target_unavailable");
+        await tx.insert(groupMembers).values({ groupId: targetGroup.id, userId: user.id, grantedBy: actor.id })
+          .onConflictDoNothing({ target: [groupMembers.groupId, groupMembers.userId] });
+        const landing = await resolveInviteLandingRoomInTx(tx, { inviteeUserId: user.id, inviteeActorId: actor.id, targetRoomId: locked.targetRoomId });
+        if (!landing) throw new RedeemAbort(409, locked.targetRoomId ? "target_room_unavailable" : "landing_room_unavailable");
+        if (landing.joinedExistingRoom) joinedExistingRoomId = landing.roomId;
+        const now = new Date();
+        await tx.update(invites).set({ usedCount: locked.usedCount + 1 }).where(eq(invites.id, locked.id));
+        await tx.update(inviteRedemptions).set({ completedAt: now, completionAdmissionEpoch: admissionEpoch })
+          .where(and(eq(inviteRedemptions.inviteId, locked.id), eq(inviteRedemptions.userId, user.id), isNull(inviteRedemptions.completedAt)));
+        return { recoveryCodes: [] as string[], newUserId: user.id, newActorId: actor.id, landingRoomId: landing.roomId,
+          isClaim: false, personalAgentId: null as string | null, isIdempotent: false, completedInvite: null };
       }
 
       // M107 Phase 2c: handle was set at bind time; only update name
@@ -1510,7 +1531,7 @@ export async function completeInviteProfile(
         .where(eq(invites.id, locked.id));
       await tx
         .update(inviteRedemptions)
-        .set({ completedAt: profileNow })
+        .set({ completedAt: profileNow, completionAdmissionEpoch: admissionEpoch })
         .where(
           and(
             eq(inviteRedemptions.inviteId, locked.id),
@@ -1577,10 +1598,10 @@ export async function completeInviteProfile(
       landingRoomId: landingRoomId ?? "",
     };
   } catch (err) {
-    if (err instanceof RedeemAbort) {
+    if (err instanceof RedeemAbort || err instanceof ModerationError) {
       return {
         ok: false,
-        httpStatus: err.status,
+        httpStatus: err instanceof RedeemAbort ? err.status : 403,
         error: err.code,
         code: err.code,
       };

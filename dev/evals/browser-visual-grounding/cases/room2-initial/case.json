@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "room2-initial",
+  "description": "AgentSea Gym room 2 initial state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room2",
+  "capturedAt": "2026-09-21T07:45:13.298Z",
+  "captureDurationMs": 85,
+  "evidencePairWindowMs": 60,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room #2: Button"
+    },
+    "e3": {
+      "role": "button",
+      "name": "CLICK ON ME!"
+    },
+    "e4": {
+      "role": "link",
+      "name": "Back to Home"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 301,
+    "sha256": "87400876f6961582c670318af70c0476f8e47393370c56ffc43e0e8ff0cc25e9"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 42286,
+    "sha256": "5b9ec348d7494b7a12e8d48120be8d589a9265684e7fb53fe0acd2140c1e6984"
+  }
+}

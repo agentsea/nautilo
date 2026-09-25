@@ -7,6 +7,43 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Mobile now opens notifications for the active server without restarting the
+  encryption check. Notifications for another server still check that server
+  before opening the conversation.
+
+- Scheduled reminders now tell the background Genie that its final answer
+  returns to the original conversation. A redundant request to message the
+  requester without waiting for a reply receives corrective feedback before
+  peer-message approval, so existing saved reminders can finish through their
+  normal Task report-back route. Task dispatch retains the requesting Human
+  through Job coalescing, and a Task wake no longer claims its synthetic input
+  was a Human-authored turn when saving the reply. The scheduled run's internal
+  answer stays out of live Room events and Room history, leaving one visible
+  reminder from the normal wake.
+
+- Floating Genie reuses the Room's Stop talking pill above the chat and compact
+  prompt inputs. Streaming replies remain stoppable through buffering and
+  sentence gaps, independently of Stop action. The floating composer now shows
+  separate Mic and Sound toggles, synchronized with Desktop voice. Mic off
+  finishes recording into a reviewable draft; the Send arrow stays separate.
+  The voice bubble uses tap to record, then tap to send without expanding.
+  Transcribing and sending show progress; pending panel drafts and attachments
+  remain separate. Full and compact chat share the conversation and draft, with
+  a latest-message preview when history is collapsed. The separate waveform
+  mode and bubble audio strip are removed. Explicit sound preferences survive
+  resizing and reactivation. Stop talking has a waveform-and-square icon distinct from Sound off. A labeled Float Genie button beside the portrait makes
+  detaching discoverable and shows Floating while active.
+  The floating chat now shares the Room-panel live message reducer: outgoing
+  messages appear immediately, replies stream into the transcript, and history
+  refreshes preserve live messages instead of replacing them.
+- Keep the compact Genie and members rail visible beside document chat in group
+  Rooms. Stop remains available while another job in the Room is still active,
+  and document previews retain their last readable version during refresh.
+- Group conversation rosters show Online, Idle, or Offline beside Humans on
+  Workbench/Desktop and Mobile. Status uses authenticated chat connections and
+  app activity; failed reads show unavailable. Multiple connected devices are
+  combined, and Agent controls retain their existing behavior.
+
 - Add `@everyone` to Room mention pickers and typed mentions on web, Desktop, and
   Mobile for users with the `manage_rooms` permission. It addresses current Human
   members through their existing notification preferences, supports encrypted
@@ -27,6 +64,14 @@ changes recorded here. Inclusion does not assert a server deployment, Mobile
 store update, or Desktop/Host installation.
 
 ### Added
+
+- Server Admin → Moderation provides partial name/handle search, persistent
+  member selection, and bulk kick/ban with individual results. A searchable,
+  bounded joining inbox reviews each account's required joining message;
+  reusing an Invite does not bypass approval. Grant-aware chat message menus
+  also offer kick/ban. Ban removes the author's existing community/group Room
+  messages and thread replies, preserving private conversations and other
+  people's replies. Interrupted removal is retryable from the saved action.
 
 - Local internal QA servers can use a separately configured Nautilo Gateway
   credential for signed OpenRouter chat, background, and embedding routes. The
@@ -106,6 +151,36 @@ store update, or Desktop/Host installation.
 
 - Room and floating Genie messages summarize recognized legacy attachment
   envelopes as filenames after history reload. Ambiguous envelopes remain intact.
+- Moderation recovery now cancels the excluded person's local queued and active
+  work through the existing Job and Task lifecycle, preserving other members'
+  work. Execution rechecks current access after persistence and before delayed
+  starts; exact Task-run checks protect newer runs. Complete cross-process
+  enforcement remains under qualification and is reported as pending.
+- Artifact downloads recheck current access before and during streaming; ZIP
+  export rechecks before returning the archive. Genie invocation, Task dispatch
+  and approval resume now reject withdrawn access even when the Human retains
+  an invocation grant.
+
+- Relay registration now rechecks and holds current admission through connection
+  publication, preventing a pending reconnect from surviving moderation removal.
+  Room resumes, listings and rebuilt Namespace envelopes also reject withdrawn
+  access despite retained membership.
+
+- Committed moderation decisions now recover audit delivery on server restart,
+  deduplicating the existing security log after a lost checkpoint. Recovery
+  reconciles current access without repeating a removal; incomplete enforcement
+  remains visibly pending.
+
+- Moderation withdrawal now advances existing Namespace authority and excludes
+  removed Humans from encrypted recipient plans while preserving Room history.
+  Existing WebSocket admission rechecks also honor Server withdrawal, Relay
+  credentials cannot reconnect a withdrawn Human, and live Room removal clears
+  stale typing subscriptions.
+
+- Room joins, direct member additions and Invite landing now honor persisted
+  moderation bans, including parent and subthread scope. Parent membership
+  repair preserves child bans, and simultaneous joins cannot survive a
+  committed Room ban.
 
 - Server Admin places the Nautilo Gateway URL and key together at the end of
   API Keys, following the separate OpenAI-compatible gateway.

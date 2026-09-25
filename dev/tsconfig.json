@@ -1,6 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "include": [
+    "scripts/test-community-moderation.ts",
     "scripts/generate-application-catalogue.ts",
     "probes/*.ts",
     "qualification/harnesses/*.ts",

@@ -44,7 +44,7 @@ export function useRoomMessageOperations(): RoomMessageOperations {
   return useContext(RoomMessageOperationsContext);
 }
 
-// ---------- Child-room event routing (D426) ----------
+// ---------- Child-room event routing ----------
 
 /**
  * The main runtime owns the one authenticated WebSocket. A visible thread
@@ -58,6 +58,7 @@ export interface ThreadRoomRegistration {
   /** Parent lane mirrored only for an edit of the displayed anchor. */
   parentRoomId?: string;
   anchorLogicalMessageKey?: string;
+  anchorMessageId?: string;
   ingestEvent: (event: ServerEvent, resolveRoomId: ThreadRoomLaneResolver) => void;
   /** Allows lane-less job terminals only when this controller already knows the job. */
   ownsJobId: (jobId: string) => boolean;
@@ -117,6 +118,8 @@ export function shouldRouteEventToThreadRoom(
     ) {
       return true;
     }
+    if (event.type === "message.deleted" && roomId === registration.parentRoomId
+      && String(event.messageId) === registration.anchorMessageId) return true;
     return roomId === registration.roomId;
   }
   return (
@@ -148,14 +151,14 @@ export function shouldPublishThreadRoomFocusEvent(
  * that mixes a component export (`NautiloRuntimeProvider`) with non-component
  * exports (hooks, types, contexts) cannot be Fast-Refreshed, and any hot
  * update that touches the dependency chain invalidates the whole tree —
- * which triggers a subtree unmount + remount (D080).
+ * which triggers a subtree unmount + remount.
  *
  * Keep this file free of React component exports.
  */
 
 // ---------- WebSocket transport state ----------
 
-// M058 — `"authenticating"` covers the WS first-frame auth handshake
+// `"authenticating"` covers the WS first-frame auth handshake
 // window. Existing consumers branched on `=== "open"` for "really
 // connected"; that semantic is preserved (we only fire `"open"`
 // after the server's `auth.accepted`). UI surfaces (disconnect
@@ -188,7 +191,7 @@ export function useWsStateContext(): WsStateSnapshot {
   return useContext(WsStateContext);
 }
 
-// ---------- Protected Room coverage (M301) ----------
+// ---------- Protected Room coverage ----------
 
 export type ProtectedRoomCoverageState = "ready" | "waiting";
 
@@ -207,7 +210,7 @@ export function useProtectedRoomAccess(): ProtectedRoomAccessSnapshot {
   return useContext(ProtectedRoomAccessContext);
 }
 
-// ---------- Notification intelligence events (M236) ----------
+// ---------- Notification intelligence events ----------
 
 export type NotificationRuntimeEvent = Extract<
   ServerEvent,
@@ -231,7 +234,7 @@ export function useNotificationRuntimeEventSource(): NotificationRuntimeEventSou
   return useContext(NotificationRuntimeEventSourceContext);
 }
 
-// ---------- Runtime shell state (ISSUE-D145) ----------
+// ---------- Runtime shell state ----------
 
 /**
  * Consumer-facing seam for the shell-state discriminated union.
@@ -282,7 +285,7 @@ export function allowsOrdinaryConversationPersistence(
   return mode === "plaintext_only" || mode === "shadow_encryption";
 }
 
-// ---------- Initial Room transcript hydration (D530) ----------
+// ---------- Initial Room transcript hydration ----------
 
 /**
  * Narrow consumer projection for the first authoritative Room-history pass.
@@ -310,7 +313,7 @@ export interface RoomHistoryControls {
   hasMoreBefore: boolean;
   loadingBefore: boolean;
   loadOlder: () => Promise<boolean>;
-  /** D430 — target-centered ranges are not ordinary cursor-history continuity. */
+  /** target-centered ranges are not ordinary cursor-history continuity. */
   ranges: readonly RoomHistoryRange[];
   loadingAroundMessageId: string | null;
   loadHistoryAround: (messageId: string) => Promise<boolean>;
@@ -337,7 +340,7 @@ export function useRoomHistoryControls(): RoomHistoryControls {
   return useContext(RoomHistoryContext);
 }
 
-// ---------- Room transcript search (D430) ----------
+// ---------- Room transcript search ----------
 
 export type RoomMessageSearchStatus =
   | "idle"
@@ -422,7 +425,7 @@ export function useRoomMessageSearch(): RoomMessageSearchControls {
   return useContext(RoomMessageSearchContext);
 }
 
-// ---------- Chats-wide search (D470) ----------
+// ---------- Chats-wide search ----------
 
 export interface ChatsSearchScope {
   serverKey: string | null;
@@ -537,6 +540,7 @@ export type TurnStopStatus =
 export interface VoiceControls {
   enabled: boolean;
   playing: boolean;
+  canStopTalking?: boolean;
   toggle: () => void;
   stop: () => void;
   /** Resolves true when a chat message was accepted by the server (composer may clear). */
@@ -546,8 +550,8 @@ export interface VoiceControls {
     mentionEveryone?: boolean;
     onOptimisticUserMessage?: () => void;
     /**
-     * D371 R2 — optional per-turn model override. Forwarded through the
-     * runtime send pipeline to the executor; inert until R3 wires UI to set it.
+     * optional per-turn model override. Forwarded through the
+     * runtime send pipeline to the executor when selected by the caller.
      */
     model?: string;
     /** Exact current work-surface resources to merge into this turn only. */
@@ -558,12 +562,12 @@ export interface VoiceControls {
    * to the same active room. False during room-history handoff.
    */
   roomBindingReady: boolean;
-  /** M147 — true while a turn (main or fork) is running in the active room. */
+  /** true while a turn (main or fork) is running in the active room. */
   isRunning: boolean;
-  /** D341 — user-visible status for stopping work/turns, not voice playback. */
+  /** user-visible status for stopping work/turns, not voice playback. */
   turnStopStatus: TurnStopStatus;
   /**
-   * M147 — abort every live job (main turn + forks) in the active room via
+   * abort every live job (main turn + forks) in the active room via
    * `POST /api/jobs/:id/stop`. Bypasses assistant-ui's `cancelRun` (which does
    * message-repository surgery incompatible with our WS-owned message list).
    */
@@ -589,7 +593,7 @@ export function useVoiceControls(): VoiceControls {
 // ---------- Tool-call activity stream ----------
 
 /**
- * Tool-call activity stream (D057 2a.1.11 / 2a.1.9). Rolling log of the
+ * Tool-call activity stream. Rolling log of the
  * most recent tool calls observed on the WS. Used by:
  *   - Activity tab (renders the last 20 as a feed)
  *   - Files tab "cited" glyph (derived: paths that appear in
@@ -621,7 +625,7 @@ export interface ToolActivityEvent {
   /** Error message if status === "error". */
   error?: string;
   /**
-   * D083 Phase 2 — actual tool output string. Populated on
+   * actual tool output string. Populated on
    * `tool.end` from the corresponding field on `ToolEndEvent`.
    * The inline ToolCard renders it (per-tool: run_shell shows
    * stdout/stderr/exit, read_file shows code-fence preview,
@@ -631,7 +635,7 @@ export interface ToolActivityEvent {
    */
   result?: string;
   resultTruncated?: boolean;
-  /** D502 provisional Desktop raw-shell streams; final tool.end is canonical. */
+  /** provisional Desktop raw-shell streams; final tool.end is canonical. */
   runShellProgress?: {
     stdout: string;
     stderr: string;
@@ -642,7 +646,7 @@ export interface ToolActivityEvent {
     phase: "running";
     elapsedMs: number;
   };
-  /** D500 v15 provisional structured SSH observation; final tool.end is canonical. */
+  /** provisional structured SSH observation; final tool.end is canonical. */
   structuredSshProgress?:
     | {
         operation: "exec";
@@ -673,7 +677,7 @@ export function useToolActivity(): ToolActivityEvent[] {
   return useContext(ToolActivityContext);
 }
 
-// ---------- Revision state (D087 Phase 3 §3.10) --------------------
+// ---------- Revision state --------------------
 
 /**
  * Latest-revision snapshot for one absolute path. Mirrors
@@ -730,7 +734,7 @@ export interface PathRevisionView {
 }
 
 /**
- * D087 Phase 3 §3.8 — derive the "most-recently-touched path" from
+ * derive the "most-recently-touched path" from
  * the revision-state map. Drives the persistent undo/redo bar and
  * the `⌘Z` / `⌘⇧Z` keybinds: the keyboard shortcut targets
  * whichever file has the newest non-null revision snapshot.
@@ -774,7 +778,7 @@ export function useMostRecentlyTouchedPath(): {
   };
 }
 
-// ---------- Approval-ask (D061 Phase 2-client / Chunk 5) ----------
+// ---------- Approval-ask ----------
 
 /**
  * Snapshot of an open `approval.ask` challenge. When `show` is false the
@@ -796,11 +800,11 @@ export interface ApprovalAskState {
   reason: string;
   /** Machine-readable reason code for theming / analytics. */
   reasonCode: ApprovalAskReason | null;
-  /** Optional D103 network destination context. */
+  /** Optional network destination context. */
   network: ApprovalAskNetworkContext | null;
   /** Subset of verbs the server allows the client to offer. */
   allowedVerbs: ApprovalReplyVerb[];
-  /** M037 — per-tool generalization grain, index-aligned with `tools`. */
+  /** per-tool generalization grain, index-aligned with `tools`. */
   scopeInfo: ApprovalScopeInfo[];
   localMcpInstall: LocalMcpInstallApproval | null;
   mediaGeneration: MediaGenerationApproval | null;
@@ -849,7 +853,7 @@ export function useApprovalAsk(): ApprovalAskControls {
   return useContext(ApprovalAskContext);
 }
 
-// ---------- Native Codex human requests (D453) ----------
+// ---------- Native Codex human requests ----------
 
 /**
  * Native Codex requests are a short-lived owner-private handshake, not a
@@ -1216,10 +1220,10 @@ export function selectCodexRequestsForRoom(
   };
 }
 
-// ---------- Auto-Approve session mode (D375) ----------
+// ---------- Auto-Approve session mode ----------
 
 /**
- * D375 — ephemeral, session+device-scoped "Auto-Approve" mode.
+ * ephemeral, session+device-scoped "Auto-Approve" mode.
  *
  * When `enabled`, ask-tier tool approvals (`approval.ask`) auto-resolve
  * with the verb `"once"` WITHOUT surfacing the ApprovalAskDock, so a
@@ -1254,7 +1258,7 @@ export function useAutoApprove(): AutoApproveControls {
   return useContext(AutoApproveContext);
 }
 
-// ---------- Running subagents (D307 Stack 87) ----------
+// ---------- Running subagents ----------
 
 /** Live owner-scoped subagent activity dock snapshot. */
 export interface RunningSubagentsSnapshot {
@@ -1271,7 +1275,7 @@ export function useRunningSubagents(): RunningSubagentsSnapshot {
   return useContext(RunningSubagentsContext);
 }
 
-// ---------- Room message reactions (D312 tap-to-react) ----------
+// ---------- Room message reactions ----------
 
 /** Tap-to-react controls exposed to per-message bubbles. */
 export interface RoomReactionControls {

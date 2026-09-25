@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "room10-apple",
+  "description": "AgentSea Gym room 10 apple state",
+  "sourceUrl": "https://agentsea.github.io/gym/#/room10",
+  "capturedAt": "2026-09-21T07:40:39.867Z",
+  "captureDurationMs": 95,
+  "evidencePairWindowMs": 67,
+  "agentBrowserVersion": "agent-browser 0.35.2",
+  "viewport": {
+    "css": {
+      "width": 1084,
+      "height": 702
+    },
+    "image": {
+      "width": 2168,
+      "height": 1404
+    },
+    "dpr": 2,
+    "imageToCssScale": 2
+  },
+  "refs": {
+    "e1": {
+      "role": "generic",
+      "name": ""
+    },
+    "e10": {
+      "role": "cell",
+      "name": "Row 2, Column 1"
+    },
+    "e11": {
+      "role": "cell",
+      "name": "Row 2, Column 2"
+    },
+    "e12": {
+      "role": "columnheader",
+      "name": "#"
+    },
+    "e13": {
+      "role": "columnheader",
+      "name": "Fruit"
+    },
+    "e14": {
+      "role": "columnheader",
+      "name": "Number"
+    },
+    "e15": {
+      "role": "generic",
+      "name": ""
+    },
+    "e16": {
+      "role": "generic",
+      "name": ""
+    },
+    "e17": {
+      "role": "generic",
+      "name": ""
+    },
+    "e18": {
+      "role": "generic",
+      "name": ""
+    },
+    "e19": {
+      "role": "textbox",
+      "name": "Row 1, Column 1"
+    },
+    "e2": {
+      "role": "heading",
+      "name": "Room #10: Fill the Table"
+    },
+    "e20": {
+      "role": "textbox",
+      "name": "Row 1, Column 2"
+    },
+    "e21": {
+      "role": "textbox",
+      "name": "Row 2, Column 1"
+    },
+    "e22": {
+      "role": "textbox",
+      "name": "Row 2, Column 2"
+    },
+    "e3": {
+      "role": "button",
+      "name": "CHECK VALUES"
+    },
+    "e4": {
+      "role": "button",
+      "name": "RESET TABLE"
+    },
+    "e5": {
+      "role": "link",
+      "name": "Back to Home"
+    },
+    "e6": {
+      "role": "cell",
+      "name": "1"
+    },
+    "e7": {
+      "role": "cell",
+      "name": "Apple"
+    },
+    "e8": {
+      "role": "cell",
+      "name": "Row 1, Column 2"
+    },
+    "e9": {
+      "role": "cell",
+      "name": "2"
+    }
+  },
+  "snapshot": {
+    "file": "snapshot.txt",
+    "bytes": 1603,
+    "sha256": "c1a682624aa17f11963a0d27075990ce5beff2fc783b56033643c4fad8480edc"
+  },
+  "screenshot": {
+    "file": "screenshot.png",
+    "bytes": 91621,
+    "sha256": "4b68480a3e0c64a14d7ef4e734370339b5ce1496c20375cd107318b1bc3d4ec6"
+  }
+}

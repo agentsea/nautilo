@@ -34,12 +34,12 @@ describe("voice ownership", () => {
     });
   });
 
-  test("a companion can temporarily own playback without changing a disabled active Room preference", () => {
+  test("sound off applies to the pinned companion as well as the main Room", () => {
     expect(resolveVoiceOwnership({
       activeRoomId: "room-visible",
       activeRoomEnabled: false,
       companionRoomId: "room-floating",
-    }).enabled).toBe(true);
+    }).enabled).toBe(false);
     expect(resolveVoiceOwnership({
       activeRoomId: "room-visible",
       activeRoomEnabled: false,

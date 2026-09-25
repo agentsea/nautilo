@@ -168,6 +168,7 @@ describe("current Task Runtime authority", () => {
       parent_room_id: null,
       namespace_access_revision: 9,
       human_actor_ids: [HUMAN],
+      effective_human_actor_ids: [HUMAN],
     };
     let selected = false;
     const tx = {
@@ -216,6 +217,7 @@ describe("current Task Runtime authority", () => {
             parent_room_id: null,
             archived_at: null,
             human_actor_ids: [HUMAN],
+            effective_human_actor_ids: [HUMAN],
           }];
         } else if (statement.includes("m291_namespace_key_readable_set_actor")) {
           rows = [{ subject_user_id: USER }];

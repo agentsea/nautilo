@@ -108,13 +108,21 @@ describe("browserControl IPC wiring", () => {
       },
       getCoordinateScale: () => undefined,
       setCoordinateScale: () => {},
+      getVisualObservation: () => undefined,
+      setVisualObservation: () => {},
+      deleteVisualObservation: () => {},
       exec: async (_binary, argv) => ({ stdout: argv.includes("snapshot")
         ? JSON.stringify({ success: true, data: observed }) : argv.includes("eval")
           ? JSON.stringify({ ready: true }) : "opened" }),
       pruneCaptures: () => {},
       capturePath: () => "/owned/browser-shot.png",
+      removeCapture: () => {},
       readCapturePng: () => Buffer.alloc(24),
       captureDimensions: () => ({ width: 1, height: 1 }),
+      extractVisualObservation: async () => ({
+        recognitionMode: "hybrid", durationMs: 1, globalDurationMs: 1, cropDurationMs: 0,
+        cropRequestCount: 0, text: [], rectangles: [], contours: [], contourCount: 0,
+      }),
       visionFromPng: () => ({ status: "error", error: "not used" }),
     });
 

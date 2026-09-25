@@ -102,6 +102,7 @@ import {
 import { authRoutes } from "../../src/routes/auth";
 import { SessionStore } from "../helpers/test-session-store";
 import { installLocalAuthPreHandlerStub } from "../unit/helpers/auth-preHandler-stub";
+import { installResumeInvocationAuthority } from "../helpers/resume-invocation-authority";
 import {
   eventBus,
   getCurrentLiveShadowTurnContext,
@@ -216,6 +217,7 @@ const authorizedProtectedResumePlan = (executionId: string) => ({
 });
 
 beforeAll(async () => {
+  await installResumeInvocationAuthority(OWNER_ID);
   sessionStore = new SessionStore(undefined, { persistPath: null });
   auditEvents = [];
 

@@ -38,6 +38,7 @@ import { ServersPanel } from "../modes/servers/ServersPanel";
 import { useBrowserColumn } from "../components/browser-column/browser-column.context";
 import { Footer } from "../components/footer/footer";
 import { NavigationRail, RoomRail, ArtifactsRail, AppsRail, WebRail } from "../components/navigation-rail";
+import { CompactNavigation } from "../components/navigation-rail/compact-navigation";
 import { ServersRail } from "../components/navigation-rail/ServersRail";
 import {
   artifactsIconState,
@@ -139,10 +140,11 @@ import { useRoomMembers } from "../modes/rooms/shape/use-room-members";
 import { RoomAuthorScope } from "../modes/rooms/shape/RoomAuthorScope";
 import { usesMembersManagerPanel } from "../modes/rooms/shape/members-panel-model";
 import { MembersManagerPanel } from "../modes/rooms/shape/MembersManagerPanel";
+import { MembersColumn } from "../modes/rooms/shape/MembersColumn";
 import { RoomManageBridge } from "../modes/rooms/shape/RoomManageBridge";
 import { useMembersPanelView } from "../modes/rooms/shape/use-members-panel-view";
 import { RoomFocusProvider } from "../modes/rooms/shape/room-focus-context";
-import { MEMBERS_RAIL_WIDTH_PX } from "./chrome-shell.layout";
+import { CONTEXT_DEFAULT_PX, MEMBERS_RAIL_WIDTH_PX } from "./chrome-shell.layout";
 import { AppErrorBoundary } from "../components/app-error-boundary";
 import { useWorkSurfaceEventTargets } from "./use-work-surface-event-target";
 import { createGenieHandoffBridge } from "../lib/genie-handoff";
@@ -160,20 +162,20 @@ type WorkSurfaceState =
       appId: string;
       mode: OpenMiniAppMode;
       target?: OpenFileTarget;
-      /** D342 Phase 2 — warm-up draft for a no-doc launch (pre-materialize). */
+      /** Warm-up draft for a launch without a document. */
       draft?: MiniAppDraftSeed;
       sourceHash?: string;
     }
   | { kind: "saas-app"; appId: string; displayName: string; initialUrl: string; mode?: "app" | "browser" }
   | { kind: "browser-research"; intervention: DesktopBrowserResearchIntervention }
-  // D362 — read-only office viewer (Collabora-backed) for a workspace artifact.
+  // read-only office viewer (Collabora-backed) for a workspace artifact.
   | { kind: "office-doc"; artifactId: string; displayName: string; documentPath: string; roomId?: string }
   | { kind: "app-source"; appId: string; path: string }
-  // D344 — full-width Apps surfaces: the all-apps overview/manager and a
+  // full-width Apps surfaces: the all-apps overview/manager and a
   // per-app detail page.
   | { kind: "apps-overview" }
   | { kind: "app-detail"; appId: string }
-  // D373 / Stack 137 — terminal (PTY) work surface. `sessionId` is set
+  // terminal (PTY) work surface. `sessionId` is set
   // after the first spawn so re-open reattaches the same main-process PTY.
   | { kind: "terminal"; sessionId?: string };
 
@@ -208,20 +210,19 @@ function summaryRosterToMembers(
 }
 
 /**
- * D182 Phase 11.6.B — browser column mode.
+ * Browser column mode.
  *
  * "artifacts" (default) → `<BrowserColumn />` with its existing
  *   Artifacts / Files tabs.
  * "rooms" → `<RelationshipExplorer />` with grouped People / Agents /
- *   Groups / Recent / Agent-to-Agent sections (the same component
- *   D111 P3 shipped, but as a USER-TOGGLED MODE rather than a
- *   permanent hijack of verified users).
+ *   Groups / Recent / Agent-to-Agent sections, shown when the user
+ *   chooses Rooms on the navigation rail.
  *
  * Toggled by clicking the Rooms icon on the navigation rail.
  *
- * D342 — "apps" → `<AppsPanel />`, the dedicated installed-mini-apps panel
+ * "apps" → `<AppsPanel />`, the dedicated installed-mini-apps panel
  *   (promoted out of the Artifacts column's old middle tab), toggled by the
- *   Apps rail icon. Distinct from D336's future "web" SaaS panel.
+ *   Apps rail icon. Distinct from the "web" SaaS panel.
  */
 type BrowserColumnMode = "artifacts" | "rooms" | "apps" | "web" | "servers";
 
@@ -237,7 +238,7 @@ const workSurfaceFallback = (
 );
 
 /**
- * D185 — per-viewer storage key for the browser-column mode.
+ * per-viewer storage key for the browser-column mode.
  *
  * Previously a flat `nautilo.workbench.browserMode.v1` key, which leaked one
  * user's mode to the next on a shared browser profile. We now namespace it by
@@ -253,15 +254,15 @@ function browserModeStorageKey(viewerKey: string | null): string | null {
 }
 
 /**
- * Workbench shell (D057 2a.1 / D077 chrome overhaul).
+ * Workbench shell and chrome layout.
  *
  * Layout progression per research/workbench-ui-vocabulary.md §4.5:
  *
  *   Stage 1 (no workspace):            [1fr _ context]
  *   Stage 1 with workspace (desktop):  [browser _ 1fr _ context]   ← current
- *   Stage 2 (rail + workspace):        [rail _ browser _ 1fr _ context]  (D076)
+ *   Stage 2 (rail + workspace):        [rail _ browser _ 1fr _ context]
  *
- * Column widths are CSS-var-driven (D077) so drag-resize updates grid
+ * Column widths are CSS-var-driven so drag-resize updates grid
  * reflow without React re-renders. `buildGridCols()` owns the template
  * string; `usePanelSizes()` owns the widths + collapse flags; this
  * component wires them together.
@@ -301,6 +302,8 @@ export function WorkbenchShell() {
   const membersView = useMembersPanelView(
     roomUsesMembersPanel ? roomNav.activeRoomId : null,
   );
+  const [readerMembersExpanded, setReaderMembersExpanded] = useState(false);
+  useEffect(() => setReaderMembersExpanded(false), [roomNav.activeRoomId]);
   const browser = useBrowserColumn();
   const installedApps = useInstalledApps();
   const subscribeWorkspaceArtifactEvents = useWorkspaceArtifactEventHub();
@@ -416,7 +419,7 @@ export function WorkbenchShell() {
     if (guard) guard(transition, stay);
     else transition();
   }, []);
-  // D373 — last live terminal session, so reopening the surface reattaches
+  // last live terminal session, so reopening the surface reattaches
   // instead of spawning a new (orphaned) PTY.
   const lastTerminalSessionIdRef = useRef<string | null>(null);
   const [terminalSessionCount, setTerminalSessionCount] = useState(0);
@@ -443,7 +446,7 @@ export function WorkbenchShell() {
     workSurface.kind === "browser-research" && auth.viewer.isVerified ? workSurface : null;
   const officeDocWorkSurface =
     workSurface.kind === "office-doc" && authenticatedHuman ? workSurface : null;
-  // D344 — full-width Apps overview / detail pages own the main column.
+  // full-width Apps overview / detail pages own the main column.
   const appsOverviewWorkSurface =
     workSurface.kind === "apps-overview" && auth.viewer.isVerified ? workSurface : null;
   const appDetailWorkSurface =
@@ -600,10 +603,10 @@ export function WorkbenchShell() {
   // whole purpose is "click to expand", which would undo the auto-hide
   // while the user is still on a page that cannot accommodate the
   // extra column.
-  // D220 — /admin (server admin) is the same kind of full-width management
+  // /admin (server admin) is the same kind of full-width management
   // surface as /settings: auto-hide BOTH the right context/Genie column and
   // the left browser column so the section-nav + body get the whole width.
-  // D263/D296 — /skills (list + routed editor) is a full-width management
+  // /skills (list + routed editor) is a full-width management
   // surface like /settings: it owns the center column, so auto-hide both the
   // right context panel AND the left rooms/artifacts explorer. (startsWith to
   // cover /skills/:name and /skills/new.)
@@ -612,18 +615,17 @@ export function WorkbenchShell() {
     Boolean(appWorkSurface) && !miniAppGuardRegistered,
     requestWorkSurfaceTransition,
   );
-  // D293 — reader state persists across management-route navigation, but the
+  // reader state persists across management-route navigation, but the
   // management page must own the center column (Outlet) instead of ReaderSurface.
   const workSurfaceOwnsMain = workSurfaceActive && (!fullWidthManagementRoute || miniAppRouteWaiting);
   const contextAutoHiddenByRoute = fullWidthManagementRoute || !canInvokeAgents;
   const contextEffectivelyCollapsed =
     panelSizes.contextCollapsed || contextAutoHiddenByRoute;
 
-  // D278 §4.7.4 — when an active room owns the right column, its tri-state ladder
+  // when an active room owns the right column, its tri-state ladder
   // (not the shared context-collapse flag) decides width + visibility. The
-  // members panel is suppressed while reading a document (the right column is
-  // the reader chat rail then) and on /settings + /admin (via
-  // contextAutoHiddenByRoute).
+  // regular members panel yields its track while reading a document; the
+  // separate compact members rail is mounted after reader chat below.
   const membersPanelActive =
     Boolean(roomNav.activeRoomId) &&
     roomUsesMembersPanel &&
@@ -663,16 +665,22 @@ export function WorkbenchShell() {
     void eventFeed.refresh();
   }, [closeEvents, eventFeed, eventsOpen]);
   const trailingDrawerOpen = drawerOpen || eventsOpen;
+  const readerMembersVisible =
+    bp === "desktop" && Boolean(roomNav.activeRoomId) &&
+    roomUsesMembersPanel && workSurfaceOwnsMain;
+  const readerMembersWidthPx = readerMembersVisible
+    ? readerMembersExpanded ? CONTEXT_DEFAULT_PX : MEMBERS_RAIL_WIDTH_PX
+    : 0;
   useEffect(() => {
     if (!authenticatedHuman && eventsOpen) setEventsOpen(false);
   }, [authenticatedHuman, eventsOpen]);
 
-  // D182 Phase 11.6.B — browser column mode. Default to artifacts so
+  // browser column mode. Default to artifacts so
   // the user lands on Files / Artifacts on first sign-in (consistent
   // with the canonical workbench-ui-vocabulary.md §4.5 behavior). Rail
   // Rooms icon click toggles to "rooms" and back.
   //
-  // D185 (Stack 24 P2) — persist the choice to localStorage so the
+  // Persist the choice to localStorage so the
   // user's last toggle survives reload. Defaults to "artifacts" on
   // first load and on any read error (private mode, quota, malformed
   // value). Storage key is namespaced to avoid colliding with future
@@ -680,7 +688,7 @@ export function WorkbenchShell() {
   const browserModeViewerKey = stableViewerKeyForStorage(auth.viewer);
   const [browserMode, setBrowserMode] = useState<BrowserColumnMode>("artifacts");
 
-  // D185 — load the signed-in viewer's stored mode when identity resolves, and
+  // load the signed-in viewer's stored mode when identity resolves, and
   // reset to the default whenever the viewer changes (sign-out, switch user) so
   // one user's choice never leaks to the next. Async by nature: auth resolves
   // after first paint, so a brief default-mode render before the stored value
@@ -717,7 +725,7 @@ export function WorkbenchShell() {
     }
   }, [browserMode, browserModeViewerKey]);
 
-  // M259 — a mode persisted while the viewer had broader authority must not
+  // A mode persisted while the viewer had broader authority must not
   // leave a newly restricted session with an empty browser column.
   useEffect(() => {
     const modeRequiresInvocation = browserMode === "web";
@@ -736,7 +744,7 @@ export function WorkbenchShell() {
   useWebKeyboardShortcuts();
 
   // Browser column mounts whenever we're at the desktop breakpoint.
-  // Post-D079 Phase 1 the column is always reachable (even with no
+  // The column is always reachable (even with no
   // current folder open) so the CurrentFolderHeader dropdown is
   // available for the user to open one. Previously the column was
   // gated on having a workspace set; with the main-process auto-
@@ -745,7 +753,7 @@ export function WorkbenchShell() {
   //
   // Whether it's VISIBLE on top of that is `!browserCollapsed` from
   // panelSizes — usePanelSizes is the sole owner of the collapse flag
-  // after D077 (was BrowserColumnContext in 2a.1, migrated so both
+  // here (previously BrowserColumnContext, migrated so both
   // panels' geometry live in one hook).
   //
   // Keep `browser.currentFolderPath` referenced so the shell re-renders
@@ -761,7 +769,7 @@ export function WorkbenchShell() {
   const showBrowserColumn =
     bp === "desktop" && browserVisible && !browserEffectivelyCollapsed;
 
-  // D303 — single source of truth for the left-column rail toggles
+  // single source of truth for the left-column rail toggles
   // (Artifacts + Rooms): 3-state icon + click intent via the pure
   // `left-column-nav` view-model. `panelEligible` = the route can host the
   // left column (not a full-width route); `browserCollapsed` = the explicit
@@ -772,7 +780,7 @@ export function WorkbenchShell() {
     browserCollapsed: panelSizes.browserCollapsed,
   };
 
-  // D076 Chunk 4 — navigation rail. Desktop-only; collapsible via
+  // navigation rail. Desktop-only; collapsible via
   // ⌘⇧0. Default visible — the rail is the primary destination
   // entry point so it stays visible unless the user explicitly hides
   // it for focus work.
@@ -806,14 +814,15 @@ export function WorkbenchShell() {
         : undefined,
     contextFixedWidth: membersPanelRail ? true : undefined,
     readerChatSidecarLayout: workSurfaceOwnsMain,
+    ...(readerMembersVisible ? { readerMembersWidthPx } : {}),
   });
 
-  // D076 Chunk 4 — dispatcher for rail action items. Keep the handlers
+  // dispatcher for rail action items. Keep the handlers
   // in the shell (not inside the rail) so the rail component stays
   // pure-presentation; all side effects flow through one place here.
-  // D365 — the theme toggle lives on the navigation rail (bottom, above
+  // the theme toggle lives on the navigation rail (bottom, above
   // the voice controls), not the header — single entry point.
-  // D303 — apply a left-column rail toggle intent (FilesRail / RoomRail). The
+  // apply a left-column rail toggle intent (FilesRail / RoomRail). The
   // intent is computed by the pure `left-column-nav` view-model; the shell just
   // executes the state writes it asks for.
   const applyToggleIntent = useCallback(
@@ -830,12 +839,12 @@ export function WorkbenchShell() {
     [navigate, panelSizes],
   );
 
-  // M238 — typed important-arrival events now own generic desktop popup
+  // Typed important-arrival events now own generic desktop popup
   // eligibility in NotificationStateProvider. This shell retains only native
   // click-to-Room routing. `desktopSessionActive` is still tracked here for the
   // terminal surface and servers panel.
 
-  // M161 Phase 3 emits this after an in-process server session becomes active.
+  // This event fires after an in-process server session becomes active.
   // Routing preserves the renderer and its other live sessions.
   useEffect(() => {
     return desktopAPI?.servers?.onNavigateHome?.(() => {
@@ -851,7 +860,7 @@ export function WorkbenchShell() {
     [installedApps],
   );
 
-  // D342 Phase 2 — build the warm-up draft seed for a bare app launch: pick the
+  // build the warm-up draft seed for a bare app launch: pick the
   // app's first workspace create-action as the blank-doc template + filename,
   // scoped to the active room. Returns undefined if the app isn't ready.
   const buildMiniAppDraftSeed = useCallback(
@@ -919,12 +928,12 @@ export function WorkbenchShell() {
       requestWorkSurfaceTransition(() => {
       setActiveMiniAppContext(null);
       clearActiveMiniApp();
-      // D344 — collapse the left column ONLY on a bare Launch (no document):
+      // collapse the left column ONLY on a bare Launch (no document):
       // the Apps panel is a launcher, so maximizing the work surface is right.
       // But when opening a SPECIFIC document in a mini-app (a `target` — e.g.
       // clicking a spreadsheet in the Files/Artifacts panel), DO NOT collapse:
       // the user keeps their browser to switch between files and collapses it
-      // themselves (`‹` / rail icon) if they want. (D342 collapsed always,
+      // themselves (`‹` / rail icon) if they want. The previous behavior collapsed it always,
       // which killed Files/Artifacts context when picking a file to edit.)
       if (target === undefined) {
         panelSizes.setCollapsed("browser", true);
@@ -933,7 +942,7 @@ export function WorkbenchShell() {
       if (panelSizes.contextWidth < READER_CHAT_DEFAULT_WIDTH_PX) {
         panelSizes.setWidth("context", READER_CHAT_DEFAULT_WIDTH_PX);
       }
-      // D342 Phase 2 — a bare launch (no bound doc) opens a warm-up draft: the
+      // a bare launch (no bound doc) opens a warm-up draft: the
       // app runs against a blank seeded from its default workspace create-action
       // and only materializes a workspace artifact on first edit (no clutter).
       const draft = target === undefined ? buildMiniAppDraftSeed(appId) : undefined;
@@ -949,7 +958,7 @@ export function WorkbenchShell() {
     [auth.viewer.isVerified, canInvokeAgents, canWriteArtifacts, panelSizes, buildMiniAppDraftSeed, requestWorkSurfaceTransition, setWorkSurface],
   );
 
-  // D342 Phase 2 — when a draft materializes into a real artifact, re-bind the
+  // when a draft materializes into a real artifact, re-bind the
   // work surface so panel toggles / reloads keep the now-saved document.
   const handleMiniAppMaterialized = useCallback((artifact: OpenFileTarget) => {
     const prev = workSurfaceRef.current;
@@ -959,7 +968,7 @@ export function WorkbenchShell() {
     setWorkSurfaceState(next);
   }, []);
 
-  // D344 — open the full-width Apps overview / per-app detail pages. Like other
+  // open the full-width Apps overview / per-app detail pages. Like other
   // launches, collapse the left column to maximize the surface.
   const openAppsOverview = useCallback(() => {
     if (!auth.viewer.isVerified) return;
@@ -1029,7 +1038,7 @@ export function WorkbenchShell() {
     [auth.viewer.isVerified, panelSizes, requestWorkSurfaceTransition, setWorkSurface],
   );
 
-  // D362 — open the read-only office viewer for a workspace artifact. Same
+  // open the read-only office viewer for a workspace artifact. Same
   // panel behavior as a SaaS app launch (collapse browser, keep chat available).
   const openOfficeDoc = useCallback(
     (target: OfficeDocTarget) => {
@@ -1116,7 +1125,7 @@ export function WorkbenchShell() {
     });
   }, [setWorkSurface]);
 
-  // D373 / Stack 137 — open the terminal work surface (center column,
+  // open the terminal work surface (center column,
   // chat slides to the reader sidecar, same as saas-app/office-doc).
   const openTerminal = useCallback(
     (target: OpenTerminalTarget) => {
@@ -1253,7 +1262,7 @@ export function WorkbenchShell() {
     requestWorkSurfaceTransition(clearWorkSurfaceImmediately);
   }, [clearWorkSurfaceImmediately, requestWorkSurfaceTransition]);
 
-  // D303 — the shell header remains mounted above work surfaces, so Home must
+  // the shell header remains mounted above work surfaces, so Home must
   // close the current surface through its draft guard before resetting chrome.
   const goHome = useCallback(() => {
     requestWorkSurfaceTransition(() => {
@@ -1651,7 +1660,7 @@ export function WorkbenchShell() {
     // `overflow-hidden` scroll-boundary guards) are defined in
     // `chrome-shell.layout.ts` and regression-tested there — see the
     // constants' JSDoc for the full rationale.
-    // D182 / Phase 11.6.E.2 — NewConversationProvider hosts the
+    // NewConversationProvider hosts the
     // single dialog mount-point so the explorer "+" + RoomsPanel
     // "+ New conversation…" + future triggers all open the same
     // dialog instance via `useNewConversation().open(...)`.
@@ -1694,12 +1703,12 @@ export function WorkbenchShell() {
         className={SHELL_GRID_CLASSES}
         style={{ gridTemplateColumns: gridCols }}
       >
-        {/* D278 §4.7.4 — one shared Conversational Focus source for this room
+        {/* one shared Conversational Focus source for this room
             so the Members panel cards/rail AND the in-transcript agent avatars
             (R4) read & toggle the same state. Context.Provider adds no DOM, so
             the grid layout is unaffected. */}
         <RoomFocusProvider roomId={roomNav.activeRoomId}>
-        {/* D076 Chunk 4 — Navigation rail. Grid column 1 when visible.
+        {/* Navigation rail. Grid column 1 when visible.
             Desktop-only; ⌘⇧0 or View → Toggle Navigation Rail collapses.
             buildGridCols drops its column when railVisible is false
             so the rest of the grid slides left seamlessly. */}
@@ -1713,13 +1722,13 @@ export function WorkbenchShell() {
               if (id === "open-terminal") requestOpenTerminal();
             }}
             accountFooter={authenticatedHuman ? <WorkbenchAccountMenu variant="rail" /> : undefined}
-            // D365 — theme toggle now lives on the rail (bottom, above voice),
+            // theme toggle now lives on the rail (bottom, above voice),
             // not the center header. Single entry point.
             theme={theme}
             onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
             updateStatus={desktopUpdate.status}
             onOpenUpdate={desktopUpdate.open}
-            // D303 — two left-column PANEL toggles: Artifacts (Boxes) and Rooms
+            // two left-column PANEL toggles: Artifacts (Boxes) and Rooms
             // (chat). Each is 3-state (open / collapsed `›` / inactive) from the
             // pure left-column-nav view-model, mutually exclusive, and operates
             // IN PLACE on any room route (no navigation) — so you can pop
@@ -1742,14 +1751,14 @@ export function WorkbenchShell() {
                   state={roomsIconState(leftColState)}
                   onToggle={() => applyToggleIntent(roomsToggleIntent(leftColState))}
                 />
-                {/* D342 — installed mini-apps panel toggle (LayoutGrid, "apps"). */}
+                {/* installed mini-apps panel toggle (LayoutGrid, "apps"). */}
                 {canInvokeAgents && canWriteArtifacts ? (
                   <AppsRail
                     state={appsIconState(leftColState)}
                     onToggle={() => applyToggleIntent(appsToggleIntent(leftColState))}
                   />
                 ) : null}
-                {/* D336 — Web / SaaS control panel toggle (Globe2, "web"). */}
+                {/* Web / SaaS control panel toggle (Globe2, "web"). */}
                 {canInvokeAgents ? (
                   <WebRail
                     state={webIconState(leftColState)}
@@ -1758,19 +1767,19 @@ export function WorkbenchShell() {
                 ) : null}
               </>
             }
-            // D303 — the rail no longer has a Home item; the home/reset
+            // the rail no longer has a Home item; the home/reset
             // affordance is the top-left NAUTILO wordmark (see header). All
             // rail route items (including Scheduled tasks and Connections)
             // navigate normally; active state is pathname-matched.
           />
         )}
 
-        {/* D057 2a.1 — Browser column. Mode-driven (D182 Phase 11.6.B):
+        {/* Browser column. Mode-driven:
             - "artifacts" (default) renders the existing <BrowserColumn />
               with its Artifacts / Files tabs.
             - "rooms" renders <RelationshipExplorer /> with grouped
               People / Agents / Groups / Recent sections per
-              workbench-ui-vocabulary.md §4.5 + D111 P3's explorer
+              workbench-ui-vocabulary.md and the Rooms explorer
               groupings, but as a USER-CONTROLLED TOGGLE rather than
               a permanent hijack of verified users.
             The collapse affordance (chevron + edge-strip) lives on
@@ -1791,14 +1800,14 @@ export function WorkbenchShell() {
             onCollapse={() => panelSizes.setCollapsed("browser", true)}
           />
         )}
-        {/* D342 — dedicated installed-mini-apps panel ("apps"). */}
+        {/* dedicated installed-mini-apps panel ("apps"). */}
         {showBrowserColumn && browserMode === "apps" && canInvokeAgents && canWriteArtifacts && (
           <AppsPanel
             onCollapse={() => panelSizes.setCollapsed("browser", true)}
             onOpenFile={focusFile}
           />
         )}
-        {/* D336 — Web / known-SaaS panel ("web"). */}
+        {/* Web / known-SaaS panel ("web"). */}
         {showBrowserColumn && browserMode === "web" && canInvokeAgents && (
           <KnownWebAppsPanel
             onCollapse={() => panelSizes.setCollapsed("browser", true)}
@@ -1814,6 +1823,8 @@ export function WorkbenchShell() {
         <main className="grid min-w-0 grid-rows-[48px_1fr] overflow-hidden">
           <header className="flex items-center justify-between border-b border-border px-4">
             <div className="flex items-center gap-2">
+              {!showRail && <CompactNavigation verified={auth.viewer.isVerified} onHome={goHome}
+                onAction={id => { if (id === "open-terminal") requestOpenTerminal(); }} />}
               <button
                 type="button"
                 onClick={goHome}
@@ -2009,9 +2020,9 @@ export function WorkbenchShell() {
 
         {/* Context panel / Drawer (right) — desktop only.
             When drawer is open, hide ContextPanel and render ThreadDrawer.
-            D077 — parent aside is position:relative so the collapse
+            The parent aside is position:relative so the collapse
             chevron can float in the top-left corner.
-            D093 follow-up — auto-hidden on /settings to give the
+            It is auto-hidden on /settings to give the
             settings page the full horizontal column (API-key values
             were clipping off the right edge). */}
         {bp === "desktop" && trailingDrawerOpen && (
@@ -2028,20 +2039,12 @@ export function WorkbenchShell() {
         {bp === "desktop" && !trailingDrawerOpen && workSurfaceOwnsMain && !panelSizes.contextCollapsed && (
           <aside className="relative grid min-h-0 min-w-0 grid-rows-[auto_1fr] overflow-hidden border-l border-border bg-background">
             <ContextPanelCollapseChevron
-              onCollapse={() =>
-                panelSizes.setCollapsed("context", true)
-              }
+              onCollapse={() => panelSizes.setCollapsed("context", true)}
               label="Hide chat panel"
             />
             {readingFile ? <ReadingChatHeader file={readingFile} /> : null}
             <div className="min-h-0 min-w-0">
-              {/* D352 — supply the active room's author/member context so the
-                  reader-rail chat's @-mention picker, agent identity, and peer
-                  labels match the center chat. `activeRoomMembers` is already
-                  fetched above (group detection), so this adds no round-trip. */}
               <RoomAuthorScope members={activeRoomMembers}>
-                {/* Baseline: <Conversation chromeDensity="readerRail" />. D513 adds
-                    only the shell-owned draft registrar below. */}
                 <Conversation
                   chromeDensity="readerRail"
                   registerSendToGenieDraftDispatcher={genieHandoffBridge.registerBrowserPageDraftDispatcher}
@@ -2050,6 +2053,28 @@ export function WorkbenchShell() {
               </RoomAuthorScope>
             </div>
           </aside>
+        )}
+        {readerMembersVisible && roomNav.activeRoomId && (
+          readerMembersExpanded ? (
+            <aside className="min-h-0 min-w-0 overflow-hidden border-l border-border bg-background-panel">
+              <MembersManagerPanel
+                roomId={roomNav.activeRoomId}
+                roomLabel={roomNav.activeRoom?.label ?? ""}
+                members={activeRoomMembers}
+                conductorMode={activeRoomConductorMode}
+                viewerActorId={auth.viewer.sessionActorId ?? ""}
+                view="full"
+                onSetView={() => setReaderMembersExpanded(false)}
+              />
+            </aside>
+          ) : (
+            <MembersColumn
+              roomId={roomNav.activeRoomId}
+              viewerActorId={auth.viewer.sessionActorId ?? ""}
+              members={activeRoomMembers}
+              onExpand={() => setReaderMembersExpanded(true)}
+            />
+          )
         )}
         {bp === "desktop" && !trailingDrawerOpen && !workSurfaceOwnsMain && !contextColumnHidden && (
           <aside className="relative border-l border-border bg-background-panel overflow-y-auto">
@@ -2077,7 +2102,7 @@ export function WorkbenchShell() {
           </aside>
         )}
 
-        {/* D077 — draggable dividers. Rendered only when the panel on
+        {/* draggable dividers. Rendered only when the panel on
             at least one side of the divider is actually visible; no
             point offering drag handles for hidden panels.
             Browser divider: anchor is `left:`, which is window-relative.
@@ -2100,15 +2125,15 @@ export function WorkbenchShell() {
             (!workSurfaceOwnsMain &&
               !membersPanelActive &&
               !contextEffectivelyCollapsed)) && (
-          <PanelDivider kind="context" sizes={panelSizes} />
+          <PanelDivider kind="context" sizes={panelSizes} rightOffsetPx={readerMembersWidthPx} />
         )}
 
-        {/* D077 — accordion edge strips. Rendered only when the matching
+        {/* accordion edge strips. Rendered only when the matching
             panel is collapsed. Hover-reveal chevron; click expands back
             to the pre-collapse width. Replaces the old header toggle
             icons (`▤` / `ⓘ`) which overloaded glyphs that mean other
             things in every other app. */}
-        {/* D303 — the browser edge strip was removed. It sat at the window's
+        {/* the browser edge strip was removed. It sat at the window's
             left edge (left:0), overlapping the 48px nav rail. Reopen the left
             column via its rail toggle (FilesRail / RoomRail) instead. The
             context edge strip (right side, no rail to overlap) is unaffected. */}
@@ -2137,6 +2162,7 @@ export function WorkbenchShell() {
             kind="context"
             sizes={panelSizes}
             label={workSurfaceOwnsMain ? "Show chat panel" : undefined}
+            rightOffsetPx={readerMembersWidthPx}
           />
         )}
         </RoomFocusProvider>
@@ -2145,7 +2171,7 @@ export function WorkbenchShell() {
       <Footer />
       <ServerUpgradeNotice />
 
-      {/* D057 2a.10 / D059 3.5 — toast rendering + prolonged-disconnect
+      {/* Toast rendering and prolonged-disconnect
           effect. Toast lives under ToastProvider (App.tsx) and renders
           via portal; ProlongedDisconnectToast is an effect-only
           component that fires the 30s escalation. */}

@@ -23,6 +23,8 @@ export type CanonicalPrincipal = Readonly<{
   logtoSub: string;
   userId: string;
   disabledAt: Date | null;
+  /** Current enrollment and Server bans, read alongside canonical identity. */
+  serverAccessAllowed: boolean;
   actorId: string;
   actorDisplayName: string;
   handle: string | null;
