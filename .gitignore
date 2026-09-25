@@ -106,6 +106,6 @@ apps/workbench/tests/fixtures/ooxml/capacity/
 # Raw exact-image reports are CI/release artifacts, not source inputs.
 /packaging/docker/evidence/source-*/
 
-# Local-only working notes. Tracked invariant inventories use unsuffixed names.
+# Local-only working notes and legacy audit snapshots.
 *.limit-audit.*
 *.agent-notes.*

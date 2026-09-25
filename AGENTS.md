@@ -114,13 +114,11 @@ by added code. Investigate each constant's producer-to-consumer behavior, then
 present the Human with a clean list of new constants, rationale, concrete
 options, and a recommendation. The choice remains Human judgment.
 
-The commands under `packages/limit-invariants` are optional investigation aids,
-not pre-push or CI gates. Their scanner output is an observation, not a policy
-decision. Keep the limit and query inventories, reviewed decisions, and
-generated limit reports tracked so another checkout can reproduce them. Review
-their content for private planning references, personal data, and credentials
-before committing. Keep `*.agent-notes.*` working notes local. See
-[limit tooling](packages/limit-invariants/README.md) for optional commands.
+Use the separate `$check-constants` agent skill for this review. Keep the query
+inventory and its reviewed decisions tracked so another checkout can reproduce
+the database query check. Review their content for private planning references,
+personal data, and credentials before committing. Keep `*.agent-notes.*`
+working notes local.
 
 Partial results must disclose completeness and continuation. Termination must
 preserve truthful state, cleanup, and safe recovery.
