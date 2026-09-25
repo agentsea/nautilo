@@ -8,6 +8,8 @@ import {
   type EncryptionDataOperationOwner,
   type PreparedTaskContentCryptoRevisionV1,
   type TaskContentAuthorityV1,
+  type TaskContentPayloadV1,
+  type TaskRunResultPayloadV1,
   type TaskRunResultContentCoordinateV1,
 } from "@nautilo/lattice-bridge";
 import type {
@@ -77,6 +79,31 @@ type ProtectedTaskRunResultRepository = Pick<
   "publishPrepared"
 >;
 
+type AdaptiveTaskRunResultRepository = Pick<
+  DurableTaskContentRepositoryV1<ProtectedTaskRunTerminalResult>,
+  "publishPreparedProtectedOrDual"
+>;
+
+type RunResultContent = Readonly<{
+  coordinate: TaskRunResultContentCoordinateV1;
+  payload: TaskRunResultPayloadV1;
+}>;
+
+function isRunResultContent(content: TaskContentPayloadV1): content is RunResultContent {
+  return content.coordinate.kind === "run_result";
+}
+
+export interface DualTaskRunResultTerminalPort {
+  terminalizeDual(input: Omit<
+    Parameters<ProtectedTaskRunTerminalPort["terminalize"]>[0],
+    "resultRepresentation"
+  > & Readonly<{
+    resultRepresentation: "dual";
+    /** Canonical ordinary sibling, visible only to the Shadow product callback. */
+    ordinaryContent: RunResultContent;
+  }>): Promise<ProtectedTaskRunTerminalResult>;
+}
+
 export type PublishProtectedTaskRunResultInput = Readonly<{
   repository: ProtectedTaskRunResultRepository;
   terminal: ProtectedTaskRunTerminalPort;
@@ -89,6 +116,14 @@ export type PublishProtectedTaskRunResultInput = Readonly<{
   scheduleKind: "now" | "one_shot" | "cron";
   completedAt: Date;
 }>;
+
+export type PublishProtectedOrDualTaskRunResultInput = Readonly<
+  Omit<PublishProtectedTaskRunResultInput, "repository"> & {
+    repository: AdaptiveTaskRunResultRepository;
+    dualTerminal: DualTaskRunResultTerminalPort;
+    ordinaryContent: RunResultContent;
+  }
+>;
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
@@ -103,7 +138,7 @@ function operationId(taskRunId: string): string {
   return `task-run-result:${taskRunId}`;
 }
 
-function validate(input: PublishProtectedTaskRunResultInput): Readonly<{
+function validate(input: Omit<PublishProtectedTaskRunResultInput, "repository">): Readonly<{
   coordinate: TaskRunResultContentCoordinateV1;
   operationId: string;
   requestDigest: Uint8Array;
@@ -240,6 +275,93 @@ export async function publishProtectedTaskRunResult(
     throw new ClassifiedDataOperationError(
       "integrity",
       "Protected Task result publication did not map its exact revision",
+    );
+  }
+  return Object.freeze({
+    status: revision.status,
+    taskId: exact.coordinate.taskId,
+    taskRunId: exact.coordinate.taskRunId,
+    resultObjectId: revision.cryptoObjectId,
+    resultRevision: RESULT_REVISION,
+  });
+}
+
+/**
+ * The shared repository selects Full or Shadow. The protected callback carries
+ * no plaintext; only the selected dual callback may pass the canonical ordinary
+ * sibling to its atomic TaskRun product write.
+ */
+export async function publishProtectedOrDualTaskRunResult(
+  input: PublishProtectedOrDualTaskRunResultInput,
+): Promise<ProtectedTaskRunResultPublicationReceipt> {
+  const exact = validate(input);
+  if (
+    !sameTaskContentCoordinateV1(
+      input.ordinaryContent.coordinate,
+      exact.coordinate,
+    )
+    || input.ordinaryContent.payload.formatVersion !== 1
+    || (exact.outcome === "completed")
+      !== (input.ordinaryContent.payload.lastError === null)
+  ) {
+    throw new TypeError("Task result ordinary sibling disagrees with its outcome");
+  }
+  const terminalInput = <Representation extends "protected" | "dual">(
+    representation: Representation,
+    revalidationToken: number,
+  ) => Object.freeze({
+    taskId: exact.coordinate.taskId,
+    taskRunId: exact.coordinate.taskRunId,
+    scheduleKind: exact.scheduleKind,
+    operationId: exact.operationId,
+    requestDigest: exact.requestDigest.slice(),
+    resultObjectId: exact.resultObjectId,
+    resultRevision: RESULT_REVISION,
+    resultRepresentation: representation,
+    outcome: exact.outcome,
+    completedAt: new Date(exact.completedAt.getTime()),
+    requiredRunStatus: "running" as const,
+    policyRevalidationToken: revalidationToken,
+  });
+  const publication = await input.repository.publishPreparedProtectedOrDual({
+    owner: input.owner,
+    operationId: exact.operationId,
+    requestDigest: exact.requestDigest,
+    authority: exact.authority,
+    operationalMetadata: null,
+    prepared: input.prepared,
+    ordinaryContent: input.ordinaryContent,
+    publishProtectedProduct: async (context) => {
+      const terminal = await input.terminal.terminalize(
+        terminalInput("protected", context.revalidationToken),
+      );
+      if (terminal.status === "rejected") terminalRejection(terminal);
+      return terminal;
+    },
+    publishDualProduct: async (content, context) => {
+      if (!isRunResultContent(content)) {
+        throw new TypeError("Task result ordinary sibling has wrong coordinate");
+      }
+      const terminal = await input.dualTerminal.terminalizeDual({
+        ...terminalInput("dual", context.revalidationToken),
+        ordinaryContent: content,
+      });
+      if (terminal.status === "rejected") terminalRejection(terminal);
+      return terminal;
+    },
+  });
+  const revision = publication.protectedRevision;
+  if (
+    (publication.representation !== "protected"
+      && publication.representation !== "dual")
+    || revision === null
+    || revision.status === "orphaned"
+    || !sameTaskContentCoordinateV1(revision.coordinate, exact.coordinate)
+    || revision.cryptoObjectId !== exact.resultObjectId
+  ) {
+    throw new ClassifiedDataOperationError(
+      "integrity",
+      "Task result publication did not map its exact revision",
     );
   }
   return Object.freeze({

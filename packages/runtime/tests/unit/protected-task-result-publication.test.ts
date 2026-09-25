@@ -14,7 +14,9 @@ import type { ProtectedTaskJobReferenceV1 } from
   "../../src/tasks/protected-task-job-reference";
 import {
   publishProtectedTaskRunResult,
+  publishProtectedOrDualTaskRunResult,
   type ProtectedTaskRunTerminalPort,
+  type PublishProtectedOrDualTaskRunResultInput,
   type PublishProtectedTaskRunResultInput,
 } from "../../src/tasks/protected-task-result-publication";
 
@@ -385,5 +387,126 @@ describe("protected Task result publication", () => {
       "terminal",
       "complete",
     ]);
+  });
+});
+
+describe("adaptive protected Task result publication", () => {
+  function adaptiveFixture(
+    mode: "plaintext_only" | "shadow_encryption" | "encrypted_only",
+  ) {
+    const calls: string[] = [];
+    const ordinaryContent = Object.freeze({
+      coordinate: coordinate(),
+      payload: Object.freeze({
+        formatVersion: 1 as const,
+        resultText: "finished work",
+        lastError: null,
+      }),
+    });
+    const terminal: ProtectedTaskRunTerminalPort = {
+      terminalize: async (value) => {
+        calls.push(`terminal:${value.resultRepresentation}`);
+        return { status: "transitioned" };
+      },
+    };
+    type AdaptivePublication = Awaited<ReturnType<
+      PublishProtectedOrDualTaskRunResultInput["repository"]["publishPreparedProtectedOrDual"]
+    >>;
+    const repository: PublishProtectedOrDualTaskRunResultInput["repository"] = {
+      publishPreparedProtectedOrDual: async (request) => request.owner.runMutation<AdaptivePublication>({
+        protected: async (context) => {
+          calls.push("reserve:protected");
+          const product = await request.publishProtectedProduct(context);
+          calls.push("complete:protected");
+          return {
+            product,
+            representation: "protected",
+            protectedRevision: {
+              status: "mapped",
+              coordinate: request.prepared.coordinate,
+              cryptoObjectId: request.prepared.objectId,
+            },
+          };
+        },
+        dual: async (context) => {
+          calls.push("reserve:dual");
+          const product = await request.publishDualProduct(
+            request.ordinaryContent,
+            context,
+          );
+          calls.push("complete:dual");
+          return {
+            product,
+            representation: "dual",
+            protectedRevision: {
+              status: "mapped",
+              coordinate: request.prepared.coordinate,
+              cryptoObjectId: request.prepared.objectId,
+            },
+          };
+        },
+      }),
+    };
+    const input: PublishProtectedOrDualTaskRunResultInput = {
+      repository,
+      terminal,
+      dualTerminal: {
+        terminalizeDual: async (value) => {
+          calls.push(`terminal:${value.resultRepresentation}`);
+          expect(value.ordinaryContent).toEqual(ordinaryContent);
+          return { status: "transitioned" };
+        },
+      },
+      owner: operationOwner(mode),
+      reference: reference(),
+      authority,
+      prepared: prepared(),
+      requestDigest: new Uint8Array(32).fill(9),
+      outcome: "completed",
+      scheduleKind: "now",
+      completedAt: COMPLETED_AT,
+      ordinaryContent,
+    };
+    return { calls, input };
+  }
+
+  test("Full calls only the content-free protected terminal", async () => {
+    const state = adaptiveFixture("encrypted_only");
+    expect((await publishProtectedOrDualTaskRunResult(state.input)).status)
+      .toBe("mapped");
+    expect(state.calls).toEqual([
+      "reserve:protected", "terminal:protected", "complete:protected",
+    ]);
+  });
+
+  test("Shadow sends the canonical sibling only to the dual terminal", async () => {
+    const state = adaptiveFixture("shadow_encryption");
+    expect((await publishProtectedOrDualTaskRunResult(state.input)).status)
+      .toBe("mapped");
+    expect(state.calls).toEqual([
+      "reserve:dual", "terminal:dual", "complete:dual",
+    ]);
+  });
+
+  test("Plain cannot enter the protected result repository", async () => {
+    const state = adaptiveFixture("plaintext_only");
+    const error = await publishProtectedOrDualTaskRunResult(state.input)
+      .then(() => null, (cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    expect(state.calls).toEqual([]);
+  });
+
+  test("rejects mismatched result content before any policy write", async () => {
+    const state = adaptiveFixture("shadow_encryption");
+    const error = await publishProtectedOrDualTaskRunResult({
+      ...state.input,
+      ordinaryContent: {
+        ...state.input.ordinaryContent,
+        payload: { formatVersion: 1, resultText: null, lastError: "failure" },
+      },
+    }).then(() => null, (cause: unknown) => cause);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toContain("disagrees with its outcome");
+    expect(state.calls).toEqual([]);
   });
 });
