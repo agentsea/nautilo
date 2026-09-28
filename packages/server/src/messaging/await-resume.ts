@@ -47,7 +47,7 @@ export async function maybeResumeAwaitingTask(
 
   const db = getSharedDirectDb();
   try {
-    const found = await findAwaitingTaskForRoom(db, roomId, fromUserId);
+    const found = await findAwaitingTaskForRoom(db, roomId, fromUserId, "ordinary");
     if (!found) return;
 
     const { task, graphThreadId, runId } = found;

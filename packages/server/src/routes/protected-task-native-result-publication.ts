@@ -127,9 +127,13 @@ function sameAuthority(
 }
 
 function assertExactReference(reference: ProtectedTaskJobReferenceV1): void {
+  const resumed = Number.isSafeInteger(reference.executionSegment)
+    && reference.executionSegment > 1;
   if (
     Object.keys(reference).sort().join(",")
-      !== "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
+      !== (resumed
+        ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
+        : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId")
     || reference.kind !== "protected_task_run_v1"
     || !UUID.test(reference.taskId)
     || !UUID.test(reference.taskRunId)
@@ -142,6 +146,12 @@ function assertExactReference(reference: ProtectedTaskJobReferenceV1): void {
     || reference.policyRevision < 1
     || !Number.isSafeInteger(reference.executionSegment)
     || reference.executionSegment < 1
+    || (resumed && (
+      typeof reference.resumeAcceptanceId !== "string"
+      || !PORTABLE_ID.test(reference.resumeAcceptanceId)
+      || encoder.encode(reference.resumeAcceptanceId).length
+        > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+    ))
   ) throw new TypeError("Protected Task result reference is invalid");
 }
 

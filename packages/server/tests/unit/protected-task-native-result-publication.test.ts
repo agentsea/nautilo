@@ -298,6 +298,28 @@ test.each([0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
   },
 );
 
+test("requires an opaque acceptance binding on resumed result references", () => {
+  const state = fixture();
+  expect(() => createProtectedTaskNativeResultPublication({
+    ...state.input,
+    reference: {
+      ...reference,
+      executionSegment: 2,
+      resumeAcceptanceId: "await-reply-acceptance:1",
+    },
+  }, state.overrides)).not.toThrow();
+  for (const invalid of [
+    { ...reference, executionSegment: 2 },
+    { ...reference, resumeAcceptanceId: "await-reply-acceptance:1" },
+    { ...reference, executionSegment: 2, resumeAcceptanceId: "contains spaces" },
+  ]) {
+    expect(() => createProtectedTaskNativeResultPublication({
+      ...state.input,
+      reference: invalid as never,
+    }, state.overrides)).toThrow("Protected Task result reference is invalid");
+  }
+});
+
 test("destroys the decoded request when current authority is unavailable", async () => {
   const state = fixture();
   const overrides: Overrides = {

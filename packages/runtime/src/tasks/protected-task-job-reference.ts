@@ -23,6 +23,7 @@ export type ProtectedTaskJobReferenceV1 = Readonly<{
   authorizationRequestId: string;
   policyRevision: number;
   executionSegment: number;
+  resumeAcceptanceId?: string;
 }>;
 
 function isPortableIdentifier(value: unknown): value is string {
@@ -39,9 +40,13 @@ export function assertProtectedTaskJobReferenceV1(
     throw new TypeError("Protected Task durable Job reference is invalid");
   }
   const reference = value as Record<string, unknown>;
+  const resumed = Number.isSafeInteger(reference["executionSegment"])
+    && (reference["executionSegment"] as number) > 1;
   if (
     Object.keys(reference).sort().join(",")
-      !== "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
+      !== (resumed
+        ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
+        : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId")
     || reference["kind"] !== "protected_task_run_v1"
     || typeof reference["taskId"] !== "string"
     || !UUID.test(reference["taskId"])
@@ -56,6 +61,7 @@ export function assertProtectedTaskJobReferenceV1(
     || (reference["policyRevision"] as number) < 1
     || !Number.isSafeInteger(reference["executionSegment"])
     || (reference["executionSegment"] as number) < 1
+    || (resumed && !isPortableIdentifier(reference["resumeAcceptanceId"]))
   ) {
     throw new TypeError("Protected Task durable Job reference is invalid");
   }

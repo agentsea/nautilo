@@ -166,6 +166,10 @@ describe("M151 — findAwaitingTaskForRoom (live PG)", () => {
     expect(found!.task.id).toBe(fixture.taskId);
     expect(found!.graphThreadId).toBe("room:R:bot:A");
     expect(found!.runId).toBe(fixture.runId);
+    expect((await findAwaitingTaskForRoom(db, roomId, owner.userId, "ordinary"))?.task.id)
+      .toBe(fixture.taskId);
+    expect(await findAwaitingTaskForRoom(db, roomId, owner.userId, "protected"))
+      .toBeUndefined();
   });
 
   test("matches when fromUserId is in target_user_ids (the ask_peer peer)", async () => {

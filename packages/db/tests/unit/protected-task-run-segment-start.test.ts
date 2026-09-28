@@ -19,6 +19,9 @@ const ids = {
   owner: "40000000-0000-4000-8000-000000000004",
   agent: "50000000-0000-4000-8000-000000000005",
   namespace: "60000000-0000-4000-8000-000000000006",
+  room: "70000000-0000-4000-8000-000000000007",
+  session: "80000000-0000-4000-8000-000000000008",
+  sourceUser: "90000000-0000-4000-8000-000000000009",
 };
 const graphThreadId = `subagent:${ids.task}:${ids.run}`;
 const definitionObjectId = `task-definition:v1:${"a".repeat(64)}`;
@@ -28,6 +31,9 @@ const fingerprint = new Uint8Array(Array.from({ length: 32 }, (_, index) => inde
 const parkedAt = new Date("2026-09-28T12:34:56.000Z");
 const receiptKey = "nautilo.protectedTaskRunPark.v1";
 const terminalReceiptKey = "nautilo.protectedTaskRunTerminal.v1";
+const acceptanceReceiptKey = "nautilo.protectedTaskAwaitReplyAcceptance.v1";
+const acceptedAt = new Date("2026-09-28T12:35:00.000Z");
+const acceptanceId = "await-reply-acceptance:1";
 
 function priorReference(
   overrides: Partial<ProtectedTaskDurableJobReference> = {},
@@ -52,6 +58,42 @@ function nextReference(
     ...priorReference(),
     authorizationRequestId: `task-run-authorization:${ids.run}:segment:2`,
     executionSegment: 2,
+    resumeAcceptanceId: acceptanceId,
+    ...overrides,
+  };
+}
+
+function acceptance() {
+  return {
+    acceptanceId,
+    interruptId: "interrupt:z",
+    message: {
+      roomId: ids.room,
+      sessionId: ids.session,
+      messageId: "41",
+      editRevision: 2,
+      cryptoObjectId: "message:v2:accepted",
+      namespaceId: ids.namespace,
+      sourceUserId: ids.sourceUser,
+    },
+    acceptedAt,
+  } as const;
+}
+
+function acceptanceReceipt(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    acceptanceId,
+    taskId: ids.task,
+    taskRunId: ids.run,
+    jobId: ids.priorJob,
+    graphThreadId,
+    generation: 3,
+    executionSegment: 1,
+    nextExecutionSegment: 2,
+    interrupt: { id: "interrupt:z", kind: "await_reply" },
+    message: acceptance().message,
+    acceptedAt: acceptedAt.toISOString(),
     ...overrides,
   };
 }
@@ -101,6 +143,7 @@ function input(
     cryptoRequiredNamespaceFingerprint: fingerprint,
     priorJobReference: priorReference(),
     jobReference: nextReference(),
+    acceptance: acceptance(),
     ...overrides,
   };
 }
@@ -115,6 +158,8 @@ function task(overrides: Partial<Task> = {}): Task {
     expectedOutput: null,
     scheduleKind: "one_shot",
     status: "awaiting",
+    targetRoomId: ids.room,
+    targetUserIds: [ids.sourceUser],
     lastError: null,
     contentRepresentation: "protected",
     contentNamespaceId: ids.namespace,
@@ -166,7 +211,10 @@ function priorJob(overrides: Partial<Job> = {}): Job {
     createdAt: new Date("2026-09-28T12:00:01.000Z"),
     startedAt: new Date("2026-09-28T12:00:02.000Z"),
     completedAt: parkedAt,
-    metadata: { [receiptKey]: receipt() },
+    metadata: {
+      [receiptKey]: receipt(),
+      [acceptanceReceiptKey]: acceptanceReceipt(),
+    },
     ...overrides,
   };
 }
@@ -256,6 +304,7 @@ function harness(options: FixtureOptions = {}) {
               taskRow = { ...taskRow, ...patch } as Task;
               return [taskRow];
             }
+            if (table === jobs) return [priorJobRow];
             throw new Error("unexpected update table");
           },
         }),
@@ -284,7 +333,7 @@ async function expectRejected(
 }
 
 describe("protected TaskRun parked-segment start CAS", () => {
-  test("locks the aggregate in order and swaps only the TaskRun Job", async () => {
+  test("locks the aggregate in order, consumes acceptance, and swaps the Job", async () => {
     const fixture = harness();
 
     expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
@@ -296,20 +345,34 @@ describe("protected TaskRun parked-segment start CAS", () => {
       { table: jobs, kind: "update" },
       { table: jobs, kind: "update" },
     ]);
-    expect(fixture.writes).toHaveLength(2);
+    expect(fixture.writes).toHaveLength(3);
     expect(fixture.writes[0]).toEqual({
+      table: jobs,
+      patch: {
+        metadata: {
+          [receiptKey]: receipt(),
+          [acceptanceReceiptKey]: acceptanceReceipt({
+            consumedByJobId: ids.job,
+          }),
+        },
+      },
+    });
+    expect(fixture.writes[1]).toEqual({
       table: taskRuns,
       patch: { status: "running", jobId: ids.job },
     });
-    expect(fixture.writes[1]?.table).toBe(tasks);
-    expect(fixture.writes[1]?.patch["status"]).toBe("running");
-    expect(fixture.writes[1]?.patch["updatedAt"]).toBeInstanceOf(Date);
+    expect(fixture.writes[2]?.table).toBe(tasks);
+    expect(fixture.writes[2]?.patch["status"]).toBe("running");
+    expect(fixture.writes[2]?.patch["updatedAt"]).toBeInstanceOf(Date);
   });
 
   test("keeps recipient generation independent from the next execution segment", async () => {
     const fixture = harness({
       priorJob: priorJob({
-        metadata: { [receiptKey]: receipt({ generation: 0 }) },
+        metadata: {
+          [receiptKey]: receipt({ generation: 0 }),
+          [acceptanceReceiptKey]: acceptanceReceipt({ generation: 0 }),
+        },
       }),
     });
 
@@ -325,6 +388,14 @@ describe("protected TaskRun parked-segment start CAS", () => {
       nextJob: nextJob({
         status: "running",
         startedAt: new Date("2026-09-28T12:35:01.000Z"),
+      }),
+      priorJob: priorJob({
+        metadata: {
+          [receiptKey]: receipt(),
+          [acceptanceReceiptKey]: acceptanceReceipt({
+            consumedByJobId: ids.job,
+          }),
+        },
       }),
     });
 
@@ -343,6 +414,17 @@ describe("protected TaskRun parked-segment start CAS", () => {
       status: "started",
     });
     expect(fixture.writes).toEqual([
+      {
+        table: jobs,
+        patch: {
+          metadata: {
+            [receiptKey]: receipt(),
+            [acceptanceReceiptKey]: acceptanceReceipt({
+              consumedByJobId: ids.job,
+            }),
+          },
+        },
+      },
       { table: taskRuns, patch: { status: "running", jobId: ids.job } },
     ]);
   });
@@ -365,6 +447,25 @@ describe("protected TaskRun parked-segment start CAS", () => {
     }
   });
 
+  test("requires the exact unconsumed acceptance for the fresh segment", async () => {
+    for (const changed of [
+      undefined,
+      acceptanceReceipt({ acceptanceId: "await-reply-acceptance:other" }),
+      acceptanceReceipt({ nextExecutionSegment: 3 }),
+      acceptanceReceipt({ consumedByJobId: ids.priorJob }),
+      acceptanceReceipt({ hidden: "content" }),
+    ]) {
+      const metadata: Record<string, unknown> = { [receiptKey]: receipt() };
+      if (changed !== undefined) metadata[acceptanceReceiptKey] = changed;
+      const fixture = harness({ priorJob: priorJob({ metadata }) });
+      expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+        status: "rejected",
+        reason: "conflict",
+      });
+      expect(fixture.writes).toEqual([]);
+    }
+  });
+
   test("rejects stopped, terminal, stale, Plain, or content-bearing state", async () => {
     const cases: FixtureOptions[] = [
       { task: task({ status: "cancelled" }) },
@@ -376,6 +477,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
       { run: run({ resultRevision: 1 }) },
       { priorJob: priorJob({ metadata: {
         [receiptKey]: receipt(),
+        [acceptanceReceiptKey]: acceptanceReceipt(),
         [terminalReceiptKey]: { version: 1 },
       } }) },
       { nextJob: nextJob({ result: { content: true } }) },
@@ -455,6 +557,15 @@ describe("protected TaskRun parked-segment start CAS", () => {
       jobReference: nextReference({
         authorizationRequestId: priorReference().authorizationRequestId,
       }),
+    })), "binding is malformed");
+    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+      jobReference: priorReference({
+        authorizationRequestId: `task-run-authorization:${ids.run}:segment:2`,
+        executionSegment: 2,
+      }),
+    })), "binding is malformed");
+    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+      jobReference: nextReference({ resumeAcceptanceId: "other-acceptance" }),
     })), "binding is malformed");
     await expectRejected(startParkedProtectedTaskRunSegment(db, input({
       priorJobReference: priorReference({ executionSegment: 0 }),

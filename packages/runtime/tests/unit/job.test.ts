@@ -1,5 +1,6 @@
 import { describe, test, expect, spyOn } from "bun:test";
 import { Job } from "../../src/job";
+import { assertProtectedTaskJobReferenceV1 } from "../../src/tasks/protected-task-job-reference";
 import type { ServerEvent, JobStatus } from "@nautilo/types";
 import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
 import { runWithLiveShadowTurnSession } from "../../src/conversation/live-shadow-turn-context";
@@ -261,6 +262,34 @@ describe("Job", () => {
         "Protected Task durable Job reference is invalid",
       );
       expect(persistCalls).toBe(0);
+    }
+  });
+
+  test("resumed protected Task Jobs require one opaque acceptance binding", () => {
+    const initial = {
+      kind: "protected_task_run_v1",
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:request-1",
+      policyRevision: 11,
+      executionSegment: 1,
+    };
+    expect(() => assertProtectedTaskJobReferenceV1(initial)).not.toThrow();
+    expect(() => assertProtectedTaskJobReferenceV1({
+      ...initial,
+      executionSegment: 2,
+      resumeAcceptanceId: "await-reply-acceptance:1",
+    })).not.toThrow();
+    for (const invalid of [
+      { ...initial, executionSegment: 2 },
+      { ...initial, resumeAcceptanceId: "await-reply-acceptance:1" },
+      { ...initial, executionSegment: 2, resumeAcceptanceId: "contains spaces" },
+    ]) {
+      expect(() => assertProtectedTaskJobReferenceV1(invalid)).toThrow(
+        "Protected Task durable Job reference is invalid",
+      );
     }
   });
 
