@@ -81,6 +81,9 @@ export type ProtectedTaskNativeSegmentResult =
       status: "interrupted";
       threadId: string;
       interrupt: Record<string, unknown>;
+      interruptCoordinates: NonNullable<
+        Extract<RunScopeSubagentResult, { status: "interrupted" }>["interruptCoordinates"]
+      >;
     }>
   | Readonly<{ status: "aborted" }>;
 
@@ -154,6 +157,61 @@ function completedPayload(resultText: string): TaskRunResultPayloadV1 {
     resultText,
     lastError: null,
   });
+}
+
+type ProtectedInterruptCoordinates = NonNullable<
+  Extract<RunScopeSubagentResult, { status: "interrupted" }>["interruptCoordinates"]
+>;
+
+function exactInterruptCoordinates(
+  value: unknown,
+): ProtectedInterruptCoordinates {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError(
+      "Protected native Task interruption requires durable coordinates",
+    );
+  }
+  const seenIds = new Set<string>();
+  const coordinates: Array<ProtectedInterruptCoordinates[number]> = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new TypeError("Protected native Task interruption has invalid coordinates");
+    }
+    const coordinate = candidate as Record<string, unknown>;
+    if (Object.keys(coordinate).some((key) => key !== "id" && key !== "kind" && key !== "requestId")) {
+      throw new TypeError("Protected native Task interruption has invalid coordinates");
+    }
+    const id = coordinate["id"];
+    const kind = coordinate["kind"];
+    const requestId = coordinate["requestId"];
+    if (
+      typeof id !== "string"
+      || id.trim().length === 0
+      || seenIds.has(id)
+      || (
+        kind !== "approval"
+        && kind !== "prove_it"
+        && kind !== "identity"
+        && kind !== "await_reply"
+      )
+      || (
+        requestId !== undefined
+        && (typeof requestId !== "string" || requestId.trim().length === 0)
+      )
+      || (kind === "approval" && requestId === undefined)
+      || ((kind === "prove_it" || kind === "await_reply") && requestId !== undefined)
+    ) {
+      throw new TypeError("Protected native Task interruption has invalid coordinates");
+    }
+    seenIds.add(id);
+    coordinates.push(Object.freeze({
+      id,
+      kind,
+      ...(requestId === undefined ? {} : { requestId }),
+    }));
+  }
+  coordinates.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  return Object.freeze(coordinates);
 }
 
 function runnerOptions(
@@ -254,10 +312,14 @@ export async function runProtectedTaskNativeSegment(
     return payload;
   }
   if (result.status === "interrupted") {
+    const interruptCoordinates = exactInterruptCoordinates(
+      result.interruptCoordinates,
+    );
     return Object.freeze({
       status: "interrupted",
       threadId: result.threadId,
       interrupt: result.interrupt,
+      interruptCoordinates,
     });
   }
 

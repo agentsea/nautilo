@@ -208,6 +208,9 @@ describe("protected Task native runner", () => {
   test("returns interruptions and aborts in memory without publishing a result", async () => {
     const interrupted = fixture();
     const interrupt = { kind: "await_human_reply" };
+    const interruptCoordinates = Object.freeze([
+      Object.freeze({ id: "interrupt-1", kind: "await_reply" as const }),
+    ]);
     const interruptedResult = await runProtectedTaskNativeSegment(
       interrupted.input,
       {
@@ -215,6 +218,7 @@ describe("protected Task native runner", () => {
           status: "interrupted",
           threadId: GRAPH_THREAD_ID,
           interrupt,
+          interruptCoordinates,
         }),
       },
     );
@@ -222,6 +226,7 @@ describe("protected Task native runner", () => {
       status: "interrupted",
       threadId: GRAPH_THREAD_ID,
       interrupt,
+      interruptCoordinates,
     });
     expect(interrupted.published).toEqual([]);
 
@@ -243,6 +248,46 @@ describe("protected Task native runner", () => {
     expect(abortedResult).toEqual({ status: "aborted" });
     expect(calls).toBe(1);
     expect(aborted.published).toEqual([]);
+  });
+
+  test("rejects a protected interruption without content-free coordinates", async () => {
+    const scenario = fixture();
+    await expectRejected(runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async () => ({
+        status: "interrupted",
+        threadId: GRAPH_THREAD_ID,
+        interrupt: { type: "await_human_reply" },
+      }),
+    }), "durable coordinates");
+    expect(scenario.published).toEqual([]);
+  });
+
+  test.each([
+    ["empty", []],
+    ["duplicate", [
+      { id: "interrupt-1", kind: "prove_it" as const },
+      { id: "interrupt-1", kind: "await_reply" as const },
+    ]],
+    ["approval without request id", [
+      { id: "interrupt-1", kind: "approval" as const },
+    ]],
+    ["prove-it with request id", [
+      { id: "interrupt-1", kind: "prove_it" as const, requestId: "not-allowed" },
+    ]],
+    ["await-reply with request id", [
+      { id: "interrupt-1", kind: "await_reply" as const, requestId: "not-allowed" },
+    ]],
+  ] as const)("rejects %s injected protected interrupt coordinates", async (_label, interruptCoordinates) => {
+    const scenario = fixture();
+    await expectRejected(runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async () => ({
+        status: "interrupted",
+        threadId: GRAPH_THREAD_ID,
+        interrupt: { type: "await_human_reply" },
+        interruptCoordinates: [...interruptCoordinates],
+      }),
+    }), "coordinates");
+    expect(scenario.published).toEqual([]);
   });
 
   test("rejects unsupported execution modes and conflicting continuation input before graph start", async () => {

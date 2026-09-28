@@ -12,6 +12,7 @@ let ordinaryAppendCalls = 0;
 let emittedEvents: unknown[] = [];
 let streamEvents: unknown[] = [];
 let finalMessages: BaseMessage[] = [];
+let finalTasks: Array<Record<string, unknown>> = [];
 
 let runScopeSubagentUntilPause: (
   opts: import("../../src/subagents/scope-subagent/run").RunScopeSubagentOpts,
@@ -57,7 +58,7 @@ beforeAll(async () => {
         },
         getState: async () => ({
           values: { messages: finalMessages },
-          tasks: [],
+          tasks: finalTasks,
         }),
       };
     },
@@ -76,6 +77,7 @@ beforeEach(() => {
   emittedEvents = [];
   streamEvents = [];
   finalMessages = [new AIMessage("done")];
+  finalTasks = [];
 });
 
 const subEnvelope: MemoryAccessEnvelope = {
@@ -133,6 +135,101 @@ function encryptedSaver(): EncryptedCheckpointSaver {
 }
 
 describe("protected Task transcript publication", () => {
+  test("retains every sorted protected interrupt coordinate without its value", async () => {
+    const firstInterrupt = {
+      id: "interrupt-z",
+      value: {
+        type: "approval_ask",
+        approvalId: "approval-opaque",
+        reason: "private reason",
+      },
+    };
+    finalTasks = [{
+      interrupts: [
+        firstInterrupt,
+        {
+          id: "interrupt-a",
+          value: { type: "await_human_reply", targetRoomId: "room-private" },
+        },
+        {
+          id: "interrupt-m",
+          value: { type: "identity_challenge", challengeId: "challenge-opaque" },
+        },
+        {
+          id: "interrupt-b",
+          value: { type: "prove_it_challenge", tools: [{ private: "body" }] },
+        },
+      ],
+    }];
+
+    const result = await runScopeSubagentUntilPause({
+      ...baseOpts,
+      taskRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      subagentThreadId: "subagent:parent-thread:protected",
+      taskRunCheckpointSaver: encryptedSaver(),
+      protectedTaskTranscriptPort: { publishBatch: async () => {} },
+    });
+
+    expect(result).toEqual({
+      status: "interrupted",
+      threadId: "subagent:parent-thread:protected",
+      interrupt: firstInterrupt.value,
+      interruptCoordinates: [
+        { id: "interrupt-a", kind: "await_reply" },
+        { id: "interrupt-b", kind: "prove_it" },
+        { id: "interrupt-m", kind: "identity", requestId: "challenge-opaque" },
+        { id: "interrupt-z", kind: "approval", requestId: "approval-opaque" },
+      ],
+    });
+    if (result.status !== "interrupted") throw new Error("expected interruption");
+    expect(JSON.stringify(result.interruptCoordinates)).not.toContain("private");
+  });
+
+  test.each([
+    ["missing id", [{ value: { type: "await_human_reply" } }]],
+    ["unknown type", [{ id: "interrupt-1", value: { type: "future_interrupt" } }]],
+    ["duplicate id", [
+      { id: "interrupt-1", value: { type: "prove_it_challenge" } },
+      { id: "interrupt-1", value: { type: "await_human_reply" } },
+    ]],
+  ] as const)("fails closed for a protected %s", async (_label, interrupts) => {
+    finalTasks = [{ interrupts: [...interrupts] }];
+
+    let failure: unknown;
+    try {
+      await runScopeSubagentUntilPause({
+        ...baseOpts,
+        taskRun: true,
+        trustedExecutionEntrypoint: "background.task",
+        currentTaskId: "task-1",
+        currentTaskRunId: "task-run-1",
+        subagentThreadId: "subagent:parent-thread:protected",
+        taskRunCheckpointSaver: encryptedSaver(),
+        protectedTaskTranscriptPort: { publishBatch: async () => {} },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as Error).message).toContain("Protected Task interrupt");
+  });
+
+  test("keeps the ordinary interrupted result shape unchanged", async () => {
+    const interrupt = { type: "future_interrupt", privateBody: "ordinary value" };
+    finalTasks = [{ interrupts: [{ value: interrupt }] }];
+
+    const result = await runScopeSubagentUntilPause({ ...baseOpts });
+
+    if (result.status !== "interrupted") throw new Error("expected interruption");
+    expect(result.threadId.startsWith("subagent:parent-thread:")).toBe(true);
+    expect(result.interrupt).toBe(interrupt);
+    expect(Object.keys(result).sort()).toEqual(["interrupt", "status", "threadId"]);
+    expect("interruptCoordinates" in result).toBe(false);
+  });
+
   test("requires the protected publication port before graph construction", async () => {
     try {
       await runScopeSubagentUntilPause({

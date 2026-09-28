@@ -52,6 +52,10 @@ import {
   hydrateMessageArtifacts,
   recordMessageArtifacts,
 } from "@nautilo/db";
+import {
+  protectedTaskInterruptCoordinates,
+  type ProtectedTaskInterruptCoordinate,
+} from "../../graph/interrupt-mapping";
 
 function extractPersistedMessagesFromChainEnd(ev: unknown): BaseMessage[] {
   if (!ev || typeof ev !== "object") return [];
@@ -724,7 +728,13 @@ export type RunScopeSubagentResult =
       securityReportState?: "completed" | "partial" | null;
       securityResearchAppendix?: string | null;
     }
-  | { status: "interrupted"; threadId: string; interrupt: Record<string, unknown> };
+  | {
+      status: "interrupted";
+      threadId: string;
+      interrupt: Record<string, unknown>;
+      /** Content-free durable resume coordinates; protected Task runs only. */
+      interruptCoordinates?: readonly ProtectedTaskInterruptCoordinate[];
+    };
 
 /** Missing or mismatched task provenance remains null rather than becoming main. */
 export function resolveScopeSubagentExecutionEntrypoint(
@@ -1105,8 +1115,19 @@ async function runScopeSubagentUntilPauseInternal(
       }
     | undefined;
 
+  const interruptCoordinates = opts.protectedTaskTranscriptPort === undefined
+    ? undefined
+    : protectedTaskInterruptCoordinates(postState);
   const interrupt = extractPendingInterruptValue(postState);
   if (interrupt) {
+    if (interruptCoordinates !== undefined) {
+      return {
+        status: "interrupted",
+        threadId: subThreadId,
+        interrupt,
+        interruptCoordinates,
+      };
+    }
     return { status: "interrupted", threadId: subThreadId, interrupt };
   }
 
