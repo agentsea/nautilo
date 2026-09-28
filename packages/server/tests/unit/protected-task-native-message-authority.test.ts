@@ -494,6 +494,37 @@ describe("protected Task native Message current authority", () => {
     expect(await stale(expected())).toBeNull();
   });
 
+  test("accepts canonical Shadow lifecycle policy metadata", async () => {
+    const current = input();
+    const shadowInput = {
+      ...current,
+      occurrence: {
+        ...current.occurrence,
+        task: { ...current.occurrence.task, contentRepresentation: "dual" as const },
+      },
+      productAuthority: {
+        ...current.productAuthority,
+        representation: "dual" as const,
+      },
+    };
+    const rows = productRows();
+    rows[0] = { ...(rows[0] as Record<string, unknown>), contentRepresentation: "dual" };
+    rows[5] = { ...(rows[5] as Record<string, unknown>), mode: "shadow_encryption" };
+    for (const index of [6, 8]) {
+      rows[index] = {
+        ...(rows[index] as Record<string, unknown>),
+        representationMode: "shadow_encryption",
+        publicationPolicyRevision: null,
+      };
+    }
+    const projection = { ...expected(), mode: "shadow_encryption" as const };
+    const resolve = createProtectedTaskNativeMessageAuthorityResolver(
+      { ...shadowInput, runner: runner(rows) },
+      nonProductDependencies(),
+    );
+    expect(await resolve(projection)).toEqual(projection);
+  });
+
   test("rejects substituted message or grant coordinates before publication", async () => {
     const resolve = createProtectedTaskNativeMessageAuthorityResolver(
       input(),

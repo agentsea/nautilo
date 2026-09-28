@@ -134,7 +134,9 @@ function exactMessageRows(
     && lifecycle.representationMode === (expected.mode === "shadow_encryption"
       ? "shadow_encryption"
       : "full_encryption")
-    && lifecycle.publicationPolicyRevision === expected.policyRevision
+    && lifecycle.publicationPolicyRevision === (expected.mode === "shadow_encryption"
+      ? null
+      : expected.policyRevision)
     && lifecycle.keyClass === "ai"
     && lifecycle.authorRole === expected.role
     && lifecycle.appendIdempotencyKey?.startsWith(

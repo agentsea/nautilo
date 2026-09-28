@@ -104,7 +104,9 @@ async function exactExistingLifecycle(
     && lifecycle.representationMode === (expected.representation === "dual"
       ? "shadow_encryption"
       : "full_encryption")
-    && lifecycle.publicationPolicyRevision === expected.policyRevision
+    && lifecycle.publicationPolicyRevision === (expected.representation === "dual"
+      ? null
+      : expected.policyRevision)
     && lifecycle.keyClass === "ai"
     && ["assistant", "tool", "system"].includes(lifecycle.authorRole)
     && lifecycle.appendIdempotencyKey?.startsWith(

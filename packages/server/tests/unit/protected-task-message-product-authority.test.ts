@@ -205,4 +205,32 @@ describe("protected Task Message product guard", () => {
       coordinates,
     ))).toContain("authority changed");
   });
+
+  test("accepts a Shadow lifecycle with the canonical null policy revision", async () => {
+    const expected = authority({ representation: "dual" });
+    const coordinates = {
+      action: "markCryptoComplete" as const,
+      sessionId: ids.session,
+      messageId: 41,
+      revision: 0,
+    };
+    const lifecycle = {
+      sessionId: ids.session, messageId: 41, editRevision: 0,
+      roomId: ids.room, namespaceIdAtAllocation: ids.namespace,
+      objectIdScheme: "message_v2",
+      cryptoObjectId: deriveMessageCryptoObjectIdV2(coordinates),
+      representationMode: "shadow_encryption", publicationPolicyRevision: null,
+      keyClass: "ai", authorRole: "assistant",
+      appendIdempotencyKey: append.action === "appendAllocated"
+        ? append.idempotencyKey : "",
+    };
+    const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
+    await guard.assertPublicationAllowed(
+      transaction([...rows(expected), lifecycle]), coordinates,
+    );
+    expect(await rejected(guard.assertPublicationAllowed(
+      transaction([...rows(expected), { ...lifecycle, publicationPolicyRevision: 9 }]),
+      coordinates,
+    ))).toContain("authority changed");
+  });
 });
