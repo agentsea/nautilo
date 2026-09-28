@@ -181,6 +181,6 @@ export async function hasAwaitingTaskReply(
 ): Promise<boolean> {
   if (!roomId || !fromUserId) return false;
   return Boolean(
-    await findAwaitingTaskForRoom(getSharedDirectDb(), roomId, fromUserId),
+    await findAwaitingTaskForRoom(getSharedDirectDb(), roomId, fromUserId, "ordinary"),
   );
 }

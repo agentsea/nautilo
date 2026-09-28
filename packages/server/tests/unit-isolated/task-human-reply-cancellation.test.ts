@@ -33,7 +33,15 @@ const db = { select: () => chain, update: (table: unknown) => {
 } };
 mock.module("@nautilo/db", () => ({ ...database,
   getSharedDirectDb: () => db,
-  findAwaitingTaskForRoom: async () => task.status === "awaiting" ? { task, runId: run.id, graphThreadId: run.graphThreadId } : undefined,
+  findAwaitingTaskForRoom: async (
+    _db: unknown,
+    _roomId: string,
+    _fromUserId: string,
+    representation?: Task["contentRepresentation"],
+  ) => task.status === "awaiting"
+      && (representation === undefined || task.contentRepresentation === representation)
+    ? { task, runId: run.id, graphThreadId: run.graphThreadId }
+    : undefined,
   getTaskById: async () => task,
   transitionTaskLifecyclePaused: async () => {
     task = { ...task, status: "paused" }; run = { ...run, status: "paused" };
@@ -72,7 +80,7 @@ mock.module("@nautilo/runtime", () => ({ ...runtime,
   reportBackTaskCompletion: completion,
   reportBackTaskError: failure,
 }));
-const { maybeResumeAwaitingTask } = await import("../../src/messaging/await-resume");
+const { maybeResumeAwaitingTask, hasAwaitingTaskReply } = await import("../../src/messaging/await-resume");
 function resetStream() { started = new Promise<void>((resolve) => { announce = resolve; }); }
 beforeEach(() => {
   task = { id: "task", ownerId: "owner", requestorId: "owner", agentId: "agent", targetRoomId: "room", status: "awaiting", scheduleKind: "now", contentRepresentation: "ordinary" } as Task;
@@ -125,10 +133,13 @@ test("human reply chained waits repark before another cancellable resume", async
 test("dual and protected Task replies never enter the ordinary plaintext resume", async () => {
   for (const representation of ["dual", "protected"] as const) {
     task = { ...task, contentRepresentation: representation };
+    expect(await hasAwaitingTaskReply("room", "owner")).toBe(false);
     await maybeResumeAwaitingTask("room", "owner", "Sensitive reply");
     expect(task.status).toBe("awaiting");
     expect(jobs.getActiveJobs()).toHaveLength(0);
     expect(completion).not.toHaveBeenCalled();
     expect(failure).not.toHaveBeenCalled();
   }
+  task = { ...task, contentRepresentation: "ordinary" };
+  expect(await hasAwaitingTaskReply("room", "owner")).toBe(true);
 });
