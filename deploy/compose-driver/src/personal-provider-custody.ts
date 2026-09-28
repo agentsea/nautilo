@@ -49,7 +49,16 @@ const shellEnvAssignmentHelpers = [
 ].join("; ");
 
 const custodyJsonPattern =
-  '^\\{"formatVersion":1,"keyId":"[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-8][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}","keyHex":"[[:xdigit:]]{64}"\\}$';
+  '^\\{"formatVersion":1,"keyId":"[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-8][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}","keyHex":"[[:xdigit:]]{64}"(,"resetFromKeyId":"[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-8][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}")?\\}$';
+
+const shellCustodyIdentityHelpers = [
+  'custody_key_id() { printf %s "$1" | sed -n ' +
+    shellQuote('s/^.*"keyId":"\\([0-9a-fA-F-]*\\)".*$/\\1/p') +
+    '; }',
+  'custody_reset_from_key_id() { printf %s "$1" | sed -n ' +
+    shellQuote('s/^.*"resetFromKeyId":"\\([0-9a-fA-F-]*\\)".*$/\\1/p') +
+    '; }',
+].join("; ");
 
 export function buildReadConnectedPersonalProviderCredentialEvidenceScript(
   psqlCommand: string,
@@ -141,6 +150,7 @@ export function buildEnsureRemotePersonalProviderCustodyScript(args: {
     `lock=${lock}`,
     `custody_key=${shellQuote(key)}`,
     shellEnvAssignmentHelpers,
+    shellCustodyIdentityHelpers,
     'block_projection() { blocked_tmp="${server_env}.blocked.$$"; if [ -f "$server_env" ]; then [ -r "$server_env" ] || return 72; strip_custody "$server_env" > "$blocked_tmp" || return 72; elif [ -e "$server_env" ]; then return 72; else : > "$blocked_tmp" || return 72; fi; printf "%s=\\n" "$custody_key" >> "$blocked_tmp" || return 72; chmod 600 "$blocked_tmp" || return 72; sync "$blocked_tmp" || return 72; mv -f -- "$blocked_tmp" "$server_env" || return 72; }',
     'fail_custody() { code="$1"; block_projection || exit 72; exit "$code"; }',
     'attempt=0; until mkdir -- "$lock" 2>/dev/null; do attempt=$((attempt + 1)); if [ "$attempt" -ge 100 ]; then exit 74; fi; sleep 0.05; done',
@@ -152,7 +162,7 @@ export function buildEnsureRemotePersonalProviderCustodyScript(args: {
     'if [ "$count" -eq 1 ] && [ -z "$custody" ]; then fail_custody 65; fi',
     "if [ -n \"$custody\" ]; then if ! printf %s \"$custody\" | grep -Eq " +
       shellQuote(custodyJsonPattern) +
-      '; then fail_custody 65; fi; fi',
+      '; then fail_custody 65; fi; custody_id="$(custody_key_id "$custody")"; reset_id="$(custody_reset_from_key_id "$custody")"; if [ -n "$reset_id" ] && [ "$(printf %s "$custody_id" | tr \'[:upper:]\' \'[:lower:]\')" = "$(printf %s "$reset_id" | tr \'[:upper:]\' \'[:lower:]\')" ]; then fail_custody 65; fi; fi',
     'if [ -z "$custody" ]; then block_projection || exit 72; fi',
     'if [ -z "$custody" ]; then relation="$(' +
       `${args.psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${relationQuery}` +
@@ -168,22 +178,33 @@ export function buildAssertRemoteRestoreCustodyScript(args: {
   database: PersonalProviderCredentialDbEvidence;
 }): string {
   if (args.database.state !== "rows") return "set -eu; :";
-  if (args.database.keyIds.length !== 1) return "set -eu; exit 68";
-  const expected = args.database.keyIds[0]!;
+  const expected = args.database.keyIds.map((keyId) => keyId.toLowerCase());
   return [
     "set -eu",
     `canonical=${shellQuote(args.canonicalInstanceEnvPath)}`,
     `custody_key=${shellQuote(PERSONAL_PROVIDER_CUSTODY_ENV)}`,
     shellEnvAssignmentHelpers,
+    shellCustodyIdentityHelpers,
     'if [ ! -f "$canonical" ] || [ ! -r "$canonical" ]; then exit 72; fi',
     'count="$(custody_count "$canonical")"; if [ "$count" -ne 1 ]; then exit 67; fi',
     'custody_raw="$(read_custody "$canonical")"; custody="$(normalize_custody "$custody_raw")"',
     'if ! printf %s "$custody" | grep -Eq ' + shellQuote(custodyJsonPattern) + '; then exit 65; fi',
-    'actual="$(printf %s "$custody" | sed -n ' +
-      shellQuote('s/^.*"keyId":"\\([0-9a-fA-F-]*\\)".*$/\\1/p') +
-      ')"',
-    `if [ "$(printf %s "$actual" | tr '[:upper:]' '[:lower:]')" != ${shellQuote(expected)} ]; then exit 68; fi`,
+    'actual="$(custody_key_id "$custody" | tr \'[:upper:]\' \'[:lower:]\')"; reset="$(custody_reset_from_key_id "$custody" | tr \'[:upper:]\' \'[:lower:]\')"',
+    'if [ -n "$reset" ] && [ "$reset" = "$actual" ]; then exit 65; fi',
+    ...expected.map(
+      (keyId) =>
+        `if [ ${shellQuote(keyId)} != "$actual" ] && [ ${shellQuote(keyId)} != "$reset" ]; then exit 68; fi`,
+    ),
+    'printf "%s\\n" "$actual"',
   ].join("; ");
+}
+
+export function parseRemoteRestoreCustodyKeyId(stdout: string): string {
+  const lines = stdout.split(/\r?\n/).filter((line) => line !== "");
+  if (lines.length !== 1 || !UUID_RE.test(lines[0]!)) {
+    throw new Error("remote personal provider custody preflight returned invalid identity");
+  }
+  return lines[0]!.toLowerCase();
 }
 
 export function buildMergeRemoteCanonicalCustodyScript(args: {
@@ -201,9 +222,10 @@ export function buildMergeRemoteCanonicalCustodyScript(args: {
     `incoming_server=${shellQuote(args.incomingServerEnvPath)}`,
     `custody_key=${shellQuote(PERSONAL_PROVIDER_CUSTODY_ENV)}`,
     shellEnvAssignmentHelpers,
+    shellCustodyIdentityHelpers,
     'for required in "$canonical" "$incoming" "$incoming_server"; do if [ ! -f "$required" ] || [ ! -r "$required" ]; then exit 72; fi; done',
     'count="$(custody_count "$canonical")"; if [ "$count" -gt 1 ]; then exit 65; fi; incoming_count="$(custody_count "$incoming")"; if [ "$incoming_count" -gt 1 ]; then exit 65; fi; incoming_server_count="$(custody_count "$incoming_server")"; if [ "$incoming_server_count" -gt 1 ]; then exit 65; fi',
-    'custody_raw="$(read_custody "$canonical")"; custody="$(normalize_custody "$custody_raw")"; if [ "$count" -eq 1 ] && ! printf %s "$custody" | grep -Eq ' + shellQuote(custodyJsonPattern) + '; then exit 65; fi',
+    'custody_raw="$(read_custody "$canonical")"; custody="$(normalize_custody "$custody_raw")"; if [ "$count" -eq 1 ] && ! printf %s "$custody" | grep -Eq ' + shellQuote(custodyJsonPattern) + '; then exit 65; fi; if [ -n "$custody" ]; then custody_id="$(custody_key_id "$custody" | tr \'[:upper:]\' \'[:lower:]\')"; reset_id="$(custody_reset_from_key_id "$custody" | tr \'[:upper:]\' \'[:lower:]\')"; if [ -n "$reset_id" ] && [ "$reset_id" = "$custody_id" ]; then exit 65; fi; fi',
     'config_tmp="${canonical}.tmp.$$"; strip_custody "$incoming" > "$config_tmp"; if [ -n "$custody" ]; then printf "%s=%s\\n" "$custody_key" "$custody" >> "$config_tmp"; fi; chmod 600 "$config_tmp"; sync "$config_tmp"; mv -f -- "$config_tmp" "$canonical"',
     'server_tmp="${server_env}.tmp.$$"; strip_custody "$incoming_server" > "$server_tmp"; printf "%s=%s\\n" "$custody_key" "$custody" >> "$server_tmp"; chmod 600 "$server_tmp"; sync "$server_tmp"; mv -f -- "$server_tmp" "$server_env"',
     'rm -f -- "$incoming" "$incoming_server"',

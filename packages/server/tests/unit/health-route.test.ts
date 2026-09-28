@@ -343,6 +343,26 @@ describe("/api/health/modes (M051)", () => {
     expect((body as Record<string, unknown>)["authMode"]).toBeUndefined();
   });
 
+  test("reports canonical custody presence after boot removes the master key from process env", async () => {
+    envSnap = snapshotEnv();
+    const previous = process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
+    delete process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
+    const app = Fastify({ logger: false });
+    healthRoutes(app, { isPersonalCustodyConfigured: async () => true });
+    instances.push(app);
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/health/modes" });
+      expect(res.statusCode).toBe(200);
+      const row = res.json<{ entries: Array<{ envVar: string; status: string; value: string | null }> }>()
+        .entries.find((entry) => entry.envVar === "NAUTILO_PERSONAL_PROVIDER_CUSTODY");
+      expect(row).toMatchObject({ status: "set", value: "[configured]" });
+      expect(res.body).not.toContain("keyHex");
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
+      else process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"] = previous;
+    }
+  });
+
   test("403 for non-localhost callers", async () => {
     envSnap = snapshotEnv();
     const app = await makeHealthApp();

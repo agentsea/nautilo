@@ -15,6 +15,7 @@ import {
 import {
   bootstrapPersonalProviderCustody,
   inspectPersonalProviderCustody,
+  isPersonalProviderCustodyConfigured,
   readPersonalProviderCustody,
   type PersonalProviderCustodyStatus,
 } from "../../src/lib/personal-provider-custody";
@@ -35,6 +36,19 @@ test("cloud restore uses protected volume custody only when injection is absent"
   expect(await readPersonalProviderCustody()).toEqual(CUSTODY);
   captureInjectedPersonalProviderCustody("");
   expect(await readPersonalProviderCustody().catch(String)).toContain("custody_invalid");
+});
+test("mode presence checks selected file or captured cloud injection without exposing key material", async () => {
+  process.env["NAUTILO_HOSTING_MODE"] = "local";
+  process.env["NAUTILO_DOTENV_PATH"] = await temporaryInstanceEnv(`NAUTILO_PERSONAL_PROVIDER_CUSTODY=${serializePersonalProviderCustody(CUSTODY)}\n`);
+  captureInjectedPersonalProviderCustody(undefined);
+  delete process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
+  expect(await isPersonalProviderCustodyConfigured()).toBe(true);
+  process.env["NAUTILO_HOSTING_MODE"] = "cloud";
+  process.env["NAUTILO_DOTENV_PATH"] = await temporaryInstanceEnv("");
+  captureInjectedPersonalProviderCustody("");
+  expect(await isPersonalProviderCustodyConfigured()).toBe(true);
+  captureInjectedPersonalProviderCustody(undefined);
+  expect(await isPersonalProviderCustodyConfigured()).toBe(false);
 });
 const AMBIENT_CUSTODY: PersonalProviderCustody = {
   formatVersion: 1,

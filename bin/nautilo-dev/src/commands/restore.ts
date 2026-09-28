@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { resolveInstance } from "@nautilo/config";
 import {
   assertPersonalProviderRestoreCustody, assertPersonalProviderCustodyHealth,
+  buildPersonalProviderCustodyBackupEvidence,
   readPersonalProviderCredentialEvidenceFromDump,
+  type PersonalProviderCredentialDbEvidence,
 } from "@nautilo/operator-secrets";
 import {
   resolveSnapshotDir,
@@ -96,6 +98,17 @@ export async function startServerThenRunRuntimeAcceptance(
   return deps.accept();
 }
 
+export function restoredPersonalProviderCustodyKeyId(
+  database: PersonalProviderCredentialDbEvidence,
+  instanceEnvRaw: string | undefined,
+): string | undefined {
+  if (database.state !== "rows") return undefined;
+  return buildPersonalProviderCustodyBackupEvidence(
+    database,
+    instanceEnvRaw,
+  ).custodyKeyId;
+}
+
 export async function restore(name: string, options: RestoreOptions = {}): Promise<void> {
   if (!name) {
     console.error("Usage: nautilo-dev restore <name> [--no-autosave]");
@@ -147,9 +160,14 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
   const personalEvidence = existsSync(dbPath)
     ? await readPersonalProviderCredentialEvidenceFromDump(dbPath)
     : undefined;
+  let personalExpectedCustodyKeyId: string | undefined;
   if (personalEvidence) {
     const recoveredEnv = existsSync(dotEnvSrc) ? await readFile(dotEnvSrc, "utf8") : undefined;
     assertPersonalProviderRestoreCustody({ database: personalEvidence, instanceEnvRaw: recoveredEnv });
+    personalExpectedCustodyKeyId = restoredPersonalProviderCustodyKeyId(
+      personalEvidence,
+      recoveredEnv,
+    );
   }
 
   if (options.requireLogto) {
@@ -377,9 +395,12 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
   }
 
   if (personalEvidence?.state === "rows") {
+    if (personalExpectedCustodyKeyId === undefined) {
+      throw new Error("Personal credential restore verification unavailable");
+    }
     const response = await fetch(new URL("/api/health/personal-provider-custody", resolveInstance().server.url));
     if (!response.ok) throw new Error("Personal credential restore verification unavailable");
-    assertPersonalProviderCustodyHealth(await response.text(), personalEvidence.keyIds[0]!);
+    assertPersonalProviderCustodyHealth(await response.text(), personalExpectedCustodyKeyId);
   }
   console.log("\nRestore verified: runtime acceptance passed.");
 }

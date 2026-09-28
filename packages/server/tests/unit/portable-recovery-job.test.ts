@@ -14,14 +14,36 @@ const env = {
   s3Endpoint: "https://s3.example.test", s3Region: "test", s3Bucket: "test-bucket", s3AccessKeyId: "access", s3SecretAccessKey: "secret",
   key, sourceReleaseId: "release-test", appDatabaseUrl: "postgres://app:pa%3Ass@app-db:5432/nautilo", logtoDatabaseUrl: "postgres://logto:pw@logto-db:5432/logto_nautilo",
 } as const;
+const CUSTODY_KEY_ID = "10000000-0000-4000-8000-000000000001";
 const CUSTODY = JSON.stringify({
+  formatVersion: 1,
+  keyId: CUSTODY_KEY_ID,
+  keyHex: "11".repeat(32),
+});
+const RESET_KEY_ID = "20000000-0000-4000-8000-000000000002";
+const RESET_CUSTODY = JSON.stringify({
   formatVersion: 1,
   keyId: "10000000-0000-4000-8000-000000000001",
   keyHex: "11".repeat(32),
+  resetFromKeyId: RESET_KEY_ID,
+});
+const OTHER_CUSTODY = JSON.stringify({
+  formatVersion: 1,
+  keyId: "30000000-0000-4000-8000-000000000003",
+  keyHex: "33".repeat(32),
 });
 
 async function* bytes(value: string): AsyncIterable<Uint8Array> { yield encoder.encode(value); }
 function child(value = ""): PortableRecoveryChild { return { stdout: bytes(value), completed: Promise.resolve() }; }
+function chunkedChild(value: string, size: number): PortableRecoveryChild {
+  return {
+    stdout: (async function* () {
+      const encoded = encoder.encode(value);
+      for (let offset = 0; offset < encoded.byteLength; offset += size) yield encoded.slice(offset, offset + size);
+    })(),
+    completed: Promise.resolve(),
+  };
+}
 function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   const result = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
   let offset = 0;
@@ -79,7 +101,32 @@ const APP_RESTORE_TOC = [
   "",
 ].join("\n");
 
-function runner(events: string[], appRestoreToc = APP_RESTORE_TOC): PortableRecoveryProcessRunner {
+const APP_RESTORE_TOC_WITH_CREDENTIALS = [
+  APP_RESTORE_TOC.trimEnd(),
+  "101; 1259 20001 TABLE public personal_provider_credentials nautilo",
+  "201; 0 20001 TABLE DATA public personal_provider_credentials nautilo",
+  "",
+].join("\n");
+
+function credentialRestoreSql(keyIds: readonly string[]): string {
+  const columns = "id, user_id, provider, revision, format_version, key_id, nonce_base64, ciphertext_base64, auth_tag_base64, created_at, updated_at";
+  const rows = keyIds.map((keyId, index) => [
+    `40000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    `50000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    "openai", "1", "1", keyId, "nonce", "ciphertext", "tag",
+    "2026-01-01 00:00:00+00", "2026-01-01 00:00:00+00",
+  ].join("\t"));
+  return [`COPY public.personal_provider_credentials (${columns}) FROM stdin;`, ...rows, String.raw`\.`, ""].join("\n");
+}
+
+interface RunnerEvidence {
+  readonly sourceTable?: string;
+  readonly sourceEvidence?: string;
+  readonly restoredCredentialSql?: string;
+  readonly restoredCredentialChunkSize?: number;
+}
+
+function runner(events: string[], appRestoreToc = APP_RESTORE_TOC, evidence: RunnerEvidence = {}): PortableRecoveryProcessRunner {
   return {
     start: async (input) => {
       events.push(`${input.command}:${input.args.join("|")}`);
@@ -92,13 +139,21 @@ function runner(events: string[], appRestoreToc = APP_RESTORE_TOC): PortableReco
         return child(`drwxr-xr-x 0/0               0 1970-01-01 00:00:00 ${root}/\n-rw-r--r-- 0/0               0 1970-01-01 00:00:00 ${root}/file with spaces\n`);
       }
       if (input.command === "pg_restore" && input.args.includes("--list")) return child(appRestoreToc);
+      if (input.command === "pg_restore" && input.args.includes("--data-only")) {
+        const value = evidence.restoredCredentialSql ?? "";
+        return evidence.restoredCredentialChunkSize === undefined ? child(value) : chunkedChild(value, evidence.restoredCredentialChunkSize);
+      }
+      const sql = input.args.at(-1) ?? "";
+      if (input.command === "psql" && sql.includes("to_regclass")) return child(evidence.sourceTable ?? "");
+      if (input.command === "psql" && sql.includes("json_build_object")) return child(evidence.sourceEvidence ?? "");
       return child();
     },
   };
 }
 
-async function sealedBundle(custody = ""): Promise<{ readonly body: Uint8Array; readonly receipt: { readonly ciphertextSha256: string; readonly ciphertextBytes: number } }> {
-  const writer = writePortableRecovery({ key, nonceSeed: new Uint8Array(32).fill(7), sourceRelease: "release-test", members: PORTABLE_RECOVERY_MEMBERS.map((name) => ({ name, chunks: bytes(name === "personal-provider-custody.json" ? custody : "") })) });
+async function sealedBundle(custody = "", includeCustodyMember = true): Promise<{ readonly body: Uint8Array; readonly receipt: { readonly ciphertextSha256: string; readonly ciphertextBytes: number } }> {
+  const members = includeCustodyMember ? PORTABLE_RECOVERY_MEMBERS : PORTABLE_RECOVERY_MEMBERS.slice(0, -1);
+  const writer = writePortableRecovery({ key, nonceSeed: new Uint8Array(32).fill(7), sourceRelease: "release-test", members: members.map((name) => ({ name, chunks: bytes(name === "personal-provider-custody.json" ? custody : "") })) });
   const chunks: Uint8Array[] = [];
   for await (const chunk of writer.stream) chunks.push(chunk);
   const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
@@ -109,6 +164,13 @@ async function sealedBundle(custody = ""): Promise<{ readonly body: Uint8Array; 
 
 function restoreEnvironment(ciphertextSha256: string) {
   return { ...env, expectedCiphertextSha256: ciphertextSha256 };
+}
+
+function sqlMutationEvents(events: readonly string[]): string[] {
+  return events.filter((event) => (
+    /^(?:pg_restore|pg_restore16):--single-transaction/.test(event)
+    || /^(?:psql|psql16):.*--single-transaction/.test(event)
+  ));
 }
 
 describe("portable recovery image job", () => {
@@ -174,6 +236,61 @@ describe("portable recovery image job", () => {
     expect(children.filter((entry) => entry.startsWith("pg_dump16:"))).toEqual([
       "pg_dump16:--format=custom|--no-owner|--no-privileges",
     ]);
+  });
+
+  test("refuses export before publish or dump when credential rows have no custody", async () => {
+    const events: string[] = [];
+    let published = false;
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { published = true; throw new Error("must not publish"); },
+      download: async () => { throw new Error("not used"); },
+    };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking side effects.
+    await expect(runPortableRecoveryJob({
+      direction: "export",
+      operationId: "op",
+      objectId: "object",
+      environment: env,
+      fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC, {
+        sourceTable: "personal_provider_credentials",
+        sourceEvidence: JSON.stringify({ recordCount: 1, keyIds: [CUSTODY_KEY_ID] }),
+      }),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+    expect(published).toBeFalse();
+    expect(events.filter((event) => /^(?:pg_dump|pg_dump16|tar):/.test(event))).toEqual([]);
+  });
+
+  test("permits a custody-free export only after the credential table is proven empty", async () => {
+    const events: string[] = [];
+    let published = false;
+    const storage: PortableRecoveryObjectStore = {
+      publish: async ({ bundle, receipt }) => {
+        published = true;
+        for await (const _chunk of bundle) { /* consume stream */ }
+        const done = await receipt;
+        return { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...done };
+      },
+      download: async () => { throw new Error("not used"); },
+    };
+    await runPortableRecoveryJob({
+      direction: "export",
+      operationId: "op",
+      objectId: "object",
+      environment: env,
+      fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC, {
+        sourceTable: "personal_provider_credentials",
+        sourceEvidence: JSON.stringify({ recordCount: 0, keyIds: [] }),
+      }),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+      random: () => new Uint8Array(32).fill(3),
+    });
+    expect(published).toBeTrue();
+    expect(events.filter((event) => event.startsWith("psql:"))).toHaveLength(2);
   });
 
   test("carries custody inside the encrypted bundle and restores it without source environment custody", async () => {
@@ -296,6 +413,105 @@ describe("portable recovery image job", () => {
       assertFreshTarget: { assertFresh: async () => undefined },
     })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
     expect(fs.readText("/volume/config/instance.env")).toBeUndefined();
+    expect(sqlMutationEvents(events)).toEqual([]);
+  });
+
+  test("refuses a legacy bundle with credential rows before the first SQL mutation", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle("", false);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking SQL events.
+    await expect(runPortableRecoveryJob({
+      direction: "restore",
+      operationId: "op",
+      objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256),
+      fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC_WITH_CREDENTIALS, { restoredCredentialSql: credentialRestoreSql([CUSTODY_KEY_ID]) }),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+    expect(sqlMutationEvents(events)).toEqual([]);
+  });
+
+  test("refuses injected custody that differs from the bundle before the first SQL mutation", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking SQL events.
+    await expect(runPortableRecoveryJob({
+      direction: "restore",
+      operationId: "op",
+      objectId: "object",
+      environment: { ...restoreEnvironment(sealed.receipt.ciphertextSha256), personalProviderCustody: OTHER_CUSTODY },
+      fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC_WITH_CREDENTIALS, { restoredCredentialSql: credentialRestoreSql([CUSTODY_KEY_ID]) }),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+    expect(sqlMutationEvents(events)).toEqual([]);
+  });
+
+  test("refuses bundled custody that does not cover every restored row key before SQL mutation", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking SQL events.
+    await expect(runPortableRecoveryJob({
+      direction: "restore",
+      operationId: "op",
+      objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256),
+      fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC_WITH_CREDENTIALS, { restoredCredentialSql: credentialRestoreSql(["30000000-0000-4000-8000-000000000003"]) }),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+    expect(sqlMutationEvents(events)).toEqual([]);
+  });
+
+  test("accepts reset custody provenance for rows under the current and previous keys", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(RESET_CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    await runPortableRecoveryJob({
+      direction: "restore",
+      operationId: "op",
+      objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256),
+      fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC_WITH_CREDENTIALS, {
+        restoredCredentialSql: credentialRestoreSql([CUSTODY_KEY_ID, RESET_KEY_ID]),
+        restoredCredentialChunkSize: 7,
+      }),
+      storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    });
+    expect(sqlMutationEvents(events).length).toBeGreaterThan(0);
   });
 
   test("verifies sealed source before DB mutation, then repairs app and Logto before promotion", async () => {
@@ -307,9 +523,9 @@ describe("portable recovery image job", () => {
     };
     await runPortableRecoveryJob({ direction: "restore", operationId: "op", objectId: "object", environment: restoreEnvironment(sealed.receipt.ciphertextSha256), fs: fakeFs(events), runner: runner(events), storage, assertFreshTarget: { assertFresh: async () => { events.push("fresh"); } } });
     const pg = events.filter((entry) => /^(pg_restore|pg_restore16|psql|psql16):/.test(entry));
-    expect(pg[0]).toContain("psql:");
-    expect(pg[0]).toContain("CREATE EXTENSION IF NOT EXISTS pg_trgm");
-    expect(pg[1]).toContain("pg_restore:--list|");
+    expect(pg[0]).toContain("pg_restore:--list|");
+    expect(pg[1]).toContain("psql:");
+    expect(pg[1]).toContain("CREATE EXTENSION IF NOT EXISTS pg_trgm");
     expect(pg[2]).toContain("pg_restore:--single-transaction|--exit-on-error");
     expect(pg[2]).toContain("--no-owner|--no-privileges|--role=nautilo|--use-list|");
     expect(pg[3]).toContain("psql:");

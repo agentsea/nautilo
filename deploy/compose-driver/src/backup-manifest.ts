@@ -9,6 +9,7 @@ const personalProviderCustodyBackupEvidenceSchema = z.object({
   database: z.enum(["table-absent", "empty", "rows"]),
   custody: z.enum(["missing", "valid", "invalid"]),
   custodyKeyId: z.uuid().optional(),
+  custodyResetFromKeyId: z.uuid().optional(),
   rowKeyIds: z.array(z.uuid()).optional(),
 });
 

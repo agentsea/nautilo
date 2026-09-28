@@ -32,6 +32,18 @@ export async function readPersonalProviderCustody(): Promise<PersonalProviderCus
   }
 }
 
+/** Lightweight operator-report projection; the diagnostic route checks validity. */
+export async function isPersonalProviderCustodyConfigured(): Promise<boolean> {
+  const injected = readInjectedPersonalProviderCustody();
+  if (isCloudMode() && injected !== undefined) return true;
+  try {
+    const raw = await readFile(canonicalPath(), "utf8");
+    return /^\s*(?:export\s+)?NAUTILO_PERSONAL_PROVIDER_CUSTODY\s*=/m.test(raw);
+  } catch {
+    return false;
+  }
+}
+
 /** Called after migrations; a failure disables only personal credential operations. */
 export async function bootstrapPersonalProviderCustody(): Promise<void> {
   if (isCloudMode()) {

@@ -131,6 +131,7 @@ import {
   defaultEnsurePersonalProviderCustodyDeps,
   ensurePersonalProviderCustody,
   parseConnectedPersonalProviderCredentialEvidence,
+  parseRemoteRestoreCustodyKeyId,
   readPersonalProviderCredentialEvidenceFromDump,
   readPersonalProviderCustodyFromEnv,
   type EnsurePersonalProviderCustodyArgs,
@@ -5711,6 +5712,7 @@ export class ComposeDriver {
               join(opts.fromPath, "nautilo.sql.gz"),
             )
           : undefined;
+        let personalProviderExpectedCustodyKeyId: string | undefined;
         if (mode === "full" && personalProviderDatabase !== undefined) {
           const restoredInstanceEnv =
             manifest.contents.instanceEnv &&
@@ -5724,6 +5726,11 @@ export class ComposeDriver {
               ? {}
               : { recorded: manifest.personalProviderCustody }),
           });
+          if (personalProviderDatabase.state === "rows") {
+            personalProviderExpectedCustodyKeyId = readPersonalProviderCustodyFromEnv(
+              restoredInstanceEnv ?? "",
+            )?.keyId;
+          }
         }
         if (
           mode === "data-only" &&
@@ -5743,6 +5750,11 @@ export class ComposeDriver {
             database: personalProviderDatabase,
             instanceEnvRaw: targetInstanceEnv,
           });
+          if (personalProviderDatabase.state === "rows") {
+            personalProviderExpectedCustodyKeyId = readPersonalProviderCustodyFromEnv(
+              targetInstanceEnv ?? "",
+            )?.keyId;
+          }
         }
         const bundleIdentity = shouldLoadData
           ? await readRestoreInstanceIdentityFromDump(
@@ -5814,6 +5826,7 @@ export class ComposeDriver {
             mode,
             bundleIdentity,
             personalProviderDatabase,
+            personalProviderExpectedCustodyKeyId,
           );
           return;
         }
@@ -6253,7 +6266,7 @@ export class ComposeDriver {
         if (
           mode === "data-only" &&
           profile.transport === "remote" &&
-          personalProviderDatabase !== undefined
+          personalProviderDatabase?.state === "rows"
         ) {
           const custodyPreflight = buildAssertRemoteRestoreCustodyScript({
             canonicalInstanceEnvPath: canonicalInstanceEnvPath(instanceRootDir),
@@ -6269,6 +6282,8 @@ export class ComposeDriver {
               "restore refused: target personal provider custody does not match the incoming database",
             );
           }
+          personalProviderExpectedCustodyKeyId =
+            parseRemoteRestoreCustodyKeyId(custodyResult.stdout);
         }
 
         await this.runCompose(
@@ -6490,6 +6505,7 @@ export class ComposeDriver {
             profile,
             baseUrl,
             personalProviderDatabase,
+            personalProviderExpectedCustodyKeyId,
           );
         }
         if (
@@ -6904,6 +6920,7 @@ export class ComposeDriver {
     mode: NonNullable<RestoreOptions["mode"]>,
     bundleIdentity: RestoreInstanceIdentity | undefined,
     personalProviderDatabase: PersonalProviderCredentialDbEvidence | undefined,
+    personalProviderExpectedCustodyKeyId: string | undefined,
   ): Promise<void> {
     const deployment = await this.readRemoteDeploymentManifest(profile);
     if (opts.stream === true) {
@@ -6918,9 +6935,10 @@ export class ComposeDriver {
 
     const remoteRoot = deployment.remoteRoot;
     const shouldLoadData = mode === "full" || mode === "data-only";
+    let expectedCustodyKeyId = personalProviderExpectedCustodyKeyId;
     await this.ensureRemoteCanonicalConfigLayout(remoteRoot);
     const projectName = deployment.composeProjectName;
-    if (mode === "data-only" && personalProviderDatabase !== undefined) {
+    if (mode === "data-only" && personalProviderDatabase?.state === "rows") {
       const custodyPreflight = buildAssertRemoteRestoreCustodyScript({
         canonicalInstanceEnvPath: posix.join(
           remoteRoot,
@@ -6939,6 +6957,9 @@ export class ComposeDriver {
           "restore refused: target personal provider custody does not match the incoming database",
         );
       }
+      expectedCustodyKeyId = parseRemoteRestoreCustodyKeyId(
+        custodyResult.stdout,
+      );
     }
     const stamp = backupTimestamp(this.deps.now());
     const stageDir = posix.join(remoteRoot, `.restore-staging-${stamp}`);
@@ -7422,6 +7443,7 @@ export class ComposeDriver {
         profile,
         baseUrl,
         personalProviderDatabase,
+        expectedCustodyKeyId,
       );
     }
     if (mode === "full") {
@@ -9378,9 +9400,10 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
     baseUrl: string,
     database: PersonalProviderCredentialDbEvidence | undefined,
+    expectedCustodyKeyId: string | undefined,
   ): Promise<void> {
     if (database?.state !== "rows") return;
-    if (database.keyIds.length !== 1) {
+    if (expectedCustodyKeyId === undefined) {
       throw new Error("restore failed: personal provider custody verification failed");
     }
     const url = `${baseUrl}/api/health/personal-provider-custody`;
@@ -9400,7 +9423,7 @@ export class ComposeDriver {
       }
       assertPersonalProviderCustodyHealth(
         await response.text(),
-        database.keyIds[0]!,
+        expectedCustodyKeyId,
       );
     } catch {
       throw new Error("restore failed: personal provider custody verification failed");

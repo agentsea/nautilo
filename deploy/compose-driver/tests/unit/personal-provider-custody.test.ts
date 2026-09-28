@@ -20,6 +20,7 @@ import {
   buildPersonalProviderCustodyBackupEvidence,
   ensurePersonalProviderCustody,
   parseConnectedPersonalProviderCredentialEvidence,
+  parseRemoteRestoreCustodyKeyId,
   readPersonalProviderCredentialEvidenceFromDump,
   readPersonalProviderCustodyFromEnv,
   setPersonalProviderCustodyInEnv,
@@ -30,6 +31,11 @@ const custody: PersonalProviderCustody = {
   formatVersion: 1,
   keyId: "123e4567-e89b-42d3-a456-426614174000",
   keyHex: "ab".repeat(32),
+};
+const lostKeyId = "223e4567-e89b-42d3-a456-426614174000";
+const resetCustody: PersonalProviderCustody = {
+  ...custody,
+  resetFromKeyId: lostKeyId,
 };
 
 const createdPaths: string[] = [];
@@ -254,6 +260,30 @@ describe("Compose personal provider custody", () => {
     );
   });
 
+  test("remote ensure preserves and projects canonical disaster-reset custody", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nautilo-custody-reset-shell-"));
+    createdPaths.push(root);
+    const canonical = join(root, "instance.env");
+    const server = join(root, "server.env");
+    const serialized = serializePersonalProviderCustody(resetCustody);
+    writeFileSync(canonical, `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`);
+    writeFileSync(server, "SERVER=1\n");
+    const script = buildEnsureRemotePersonalProviderCustodyScript({
+      canonicalInstanceEnvPath: canonical,
+      serverEnvPath: server,
+      psqlCommand: "false",
+    });
+
+    const result = Bun.spawnSync({ cmd: ["sh", "-c", script] });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    await expect(Bun.file(canonical).text()).resolves.toBe(
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
+    );
+    await expect(Bun.file(server).text()).resolves.toBe(
+      `SERVER=1\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
+    );
+  });
+
   test("remote ensure preserves invalid canonical custody and blanks only its runtime projection", async () => {
     for (const [name, configured] of [
       ["duplicate", `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n`],
@@ -345,6 +375,62 @@ describe("Compose personal provider custody", () => {
       `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
     );
     expect(Bun.spawnSync({ cmd: ["sh", "-c", build()] }).exitCode).not.toBe(0);
+  });
+
+  test("remote restore preflight admits only current and retained lost-key rows", () => {
+    const root = mkdtempSync(join(tmpdir(), "nautilo-custody-reset-restore-shell-"));
+    createdPaths.push(root);
+    const canonical = join(root, "instance.env");
+    writeFileSync(
+      canonical,
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(resetCustody)}\n`,
+    );
+    const accepted = buildAssertRemoteRestoreCustodyScript({
+      canonicalInstanceEnvPath: canonical,
+      database: { state: "rows", keyIds: [lostKeyId, custody.keyId] },
+    });
+    const acceptedResult = Bun.spawnSync({ cmd: ["sh", "-c", accepted] });
+    expect(acceptedResult.exitCode, acceptedResult.stderr.toString()).toBe(0);
+    expect(parseRemoteRestoreCustodyKeyId(acceptedResult.stdout.toString())).toBe(
+      custody.keyId,
+    );
+
+    const unrelated = buildAssertRemoteRestoreCustodyScript({
+      canonicalInstanceEnvPath: canonical,
+      database: {
+        state: "rows",
+        keyIds: ["323e4567-e89b-42d3-a456-426614174000"],
+      },
+    });
+    expect(Bun.spawnSync({ cmd: ["sh", "-c", unrelated] }).exitCode).not.toBe(0);
+  });
+
+  test("remote config merge preserves disaster-reset custody", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nautilo-custody-reset-merge-"));
+    createdPaths.push(root);
+    const canonical = join(root, "instance.env");
+    const incoming = join(root, "instance.env.incoming");
+    const server = join(root, "server.env");
+    const incomingServer = join(root, "server.env.incoming");
+    const serialized = serializePersonalProviderCustody(resetCustody);
+    writeFileSync(canonical, `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\nCANONICAL=1\n`);
+    writeFileSync(incoming, "INCOMING=1\n");
+    writeFileSync(incomingServer, "SERVER=1\n");
+    const script = buildMergeRemoteCanonicalCustodyScript({
+      canonicalInstanceEnvPath: canonical,
+      incomingInstanceEnvPath: incoming,
+      serverEnvPath: server,
+      incomingServerEnvPath: incomingServer,
+    });
+
+    const result = Bun.spawnSync({ cmd: ["sh", "-c", script] });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    await expect(Bun.file(canonical).text()).resolves.toBe(
+      `INCOMING=1\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
+    );
+    await expect(Bun.file(server).text()).resolves.toBe(
+      `SERVER=1\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
+    );
   });
 
   test("post-restore health evidence requires ready authenticated rows and matching identity", () => {

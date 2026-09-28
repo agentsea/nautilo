@@ -19,10 +19,12 @@ import {
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
 import {
+  assertPersonalProviderRestoreCustody,
   PERSONAL_PROVIDER_CUSTODY_ENV,
   parsePersonalProviderCustody,
   personalProviderCustodyFromEnvFile,
   serializePersonalProviderCustody,
+  type PersonalProviderCredentialDbEvidence,
 } from "@nautilo/operator-secrets";
 import {
   PORTABLE_RECOVERY_MEMBERS,
@@ -43,6 +45,8 @@ const ROOTS = ["artifacts", "media", "apps"] as const;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_SOURCE_RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PERSONAL_PROVIDER_TABLE = "personal_provider_credentials";
 const LOGTO_TENANT_REGRANT_SQL =
   "DO $$ DECLARE r record; BEGIN " +
   "FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'logto_tenant_%' LOOP " +
@@ -239,6 +243,64 @@ async function withPgpass<T>(fs: PortableRecoveryFilesystem, authority: ReturnTy
   }
 }
 
+async function readDatabaseText(input: {
+  readonly fs: PortableRecoveryFilesystem;
+  readonly runner: PortableRecoveryProcessRunner;
+  readonly databaseUrl: string;
+  readonly sql: string;
+}): Promise<string> {
+  const authority = parsePostgresUrl(input.databaseUrl);
+  return withPgpass(input.fs, authority, async (pgpass) => {
+    const child = await input.runner.start({
+      command: "psql",
+      args: ["--tuples-only", "--no-align", "--set", "ON_ERROR_STOP=1", "--command", input.sql],
+      env: childEnvironment(authority, pgpass),
+    });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of child.stdout) chunks.push(chunk);
+    try { await child.completed; } catch { fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is unavailable"); }
+    return new TextDecoder("utf-8", { fatal: true }).decode(concat(chunks)).trim();
+  });
+}
+
+async function readSourcePersonalProviderCredentialEvidence(input: {
+  readonly fs: PortableRecoveryFilesystem;
+  readonly runner: PortableRecoveryProcessRunner;
+  readonly databaseUrl: string;
+}): Promise<PersonalProviderCredentialDbEvidence> {
+  const table = await readDatabaseText({
+    ...input,
+    sql: `SELECT coalesce(to_regclass('public.${PERSONAL_PROVIDER_TABLE}')::text, '')`,
+  });
+  if (table === "") return { state: "table-absent" };
+  if (table !== PERSONAL_PROVIDER_TABLE && table !== `public.${PERSONAL_PROVIDER_TABLE}`) {
+    fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+  }
+  const raw = await readDatabaseText({
+    ...input,
+    sql: `SELECT json_build_object('recordCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id::text ORDER BY key_id::text), '[]'::json))::text FROM public.${PERSONAL_PROVIDER_TABLE}`,
+  });
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const count = record["recordCount"];
+  const keyIds = record["keyIds"];
+  if (
+    Object.keys(record).sort().join(",") !== "keyIds,recordCount"
+    || typeof count !== "number"
+    || !Number.isSafeInteger(count)
+    || count < 0
+    || !Array.isArray(keyIds)
+    || keyIds.some((keyId) => typeof keyId !== "string" || !UUID.test(keyId))
+  ) fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+  const normalized = [...new Set((keyIds as string[]).map((keyId) => keyId.toLowerCase()))].sort();
+  if ((count === 0) !== (normalized.length === 0)) fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+  return count === 0 ? { state: "empty" } : { state: "rows", keyIds: normalized };
+}
+
 async function* childStream(child: PortableRecoveryChild): AsyncIterable<Uint8Array> {
   for await (const chunk of child.stdout) yield chunk;
   try { await child.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery subprocess failed"); }
@@ -339,16 +401,32 @@ async function sourcePersonalProviderCustody(
 async function restorePersonalProviderCustody(
   fs: PortableRecoveryFilesystem,
   memberPath: string,
+  injected: string | undefined,
+  database: PersonalProviderCredentialDbEvidence,
 ): Promise<void> {
-  if (!(await fs.exists(memberPath))) return;
-  const bytes = await fs.readFile(memberPath);
-  if (bytes.byteLength === 0) return;
-  if (bytes.byteLength > 1024) fail("VERIFICATION_FAILED", "portable recovery custody is invalid");
-  let recovered: string;
+  let recovered: string | undefined;
+  if (await fs.exists(memberPath)) {
+    const bytes = await fs.readFile(memberPath);
+    if (bytes.byteLength > 0) {
+      if (bytes.byteLength > 1024) fail("VERIFICATION_FAILED", "portable recovery custody is invalid");
+      try {
+        recovered = canonicalCustody(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch {
+        fail("VERIFICATION_FAILED", "portable recovery custody is invalid");
+      }
+    }
+  }
   try {
-    recovered = canonicalCustody(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    assertPersonalProviderRestoreCustody({
+      database,
+      instanceEnvRaw: recovered === undefined ? undefined : `${PERSONAL_PROVIDER_CUSTODY_ENV}=${recovered}\n`,
+    });
   } catch {
-    fail("VERIFICATION_FAILED", "portable recovery custody is invalid");
+    fail("VERIFICATION_FAILED", "portable recovery custody does not match personal credential records");
+  }
+  if (recovered === undefined) return;
+  if (injected !== undefined && canonicalCustody(injected) !== recovered) {
+    fail("VERIFICATION_FAILED", "portable recovery injected custody does not match the recovery bundle");
   }
   const configRoot = join(fs.root, "config");
   const target = join(configRoot, "instance.env");
@@ -526,7 +604,7 @@ async function prepareAppRestoreList(input: {
   readonly runner: PortableRecoveryProcessRunner;
   readonly dumpPath: string;
   readonly listPath: string;
-}): Promise<void> {
+}): Promise<PersonalProviderCredentialDbEvidence> {
   const child = await input.runner.start({
     command: "pg_restore",
     args: ["--list", input.dumpPath],
@@ -537,6 +615,8 @@ async function prepareAppRestoreList(input: {
   try { await child.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery restore list failed"); }
   const retained: string[] = [];
   const observed = new Set<string>();
+  let personalProviderTable = false;
+  let personalProviderTableData = false;
   for (const rawLine of new TextDecoder().decode(concat(chunks)).split("\n")) {
     const line = rawLine.trimEnd();
     const extension = /(?: EXTENSION - | COMMENT - EXTENSION )([^ ]+)$/.exec(line)?.[1];
@@ -546,6 +626,8 @@ async function prepareAppRestoreList(input: {
       continue;
     }
     if (line.includes(" EXTENSION ")) fail("VERIFICATION_FAILED", "portable recovery app extension entry is invalid");
+    if (/ TABLE public personal_provider_credentials(?: |$)/.test(line)) personalProviderTable = true;
+    if (/ TABLE DATA public personal_provider_credentials(?: |$)/.test(line)) personalProviderTableData = true;
     retained.push(rawLine);
   }
   if ([...APP_RETAINED_EXTENSIONS].some((extension) => !observed.has(extension))) {
@@ -554,6 +636,115 @@ async function prepareAppRestoreList(input: {
   await input.fs.writeFile(input.listPath, new TextEncoder().encode(retained.join("\n")), 0o600);
   await input.fs.chmod(input.listPath, 0o600);
   await input.fs.syncFile(input.listPath);
+  if (!personalProviderTable) return { state: "table-absent" };
+  if (!personalProviderTableData) {
+    fail("VERIFICATION_FAILED", "portable recovery personal credential contents cannot be established from the backup");
+  }
+  const extracted = await input.runner.start({
+    command: "pg_restore",
+    args: ["--data-only", `--table=public.${PERSONAL_PROVIDER_TABLE}`, input.dumpPath],
+    env: { PATH: CHILD_PATH, LANG: "C" },
+  });
+  const evidence = await readPersonalProviderCredentialEvidenceFromRestoreSql(extracted.stdout);
+  try { await extracted.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery personal credential evidence extraction failed"); }
+  return evidence;
+}
+
+async function readPersonalProviderCredentialEvidenceFromRestoreSql(
+  source: AsyncIterable<Uint8Array>,
+): Promise<PersonalProviderCredentialDbEvidence> {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let mode: "header" | "copy" | "done" | "invalid" = "header";
+  let invalidMessage: string | undefined;
+  let header = "";
+  let columnCount = 0;
+  let keyIndex = -1;
+  let fieldIndex = 0;
+  let firstFieldPrefix = "";
+  let currentKeyId = "";
+  let rowCount = 0;
+  const keyIds = new Set<string>();
+  let sawCopy = false;
+  let sawEnd = false;
+  const invalidate = (message: string): void => {
+    invalidMessage ??= message;
+    mode = "invalid";
+  };
+  const consumeHeaderLine = (): void => {
+    const line = header.endsWith("\r") ? header.slice(0, -1) : header;
+    header = "";
+    const match = /^COPY (?:(?:"public"|public)\.)?(?:"personal_provider_credentials"|personal_provider_credentials) \(([^)]+)\) FROM stdin;$/.exec(line);
+    if (match === null) return;
+    const columns = match[1]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""));
+    keyIndex = columns.indexOf("key_id");
+    if (keyIndex < 0) {
+      invalidate("portable recovery personal credential dump is missing custody identity");
+      return;
+    }
+    sawCopy = true;
+    columnCount = columns.length;
+    mode = "copy";
+  };
+  const consumeCopyLine = (): void => {
+    const firstField = firstFieldPrefix.endsWith("\r") ? firstFieldPrefix.slice(0, -1) : firstFieldPrefix;
+    if (fieldIndex === 0 && firstField === String.raw`\.`) {
+      mode = "done";
+      sawEnd = true;
+      return;
+    }
+    if (fieldIndex !== columnCount - 1) {
+      invalidate("portable recovery personal credential dump is malformed");
+      return;
+    }
+    const keyId = currentKeyId.endsWith("\r") ? currentKeyId.slice(0, -1) : currentKeyId;
+    if (!UUID.test(keyId)) {
+      invalidate("portable recovery personal credential row has invalid custody identity");
+      return;
+    }
+    keyIds.add(keyId.toLowerCase());
+    rowCount += 1;
+    fieldIndex = 0;
+    firstFieldPrefix = "";
+    currentKeyId = "";
+  };
+  const consumeText = (text: string): void => {
+    for (const character of text) {
+      if (mode === "invalid" || mode === "done") continue;
+      if (mode === "header") {
+        if (character === "\n") {
+          consumeHeaderLine();
+        } else if (header.length >= 65_536) {
+          invalidate("portable recovery personal credential dump is malformed");
+        } else {
+          header += character;
+        }
+        continue;
+      }
+      if (character === "\t") {
+        fieldIndex += 1;
+        if (fieldIndex >= columnCount) invalidate("portable recovery personal credential dump is malformed");
+        continue;
+      }
+      if (character === "\n") {
+        consumeCopyLine();
+        continue;
+      }
+      if (fieldIndex === 0 && firstFieldPrefix.length < 3) firstFieldPrefix += character;
+      if (fieldIndex === keyIndex) {
+        if (currentKeyId.length >= 64) invalidate("portable recovery personal credential row has invalid custody identity");
+        else currentKeyId += character;
+      }
+    }
+  };
+  try {
+    for await (const chunk of source) consumeText(decoder.decode(chunk, { stream: true }));
+    consumeText(decoder.decode());
+  } catch {
+    invalidate("portable recovery personal credential dump is malformed");
+  }
+  if (invalidMessage !== undefined) fail("VERIFICATION_FAILED", invalidMessage);
+  if (!sawEnd || !sawCopy) fail("VERIFICATION_FAILED", "portable recovery personal credential contents cannot be established from the backup");
+  return rowCount === 0 ? { state: "empty" } : { state: "rows", keyIds: [...keyIds].sort() };
 }
 
 async function runSqlRepair(input: { readonly fs: PortableRecoveryFilesystem; readonly runner: PortableRecoveryProcessRunner; readonly databaseUrl: string; readonly sql: string; readonly command: "psql" | "psql16" }): Promise<void> {
@@ -624,7 +815,20 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     // Validate every volume root before opening the remote upload. This keeps
     // unsafe source topology from becoming a partial object-store operation.
     for (const root of ROOTS) await assertSafeTree(stable.fs, join(stable.fs.root, root));
+    const credentialEvidence = await readSourcePersonalProviderCredentialEvidence({
+      fs: stable.fs,
+      runner: stable.runner,
+      databaseUrl: stable.environment.appDatabaseUrl,
+    });
     const custody = await sourcePersonalProviderCustody(stable.fs, stable.environment.personalProviderCustody);
+    try {
+      assertPersonalProviderRestoreCustody({
+        database: credentialEvidence,
+        instanceEnvRaw: custody === undefined ? undefined : `${PERSONAL_PROVIDER_CUSTODY_ENV}=${custody}\n`,
+      });
+    } catch {
+      fail("VERIFICATION_FAILED", "portable recovery export custody does not match personal credential records");
+    }
     const memberNames = custody === undefined
       ? PORTABLE_RECOVERY_MEMBERS.slice(0, -1)
       : PORTABLE_RECOVERY_MEMBERS;
@@ -710,17 +914,22 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
       await stable.fs.rename(markerNext, join(staging, "verified.json"));
       await stable.fs.syncDirectory(staging);
     }
+    const appRestoreListPath = join(staging, "app-postgres.list");
+    const credentialEvidence = await prepareAppRestoreList({ fs: stable.fs, runner: stable.runner, dumpPath: memberPaths.get("app-postgres.dump")!, listPath: appRestoreListPath });
+    await restorePersonalProviderCustody(
+      stable.fs,
+      memberPaths.get("personal-provider-custody.json")!,
+      stable.environment.personalProviderCustody,
+      credentialEvidence,
+    );
     verified = true;
     discardStaging = false;
     await runSqlRepair({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.appDatabaseUrl, sql: APP_EXTENSION_REPAIR_SQL, command: "psql" });
-    const appRestoreListPath = join(staging, "app-postgres.list");
-    await prepareAppRestoreList({ fs: stable.fs, runner: stable.runner, dumpPath: memberPaths.get("app-postgres.dump")!, listPath: appRestoreListPath });
     await runRestoreCommand({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.appDatabaseUrl, dumpPath: memberPaths.get("app-postgres.dump")!, command: "pg_restore", ownerRole: "nautilo", useListPath: appRestoreListPath });
     await runSqlRepair({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.appDatabaseUrl, sql: APP_REPAIR_SQL, command: "psql" });
     await runRestoreCommand({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, dumpPath: memberPaths.get("logto-postgres.dump")!, command: "pg_restore16", ownerRole: "logto" });
     await runSqlRepair({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, sql: LOGTO_TENANT_PASSWORD_RESYNC_SQL, command: "psql16" });
     await runSqlRepair({ fs: stable.fs, runner: stable.runner, databaseUrl: stable.environment.logtoDatabaseUrl, sql: LOGTO_TENANT_REGRANT_SQL, command: "psql16" });
-    await restorePersonalProviderCustody(stable.fs, memberPaths.get("personal-provider-custody.json")!);
     // A process can die between root renames. The verified tar members are the
     // authority, so normalize every resume back to exact empty targets and a
     // clean extraction tree before attempting promotion again.
