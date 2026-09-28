@@ -238,10 +238,20 @@ describe("current protected Task Runtime authority adapter", () => {
 
   test("rechecks closed current facts under accepted authority and releases locks before use", async () => {
     const f = await fixture();
+    const occurrence: ProtectedTaskOccurrence = {
+      ...f.occurrence,
+      task: { ...f.occurrence.task, callingRoomId: "room:open" },
+    };
     let insideAuthority = false;
     let loaded = 0;
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => {loaded++; return f.facts;},
+      loadCurrentFacts: async () => {
+        loaded++;
+        return {
+          ...f.facts,
+          task: { ...f.facts.task, callingRoomId: "room:open" },
+        };
+      },
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         insideAuthority = true;
@@ -258,7 +268,7 @@ describe("current protected Task Runtime authority adapter", () => {
       subject: {userId: f.occurrence.task.requestorId,
         humanActorId: f.authority.plan.subjectHumanId,
         deviceId: f.authority.plan.committerDeviceId},
-      occurrence: f.occurrence,
+      occurrence,
       record: f.record,
       request: f.request,
       now: () => f.now,

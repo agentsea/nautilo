@@ -437,6 +437,32 @@ describe("current Task Runtime authority", () => {
       now: NOW + 1,
     };
     expect(matchesCurrentTaskRuntimeAuthority(input)).toBe(true);
+    const additionalNamespace = {
+      ...value.namespaceRequirements[0]!,
+      ordinal: 1,
+      namespaceId: "20000000-0000-4000-8000-000000000005",
+      operations: ["decrypt"] as const,
+    };
+    expect(matchesCurrentTaskRuntimeAuthority({
+      ...input,
+      namespaces: [...value.namespaceRequirements, additionalNamespace],
+    })).toBe(true);
+    expect(matchesCurrentTaskRuntimeAuthority({
+      ...input,
+      namespaces: [
+        ...value.namespaceRequirements,
+        { ...additionalNamespace, operations: ["encrypt"] },
+      ],
+    })).toBe(true);
+    for (const operations of [[], ["encrypt", "decrypt"], ["decrypt", "decrypt"]] as const) {
+      expect(matchesCurrentTaskRuntimeAuthority({
+        ...input,
+        namespaces: [
+          ...value.namespaceRequirements,
+          { ...additionalNamespace, operations },
+        ],
+      })).toBe(false);
+    }
     expect(matchesCurrentTaskRuntimeAuthority({
       ...input,
       now: value.request.deadlineAt,

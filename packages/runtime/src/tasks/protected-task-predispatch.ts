@@ -242,7 +242,10 @@ function exactMemory(
     || envelope.agentId !== task.agentId
     || (
       expectedMode === "scope"
-        ? envelope.memoryMode !== "scope" || envelope.scopeId !== task.scopeId
+        ? envelope.memoryMode !== "scope"
+          || envelope.scopeId !== task.scopeId
+          || !("originWritableNamespaceId" in envelope)
+          || !uuid(envelope.originWritableNamespaceId)
         : envelope.memoryMode === "scope"
           || envelope.readableNamespaces.length === 0
           || envelope.writableNamespaces.length === 0

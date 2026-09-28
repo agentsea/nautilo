@@ -42,7 +42,7 @@ const fixture: Input = {
 };
 
 describe("current protected Task run for grant", () => {
-  test("accepts exact orphan and open-Room source authority", () => {
+  test("uses the requester-private Task content source for orphan and open-Room runs", () => {
     expect(isCurrentProtectedTaskRunForGrant(fixture)).toBe(true);
     expect(isCurrentProtectedTaskRunForGrant({
       ...fixture,
@@ -50,9 +50,23 @@ describe("current protected Task run for grant", () => {
         ...fixture.occurrence.task, callingRoomId: "open-room",
       } },
       task: { ...fixture.task, callingRoomId: "open-room" },
-      sourceRoomId: "open-room",
-      requesterPrivateRoom: null,
     })).toBe(true);
+    expect(isCurrentProtectedTaskRunForGrant({
+      ...fixture,
+      occurrence: { ...fixture.occurrence, task: {
+        ...fixture.occurrence.task, callingRoomId: "open-room",
+      } },
+      task: { ...fixture.task, callingRoomId: "open-room" },
+      sourceRoomId: "open-room",
+    })).toBe(false);
+    expect(isCurrentProtectedTaskRunForGrant({
+      ...fixture,
+      occurrence: { ...fixture.occurrence, task: {
+        ...fixture.occurrence.task, callingRoomId: "open-room",
+      } },
+      task: { ...fixture.task, callingRoomId: "open-room" },
+      requesterPrivateRoom: null,
+    })).toBe(false);
   });
 
   test("rejects another requestor, source Room, or private Namespace", () => {

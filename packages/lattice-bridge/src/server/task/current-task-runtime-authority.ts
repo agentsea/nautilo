@@ -161,9 +161,14 @@ function requirementsAreCanonical(
     requirement.ordinal !== index
     || (index > 0
       && namespaces[index - 1]!.namespaceId >= requirement.namespaceId)
-    || requirement.operations.length !== 2
-    || requirement.operations[0] !== "decrypt"
-    || requirement.operations[1] !== "encrypt"
+    || !(
+      requirement.operations.length === 1
+        && (requirement.operations[0] === "decrypt"
+          || requirement.operations[0] === "encrypt")
+      || requirement.operations.length === 2
+        && requirement.operations[0] === "decrypt"
+        && requirement.operations[1] === "encrypt"
+    )
   )) return false;
   if (domains.some((requirement, index) =>
     requirement.ordinal !== index
@@ -212,6 +217,7 @@ function matchesCurrentTaskRuntimeAuthorityWithoutAdmission(input: Readonly<{
     && plan.operations.length === 2
     && plan.operations[0] === "decrypt"
     && plan.operations[1] === "encrypt"
+    && requirementsAreCanonical(namespaces, domainRequirements)
     && namespaces.every((requirement) =>
       requirement.expectedPolicyRevision === input.policyRevision
       && requirement.operations.every((operation) =>

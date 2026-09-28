@@ -38,13 +38,12 @@ export function isCurrentProtectedTaskRunForGrant(input: Readonly<{
   phase: "awaiting" | "running";
 }>): boolean {
   const { occurrence, task, run } = input;
-  const sourceRoom = task.callingRoomId ?? input.requesterPrivateRoom?.roomId;
+  const sourceRoom = input.requesterPrivateRoom;
   return input.requestorUserId === task.requestorId
     && input.requestWorkId === run.id
-    && sourceRoom !== undefined
-    && input.sourceRoomId === sourceRoom
-    && (task.callingRoomId !== null
-      || input.requesterPrivateRoom?.namespaceId === task.contentNamespaceId)
+    && sourceRoom !== null
+    && input.sourceRoomId === sourceRoom.roomId
+    && sourceRoom.namespaceId === task.contentNamespaceId
     && task.id === occurrence.task.id
     && task.ownerId === occurrence.task.ownerId
     && task.requestorId === occurrence.task.requestorId

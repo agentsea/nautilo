@@ -495,6 +495,64 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 }
 
 describe("Task Runtime grant claim", () => {
+  test("claims an exact read-only Memory Namespace without widening its operations", async () => {
+    const value = await fixture();
+    const memoryRequirement = Object.freeze({
+      ordinal: 1,
+      namespaceId: "z-read-only-memory-namespace",
+      domainId: DOMAIN,
+      operations: Object.freeze(["decrypt"] as const),
+      expectedAccessRevision: 3,
+      expectedPolicyRevision: 7,
+    });
+    const namespaceRequirements = Object.freeze([
+      ...initialRecord().authoritySet.namespaceRequirements,
+      memoryRequirement,
+    ]);
+    value.setSubstitutePlan((plan) => Object.freeze({
+      ...plan,
+      initialRecord: Object.freeze({
+        ...plan.initialRecord,
+        authoritySet: Object.freeze({
+          ...plan.initialRecord.authoritySet,
+          namespaceRequirements,
+        }),
+      }),
+    }));
+    value.setCurrentNamespaceRequirements(namespaceRequirements);
+
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    expect(claimed.status).toBe("claimed");
+    expect((await value.repository.get(REQUEST))?.authoritySet?.namespaceRequirements[1]
+      ?.operations).toEqual(["decrypt"]);
+    if (claimed.status === "claimed") claimed.dispatch.candidate.onIneligible();
+  });
+
+  test("does not weaken the Task definition and result Namespace to read-only", async () => {
+    const value = await fixture();
+    const initial = initialRecord();
+    value.setSubstitutePlan((plan) => Object.freeze({
+      ...plan,
+      initialRecord: Object.freeze({
+        ...initial,
+        authoritySet: Object.freeze({
+          ...initial.authoritySet,
+          namespaceRequirements: Object.freeze([Object.freeze({
+            ...initial.authoritySet.namespaceRequirements[0]!,
+            operations: Object.freeze(["decrypt"] as const),
+          })]),
+        }),
+      }),
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("disagrees with its occurrence");
+    expect(await value.repository.get(REQUEST)).toBeNull();
+  });
+
   test("rotates an unconsumed request after its process-local recipient is lost", async () => {
     const value = await fixture();
     await prepareAndBind(value);

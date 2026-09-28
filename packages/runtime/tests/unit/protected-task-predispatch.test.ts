@@ -299,6 +299,7 @@ describe("protected Task predispatch", () => {
             agentId: AGENT,
             roomId: ROOM,
             scopeId,
+            originWritableNamespaceId: NAMESPACE,
             toolPolicy: {},
           },
           mode: "scope",
@@ -309,7 +310,34 @@ describe("protected Task predispatch", () => {
     });
     expect(value.memory).toMatchObject({
       mode: "scope",
-      envelope: { scopeId },
+      envelope: { scopeId, originWritableNamespaceId: NAMESPACE },
     });
+  });
+
+  test("rejects a Scope without its exact writable origin Namespace", async () => {
+    const scopeId = "99999999-9999-4999-8999-999999999999";
+    const base = ports();
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(planProtectedTaskPredispatch({
+      task: task({ useScope: true, scopeId }),
+      run: run(),
+      ports: {
+        ...base,
+        resolveMemoryEnvelope: async () => ({
+          envelope: {
+            memoryMode: "scope",
+            ownerId: OWNER,
+            actorId: "88888888-8888-4888-8888-888888888888",
+            agentId: AGENT,
+            roomId: ROOM,
+            scopeId,
+            toolPolicy: {},
+          },
+          mode: "scope",
+          authorityStatus: "exact",
+          provenance: "scope_existing",
+        }),
+      },
+    })).rejects.toThrow("Protected Task Memory authority is not exact");
   });
 });

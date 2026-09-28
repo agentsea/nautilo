@@ -252,9 +252,8 @@ function exactOccurrenceRecord(
     && record.authoritySet.namespaceRequirements.some((requirement) =>
       requirement.namespaceId === occurrence.task.contentNamespaceId
       && requirement.expectedAccessRevision
-        === occurrence.task.cryptoAccessRevision)
-    && record.authoritySet.namespaceRequirements.every((requirement) =>
-      requirement.operations.length === 2
+        === occurrence.task.cryptoAccessRevision
+      && requirement.operations.length === 2
       && requirement.operations[0] === "decrypt"
       && requirement.operations[1] === "encrypt");
 }

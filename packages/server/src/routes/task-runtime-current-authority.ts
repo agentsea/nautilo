@@ -262,7 +262,7 @@ async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
     resultCryptoMappingState: runRow.result_crypto_mapping_state,
   };
   let requesterPrivateRoom: CurrentProtectedTaskRuntimeFacts["requesterPrivateRoom"] = null;
-  if (task.callingRoomId === null && task.contentNamespaceId !== null) {
+  if (task.contentNamespaceId !== null) {
     const humanRows = await executeTypedCryptoQuery(input.product,
       cryptoTypedDb.select({actor_id: actors.id}).from(actors).where(and(
         eq(actors.ownerId, task.requestorId),
