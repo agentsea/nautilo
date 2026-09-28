@@ -75,7 +75,7 @@ mock.module("@nautilo/runtime", () => ({ ...runtime,
 const { maybeResumeAwaitingTask } = await import("../../src/messaging/await-resume");
 function resetStream() { started = new Promise<void>((resolve) => { announce = resolve; }); }
 beforeEach(() => {
-  task = { id: "task", ownerId: "owner", requestorId: "owner", agentId: "agent", targetRoomId: "room", status: "awaiting", scheduleKind: "now" } as Task;
+  task = { id: "task", ownerId: "owner", requestorId: "owner", agentId: "agent", targetRoomId: "room", status: "awaiting", scheduleKind: "now", contentRepresentation: "ordinary" } as Task;
   run = { id: "run", taskId: task.id, graphThreadId: "subagent:human-reply", jobId: "completed-original", status: "awaiting" } as TaskRun;
   jobs = new runtime.JobManager({ persist: async () => randomUUID(), updateStatus: async () => {} });
   completion.mockClear(); failure.mockClear(); baseProcess.mockClear(); baseEmit.mockClear();
@@ -120,4 +120,15 @@ test("human reply chained waits repark before another cancellable resume", async
   const next = maybeResumeAwaitingTask("room", "owner", "Next reply"); await started; finish(); await next;
   expect(completion).toHaveBeenCalledWith({ db }, { taskId: task.id, runId: run.id, scheduleKind: "now", resultText: "Late reply", requireRunningPair: true });
   expect(jobs.getActiveJobs()).toHaveLength(0);
+});
+
+test("dual and protected Task replies never enter the ordinary plaintext resume", async () => {
+  for (const representation of ["dual", "protected"] as const) {
+    task = { ...task, contentRepresentation: representation };
+    await maybeResumeAwaitingTask("room", "owner", "Sensitive reply");
+    expect(task.status).toBe("awaiting");
+    expect(jobs.getActiveJobs()).toHaveLength(0);
+    expect(completion).not.toHaveBeenCalled();
+    expect(failure).not.toHaveBeenCalled();
+  }
 });

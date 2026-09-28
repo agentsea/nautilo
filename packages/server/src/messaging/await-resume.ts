@@ -51,6 +51,9 @@ export async function maybeResumeAwaitingTask(
     if (!found) return;
 
     const { task, graphThreadId, runId } = found;
+    // A protected Task must accept the exact encrypted Message and resume
+    // under a fresh Task grant. Raw HTTP content belongs only to Plain Tasks.
+    if (task.contentRepresentation !== "ordinary") return;
 
     // The reply is ordinary Room participation. Only the Task's persisted
     // requestor authorizes and funds the resumed Agent execution.
