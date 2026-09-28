@@ -972,6 +972,8 @@ export {PostgresProtectedReflectionMessageMetadata, type ProtectedReflectionMess
 
 export {
   inspectInitialTaskRuntimeNamespaceAuthority,
+  withInitialTaskRuntimeRecipientAuthority,
+  type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
 } from "./task/initial-task-runtime-namespace-authority.ts";

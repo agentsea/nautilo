@@ -51,11 +51,16 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     sourceNamespaceId: string;
     facts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[];
   }>>;
-  executor: TaskRuntimeGrantClaimPlan["executor"];
+  prepareExecution(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    predispatch: ProtectedTaskPredispatchPlan;
+  }>): Promise<Readonly<{
+    executor: TaskRuntimeGrantClaimPlan["executor"];
+    openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"];
+    modelAttribution?: "external";
+  }>>;
   startProtectedTaskRun: TaskRuntimeGrantClaimPlan["startProtectedTaskRun"];
-  openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"];
   publishResult: TaskRuntimeGrantClaimPlan["publishResult"];
-  modelAttribution?: "external";
   now?: () => number;
 }>;
 
@@ -242,9 +247,8 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     throw new TypeError("Protected Task recipient TTL is invalid");
   }
   for (const required of [
-    dependencies.executor,
+    dependencies.prepareExecution,
     dependencies.startProtectedTaskRun,
-    dependencies.openTransientInput,
     dependencies.publishResult,
   ]) {
     if (typeof required !== "function") {
@@ -355,12 +359,33 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       authorizationRequestId: requestId,
       policyRevision: authority.policyRevision,
     });
+    const execution = await dependencies.prepareExecution(Object.freeze({
+      occurrence,
+      predispatch: prepared,
+    }));
+    const executionKeys = execution !== null && typeof execution === "object"
+      ? Object.keys(execution).sort().join(",")
+      : "";
+    if ((executionKeys !== "executor,openTransientInput"
+        && executionKeys !== "executor,modelAttribution,openTransientInput")
+      || typeof execution.executor !== "function"
+      || typeof execution.openTransientInput !== "function"
+      || (execution.modelAttribution !== undefined
+        && execution.modelAttribution !== "external")) {
+      throw new TypeError("Protected Task execution preparation is invalid");
+    }
+    // A preparation dependency may perform async route admission, but it may
+    // not replace the already-authorized occurrence or its resolved target.
+    if (!sameOccurrence(occurrence, prepared.occurrence)
+      || prepared.scheduling.roomId !== prepared.target.roomId) {
+      throw new TypeError("Protected Task execution preparation changed predispatch");
+    }
 
     return Object.freeze({
       initialRecord,
       reference,
       scheduling: prepared.scheduling,
-      executor: dependencies.executor,
+      executor: execution.executor,
       startProtectedTaskRun: dependencies.startProtectedTaskRun,
       recipientAttempt: ({ record, now: attemptAt }) => {
         if (record.snapshot.requestId !== requestId
@@ -459,11 +484,11 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
           destroyDomainForegroundAuthorizationPlanV2(grant);
         }
       },
-      openTransientInput: dependencies.openTransientInput,
+      openTransientInput: execution.openTransientInput,
       publishResult: dependencies.publishResult,
-      ...(dependencies.modelAttribution === undefined
+      ...(execution.modelAttribution === undefined
         ? {}
-        : { modelAttribution: dependencies.modelAttribution }),
+        : { modelAttribution: execution.modelAttribution }),
     });
   };
 }

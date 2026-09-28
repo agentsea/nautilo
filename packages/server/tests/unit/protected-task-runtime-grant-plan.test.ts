@@ -30,6 +30,8 @@ const HUMAN = "30000000-0000-4000-8000-000000000003";
 const AGENT = "40000000-0000-4000-8000-000000000004";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
+const TASK_TWO = "51000000-0000-4000-8000-000000000005";
+const RUN_TWO = "61000000-0000-4000-8000-000000000006";
 const ROOM = "70000000-0000-4000-8000-000000000007";
 const DEVICE = "80000000-0000-4000-8000-000000000008";
 const CONTENT = "90000000-0000-4000-8000-000000000009";
@@ -42,10 +44,13 @@ function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
 }
 
-function occurrence(): ProtectedTaskOccurrence {
+function occurrence(
+  taskId: string = TASK,
+  taskRunId: string = RUN,
+): ProtectedTaskOccurrence {
   return Object.freeze({
     task: Object.freeze({
-      id: TASK,
+      id: taskId,
       ownerId: OWNER,
       requestorId: REQUESTOR,
       agentId: AGENT,
@@ -56,17 +61,17 @@ function occurrence(): ProtectedTaskOccurrence {
       contentRevision: 3,
       cryptoObjectId: deriveTaskContentCryptoObjectIdV1({
         kind: "definition",
-        taskId: TASK,
+        taskId,
         contentRevision: 3,
       }),
       cryptoAccessRevision: 0,
       cryptoRequiredNamespaceFingerprint: bytes(8),
     }),
     run: Object.freeze({
-      id: RUN,
-      taskId: TASK,
+      id: taskRunId,
+      taskId,
       jobId: null,
-      graphThreadId: `subagent:task:${TASK}:${RUN}`,
+      graphThreadId: `subagent:task:${taskId}:${taskRunId}`,
       status: "awaiting" as const,
       startedAt: new Date(NOW - 1_000),
     }),
@@ -167,9 +172,8 @@ function builder(
         facts: authorityFacts,
       };
     },
-    executor,
+    prepareExecution: async () => ({ executor, openTransientInput }),
     startProtectedTaskRun,
-    openTransientInput,
     publishResult,
   });
 }
@@ -251,6 +255,84 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     recipientKeyId: recipient.recipientKeyId,
     domainCount: 2,
   });
+});
+
+test("binds distinct per-occurrence executors and transient openers", async () => {
+  const first = occurrence();
+  const second = occurrence(TASK_TWO, RUN_TWO);
+  const firstExecutor = async function* () { yield* []; };
+  const secondExecutor = async function* () { yield* []; };
+  const firstOpener = async () => ({ message: "first" });
+  const secondOpener = async () => ({ message: "second" });
+  const prepared: string[] = [];
+  const build = createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async value => predispatch(value),
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      facts: facts(),
+    }),
+    prepareExecution: async ({ occurrence: value, predispatch: plan }) => {
+      expect(plan.occurrence).toBe(value);
+      expect(plan.target.roomId).toBe(ROOM);
+      prepared.push(value.run.id);
+      return value.run.id === RUN
+        ? { executor: firstExecutor, openTransientInput: firstOpener }
+        : {
+            executor: secondExecutor,
+            openTransientInput: secondOpener,
+            modelAttribution: "external" as const,
+          };
+    },
+    startProtectedTaskRun: async () => ({ status: "started" }),
+    publishResult: async () => {},
+  });
+
+  const [firstPlan, secondPlan] = await Promise.all([
+    build(first),
+    build(second),
+  ]);
+  expect(prepared.sort()).toEqual([RUN, RUN_TWO].sort());
+  expect(firstPlan.executor).toBe(firstExecutor);
+  expect(firstPlan.openTransientInput).toBe(firstOpener);
+  expect(firstPlan.modelAttribution).toBeUndefined();
+  expect(secondPlan.executor).toBe(secondExecutor);
+  expect(secondPlan.openTransientInput).toBe(secondOpener);
+  expect(secondPlan.modelAttribution).toBe("external");
+});
+
+test("refuses substituted predispatch before execution preparation", async () => {
+  const value = occurrence();
+  const substituted = occurrence(TASK_TWO, RUN_TWO);
+  let preparationCalls = 0;
+  const build = createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    predispatch: async () => predispatch(substituted),
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      facts: facts(),
+    }),
+    prepareExecution: async () => {
+      preparationCalls += 1;
+      return {
+        executor: async function* () { yield* []; },
+        openTransientInput: async () => ({}),
+      };
+    },
+    startProtectedTaskRun: async () => ({ status: "started" }),
+    publishResult: async () => {},
+  });
+
+  // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+  await expect(build(value)).rejects.toThrow(
+    "predispatch substituted its occurrence",
+  );
+  expect(preparationCalls).toBe(0);
 });
 
 test("fails closed on incomplete authority and substituted current authority", async () => {
@@ -342,9 +424,11 @@ test("includes the exact Scope origin Namespace in the grant inventory", async (
         facts: facts(),
       };
     },
-    executor: async function* () { yield* []; },
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
     startProtectedTaskRun: async () => ({ status: "started" }),
-    openTransientInput: async () => ({}),
     publishResult: async () => {},
   })(value);
 
@@ -364,9 +448,8 @@ test("requires concrete execution and publication sinks", () => {
       sourceNamespaceId: CONTENT,
       facts: facts(),
     }),
-    executor: undefined,
+    prepareExecution: undefined,
     startProtectedTaskRun: async () => ({ status: "started" as const }),
-    openTransientInput: async () => ({}),
     publishResult: async () => {},
   } as never)).toThrow("execution sink is unavailable");
 });

@@ -1,8 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { PostgresJsBridgeConnection, PostgresJsBridgeExecutor, PostgresJsBridgeRow, PostgresJsBridgeScalar } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { inspectInitialTaskRuntimeNamespaceAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
+import { inspectInitialTaskRuntimeNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 
+import { PostgresDeviceAdmissionRepository, type CurrentDeviceAdmissionAuthority } from "../../src/server/device/postgres-device-admission-repository.ts";
+
+const DEVICE = "initial-task-device";
 const USER = "10000000-0000-4000-8000-000000000001";
 const HUMAN = "10000000-0000-4000-8000-000000000002";
 const AGENT_ACTOR = "10000000-0000-4000-8000-000000000003";
@@ -102,6 +105,22 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       if (statement.includes("SELECT current_user::text")) {
         stage = "role";
         rows = [{ current_user: "nautilo_crypto", session_user: "nautilo_crypto" }];
+      } else if (statement.includes('from "human_crypto_devices"')) {
+        stage = "device-lock";
+        rows = [{ device_id: DEVICE, device_generation: 2, revision: 4 }];
+      } else if (statement.includes('from "domain_key_recipient_envelopes"')) {
+        stage = "recipient";
+        rows = DOMAINS.map((domain_id) => ({ domain_id }));
+      } else if (statement.includes('from "namespace_domain_key_heads"') && statement.includes('order by')) {
+        stage = "namespace-locks";
+        rows = NAMESPACES.map((namespace_id, index) => ({ namespace_id, domain_id: DOMAINS[index]!,
+          domain_key_generation: 2, domain_authorization_revision: 3,
+          domain_head_digest: new Uint8Array(32).fill(4), binding_digest: new Uint8Array(32).fill(6) }));
+      } else if (statement.includes('from "domain_key_heads"') && statement.includes('order by')) {
+        stage = "domain-locks";
+        rows = DOMAINS.map((domain_id) => ({ domain_id, domain_key_generation: 2,
+          authorization_revision: 3, head_digest: new Uint8Array(32).fill(4),
+          participant_count: 1, participant_digest: new Uint8Array(32).fill(5) }));
       } else if (statement.includes('from "namespace_domain_key_heads"')) {
         stage = "namespace";
         const index = (NAMESPACES as readonly string[]).indexOf(String(parameters[0]));
@@ -213,5 +232,115 @@ describe("initial Task Runtime Namespace authority", () => {
       expect(error).toBeInstanceOf(TypeError);
       expect(events).toEqual([]);
     }
+  });
+});
+
+function device(): CurrentDeviceAdmissionAuthority {
+  return { userId: USER, humanActorId: HUMAN, deviceId: DEVICE, deviceGeneration: 2,
+    signingPublicKey: new Uint8Array(32).fill(6), serverInstanceId: "initial-server", lineageGeneration: 1,
+    epoch: 2, securityRevision: 4, headDigest: new Uint8Array(32).fill(7) };
+}
+function recipientInput(input: Input) {
+  return { ...input, deviceId: DEVICE,
+    namespaceRequirements: NAMESPACES.map((namespaceId, ordinal) => ({ ordinal, namespaceId,
+      domainId: DOMAINS[ordinal]!, operations: ["decrypt", "encrypt"] as const,
+      expectedAccessRevision: 9 + ordinal, expectedPolicyRevision: 7 })),
+    domainRequirements: DOMAINS.map((domainId, ordinal) => ({ ordinal, domainId, expectedEpoch: 2, expectedAuthorizationRevision: 3 })),
+  };
+}
+
+describe("initial Task Runtime recipient authority", () => {
+  test("lends exact public authority inside product/device/Namespace/Domain locks", async () => {
+    const { input, events } = fixture();
+    const devices: CurrentDeviceAdmissionAuthority[] = [];
+    const admission = spyOn(PostgresDeviceAdmissionRepository.prototype, "currentAuthorityForDelegation")
+      .mockImplementation(async (subject) => {
+        expect(subject).toEqual({ userId: USER, humanActorId: HUMAN, deviceId: DEVICE });
+        expect(events).toContain("restricted"); expect(events).not.toContain("restricted-released");
+        events.push("admission"); const current = device(); devices.push(current); return current;
+      });
+    let borrowed: Uint8Array[] = [];
+    try {
+      const result = await withInitialTaskRuntimeRecipientAuthority({ ...recipientInput(input), use: async (current) => {
+        events.push("callback");
+        expect(current.sourceRoomId).toBe(ROOMS[0]); expect(current.policyRevision).toBe(7);
+        expect(current.namespaceRequirements).toEqual(recipientInput(input).namespaceRequirements);
+        expect(current.domains.map((entry) => entry.domainId)).toEqual([...DOMAINS]);
+        expect(current.domains.every((entry) => entry.activeNamespaceBindingCount === 1)).toBe(true);
+        expect(Object.keys(current).sort()).toEqual(["device", "domains", "namespaceRequirements", "policyRevision", "sourceNamespaceId", "sourceRoomId"]);
+        borrowed = current.domains.flatMap((entry) => [entry.headDigest, entry.participantDigest, entry.activeNamespaceBindingSetDigest]);
+        expect(events).not.toContain("restricted-released");
+        await Promise.resolve(); return current.device.deviceId;
+      } });
+      expect(result).toBe(DEVICE);
+      expect(events.indexOf("device-lock")).toBeLessThan(events.indexOf("namespace-locks"));
+      expect(events.indexOf("namespace-locks")).toBeLessThan(events.indexOf("domain-locks"));
+      expect(events.lastIndexOf("admission")).toBeLessThan(events.indexOf("callback"));
+      expect(events.slice(-2)).toEqual(["restricted-released", "product-released"]);
+      for (const bytes of [...borrowed, ...devices.flatMap((entry) => [entry.signingPublicKey, entry.headDigest])]) {
+        expect(bytes.every((byte) => byte === 0)).toBe(true);
+      }
+    } finally { admission.mockRestore(); }
+  });
+
+  for (const [stage, field, value] of [
+    ["task", "agent_id", HUMAN], ["exact-source", "namespace_id", NAMESPACES[1]],
+    ["targets", "namespace_access_revision", 40], ["policy", "revision", 8], ["policy", "mode", "plaintext_only"],
+    ["namespace", "namespace_access_revision", 80], ["namespace", "domain_id", DOMAINS[1]],
+    ["namespace-locks", "domain_authorization_revision", 90], ["domain-locks", "authorization_revision", 90],
+    ["domain-locks", "head_digest", new Uint8Array(32).fill(9)],
+    ["device-lock", "device_generation", 8],
+  ] as const) {
+    test(`does not invoke callback for stale ${stage}.${field}`, async () => {
+      const { input } = fixture(substitute(stage, field, value)); let used = false;
+      const admission = spyOn(PostgresDeviceAdmissionRepository.prototype, "currentAuthorityForDelegation")
+        .mockImplementation(async () => device());
+      try {
+        expect(await withInitialTaskRuntimeRecipientAuthority({ ...recipientInput(input), use: () => { used = true; } })).toBeNull();
+        expect(used).toBe(false);
+      } finally { admission.mockRestore(); }
+    });
+  }
+
+  test("rejects revoked device, missing native recipient and device drift before callback", async () => {
+    for (const denied of ["admission", "device-lock", "recipient", "changed"]) {
+      const { input } = fixture((stage, rows) => stage === denied ? [] : rows); let used = false; let reads = 0;
+      const admission = spyOn(PostgresDeviceAdmissionRepository.prototype, "currentAuthorityForDelegation")
+        .mockImplementation(async () => denied === "admission" ? null
+          : { ...device(), epoch: denied === "changed" && ++reads === 2 ? 3 : 2 });
+      try {
+        expect(await withInitialTaskRuntimeRecipientAuthority({ ...recipientInput(input), use: () => { used = true; } })).toBeNull();
+        expect(used).toBe(false);
+      } finally { admission.mockRestore(); }
+    }
+  });
+
+  test("supports Shadow and wipes borrowed public bytes when its callback fails", async () => {
+    const { input, events } = fixture((stage, rows) => stage === "policy"
+      ? [{ mode: "shadow_encryption", shadowBehavior: "fallback", revision: 7 }]
+      : stage === "task" ? rows.map((row) => ({ ...row, content_representation: "dual" })) : rows);
+    const admission = spyOn(PostgresDeviceAdmissionRepository.prototype, "currentAuthorityForDelegation")
+      .mockImplementation(async () => device());
+    let borrowed: Uint8Array[] = [];
+    try {
+      const failure = new Error("request builder failed");
+      expect(await withInitialTaskRuntimeRecipientAuthority({ ...recipientInput(input), use: (current) => {
+        borrowed = [current.device.signingPublicKey, current.device.headDigest,
+          ...current.domains.flatMap((entry) => [entry.headDigest, entry.participantDigest, entry.activeNamespaceBindingSetDigest])];
+        throw failure;
+      } }).catch((error: unknown) => error)).toBe(failure);
+      expect(borrowed.length).toBeGreaterThan(0);
+      expect(borrowed.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+      expect(events.slice(-2)).toEqual(["restricted-released", "product-released"]);
+    } finally { admission.mockRestore(); }
+  });
+
+  test("rejects forged requirement inventory and aborts without invoking callback", async () => {
+    const { input, events } = fixture(); const exact = recipientInput(input);
+    expect(await withInitialTaskRuntimeRecipientAuthority({ ...exact,
+      namespaceRequirements: [...exact.namespaceRequirements].reverse(), use: () => true }).catch((error: unknown) => error)).toBeInstanceOf(Error);
+    const controller = new AbortController(); controller.abort();
+    expect(await withInitialTaskRuntimeRecipientAuthority({ ...exact, signal: controller.signal, use: () => true }).catch((error: unknown) => error)).toBeInstanceOf(Error);
+    expect(events).toEqual([]);
   });
 });
