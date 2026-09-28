@@ -1007,3 +1007,9 @@ export {
   type NativeTaskMessageCryptoCompletionDependencies,
   type NativeTaskMessageCryptoCompletionPort,
 } from "./task/postgres-native-task-message-completion.ts";
+export {
+  createNativeTaskMessageReadTargetV1,
+  withNativeTaskMessageV1,
+  type NativeTaskMessageReadAuthorityV1,
+  type NativeTaskMessageReadTargetV1,
+} from "./task/native-task-message-opener.ts";
