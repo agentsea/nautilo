@@ -12,7 +12,7 @@ import { readTaskPreparation } from "@nautilo/types";
  * Phase 2 can pass either a pooled `DirectDatabase` or a transaction-
  * scoped handle) rather than reaching for a module-level singleton.
  */
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, or, sql } from "drizzle-orm";
+import { and, arrayContains, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, or, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
 import { taskRuns, type TaskRun, type NewTaskRun } from "../schema/task-runs";
@@ -21,6 +21,8 @@ import { jobs, type Job } from "../schema/jobs";
 import { rooms } from "../schema/rooms";
 import { sessionMessages, sessions } from "../schema/sessions";
 import { sessionMessageCryptoRevisions } from "../schema/session-message-crypto-revisions";
+import { conversationSharedAgentShadowOperations } from
+  "../schema/conversation-shared-agent-shadow-operations";
 import {
   taskDefinitionCryptoRevisions,
   type TaskDefinitionCryptoRevision,
@@ -2231,6 +2233,13 @@ export type AcceptProtectedTaskAwaitReplyResult =
   | Readonly<{ status: "accepted" | "exact_replay" }>
   | Readonly<{ status: "rejected"; reason: "conflict" | "not_found" | "stale" }>;
 
+export type ResolvePublishedProtectedTaskAwaitReplyResult =
+  | Readonly<{ status: "no_match" | "ambiguous" }>
+  | Readonly<{
+      status: "resolved";
+      input: AcceptProtectedTaskAwaitReplyInput;
+    }>;
+
 export type ParkProtectedTaskRunInput = Readonly<{
   taskId: string;
   taskRunId: string;
@@ -2709,6 +2718,308 @@ export async function parkProtectedTaskRun(
     }
     return { status: "parked" } as const;
   });
+}
+
+type PublishedProtectedTaskReplyMessage = Readonly<{
+  operationId: string;
+  operationSessionId: string;
+  operationRoomId: string;
+  operationMessageId: number;
+  operationNamespaceId: string;
+  operationCryptoObjectId: string;
+  terminalAt: Date | null;
+  roomId: string | null;
+  sessionId: string;
+  messageId: number;
+  editRevision: number;
+  cryptoObjectId: string | null;
+  namespaceId: string;
+  sourceUserId: string;
+  role: string;
+  createdAt: Date;
+  lifecycleNamespaceId: string;
+  lifecycleRoomId: string;
+  lifecycleCryptoObjectId: string;
+  lifecycleOperationId: string | null;
+  lifecycleKeyClass: string;
+  lifecycleAuthorRole: string;
+  lifecyclePayloadVersion: number;
+  lifecycleCompletion: string;
+  lifecycleDisposition: string;
+}>;
+
+function publishedProtectedTaskReplyReference(
+  row: PublishedProtectedTaskReplyMessage,
+  operationId: string,
+  messageId: number,
+): Readonly<{
+  acceptedAt: Date;
+  message: ProtectedTaskAwaitReplyMessageReference;
+}> | null {
+  if (
+    row.operationId !== operationId
+    || row.operationMessageId !== messageId
+    || row.messageId !== messageId
+    || row.operationSessionId !== row.sessionId
+    || row.operationRoomId !== row.roomId
+    || row.operationNamespaceId !== row.namespaceId
+    || row.operationCryptoObjectId !== row.cryptoObjectId
+    || row.lifecycleOperationId !== operationId
+    || row.lifecycleNamespaceId !== row.namespaceId
+    || row.lifecycleRoomId !== row.roomId
+    || row.lifecycleCryptoObjectId !== row.cryptoObjectId
+    || row.lifecycleKeyClass !== "ai"
+    || row.lifecycleAuthorRole !== "user"
+    || row.lifecyclePayloadVersion !== 2
+    || row.lifecycleCompletion !== "complete"
+    || row.lifecycleDisposition !== "mapped"
+    || row.role !== "user"
+    || row.roomId === null
+    || row.cryptoObjectId === null
+    || !CANONICAL_UUID.test(row.roomId)
+    || !CANONICAL_UUID.test(row.sessionId)
+    || !CANONICAL_UUID.test(row.namespaceId)
+    || !CANONICAL_UUID.test(row.sourceUserId)
+    || !Number.isSafeInteger(row.messageId)
+    || row.messageId < 1
+    || !Number.isSafeInteger(row.editRevision)
+    || row.editRevision < 0
+    || !opaqueCheckpointCoordinate(row.cryptoObjectId)
+    || !(row.terminalAt instanceof Date)
+    || !Number.isFinite(row.terminalAt.getTime())
+    || !(row.createdAt instanceof Date)
+    || !Number.isFinite(row.createdAt.getTime())
+    || row.terminalAt.getTime() < row.createdAt.getTime()
+  ) return null;
+  return Object.freeze({
+    acceptedAt: new Date(row.terminalAt.getTime()),
+    message: Object.freeze({
+      roomId: row.roomId,
+      sessionId: row.sessionId,
+      messageId: String(row.messageId),
+      editRevision: row.editRevision,
+      cryptoObjectId: row.cryptoObjectId,
+      namespaceId: row.namespaceId,
+      sourceUserId: row.sourceUserId,
+    }),
+  });
+}
+
+function parkedProtectedTaskAwaitReplyInput(
+  row: Readonly<{ task: Task; run: TaskRun; job: Job }>,
+  publication: Readonly<{
+    operationId: string;
+    acceptedAt: Date;
+    message: ProtectedTaskAwaitReplyMessageReference;
+  }>,
+): AcceptProtectedTaskAwaitReplyInput | null {
+  const { task, run, job } = row;
+  const metadata = isRecord(job.metadata) ? job.metadata : {};
+  const rawReceipt = metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY];
+  if (!isRecord(rawReceipt)) return null;
+  const parkedAtText = rawReceipt["parkedAt"];
+  const parkedAt = typeof parkedAtText === "string"
+    ? new Date(parkedAtText)
+    : new Date(Number.NaN);
+  if (
+    Object.keys(rawReceipt).sort().join(",")
+      !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
+    || rawReceipt["version"] !== 1
+    || !Number.isSafeInteger(rawReceipt["generation"])
+    || (rawReceipt["generation"] as number) < 0
+    || !Number.isSafeInteger(rawReceipt["executionSegment"])
+    || (rawReceipt["executionSegment"] as number) < 1
+    || rawReceipt["executionSegment"] === Number.MAX_SAFE_INTEGER
+    || !Number.isFinite(parkedAt.getTime())
+    || parkedAt.toISOString() !== parkedAtText
+    || publication.acceptedAt.getTime() < parkedAt.getTime()
+  ) return null;
+
+  let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+  try {
+    interrupts = canonicalInterruptCoordinates(
+      rawReceipt["interrupts"] as readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+  } catch {
+    return null;
+  }
+  const awaitReply = interrupts.filter((interrupt) =>
+    interrupt.kind === "await_reply" && interrupt.requestId === undefined
+  );
+  if (awaitReply.length !== 1) return null;
+
+  const reference = job.input as ProtectedTaskDurableJobReference;
+  const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
+    version: 1,
+    taskId: task.id,
+    taskRunId: run.id,
+    jobId: job.id,
+    graphThreadId: run.graphThreadId,
+    generation: rawReceipt["generation"] as number,
+    executionSegment: rawReceipt["executionSegment"] as number,
+    interrupts,
+    parkedAt: parkedAt.toISOString(),
+  });
+  const expectedTaskStatus = task.scheduleKind === "cron" ? "pending" : "awaiting";
+  if (
+    task.status !== expectedTaskStatus
+    || (task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected")
+    || task.cryptoMappingState !== "verified"
+    || task.targetRoomId !== publication.message.roomId
+    || (task.requestorId !== publication.message.sourceUserId
+      && !task.targetUserIds.includes(publication.message.sourceUserId))
+    || run.status !== "awaiting"
+    || run.taskId !== task.id
+    || run.jobId !== job.id
+    || !pristineProtectedTaskRun(run)
+    || job.status !== "completed"
+    || job.completedAt?.getTime() !== parkedAt.getTime()
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.result !== null
+    || job.message !== null
+    || job.startedAt === null
+    || metadata[PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY] !== undefined
+    || !exactProtectedTaskJobReference(job.input, reference)
+    || reference.taskId !== task.id
+    || reference.taskRunId !== run.id
+    || reference.executionSegment !== receipt.executionSegment
+    || !exactParkReceipt(rawReceipt, receipt)
+  ) return null;
+
+  return Object.freeze({
+    taskId: task.id,
+    taskRunId: run.id,
+    graphThreadId: run.graphThreadId,
+    priorJobId: job.id,
+    generation: receipt.generation,
+    executionSegment: receipt.executionSegment,
+    interrupts,
+    parkedAt,
+    priorJobReference: Object.freeze({ ...reference }),
+    acceptance: Object.freeze({
+      acceptanceId: publication.operationId,
+      interruptId: awaitReply[0]!.id,
+      message: publication.message,
+      acceptedAt: publication.acceptedAt,
+    }),
+  });
+}
+
+/**
+ * Resolve one published AI-readable Human Message to the exact parked
+ * protected Task interruption it may satisfy. This is discovery only: it
+ * returns content-free coordinates for `acceptProtectedTaskAwaitReply` and
+ * never advances the Task or opens protected bytes.
+ */
+export async function resolvePublishedProtectedTaskAwaitReply(
+  db: DirectDatabase,
+  input: Readonly<{ operationId: string; messageId: number }>,
+): Promise<ResolvePublishedProtectedTaskAwaitReplyResult> {
+  if (
+    !opaqueCheckpointCoordinate(input.operationId)
+    || !Number.isSafeInteger(input.messageId)
+    || input.messageId < 1
+  ) return { status: "no_match" };
+
+  const [published] = await db.select({
+    operationId: conversationSharedAgentShadowOperations.operationId,
+    operationSessionId: conversationSharedAgentShadowOperations.sessionId,
+    operationRoomId: conversationSharedAgentShadowOperations.roomId,
+    operationMessageId:
+      conversationSharedAgentShadowOperations.humanMessageId,
+    operationNamespaceId: conversationSharedAgentShadowOperations.namespaceId,
+    operationCryptoObjectId:
+      conversationSharedAgentShadowOperations.cryptoObjectId,
+    terminalAt: conversationSharedAgentShadowOperations.terminalAt,
+    roomId: sessions.roomId,
+    sessionId: sessionMessages.sessionId,
+    messageId: sessionMessages.id,
+    editRevision: sessionMessages.editRevision,
+    cryptoObjectId: sessionMessages.cryptoObjectId,
+    namespaceId: rooms.namespaceId,
+    sourceUserId: sessions.ownerId,
+    role: sessionMessages.role,
+    createdAt: sessionMessages.createdAt,
+    lifecycleNamespaceId:
+      sessionMessageCryptoRevisions.namespaceIdAtAllocation,
+    lifecycleRoomId: sessionMessageCryptoRevisions.roomId,
+    lifecycleCryptoObjectId: sessionMessageCryptoRevisions.cryptoObjectId,
+    lifecycleOperationId:
+      sessionMessageCryptoRevisions.sharedAgentShadowOperationId,
+    lifecycleKeyClass: sessionMessageCryptoRevisions.keyClass,
+    lifecycleAuthorRole: sessionMessageCryptoRevisions.authorRole,
+    lifecyclePayloadVersion: sessionMessageCryptoRevisions.payloadVersion,
+    lifecycleCompletion: sessionMessageCryptoRevisions.completion,
+    lifecycleDisposition: sessionMessageCryptoRevisions.disposition,
+  }).from(conversationSharedAgentShadowOperations)
+    .innerJoin(sessionMessages, and(
+      eq(sessionMessages.sessionId,
+        conversationSharedAgentShadowOperations.sessionId),
+      eq(sessionMessages.id,
+        conversationSharedAgentShadowOperations.humanMessageId),
+    ))
+    .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+    .innerJoin(rooms, eq(rooms.id, sessions.roomId))
+    .innerJoin(sessionMessageCryptoRevisions, and(
+      eq(sessionMessageCryptoRevisions.sessionId, sessionMessages.sessionId),
+      eq(sessionMessageCryptoRevisions.messageId, sessionMessages.id),
+      eq(sessionMessageCryptoRevisions.editRevision,
+        sessionMessages.editRevision),
+    ))
+    .where(and(
+      eq(conversationSharedAgentShadowOperations.operationId,
+        input.operationId),
+      eq(conversationSharedAgentShadowOperations.humanMessageId,
+        input.messageId),
+      eq(conversationSharedAgentShadowOperations.state, "published"),
+      isNotNull(conversationSharedAgentShadowOperations.terminalAt),
+    )).limit(1);
+  if (!published) return { status: "no_match" };
+  const publication = publishedProtectedTaskReplyReference(
+    published,
+    input.operationId,
+    input.messageId,
+  );
+  if (publication === null) return { status: "no_match" };
+
+  const candidates = await db.select({ task: tasks, run: taskRuns, job: jobs })
+    .from(tasks)
+    .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .where(and(
+      eq(tasks.targetRoomId, publication.message.roomId),
+      inArray(tasks.contentRepresentation, ["dual", "protected"]),
+      eq(tasks.cryptoMappingState, "verified"),
+      or(
+        and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
+        and(
+          inArray(tasks.scheduleKind, ["now", "one_shot"]),
+          eq(tasks.status, "awaiting"),
+        ),
+      ),
+      eq(taskRuns.status, "awaiting"),
+      eq(jobs.status, "completed"),
+      or(
+        eq(tasks.requestorId, publication.message.sourceUserId),
+        arrayContains(tasks.targetUserIds, [publication.message.sourceUserId]),
+      ),
+    ))
+    .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+    .limit(2);
+  if (candidates.length === 0) return { status: "no_match" };
+  if (candidates.length > 1) return { status: "ambiguous" };
+
+  const resolved = parkedProtectedTaskAwaitReplyInput(candidates[0]!, {
+    operationId: input.operationId,
+    ...publication,
+  });
+  return resolved === null
+    ? { status: "no_match" }
+    : { status: "resolved", input: resolved };
 }
 
 /**
