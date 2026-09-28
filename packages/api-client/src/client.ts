@@ -12114,7 +12114,7 @@ export class NautiloApiClient {
    *
    * The route is deliberately fetched with redirects disabled. The response is
    * read incrementally, never handed to Blob, and only returned after its
-   * declared and observed sizes agree. No partial bytes escape on any failure.
+   * decoded and authorized sizes agree. No partial bytes escape on any failure.
    */
   async getWorkspaceArtifactBytesArrayBuffer(
     id: string,
@@ -12153,7 +12153,13 @@ export class NautiloApiClient {
       );
     }
 
-    const declaredBytes = contentLength(response);
+    const transferredBytes = contentLength(response);
+    const contentEncoding = response.headers.get("content-encoding")?.trim().toLowerCase();
+    // Fetch decodes compressed response bodies but retains the transfer's
+    // Content-Length, which cannot be compared with the decoded byte stream.
+    const declaredBytes = contentEncoding && contentEncoding !== "identity"
+      ? undefined
+      : transferredBytes;
     if (declaredBytes !== undefined && declaredBytes > maxBytes) {
       throw new WorkspaceArtifactStreamError("size", "Artifact is too large to preview.");
     }
@@ -12167,8 +12173,9 @@ export class NautiloApiClient {
         "Artifact response size does not match its authorized metadata.",
       );
     }
+    const decodedBytes = declaredBytes ?? expectedBytes;
     if (response.body === null) {
-      if ((declaredBytes ?? expectedBytes ?? 0) === 0) return new ArrayBuffer(0);
+      if ((decodedBytes ?? 0) === 0) return new ArrayBuffer(0);
       throw new WorkspaceArtifactStreamError("response", "Artifact response body was unavailable.");
     }
 
@@ -12179,7 +12186,7 @@ export class NautiloApiClient {
     opts?.signal?.addEventListener("abort", cancelReaderOnAbort, { once: true });
     let completed = false;
     let received = 0;
-    const knownLengthOutput = declaredBytes === undefined ? undefined : new Uint8Array(declaredBytes);
+    const knownLengthOutput = decodedBytes === undefined ? undefined : new Uint8Array(decodedBytes);
     const collector = knownLengthOutput === undefined ? new BoundedByteCollector(maxBytes) : undefined;
     try {
       while (true) {
@@ -12192,7 +12199,12 @@ export class NautiloApiClient {
         }
         if (knownLengthOutput !== undefined) {
           if (chunk.byteLength > knownLengthOutput.byteLength - received) {
-            throw new WorkspaceArtifactStreamError("truncated", "Artifact response exceeded its content length.");
+            throw new WorkspaceArtifactStreamError(
+              "truncated",
+              declaredBytes === undefined
+                ? "Artifact response exceeded its authorized size."
+                : "Artifact response exceeded its content length.",
+            );
           }
           knownLengthOutput.set(chunk, received);
         } else {
