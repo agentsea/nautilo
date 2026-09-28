@@ -2328,7 +2328,7 @@ export async function parkProtectedTaskRun(
     || !input.graphThreadId
     || !input.jobId
     || !Number.isSafeInteger(input.generation)
-    || input.generation < 1
+    || input.generation < 0
     || !(input.parkedAt instanceof Date)
     || !Number.isFinite(input.parkedAt.getTime())
     || input.jobReference === null

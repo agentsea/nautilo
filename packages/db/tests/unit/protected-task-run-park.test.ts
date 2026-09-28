@@ -294,6 +294,16 @@ describe("protected TaskRun clean-interrupt park CAS", () => {
     expect(fixture.writes).toEqual([]);
   });
 
+  test("parks the first authorization generation", async () => {
+    const fixture = harness();
+    expect(await parkProtectedTaskRun(fixture.db, input({ generation: 0 }))).toEqual({
+      status: "parked",
+    });
+    expect(fixture.writes[0]?.patch["metadata"]).toEqual({
+      [receiptKey]: receipt({ generation: 0 }),
+    });
+  });
+
   test("rejects changed generation, interrupt set, or extra receipt data", async () => {
     for (const changed of [
       receipt({ generation: 4 }),
