@@ -619,6 +619,9 @@ export default tseslint.config(
       'dev/tests/repo-invariants/m281-actions-cost-control.test.ts',
       'dev/tests/repo-invariants/lattice-bridge-storage.test.ts',
       'dev/tests/repo-invariants/lattice-crypto-import.test.ts',
+      // This Bun-only invariant is outside the TypeScript projectService
+      // program; its focused test run is the authoritative check.
+      'dev/tests/repo-invariants/test-db-instance-guard.test.ts',
       // Co-located test files under `src/modes/rooms/<feature>/tests/` are
       // excluded from `apps/workbench/tsconfig.json`; ESLint projectService
       // cannot attach a TS program to them. The wildcard covers thread-drawer,

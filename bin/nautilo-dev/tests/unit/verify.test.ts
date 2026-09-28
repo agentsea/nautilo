@@ -179,6 +179,19 @@ describe("D427 dev:verify — buildAuthoritativeTargets", () => {
 });
 
 describe("D427 dev:verify — runAuthoritativeAcceptance (report mapping)", () => {
+  // The root Bun preload routes tests to the scratch instance. These fake
+  // responses represent the default instance, so pin that identity here.
+  const prevInstance = process.env["NAUTILO_INSTANCE_ID"];
+  beforeEach(() => {
+    delete process.env["NAUTILO_INSTANCE_ID"];
+    __resetResolvedInstanceForTests();
+  });
+  afterEach(() => {
+    if (prevInstance === undefined) delete process.env["NAUTILO_INSTANCE_ID"];
+    else process.env["NAUTILO_INSTANCE_ID"] = prevInstance;
+    __resetResolvedInstanceForTests();
+  });
+
   test("happy path → mode authoritative, allPassed true, eight checks", async () => {
     const report = await runAuthoritativeAcceptance(fakeTransport());
     expect(report.mode).toBe("authoritative");
