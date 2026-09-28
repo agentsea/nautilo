@@ -80,6 +80,7 @@ function inputs(overrides: Partial<RailwayVariableProjectionInputs> = {}): Railw
       ["logto-bootstrap-handoff-token", "never-return-handoff-token"],
       ["nautilo-bootstrap-token", "never-return-bootstrap-token"],
       ["nautilo-logto-email-webhook-secret", "never-return-email-webhook"],
+      ["nautilo-personal-provider-custody", "never-return-personal-provider-custody"],
     ]),
     generatedPublicDomains: new Map([
       ["logto-public", "https://logto.generated.railway.app"],
@@ -207,6 +208,16 @@ describe("projectRailwayRuntimeVariables", () => {
     expect(missing.projection.finalServices["nautilo-server"]["ELEVENLABS_API_KEY"]).toBeUndefined();
     expect(missing.projection.finalServices["nautilo-server"]["CLOUDCONVERT_API_KEY"]).toBeUndefined();
     expect(missing.projection.finalServices["nautilo-server"]["VENICE_API_KEY"]).toBeUndefined();
+  });
+
+  test("keeps a legacy launch deployable while personal-provider custody awaits explicit migration", () => {
+    const legacySecrets = new Map(inputs().generatedSecrets);
+    legacySecrets.delete("nautilo-personal-provider-custody");
+    const result = projectRailwayRuntimeVariables(topology(), inputs({ generatedSecrets: legacySecrets }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("legacy projection unexpectedly blocked");
+    expect(result.projection.finalServices["nautilo-server"]["NAUTILO_PERSONAL_PROVIDER_CUSTODY"])
+      .toBeUndefined();
   });
 
   test("returns metadata-free typed blockers for duplicate keys without serializing injected provider values", () => {

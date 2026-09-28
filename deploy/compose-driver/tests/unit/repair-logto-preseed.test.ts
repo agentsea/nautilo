@@ -8,6 +8,7 @@ import {
 import * as nodeFs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 import {
   backupManifestSchema,
@@ -161,7 +162,7 @@ function validRemoteManifest(
 
 function writeRestoreBundle(root: string): string {
   mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "nautilo.sql.gz"), "");
+  writeFileSync(join(root, "nautilo.sql.gz"), gzipSync("-- PostgreSQL database dump\n"));
   writeFileSync(join(root, "logto.sql.gz"), "");
   const manifest = backupManifestSchema.parse({
     version: 1,

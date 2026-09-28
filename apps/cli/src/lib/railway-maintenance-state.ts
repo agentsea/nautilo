@@ -198,11 +198,13 @@ function validPortableTransfer(value: unknown): value is RailwayPortableMaintena
   const started = value["state"] === "started";
   if (!exact(value, ["state", "attempt", "operationId", "direction", "objectId", "projectId", "environmentId", "serviceId", "image", "sourceReleaseId", "command", "startEffect", ...(baseline ? ["baselineDeploymentIds"] : []), ...(started ? ["jobId"] : [])])) return false;
   const ids = value["baselineDeploymentIds"];
-  const command = `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${String(value["direction"])} ${String(value["operationId"])} ${String(value["objectId"])}`;
+  const legacyCommand = `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${String(value["direction"])} ${String(value["operationId"])} ${String(value["objectId"])}`;
+  const custodyCommand = `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts restore-custody-v1 ${String(value["operationId"])} ${String(value["objectId"])}`;
   return integer(value["attempt"], 1, 8) && [value["operationId"], value["objectId"], value["projectId"], value["environmentId"], value["serviceId"], value["sourceReleaseId"]].every(safeId)
     && (value["direction"] === "export" || value["direction"] === "restore")
     && typeof value["image"] === "string" && IMAGE.test(value["image"])
-    && value["command"] === command && (value["startEffect"] === "connect" || value["startEffect"] === "deploy")
+    && (value["command"] === legacyCommand || value["direction"] === "restore" && value["command"] === custodyCommand)
+    && (value["startEffect"] === "connect" || value["startEffect"] === "deploy")
     && (!baseline || Array.isArray(ids) && ids.length <= 256 && ids.every(safeId) && new Set(ids).size === ids.length)
     && (!started || safeId(value["jobId"]));
 }

@@ -8,6 +8,23 @@ import { afterEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { healthRoutes } from "../../src/routes/health";
 
+describe("personal credential custody diagnostic authorization", () => {
+  test("rejects a remote unauthenticated caller before reading cross-user custody", async () => {
+    const app = Fastify({ logger: false });
+    let inspections = 0;
+    healthRoutes(app, { inspectPersonalCustody: async () => { inspections++; return { status: "ready", recordsExist: false }; } });
+    try {
+      const denied = await app.inject({ method: "GET", url: "/api/health/personal-provider-custody", remoteAddress: "10.0.0.5" });
+      expect(denied.statusCode).toBe(403);
+      expect(inspections).toBe(0);
+      const allowed = await app.inject({ method: "GET", url: "/api/health/personal-provider-custody" });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json<{ status: string; recordsExist: boolean }>()).toEqual({ status: "ready", recordsExist: false });
+      expect(inspections).toBe(1);
+    } finally { await app.close(); }
+  });
+});
+
 interface HealthResponse {
   status: string;
   authRequired: boolean;
@@ -324,6 +341,26 @@ describe("/api/health/modes (M051)", () => {
     expect(secret?.redacted).toBe(true);
     expect(secret?.value).not.toBe("supersecret-1234567890abcdef");
     expect((body as Record<string, unknown>)["authMode"]).toBeUndefined();
+  });
+
+  test("reports canonical custody presence after boot removes the master key from process env", async () => {
+    envSnap = snapshotEnv();
+    const previous = process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
+    delete process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
+    const app = Fastify({ logger: false });
+    healthRoutes(app, { isPersonalCustodyConfigured: async () => true });
+    instances.push(app);
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/health/modes" });
+      expect(res.statusCode).toBe(200);
+      const row = res.json<{ entries: Array<{ envVar: string; status: string; value: string | null }> }>()
+        .entries.find((entry) => entry.envVar === "NAUTILO_PERSONAL_PROVIDER_CUSTODY");
+      expect(row).toMatchObject({ status: "set", value: "[configured]" });
+      expect(res.body).not.toContain("keyHex");
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
+      else process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"] = previous;
+    }
   });
 
   test("403 for non-localhost callers", async () => {

@@ -63,6 +63,21 @@ export {
   type EnsurePushTokenEncryptionKeyArgs,
   type EnsurePushTokenEncryptionKeyDeps,
 } from "./ensurePushTokenEncryptionKey.ts";
+export {
+  assertPersonalProviderCustodyHealth,
+  assertPersonalProviderRestoreCustody,
+  buildPersonalProviderCustodyBackupEvidence,
+  defaultEnsurePersonalProviderCustodyDeps,
+  ensurePersonalProviderCustody,
+  readPersonalProviderCredentialEvidenceFromDump,
+  readPersonalProviderCustodyFromEnv,
+  setPersonalProviderCustodyInEnv,
+  type EnsurePersonalProviderCustodyArgs,
+  type EnsurePersonalProviderCustodyDeps,
+  type PersonalProviderCredentialDbEvidence,
+  type PersonalProviderCustodyBackupEvidence,
+  type PersonalProviderCustodyHealthEvidence,
+} from "./personal-provider-custody.ts";
 export { gates } from "./gates.ts";
 export {
   bootstrapLogtoForProfile,

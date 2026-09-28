@@ -1840,6 +1840,7 @@ export async function materializeClone(
     NAUTILO_LOGTO_REBIND_FROM_INSTANCE_ID: sourceId,
   };
   let historicalLogtoApplications: readonly CloneLogtoApplicationIdentity[] | undefined;
+  delete targetEnv["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
 
   const actions = {
     "topology-created": () => Promise.resolve(),
@@ -1848,6 +1849,11 @@ export async function materializeClone(
           "--exclude=clone-operation.json",
           "--exclude=.protected-instance",
           "--exclude=certs",
+          "--exclude=config-snapshots",
+          "--exclude=instance.env*",
+          "--exclude=deploy.server.env",
+          "--exclude=deploy.server-overlay.yml",
+          "--exclude=.personal-provider-custody*",
           "-xzf",
           join(backup.dir, backup.manifest.artifacts.nautiloHome.file),
           "-C",
@@ -1966,6 +1972,10 @@ export async function materializeClone(
       }
       rebindCloneFileUris(target, sourceRoot, targetRoot);
       rebindCloneServerIdentity(target, cloneServerInstanceId);
+      await runClone("bun", [
+        join(NAUTILO_REPO_ROOT, "bin/nautilo-dev/src/lib/isolate-personal-provider-clone.ts"),
+        targetId, cloneServerInstanceId,
+      ], { env: targetEnv });
     },
     "logto-migrated": () => runClone(
         "bun",

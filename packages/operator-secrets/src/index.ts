@@ -30,6 +30,38 @@ export {
 } from "./loader.ts";
 
 export { appendOperatorSecrets } from "./appender.ts";
+export {
+  ensurePersonalProviderCustodyFile,
+  resetPersonalProviderCustodyFile,
+  type PersonalProviderCustodyFileOptions,
+} from "./personal-provider-custody-file.ts";
+
+export {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  captureInjectedPersonalProviderCustody,
+  readInjectedPersonalProviderCustody,
+  PersonalProviderCustodyError,
+  createPersonalProviderCustody,
+  parsePersonalProviderCustody,
+  serializePersonalProviderCustody,
+  personalProviderCustodyFromEnvFile,
+  encryptPersonalProviderCredential,
+  decryptPersonalProviderCredential,
+  type PersonalProviderCustody,
+  type PersonalProviderCredentialContext,
+  type PersonalProviderCredentialEnvelope,
+  type PersonalProviderCustodyErrorCode,
+} from "./personal-provider-custody.ts";
+
+export {
+  assertPersonalProviderCustodyHealth,
+  assertPersonalProviderRestoreCustody,
+  buildPersonalProviderCustodyBackupEvidence,
+  readPersonalProviderCredentialEvidenceFromDump,
+  type PersonalProviderCredentialDbEvidence,
+  type PersonalProviderCustodyBackupEvidence,
+  type PersonalProviderCustodyHealthEvidence,
+} from "./personal-provider-backup.ts";
 
 export {
   REMOTE_PAIRING_PEPPER_KEY,

@@ -302,7 +302,7 @@ export function getModeReport(
       description: def.description,
       deprecated: def.deprecated === true,
       status: "set",
-      value: def.redact ? maskValue(trimmed) : trimmed,
+      value: def.presenceOnly ? "[configured]" : def.redact ? maskValue(trimmed) : trimmed,
       redacted: Boolean(def.redact),
     };
   });

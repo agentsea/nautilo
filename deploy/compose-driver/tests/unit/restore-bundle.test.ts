@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 
 import {
   backupManifestSchema,
@@ -52,6 +56,26 @@ function identityDump(instanceId = ""): Buffer {
     [
       "COPY public.nautilo_instance_identity (id, instance_id, created_at, server_instance_id, server_binding_generation) FROM stdin;",
       `self\t${instanceId}\t2026-05-19 12:00:00+00\t${RESTORE_SERVER_INSTANCE_ID}\t1`,
+      String.raw`\.`,
+      "",
+    ].join("\n"),
+  );
+}
+
+function personalCredentialDump(keyIds: readonly string[], instanceId = ""): Buffer {
+  return gzipSync(
+    [
+      "COPY public.nautilo_instance_identity (id, instance_id, created_at, server_instance_id, server_binding_generation) FROM stdin;",
+      `self\t${instanceId}\t2026-05-19 12:00:00+00\t${RESTORE_SERVER_INSTANCE_ID}\t1`,
+      String.raw`\.`,
+      "CREATE TABLE public.personal_provider_credentials (",
+      "    id uuid NOT NULL",
+      ");",
+      "COPY public.personal_provider_credentials (id, key_id) FROM stdin;",
+      ...keyIds.map(
+        (keyId, index) =>
+          `${String(index + 2).padStart(8, "0")}-e89b-42d3-a456-426614174000\t${keyId}`,
+      ),
       String.raw`\.`,
       "",
     ].join("\n"),
@@ -339,6 +363,39 @@ test("backup manifest accepts pre-apps v1 bundles", () => {
 
 test("BUNDLE_INTEGRITY_FILES maps apps to apps.tgz", () => {
   expect(BUNDLE_INTEGRITY_FILES.apps).toBe("apps.tgz");
+});
+
+test("backup manifest preserves disaster-reset custody provenance", () => {
+  const parsed = backupManifestSchema.parse({
+    version: 2,
+    createdAt: "2026-05-19T12:34:56.000Z",
+    profileName: "local-default",
+    instanceId: "",
+    transport: "local",
+    composeProjectName: "nautilo",
+    image: { mode: "registry" },
+    contents: {
+      nautiloDb: true,
+      logtoDb: true,
+      artifacts: true,
+      instanceEnv: true,
+      operatorFiles: false,
+      caddyData: false,
+      caddyConfig: false,
+      localCaCerts: false,
+    },
+    integrity: {},
+    personalProviderCustody: {
+      database: "rows",
+      custody: "valid",
+      custodyKeyId: "323e4567-e89b-42d3-a456-426614174000",
+      custodyResetFromKeyId: "223e4567-e89b-42d3-a456-426614174000",
+      rowKeyIds: ["223e4567-e89b-42d3-a456-426614174000"],
+    },
+  });
+  expect(parsed.personalProviderCustody?.custodyResetFromKeyId).toBe(
+    "223e4567-e89b-42d3-a456-426614174000",
+  );
 });
 
 describe("restore full bundle", () => {
@@ -956,6 +1013,215 @@ describe("restore full bundle", () => {
     expect(all).not.toContain("artifacts.tgz");
   });
 
+  test("data-only restore refuses custody mismatch before destructive schema reset", async () => {
+    const exec = makeFakeExec();
+    const bundlePath = writeBundle(join(home, "data-only-custody-mismatch"));
+    const sourceKeyId = "123e4567-e89b-42d3-a456-426614174000";
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      gzipSync([
+        "COPY public.nautilo_instance_identity (id, instance_id, created_at, server_instance_id, server_binding_generation) FROM stdin;",
+        `self\t\t2026-05-19 12:00:00+00\t${RESTORE_SERVER_INSTANCE_ID}\t1`,
+        String.raw`\.`,
+        "CREATE TABLE public.personal_provider_credentials (",
+        "    id uuid NOT NULL",
+        ");",
+        "COPY public.personal_provider_credentials (id, key_id) FROM stdin;",
+        `223e4567-e89b-42d3-a456-426614174000\t${sourceKeyId}`,
+        String.raw`\.`,
+        "",
+      ].join("\n")),
+    );
+    const targetRoot = join(home, ".nautilo", "runtime-config");
+    mkdirSync(targetRoot, { recursive: true });
+    writeFileSync(
+      join(targetRoot, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+        formatVersion: 1,
+        keyId: "323e4567-e89b-42d3-a456-426614174000",
+        keyHex: "ee".repeat(32),
+      })}\n`,
+    );
+    const driver = new ComposeDriver(
+      makeDeps([], { exec: exec.exec, localExec: exec.exec }),
+    );
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule cannot infer that.
+    await expect(
+      driver.restore(baseProfile, {
+        fromPath: bundlePath,
+        force: true,
+        mode: "data-only",
+      }),
+    ).rejects.toThrow(/custody identity does not match/);
+    expect(
+      exec.calls.some((call) => commandText(call).includes("DROP SCHEMA")),
+    ).toBe(false);
+  });
+
+  test("populated restore requires custody authentication proof after server restart", async () => {
+    const events: string[] = [];
+    const exec = makeFakeExec((call) => {
+      if (commandText(call).includes("start nautilo-server")) {
+        events.push("server-start");
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const bundlePath = writeBundle(join(home, "data-only-custody-health"));
+    const keyId = "123e4567-e89b-42d3-a456-426614174000";
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      gzipSync([
+        "COPY public.nautilo_instance_identity (id, instance_id, created_at, server_instance_id, server_binding_generation) FROM stdin;",
+        `self\t\t2026-05-19 12:00:00+00\t${RESTORE_SERVER_INSTANCE_ID}\t1`,
+        String.raw`\.`,
+        "CREATE TABLE public.personal_provider_credentials (",
+        "    id uuid NOT NULL",
+        ");",
+        "COPY public.personal_provider_credentials (id, key_id) FROM stdin;",
+        `223e4567-e89b-42d3-a456-426614174000\t${keyId}`,
+        String.raw`\.`,
+        "",
+      ].join("\n")),
+    );
+    const targetRoot = join(home, ".nautilo", "runtime-config");
+    mkdirSync(targetRoot, { recursive: true });
+    writeFileSync(
+      join(targetRoot, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+        formatVersion: 1,
+        keyId,
+        keyHex: "ee".repeat(32),
+      })}\n`,
+    );
+    const custodyFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/api/health/personal-provider-custody")) {
+        events.push("custody-health");
+        return new Response(
+          JSON.stringify({
+            status: "unavailable",
+            recordsExist: true,
+            code: "credential_authentication_failed",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/health")) {
+        events.push("health-poll");
+        return new Response("ok", { status: 200 });
+      }
+      return new Response('{"setupState":"new"}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const driver = new ComposeDriver(
+      makeDeps(events, { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
+    );
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule cannot infer that.
+    await expect(
+      driver.restore(baseProfile, {
+        fromPath: bundlePath,
+        force: true,
+        mode: "data-only",
+      }),
+    ).rejects.toThrow(/custody verification failed/);
+    expect(events).toEqual(["server-start", "health-poll", "custody-health"]);
+    expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(true);
+  });
+
+  test("data-only restore accepts a degraded disaster-reset transition", async () => {
+    const exec = makeFakeExec();
+    const bundlePath = writeBundle(join(home, "data-only-custody-reset"));
+    const lostKeyId = "223e4567-e89b-42d3-a456-426614174000";
+    const currentKeyId = "323e4567-e89b-42d3-a456-426614174000";
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      personalCredentialDump([lostKeyId, currentKeyId]),
+    );
+    const targetRoot = join(home, ".nautilo", "runtime-config");
+    mkdirSync(targetRoot, { recursive: true });
+    writeFileSync(
+      join(targetRoot, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+        formatVersion: 1,
+        keyId: currentKeyId,
+        keyHex: "ee".repeat(32),
+        resetFromKeyId: lostKeyId,
+      })}\n`,
+    );
+    const custodyFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/api/health/personal-provider-custody")) {
+        return new Response(JSON.stringify({
+          status: "degraded",
+          recordsExist: true,
+          keyId: currentKeyId,
+          code: "credential_reenrollment_required",
+        }), { status: 200 });
+      }
+      if (url.includes("/health")) return new Response("ok", { status: 200 });
+      return new Response('{"setupState":"new"}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const driver = new ComposeDriver(
+      makeDeps([], { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
+    );
+
+    await driver.restore(baseProfile, {
+      fromPath: bundlePath,
+      force: true,
+      mode: "data-only",
+    });
+    expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(true);
+  });
+
+  test("full restore round-trips disaster-reset manifest evidence", async () => {
+    const exec = makeFakeExec();
+    const lostKeyId = "223e4567-e89b-42d3-a456-426614174000";
+    const currentKeyId = "323e4567-e89b-42d3-a456-426614174000";
+    const custody = {
+      formatVersion: 1 as const,
+      keyId: currentKeyId,
+      keyHex: "ee".repeat(32),
+      resetFromKeyId: lostKeyId,
+    };
+    const bundlePath = writeBundle(join(home, "full-custody-reset"), {
+      personalProviderCustody: {
+        database: "rows",
+        custody: "valid",
+        custodyKeyId: currentKeyId,
+        custodyResetFromKeyId: lostKeyId,
+        rowKeyIds: [lostKeyId, currentKeyId],
+      },
+    });
+    writeFileSync(
+      join(bundlePath, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n`,
+    );
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      personalCredentialDump([lostKeyId, currentKeyId]),
+    );
+    const custodyFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/api/health/personal-provider-custody")) {
+        return new Response(JSON.stringify({
+          status: "degraded",
+          recordsExist: true,
+          keyId: currentKeyId,
+          code: "credential_reenrollment_required",
+        }), { status: 200 });
+      }
+      if (url.includes("/health")) return new Response("ok", { status: 200 });
+      return new Response('{"setupState":"new"}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const driver = new ComposeDriver(
+      makeDeps([], { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
+    );
+
+    await driver.restore(baseProfile, { fromPath: bundlePath, force: true });
+    expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(true);
+  });
+
   test("mode=artifacts-only loads only the artifact volume", async () => {
     const events: string[] = [];
     const exec = makeFakeExec();
@@ -1541,6 +1807,100 @@ describe("restore full bundle", () => {
     expect(
       exec.calls.some((call) => (call.args[1] ?? "").includes("deployment-manifest.json")),
     ).toBe(false);
+  });
+
+  test("remote data-only restore verifies degraded reset custody against the current key", async () => {
+    const remoteRoot = "/opt/nautilo-prod";
+    const lostKeyId = "223e4567-e89b-42d3-a456-426614174000";
+    const currentKeyId = "323e4567-e89b-42d3-a456-426614174000";
+    const remoteProfile: ComposeDriverProfile = {
+      name: "remote-droplet",
+      transport: "remote",
+      lifecycle: "compose",
+      from_source: false,
+      tag: "main",
+      instance_id: "prod",
+      ssh: { host: "1.2.3.4", user: "root" },
+    };
+    const deploymentManifest = {
+      version: 1,
+      instanceId: "prod",
+      composeProjectName: "nautilo-prod",
+      lifecycle: "compose",
+      image: {
+        mode: "registry" as const,
+        reference: "ghcr.io/agentsea/nautilo-server:main",
+      },
+      remoteRoot,
+      https: "off" as const,
+      createdAt: "2026-05-19T12:00:00.000Z",
+      updatedAt: "2026-05-19T12:30:00.000Z",
+    };
+    const exec = makeFakeExec((call) => {
+      const script = call.args[1] ?? "";
+      if (call.cmd === "cat" && call.args[0]?.endsWith("deployment-manifest.json")) {
+        return { code: 0, stdout: JSON.stringify(deploymentManifest), stderr: "" };
+      }
+      if (
+        call.cmd === "sh" &&
+        script.includes("resetFromKeyId") &&
+        script.includes('printf "%s\\n" "$actual"')
+      ) {
+        return { code: 0, stdout: `${currentKeyId}\n`, stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const localExec = makeFakeExec((call) =>
+      call.cmd === "rsync" && call.args[0] === "--version"
+        ? { code: 0, stdout: "rsync  version 3.2.7\n", stderr: "" }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    const bundlePath = writeBundle(join(home, "remote-data-only-custody-reset"), {
+      instanceId: "prod",
+      composeProjectName: "nautilo-prod",
+      transport: "remote",
+    });
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      personalCredentialDump([lostKeyId, currentKeyId], "prod"),
+    );
+    const custodyFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/api/health/personal-provider-custody")) {
+        return new Response(JSON.stringify({
+          status: "degraded",
+          recordsExist: true,
+          keyId: currentKeyId,
+          code: "credential_reenrollment_required",
+        }), { status: 200 });
+      }
+      if (url.includes("/health")) return new Response("ok", { status: 200 });
+      return new Response('{"setupState":"new"}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const driver = new ComposeDriver(
+      makeDeps([], {
+        exec: exec.exec,
+        localExec: localExec.exec,
+        resolveInstanceRootDir: () => remoteRoot,
+      }),
+    );
+    driver.setRemoteRuntimeAcceptanceTransport({
+      fetch: (url) => custodyFetch(url),
+      pollHealth: async () => {},
+    });
+
+    await driver.restore(remoteProfile, {
+      fromPath: bundlePath,
+      force: true,
+      mode: "data-only",
+    });
+
+    const custodyPreflight = exec.calls.find((call) =>
+      (call.args[1] ?? "").includes('printf "%s\\n" "$actual"'),
+    )?.args[1];
+    expect(custodyPreflight).toContain(lostKeyId);
+    expect(custodyPreflight).toContain(currentKeyId);
+    expect(custodyPreflight).toContain('!= "$reset"');
   });
 
   test("remote bundle restore does not generate operator-local webhook secret (M207)", async () => {

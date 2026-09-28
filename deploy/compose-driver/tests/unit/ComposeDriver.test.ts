@@ -2646,9 +2646,12 @@ describe("ComposeDriver", () => {
       "ln -s runtime-config/instance.env",
     );
     expect(
-      extractRemoteFileWrites(stagedConfigCall!.args[1] ?? "").some((write) =>
-        write.path.endsWith("/runtime-config/instance.env"),
-      ),
+      calls
+        .filter((call) => call.cmd === "sh")
+        .flatMap((call) => extractRemoteFileWrites(call.args[1] ?? ""))
+        .some((write) =>
+          write.path.endsWith("/runtime-config/instance.env.incoming"),
+        ),
     ).toBe(true);
     expect(
       calls.some(

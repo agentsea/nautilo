@@ -4,15 +4,20 @@ import type {
   RailwayBootstrapHandoffOutput,
   RailwayGeneratedSecretSlotName,
 } from "@nautilo/railway-hosting";
+import {
+  createPersonalProviderCustody,
+  parsePersonalProviderCustody,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 
-const FORMAT_VERSION = 2 as const;
+const FORMAT_VERSION = 3 as const;
 const SECRET_BYTES = 32;
 const MAX_ENVELOPE_BYTES = 16 * 1024;
 
 export const RAILWAY_LAUNCH_SECRET_KEYRING_SERVICE =
   "dev.nautilo.cli.railway-launch" as const;
 
-export const RAILWAY_GENERATED_SECRET_SLOTS = [
+const RAILWAY_LEGACY_GENERATED_SECRET_SLOTS = [
   "app-postgres-superuser-password",
   "app-nautilo-db-password",
   "app-nautilo-agent-db-password",
@@ -22,6 +27,14 @@ export const RAILWAY_GENERATED_SECRET_SLOTS = [
   "logto-bootstrap-handoff-token",
   "nautilo-bootstrap-token",
   "nautilo-logto-email-webhook-secret",
+] as const;
+
+type RailwayLegacyGeneratedSecretSlotName =
+  (typeof RAILWAY_LEGACY_GENERATED_SECRET_SLOTS)[number];
+
+export const RAILWAY_GENERATED_SECRET_SLOTS = [
+  ...RAILWAY_LEGACY_GENERATED_SECRET_SLOTS,
+  "nautilo-personal-provider-custody",
 ] as const satisfies readonly RailwayGeneratedSecretSlotName[];
 
 export interface RailwayLaunchSecretKeyringEntry {
@@ -43,10 +56,18 @@ interface RailwayLaunchSecretEnvelopeV1 {
   readonly formatVersion: 1;
   readonly launchId: string;
   readonly releaseId: string;
-  readonly secrets: Readonly<Record<RailwayGeneratedSecretSlotName, string>>;
+  readonly secrets: Readonly<Record<RailwayLegacyGeneratedSecretSlotName, string>>;
 }
 
 interface RailwayLaunchSecretEnvelopeV2 {
+  readonly formatVersion: 2;
+  readonly launchId: string;
+  readonly releaseId: string;
+  readonly secrets: Readonly<Record<RailwayLegacyGeneratedSecretSlotName, string>>;
+  readonly bootstrap?: { readonly binding: RailwayBootstrapOutputBinding; readonly output: RailwayBootstrapHandoffOutput } | undefined;
+}
+
+interface RailwayLaunchSecretEnvelopeV3 {
   readonly formatVersion: typeof FORMAT_VERSION;
   readonly launchId: string;
   readonly releaseId: string;
@@ -54,7 +75,23 @@ interface RailwayLaunchSecretEnvelopeV2 {
   readonly bootstrap?: { readonly binding: RailwayBootstrapOutputBinding; readonly output: RailwayBootstrapHandoffOutput } | undefined;
 }
 
-type RailwayLaunchSecretEnvelope = RailwayLaunchSecretEnvelopeV1 | RailwayLaunchSecretEnvelopeV2;
+type RailwayLaunchSecretEnvelope = RailwayLaunchSecretEnvelopeV1 | RailwayLaunchSecretEnvelopeV2 | RailwayLaunchSecretEnvelopeV3;
+
+export type RailwayLegacyPersonalProviderCustodyInspection =
+  | { readonly outcome: "canonical-custody"; readonly serializedCustody: string }
+  | { readonly outcome: "proven-no-existing-authority" }
+  | { readonly outcome: "blocked" };
+
+export interface RailwayLegacyPersonalProviderCustodyAuthority {
+  /**
+   * This port must inspect the exact live instance. `proven-no-existing-authority`
+   * is valid only after ruling out credential rows and recoverable custody.
+   */
+  inspect(input: {
+    readonly launchId: string;
+    readonly releaseId: string;
+  }): Promise<RailwayLegacyPersonalProviderCustodyInspection>;
+}
 
 const BOOTSTRAP_KEYS = [
   "logto-workbench-app-id", "logto-tui-app-id", "logto-tui-loopback-app-id", "logto-desktop-app-id",
@@ -66,7 +103,22 @@ function safeIdentity(value: string): boolean {
 }
 
 function secretMap(envelope: RailwayLaunchSecretEnvelope): ReadonlyMap<RailwayGeneratedSecretSlotName, string> {
-  return new Map(RAILWAY_GENERATED_SECRET_SLOTS.map((slot) => [slot, envelope.secrets[slot]]));
+  if (envelope.formatVersion === FORMAT_VERSION) {
+    return new Map(RAILWAY_GENERATED_SECRET_SLOTS.map((slot) => [slot, envelope.secrets[slot]]));
+  }
+  return new Map(RAILWAY_LEGACY_GENERATED_SECRET_SLOTS.map((slot) => [slot, envelope.secrets[slot]]));
+}
+
+function validSerializedPersonalProviderCustody(value: string): boolean {
+  try {
+    return serializePersonalProviderCustody(parsePersonalProviderCustody(value)) === value;
+  } catch {
+    return false;
+  }
+}
+
+function createSerializedPersonalProviderCustody(): string {
+  return serializePersonalProviderCustody(createPersonalProviderCustody());
 }
 
 function validBootstrapBinding(value: unknown): value is RailwayBootstrapOutputBinding {
@@ -102,23 +154,30 @@ function parseEnvelope(raw: string | null | undefined): RailwayLaunchSecretEnvel
   const keys = version === 1 ? ["formatVersion", "launchId", "releaseId", "secrets"]
     : ["formatVersion", "launchId", "releaseId", "secrets", ...(record["bootstrap"] === undefined ? [] : ["bootstrap"])];
   if (Object.keys(record).sort().join("\0") !== keys.sort().join("\0")
-    || (version !== 1 && version !== FORMAT_VERSION)
+    || (version !== 1 && version !== 2 && version !== FORMAT_VERSION)
     || typeof record["launchId"] !== "string" || !safeIdentity(record["launchId"])
     || typeof record["releaseId"] !== "string" || !safeIdentity(record["releaseId"])
     || typeof record["secrets"] !== "object" || record["secrets"] === null || Array.isArray(record["secrets"])) {
     throw new Error("Railway launch secret custody failed");
   }
   const secrets = record["secrets"] as Record<string, unknown>;
-  if (Object.keys(secrets).sort().join("\0") !== [...RAILWAY_GENERATED_SECRET_SLOTS].sort().join("\0")) {
+  const expectedSlots = version === FORMAT_VERSION
+    ? RAILWAY_GENERATED_SECRET_SLOTS
+    : RAILWAY_LEGACY_GENERATED_SECRET_SLOTS;
+  if (Object.keys(secrets).sort().join("\0") !== [...expectedSlots].sort().join("\0")) {
     throw new Error("Railway launch secret custody failed");
   }
-  for (const slot of RAILWAY_GENERATED_SECRET_SLOTS) {
+  for (const slot of expectedSlots) {
     const secret = secrets[slot];
     if (typeof secret !== "string" || secret.length < 32 || secret.length > 256) {
       throw new Error("Railway launch secret custody failed");
     }
   }
-  if (version === FORMAT_VERSION && record["bootstrap"] !== undefined) {
+  if (version === FORMAT_VERSION
+    && !validSerializedPersonalProviderCustody(secrets["nautilo-personal-provider-custody"] as string)) {
+    throw new Error("Railway launch secret custody failed");
+  }
+  if ((version === 2 || version === FORMAT_VERSION) && record["bootstrap"] !== undefined) {
     const bootstrap = record["bootstrap"];
     if (typeof bootstrap !== "object" || bootstrap === null || Array.isArray(bootstrap)) throw new Error("Railway launch secret custody failed");
     const child = bootstrap as Record<string, unknown>;
@@ -187,9 +246,11 @@ export class KeyringRailwayLaunchSecretStore {
     }
     const secrets = Object.fromEntries(RAILWAY_GENERATED_SECRET_SLOTS.map((slot) => [
       slot,
-      randomBytes(SECRET_BYTES).toString("base64url"),
+      slot === "nautilo-personal-provider-custody"
+        ? createSerializedPersonalProviderCustody()
+        : randomBytes(SECRET_BYTES).toString("base64url"),
     ])) as Record<RailwayGeneratedSecretSlotName, string>;
-    const envelope: RailwayLaunchSecretEnvelopeV2 = {
+    const envelope: RailwayLaunchSecretEnvelopeV3 = {
       formatVersion: FORMAT_VERSION,
       launchId: input.launchId,
       releaseId: input.releaseId,
@@ -211,37 +272,110 @@ export class KeyringRailwayLaunchSecretStore {
   async storeGeneratedSecrets(input: {
     readonly launchId: string;
     readonly releaseId: string;
-    readonly secrets: ReadonlyMap<RailwayGeneratedSecretSlotName, string>;
+    readonly secrets: ReadonlyMap<string, string>;
   }): Promise<void> {
+    const suppliedSlots = [...input.secrets.keys()].sort();
+    const legacySlots = [...RAILWAY_LEGACY_GENERATED_SECRET_SLOTS].sort();
+    const currentSlots = [...RAILWAY_GENERATED_SECRET_SLOTS].sort();
+    const suppliedLegacy = JSON.stringify(suppliedSlots) === JSON.stringify(legacySlots);
+    const suppliedCurrent = JSON.stringify(suppliedSlots) === JSON.stringify(currentSlots);
     if (!safeIdentity(input.launchId) || !safeIdentity(input.releaseId)
-      || input.secrets.size !== RAILWAY_GENERATED_SECRET_SLOTS.length
-      || RAILWAY_GENERATED_SECRET_SLOTS.some((slot) => {
+      || (!suppliedLegacy && !suppliedCurrent)
+      || RAILWAY_LEGACY_GENERATED_SECRET_SLOTS.some((slot) => {
         const value = input.secrets.get(slot);
         return value === undefined || value.length < 32 || value.length > 256;
-      })) throw new Error("Railway launch secret custody failed");
-    const intendedSecrets = Object.fromEntries(
-      RAILWAY_GENERATED_SECRET_SLOTS.map((slot) => [slot, input.secrets.get(slot)!]),
-    ) as Record<RailwayGeneratedSecretSlotName, string>;
+      })
+      || suppliedCurrent && !validSerializedPersonalProviderCustody(
+        input.secrets.get("nautilo-personal-provider-custody") ?? "",
+      )) throw new Error("Railway launch secret custody failed");
     const existing = parseEnvelope(await this.#entry.getPassword());
     if (existing !== null) {
       if (!same(existing.launchId, input.launchId) || !same(existing.releaseId, input.releaseId)
-        || RAILWAY_GENERATED_SECRET_SLOTS.some((slot) => !same(existing.secrets[slot], intendedSecrets[slot]))) {
+        || RAILWAY_LEGACY_GENERATED_SECRET_SLOTS.some((slot) => !same(existing.secrets[slot], input.secrets.get(slot)!))) {
         throw new Error("Railway launch secret custody failed");
       }
-      return;
+      if (existing.formatVersion === FORMAT_VERSION) {
+        const suppliedCustody = input.secrets.get("nautilo-personal-provider-custody");
+        if (suppliedCustody !== undefined
+          && !same(existing.secrets["nautilo-personal-provider-custody"], suppliedCustody)) {
+          throw new Error("Railway launch secret custody failed");
+        }
+        return;
+      }
     }
-    const envelope: RailwayLaunchSecretEnvelopeV2 = {
+    const personalProviderCustody = input.secrets.get("nautilo-personal-provider-custody")
+      ?? createSerializedPersonalProviderCustody();
+    const intendedSecrets = Object.fromEntries([
+      ...RAILWAY_LEGACY_GENERATED_SECRET_SLOTS.map((slot) => [slot, input.secrets.get(slot)!] as const),
+      ["nautilo-personal-provider-custody", personalProviderCustody] as const,
+    ]) as Record<RailwayGeneratedSecretSlotName, string>;
+    const envelope: RailwayLaunchSecretEnvelopeV3 = {
       formatVersion: FORMAT_VERSION,
       launchId: input.launchId,
       releaseId: input.releaseId,
       secrets: intendedSecrets,
+      ...(existing?.formatVersion === 2 && existing.bootstrap !== undefined
+        ? { bootstrap: existing.bootstrap }
+        : {}),
     };
     await this.#entry.setPassword(serializeEnvelope(envelope));
     const confirmed = parseEnvelope(await this.#entry.getPassword());
-    if (confirmed === null || !same(confirmed.launchId, input.launchId) || !same(confirmed.releaseId, input.releaseId)
+    if (confirmed?.formatVersion !== FORMAT_VERSION
+      || !same(confirmed.launchId, input.launchId) || !same(confirmed.releaseId, input.releaseId)
       || RAILWAY_GENERATED_SECRET_SLOTS.some((slot) => !same(confirmed.secrets[slot], intendedSecrets[slot]))) {
       throw new Error("Railway launch secret custody failed");
     }
+  }
+
+  /**
+   * Upgrade an exact legacy envelope only after the caller has inspected the
+   * live instance. A missing local slot never proves that new custody is safe.
+   */
+  async upgradePersonalProviderCustody(input: {
+    readonly launchId: string;
+    readonly releaseId: string;
+    readonly authority: RailwayLegacyPersonalProviderCustodyAuthority;
+  }): Promise<ReadonlyMap<RailwayGeneratedSecretSlotName, string>> {
+    if (!safeIdentity(input.launchId) || !safeIdentity(input.releaseId)) failCustody();
+    const existing = parseEnvelope(await this.#entry.getPassword());
+    if (existing === null || !same(existing.launchId, input.launchId)
+      || !same(existing.releaseId, input.releaseId)) failCustody();
+    if (existing.formatVersion === FORMAT_VERSION) return secretMap(existing);
+
+    let inspection: RailwayLegacyPersonalProviderCustodyInspection;
+    try {
+      inspection = await input.authority.inspect({
+        launchId: input.launchId,
+        releaseId: input.releaseId,
+      });
+    } catch {
+      failCustody();
+    }
+    if (inspection.outcome === "blocked") failCustody();
+    let serializedCustody: string;
+    try {
+      serializedCustody = inspection.outcome === "canonical-custody"
+        ? serializePersonalProviderCustody(parsePersonalProviderCustody(inspection.serializedCustody))
+        : createSerializedPersonalProviderCustody();
+    } catch {
+      failCustody();
+    }
+    const next: RailwayLaunchSecretEnvelopeV3 = {
+      ...existing,
+      formatVersion: FORMAT_VERSION,
+      secrets: {
+        ...existing.secrets,
+        "nautilo-personal-provider-custody": serializedCustody,
+      },
+    };
+    await this.#entry.setPassword(serializeEnvelope(next));
+    const confirmed = parseEnvelope(await this.#entry.getPassword());
+    if (confirmed?.formatVersion !== FORMAT_VERSION
+      || !same(confirmed.launchId, input.launchId)
+      || !same(confirmed.releaseId, input.releaseId)
+      || RAILWAY_LEGACY_GENERATED_SECRET_SLOTS.some((slot) => !same(confirmed.secrets[slot], existing.secrets[slot]))
+      || !same(confirmed.secrets["nautilo-personal-provider-custody"], serializedCustody)) failCustody();
+    return secretMap(confirmed);
   }
 
   async storeBootstrapOutputs(binding: RailwayBootstrapOutputBinding, output: RailwayBootstrapHandoffOutput): Promise<void> {
@@ -251,14 +385,17 @@ export class KeyringRailwayLaunchSecretStore {
       throw new Error("Railway launch secret custody failed");
     }
     const intended = { binding: structuredClone(binding), output: structuredClone(output) };
-    if (existing.formatVersion === 2 && existing.bootstrap !== undefined) {
+    if (existing.formatVersion !== 1 && existing.bootstrap !== undefined) {
       if (JSON.stringify(existing.bootstrap) !== JSON.stringify(intended)) throw new Error("Railway launch secret custody failed");
       return;
     }
-    const next: RailwayLaunchSecretEnvelopeV2 = { ...existing, formatVersion: 2, bootstrap: intended };
+    const next: RailwayLaunchSecretEnvelopeV2 | RailwayLaunchSecretEnvelopeV3 = existing.formatVersion === FORMAT_VERSION
+      ? { ...existing, bootstrap: intended }
+      : { ...existing, formatVersion: 2, bootstrap: intended };
     await this.#entry.setPassword(serializeEnvelope(next));
     const confirmed = parseEnvelope(await this.#entry.getPassword());
-    if (confirmed?.formatVersion !== 2 || JSON.stringify(confirmed.bootstrap) !== JSON.stringify(intended)) {
+    if (confirmed === null || confirmed.formatVersion === 1
+      || JSON.stringify(confirmed.bootstrap) !== JSON.stringify(intended)) {
       throw new Error("Railway launch secret custody failed");
     }
   }
@@ -287,24 +424,25 @@ export class KeyringRailwayLaunchSecretStore {
     const source = parseEnvelope(await this.#entry.getPassword());
     const targetExisting = parseEnvelope(await input.targetStore.#entry.getPassword());
     if (targetExisting !== null) {
-      const exactTarget = targetExisting.formatVersion === 2
+      const exactTarget = targetExisting.formatVersion !== 1
         && same(targetExisting.launchId, input.target.launchId) && same(targetExisting.releaseId, input.target.releaseId)
         && targetExisting.bootstrap !== undefined
         && JSON.stringify(targetExisting.bootstrap.binding) === JSON.stringify(input.target)
-        && (input.targetStore === this || source?.formatVersion === 2 && source.bootstrap !== undefined
+        && (input.targetStore === this || source !== null && source.formatVersion !== 1 && source.bootstrap !== undefined
           && JSON.stringify(targetExisting.secrets) === JSON.stringify(source.secrets)
           && JSON.stringify(targetExisting.bootstrap.output) === JSON.stringify(source.bootstrap.output));
       if (exactTarget) return;
       if (input.targetStore !== this) failCustody();
     }
-    if (source?.formatVersion !== 2 || source.bootstrap === undefined
+    if (source === null || source.formatVersion === 1 || source.bootstrap === undefined
       || !same(source.launchId, input.source.launchId) || !same(source.releaseId, input.source.releaseId)
       || JSON.stringify(source.bootstrap.binding) !== JSON.stringify(input.source)) failCustody();
-    const next: RailwayLaunchSecretEnvelopeV2 = { ...source, launchId: input.target.launchId, releaseId: input.target.releaseId,
+    const next: RailwayLaunchSecretEnvelopeV2 | RailwayLaunchSecretEnvelopeV3 = { ...source, launchId: input.target.launchId, releaseId: input.target.releaseId,
       bootstrap: { binding: structuredClone(input.target), output: structuredClone(source.bootstrap.output) } };
     await input.targetStore.#entry.setPassword(serializeEnvelope(next));
     const confirmed = parseEnvelope(await input.targetStore.#entry.getPassword());
-    if (confirmed?.formatVersion !== 2 || !same(confirmed.launchId, input.target.launchId)
+    if (confirmed === null || confirmed.formatVersion === 1 || confirmed.formatVersion !== source.formatVersion
+      || !same(confirmed.launchId, input.target.launchId)
       || !same(confirmed.releaseId, input.target.releaseId)
       || JSON.stringify(confirmed.bootstrap) !== JSON.stringify(next.bootstrap)
       || JSON.stringify(confirmed.secrets) !== JSON.stringify(source.secrets)) failCustody();

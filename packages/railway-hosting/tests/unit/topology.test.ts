@@ -22,7 +22,7 @@ const DIGESTS = {
   "nautilo-bootstrap": "registry.nautilo.test/nautilo-bootstrap@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 } as const;
 
-function releaseManifest(): unknown {
+function releaseManifest(migrationSchemaVersion = 1): unknown {
   return {
     schemaVersion: 1,
     releaseId: "2026.08.03-v1",
@@ -43,7 +43,7 @@ function releaseManifest(): unknown {
         { role: "nautilo-data", service: "nautilo-server", mountPath: "/var/lib/nautilo" },
       ],
       environmentSchemaVersion: 1,
-      migrationSchemaVersion: 1,
+      migrationSchemaVersion,
     },
     compatibility: {
       runtime: { minimum: 1, maximum: 1 },
@@ -53,10 +53,10 @@ function releaseManifest(): unknown {
   };
 }
 
-function verifiedManifest(): VerifiedReleaseManifest {
+function verifiedManifest(migrationSchemaVersion = 1): VerifiedReleaseManifest {
   const result = verifyReleaseManifest(
     {
-      manifest: releaseManifest(),
+      manifest: releaseManifest(migrationSchemaVersion),
       signature: {
         algorithm: "ed25519",
         keyId: "test-key",
@@ -90,6 +90,7 @@ function service(name: string) {
 describe("Railway V1 certified topology", () => {
   test("has exactly five final services, three mounts, two final domains, and two sequential transient bootstrap phases", () => {
     const graph = topology();
+    expect(graph.migrationSchemaVersion).toBe(1);
     expect(graph.finalServices.map((entry) => entry.name)).toEqual([
       "app-postgres",
       "logto-postgres",
@@ -137,6 +138,14 @@ describe("Railway V1 certified topology", () => {
       key: "NAUTILO_PORT",
       value: { kind: "safe-literal", value: `${RAILWAY_NAUTILO_PORT}` },
     });
+    expect(graph.finalServices.find((entry) => entry.name === "nautilo-server")?.variables).toContainEqual({
+      key: "NAUTILO_PERSONAL_PROVIDER_CUSTODY",
+      value: {
+        kind: "generated-secret-slot",
+        slot: "nautilo-personal-provider-custody",
+        purpose: "personal provider credential custody",
+      },
+    });
     expect(graph.finalServices.find((service) => service.name === "logto")?.variables).toContainEqual({
       key: "ADMIN_ENDPOINT",
       value: { kind: "safe-literal", value: "http://logto.railway.internal:4302" },
@@ -150,6 +159,13 @@ describe("Railway V1 certified topology", () => {
         key: "NAUTILO_DOTENV_PATH",
         value: { kind: "safe-literal", value: "/var/lib/nautilo/config/instance.env" },
       });
+  });
+
+  test("preserves the signed migration schema version used for image-resident maintenance commands", () => {
+    const result = buildRailwayTopology(verifiedManifest(2));
+    expect(result.ok).toBeTrue();
+    if (!result.ok) throw new Error(result.code);
+    expect(result.topology.migrationSchemaVersion).toBe(2);
   });
 
   test("excludes office resources and any undeclared service", () => {

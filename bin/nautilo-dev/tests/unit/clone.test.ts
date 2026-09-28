@@ -806,6 +806,7 @@ describe("development clone guards", () => {
     const result = rebindCloneEnvContent({
       sourceRaw: [
         "OPENAI_API_KEY=secret-provider",
+        "NAUTILO_PERSONAL_PROVIDER_CUSTODY=source-personal-custody",
         "LOGTO_DB_PASSWORD=secret-logto",
         "LOGTO_ENDPOINT=http://localhost:3301",
         "LOGTO_ENDPOINT_INTERNAL=http://localhost:3301",
@@ -817,6 +818,8 @@ describe("development clone guards", () => {
       target,
     });
     expect(result).toContain("OPENAI_API_KEY=secret-provider");
+    expect(result).not.toContain("NAUTILO_PERSONAL_PROVIDER_CUSTODY");
+    expect(result).not.toContain("source-personal-custody");
     expect(result).toContain("LOGTO_DB_PASSWORD=secret-logto");
     expect(result).toContain("LOGTO_ENDPOINT=http://localhost:3311");
     expect(result).toContain("LOGTO_ENDPOINT_INTERNAL=http://localhost:3311");

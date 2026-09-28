@@ -15,6 +15,7 @@
         "@nautilo/config-guard": "workspace:*",
         "@nautilo/db": "workspace:*",
         "@nautilo/logger": "workspace:*",
+        "@nautilo/operator-secrets": "workspace:*",
         "@nautilo/runtime": "workspace:*",
         "@nautilo/server": "workspace:*",
         "@nautilo/trust": "workspace:*",
