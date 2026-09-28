@@ -203,20 +203,6 @@ export async function acceptProtectedTaskRunOutputBinding(
       if (!room) return rejected("authority_changed");
     }
 
-    const [existing] = await tx.select().from(protectedTaskRunOutputBindings)
-      .where(eq(protectedTaskRunOutputBindings.taskRunId, run.id))
-      .limit(1).for("update");
-    if (existing) {
-      const exactCurrentDestination = deliveryMode === "none"
-        ? task.callingRoomId === null && input.destination === null
-        : input.destination !== null
-          && task.callingRoomId === input.destination.roomId;
-      return exactCurrentDestination
-          && exactBinding(existing, input, deliveryMode)
-        ? Object.freeze({ status: "exact_replay" as const, binding: existing })
-        : rejected("conflict");
-    }
-
     const expectedTaskStatus = task.scheduleKind === "cron"
       ? "pending"
       : "awaiting";
@@ -235,6 +221,20 @@ export async function acceptProtectedTaskRunOutputBinding(
       || run.resultCryptoRequiredNamespaceFingerprint !== null
       || run.resultCryptoMappingState !== "unmapped"
     ) return rejected("stale");
+
+    const [existing] = await tx.select().from(protectedTaskRunOutputBindings)
+      .where(eq(protectedTaskRunOutputBindings.taskRunId, run.id))
+      .limit(1).for("update");
+    if (existing) {
+      const exactCurrentDestination = deliveryMode === "none"
+        ? task.callingRoomId === null && input.destination === null
+        : input.destination !== null
+          && task.callingRoomId === input.destination.roomId;
+      return exactCurrentDestination
+          && exactBinding(existing, input, deliveryMode)
+        ? Object.freeze({ status: "exact_replay" as const, binding: existing })
+        : rejected("conflict");
+    }
 
     if (deliveryMode === "none") {
       if (input.destination !== null) return rejected("conflict");

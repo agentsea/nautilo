@@ -299,4 +299,29 @@ describe("protected TaskRun output binding acceptance", () => {
     })).toEqual({ status: "rejected", reason: "authority_changed" });
     expect(fixture.locks.some((entry) => entry.table === rooms)).toBe(true);
   });
+
+  test("does not issue a fresh grant from a completed replay", async () => {
+    const fixture = harness({
+      run: run({ status: "completed", completedAt: acceptedAt }),
+      binding: {
+        taskRunId: ids.run,
+        bindingId: protectedTaskRunOutputBindingId(ids.run),
+        deliveryMode: "none",
+        destinationRoomId: null,
+        destinationNamespaceId: null,
+        resultOperationId: `task-run-result:${ids.run}`,
+        resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
+        messageOperationId: null,
+        wakeOperationId: null,
+        acceptedPolicyRevision: 9,
+      } as ProtectedTaskRunOutputBinding,
+    });
+    expect(await acceptProtectedTaskRunOutputBinding(fixture.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+      requiredPolicyRevision: 9,
+      acceptedAt,
+      destination: null,
+    })).toEqual({ status: "rejected", reason: "stale" });
+  });
 });
