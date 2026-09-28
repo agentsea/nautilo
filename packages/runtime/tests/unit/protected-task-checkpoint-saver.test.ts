@@ -1,18 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  EncryptedCheckpointSaver,
-} from "@nautilo/agent";
-import type {
-  CreateEncryptedCheckpointSaverOptions,
-} from "@nautilo/agent";
+import { EncryptedCheckpointSaver } from "@nautilo/agent";
+import type { CreateEncryptedCheckpointSaverOptions } from "@nautilo/agent";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 
 import {
+  withNativeProtectedTaskCheckpointSaver,
   withProtectedTaskCheckpointSaver,
 } from "../../src/tasks/protected-task-checkpoint-saver";
 
 type Input = Parameters<typeof withProtectedTaskCheckpointSaver>[0];
+type NativeInput = Parameters<typeof withNativeProtectedTaskCheckpointSaver>[0];
 type DedicatedPool = CreateEncryptedCheckpointSaverOptions["dedicatedPool"];
 
 function fixture() {
@@ -38,8 +36,12 @@ function fixture() {
     createDedicatedPool: () => {
       poolCalls += 1;
       return {
-        connect: async () => { throw new Error("not used"); },
-        end: async () => { closeCalls += 1; },
+        connect: async () => {
+          throw new Error("not used");
+        },
+        end: async () => {
+          closeCalls += 1;
+        },
       } as unknown as DedicatedPool;
     },
     execute: async (_saver: EncryptedCheckpointSaver) => "finished",
@@ -56,7 +58,7 @@ describe("protected Task checkpoint saver ownership", () => {
     const scenario = fixture();
     const result = await withProtectedTaskCheckpointSaver({
       ...scenario.input,
-      execute: async saver => {
+      execute: async (saver) => {
         expect(saver).toBeInstanceOf(EncryptedCheckpointSaver);
         return "completed";
       },
@@ -71,8 +73,13 @@ describe("protected Task checkpoint saver ownership", () => {
     const failure = new Error("graph failed");
     const caught = await withProtectedTaskCheckpointSaver({
       ...scenario.input,
-      execute: async () => { throw failure; },
-    }).then(() => null, (error: unknown) => error);
+      execute: async () => {
+        throw failure;
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
     expect(caught).toBe(failure);
     expect(scenario.poolCalls()).toBe(1);
     expect(scenario.closeCalls()).toBe(1);
@@ -89,10 +96,53 @@ describe("protected Task checkpoint saver ownership", () => {
     const failure = await withProtectedTaskCheckpointSaver({
       ...scenario.input,
       createDedicatedPool: () => pool,
-      execute: async () => { entered = true; },
-    }).then(() => null, (error: unknown) => error);
+      execute: async () => {
+        entered = true;
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
     expect(failure).toBeInstanceOf(TypeError);
     expect(entered).toBe(false);
+    expect(scenario.closeCalls()).toBe(1);
+  });
+
+  test("native cells use a fresh Task-run saver and close its pool", async () => {
+    const scenario = fixture();
+    const native = {
+      ...scenario.input,
+      restricted: {},
+      serverScope: "http://localhost:3001",
+      domains: [],
+      execute: async (saver: EncryptedCheckpointSaver) => {
+        expect(saver).toBeInstanceOf(EncryptedCheckpointSaver);
+        return "native-completed";
+      },
+    } as unknown as NativeInput;
+    expect(await withNativeProtectedTaskCheckpointSaver(native)).toBe(
+      "native-completed",
+    );
+    expect(scenario.poolCalls()).toBe(1);
+    expect(scenario.closeCalls()).toBe(1);
+  });
+
+  test("native cells reject an already owned physical pool", async () => {
+    const scenario = fixture();
+    const pool = scenario.input.createDedicatedPool();
+    const native = {
+      ...scenario.input,
+      restricted: {},
+      serverScope: "http://localhost:3001",
+      domains: [],
+      createDedicatedPool: () => pool,
+    } as unknown as NativeInput;
+    await withNativeProtectedTaskCheckpointSaver(native);
+    const failure = await withNativeProtectedTaskCheckpointSaver(native).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(TypeError);
     expect(scenario.closeCalls()).toBe(1);
   });
 });

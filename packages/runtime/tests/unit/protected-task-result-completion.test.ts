@@ -7,8 +7,10 @@ import {
 
 import {
   completeProtectedTaskRunResult,
+  publishPreparedProtectedTaskRunResult,
   type CompleteProtectedTaskRunResultDependencies,
   type CompleteProtectedTaskRunResultInput,
+  type PublishPreparedProtectedTaskRunResultInput,
 } from "../../src/tasks/protected-task-result-completion";
 
 const TASK_ID = "10000000-0000-4000-8000-000000000001";
@@ -42,8 +44,16 @@ function fixture(payload: TaskRunResultPayloadV1) {
     result: {
       taskId: TASK_ID,
       taskRunId: RUN_ID,
+      contentRevision: 1 as const,
       objectId: resultObjectId,
-      namespace: { namespaceId: NAMESPACE_ID },
+      signerAgentId: "60000000-0000-4000-8000-000000000006",
+      namespace: {
+        namespaceId: NAMESPACE_ID,
+        domainId: DOMAIN_ID,
+        operations: ["encrypt"] as const,
+        expectedAccessRevision: 4,
+        expectedPolicyRevision: 7,
+      },
     },
   };
   const authority = {
@@ -87,15 +97,117 @@ function fixture(payload: TaskRunResultPayloadV1) {
       };
     },
   };
-  return { input, controller, dependencies, publications, prepareCalls: () => prepareCalls };
+  return {
+    input,
+    prepared: prepared as ReturnType<
+      CompleteProtectedTaskRunResultDependencies["prepare"]
+    >,
+    controller,
+    dependencies,
+    publications,
+    prepareCalls: () => prepareCalls,
+  };
 }
 
 describe("protected Task result completion", () => {
-  test("binds the exact live grant to one canonical encrypted result publication", async () => {
+  test("publishes an exact native-prepared result without preparing it again", async () => {
     const payload: TaskRunResultPayloadV1 = {
       formatVersion: 1,
       resultText: "Protected answer",
       lastError: null,
+    };
+    const scenario = fixture(payload);
+    const receipt = await publishPreparedProtectedTaskRunResult({
+      repository: scenario.input.repository,
+      terminal: scenario.input.terminal,
+      dualTerminal: scenario.input.dualTerminal,
+      owner: scenario.input.owner,
+      reference: scenario.input.reference,
+      authority: scenario.input.authority,
+      prepared: scenario.prepared,
+      evidence: scenario.input.evidence,
+      signal: scenario.input.signal,
+      scheduleKind: scenario.input.scheduleKind,
+      completedAt: scenario.input.completedAt,
+      ordinaryContent: Object.freeze({ coordinate, payload }),
+    } as PublishPreparedProtectedTaskRunResultInput, scenario.dependencies);
+
+    expect(receipt).toMatchObject({ status: "mapped", taskRunId: RUN_ID });
+    expect(scenario.prepareCalls()).toBe(0);
+    expect(scenario.publications).toHaveLength(1);
+    const publication = scenario.publications[0]!;
+    expect(publication.outcome).toBe("completed");
+    expect(publication.scheduleKind).toBe("cron");
+    expect(publication.ordinaryContent).toEqual({ coordinate, payload });
+    expect(publication.requestDigest).toEqual(new Uint8Array(32).fill(9));
+  });
+
+  test.each([
+    ["grant", (input: PublishPreparedProtectedTaskRunResultInput) => ({
+      ...input,
+      evidence: { ...input.evidence, requestId: "another-request" },
+    })],
+    ["prepared coordinate", (input: PublishPreparedProtectedTaskRunResultInput) => ({
+      ...input,
+      prepared: {
+        ...input.prepared,
+        coordinate: { ...input.prepared.coordinate, taskRunId: TASK_ID },
+      },
+    })],
+    ["ordinary sibling", (input: PublishPreparedProtectedTaskRunResultInput) => ({
+      ...input,
+      ordinaryContent: {
+        ...input.ordinaryContent,
+        coordinate: { ...input.ordinaryContent.coordinate, taskRunId: TASK_ID },
+      },
+    })],
+  ] as const)("rejects a substituted %s before digest or publication", async (
+    _label,
+    substitute,
+  ) => {
+    const scenario = fixture({
+      formatVersion: 1,
+      resultText: "Protected answer",
+      lastError: null,
+    });
+    let digestCalls = 0;
+    const input = {
+      repository: scenario.input.repository,
+      terminal: scenario.input.terminal,
+      dualTerminal: scenario.input.dualTerminal,
+      owner: scenario.input.owner,
+      reference: scenario.input.reference,
+      authority: scenario.input.authority,
+      prepared: scenario.prepared,
+      evidence: scenario.input.evidence,
+      signal: scenario.input.signal,
+      scheduleKind: scenario.input.scheduleKind,
+      completedAt: scenario.input.completedAt,
+      ordinaryContent: Object.freeze({
+        coordinate,
+        payload: scenario.input.payload,
+      }),
+    } as PublishPreparedProtectedTaskRunResultInput;
+    const failure = await publishPreparedProtectedTaskRunResult(
+      substitute(input) as PublishPreparedProtectedTaskRunResultInput,
+      {
+        ...scenario.dependencies,
+        digestPrepared: () => {
+          digestCalls += 1;
+          return new Uint8Array(32).fill(9);
+        },
+      },
+    ).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(TypeError);
+    expect(digestCalls).toBe(0);
+    expect(scenario.publications).toEqual([]);
+  });
+
+  test("routes legacy preparation through prepared-result publication", async () => {
+    const payload: TaskRunResultPayloadV1 = {
+      formatVersion: 1,
+      resultText: null,
+      lastError: "Protected Task execution failed",
     };
     const scenario = fixture(payload);
     const receipt = await completeProtectedTaskRunResult(
@@ -106,11 +218,10 @@ describe("protected Task result completion", () => {
     expect(receipt).toMatchObject({ status: "mapped", taskRunId: RUN_ID });
     expect(scenario.prepareCalls()).toBe(1);
     expect(scenario.publications).toHaveLength(1);
-    const publication = scenario.publications[0]!;
-    expect(publication.outcome).toBe("completed");
-    expect(publication.scheduleKind).toBe("cron");
-    expect(publication.ordinaryContent).toEqual({ coordinate, payload });
-    expect(publication.requestDigest).toEqual(new Uint8Array(32).fill(9));
+    expect(scenario.publications[0]).toMatchObject({
+      outcome: "errored",
+      ordinaryContent: { coordinate, payload },
+    });
   });
 
   test("rejects a substituted grant or aborted operation before preparation", async () => {

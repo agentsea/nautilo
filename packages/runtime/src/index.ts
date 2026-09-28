@@ -348,8 +348,11 @@ export {
 } from "./tasks/protected-task-native-runner";
 export {
   completeProtectedTaskRunResult,
+  publishPreparedProtectedTaskRunResult,
   type CompleteProtectedTaskRunResultDependencies,
   type CompleteProtectedTaskRunResultInput,
+  type PublishPreparedProtectedTaskRunResultDependencies,
+  type PublishPreparedProtectedTaskRunResultInput,
 } from "./tasks/protected-task-result-completion";
 export {
   completeProtectedTaskRunResultWithLiveAuthority,
@@ -361,6 +364,7 @@ export type {
 } from "./tasks/protected-task-result-publication";
 export {
   withProtectedTaskCheckpointSaver,
+  withNativeProtectedTaskCheckpointSaver,
 } from "./tasks/protected-task-checkpoint-saver";
 export {
   dispatchTaskRun,
