@@ -31,7 +31,10 @@ export const PORTABLE_RECOVERY_MEMBERS = [
   "artifacts.tar",
   "media.tar",
   "apps.tar",
+  "personal-provider-custody.json",
 ] as const;
+
+const LEGACY_PORTABLE_RECOVERY_MEMBER_COUNT = PORTABLE_RECOVERY_MEMBERS.length - 1;
 
 export type PortableRecoveryMemberName = (typeof PORTABLE_RECOVERY_MEMBERS)[number];
 
@@ -210,8 +213,10 @@ function validateSourceRelease(value: string): void {
 }
 
 function validateMemberSources(members: readonly PortableRecoveryMemberSource[]): void {
-  if (members.length !== PORTABLE_RECOVERY_MEMBERS.length) fail("INVALID_INPUT", "all fixed recovery members are required");
-  for (let index = 0; index < PORTABLE_RECOVERY_MEMBERS.length; index += 1) {
+  if (members.length !== LEGACY_PORTABLE_RECOVERY_MEMBER_COUNT && members.length !== PORTABLE_RECOVERY_MEMBERS.length) {
+    fail("INVALID_INPUT", "recovery members do not match a supported canonical set");
+  }
+  for (let index = 0; index < members.length; index += 1) {
     const member = members[index];
     if (member === undefined || member.name !== PORTABLE_RECOVERY_MEMBERS[index] || member.chunks == null || typeof member.chunks[Symbol.asyncIterator] !== "function") {
       fail("INVALID_INPUT", "recovery members must be complete, unique, and in canonical order");
@@ -521,8 +526,11 @@ function parseManifest(bytes: Uint8Array): PortableRecoveryManifest {
   const payloadCiphertextBytes = parsed["payloadCiphertextBytes"];
   if (!isUnknownArray(manifestMembers) || typeof sourceRelease !== "string" || !Number.isInteger(totalChunks) ||
     typeof payloadCiphertextSha256 !== "string" || !Number.isInteger(payloadCiphertextBytes)) fail("INTEGRITY_FAILED", "terminal manifest has an invalid shape");
-  if (manifestMembers.length !== PORTABLE_RECOVERY_MEMBERS.length) fail("INTEGRITY_FAILED", "terminal manifest must contain every fixed member");
-  for (let index = 0; index < PORTABLE_RECOVERY_MEMBERS.length; index += 1) {
+  if (manifestMembers.length !== LEGACY_PORTABLE_RECOVERY_MEMBER_COUNT
+    && manifestMembers.length !== PORTABLE_RECOVERY_MEMBERS.length) {
+    fail("INTEGRITY_FAILED", "terminal manifest does not match a supported canonical member set");
+  }
+  for (let index = 0; index < manifestMembers.length; index += 1) {
     const member = manifestMembers[index];
     if (!isObject(member)) fail("INTEGRITY_FAILED", "terminal manifest member is invalid or noncanonical");
     const name = member["name"];
@@ -655,13 +663,16 @@ export async function readPortableRecovery(input: ReadPortableRecoveryInput): Pr
   if (terminal.totalChunks !== totalChunks || terminal.payloadCiphertextBytes !== terminalPreBytes || terminal.payloadCiphertextSha256 !== terminalPreDigest) {
     fail("INTEGRITY_FAILED", "terminal manifest does not commit to the received payload");
   }
-  for (let index = 0; index < PORTABLE_RECOVERY_MEMBERS.length; index += 1) {
+  for (let index = 0; index < terminal.members.length; index += 1) {
     const expected = terminal.members[index]!;
     const actual = memberStates[index]!;
     if (expected.name !== PORTABLE_RECOVERY_MEMBERS[index] || expected.chunks !== actual.chunks ||
       expected.plaintextBytes !== actual.plaintextBytes || expected.sha256 !== actual.digest.digest("hex")) {
       fail("INTEGRITY_FAILED", "terminal manifest member digest or byte count does not match payload");
     }
+  }
+  if (memberStates.slice(terminal.members.length).some((state) => state.chunks !== 0 || state.plaintextBytes !== 0)) {
+    fail("INTEGRITY_FAILED", "payload contains a member omitted by the terminal manifest");
   }
   const receipt = { ciphertextSha256: digest.digest("hex"), ciphertextBytes: count.value };
   if (expectedReceipt !== undefined &&

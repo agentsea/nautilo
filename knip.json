@@ -205,7 +205,7 @@
       "ignoreDependencies": ["bun-types"]
     },
     "bin/nautilo-dev": {
-      "entry": ["tests/**/*.test.ts"],
+      "entry": ["tests/**/*.test.ts", "src/lib/isolate-personal-provider-clone.ts"],
       "project": ["src/**/*.ts", "tests/**/*.ts"],
       "ignoreDependencies": ["@logto/cli"]
     },

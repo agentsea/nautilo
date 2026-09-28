@@ -7,6 +7,7 @@ import {
 import {
   RailwayGraphqlReconcileExecutor,
   RailwayGraphqlWholeManifestUpgradeExecutor,
+  RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX,
   RailwayPortableMaintenanceCleanup,
   RailwayPortableMaintenanceTarget,
   RailwayVolumeBackupExecutor,
@@ -21,6 +22,11 @@ import {
   type RailwayWholeManifestUpgradeBinding,
   type RailwayRestoredTargetActivationFailureCode,
 } from "@nautilo/railway-hosting";
+import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  parsePersonalProviderCustody,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 
 import { createRailwayPostUpgradeSourceState, RailwayMaintenanceStateStoreError } from "./railway-maintenance-state";
 import { S3RailwayPortableMaintenanceDescriptorProbe } from "./railway-portable-maintenance-descriptor-probe";
@@ -86,6 +92,8 @@ export interface RailwayUpgradeStageAdaptersInput {
   readonly deploymentObservationAttempts?: number | undefined;
   readonly interrupted?: (() => boolean) | undefined;
   readonly signal?: AbortSignal | undefined;
+  /** Called only after a new-image maintenance proof has succeeded. */
+  readonly provisionPersonalProviderCustody?: (() => Promise<string | undefined>) | undefined;
 }
 
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
@@ -234,6 +242,9 @@ function targetPortableBinding(input: RailwayUpgradeStageAdaptersInput, context:
   const resources = target.reconcile.receipt.resources;
   const services = resources.filter((resource) => resource.kind === "railway.service" && resource.name === "nautilo-server");
   if (services.length !== 1) throw new RailwayMaintenanceStateStoreError("invalid-state");
+  const retainedCommand = state.portableRestore?.target.command;
+  const supportsCustodyEvidence = (input.topology.migrationSchemaVersion ?? 1) >= 2;
+  const provenRestoreCommand = `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts restore-custody-v1 ${input.portable.exportOperationId} ${exported.objectId}`;
   return {
     projectId: restoreTarget.projectId,
     environmentId: restoreTarget.environmentId,
@@ -251,11 +262,17 @@ function targetPortableBinding(input: RailwayUpgradeStageAdaptersInput, context:
     logtoDatabaseUrl: input.portable.targetLogtoDatabaseUrl,
     storagePrefix: input.recoveryConfig.objectPrefix,
     storageSessionToken: input.recoveryConfig.sessionToken,
+    ...(supportsCustodyEvidence && (retainedCommand === undefined || retainedCommand === provenRestoreCommand)
+      ? { personalProviderCustodyEvidence: "v1" as const }
+      : {}),
   };
 }
 
 function cleanupBinding(binding: RailwayPortableMaintenanceBinding) {
-  return { ...binding, command: `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${binding.direction} ${binding.operationId} ${binding.objectId}` };
+  const action = binding.direction === "restore" && binding.personalProviderCustodyEvidence === "v1"
+    ? "restore-custody-v1"
+    : binding.direction;
+  return { ...binding, command: `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${action} ${binding.operationId} ${binding.objectId}` };
 }
 
 /** Builds the non-public production adapter composition used by the durable coordinator. */
@@ -286,6 +303,14 @@ export function createRailwayUpgradeStageAdapters(source: RailwayUpgradeStageAda
     if (input.interrupted?.() === true) throw new Error("Railway maintenance interrupted");
   };
   const probe = new S3RailwayPortableMaintenanceDescriptorProbe();
+
+  const provisionCustody = async (): Promise<string | undefined> => {
+    const retained = input.projectionInputs.generatedSecrets.get("nautilo-personal-provider-custody");
+    if (retained !== undefined) return retained;
+    const candidate = await input.provisionPersonalProviderCustody?.();
+    if (candidate === undefined) return undefined;
+    return serializePersonalProviderCustody(parsePersonalProviderCustody(candidate));
+  };
 
   const volumeExecutor = (context: RailwayUpgradeReceiptStageContext, failed: (error: unknown) => void): RailwayVolumeBackupExecutor => (
     new RailwayVolumeBackupExecutor({
@@ -476,6 +501,21 @@ export function createRailwayUpgradeStageAdapters(source: RailwayUpgradeStageAda
         return outcome("terminal-failure");
       }
       const executor = new RailwayGraphqlWholeManifestUpgradeExecutor({ transport: authorityTransport(input, context), sleep: wait });
+      if (state.candidateUpgrade?.stage === "migration-proven"
+        && state.candidateUpgrade.migrationId.startsWith(RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX)
+        && !input.projectionInputs.generatedSecrets.has("nautilo-personal-provider-custody")) {
+        const custody = await provisionCustody();
+        if (custody !== undefined) {
+          const server = input.candidate.services.filter(({ name }) => name === "nautilo-server");
+          if (server.length !== 1) return outcome("terminal-failure");
+          await new RailwayGraphqlReconcileExecutor({ transport: authorityTransport(input, context), sleep: wait }).upsertVariables({
+            projectId: sourceProjectId,
+            environmentId: sourceEnvironmentId,
+            serviceId: server[0]!.serviceId,
+            variables: { [PERSONAL_PROVIDER_CUSTODY_ENV]: custody },
+          });
+        }
+      }
       const result = await runRailwayWholeManifestUpgrade({ binding: input.candidate, executor,
         loadCheckpoint: async () => (await context.loadState()).candidateUpgrade,
         persistCheckpoint: async (checkpoint) => { await context.persistCandidateUpgrade(checkpoint); } });

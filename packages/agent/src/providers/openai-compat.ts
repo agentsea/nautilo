@@ -3,10 +3,15 @@ import {
   ChatOpenAIResponses,
   convertMessagesToResponsesInput,
   convertResponsesMessageToAIMessage,
+  convertResponsesDeltaToChatGenerationChunk,
 } from "@langchain/openai";
 
 type InvocationOptions = Parameters<ChatOpenAICompletions["invocationParams"]>[0];
 type InvocationExtra = Parameters<ChatOpenAICompletions["invocationParams"]>[1];
+
+export function isDirectGpt6Model(modelId: string): boolean {
+  return /^openai:gpt-6-(astra|sol|luna)$/.test(modelId);
+}
 
 /**
  * The installed LangChain release recognizes GPT-5 and o-series reasoning
@@ -29,8 +34,47 @@ export class OpenAIGpt6Completions extends ChatOpenAICompletions {
   }
 }
 
-/** Preserve provider usage that LangChain's non-streaming Responses converter omits. */
+/** Preserve usage and scoped request fields omitted by the installed Responses adapter. */
 export class OpenAIUsageResponses extends ChatOpenAIResponses {
+  override invocationParams(
+    options?: Parameters<ChatOpenAIResponses["invocationParams"]>[0],
+  ): ReturnType<ChatOpenAIResponses["invocationParams"]> {
+    const params = super.invocationParams(options);
+    // The installed serializer handles named choices but drops these standard
+    // string choices. Keep the caller's tool policy on direct GPT-6 requests.
+    if (isDirectGpt6Model(`openai:${this.model}`)
+      && (options?.tool_choice === "auto" || options?.tool_choice === "none" || options?.tool_choice === "required")) {
+      params.tool_choice = options.tool_choice;
+    }
+    return params;
+  }
+
+  override async *_streamResponseChunks(
+    messages: Parameters<ChatOpenAIResponses["_streamResponseChunks"]>[0],
+    options: Parameters<ChatOpenAIResponses["_streamResponseChunks"]>[1],
+    runManager?: Parameters<ChatOpenAIResponses["_streamResponseChunks"]>[2],
+  ) {
+    const stream = await this.completionWithRetry({
+      ...this.invocationParams(options),
+      input: convertMessagesToResponsesInput({ messages, zdrEnabled: this.zdrEnabled ?? false, model: this.model }),
+      stream: true,
+    }, options);
+    for await (const event of stream) {
+      options.signal?.throwIfAborted();
+      // The installed converter only retains terminal metadata for completed
+      // events. Reuse that conversion for incomplete responses while preserving
+      // their actual status and reason; never turn partial output into success.
+      const chunk = convertResponsesDeltaToChatGenerationChunk(event.type === "response.incomplete"
+        ? { ...event, type: "response.completed" } : event);
+      if (chunk === null) continue;
+      yield chunk;
+      await runManager?.handleLLMNewToken(chunk.text || "", {
+        prompt: options.promptIndex ?? 0, completion: 0,
+      }, undefined, undefined, undefined, { chunk });
+    }
+    options.signal?.throwIfAborted();
+  }
+
   override async _generate(
     messages: Parameters<ChatOpenAIResponses["_generate"]>[0],
     options: Parameters<ChatOpenAIResponses["_generate"]>[1],

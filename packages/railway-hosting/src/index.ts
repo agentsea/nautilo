@@ -253,6 +253,7 @@ export {
 export {
   RailwayWholeManifestUpgrade,
   RailwayWholeManifestUpgradeError,
+  RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX,
   RAILWAY_WHOLE_MANIFEST_UPGRADE_SCHEMA_VERSION,
   isRailwayWholeManifestUpgradeCheckpoint,
   isRailwayWholeManifestUpgradeCheckpointTransition,

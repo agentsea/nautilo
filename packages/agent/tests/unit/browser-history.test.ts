@@ -55,8 +55,7 @@ describe("browser history provider projection", () => {
       call("second"), second, call("latest"), latest];
 
     const processed = processHistory(messages, {
-      validationEnabled: true, pruningEnabled: true, tokenBudgetFraction: 0.9,
-      windowKeepRecent: 100, modelId: "openai:gpt-5.6-sol",
+      validationEnabled: true, pruningEnabled: true, maxMessageTokens: 900_000,
     });
     const providerMessages = projectOpenAIMultimodalToolResults(processed.messages, "openai:gpt-5.6-sol");
     const images = providerMessages.flatMap((message) => Array.isArray(message.content)
@@ -134,8 +133,7 @@ describe("browser history provider projection", () => {
         chosenObservation, second, outside, ordinary];
 
       const processed = processHistory(messages, {
-        validationEnabled: true, pruningEnabled: true, tokenBudgetFraction: 0.9,
-        windowKeepRecent: 100, modelId: "openai:gpt-5.6-sol",
+        validationEnabled: true, pruningEnabled: true, maxMessageTokens: 900_000,
       });
       const providerText = JSON.stringify(processed.messages);
       expect(providerText).not.toContain("first-internal-state");
@@ -182,8 +180,7 @@ describe("browser history provider projection", () => {
     const outside = snapshot("ordinary-verification", "long-loop", 60);
     messages.push(new AIMessage({ content: "", tool_calls: [{ id: "ordinary-verification", name: "browser_snapshot", args: {} }] }), outside);
     const processed = processHistory(messages, {
-      validationEnabled: true, pruningEnabled: true, tokenBudgetFraction: 0.9,
-      windowKeepRecent: 100, modelId: "openai:gpt-5.6-sol",
+      validationEnabled: true, pruningEnabled: true, maxMessageTokens: 900_000,
     });
     const providerText = JSON.stringify(processed.messages);
     expect(providerText.length).toBeLessThan(JSON.stringify(messages).length / 10);
@@ -257,9 +254,7 @@ describe("browser history provider projection", () => {
     const processed = processHistory(messages, {
       validationEnabled: true,
       pruningEnabled: true,
-      tokenBudgetFraction: 0.9,
-      windowKeepRecent: 100,
-      modelId: "openai:gpt-5.6-sol",
+      maxMessageTokens: 900_000,
     });
 
     expect(compacted(processed.messages[2]!)).toMatchObject({ sourceToolCallId: "old" });

@@ -2136,6 +2136,13 @@
       "when": 1790322939706,
       "tag": "0304_overconfident_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1790589516084,
+      "tag": "0305_personal_provider_credentials",
+      "breakpoints": true
     }
   ]
 }

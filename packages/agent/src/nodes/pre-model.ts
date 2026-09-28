@@ -43,8 +43,7 @@ import { log } from "@nautilo/logger";
 import { validateMessageHistory, assertMessageInvariants } from "@nautilo/message-invariants";
 import { activeComputerUseModelGuidanceForBoundTools } from "../config/computer-use-catalogue/host-tool-admission";
 import { processHistory, estimateTokenCount, taskReadResponseByteBudget, pendingTaskReadPages, type HistoryConfig } from "../utils/history-manager";
-import { getModelTokenLimit, resolveModelExecutionLimits } from "../providers/models";
-import { estimateBoundToolTokens } from "../utils/chat-model-invocation";
+import { resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
 import { budgetResearchContext, isResearchPreEvictionConsolidating, prepareResearchContextOrigins, restoreResearchContextControlCycle } from "../tools/security/research-context-rollover";
 import { SECURITY_RESEARCH_WORKFLOW } from "../tools/security/research-protocol";
 import { buildResearchWorkContextMessage } from "../tools/security/research-work-context";
@@ -1091,27 +1090,7 @@ export async function preModelNode(
     const roleMessage = buildResearchWorkContextMessage({ ...state, messages: turnMessages });
     if (roleMessage) systemPrompt += "\n\n" + roleMessage;
   }
-  const canManageMemory = state.toolWhitelist === undefined || state.toolWhitelist === null
-    || state.toolWhitelist.includes("manage_memory");
   let compactionHint: SystemMessage | null = null;
-
-  if (!isGuest) {
-    const tokenBudget = Math.floor(getModelTokenLimit(requestedModelId) * config.nautilo_token_budget_fraction);
-    const currentTokens = estimateTokenCount(state.messages);
-    if (currentTokens > tokenBudget * 0.8) {
-      compactionHint = new SystemMessage(
-        researchContinuity
-          ? `[RESEARCH CHECKPOINT] Context is filling. Before further investigation, use security_scan record ` +
-            `to persist all unsaved material notes, traced flows, protections, unresolved work, and source references, ` +
-            `then save a checkpoint with nextWork and openRecordIds. Earlier tool cycles can leave the model ` +
-            `window only after that durable checkpoint is accepted. Continue the same scan; do not summarize ` +
-            `away unfinished work or use unavailable memory tools.`
-          : `[MEMORY SAVE] Your conversation context is getting long and will soon be trimmed. ` +
-            (canManageMemory ? `Use manage_memory to save any important information you haven't saved yet.`
-              : `Preserve important information using the durable tools available to this Task.`),
-      );
-    }
-  }
 
   // no-progress breaker: inject exactly ONE corrective
   // instruction into this model turn when the tools node flagged a failure
@@ -1176,18 +1155,12 @@ export async function preModelNode(
   const historyConfig: HistoryConfig = {
     validationEnabled: config.nautilo_history_validation_enabled,
     pruningEnabled: config.nautilo_history_pruning_enabled,
-    tokenBudgetFraction: config.nautilo_token_budget_fraction,
-    windowKeepRecent: config.nautilo_window_keep_recent,
-    modelId: requestedModelId,
+    maxMessageTokens: (await resolvePreparedMessageBudget(requestedModelId, tools)) - estimateTokenCount([systemMessage]),
     researchContinuity,
   };
 
   const processedHistory = processHistory(llmMessages, historyConfig);
 
-  if (researchContinuity && estimateTokenCount(processedHistory.messages)
-    <= Math.floor(getModelTokenLimit(requestedModelId) * config.nautilo_token_budget_fraction) * 0.8) {
-    compactionHint = null;
-  }
   if (processedHistory.windowing.researchReloadRequired) {
     compactionHint = new SystemMessage(
       `[RESEARCH RELOAD] Earlier completed tool cycles were projected out after the accepted checkpoint ` +
@@ -1202,12 +1175,6 @@ export async function preModelNode(
       `After recovery, resume the active workspace objective; without workspace instructions, continue the original ` +
       `research brief. Re-read cited source when needed while the research ledger remains open. ` +
       `Do not restart scanners or infer that omitted work was completed.`,
-    );
-  } else if (!isGuest && !researchContinuity && processedHistory.windowing.removedCount > 0 && !compactionHint) {
-    compactionHint = new SystemMessage(
-      `[MEMORY FLUSH] ${processedHistory.windowing.removedCount} older messages were removed from context. ` +
-      (canManageMemory ? `Use manage_memory to save any important information from the remaining conversation.`
-        : `Use the available durable tools to retain important information.`),
     );
   }
 
@@ -1280,9 +1247,8 @@ export async function preModelNode(
   // the corrective instruction was already appended to the
   // system prompt above (before `systemMessage` was built). No further
   // message-level injection is needed.
-  const modelTokenBudget = Math.floor((await resolveModelExecutionLimits(requestedModelId)).contextTokens * config.nautilo_token_budget_fraction);
-  const maxPreparedMessageTokens = modelTokenBudget - estimateBoundToolTokens(tools);
-  const consolidationMessageTokens = modelTokenBudget - estimateBoundToolTokens(projectSecurityResearchConsolidationTools(availableTools, true));
+  const maxPreparedMessageTokens = await resolvePreparedMessageBudget(requestedModelId, tools);
+  const consolidationMessageTokens = await resolvePreparedMessageBudget(requestedModelId, projectSecurityResearchConsolidationTools(availableTools, true));
   const researchContext = researchContinuity && state.currentTaskId && state.currentTaskRunId
     ? budgetResearchContext(state, preparedMessages, maxPreparedMessageTokens, consolidationMessageTokens)
     : null;
@@ -1295,7 +1261,7 @@ export async function preModelNode(
     finalTools = projectSecurityResearchConsolidationTools(availableTools, nextConsolidating === true);
     finalStableSystemPrefix = buildSystemPrompt({ assistantName: state.assistantName || "Genie", tools: finalTools, isGuest, explicitlySelected: state.explicitlySelected })
       + activeComputerUseModelGuidanceForBoundTools(finalTools);
-    finalMessageTokens = modelTokenBudget - estimateBoundToolTokens(finalTools);
+    finalMessageTokens = await resolvePreparedMessageBudget(requestedModelId, finalTools);
     // Rebuild only the stable tool prefix without repeating preparation or
     // external reads. Resolved authority, protected volatile context (including
     // any one-shot payload) and normalized source history stay intact.
@@ -1337,12 +1303,12 @@ export async function preModelNode(
   }
 
   return {
-    // Research compaction is a provider projection only. The state reducer
+    // All preparation is a provider projection only. The state reducer
     // replaces this array, so returning the projected history here would erase
     // canonical notes/final pages needed for continuation and the report appendix.
-    messages: researchContinuity ? state.messages : (processedHistory.canonicalMessages ?? processedHistory.messages),
+    messages: state.messages,
     preparedMessages: finalPreparedMessages,
-    taskReadPageBytes: taskReadResponseByteBudget(historyConfig, finalMessageTokens, finalPreparedMessages),
+    taskReadPageBytes: taskReadResponseByteBudget(finalMessageTokens, finalPreparedMessages),
     taskReadPendingPages: pendingTaskReadPages(processedHistory.canonicalMessages ?? processedHistory.messages, finalPreparedMessages, state.taskReadPendingPages ?? []),
     researchContextRecovery: finalResearchContext?.recovery ?? null,
     researchContextPageBytes: finalResearchContext?.pageBytes ?? null,

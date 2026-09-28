@@ -40,6 +40,9 @@ export async function writeFileAtomic(filePath: string, content: string): Promis
 export async function reloadEnvAndStripRemovedRegistryKeys(envPath: string): Promise<void> {
   const managed = captureManagedProviderValues();
   loadEnv({ path: envPath, override: true });
+  // This per-instance master key is read only by trusted custody code. A
+  // config reload must not reintroduce it into child-process environments.
+  delete process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
   let content = "";
   try {
     content = await readFile(envPath, "utf-8");
@@ -61,6 +64,7 @@ export async function reloadEnvAndStripRemovedRegistryKeys(envPath: string): Pro
 export function reloadEnvOverlay(envPath: string): void {
   const managed = captureManagedProviderValues();
   loadEnv({ path: envPath, override: true });
+  delete process.env["NAUTILO_PERSONAL_PROVIDER_CUSTODY"];
   restoreManagedProviderValues(managed);
   notifyEnvReload();
 }

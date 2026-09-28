@@ -71,7 +71,7 @@ describe("resolved-catalog (the current implementation)", () => {
       ["openai:gpt-5.6-sol", "OpenAI credential is not configured"],
       ["openrouter:moonshotai/kimi-k2.6", "OpenRouter credential is not configured"],
       ["google:gemini-2.5-pro", "Google credential is not configured"],
-      ["fireworks:accounts/fireworks/models/glm-5p2", "Fireworks credential is not configured"],
+      ["fireworks:accounts/fireworks/models/glm-5p3", "Fireworks credential is not configured"],
       ["venice:zai-org-glm-5-2", "Venice credential is not configured"],
     ];
     for (const [id, reason] of cases) {
@@ -79,6 +79,11 @@ describe("resolved-catalog (the current implementation)", () => {
       expect(row.availability).toBe("missing_credentials");
       expect(row.unavailableReason).toBe(reason);
     }
+  });
+
+  test("retired Fireworks GLM route is unknown", () => {
+    const row = resolveCatalogModel("fireworks:accounts/fireworks/models/glm-5p2", { env: NO_ENV });
+    expect(row.availability).toBe("unknown_model");
   });
 
   test("managed Gateway admits OpenRouter chat but not generation catalog rows", () => {
@@ -104,7 +109,7 @@ describe("resolved-catalog (the current implementation)", () => {
   test("direct OpenRouter credentials admit generation despite malformed managed config", () => {
     const generation = resolveCatalogModel("openrouter:openai/gpt-5.4-image-2", {
       env: {
-        OPENROUTER_API_KEY: "sk-or-v1-direct-generation",
+        OPENROUTER_API_KEY: "synthetic-openrouter-key",
         NAUTILO_MANAGED_GATEWAY_API_KEY: "malformed-managed-key",
       },
     });

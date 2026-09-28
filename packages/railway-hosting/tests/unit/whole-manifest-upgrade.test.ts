@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX,
   isRailwayWholeManifestUpgradeCheckpoint,
   isRailwayWholeManifestUpgradeCheckpointTransition,
   RailwayWholeManifestUpgrade,
@@ -79,7 +80,7 @@ class FixtureExecutor implements RailwayWholeManifestUpgradeExecutor {
   }
 
   async createDeployment(input: { readonly serviceId: string; readonly environmentId: string }) {
-    const migration = this.commands.get(this.#name(input.serviceId))?.includes("maintenance-job.ts migrate ") === true;
+    const migration = this.commands.get(this.#name(input.serviceId))?.includes("maintenance-job.ts migrate") === true;
     this.events.push(migration ? `effect:migration:${input.serviceId}` : `effect:start:${input.serviceId}`);
     const visible = this.visible.get(input.serviceId) ?? [];
     this.visible.set(input.serviceId, visible);
@@ -275,6 +276,20 @@ describe("RailwayWholeManifestUpgrade", () => {
     expect(value.checkpoint()).toMatchObject({ migrationDeploymentId: "nautilo-server-service-migration-1" });
     expect(value.events.filter((event) => event === "effect:migration:nautilo-server-service")).toHaveLength(1);
     expect(value.events).toContain("effect:command:nautilo-server-service:reset");
+  });
+
+  test("a custody-proof migration identity selects the explicit new-image proof command", async () => {
+    const value = fixture({
+      ...binding(),
+      migration: {
+        migrationId: `${RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX}schema-v2`,
+        executionId: "upgrade-release-2-schema-v2",
+      },
+    });
+    await untilStage(value, "migration-start-ready");
+    expect(value.executor.commands.get("nautilo-server")).toBe(
+      `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts migrate-custody-v1 ${RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX}schema-v2 upgrade-release-2-schema-v2`,
+    );
   });
 
   test("multiple migration deltas are terminally ambiguous and retain every exact identity", async () => {

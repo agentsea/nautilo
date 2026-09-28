@@ -89,6 +89,14 @@
       "reason": "Operator bootstrap helper; optional injected db with createDirectDb(1) fallback for claim-invite wiring."
     },
     {
+      "path": "bin/nautilo-dev/src/lib/isolate-personal-provider-clone.ts",
+      "reason": "Verified clone subprocess; one owned createDirectDb(1) handle, closed after target-identity guarded credential removal."
+    },
+    {
+      "path": "bin/nautilo-dev/src/commands/reset-personal-provider-custody.ts",
+      "reason": "Explicit disaster-recovery CLI; one owned createDirectDb(1) handle, closed after identity, policy, and lost-key evidence checks."
+    },
+    {
       "path": "bin/nautilo-dev/src/commands/repair-orphan-default-agent.ts",
       "reason": "Operator repair CLI; one-shot createDirectDb(1) for orphan default-agent repair."
     },

@@ -82,7 +82,11 @@ export const REMOTE_SERVER_LOOPBACK_BASE_URL = "http://127.0.0.1:3001";
 
 /** Paths served by nautilo-server that must be probed over container loopback. */
 function isLoopbackServerPath(pathname: string): boolean {
-  return pathname === "/health" || pathname.startsWith("/api/setup/status");
+  return (
+    pathname === "/health" ||
+    pathname.startsWith("/api/setup/status") ||
+    pathname === "/api/health/personal-provider-custody"
+  );
 }
 
 /**

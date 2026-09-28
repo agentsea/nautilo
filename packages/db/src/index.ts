@@ -9,6 +9,7 @@ export * from "./queries/connected-apps";
 export * from "./queries/legacy-photo-history";
 export * from "./queries/reflection-sources";
 export * from "./queries/personal-encryption-coverage";
+export * from "./queries/personal-provider-credentials";
 export * from "./queries/video-generation-links";
 export {
   createDatabase,

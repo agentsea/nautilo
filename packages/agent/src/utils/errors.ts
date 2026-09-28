@@ -225,7 +225,8 @@ export function classifyError(error: unknown): ClassifiedError {
     hasKeyword(messageLower, RATE_LIMIT_KEYWORDS) ||
     codeUpper === "RATE_LIMIT_ERROR" || codeUpper === "INSUFFICIENT_QUOTA";
 
-  const tokenLimit = hasKeyword(messageLower, TOKEN_LIMIT_KEYWORDS) || codeUpper === "CONTEXT_LENGTH_EXCEEDED";
+  const tokenLimit = hasKeyword(messageLower, TOKEN_LIMIT_KEYWORDS) || codeUpper === "CONTEXT_LENGTH_EXCEEDED"
+    || codeUpper === "NAUTILO_PREPARED_CONTEXT_EXCEEDED";
 
   const serviceError =
     (typeof statusCode === "number" && [500, 502, 503, 504, 529].includes(statusCode)) ||

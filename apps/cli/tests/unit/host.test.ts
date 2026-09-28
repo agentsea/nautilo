@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yargs from "yargs";
+import { parsePersonalProviderCustody } from "@nautilo/operator-secrets";
 
 import {
   compileRailwayHeldTemplateScaffold,
@@ -26,6 +27,7 @@ import {
 } from "../../src/lib/railway-provider-custody.ts";
 import {
   KeyringRailwayLaunchSecretStore,
+  RAILWAY_GENERATED_SECRET_SLOTS,
   type RailwayLaunchSecretKeyringEntry,
 } from "../../src/lib/railway-launch-secret-store.ts";
 import {
@@ -47,6 +49,7 @@ import {
   railwayMaintenanceCustodyProjection,
   railwayMaintenanceProjectionComplete,
   renderRailwayPlanTty,
+  upgradeRailwayPersonalProviderCustodyIfAuthorized,
   type HostPlanInputFailure,
   type HostPlanDependencies,
 } from "../../src/commands/host.ts";
@@ -147,6 +150,24 @@ class InspectFixtureTransport implements RailwayPlanTransport {
       default:
         throw new Error(`unexpected Railway inspection operation: ${operation.name}`);
     }
+  }
+}
+
+class CustodyFixtureTransport implements RailwayPlanTransport {
+  readonly calls: RecordedCall[] = [];
+  constructor(readonly custody: string | undefined) {}
+
+  execute<Operation extends RailwayOperation<string, RailwayGraphqlVariables, unknown>>(
+    operation: Operation,
+    variables: RailwayOperationVariables<Operation>,
+  ): Promise<RailwayTransportResult<RailwayOperationData<Operation>>> {
+    this.calls.push({ name: operation.name, isMutation: operation.isMutation, variables });
+    if (operation.name !== "RailwayVariables" || operation.isMutation) throw new Error("unexpected custody operation");
+    return Promise.resolve({
+      outcome: "success",
+      data: { variables: this.custody === undefined ? {} : { NAUTILO_PERSONAL_PROVIDER_CUSTODY: this.custody } },
+      metadata: { httpStatus: 200, rateLimit: {} },
+    } as RailwayTransportResult<RailwayOperationData<Operation>>);
   }
 }
 
@@ -324,6 +345,95 @@ afterEach(async () => {
   process.exitCode = 0;
 });
 
+describe("Railway legacy personal-provider custody integration", () => {
+  test("captures the exact live server variable into V3 before reconciliation", async () => {
+    const launchId = "00000000-0000-4000-8000-000000000081";
+    const releaseId = "qualification-provider-config";
+    const state = createRailwayDeploymentDriverState({
+      launchId,
+      releaseId,
+      providers: [],
+      target: { workspaceId: "workspace-1", projectName: "nautilo", environmentName: "production" },
+      now: "2026-09-25T00:00:00.000Z",
+    });
+    const withResources = {
+      ...state,
+      reconcile: { receipt: { ...state.reconcile.receipt, resources: [
+        { kind: "railway.project" as const, id: "project-1", name: "nautilo" },
+        { kind: "railway.environment" as const, id: "environment-1", name: "production" },
+        { kind: "railway.service" as const, id: "service-1", name: "nautilo-server" },
+      ] } },
+    };
+    const entry = new MemorySecretEntry();
+    entry.value = JSON.stringify({
+      formatVersion: 2,
+      launchId,
+      releaseId,
+      secrets: Object.fromEntries(RAILWAY_GENERATED_SECRET_SLOTS
+        .filter((slot) => slot !== "nautilo-personal-provider-custody")
+        .map((slot) => [slot, `legacy-${slot}`.padEnd(48, "x")])),
+    });
+    const canonical = JSON.stringify({
+      formatVersion: 1,
+      keyId: "00000000-0000-4000-8000-000000000001",
+      keyHex: "ab".repeat(32),
+    });
+    const transport = new CustodyFixtureTransport(canonical);
+    const fixture = harness({ HOME: root });
+    const store = new KeyringRailwayLaunchSecretStore(entry);
+    const legacy = await store.load({ launchId, releaseId });
+    if (legacy === undefined) throw new Error("legacy fixture missing");
+
+    const upgraded = await upgradeRailwayPersonalProviderCustodyIfAuthorized({
+      state: withResources,
+      binding: { launchId, releaseId },
+      generatedSecrets: legacy,
+      store,
+      transport,
+      dependencies: fixture.dependencies,
+    });
+
+    expect(upgraded.get("nautilo-personal-provider-custody")).toBe(canonical);
+    expect(transport.calls).toEqual([{
+      name: "RailwayVariables",
+      isMutation: false,
+      variables: { projectId: "project-1", environmentId: "environment-1", serviceId: "service-1", unrendered: false },
+    }]);
+    expect(JSON.parse(entry.value)).toMatchObject({ formatVersion: 3 });
+  });
+
+  test("leaves legacy custody unchanged when neither live authority nor no-record proof exists", async () => {
+    const launchId = "00000000-0000-4000-8000-000000000082";
+    const releaseId = "qualification-provider-config";
+    const state = createRailwayDeploymentDriverState({
+      launchId, releaseId, providers: [],
+      target: { workspaceId: "workspace-1", projectName: "nautilo", environmentName: "production" },
+      now: "2026-09-25T00:00:00.000Z",
+    });
+    const withResources = { ...state, reconcile: { receipt: { ...state.reconcile.receipt, resources: [
+      { kind: "railway.project" as const, id: "project-1", name: "nautilo" },
+      { kind: "railway.environment" as const, id: "environment-1", name: "production" },
+      { kind: "railway.service" as const, id: "service-1", name: "nautilo-server" },
+    ] } } };
+    const entry = new MemorySecretEntry();
+    entry.value = JSON.stringify({ formatVersion: 1, launchId, releaseId,
+      secrets: Object.fromEntries(RAILWAY_GENERATED_SECRET_SLOTS
+        .filter((slot) => slot !== "nautilo-personal-provider-custody")
+        .map((slot) => [slot, `legacy-${slot}`.padEnd(48, "x")])) });
+    const before = entry.value;
+    const store = new KeyringRailwayLaunchSecretStore(entry);
+    const legacy = await store.load({ launchId, releaseId });
+    if (legacy === undefined) throw new Error("legacy fixture missing");
+    const fixture = harness({ HOME: root });
+    const retained = await upgradeRailwayPersonalProviderCustodyIfAuthorized({
+      state: withResources, binding: { launchId, releaseId }, generatedSecrets: legacy, store,
+      transport: new CustodyFixtureTransport(undefined), dependencies: fixture.dependencies,
+    });
+    expect(retained.has("nautilo-personal-provider-custody")).toBe(false);
+    expect(entry.value).toBe(before);
+  });
+});
+
 describe("host adopt Railway audit", () => {
   test("discovers one exact held project without copied IDs or Railway mutations", async () => {
     const fixture = harness({ HOME: root });
@@ -416,6 +526,10 @@ describe("host adopt Railway audit", () => {
         "logto-seed": "deployment-3", logto: "deployment-4", "nautilo-server": "deployment-5",
       } } });
     expect(keyring.value).not.toBeNull();
+    const generatedEnvelope = JSON.parse(keyring.value!) as { formatVersion: number; secrets: Record<string, string> };
+    expect(generatedEnvelope.formatVersion).toBe(3);
+    expect(() => parsePersonalProviderCustody(generatedEnvelope.secrets["nautilo-personal-provider-custody"]))
+      .not.toThrow();
     expect(state).toMatchObject({ providers: withProviders ? ["browser-use"] : [] });
     if (withProviders) {
       expect(await providerStore.load({ launchId: launchIds[0]!, releaseId: release.manifest.releaseId })).toEqual(new Map([["browser-use", key]]));

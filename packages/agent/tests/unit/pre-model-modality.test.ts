@@ -33,7 +33,7 @@ describe("pre-model modality sanitization", () => {
     expect(() => sanitizeImagesForModel([current], "fireworks:accounts/fireworks/models/minimax-m2p7")).toThrow(
       /does not support image/,
     );
-    expect(() => sanitizeImagesForModel([current], "fireworks:accounts/fireworks/models/glm-5p2")).toThrow(
+    expect(() => sanitizeImagesForModel([current], "fireworks:accounts/fireworks/models/glm-5p3")).toThrow(
       /does not support image/,
     );
   });

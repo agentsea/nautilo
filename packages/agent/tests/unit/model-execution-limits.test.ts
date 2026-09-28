@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { HumanMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ModelCatalogSchema, type ModelCatalog } from "@nautilo/types";
 import {
   configureRuntimeModelCatalog,
@@ -14,7 +14,7 @@ import {
   resolveModelExecutionLimits,
 } from "../../src/providers/models";
 import { resolveFactoryMaxTokens } from "../../src/providers/factory";
-import { resolveCompletionBudget } from "../../src/utils/chat-model-invocation";
+import { resolveCompletionBudget, resolvePreparedMessageBudget, PreparedContextExceededError } from "../../src/utils/chat-model-invocation";
 import { processHistory } from "../../src/utils/history-manager";
 
 interface LimitRow {
@@ -202,11 +202,29 @@ describe("M293 signed-catalogue execution limits", () => {
     const processed = processHistory([oversized], {
       validationEnabled: true,
       pruningEnabled: false,
-      tokenBudgetFraction: 0.6,
-      windowKeepRecent: 20,
-      modelId: id,
+      maxMessageTokens: await resolvePreparedMessageBudget(id),
     });
-    expect(processed.clamping.clampedCount).toBe(1);
-    expect((processed.messages[0]!.content as string).length).toBeLessThan(20_000);
+    expect(processed.clamping.clampedCount).toBe(0);
+    expect(processed.messages[0]).toBe(oversized);
   });
+  test("uses context above the former 60 percent boundary and charges system, tools and remaining output", async () => {
+    const id = "openrouter:openai/gpt-6-luna";
+    await activateCatalog(catalog("2026.09.24.1", [{ id, contextTokens: 1_050_000, outputTokens: 128_000 }]));
+    const { DynamicStructuredTool } = await import("@langchain/core/tools");
+    const { z } = await import("zod");
+    const tool = new DynamicStructuredTool({ name: "read", description: "Read source", schema: z.object({ path: z.string() }), func: async () => "" });
+    const { estimateTokenCount } = await import("../../src/utils/history-manager");
+    const { estimateBoundToolTokens } = await import("../../src/utils/chat-model-invocation");
+    const messages = [new SystemMessage("s".repeat(4_000)), new HumanMessage("x".repeat(800_000 * 4))];
+    const allowance = await resolvePreparedMessageBudget(id, [tool]);
+    expect(allowance).toBe(1_050_000 - 4096 - estimateBoundToolTokens([tool]));
+    expect(await resolveCompletionBudget(id, messages, [tool])).toBe(128_000);
+    messages.push(new HumanMessage("y".repeat(200_000 * 4)));
+    expect(await resolveCompletionBudget(id, messages, [tool])).toBe(allowance - estimateTokenCount(messages));
+    messages.push(new HumanMessage("z".repeat(60_000 * 4)));
+    const error = await resolveCompletionBudget(id, messages, [tool]).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PreparedContextExceededError);
+    expect((messages[1]!.content as string).length).toBe(800_000 * 4);
+  });
+
 });

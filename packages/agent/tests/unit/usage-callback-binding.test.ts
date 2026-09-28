@@ -69,7 +69,7 @@ async function assertOneUsageCallbackBeforeAndAfterBindTools(
   expect(countNautiloUsageCallbacks(bound)).toBe(1);
 }
 
-describe("usage callback constructor binding (ISSUE-M217 phase 1)", () => {
+describe("usage callback constructor binding", () => {
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -126,7 +126,7 @@ describe("usage callback constructor binding (ISSUE-M217 phase 1)", () => {
 
   it("fireworks model keeps one nautilo_usage callback through bindTools", async () => {
     await assertOneUsageCallbackBeforeAndAfterBindTools(
-      "fireworks:accounts/fireworks/models/glm-5p2",
+      "fireworks:accounts/fireworks/models/glm-5p3",
     );
   });
 
@@ -165,22 +165,22 @@ describe("usage callback constructor binding (ISSUE-M217 phase 1)", () => {
       __setUsageRecorderForTests((input) => {
         calls.push(input);
       });
-      const metadata = { turnId: "turn-d526-cache-baseline", experiment: "baseline" };
+      const metadata = { turnId: "turn-usage-cache-baseline", experiment: "baseline" };
       runWithUsageContext(
         {
           callType: "chat",
-          userId: "user-d526",
-          roomId: "room-d526",
+          userId: "user-usage-binding",
+          roomId: "room-usage-binding",
           metadata,
         },
-        () => invokeHandlerEnd(createUsageCallbackHandler("anthropic:claude-sonnet-4-6"), syntheticUsageResult(), "provider-run-d526"),
+        () => invokeHandlerEnd(createUsageCallbackHandler("anthropic:claude-sonnet-4-6"), syntheticUsageResult(), "provider-run-usage-binding"),
       );
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({
         model: "anthropic:claude-sonnet-4-6",
         callType: "chat",
-        userId: "user-d526",
-        roomId: "room-d526",
+        userId: "user-usage-binding",
+        roomId: "room-usage-binding",
         inputTokens: 11,
         outputTokens: 7,
         cachedInputTokens: 3,

@@ -45,6 +45,7 @@ const DEFAULT_OUTPUT_TOKEN_LIMIT = 8_192;
  * never raise the signed catalog ceiling.
  */
 const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
+  "anthropic:claude-opus-5-5": 1_000_000,
   "anthropic:claude-opus-5": 1_000_000,
   "anthropic:claude-opus-4-8": 1_000_000,
   "anthropic:claude-opus-4-7": 1_000_000,
@@ -52,6 +53,14 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
   "anthropic:claude-sonnet-4-6": 1_000_000,
   "openrouter:anthropic/claude-sonnet-4.6": 1_000_000,
   "openrouter:openai/gpt-5.5": 1_050_000,
+  "openai:gpt-6-sol": 1_050_000,
+  "openai:gpt-6-luna": 1_050_000,
+  "openrouter:openai/gpt-6-sol": 1_050_000,
+  "openrouter:openai/gpt-6-luna": 1_050_000,
+  "openrouter:anthropic/claude-opus-5.5": 1_000_000,
+  "venice:claude-opus-5-5": 1_000_000,
+  "venice:openai-gpt-6-sol": 1_050_000,
+  "venice:openai-gpt-6-luna": 1_050_000,
   "openrouter:google/gemini-3.1-pro-preview": 1_048_576,
   "anthropic:claude-sonnet-5": 1_000_000,
   // Anthropic GET /v1/models/claude-fable-5 → max_input_tokens 1_000_000 (2026-07-08).
@@ -68,8 +77,8 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
   "openrouter:deepseek/deepseek-v4-pro": 1_048_576,
   "openrouter:deepseek/deepseek-v4-pro-0813": 1_048_576,
   "openrouter:minimax/minimax-m2.7": 196_608,
-  "fireworks:accounts/fireworks/models/kimi-k2p6": 262_144,
   "openrouter:moonshotai/kimi-k2.6": 262_142,
+  "fireworks:accounts/fireworks/models/kimi-k2p6": 262_144,
   "fireworks:accounts/fireworks/models/gemma-4-31b-it": 262_144,
   "fireworks:accounts/fireworks/models/gemma-4-26b-a4b-it": 262_144,
   "openrouter:google/gemma-4-31b-it": 262_144,
@@ -91,6 +100,7 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
  * - Anthropic Sonnet 4.6: `GET /v1/models/claude-sonnet-4-6` → `max_tokens` 128_000 (2026-05-01).
  */
 const NAUTILO_BUILTIN_OUTPUT_TOKENS: Record<string, number> = {
+  "anthropic:claude-opus-5-5": 128_000,
   "anthropic:claude-opus-5": 128_000,
   "anthropic:claude-opus-4-8": 128_000,
   "anthropic:claude-opus-4-7": 128_000,
@@ -98,6 +108,14 @@ const NAUTILO_BUILTIN_OUTPUT_TOKENS: Record<string, number> = {
   "anthropic:claude-sonnet-4-6": 128_000,
   "openrouter:anthropic/claude-sonnet-4.6": 128_000,
   "openrouter:openai/gpt-5.5": 128_000,
+  "openai:gpt-6-sol": 128_000,
+  "openai:gpt-6-luna": 128_000,
+  "openrouter:openai/gpt-6-sol": 128_000,
+  "openrouter:openai/gpt-6-luna": 128_000,
+  "openrouter:anthropic/claude-opus-5.5": 128_000,
+  "venice:claude-opus-5-5": 128_000,
+  "venice:openai-gpt-6-sol": 128_000,
+  "venice:openai-gpt-6-luna": 128_000,
   "openrouter:google/gemini-3.1-pro-preview": 65_536,
   "anthropic:claude-sonnet-5": 128_000,
   // Anthropic GET /v1/models/claude-fable-5 → max_tokens 128_000 (2026-07-08).
@@ -113,8 +131,8 @@ const NAUTILO_BUILTIN_OUTPUT_TOKENS: Record<string, number> = {
   "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": 1_040_000,
   "openrouter:deepseek/deepseek-v4-pro": 384_000,
   "openrouter:minimax/minimax-m2.7": 196_607,
-  "fireworks:accounts/fireworks/models/kimi-k2p6": 262_144,
   "openrouter:moonshotai/kimi-k2.6": 262_142,
+  "fireworks:accounts/fireworks/models/kimi-k2p6": 262_144,
   "fireworks:accounts/fireworks/models/gemma-4-31b-it": 262_144,
   "fireworks:accounts/fireworks/models/gemma-4-26b-a4b-it": 262_144,
   "openrouter:google/gemma-4-31b-it": 65_536,
@@ -282,6 +300,8 @@ export function resolveModelClass(modelId: string, options?: ResolveOptions): Mo
     // Kimi family — "thinking" before generic k2-*
     if (id.includes("kimi-k2-thinking")) return "256K";
     if (id.includes("kimi-k3")) return "1M";
+    if (id.includes("openai-gpt-6")) return "2M";
+    if (id.includes("claude-opus-5-5")) return "1M";
     if (id.includes("kimi-k2-6")) return "256K";
     if (id.includes("kimi-k2-5")) return "256K";
 
@@ -346,6 +366,7 @@ export function resolveModelClass(modelId: string, options?: ResolveOptions): Mo
   }
 
   if (id.startsWith("openai:")) {
+    if (id.includes("gpt-6")) return "2M";
     if (id.includes("gpt-5-mini")) return "200K";
     if (id.includes("gpt-5-nano")) return "128K";
     if (id.includes("gpt-5")) return "1M";
@@ -422,6 +443,8 @@ export function resolveModelClass(modelId: string, options?: ResolveOptions): Mo
   }
 
   if (id.startsWith("openrouter:")) {
+    if (id.includes("openai/gpt-6")) return "2M";
+    if (id.includes("anthropic/claude-opus-5.5")) return "1M";
     if (id.includes("google/gemma-4")) return "256K";
     if (id.includes("moonshotai") && id.includes("kimi-k2.6")) return "256K";
     return "128K";

@@ -16,13 +16,13 @@ import { DEFAULT_GRAPH_RECURSION_LIMIT } from "../../src/graph/execution-policy"
 import { NoProgressError } from "../../src/graph/no-progress";
 
 /**
- * D141 Phase 1 — friendly-error translator.
+ * Friendly-error translator.
  *
  * Coverage strategy: assert each user-visible category maps to its
  * canonical sentence given representative inputs (HTTP status, SDK
  * APIError shapes, plain Error messages, primitives, null). Also
  * confirm `detailsForLog` round-trips the upstream provider blob via
- * `formatProviderError` (P-13 audit-log discipline preserved — server
+ * `formatProviderError` (server
  * log path unchanged) and the user-facing `message` does NOT echo
  * upstream content.
  */
@@ -224,7 +224,7 @@ describe("toFriendlyError — sentence shape", () => {
   });
 
   test("user-visible message NEVER contains raw upstream JSON-RPC noise", () => {
-    // The Google JSON-RPC body that triggered ISSUE-D141 in the wild.
+    // Representative malformed Google JSON-RPC body.
     const upstream = new Error(
       `[GoogleGenerativeAI Error]: Invalid JSON payload received. ` +
         `Unknown name "const" at 'tools[0].function_declarations[13].` +
@@ -239,7 +239,7 @@ describe("toFriendlyError — sentence shape", () => {
     expect(friendly.message).not.toContain("any_of");
     // But the raw blob IS preserved on `detailsForLog` for
     // server-side debugging only (NEVER for room-broadcast WS
-    // events — see runtime/job.ts privacy comment + LD-8).
+    // events — see runtime/job.ts privacy comment).
     expect(friendly.detailsForLog).toContain("function_declarations");
   });
 });
@@ -286,7 +286,7 @@ describe("toFriendlyError — protected authorization expiry", () => {
   });
 });
 
-describe("toFriendlyError — MDL00x code mapping (ISSUE-D141 §LD-9)", () => {
+describe("toFriendlyError — MDL00x code mapping", () => {
   const expectedCodes: Array<{ category: FriendlyErrorCategory; code: MdlCode }> = [
     { category: "timeout", code: "MDL001" },
     { category: "rate_limit", code: "MDL002" },
@@ -396,12 +396,12 @@ describe("toFriendlyError — detailsForLog round-trip", () => {
   });
 });
 
-describe("toFriendlyError — Stack 208 P0 graph-budget (GraphRecursionError) mapping", () => {
-  // R9 — LangGraph's raw GraphRecursionError must never reach the user as the
+describe("toFriendlyError — graph-budget (GraphRecursionError) mapping", () => {
+  // LangGraph's raw GraphRecursionError must never reach the user as the
   // raw framework text. It maps to a typed internal GraphBudgetOutcome (tested
   // in execution-policy.test.ts) AND a user-safe sentence here. The WS
-  // `errorCategory` union in @nautilo/types is a closed set not owned by this
-  // stack, so the category stays `unknown` / `MDL007` on the wire; the
+  // `errorCategory` union in @nautilo/types is closed, so the category stays
+  // `unknown` / `MDL007` on the wire; the
   // dedicated sentence is what the user reads, and the raw framework detail
   // (troubleshooting URL + literal limit) rides `detailsForLog` → server.log.
   function makeRecursionError(): GraphRecursionError {
@@ -485,7 +485,7 @@ describe("toFriendlyError — Stack 208 P0 graph-budget (GraphRecursionError) ma
   });
 });
 
-describe("toFriendlyError — Stack 208 P2 no-progress mapping", () => {
+describe("toFriendlyError — no-progress mapping", () => {
   function makeNoProgressError(): NoProgressError {
     return new NoProgressError({
       toolName: "file",
@@ -561,4 +561,14 @@ describe("toFriendlyError — Stack 208 P2 no-progress mapping", () => {
       lc_error_code: "GRAPH_RECURSION_LIMIT",
     })).category).toBe("unknown");
   });
+});
+
+
+test("prepared context exhaustion uses the existing context recovery message", () => {
+  const error = Object.assign(new Error("Prepared messages exceed the usable context window"), {
+    code: "NAUTILO_PREPARED_CONTEXT_EXCEEDED",
+  });
+  const friendly = toFriendlyError(error);
+  expect(friendly.category).toBe("context_exceeded");
+  expect(friendly.code).toBe("MDL005");
 });

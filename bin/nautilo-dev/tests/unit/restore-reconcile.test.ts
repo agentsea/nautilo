@@ -4,9 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { __resetResolvedInstanceForTests } from "@nautilo/config";
 import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  serializePersonalProviderCustody,
+} from "@nautilo/operator-secrets";
+import {
   runLocalCredentialReconciliation,
 } from "../../src/lib/verify";
-import { startServerThenRunRuntimeAcceptance } from "../../src/commands/restore";
+import {
+  restoredPersonalProviderCustodyKeyId,
+  startServerThenRunRuntimeAcceptance,
+} from "../../src/commands/restore";
 
 const isolatedEnvKeys = [
   "HOME",
@@ -202,6 +209,26 @@ describe("D427 dev:restore — local server start before acceptance", () => {
 
     expect(code).toBe(1);
     expect(events).toEqual(["start-server"]);
+  });
+});
+
+describe("dev:restore — personal provider custody verification", () => {
+  test("selects the current key instead of the retained lost key during reset recovery", () => {
+    const lostKeyId = "223e4567-e89b-42d3-a456-426614174000";
+    const currentKeyId = "323e4567-e89b-42d3-a456-426614174000";
+    const instanceEnvRaw = `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+      formatVersion: 1,
+      keyId: currentKeyId,
+      keyHex: "ee".repeat(32),
+      resetFromKeyId: lostKeyId,
+    })}\n`;
+
+    expect(
+      restoredPersonalProviderCustodyKeyId(
+        { state: "rows", keyIds: [lostKeyId, currentKeyId] },
+        instanceEnvRaw,
+      ),
+    ).toBe(currentKeyId);
   });
 });
 

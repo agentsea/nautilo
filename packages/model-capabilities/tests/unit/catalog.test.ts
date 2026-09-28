@@ -142,11 +142,28 @@ describe("resolveModelCapabilities", () => {
     expect(modelSupportsFeature(id, "reasoning")).toBe(true);
   });
 
-  test("Fireworks Kimi / GLM overrides are text-only", () => {
+  test("retained Fireworks GLM overrides are text-only", () => {
     expect(modelSupportsInput("fireworks:accounts/fireworks/models/kimi-k2p5", "image")).toBe(false);
-    expect(modelSupportsInput("fireworks:accounts/fireworks/models/glm-5p2", "image")).toBe(false);
+    expect(modelSupportsInput("fireworks:accounts/fireworks/models/glm-5p3", "image")).toBe(false);
     expect(modelSupportsInput("fireworks:accounts/fireworks/models/glm-5", "image")).toBe(false);
-    expect(resolveModelCapabilities("fireworks:accounts/fireworks/models/glm-5p2").features?.tools).toBe(true);
+    expect(resolveModelCapabilities("fireworks:accounts/fireworks/models/glm-5p3").features?.tools).toBe(true);
+  });
+
+  test("new direct and Venice routes retain reviewed capabilities without remote hydration", () => {
+    for (const id of ["anthropic:claude-opus-5-5", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+      expect(modelSupportsInput(id, "file")).toBe(true);
+      expect(modelSupportsFeature(id, "structuredOutputs")).toBe(true);
+      expect(modelSupportsFeature(id, "reasoning")).toBe(true);
+    }
+    for (const id of ["venice:claude-opus-5-5", "venice:openai-gpt-6-sol", "venice:openai-gpt-6-luna"]) {
+      expect(modelSupportsInput(id, "image")).toBe(true);
+      expect(modelSupportsInput(id, "file")).toBe(false);
+      expect(modelSupportsFeature(id, "tools")).toBe(true);
+    }
+    expect(modelSupportsInput("fireworks:accounts/fireworks/models/deepseek-v4p1-flash", "image")).toBe(true);
+    for (const id of ["fireworks:accounts/fireworks/models/glm-5p2", "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813", "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731"]) {
+      expect(MODEL_CAPABILITY_OVERRIDES[id]).toBeUndefined();
+    }
   });
 
   test(" — GPT-5.6 family (sol/terra/luna) resolve to overrides with vision, file, tools, and reasoning", () => {
@@ -163,8 +180,8 @@ describe("resolveModelCapabilities", () => {
   test("provider reasoning overrides cover GPT, Fireworks, Venice, and OpenRouter", () => {
     expect(modelSupportsFeature("openai:gpt-5.5-2026-04-23", "reasoning")).toBe(true);
     expect(modelSupportsFeature("fireworks:accounts/fireworks/models/deepseek-v4-pro", "reasoning")).toBe(true);
-    expect(modelSupportsFeature("fireworks:accounts/fireworks/models/deepseek-v4-pro-0813", "reasoning")).toBe(true);
-    expect(modelSupportsFeature("fireworks:accounts/fireworks/models/deepseek-v4-pro-0813", "structuredOutputs")).toBe(false);
+    expect(modelSupportsFeature("fireworks:accounts/fireworks/models/deepseek-v4p1-flash", "reasoning")).toBe(true);
+    expect(modelSupportsFeature("fireworks:accounts/fireworks/models/deepseek-v4p1-flash", "structuredOutputs")).toBe(false);
     expect(modelSupportsFeature("openrouter:deepseek/deepseek-v4-pro-0813", "reasoning")).toBe(true);
     expect(modelSupportsFeature("openrouter:deepseek/deepseek-v4-pro-0813", "structuredOutputs")).toBe(true);
     expect(modelSupportsFeature("fireworks:accounts/fireworks/models/glm-5p1", "reasoning")).toBe(true);

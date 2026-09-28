@@ -30,10 +30,6 @@ const EXPECTED_AUDITED_LIMITS = {
     contextTokens: 1_048_576,
     outputTokens: 131_072,
   },
-  "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": {
-    contextTokens: 1_040_000,
-    outputTokens: 1_040_000,
-  },
   // Context-derived request ceiling; execution subtracts the actual prompt.
   // This does not claim an observed million-token completion.
   "fireworks:accounts/fireworks/models/deepseek-v4p1-flash": {
@@ -50,15 +46,15 @@ describe("checked-in model catalog fallback", () => {
     const parsed = ModelCatalogSchema.parse(manifest);
     // Match the canonical publisher's artifact serialization, before schema parsing.
     expect(createHash("sha256").update(`${JSON.stringify(manifest)}\n`).digest("hex"))
-      .toBe("61fc536d6cc5b580755a0925ee1db4de33604ab934e353b112cf107b6a27f5ef");
+      .toBe("8cea192e0aac3dcfc9805abe9acbfe7ab3d927116f38175b15073192b1b9bbcb");
 
     expect(parsed).toEqual(localModelCatalog);
     expect(parsed).toMatchObject({
       version: 6,
-      catalogVersion: "2026.09.20.2",
-      publishedAt: "2026-09-20T15:00:00Z",
+      catalogVersion: "2026.09.23.1",
+      publishedAt: "2026-09-23T09:27:38Z",
     });
-    expect(parsed.entries).toHaveLength(91);
+    expect(parsed.entries).toHaveLength(97);
     expect(
       parsed.entries
         .filter((entry) =>

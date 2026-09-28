@@ -103,6 +103,33 @@ describe("buildRemoteRuntimeAcceptanceTransport — URL classification", () => {
     expect(calls[0]!.args).toContain("root@203.0.113.7");
   });
 
+  test("personal provider custody verification routes to server loopback", async () => {
+    const { spawnFn } = fakeChild({
+      respond: (args) => {
+        const joined = argsJoined(args);
+        expect(joined).toContain("docker exec -i");
+        expect(joined).toContain(
+          `${REMOTE_SERVER_LOOPBACK_BASE_URL}/api/health/personal-provider-custody`,
+        );
+        expect(joined).not.toContain("upgrade.example.test");
+        return {
+          stdout: '{"status":"ready","recordsExist":true,"keyId":"123e4567-e89b-42d3-a456-426614174000"}\n200',
+          stderr: "",
+          code: 0,
+        };
+      },
+    });
+    const transport = buildRemoteRuntimeAcceptanceTransport({
+      ssh,
+      composeProjectName,
+      spawnFn,
+    });
+    const response = await transport.fetch(
+      "https://upgrade.example.test/api/health/personal-provider-custody",
+    );
+    expect(response.ok).toBe(true);
+  });
+
   test("HTTPS SPA + OIDC vhost checks use --resolve <hostname>:443:127.0.0.1 -k (target Caddy + correct SNI)", async () => {
     const seen: string[] = [];
     const { spawnFn } = fakeChild({

@@ -43,9 +43,9 @@ describe("provider factory helpers", () => {
     expect(stripProviderPrefix("gateway:local-model")).toBe("local-model");
   });
 
-  test("resolves the stable Fireworks DeepSeek V4 Flash alias to its deployed model", async () => {
+  test("resolves the stable Fireworks DeepSeek V4 Flash alias to its replacement", async () => {
     expect(resolveFireworksWireModel("accounts/fireworks/models/deepseek-v4-flash")).toBe(
-      "accounts/fireworks/models/deepseek-v4-flash-0731",
+      "accounts/fireworks/models/deepseek-v4p1-flash",
     );
     expect(resolveFireworksWireModel("accounts/fireworks/models/deepseek-v4-flash-0731")).toBe(
       "accounts/fireworks/models/deepseek-v4-flash-0731",
@@ -57,7 +57,7 @@ describe("provider factory helpers", () => {
       maxTokens: 8192,
     });
     expect((llm as unknown as Record<string, unknown>)["model"]).toBe(
-      "accounts/fireworks/models/deepseek-v4-flash-0731",
+      "accounts/fireworks/models/deepseek-v4p1-flash",
     );
   });
 
@@ -134,7 +134,7 @@ describe("provider factory helpers", () => {
   });
 });
 
-describe("D563 supervised wrapper timeout contract", () => {
+describe("supervised wrapper timeout contract", () => {
   test("null omits the wrapper timeout while ordinary utility callers retain 120s", async () => {
     const fields: Record<string, unknown>[] = [];
     const dependencies = { createClient: (next: Record<string, unknown>) => { fields.push(next); return model(); } };

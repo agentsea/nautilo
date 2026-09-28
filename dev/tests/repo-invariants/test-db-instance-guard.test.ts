@@ -104,6 +104,8 @@ const EXEMPT: Record<string, string> = {
     "pre-DB validation only (returns before createDirectDb); no DB connection",
   "bin/nautilo-dev/tests/unit/cleanup-test-cruft-plan-out.test.ts":
     "pre-DB validation + atomicWritePlanFile; no DB connection",
+  "bin/nautilo-dev/tests/unit/reset-personal-provider-custody.test.ts":
+    "spyOn(createDirectDb) returns an in-memory fake; no real DB connection",
   // Stack 198 — exercises setupTestDb routing with mocked ensureDatabase; 5434
   // literals are stale-override fixtures cleared by bootstrapTestDbInstance.
   "packages/runtime/tests/unit-isolated/setup-test-db-routing.test.ts":

@@ -45,7 +45,8 @@ export type RailwayGeneratedSecretSlotName =
   | "logto-db-password"
   | "logto-bootstrap-handoff-token"
   | "nautilo-bootstrap-token"
-  | "nautilo-logto-email-webhook-secret";
+  | "nautilo-logto-email-webhook-secret"
+  | "nautilo-personal-provider-custody";
 
 /** Metadata only. The customer supplies the actual provider key outside a plan or receipt. */
 export interface RailwayExternalProviderSecretSlot {
@@ -176,6 +177,12 @@ export interface RailwayTopologyQualification {
 export interface RailwayTopology {
   readonly schemaVersion: typeof RAILWAY_TOPOLOGY_SCHEMA_VERSION;
   readonly releaseId: string;
+  /**
+   * Signed image contract forwarded from the verified release manifest.
+   * Version 2 may be declared only by images that implement the explicit
+   * personal-provider custody maintenance commands. Absent means legacy v1.
+   */
+  readonly migrationSchemaVersion?: number | undefined;
   readonly finalServices: readonly RailwayFinalServiceIntent[];
   readonly mounts: readonly RailwayMountIntent[];
   readonly generatedPublicDomains: readonly RailwayGeneratedPublicDomainIntent[];
@@ -443,6 +450,7 @@ export function buildRailwayTopology(verifiedManifest: VerifiedReleaseManifest):
       { key: "NAUTILO_HOST", value: literal("::") },
       { key: "NAUTILO_HOSTING_MODE", value: literal("cloud") },
       { key: "NAUTILO_LOGTO_HTTP_EMAIL_WEBHOOK_SECRET", value: generated("nautilo-logto-email-webhook-secret", "Logto HTTP email connector bearer") },
+      { key: "NAUTILO_PERSONAL_PROVIDER_CUSTODY", value: generated("nautilo-personal-provider-custody", "personal provider credential custody") },
       { key: "NAUTILO_MEDIA_ROOT", value: literal("/var/lib/nautilo/media") },
       { key: "NAUTILO_MIGRATIONS_DIR", value: literal("/srv/migrations") },
       { key: "NAUTILO_PORT", value: literal(`${RAILWAY_NAUTILO_PORT}`) },
@@ -456,6 +464,7 @@ export function buildRailwayTopology(verifiedManifest: VerifiedReleaseManifest):
     topology: {
       schemaVersion: RAILWAY_TOPOLOGY_SCHEMA_VERSION,
       releaseId: verifiedManifest.releaseId,
+      migrationSchemaVersion: verifiedManifest.topology.migrationSchemaVersion,
       finalServices: [appPostgres, logtoPostgres, logtoSeed, logto, nautiloServer],
       mounts: [
         { logicalName: "app-postgres-data", service: "app-postgres", mountPath: "/var/lib/postgresql/data" },

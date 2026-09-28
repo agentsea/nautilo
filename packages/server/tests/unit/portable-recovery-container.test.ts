@@ -87,6 +87,7 @@ describe("nautilo-recovery-v1 portable recovery container", () => {
       "artifacts.tar": "artifact bytes",
       "media.tar": "media bytes",
       "apps.tar": "app files",
+      "personal-provider-custody.json": "synthetic-custody",
     } as const;
     const { bytes, receipt } = await written(expected);
     const restored = new Map<PortableRecoveryMemberName, Uint8Array[]>();
@@ -107,6 +108,25 @@ describe("nautilo-recovery-v1 portable recovery container", () => {
     for (const name of PORTABLE_RECOVERY_MEMBERS) {
       expect(decoder.decode(join(restored.get(name) ?? []))).toBe(expected[name]);
     }
+  });
+
+  test("continues to read legacy bundles without the optional custody member", async () => {
+    const writer = writePortableRecovery({
+      key,
+      nonceSeed,
+      sourceRelease: "sha256:legacy-release",
+      members: sources().slice(0, -1),
+      chunkBytes: 3,
+    });
+    const bytes = await collect(writer.stream);
+    const result = await readPortableRecovery({
+      source: sourceFrom(bytes),
+      key,
+      expectedReceipt: await writer.completion,
+      onChunk: () => undefined,
+    });
+
+    expect(result.manifest.members.map(({ name }) => name)).toEqual(PORTABLE_RECOVERY_MEMBERS.slice(0, -1));
   });
 
   test("applies causal backpressure while emitting bounded recovery frames", async () => {

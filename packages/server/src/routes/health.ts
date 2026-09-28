@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { readFileSync } from "node:fs";
 import type { MaintenanceState } from "@nautilo/types";
 import { check, getModeReport } from "@nautilo/config-guard";
+import { inspectPersonalProviderCustody, isPersonalProviderCustodyConfigured } from "../lib/personal-provider-custody";
 import { getPasswordRecoveryDriver, resolveInstance } from "@nautilo/config";
 import { requestAllowsLoopbackTrust, requestAllowsOwnerOrLoopback } from "../lib/request-trust";
 import type { PinChallengeProvider } from "@nautilo/trust";
@@ -15,6 +16,8 @@ import { resolvePublicServerUrl, resolvePublicWorkbenchUrl } from "../lib/public
 import { managedProviderCredentialRouteIsBlocked } from "../managed-provider-route-inventory";
 
 export interface HealthRouteDeps {
+  inspectPersonalCustody?: typeof inspectPersonalProviderCustody;
+  isPersonalCustodyConfigured?: typeof isPersonalProviderCustodyConfigured;
   pinProvider?: PinChallengeProvider | undefined;
   /**
    * M043: the PIN-subject identifier is a `users.id` now, not an
@@ -335,6 +338,19 @@ export function healthRoutes(app: FastifyInstance, deps?: HealthRouteDeps) {
     if (!requestAllowsOwnerOrLoopback(request)) {
       return reply.code(403).send({ error: "Owner identity or localhost required" });
     }
-    return reply.send(getModeReport());
+    const configured = await (deps?.isPersonalCustodyConfigured ?? isPersonalProviderCustodyConfigured)();
+    // Boot strips the master key from process.env. Supply only a synthetic
+    // presence marker, which MODE_REGISTRY always renders as [configured].
+    return reply.send(getModeReport({
+      ...process.env,
+      NAUTILO_PERSONAL_PROVIDER_CUSTODY: configured ? "configured" : "",
+    }));
+  });
+
+  app.get("/api/health/personal-provider-custody", async (request, reply) => {
+    if (!requestAllowsOwnerOrLoopback(request)) {
+      return reply.code(403).send({ error: "Owner identity or localhost required" });
+    }
+    return reply.send(await (deps?.inspectPersonalCustody ?? inspectPersonalProviderCustody)());
   });
 }
