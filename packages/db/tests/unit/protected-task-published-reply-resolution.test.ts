@@ -222,6 +222,35 @@ describe("resolvePublishedProtectedTaskAwaitReply", () => {
     expect(result).toEqual({ status: "ambiguous" });
   });
 
+  test("ignores unrelated parked Tasks before deciding ambiguity", async () => {
+    const unrelated = candidate(parkReceipt({ interrupts: [
+      { id: "interrupt:approval", kind: "approval", requestId: "approval:1" },
+    ] }));
+    const result = await resolvePublishedProtectedTaskAwaitReply(
+      database([[publication()], [unrelated, candidate()]]),
+      { operationId, messageId },
+    );
+    expect(result.status).toBe("resolved");
+  });
+
+  test("continues past a full page of invalid park receipts", async () => {
+    const unrelated = Array.from({ length: 64 }, (_, index) => {
+      const row = candidate(parkReceipt({ generation: -1 }));
+      return {
+        ...row,
+        run: {
+          ...row.run,
+          id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        },
+      };
+    });
+    const result = await resolvePublishedProtectedTaskAwaitReply(
+      database([[publication()], unrelated, [candidate()]]),
+      { operationId, messageId },
+    );
+    expect(result.status).toBe("resolved");
+  });
+
   test("fails closed on malformed or multiple await-reply interrupts", async () => {
     const malformed = candidate(parkReceipt({ generation: -1 }));
     expect(await resolvePublishedProtectedTaskAwaitReply(

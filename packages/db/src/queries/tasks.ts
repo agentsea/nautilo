@@ -3016,37 +3016,50 @@ export async function resolvePublishedProtectedTaskAwaitReply(
   );
   if (publication === null) return { status: "no_match" };
 
-  const candidates = await db.select({ task: tasks, run: taskRuns, job: jobs })
-    .from(tasks)
-    .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
-    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
-    .where(and(
-      eq(tasks.targetRoomId, publication.message.roomId),
-      inArray(tasks.contentRepresentation, ["dual", "protected"]),
-      eq(tasks.cryptoMappingState, "verified"),
-      or(
-        and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
-        and(
-          inArray(tasks.scheduleKind, ["now", "one_shot"]),
-          eq(tasks.status, "awaiting"),
+  // The broad status query also finds parked Tasks with unrelated interrupts.
+  // Page through it until two *validated* park receipts are found; counting
+  // rows before receipt validation would reject an otherwise unique reply.
+  const pageSize = 64;
+  let afterRunId: string | null = null;
+  let resolved: AcceptProtectedTaskAwaitReplyInput | null = null;
+  while (true) {
+    const candidates = await db.select({ task: tasks, run: taskRuns, job: jobs })
+      .from(tasks)
+      .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
+      .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+      .where(and(
+        eq(tasks.targetRoomId, publication.message.roomId),
+        inArray(tasks.contentRepresentation, ["dual", "protected"]),
+        eq(tasks.cryptoMappingState, "verified"),
+        or(
+          and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
+          and(
+            inArray(tasks.scheduleKind, ["now", "one_shot"]),
+            eq(tasks.status, "awaiting"),
+          ),
         ),
-      ),
-      eq(taskRuns.status, "awaiting"),
-      eq(jobs.status, "completed"),
-      or(
-        eq(tasks.requestorId, publication.message.sourceUserId),
-        arrayContains(tasks.targetUserIds, [publication.message.sourceUserId]),
-      ),
-    ))
-    .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
-    .limit(2);
-  if (candidates.length === 0) return { status: "no_match" };
-  if (candidates.length > 1) return { status: "ambiguous" };
-
-  const resolved = parkedProtectedTaskAwaitReplyInput(candidates[0]!, {
-    operationId: input.operationId,
-    ...publication,
-  });
+        eq(taskRuns.status, "awaiting"),
+        eq(jobs.status, "completed"),
+        or(
+          eq(tasks.requestorId, publication.message.sourceUserId),
+          arrayContains(tasks.targetUserIds, [publication.message.sourceUserId]),
+        ),
+        afterRunId === null ? undefined : gt(taskRuns.id, afterRunId),
+      ))
+      .orderBy(asc(taskRuns.id))
+      .limit(pageSize);
+    for (const candidate of candidates) {
+      const match = parkedProtectedTaskAwaitReplyInput(candidate, {
+        operationId: input.operationId,
+        ...publication,
+      });
+      if (match === null) continue;
+      if (resolved !== null) return { status: "ambiguous" };
+      resolved = match;
+    }
+    if (candidates.length < pageSize) break;
+    afterRunId = candidates[candidates.length - 1]!.run.id;
+  }
   return resolved === null
     ? { status: "no_match" }
     : { status: "resolved", input: resolved };
