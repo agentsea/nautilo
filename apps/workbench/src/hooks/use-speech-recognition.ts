@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { isDesktop, desktopAPI } from "../lib/desktop";
-import { formatSttHttpError } from "../lib/speech-stt-error";
-import { workbenchFetch } from "../lib/admission-fetch";
+import { apiClient } from "../lib/api";
 import { SpeechCapture, type CaptureSnapshot } from "../lib/speech-capture";
 
 /**
@@ -56,11 +55,8 @@ export function createBrowserSpeechCapture(changed: (state: CaptureSnapshot) => 
       return new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     },
     transcribe: async (blob, signal) => {
-      const form = new FormData();
-      form.append("audio", blob, `recording.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
-      const response = await workbenchFetch("/api/stt", { method: "POST", body: form, signal });
-      if (!response.ok) throw new Error(await formatSttHttpError(response));
-      const data = await response.json() as { text?: string };
+      const filename = `recording.${blob.type.includes("mp4") ? "m4a" : "webm"}`;
+      const data = await apiClient.transcribeAudio(blob, filename, { signal });
       return data.text ?? "";
     },
   }, changed, result);
