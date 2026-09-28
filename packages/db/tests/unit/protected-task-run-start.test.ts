@@ -6,7 +6,13 @@ import {
   type ProtectedTaskDurableJobReference,
   type StartProtectedTaskRunInput,
 } from "../../src/queries/tasks";
+import { protectedTaskRunResultObjectId } from
+  "../../src/queries/protected-task-output-bindings";
 import { jobs, type Job } from "../../src/schema/jobs";
+import {
+  protectedTaskRunOutputBindings,
+  type ProtectedTaskRunOutputBinding,
+} from "../../src/schema/protected-task-run-output-bindings";
 import { taskRuns, type TaskRun } from "../../src/schema/task-runs";
 import { tasks, type Task } from "../../src/schema/tasks";
 
@@ -30,7 +36,7 @@ function reference(
     taskId: ids.task,
     taskRunId: ids.run,
     inputObjectId: objectId,
-    resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+    resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
     authorizationRequestId: `task-run-authorization:${ids.run}`,
     policyRevision: 9,
     executionSegment: 1,
@@ -63,6 +69,8 @@ function task(overrides: Partial<Task> = {}): Task {
     ownerId: ids.owner,
     requestorId: ids.owner,
     agentId: ids.agent,
+    callingRoomId: null,
+    resultDelivery: "wake",
     scheduleKind: "now",
     status: "awaiting",
     contentRepresentation: "protected",
@@ -119,10 +127,37 @@ function job(overrides: Partial<Job> = {}): Job {
   };
 }
 
+function binding(
+  overrides: Partial<ProtectedTaskRunOutputBinding> = {},
+): ProtectedTaskRunOutputBinding {
+  return {
+    taskRunId: ids.run,
+    bindingId: `task-run-output:${ids.run}`,
+    deliveryMode: "none",
+    destinationRoomId: null,
+    destinationNamespaceId: null,
+    resultOperationId: `task-run-result:${ids.run}`,
+    resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
+    messageOperationId: null,
+    wakeOperationId: null,
+    acceptedPolicyRevision: 9,
+    acceptedAt: new Date("2026-09-20T10:00:00.000Z"),
+    resultTerminalAt: null,
+    resultAttachedAt: null,
+    messageId: null,
+    messagePublishedAt: null,
+    wakeJobId: null,
+    wakeScheduledAt: null,
+    completedAt: null,
+    ...overrides,
+  };
+}
+
 type FixtureOptions = Readonly<{
   task?: Task | undefined;
   run?: TaskRun | undefined;
   job?: Job | undefined;
+  binding?: ProtectedTaskRunOutputBinding | undefined;
   loseRunUpdate?: boolean;
   loseTaskUpdate?: boolean;
 }>;
@@ -137,6 +172,9 @@ function harness(options: FixtureOptions = {}) {
   const jobRow = Object.prototype.hasOwnProperty.call(options, "job")
     ? options.job
     : job();
+  const bindingRow = Object.prototype.hasOwnProperty.call(options, "binding")
+    ? options.binding
+    : binding();
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
@@ -144,6 +182,9 @@ function harness(options: FixtureOptions = {}) {
     if (table === tasks) return taskRow ? [taskRow] : [];
     if (table === taskRuns) return runRow ? [runRow] : [];
     if (table === jobs) return jobRow ? [jobRow] : [];
+    if (table === protectedTaskRunOutputBindings) {
+      return bindingRow ? [bindingRow] : [];
+    }
     throw new Error("unexpected table");
   };
   const tx = {
@@ -197,6 +238,7 @@ describe("protected TaskRun start transition", () => {
     expect(fixture.locks).toEqual([
       { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" },
+      { table: protectedTaskRunOutputBindings, kind: "share" },
       { table: jobs, kind: "share" },
     ]);
     expect(fixture.writes.map((write) => ({
@@ -231,6 +273,8 @@ describe("protected TaskRun start transition", () => {
       { run: run({ jobId: ids.job }) },
       { run: run({ graphThreadId: `${graphThreadId}:other` }) },
       { run: run({ resultRevision: 1 }) },
+      { binding: binding({ acceptedPolicyRevision: 10 }) },
+      { binding: binding({ resultTerminalAt: new Date() }) },
       { job: job({ status: "running" }) },
       { job: job({ laneKey: "task:other" }) },
       { job: job({ input: { ...reference(), taskRunId: "different" } }) },
@@ -250,6 +294,7 @@ describe("protected TaskRun start transition", () => {
     for (const options of [
       { task: undefined },
       { run: undefined },
+      { binding: undefined },
       { job: undefined },
     ] satisfies FixtureOptions[]) {
       const fixture = harness(options);

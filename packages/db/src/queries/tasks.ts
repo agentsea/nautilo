@@ -1901,7 +1901,8 @@ export async function startProtectedTaskRun(
     || input.jobReference.taskId !== input.taskId
     || input.jobReference.taskRunId !== input.taskRunId
     || input.jobReference.inputObjectId !== input.cryptoObjectId
-    || !input.jobReference.resultObjectId
+    || input.jobReference.resultObjectId
+      !== protectedTaskRunResultObjectId(input.taskId, input.taskRunId)
     || !input.jobReference.authorizationRequestId
     || !Number.isSafeInteger(input.jobReference.policyRevision)
     || input.jobReference.policyRevision < 1
@@ -1967,6 +1968,33 @@ export async function startProtectedTaskRun(
       || run.resultCryptoRequiredNamespaceFingerprint !== null
       || run.resultCryptoMappingState !== "unmapped"
     ) {
+      return { status: "stale" } as const;
+    }
+
+    const [outputBinding] = await tx.select()
+      .from(protectedTaskRunOutputBindings)
+      .where(eq(protectedTaskRunOutputBindings.taskRunId, run.id))
+      .limit(1).for("share");
+    if (!outputBinding
+      || outputBinding.bindingId !== `task-run-output:${run.id}`
+      || outputBinding.resultOperationId !== `task-run-result:${run.id}`
+      || outputBinding.resultObjectId !== input.jobReference.resultObjectId
+      || outputBinding.acceptedPolicyRevision
+        !== input.jobReference.policyRevision
+      || outputBinding.resultTerminalAt !== null
+      || outputBinding.resultAttachedAt !== null
+      || outputBinding.messageId !== null
+      || outputBinding.messagePublishedAt !== null
+      || outputBinding.wakeJobId !== null
+      || outputBinding.wakeScheduledAt !== null
+      || outputBinding.completedAt !== null
+      || (task.callingRoomId === null
+        ? outputBinding.deliveryMode !== "none"
+          || outputBinding.destinationRoomId !== null
+          || outputBinding.destinationNamespaceId !== null
+        : outputBinding.deliveryMode !== task.resultDelivery
+          || outputBinding.destinationRoomId !== task.callingRoomId
+          || outputBinding.destinationNamespaceId === null)) {
       return { status: "stale" } as const;
     }
 
