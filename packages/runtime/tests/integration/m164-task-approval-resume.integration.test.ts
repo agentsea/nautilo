@@ -31,6 +31,7 @@ import {
   actors,
   groupMembers,
   groups,
+  serverAdmission,
   tasks,
   taskRuns,
   createTask as dbCreateTask,
@@ -95,6 +96,8 @@ beforeAll(async () => {
   userId = env.userId;
   agentId = env.agentId;
   db = getDirectDb();
+  // The production JobManager rechecks server admission before dispatch.
+  await db.insert(serverAdmission).values({ userId, admitted: true });
   setTaskRunDb(db);
   setTaskRunJobManager(jobManager);
 

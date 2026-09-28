@@ -31,6 +31,7 @@ import {
   roomMembers,
   sessions,
   sessionMessages,
+  serverAdmission,
   jobs,
   tasks,
   taskRuns,
@@ -93,6 +94,8 @@ beforeAll(async () => {
   ownerUserId = env.userId;
   agentId = env.agentId;
   db = getDirectDb();
+  // The production JobManager rechecks server admission before dispatch.
+  await db.insert(serverAdmission).values({ userId: ownerUserId, admitted: true });
   setTaskRunDb(db);
   setTaskRunJobManager(jobManager);
 
