@@ -174,8 +174,45 @@ describe("Job", () => {
       representation: "protected_only",
     });
 
-    await job.execute();
+    await job.executeProtectedTask(job.input, undefined, {
+      awaitPublished: async () => true,
+    });
     expect(executedMessage).toBe("protected-task-input-sentinel");
+  });
+
+  test("protected Task completion waits for a published result", async () => {
+    const reference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:result-barrier",
+      policyRevision: 11,
+    };
+    for (const published of [false, true]) {
+      const updates: JobStatus[] = [];
+      const job = new Job({
+        ownerId: "o1",
+        requestorId: "r1",
+        laneKey: `task:${reference.taskId}`,
+        type: "foreground",
+        input: {},
+        durableInputReference: reference,
+        durableInputDisposition: "full",
+        executor: yieldNothing,
+        persist: async () => `protected-result-${published}`,
+        updateStatus: async (_id, status) => { updates.push(status); },
+      });
+      await job.persist();
+      await job.executeProtectedTask({}, undefined, {
+        awaitPublished: async () => published,
+      });
+      expect(job.status).toBe(published ? "completed" : "running");
+      expect(updates).toEqual(published
+        ? ["running", "completed"]
+        : ["running"]);
+    }
   });
 
   test("rejects malformed protected Task references before persistence", async () => {

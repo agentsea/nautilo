@@ -664,6 +664,7 @@ function createCandidate(input: Readonly<{
       authorizationSignal: AbortSignal,
       publication: Readonly<{
         publish(payload: TaskRunResultPayloadV1): Promise<void>;
+        awaitPublished(): Promise<boolean>;
       }>,
     ) => Promise<Value>): Promise<Value> {
       if (state === "ready") {
@@ -762,6 +763,7 @@ function createCandidate(input: Readonly<{
                   throw new Error("Task Runtime execution start could not be recorded");
                 }
                 let publicationCalls = 0;
+                let publicationCompleted = false;
                 let publicationOpen = true;
                 const pendingPublications: Promise<void>[] = [];
                 const publication = Object.freeze({
@@ -778,9 +780,15 @@ function createCandidate(input: Readonly<{
                       domains,
                       evidence,
                       signal,
+                    }).then(() => {
+                      publicationCompleted = true;
                     });
                     pendingPublications.push(pending);
                     return pending;
+                  },
+                  awaitPublished: async (): Promise<boolean> => {
+                    await Promise.all(pendingPublications);
+                    return publicationCalls === 1 && publicationCompleted;
                   },
                 });
                 try {

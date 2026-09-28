@@ -33,6 +33,7 @@ export interface ProtectedTaskExecutionCandidate {
       authorizationSignal: AbortSignal,
       publication: Readonly<{
         publish(payload: TaskRunResultPayloadV1): Promise<void>;
+        awaitPublished(): Promise<boolean>;
       }>,
     ) => Promise<T>,
   ): Promise<T>;

@@ -1446,6 +1446,7 @@ export class JobManager {
                     () => job.executeProtectedTask(
                       exactTransientInput,
                       authorizationSignal,
+                      publication,
                     ),
                   ),
                 );

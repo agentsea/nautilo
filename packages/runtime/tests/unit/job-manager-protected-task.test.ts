@@ -18,7 +18,10 @@ const ROOM_ID = "40000000-0000-4000-8000-000000000004";
 const TASK_ID = "50000000-0000-4000-8000-000000000005";
 const RUN_ID = "60000000-0000-4000-8000-000000000006";
 const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
-const publication = Object.freeze({ publish: async () => {} });
+const publication = Object.freeze({
+  publish: async () => {},
+  awaitPublished: async () => true,
+});
 
 function reference(
   taskId = TASK_ID,
