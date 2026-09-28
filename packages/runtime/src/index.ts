@@ -347,6 +347,11 @@ export {
   type RunProtectedTaskNativeSegmentInput,
 } from "./tasks/protected-task-native-runner";
 export {
+  createProtectedTaskTranscriptPort,
+  type ProtectedTaskTranscriptIdentity,
+  type ProtectedTaskTranscriptMessagePublisher,
+} from "./tasks/protected-task-transcript-port";
+export {
   completeProtectedTaskRunResult,
   publishPreparedProtectedTaskRunResult,
   type CompleteProtectedTaskRunResultDependencies,
