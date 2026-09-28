@@ -36,6 +36,7 @@ const ROOM = "70000000-0000-4000-8000-000000000007";
 const DEVICE = "80000000-0000-4000-8000-000000000008";
 const CONTENT = "90000000-0000-4000-8000-000000000009";
 const READABLE = "a0000000-0000-4000-8000-00000000000a";
+const OUTPUT = "a1000000-0000-4000-8000-00000000000a";
 const DOMAIN_A = "b0000000-0000-4000-8000-00000000000b";
 const DOMAIN_B = "c0000000-0000-4000-8000-00000000000c";
 const SOURCE_ROOM = "d0000000-0000-4000-8000-00000000000d";
@@ -150,6 +151,43 @@ function domain(
   });
 }
 
+function outputPorts(namespaceId: string = CONTENT) {
+  return {
+    resolveOutputDestination: async () => ({ roomId: ROOM, namespaceId }),
+    acceptOutputBinding: async (input: Readonly<{
+      taskId: string;
+      taskRunId: string;
+      requiredPolicyRevision: number;
+      acceptedAt: Date;
+    }>) => ({
+      status: "accepted" as const,
+      binding: {
+        taskRunId: input.taskRunId,
+        bindingId: `task-run-output:${input.taskRunId}`,
+        deliveryMode: "wake" as const,
+        destinationRoomId: ROOM,
+        destinationNamespaceId: namespaceId,
+        resultOperationId: `task-run-result:${input.taskRunId}`,
+        resultObjectId: deriveTaskContentCryptoObjectIdV1({
+          kind: "run_result", taskId: input.taskId,
+          taskRunId: input.taskRunId, contentRevision: 1,
+        }),
+        messageOperationId: null,
+        wakeOperationId: `task-run-delivery-wake:${input.taskRunId}`,
+        acceptedPolicyRevision: input.requiredPolicyRevision,
+        acceptedAt: input.acceptedAt,
+        resultTerminalAt: null,
+        resultAttachedAt: null,
+        messageId: null,
+        messagePublishedAt: null,
+        wakeJobId: null,
+        wakeScheduledAt: null,
+        completedAt: null,
+      },
+    }),
+  };
+}
+
 function builder(
   authorityFacts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[] = facts(),
   sourceNamespaceId: string = CONTENT,
@@ -164,6 +202,7 @@ function builder(
     recipientTtlMs: 60_000,
     now: () => NOW,
     predispatch: async value => predispatch(value),
+    ...outputPorts(),
     resolveNamespaceAuthority: async ({ namespaceIds }) => {
       expect(namespaceIds).toEqual([CONTENT, READABLE].sort());
       return {
@@ -271,6 +310,7 @@ test("binds distinct per-occurrence executors and transient openers", async () =
     recipientTtlMs: 60_000,
     now: () => NOW,
     predispatch: async value => predispatch(value),
+    ...outputPorts(),
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
@@ -313,6 +353,7 @@ test("refuses substituted predispatch before execution preparation", async () =>
     crypto: new LatticeCrypto(),
     recipientTtlMs: 60_000,
     predispatch: async () => predispatch(substituted),
+    ...outputPorts(),
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
@@ -417,6 +458,7 @@ test("includes the exact Scope origin Namespace in the grant inventory", async (
     recipientTtlMs: 60_000,
     now: () => NOW,
     predispatch: async () => scoped,
+    ...outputPorts(),
     resolveNamespaceAuthority: async ({ namespaceIds }) => {
       expect(namespaceIds).toEqual([CONTENT, READABLE].sort());
       return {
@@ -439,11 +481,49 @@ test("includes the exact Scope origin Namespace in the grant inventory", async (
   ]);
 });
 
+test("includes a separate output Namespace with encrypt authority before granting", async () => {
+  const extra = {
+    namespaceId: OUTPUT,
+    domainId: "c1000000-0000-4000-8000-00000000000c",
+    expectedAccessRevision: 4,
+    expectedPolicyRevision: 7,
+    expectedDomainEpoch: 3,
+    expectedAuthorizationRevision: 11,
+  };
+  const value = occurrence();
+  const plan = await createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async () => predispatch(value),
+    ...outputPorts(OUTPUT),
+    resolveNamespaceAuthority: async ({ namespaceIds }) => {
+      expect(namespaceIds).toEqual([CONTENT, READABLE, OUTPUT].sort());
+      return {
+        sourceRoomId: SOURCE_ROOM,
+        sourceNamespaceId: CONTENT,
+        facts: [...facts(), extra],
+      };
+    },
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" }),
+    publishResult: async () => {},
+  })(value);
+  const output = plan.initialRecord.authoritySet.namespaceRequirements.find(
+    entry => entry.namespaceId === OUTPUT,
+  );
+  expect(output?.operations).toEqual(["encrypt"]);
+});
+
 test("requires concrete execution and publication sinks", () => {
   expect(() => createProtectedTaskRuntimeGrantPlanBuilder({
     crypto: new LatticeCrypto(),
     recipientTtlMs: 60_000,
     predispatch: async (value: ProtectedTaskOccurrence) => predispatch(value),
+    ...outputPorts(),
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,

@@ -16,6 +16,11 @@ import {
   destroyDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import type {
+  AcceptProtectedTaskRunOutputBindingInput,
+  AcceptProtectedTaskRunOutputBindingResult,
+  ProtectedTaskRunOutputDestination,
+} from "@nautilo/db";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -51,6 +56,12 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     sourceNamespaceId: string;
     facts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[];
   }>>;
+  resolveOutputDestination(
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<ProtectedTaskRunOutputDestination | null>;
+  acceptOutputBinding(
+    input: AcceptProtectedTaskRunOutputBindingInput,
+  ): Promise<AcceptProtectedTaskRunOutputBindingResult>;
   prepareExecution(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
@@ -96,7 +107,10 @@ function sameOccurrence(
     && left.run.startedAt.getTime() === right.run.startedAt.getTime();
 }
 
-function namespaceInventory(plan: ProtectedTaskPredispatchPlan): Readonly<{
+function namespaceInventory(
+  plan: ProtectedTaskPredispatchPlan,
+  outputDestination: ProtectedTaskRunOutputDestination | null,
+): Readonly<{
   namespaceIds: readonly string[];
   operations(namespaceId: string): readonly ("decrypt" | "encrypt")[];
 }> {
@@ -117,8 +131,15 @@ function namespaceInventory(plan: ProtectedTaskPredispatchPlan): Readonly<{
       namespaceIds: Object.freeze([...new Set([
         contentNamespaceId,
         originNamespaceId,
+        ...(outputDestination === null ? [] : [outputDestination.namespaceId]),
       ])].sort()),
-      operations: () => Object.freeze(["decrypt", "encrypt"] as const),
+      operations: (namespaceId: string) => Object.freeze(
+        namespaceId === outputDestination?.namespaceId
+          && namespaceId !== contentNamespaceId
+          && namespaceId !== originNamespaceId
+          ? ["encrypt" as const]
+          : ["decrypt" as const, "encrypt" as const],
+      ),
     });
   }
   const readable = new Set(envelope.readableNamespaces);
@@ -128,6 +149,7 @@ function namespaceInventory(plan: ProtectedTaskPredispatchPlan): Readonly<{
   ]);
   readable.add(contentNamespaceId);
   encryptable.add(contentNamespaceId);
+  if (outputDestination !== null) encryptable.add(outputDestination.namespaceId);
   const namespaceIds = Object.freeze([...new Set([
     ...readable,
     ...encryptable,
@@ -248,6 +270,8 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
   }
   for (const required of [
     dependencies.prepareExecution,
+    dependencies.resolveOutputDestination,
+    dependencies.acceptOutputBinding,
     dependencies.startProtectedTaskRun,
     dependencies.publishResult,
   ]) {
@@ -277,7 +301,15 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       || prepared.scheduling.graphThreadId !== occurrence.run.graphThreadId) {
       throw new TypeError("Protected Task predispatch scheduling is not exact");
     }
-    const inventory = namespaceInventory(prepared);
+    const outputDestination = await dependencies.resolveOutputDestination(occurrence);
+    if ((occurrence.task.callingRoomId === null) !== (outputDestination === null)
+      || outputDestination !== null && (
+        outputDestination.roomId !== occurrence.task.callingRoomId
+        || !UUID.test(outputDestination.namespaceId)
+      )) {
+      throw new TypeError("Protected Task output destination is invalid");
+    }
+    const inventory = namespaceInventory(prepared, outputDestination);
     const resolvedAuthority = await dependencies.resolveNamespaceAuthority({
       occurrence,
       predispatch: prepared,
@@ -308,6 +340,29 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       taskRunId: occurrence.run.id,
       contentRevision: 1,
     });
+    const output = await dependencies.acceptOutputBinding({
+      taskId: occurrence.task.id,
+      taskRunId: occurrence.run.id,
+      requiredPolicyRevision: authority.policyRevision,
+      acceptedAt: new Date(createdAt),
+      destination: outputDestination,
+    });
+    if (output.status === "rejected"
+      || output.binding.taskRunId !== occurrence.run.id
+      || output.binding.bindingId !== `task-run-output:${occurrence.run.id}`
+      || (outputDestination === null
+        ? output.binding.deliveryMode !== "none"
+        : output.binding.deliveryMode !== "wake"
+          && output.binding.deliveryMode !== "raw"
+          && output.binding.deliveryMode !== "raw_and_wake")
+      || output.binding.destinationRoomId !== (outputDestination?.roomId ?? null)
+      || output.binding.destinationNamespaceId
+        !== (outputDestination?.namespaceId ?? null)
+      || output.binding.resultOperationId !== `task-run-result:${occurrence.run.id}`
+      || output.binding.resultObjectId !== resultObjectId
+      || output.binding.acceptedPolicyRevision !== authority.policyRevision) {
+      throw new TypeError("Protected Task output binding is unavailable");
+    }
     const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
       snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
         requestId,
@@ -321,6 +376,8 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
         scheduleKind: occurrence.task.scheduleKind,
         sourceRoomId: resolvedAuthority.sourceRoomId,
         targetRoomId: prepared.target.roomId,
+        outputRoomId: outputDestination?.roomId ?? null,
+        outputNamespaceId: outputDestination?.namespaceId ?? null,
         targetUserIds: [...prepared.target.targetUserIds].sort(),
         memoryMode: prepared.memory.mode,
         scopeId: prepared.memory.envelope.memoryMode === "scope"
