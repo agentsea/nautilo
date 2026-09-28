@@ -38,6 +38,7 @@ function reference(
     resultObjectId,
     authorizationRequestId: `task-run-authorization:${ids.run}`,
     policyRevision: 9,
+    executionSegment: 1,
     ...overrides,
   };
 }
@@ -51,6 +52,7 @@ function input(
     graphThreadId,
     jobId: ids.job,
     generation: 3,
+    executionSegment: 1,
     interrupts: [
       { id: "interrupt:z", kind: "await_reply" },
       { id: "interrupt:a", kind: "approval", requestId: "approval:17" },
@@ -135,6 +137,7 @@ function receipt(overrides: Record<string, unknown> = {}) {
     jobId: ids.job,
     graphThreadId,
     generation: 3,
+    executionSegment: 1,
     interrupts: [
       { id: "interrupt:a", kind: "approval", requestId: "approval:17" },
       { id: "interrupt:z", kind: "await_reply" },
@@ -327,6 +330,24 @@ describe("protected TaskRun clean-interrupt park CAS", () => {
     }
   });
 
+  test("binds the park receipt to the exact execution segment", async () => {
+    const fixture = harness({
+      task: task({ status: "awaiting" }),
+      run: run({ status: "awaiting" }),
+      job: job({
+        status: "completed",
+        completedAt: parkedAt,
+        metadata: { [receiptKey]: receipt({ executionSegment: 2 }) },
+      }),
+    });
+
+    expect(await parkProtectedTaskRun(fixture.db, input())).toEqual({
+      status: "rejected",
+      reason: "conflict",
+    });
+    expect(fixture.writes).toEqual([]);
+  });
+
   test("rejects Plain, terminal, mismatched, or non-content-free state", async () => {
     const cases: FixtureOptions[] = [
       { task: task({ contentRepresentation: "ordinary" }) },
@@ -382,6 +403,9 @@ describe("protected TaskRun clean-interrupt park CAS", () => {
       jobReference: reference({
         resultObjectId: `task-run-result:v1:${"d".repeat(64)}`,
       }),
+    })), "binding is malformed");
+    await expectRejected(parkProtectedTaskRun(db, input({
+      executionSegment: 2,
     })), "binding is malformed");
     await expectRejected(parkProtectedTaskRun(db, input({
       jobReference: {

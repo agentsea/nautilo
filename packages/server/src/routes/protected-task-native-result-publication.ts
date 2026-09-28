@@ -129,7 +129,7 @@ function sameAuthority(
 function assertExactReference(reference: ProtectedTaskJobReferenceV1): void {
   if (
     Object.keys(reference).sort().join(",")
-      !== "authorizationRequestId,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
+      !== "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
     || reference.kind !== "protected_task_run_v1"
     || !UUID.test(reference.taskId)
     || !UUID.test(reference.taskRunId)
@@ -140,6 +140,8 @@ function assertExactReference(reference: ProtectedTaskJobReferenceV1): void {
       > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
     || !Number.isSafeInteger(reference.policyRevision)
     || reference.policyRevision < 1
+    || !Number.isSafeInteger(reference.executionSegment)
+    || reference.executionSegment < 1
   ) throw new TypeError("Protected Task result reference is invalid");
 }
 

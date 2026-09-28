@@ -209,6 +209,7 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     inputObjectId: value.task.cryptoObjectId,
     authorizationRequestId: `task-run-authorization:${RUN}`,
     policyRevision: 7,
+    executionSegment: 1,
   });
   expect(plan.scheduling.roomId).toBe(ROOM);
 

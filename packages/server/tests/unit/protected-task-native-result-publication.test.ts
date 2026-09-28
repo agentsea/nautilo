@@ -27,6 +27,7 @@ const reference: TaskRuntimeGrantClaimPlan["reference"] = Object.freeze({
   resultObjectId: RESULT_OBJECT,
   authorizationRequestId: REQUEST,
   policyRevision: 7,
+  executionSegment: 1,
 });
 
 const authority: TaskContentAuthorityV1 = Object.freeze({
@@ -281,6 +282,21 @@ test("rejects a mismatched exact grant before decoding or publishing", async () 
   );
   expect(state.calls).toEqual([]);
 });
+
+test.each([0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+  "rejects invalid execution segment %s before decoding or publishing",
+  (executionSegment) => {
+    const state = fixture();
+    expect(() => createProtectedTaskNativeResultPublication(
+      {
+        ...state.input,
+        reference: { ...reference, executionSegment } as never,
+      },
+      state.overrides,
+    )).toThrow("Protected Task result reference is invalid");
+    expect(state.calls).toEqual([]);
+  },
+);
 
 test("destroys the decoded request when current authority is unavailable", async () => {
   const state = fixture();

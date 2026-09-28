@@ -36,6 +36,7 @@ function reference(
     resultObjectId: `task-run-result:v1:${suffix.repeat(64)}`,
     authorizationRequestId: `task-run-authorization:${taskRunId}`,
     policyRevision: 7,
+    executionSegment: 1,
   };
 }
 

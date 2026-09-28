@@ -36,6 +36,7 @@ function fixture(payload: TaskRunResultPayloadV1) {
     resultObjectId,
     authorizationRequestId: REQUEST_ID,
     policyRevision: 7,
+    executionSegment: 1,
   });
   const evidence = {
     requestId: REQUEST_ID,

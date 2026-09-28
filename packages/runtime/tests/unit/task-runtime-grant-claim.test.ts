@@ -257,6 +257,7 @@ async function fixture() {
       resultObjectId: RESULT_OBJECT,
       authorizationRequestId: REQUEST,
       policyRevision: 7,
+      executionSegment: 1,
     },
     scheduling: {
       ownerId: OWNER,

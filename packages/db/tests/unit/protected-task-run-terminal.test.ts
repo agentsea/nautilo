@@ -136,6 +136,7 @@ function jobReference() {
     resultObjectId,
     authorizationRequestId: `task-run-authorization:${ids.run}`,
     policyRevision: 9,
+    executionSegment: 1,
   };
 }
 

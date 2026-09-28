@@ -58,6 +58,7 @@ function claimed(
       resultObjectId: RESULT_OBJECT_ID,
       authorizationRequestId: `task-run-authorization:${RUN_ID}`,
       policyRevision: 7,
+      executionSegment: 1,
     }),
     scheduling: Object.freeze({
       ownerId: OWNER_ID,

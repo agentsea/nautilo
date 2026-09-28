@@ -358,6 +358,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       resultObjectId,
       authorizationRequestId: requestId,
       policyRevision: authority.policyRevision,
+      executionSegment: 1,
     });
     const execution = await dependencies.prepareExecution(Object.freeze({
       occurrence,

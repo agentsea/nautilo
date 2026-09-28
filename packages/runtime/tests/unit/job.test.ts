@@ -142,6 +142,7 @@ describe("Job", () => {
       resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
       authorizationRequestId: "task-run-authorization:request-1",
       policyRevision: 11,
+      executionSegment: 1,
     };
     const job = new Job({
       ownerId: "o1",
@@ -189,6 +190,7 @@ describe("Job", () => {
       resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
       authorizationRequestId: "task-run-authorization:result-barrier",
       policyRevision: 11,
+      executionSegment: 1,
     };
     for (const published of [false, true]) {
       const updates: JobStatus[] = [];
@@ -224,6 +226,7 @@ describe("Job", () => {
       resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
       authorizationRequestId: "task-run-authorization:request-1",
       policyRevision: 11,
+      executionSegment: 1,
     };
     const malformed = [
       { ...valid, taskId: "not-a-task-id" },
@@ -231,6 +234,9 @@ describe("Job", () => {
       { ...valid, resultObjectId: valid.inputObjectId },
       { ...valid, authorizationRequestId: "contains spaces" },
       { ...valid, policyRevision: 0 },
+      { ...valid, executionSegment: 0 },
+      { ...valid, executionSegment: 1.5 },
+      { ...valid, executionSegment: Number.MAX_SAFE_INTEGER + 1 },
       { ...valid, prompt: "must-not-be-durable" },
     ];
 
@@ -353,6 +359,7 @@ describe("Job", () => {
           resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
           authorizationRequestId: "task-run-authorization:failure-test",
           policyRevision: 9,
+          executionSegment: 1,
         },
         executor: async function* () {
           yield* ([] as ServerEvent[]);

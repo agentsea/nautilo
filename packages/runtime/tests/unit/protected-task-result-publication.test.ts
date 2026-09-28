@@ -92,6 +92,7 @@ function reference(
     resultObjectId,
     authorizationRequestId: `task-run-authorization:${RUN_ID}`,
     policyRevision,
+    executionSegment: 1,
   });
 }
 
