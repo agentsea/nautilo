@@ -324,8 +324,9 @@ export {
 export {
   isCurrentProtectedTaskRunForGrant,
 } from "./tasks/protected-task-current-run";
-export type {
-  ProtectedTaskPredispatchPlan,
+export {
+  planProtectedTaskPredispatch,
+  type ProtectedTaskPredispatchPlan,
 } from "./tasks/protected-task-predispatch";
 export {
   ProtectedTaskOccurrenceCoordinator,
@@ -370,6 +371,7 @@ export {
   type ResolvedTargetRoom,
   type HumanRoomMember,
 } from "./tasks/resolve-target-room";
+export { resolveTaskMemoryEnvelope } from "./tasks/resolve-task-memory-envelope";
 export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps } from "./tasks/create-task";
 export {
   TaskCreationUnavailableError,

@@ -969,3 +969,9 @@ export {PostgresProtectedOrganizerMetadata, type ProtectedOrganizerRoomBindingPo
 
 
 export {PostgresProtectedReflectionMessageMetadata, type ProtectedReflectionMessageMetadata} from "./reflection/protected-message-metadata.ts";
+
+export {
+  inspectInitialTaskRuntimeNamespaceAuthority,
+  type InitialTaskRuntimeNamespaceAuthority,
+  type InitialTaskRuntimeNamespaceFact,
+} from "./task/initial-task-runtime-namespace-authority.ts";
