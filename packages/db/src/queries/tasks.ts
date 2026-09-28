@@ -1803,6 +1803,15 @@ export type StartProtectedTaskRunResult =
   | Readonly<{ status: "started" }>
   | Readonly<{ status: "stale" }>;
 
+export type AttachProtectedTaskRunModelInput = StartProtectedTaskRunInput &
+  Readonly<{ modelId: string }>;
+
+export type AttachProtectedTaskRunModelResult =
+  | Readonly<{ status: "attached" | "same" }>
+  | Readonly<{ status: "stale" }>;
+
+const NATIVE_TASK_MODEL_ID = /^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9/._-]*$/u;
+
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
@@ -1986,6 +1995,157 @@ export async function startProtectedTaskRun(
       throw new Error("Protected Task start lost its locked Task");
     }
     return { status: "started" } as const;
+  });
+}
+
+/**
+ * Persist the already-resolved native model on one exact running protected
+ * TaskRun. This is deliberately separate from the start transition: model
+ * selection can perform asynchronous policy/catalog work only after the
+ * protected definition has been opened, while this CAS revalidates the full
+ * durable Task -> TaskRun -> Job chain before recording the result.
+ *
+ * Exact retries are idempotent. A different model, terminal work, changed
+ * crypto coordinates, or a stopped/unrelated Job returns `stale` without a
+ * write. Plain TaskRuns cannot satisfy the protected representation checks.
+ */
+export async function attachProtectedTaskRunModel(
+  db: DirectDatabase,
+  input: AttachProtectedTaskRunModelInput,
+): Promise<AttachProtectedTaskRunModelResult> {
+  if (
+    !input.taskId
+    || !input.taskRunId
+    || !input.graphThreadId
+    || !input.jobId
+    || !NATIVE_TASK_MODEL_ID.test(input.modelId)
+    || input.contentRepresentation !== "dual"
+      && input.contentRepresentation !== "protected"
+    || !input.contentNamespaceId
+    || !Number.isSafeInteger(input.contentRevision)
+    || input.contentRevision < 1
+    || !input.cryptoObjectId
+    || !Number.isSafeInteger(input.cryptoAccessRevision)
+    || input.cryptoAccessRevision < 0
+    || !(input.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || input.cryptoRequiredNamespaceFingerprint.length !== 32
+    || input.jobReference === null
+    || typeof input.jobReference !== "object"
+    || Array.isArray(input.jobReference)
+    || input.jobReference.kind !== "protected_task_run_v1"
+    || input.jobReference.taskId !== input.taskId
+    || input.jobReference.taskRunId !== input.taskRunId
+    || input.jobReference.inputObjectId !== input.cryptoObjectId
+    || !input.jobReference.resultObjectId
+    || !input.jobReference.authorizationRequestId
+    || !Number.isSafeInteger(input.jobReference.policyRevision)
+    || input.jobReference.policyRevision < 1
+  ) {
+    throw new TypeError("Protected Task model binding is malformed");
+  }
+
+  return db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, input.taskId))
+      .limit(1)
+      .for("update");
+    if (!task) return { status: "stale" } as const;
+
+    const expectedTaskStatus = task.scheduleKind === "cron"
+      ? "pending"
+      : "running";
+    if (
+      task.status !== expectedTaskStatus
+      || task.contentRepresentation !== input.contentRepresentation
+      || task.contentNamespaceId !== input.contentNamespaceId
+      || task.contentRevision !== input.contentRevision
+      || task.cryptoObjectId !== input.cryptoObjectId
+      || task.cryptoAccessRevision !== input.cryptoAccessRevision
+      || task.cryptoMappingState !== "verified"
+      || task.cryptoRequiredNamespaceFingerprint === null
+      || !sameBytes(
+        task.cryptoRequiredNamespaceFingerprint,
+        input.cryptoRequiredNamespaceFingerprint,
+      )
+    ) {
+      return { status: "stale" } as const;
+    }
+
+    const [run] = await tx
+      .select()
+      .from(taskRuns)
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, task.id),
+      ))
+      .limit(1)
+      .for("update");
+    if (
+      !run
+      || run.graphThreadId !== input.graphThreadId
+      || run.status !== "running"
+      || run.jobId !== input.jobId
+      || run.modelId !== null && run.modelId !== input.modelId
+      || run.resultText !== null
+      || run.completedAt !== null
+      || run.lastError !== null
+      || run.resultRepresentation !== "ordinary"
+      || run.resultContentNamespaceId !== null
+      || run.resultRevision !== 0
+      || run.resultCryptoObjectId !== null
+      || run.resultCryptoAccessRevision !== 0
+      || run.resultCryptoRequiredNamespaceFingerprint !== null
+      || run.resultCryptoMappingState !== "unmapped"
+    ) {
+      return { status: "stale" } as const;
+    }
+
+    const [job] = await tx
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, input.jobId))
+      .limit(1)
+      .for("share");
+    if (
+      !job
+      || job.ownerId !== task.requestorId
+      || job.requestorId !== task.requestorId
+      || job.laneKey !== `task:${task.id}`
+      || job.type !== "foreground"
+      || job.status !== "queued" && job.status !== "running"
+      || job.status === "queued" && job.startedAt !== null
+      || job.status === "running" && job.startedAt === null
+      || job.result !== null
+      || job.message !== null
+      || job.completedAt !== null
+      || !exactProtectedTaskJobReference(job.input, input.jobReference)
+    ) {
+      return { status: "stale" } as const;
+    }
+
+    if (run.modelId === input.modelId) {
+      return { status: "same" } as const;
+    }
+
+    const [updatedRun] = await tx
+      .update(taskRuns)
+      .set({ modelId: input.modelId })
+      .where(and(
+        eq(taskRuns.id, run.id),
+        eq(taskRuns.taskId, task.id),
+        eq(taskRuns.graphThreadId, input.graphThreadId),
+        eq(taskRuns.status, "running"),
+        eq(taskRuns.jobId, job.id),
+        isNull(taskRuns.modelId),
+        isNull(taskRuns.completedAt),
+      ))
+      .returning();
+    if (!updatedRun) {
+      throw new Error("Protected Task model binding lost its locked TaskRun");
+    }
+    return { status: "attached" } as const;
   });
 }
 
