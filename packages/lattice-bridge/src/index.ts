@@ -181,6 +181,19 @@ export {
   type PrepareTaskRuntimeRunResultInput,
 } from "./task/task-run-result-preparation.ts";
 export {
+  withProtectedTaskResultSigner,
+  type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskResultSignerResult,
+} from "./task/protected-task-result-signer.ts";
+export { withProtectedTaskResultNamespaceSource } from
+  "./task/protected-task-namespace-source.ts";
+export {
+  withProtectedTaskDefinitionV1,
+  type OpenProtectedTaskDefinitionInputV1,
+  type ProtectedTaskDefinitionNamespaceSourceV1,
+  type ProtectedTaskDefinitionOccurrenceV1,
+} from "./task/protected-task-definition-opener.ts";
+export {
   commitMemoryMutationV1,
   type MemoryMutationCommitmentInput,
 } from "./memory/memory-mutation-commitment.ts";

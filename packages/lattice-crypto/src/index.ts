@@ -409,6 +409,7 @@ export type {
   TaskRuntimeExecutionEvidenceV1 as TaskRuntimeExecutionEvidence,
   TaskRuntimeExecutionNamespaceAuthorityV1 as TaskRuntimeExecutionNamespaceAuthority,
 } from "./background/task-runtime-execution-evidence-v1.ts";
+export { assertAuthenticTaskRuntimeExecutionEvidenceV1 as assertAuthenticTaskRuntimeExecutionEvidence } from "./background/task-runtime-execution-evidence-v1.ts";
 export type {
   OneRunProcessorTransformResultV1 as OneRunProcessorTransformResult,
   ProcessorCredentialClaimPortV1 as ProcessorCredentialClaimPort,
