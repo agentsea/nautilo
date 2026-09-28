@@ -187,6 +187,22 @@ export async function acceptProtectedTaskRunOutputBinding(
       || task.lastError !== null
     ) return rejected("authority_changed");
 
+    if (deliveryMode !== "none") {
+      if (
+        input.destination === null
+        || task.callingRoomId !== input.destination.roomId
+      ) return rejected("conflict");
+      const [room] = await tx.select({
+        id: rooms.id,
+        namespaceId: rooms.namespaceId,
+      }).from(rooms).where(and(
+        eq(rooms.id, input.destination.roomId),
+        eq(rooms.namespaceId, input.destination.namespaceId),
+        isNull(rooms.archivedAt),
+      )).limit(1).for("share");
+      if (!room) return rejected("authority_changed");
+    }
+
     const [existing] = await tx.select().from(protectedTaskRunOutputBindings)
       .where(eq(protectedTaskRunOutputBindings.taskRunId, run.id))
       .limit(1).for("update");
@@ -222,19 +238,6 @@ export async function acceptProtectedTaskRunOutputBinding(
 
     if (deliveryMode === "none") {
       if (input.destination !== null) return rejected("conflict");
-    } else {
-      if (
-        input.destination === null
-        || task.callingRoomId !== input.destination.roomId
-      ) return rejected("conflict");
-      const [room] = await tx.select({
-        id: rooms.id,
-        namespaceId: rooms.namespaceId,
-      }).from(rooms).where(and(
-        eq(rooms.id, input.destination.roomId),
-        eq(rooms.namespaceId, input.destination.namespaceId),
-      )).limit(1).for("share");
-      if (!room) return rejected("authority_changed");
     }
 
     const [binding] = await tx.insert(protectedTaskRunOutputBindings).values({

@@ -95,13 +95,13 @@ function harness(options: Readonly<{
   task?: Task;
   run?: TaskRun;
   policy?: EncryptionTransitionPolicyRow;
-  room?: Room;
+  room?: Room | null;
   binding?: ProtectedTaskRunOutputBinding;
 }> = {}) {
   const taskRow = options.task ?? task();
   const runRow = options.run ?? run();
   const policyRow = options.policy ?? policy();
-  const roomRow = options.room ?? room();
+  const roomRow = options.room === undefined ? room() : options.room;
   let bindingRow = options.binding;
   const inserts: Array<Record<string, unknown>> = [];
   const locks: Array<{ table: unknown; kind: string }> = [];
@@ -109,7 +109,7 @@ function harness(options: Readonly<{
     if (table === tasks) return [taskRow];
     if (table === taskRuns) return [runRow];
     if (table === encryptionTransitionPolicy) return [policyRow];
-    if (table === rooms) return [roomRow];
+    if (table === rooms) return roomRow === null ? [] : [roomRow];
     if (table === protectedTaskRunOutputBindings) {
       return bindingRow ? [bindingRow] : [];
     }
@@ -269,5 +269,34 @@ describe("protected TaskRun output binding acceptance", () => {
       acceptedAt,
       destination: { roomId: ids.room, namespaceId: ids.namespace },
     })).toEqual({ status: "rejected", reason: "conflict" });
+  });
+
+  test("rechecks the destination Room even for an accepted replay", async () => {
+    const existing = {
+      taskRunId: ids.run,
+      bindingId: protectedTaskRunOutputBindingId(ids.run),
+      deliveryMode: "raw",
+      destinationRoomId: ids.room,
+      destinationNamespaceId: ids.namespace,
+      resultOperationId: `task-run-result:${ids.run}`,
+      resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
+      messageOperationId: protectedTaskRunMessageOperationId(ids.run),
+      wakeOperationId: null,
+      acceptedPolicyRevision: 9,
+      acceptedAt,
+    } as ProtectedTaskRunOutputBinding;
+    const fixture = harness({
+      task: task({ callingRoomId: ids.room, resultDelivery: "raw" }),
+      room: null,
+      binding: existing,
+    });
+    expect(await acceptProtectedTaskRunOutputBinding(fixture.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+      requiredPolicyRevision: 9,
+      acceptedAt,
+      destination: { roomId: ids.room, namespaceId: ids.namespace },
+    })).toEqual({ status: "rejected", reason: "authority_changed" });
+    expect(fixture.locks.some((entry) => entry.table === rooms)).toBe(true);
   });
 });
