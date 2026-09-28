@@ -5,6 +5,8 @@ import {
   verifyConversationProductPostgresHandle,
   type ConversationProductCanonicalTransactionConnection,
   type ConversationProductCanonicalTransactionRunner,
+  type ConversationProductPublicationGuard,
+  type ConversationProductPublicationGuardInput,
   type ConversationProductPostgresConnection,
   type ConversationProductPostgresHandle,
   type ConversationProductPostgresIsolationLevel,
@@ -92,6 +94,7 @@ class ScriptedCanonicalConnection
     steps: readonly CanonicalStep[],
     private readonly role: "nautilo" | "nautilo_agent",
     private readonly policyMode: "plaintext_only" | "shadow_encryption" | "encrypted_only" = "shadow_encryption",
+    private readonly forcedPolicyFences = 0,
   ) {
     this.#steps = [...steps];
   }
@@ -106,6 +109,7 @@ class ScriptedCanonicalConnection
     this.isolationLevels.push(options.isolationLevel);
     let identityPending = true;
     let publicationPolicyReadPending = false;
+    let forcedPolicyFences = this.forcedPolicyFences;
     const take = (operation: CanonicalOperation): unknown => {
       const step = this.#steps.shift();
       expect(step?.operation).toBe(operation);
@@ -171,6 +175,11 @@ class ScriptedCanonicalConnection
             current_user: this.role,
             session_user: this.role,
           }]);
+        }
+        if (forcedPolicyFences > 0) {
+          forcedPolicyFences -= 1;
+          publicationPolicyReadPending = true;
+          return Promise.resolve([]);
         }
         // Canonical transcript mutations acquire the shared publication fence
         // before their pre-existing scripted Room work. Keep this structural
@@ -335,6 +344,8 @@ async function storeWithResults(
   role: "nautilo" | "nautilo_agent" = "nautilo_agent",
   canonicalSteps: readonly CanonicalStep[] = [],
   policyMode: "plaintext_only" | "shadow_encryption" | "encrypted_only" = "shadow_encryption",
+  publicationGuard?: ConversationProductPublicationGuard,
+  forcedPolicyFences = 0,
 ): Promise<{
   connection: ScriptedConnection;
   canonical: ScriptedCanonicalConnection;
@@ -344,7 +355,12 @@ async function storeWithResults(
     { current_user: role, session_user: role },
   ], ...results]);
   const handle = await verifyConversationProductPostgresHandle(connection);
-  const canonical = new ScriptedCanonicalConnection(canonicalSteps, role, policyMode);
+  const canonical = new ScriptedCanonicalConnection(
+    canonicalSteps,
+    role,
+    policyMode,
+    forcedPolicyFences,
+  );
   const canonicalRunner =
     bindConversationProductCanonicalTransactionRunner(
       handle,
@@ -353,7 +369,11 @@ async function storeWithResults(
   return {
     connection,
     canonical,
-    store: new PostgresConversationProductStore(handle, canonicalRunner),
+    store: new PostgresConversationProductStore(
+      handle,
+      canonicalRunner,
+      publicationGuard,
+    ),
   };
 }
 
@@ -482,6 +502,106 @@ describe("Postgres conversation product store", () => {
         requestDigest: digest(),
       }))).message,
     ).toMatch(/canonical conversation transaction.*verified ordinary/i);
+  });
+
+  test("guards exact publication identity inside each canonical transaction before product mutation", async () => {
+    const rejection = new Error("publication rejected");
+    const guardCalls: ConversationProductPublicationGuardInput[] = [];
+    const guard: ConversationProductPublicationGuard = {
+      async assertPublicationAllowed(transaction, input): Promise<void> {
+        expect(transaction).toBeDefined();
+        guardCalls.push(input);
+        throw rejection;
+      },
+    };
+    const append = await storeWithResults([], "nautilo_agent", [
+      { operation: "execute", result: [] },
+      { operation: "select", result: [] },
+      { operation: "select", result: [{ roomId: ROOM_ID }] },
+      { operation: "execute", result: [] },
+      { operation: "execute", result: [{ id: 11 }] },
+    ], "shadow_encryption", guard, 1);
+    expect(await rejectedError(append.store.appendAllocated({
+      ...canonicalAppendFacts,
+      sessionId: SESSION_ID,
+      idempotencyKey: "guarded-append",
+      content: "protected output",
+      keyClass: "ai",
+      authorRole: "assistant",
+      requestDigest: digest(),
+      publicationPolicy: {
+        expectedRevision: 1,
+        representation: "ordinary_and_protected",
+      },
+    }))).toBe(rejection);
+    expect(guardCalls).toEqual([{
+      action: "appendAllocated",
+      sessionId: SESSION_ID,
+      messageId: 11,
+      revision: 0,
+      idempotencyKey: "guarded-append",
+      authorRole: "assistant",
+      keyClass: "ai",
+      publicationPolicy: {
+        expectedRevision: 1,
+        representation: "ordinary_and_protected",
+      },
+    }]);
+    expect(append.canonical.insertedValues).toEqual([]);
+    expect(append.canonical.updatedValues).toEqual([]);
+    append.canonical.assertExhausted();
+
+    guardCalls.length = 0;
+    const complete = await storeWithResults(
+      [],
+      "nautilo_agent",
+      [],
+      "shadow_encryption",
+      guard,
+    );
+    expect(await rejectedError(complete.store.markCryptoComplete({
+      sessionId: SESSION_ID_2,
+      messageId: 23,
+      revision: 4,
+      cryptoObjectId: "guarded-object",
+      parityStatus: "server_verified",
+      leaseToken: null,
+    }))).toBe(rejection);
+    expect(guardCalls).toEqual([{
+      action: "markCryptoComplete",
+      sessionId: SESSION_ID_2,
+      messageId: 23,
+      revision: 4,
+    }]);
+    expect(complete.canonical.events).toEqual([]);
+    expect(complete.canonical.insertedValues).toEqual([]);
+    expect(complete.canonical.updatedValues).toEqual([]);
+
+    guardCalls.length = 0;
+    const mapping = await storeWithResults(
+      [],
+      "nautilo_agent",
+      [],
+      "shadow_encryption",
+      guard,
+    );
+    expect(await rejectedError(mapping.store.compareAndSwapCryptoMapping({
+      sessionId: SESSION_ID_2,
+      messageId: 29,
+      revision: 6,
+      expectedNamespaceId: NAMESPACE_ID,
+      cryptoObjectId: "guarded-object",
+      leaseToken: null,
+    }))).toBe(rejection);
+    expect(guardCalls).toEqual([{
+      action: "compareAndSwapCryptoMapping",
+      sessionId: SESSION_ID_2,
+      messageId: 29,
+      revision: 6,
+    }]);
+    expect(mapping.canonical.events).toEqual([]);
+    expect(mapping.canonical.insertedValues).toEqual([]);
+    expect(mapping.canonical.updatedValues).toEqual([]);
   });
 
   test("allocates lifecycle before the narrow shadow message and replays by Session-scoped digest", async () => {
