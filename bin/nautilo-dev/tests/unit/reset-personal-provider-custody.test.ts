@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import * as config from "@nautilo/config";
 import * as configGuard from "@nautilo/config-guard";
 import * as credentialDb from "@nautilo/db";
+import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import * as operatorSecrets from "@nautilo/operator-secrets";
 import { resetPersonalProviderCustody } from "../../src/commands/reset-personal-provider-custody";
 
@@ -11,6 +12,10 @@ const LOST_KEY_ID = "20000000-0000-4000-8000-000000000002";
 const NEW_KEY_ID = "30000000-0000-4000-8000-000000000003";
 const RAW_KEY = "ab".repeat(32);
 const restoreSpies: Array<() => void> = [];
+
+beforeAll(() => {
+  bootstrapTestDbInstance();
+});
 
 function trackSpy<T extends { mockRestore(): void }>(spy: T): T {
   restoreSpies.push(() => spy.mockRestore());
