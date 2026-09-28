@@ -202,7 +202,17 @@ function fixture(choice: "protected" | "dual" = "protected") {
     publish: (async (value: Record<string, unknown>) => {
       calls.push(`publish:${(value["owner"] as { choice: string }).choice}`);
       published = value;
-      return {};
+      return {
+        status: "mapped",
+        taskId: TASK,
+        taskRunId: RUN,
+        resultObjectId: RESULT_OBJECT,
+        resultRevision: 1,
+      };
+    }) as never,
+    recordAttached: (async () => {
+      calls.push("attached");
+      return { status: "recorded" };
     }) as never,
   };
   return { calls, input, overrides, runtimeBytes, published: () => published };
@@ -231,6 +241,7 @@ test("prepares under signer history and publishes only after its postcheck", asy
     "repository",
     "terminal",
     "publish:protected",
+    "attached",
     "destroy",
   ]);
   expect([...state.runtimeBytes]).toEqual([0, 0, 0]);
@@ -362,4 +373,30 @@ test("does not publish when authority changes during native preparation", async 
   expect(state.calls).not.toContain("history:postcheck");
   expect(state.calls.some((call) => call.startsWith("publish:"))).toBe(false);
   expect(state.calls.at(-1)).toBe("destroy");
+});
+
+test("does not attach a substituted result publication receipt", async () => {
+  const state = fixture();
+  let attached = false;
+  const publishResult = createProtectedTaskNativeResultPublication(
+    state.input,
+    {
+      ...state.overrides,
+      publish: (async () => ({
+        status: "mapped",
+        taskId: TASK,
+        taskRunId: TASK,
+        resultObjectId: RESULT_OBJECT,
+        resultRevision: 1,
+      })) as never,
+      recordAttached: (async () => {
+        attached = true;
+        return { status: "recorded" };
+      }) as never,
+    },
+  );
+  await Promise.resolve(expect(publishResult(publication())).rejects.toThrow(
+    "result receipt is not exact",
+  ));
+  expect(attached).toBe(false);
 });

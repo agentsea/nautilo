@@ -3,6 +3,7 @@ import {
   eq,
   humanCryptoDevices,
   inArray,
+  recordProtectedTaskRunResultAttached,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
@@ -83,6 +84,7 @@ type Dependencies = Readonly<{
   withSigner: typeof withProtectedTaskResultSigner;
   prepare: typeof prepareNativeTaskRuntimeRunResult;
   publish: typeof publishPreparedProtectedTaskRunResult;
+  recordAttached: typeof recordProtectedTaskRunResultAttached;
   createHumanSignerHistory(
     handle: CryptoPostgresHandle,
     crypto: LatticeCrypto,
@@ -107,6 +109,7 @@ const productionDependencies: Dependencies = Object.freeze({
   withSigner: withProtectedTaskResultSigner,
   prepare: prepareNativeTaskRuntimeRunResult,
   publish: publishPreparedProtectedTaskRunResult,
+  recordAttached: recordProtectedTaskRunResultAttached,
   createHumanSignerHistory: (handle, crypto) =>
     new PostgresHumanDeviceSignerHistory({ handle, crypto }),
   createStorage: (handle) => new PostgresLatticeStorage(handle),
@@ -430,7 +433,7 @@ export function createProtectedTaskNativeResultPublication(
         },
       });
       const terminal = dependencies.createTerminalPorts(input.db);
-      await dependencies.publish({
+      const receipt = await dependencies.publish({
         repository,
         terminal: terminal.terminal,
         dualTerminal: terminal.dualTerminal,
@@ -447,6 +450,19 @@ export function createProtectedTaskNativeResultPublication(
           payload: publication.payload,
         }),
       });
+      if (receipt.taskId !== occurrence.task.id
+        || receipt.taskRunId !== occurrence.run.id
+        || receipt.resultObjectId !== input.reference.resultObjectId
+        || receipt.resultRevision !== 1) {
+        throw new TypeError("Protected Task result receipt is not exact");
+      }
+      const attached = await dependencies.recordAttached(input.db, {
+        taskId: receipt.taskId,
+        taskRunId: receipt.taskRunId,
+      });
+      if (attached.status === "rejected") {
+        throw new TypeError("Protected Task result attachment is not ready");
+      }
     } finally {
       dependencies.destroyRequest(request);
     }
