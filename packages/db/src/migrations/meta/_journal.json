@@ -2150,6 +2150,13 @@
       "when": 1790631333042,
       "tag": "0306_lethal_angel",
       "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1790635372692,
+      "tag": "0307_fearless_salo",
+      "breakpoints": true
     }
   ]
 }

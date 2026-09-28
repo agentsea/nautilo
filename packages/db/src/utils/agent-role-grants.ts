@@ -24,6 +24,7 @@ export const SENSITIVE_TABLES = [
   // replay history, not Agent runtime authority. Keep them denied after the
   // broad legacy/default grants are reconciled.
   "content_access_operations",
+  "protected_task_run_output_bindings",
   "group_moderation_scopes",
   "moderation_subjects",
   "moderation_restrictions",

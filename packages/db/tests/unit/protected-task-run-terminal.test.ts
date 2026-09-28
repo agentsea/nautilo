@@ -13,6 +13,10 @@ import {
 } from "../../src/schema/encryption-transition";
 import { jobs, type Job } from "../../src/schema/jobs";
 import {
+  protectedTaskRunOutputBindings,
+  type ProtectedTaskRunOutputBinding,
+} from "../../src/schema/protected-task-run-output-bindings";
+import {
   taskDefinitionCryptoRevisions,
   type TaskDefinitionCryptoRevision,
 } from "../../src/schema/task-definition-crypto-revisions";
@@ -214,6 +218,32 @@ function policy(
   } as EncryptionTransitionPolicyRow;
 }
 
+function outputBinding(
+  overrides: Partial<ProtectedTaskRunOutputBinding> = {},
+): ProtectedTaskRunOutputBinding {
+  return {
+    taskRunId: ids.run,
+    bindingId: `task-run-output:${ids.run}`,
+    deliveryMode: "none",
+    destinationRoomId: null,
+    destinationNamespaceId: null,
+    resultOperationId: `task-run-result:${ids.run}`,
+    resultObjectId,
+    messageOperationId: null,
+    wakeOperationId: null,
+    acceptedPolicyRevision: 9,
+    acceptedAt: new Date("2026-09-25T12:00:03.000Z"),
+    resultTerminalAt: null,
+    resultAttachedAt: null,
+    messageId: null,
+    messagePublishedAt: null,
+    wakeJobId: null,
+    wakeScheduledAt: null,
+    completedAt: null,
+    ...overrides,
+  };
+}
+
 function hex(value: Uint8Array): string {
   return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -241,9 +271,11 @@ type FixtureOptions = Readonly<{
   definitionRevision?: TaskDefinitionCryptoRevision | undefined;
   resultRevision?: TaskRunResultCryptoRevision | undefined;
   policy?: EncryptionTransitionPolicyRow | undefined;
+  outputBinding?: ProtectedTaskRunOutputBinding | undefined;
   loseJobUpdate?: boolean;
   loseRunUpdate?: boolean;
   loseTaskUpdate?: boolean;
+  loseOutputBindingUpdate?: boolean;
 }>;
 
 function harness(options: FixtureOptions = {}) {
@@ -266,6 +298,12 @@ function harness(options: FixtureOptions = {}) {
   const policyRow = Object.prototype.hasOwnProperty.call(options, "policy")
     ? options.policy
     : policy();
+  let outputBindingRow = Object.prototype.hasOwnProperty.call(
+    options,
+    "outputBinding",
+  ) ? options.outputBinding : outputBinding({
+    resultTerminalAt: runRow?.completedAt ?? null,
+  });
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
@@ -278,6 +316,9 @@ function harness(options: FixtureOptions = {}) {
     }
     if (table === taskRunResultCryptoRevisions) return resultRow ? [resultRow] : [];
     if (table === encryptionTransitionPolicy) return policyRow ? [policyRow] : [];
+    if (table === protectedTaskRunOutputBindings) {
+      return outputBindingRow ? [outputBindingRow] : [];
+    }
     throw new Error("unexpected table");
   };
   const tx = {
@@ -314,6 +355,14 @@ function harness(options: FixtureOptions = {}) {
               taskRow = { ...taskRow, ...patch } as Task;
               return [taskRow];
             }
+            if (table === protectedTaskRunOutputBindings) {
+              if (options.loseOutputBindingUpdate || !outputBindingRow) return [];
+              outputBindingRow = {
+                ...outputBindingRow,
+                ...patch,
+              } as ProtectedTaskRunOutputBinding;
+              return [outputBindingRow];
+            }
             throw new Error("unexpected update table");
           },
         }),
@@ -340,8 +389,9 @@ describe("protected TaskRun result terminal CAS", () => {
       { table: taskDefinitionCryptoRevisions, kind: "share" },
       { table: taskRunResultCryptoRevisions, kind: "share" },
       { table: encryptionTransitionPolicy, kind: "share" },
+      { table: protectedTaskRunOutputBindings, kind: "update" },
     ]);
-    expect(fixture.writes).toHaveLength(3);
+    expect(fixture.writes).toHaveLength(4);
     expect(fixture.writes[0]?.table).toBe(jobs);
     expect(fixture.writes[0]?.patch).toEqual({
       metadata: { [receiptKey]: exactReceipt() },
@@ -353,6 +403,10 @@ describe("protected TaskRun result terminal CAS", () => {
     expect(fixture.writes[2]).toEqual({
       table: tasks,
       patch: { status: "completed", updatedAt: completedAt },
+    });
+    expect(fixture.writes[3]).toEqual({
+      table: protectedTaskRunOutputBindings,
+      patch: { resultTerminalAt: completedAt },
     });
     const patches = JSON.stringify(fixture.writes.map((write) => write.patch));
     expect(patches).not.toContain("resultText");
@@ -369,7 +423,11 @@ describe("protected TaskRun result terminal CAS", () => {
     }));
 
     expect(result).toEqual({ status: "transitioned" });
-    expect(fixture.writes.map((write) => write.table)).toEqual([jobs, taskRuns]);
+    expect(fixture.writes.map((write) => write.table)).toEqual([
+      jobs,
+      taskRuns,
+      protectedTaskRunOutputBindings,
+    ]);
     expect(fixture.writes[1]?.patch).toEqual({
       status: "errored",
       completedAt,
@@ -381,7 +439,7 @@ describe("protected TaskRun result terminal CAS", () => {
     expect(await terminalizeProtectedTaskRunResult(fixture.db, input({
       scheduleKind: "now",
     }))).toEqual({ status: "transitioned" });
-    expect(fixture.writes.at(-1)).toEqual({
+    expect(fixture.writes.at(-2)).toEqual({
       table: tasks,
       patch: { status: "completed", updatedAt: completedAt },
     });
@@ -461,6 +519,8 @@ describe("protected TaskRun result terminal CAS", () => {
       { job: job({ input: { ...jobReference(), resultObjectId: `${resultObjectId}:other` } }) },
       { policy: policy({ revision: 10 }) },
       { policy: policy({ mode: "shadow_encryption" }) },
+      { outputBinding: undefined },
+      { outputBinding: outputBinding({ acceptedPolicyRevision: 10 }) },
     ];
 
     for (const options of cases) {
@@ -505,6 +565,10 @@ describe("protected TaskRun result terminal CAS", () => {
       harness({ loseTaskUpdate: true }).db,
       input(),
     )).rejects.toThrow("lost its Task");
+    expect(terminalizeProtectedTaskRunResult(
+      harness({ loseOutputBindingUpdate: true }).db,
+      input(),
+    )).rejects.toThrow("lost its output binding");
   });
 
   test("writes Shadow ordinary result content in the same dual terminal CAS", async () => {
@@ -542,6 +606,7 @@ describe("protected TaskRun result terminal CAS", () => {
       },
     });
     expect(fixture.writes[2]?.table).toBe(tasks);
+    expect(fixture.writes[3]?.table).toBe(protectedTaskRunOutputBindings);
     expect(JSON.stringify(fixture.writes[0]?.patch)).not.toContain(
       ordinaryResult.resultText,
     );
@@ -570,7 +635,11 @@ describe("protected TaskRun result terminal CAS", () => {
       outcome: "errored",
       ordinaryResult,
     }))).toEqual({ status: "transitioned" });
-    expect(fixture.writes.map((write) => write.table)).toEqual([jobs, taskRuns]);
+    expect(fixture.writes.map((write) => write.table)).toEqual([
+      jobs,
+      taskRuns,
+      protectedTaskRunOutputBindings,
+    ]);
     expect(fixture.writes[1]?.patch).toMatchObject({
       status: "errored",
       resultText: null,
