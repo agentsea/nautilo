@@ -89,6 +89,9 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
     accessRevisions: readonly number[],
     policyRevision: number,
   ) => Promise<Value | null>,
+  validateCurrentTaskRun?: (
+    product: PostgresJsBridgeConnection,
+  ) => Promise<boolean>,
 ): Promise<Value | null> {
   // Snapshot caller-owned coordinates before the first asynchronous boundary.
   const request = Object.freeze({ ...input,
@@ -127,6 +130,10 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
       || task.content_namespace_id !== request.contentNamespaceId
       || (task.content_representation !== "protected"
         && task.content_representation !== "dual")) return null;
+    // Recipient binding starts before a signed request exists. Hold the exact
+    // awaiting TaskRun lock for the entire request-construction callback.
+    if (validateCurrentTaskRun !== undefined
+      && !await validateCurrentTaskRun(product)) return null;
     return new PostgresNamespaceProductAuthority(product)
       .withCurrentReadableNamespaceSet({
         subjectUserId: request.requesterUserId,
@@ -303,6 +310,7 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
   deviceId: string;
   namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
   domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+  validateCurrentTaskRun(product: PostgresJsBridgeConnection): Promise<boolean>;
   signal?: AbortSignal;
   use(authority: InitialTaskRuntimeRecipientAuthority): Value | Promise<Value>;
 }>): Promise<Value | null> {
@@ -311,7 +319,8 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
   })));
   const domains = Object.freeze(input.domainRequirements.map((entry) => Object.freeze({ ...entry })));
   const request = Object.freeze({ ...input, namespaceIds: Object.freeze([...input.namespaceIds]) });
-  if (request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
+  if (typeof request.validateCurrentTaskRun !== "function"
+    || request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
     || namespaces.some((entry, index) => entry.ordinal !== index
       || entry.namespaceId !== request.namespaceIds[index]
       || !Number.isSafeInteger(entry.expectedAccessRevision) || entry.expectedAccessRevision < 0
@@ -386,5 +395,5 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
-  });
+  }, request.validateCurrentTaskRun);
 }

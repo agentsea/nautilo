@@ -242,6 +242,7 @@ function device(): CurrentDeviceAdmissionAuthority {
 }
 function recipientInput(input: Input) {
   return { ...input, deviceId: DEVICE,
+    validateCurrentTaskRun: async () => true,
     namespaceRequirements: NAMESPACES.map((namespaceId, ordinal) => ({ ordinal, namespaceId,
       domainId: DOMAINS[ordinal]!, operations: ["decrypt", "encrypt"] as const,
       expectedAccessRevision: 9 + ordinal, expectedPolicyRevision: 7 })),
@@ -250,6 +251,29 @@ function recipientInput(input: Input) {
 }
 
 describe("initial Task Runtime recipient authority", () => {
+  test("keeps exact awaiting TaskRun validation inside product locks before recipient construction", async () => {
+    const { input, events } = fixture();
+    const admission = spyOn(PostgresDeviceAdmissionRepository.prototype, "currentAuthorityForDelegation")
+      .mockImplementation(async () => device());
+    let used = false;
+    try {
+      const result = await withInitialTaskRuntimeRecipientAuthority({
+        ...recipientInput(input),
+        validateCurrentTaskRun: async () => {
+          events.push("run-lock");
+          expect(events).toContain("task");
+          expect(events).not.toContain("restricted");
+          return false;
+        },
+        use: () => { used = true; return true; },
+      });
+      expect(result).toBeNull();
+      expect(used).toBe(false);
+      expect(events.indexOf("task")).toBeLessThan(events.indexOf("run-lock"));
+      expect(events).not.toContain("restricted");
+    } finally { admission.mockRestore(); }
+  });
+
   test("lends exact public authority inside product/device/Namespace/Domain locks", async () => {
     const { input, events } = fixture();
     const devices: CurrentDeviceAdmissionAuthority[] = [];

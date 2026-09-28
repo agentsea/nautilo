@@ -987,3 +987,8 @@ export {
   prepareNativeTaskRuntimeRunResult,
   type PrepareNativeTaskRuntimeRunResultInput,
 } from "./task/native-task-run-result-preparation.ts";
+
+export {
+  createNativeTaskRuntimeCheckpointCellCrypto,
+  type NativeTaskRuntimeCheckpointCellCryptoInput,
+} from "./task/native-task-runtime-checkpoint-cell-crypto.ts";
