@@ -16,6 +16,8 @@ import {
   rooms,
   tasks,
   taskRuns,
+  cryptoObjects,
+  taskDefinitionCryptoRevisions,
   createTask,
   insertTaskRun,
   findAwaitingTaskForRoom,
@@ -34,6 +36,7 @@ const createdAgentIds: string[] = [];
 const createdNamespaceIds: string[] = [];
 const createdRoomIds: string[] = [];
 const createdTaskIds: string[] = [];
+const createdObjectIds: string[] = [];
 
 /** Seed a fresh user + agent; returns their ids. */
 async function seedUserAndAgent(tag: string) {
@@ -100,12 +103,13 @@ async function insertAwaitingTaskForRoom(opts: {
   targetUserIds: string[];
   graphThreadId: string;
   runStartedAt?: Date;
+  prompt?: string;
 }): Promise<AwaitingFixture> {
   const task = await createTask(db, {
     ownerId: opts.owner.userId,
     requestorId: opts.requestorId,
     agentId: opts.owner.agentId,
-    prompt: "await probe",
+    prompt: opts.prompt ?? "await probe",
     status: "awaiting",
     targetRoomId: opts.roomId,
     targetUserIds: opts.targetUserIds,
@@ -133,6 +137,12 @@ afterAll(async () => {
   if (createdTaskIds.length > 0) {
     await db.delete(taskRuns).where(inArray(taskRuns.taskId, createdTaskIds));
     await db.delete(tasks).where(inArray(tasks.id, createdTaskIds));
+    await db.delete(taskDefinitionCryptoRevisions)
+      .where(inArray(taskDefinitionCryptoRevisions.taskId, createdTaskIds));
+  }
+  if (createdObjectIds.length > 0) {
+    await db.delete(cryptoObjects)
+      .where(inArray(cryptoObjects.objectId, createdObjectIds));
   }
   for (const roomId of createdRoomIds) {
     await db.delete(rooms).where(eq(rooms.id, roomId));
@@ -275,6 +285,63 @@ describe("M151 — findAwaitingTaskForRoom (live PG)", () => {
     expect(found!.graphThreadId).toBe("room:R:bot:newer");
     expect(found!.runId).toBe(newer.runId);
     expect(found!.task.id).not.toBe(older.taskId);
+  });
+
+  test("an encrypted wait cannot hide an older ordinary reply from Plain routing", async () => {
+    const owner = await seedUserAndAgent("mixed-waits");
+    const roomId = await makeTargetRoom(owner.userId, "mixed-waits-room");
+    const older = await insertAwaitingTaskForRoom({
+      owner, roomId, requestorId: owner.userId, targetUserIds: [],
+      graphThreadId: "room:R:bot:ordinary-wait",
+      runStartedAt: new Date(Date.now() - 10_000),
+    });
+    const newer = await insertAwaitingTaskForRoom({
+      owner, roomId, requestorId: owner.userId, targetUserIds: [],
+      graphThreadId: "room:R:bot:protected-wait",
+      runStartedAt: new Date(Date.now() - 1_000), prompt: "",
+    });
+    const [room] = await db.select({ namespaceId: rooms.namespaceId })
+      .from(rooms).where(eq(rooms.id, roomId)).limit(1);
+    if (!room?.namespaceId) throw new Error("Protected wait Namespace missing");
+    const digest = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
+    const objectId = `task-definition:v1:${digest}`;
+    createdObjectIds.push(objectId);
+    const fingerprint = new Uint8Array(32).fill(17);
+    await db.insert(cryptoObjects).values({
+      objectId,
+      payloadHash: new Uint8Array(32).fill(18),
+      payloadBytes: new Uint8Array([1]),
+    });
+    await db.insert(taskDefinitionCryptoRevisions).values({
+      taskId: newer.taskId,
+      contentNamespaceId: room.namespaceId,
+      contentRevision: 1,
+      operationId: `task-reply-routing:${crypto.randomUUID()}`,
+      requestDigest: new Uint8Array(32).fill(19),
+      authorityFingerprint: new Uint8Array(32).fill(20),
+      requesterHumanId: owner.userId,
+      anchorNamespaceId: room.namespaceId,
+      cryptoObjectId: objectId,
+      representation: "protected",
+      requiredNamespaceFingerprint: fingerprint,
+      completion: "complete",
+      disposition: "mapped",
+      cryptoCompletedAt: new Date(),
+    });
+    await db.update(tasks).set({
+      contentRepresentation: "protected",
+      contentNamespaceId: room.namespaceId,
+      contentRevision: 1,
+      cryptoObjectId: objectId,
+      cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: fingerprint,
+      cryptoMappingState: "verified",
+    }).where(eq(tasks.id, newer.taskId));
+
+    expect((await findAwaitingTaskForRoom(db, roomId, owner.userId))?.task.id)
+      .toBe(newer.taskId);
+    expect((await findAwaitingTaskForRoom(db, roomId, owner.userId, "ordinary"))?.task.id)
+      .toBe(older.taskId);
   });
 
   test("parks Writer review runs durably without letting room replies resume them", async () => {
