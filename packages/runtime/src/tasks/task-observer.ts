@@ -61,6 +61,7 @@ export type ProtectedTaskOccurrence = Readonly<{
     requestorId: string;
     agentId: string;
     callingRoomId: string | null;
+    scheduleKind: "now" | "one_shot" | "cron";
     contentRepresentation: "dual" | "protected";
     contentNamespaceId: string;
     contentRevision: number;
@@ -111,6 +112,7 @@ function projectProtectedTaskOccurrence(
       requestorId: task.requestorId,
       agentId: task.agentId,
       callingRoomId: task.callingRoomId,
+      scheduleKind: task.scheduleKind,
       contentRepresentation: task.contentRepresentation,
       contentNamespaceId: task.contentNamespaceId,
       contentRevision: task.contentRevision,

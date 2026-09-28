@@ -92,6 +92,7 @@ async function fixture() {
       requestorId: "user:requestor",
       agentId: "agent:task",
       callingRoomId: null,
+      scheduleKind: "now",
       contentRepresentation: "protected",
       contentNamespaceId: "namespace:task",
       contentRevision: 1,
@@ -273,6 +274,42 @@ describe("current protected Task Runtime authority adapter", () => {
     });
     expect(result).toBe("current");
     expect(loaded).toBe(1);
+    f.signing.privateKey.fill(0);
+  });
+
+  test("accepts current running cron authority with a pending parent Task", async () => {
+    const f = await fixture();
+    const occurrence: ProtectedTaskOccurrence = {
+      ...f.occurrence,
+      task: { ...f.occurrence.task, scheduleKind: "cron" },
+    };
+    const port = createCurrentProtectedTaskRuntimeAuthorityPort({
+      loadCurrentFacts: async () => ({
+        ...f.facts,
+        task: { ...f.facts.task, scheduleKind: "cron", status: "pending" },
+      }),
+      withAcceptedAuthority: (async (input: Parameters<
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
+        f.authority,
+        {} as never,
+        {} as never,
+      )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+    });
+    const result = await port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: {userId: occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId},
+      occurrence,
+      record: f.record,
+      request: f.request,
+      now: () => f.now,
+      use: () => "cron",
+    });
+    expect(result).toBe("cron");
     f.signing.privateKey.fill(0);
   });
 

@@ -4,7 +4,7 @@ import type { ProtectedTaskOccurrence } from "./task-observer";
 
 type CurrentTask = Pick<Task,
   | "id" | "ownerId" | "requestorId" | "agentId" | "callingRoomId"
-  | "status" | "contentRepresentation" | "contentNamespaceId"
+  | "status" | "scheduleKind" | "contentRepresentation" | "contentNamespaceId"
   | "contentRevision" | "cryptoObjectId" | "cryptoAccessRevision"
   | "cryptoRequiredNamespaceFingerprint" | "cryptoMappingState"
 >;
@@ -50,6 +50,7 @@ export function isCurrentProtectedTaskRunForGrant(input: Readonly<{
     && task.requestorId === occurrence.task.requestorId
     && task.agentId === occurrence.task.agentId
     && task.callingRoomId === occurrence.task.callingRoomId
+    && task.scheduleKind === occurrence.task.scheduleKind
     && task.contentRepresentation === occurrence.task.contentRepresentation
     && task.contentNamespaceId === occurrence.task.contentNamespaceId
     && task.contentRevision === occurrence.task.contentRevision
@@ -60,7 +61,9 @@ export function isCurrentProtectedTaskRunForGrant(input: Readonly<{
     && task.cryptoMappingState === "verified"
     && (input.phase === "awaiting"
       ? task.status === "pending" || task.status === "awaiting" || task.status === "running"
-      : task.status === "running")
+      : occurrence.task.scheduleKind === "cron"
+        ? task.status === "pending"
+        : task.status === "running")
     && run.id === occurrence.run.id
     && run.taskId === task.id
     && run.graphThreadId === occurrence.run.graphThreadId

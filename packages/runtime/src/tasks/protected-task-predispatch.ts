@@ -22,6 +22,7 @@ export type ProtectedTaskPredispatchTaskFacts = Readonly<Pick<Task,
   | "requestorId"
   | "agentId"
   | "callingRoomId"
+  | "scheduleKind"
   | "status"
   | "preset"
   | "targetChat"
@@ -150,6 +151,7 @@ function assertOccurrence(
     || !uuid(task.requestorId)
     || !uuid(task.agentId)
     || task.callingRoomId !== null && !uuid(task.callingRoomId)
+    || !["now", "one_shot", "cron"].includes(task.scheduleKind)
     || !["pending", "awaiting", "running"].includes(task.status)
     || !uniqueUuids(task.targetUserIds)
     || task.targetRoomId !== null && !uuid(task.targetRoomId)
@@ -296,6 +298,7 @@ export async function planProtectedTaskPredispatch(input: Readonly<{
       requestorId: task.requestorId,
       agentId: task.agentId,
       callingRoomId: task.callingRoomId,
+      scheduleKind: task.scheduleKind,
       contentRepresentation: task.contentRepresentation,
       contentNamespaceId: task.contentNamespaceId,
       contentRevision: task.contentRevision,

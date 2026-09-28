@@ -26,6 +26,7 @@ function task(
     requestorId: OWNER,
     agentId: AGENT,
     callingRoomId: null,
+    scheduleKind: "now",
     status: "awaiting",
     preset: "task",
     targetChat: "last_in_namespace",
@@ -141,6 +142,7 @@ describe("protected Task predispatch", () => {
     expect(value.occurrence).toMatchObject({
       task: {
         id: TASK,
+        scheduleKind: "now",
         contentNamespaceId: NAMESPACE,
         contentRevision: 3,
         cryptoAccessRevision: 2,

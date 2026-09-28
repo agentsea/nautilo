@@ -26,6 +26,7 @@ function occurrence(): ProtectedTaskOccurrence {
       requestorId: REQUESTOR_ID,
       agentId: AGENT_ID,
       callingRoomId: ROOM_ID,
+      scheduleKind: "now" as const,
       contentRepresentation: "protected" as const,
       contentNamespaceId: "namespace-1",
       contentRevision: 2,

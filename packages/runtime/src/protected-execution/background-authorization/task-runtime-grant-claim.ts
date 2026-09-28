@@ -48,6 +48,9 @@ import {
   advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
   claimBackgroundAuthorizationRequest,
+  completeBackgroundAuthorizationRequest,
+  failBackgroundAuthorizationRequest,
+  markBackgroundAuthorizationRunning,
 } from "./lifecycle";
 import type {
   BackgroundAuthorizationRecord,
@@ -735,6 +738,30 @@ function createCandidate(input: Readonly<{
                   signal,
                 });
                 signal.throwIfAborted();
+                const runningAt = input.dependencies.now?.() ?? Date.now();
+                const runningRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+                  ...current,
+                  snapshot: markBackgroundAuthorizationRunning(
+                    current.snapshot,
+                    runningAt,
+                  ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+                };
+                const running = await input.dependencies.repository.compareAndSwap({
+                  expectedRequestRevision: current.snapshot.requestRevision,
+                  next: runningRecord,
+                });
+                const storedRunning = running.status === "updated"
+                  ? running.record
+                  : null;
+                if (
+                  storedRunning === null
+                  || !isTaskRuntimeRecord(storedRunning)
+                  || storedRunning.snapshot.state !== "running"
+                  || storedRunning.snapshot.claimId !== input.claimId
+                  || !exactOccurrenceRecord(input.occurrence, storedRunning)
+                ) {
+                  throw new Error("Task Runtime execution start could not be recorded");
+                }
                 let publicationCalls = 0;
                 let publicationOpen = true;
                 const pendingPublications: Promise<void>[] = [];
@@ -747,7 +774,7 @@ function createCandidate(input: Readonly<{
                     signal.throwIfAborted();
                     const pending = input.plan.publishResult({
                       occurrence: input.occurrence,
-                      record: current,
+                      record: storedRunning,
                       payload,
                       domains,
                       evidence,
@@ -761,6 +788,29 @@ function createCandidate(input: Readonly<{
                   const result = await work(transientInput, signal, publication);
                   await Promise.all(pendingPublications);
                   signal.throwIfAborted();
+                  if (publicationCalls === 1) {
+                    const completedAt = input.dependencies.now?.() ?? Date.now();
+                    const completedRecord:
+                      BackgroundAuthorizationTaskRuntimeRecordV3 = {
+                        ...storedRunning,
+                        snapshot: completeBackgroundAuthorizationRequest(
+                          storedRunning.snapshot,
+                          completedAt,
+                        ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+                        finishedAt: completedAt,
+                      };
+                    const completed = await input.dependencies.repository
+                      .compareAndSwap({
+                        expectedRequestRevision:
+                          storedRunning.snapshot.requestRevision,
+                        next: completedRecord,
+                      });
+                    if (completed.status !== "updated") {
+                      throw new Error(
+                        "Task Runtime execution completion could not be recorded",
+                      );
+                    }
+                  }
                   return result;
                 } catch (error) {
                   await Promise.allSettled(pendingPublications);
@@ -999,6 +1049,43 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       }
     }
     if (current.snapshot.state === "claimed" || current.snapshot.state === "running") {
+      const now = this.#now();
+      if (
+        current.snapshot.claimExpiresAt !== null
+        && now >= current.snapshot.claimExpiresAt
+      ) {
+        const wasRunning = current.snapshot.state === "running";
+        const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+          ...current,
+          snapshot: (wasRunning
+            ? failBackgroundAuthorizationRequest(
+              current.snapshot,
+              "provider_outcome_unknown",
+              now,
+            )
+            : advanceBackgroundAuthorizationGeneration(
+              current.snapshot,
+              { reason: "claim_expired", now, nextAttemptAt: now },
+            )) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          ...(wasRunning
+            ? { finishedAt: now }
+            : { descriptorBytes: null, acceptedMaterial: null }),
+        };
+        const expired = await this.dependencies.repository.compareAndSwap({
+          expectedRequestRevision: current.snapshot.requestRevision,
+          next,
+        });
+        if (expired.status === "updated") {
+          this.dependencies.recipients.delete(
+            current.snapshot.requestId,
+            current.snapshot.recipientGeneration,
+          );
+          return Object.freeze({
+            status: wasRunning ? "inactive" as const : "awaiting_authorization" as const,
+          });
+        }
+        return staleClaimResult(expired.current);
+      }
       return Object.freeze({ status: "already_claimed" as const });
     }
     if (

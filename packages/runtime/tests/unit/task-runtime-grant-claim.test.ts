@@ -109,6 +109,7 @@ function occurrence(callingRoomId: string | null = ROOM): ProtectedTaskOccurrenc
       requestorId: REQUESTOR,
       agentId: AGENT,
       callingRoomId,
+      scheduleKind: "now" as const,
       contentRepresentation: "protected" as const,
       contentNamespaceId: NAMESPACE,
       contentRevision: 1,
@@ -598,8 +599,95 @@ describe("Task Runtime grant claim", () => {
     await expect(result.dispatch.candidate.run(async () => {}))
       .rejects.toThrow("one-use");
     expect(value.recipients.size).toBe(0);
-    expect(JSON.stringify(await value.repository.get(REQUEST)))
-      .not.toContain(SENTINEL);
+    const completed = await value.repository.get(REQUEST);
+    expect(completed?.snapshot.state).toBe("completed");
+    expect(completed?.snapshot.claimId).toBeNull();
+    expect(completed?.snapshot.claimExpiresAt).toBeNull();
+    expect(completed?.finishedAt).toBe(NOW + 3);
+    expect(JSON.stringify(completed)).not.toContain(SENTINEL);
+  });
+
+  test("a restarted coordinator rotates an expired claim that never began work", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    value.recipients.close();
+    value.setClock(NOW + 60_000);
+    const restartedRecipients = new TaskRuntimeRecipientRegistry(value.crypto, {
+      now: () => NOW + 60_000,
+    });
+    const restarted = value.createCoordinator(restartedRecipients);
+
+    expect(await restarted.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("awaiting_recipient");
+    expect(durable?.snapshot.recipientGeneration).toBe(1);
+    expect(durable?.snapshot.retryCount).toBe(0);
+    expect(durable?.snapshot.lastRetryReason).toBe("claim_expired");
+    expect(durable?.snapshot.claimId).toBeNull();
+    expect(durable?.descriptorBytes).toBeNull();
+    expect(durable?.acceptedMaterial).toBeNull();
+    restartedRecipients.close();
+  });
+
+  test("a no-publication interrupt stays nonterminal and cannot redispatch", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-interrupted"))
+      .toEqual({ status: "started" });
+
+    expect(await claimed.dispatch.candidate.run(async () => ({
+      status: "interrupted" as const,
+    }))).toEqual({ status: "interrupted" });
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("running");
+    expect(durable?.finishedAt).toBeNull();
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "already_claimed" });
+    expect(value.claimCasCount()).toBe(1);
+    expect(value.startInputs).toHaveLength(1);
+  });
+
+  test("an expired running claim becomes uncertain and cannot auto-replay", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-uncertain"))
+      .toEqual({ status: "started" });
+    const entered = Promise.withResolvers<void>();
+    const releaseWork = Promise.withResolvers<void>();
+    const running = claimed.dispatch.candidate.run(async () => {
+      entered.resolve();
+      await releaseWork.promise;
+    });
+    await entered.promise;
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+
+    value.setClock(NOW + 60_000);
+    const restarted = value.createCoordinator(value.recipients);
+    expect(await restarted.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "inactive" });
+    const terminal = await value.repository.get(REQUEST);
+    expect(terminal?.snapshot.state).toBe("terminal_failure");
+    expect(terminal?.snapshot.terminalReason).toBe("provider_outcome_unknown");
+    expect(terminal?.snapshot.recipientGeneration).toBe(0);
+    expect(terminal?.snapshot.retryCount).toBe(0);
+    expect(terminal?.finishedAt).toBe(NOW + 60_000);
+    expect(await restarted.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "inactive" });
+    expect(value.claimCasCount()).toBe(1);
+
+    releaseWork.resolve();
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(running).rejects.toThrow();
   });
 
   test("rejects a non-requestor before creating a recipient", async () => {

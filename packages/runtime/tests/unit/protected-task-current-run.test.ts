@@ -9,7 +9,7 @@ const fixture: Input = {
   occurrence: {
     task: {
       id: "task", ownerId: "owner", requestorId: "requestor",
-      agentId: "agent", callingRoomId: null,
+      agentId: "agent", callingRoomId: null, scheduleKind: "now",
       contentRepresentation: "protected", contentNamespaceId: "private-namespace",
       contentRevision: 2, cryptoObjectId: "object", cryptoAccessRevision: 4,
       cryptoRequiredNamespaceFingerprint: fingerprint,
@@ -21,7 +21,7 @@ const fixture: Input = {
   },
   task: {
     id: "task", ownerId: "owner", requestorId: "requestor",
-    agentId: "agent", callingRoomId: null, status: "pending",
+    agentId: "agent", callingRoomId: null, status: "pending", scheduleKind: "now",
     contentRepresentation: "protected", contentNamespaceId: "private-namespace",
     contentRevision: 2, cryptoObjectId: "object", cryptoAccessRevision: 4,
     cryptoRequiredNamespaceFingerprint: fingerprint,
@@ -88,5 +88,54 @@ describe("current protected Task run for grant", () => {
       ...fixture, phase: "running", task: { ...fixture.task, status: "cancelled" },
       run: { ...fixture.run, status: "running", jobId: "job" },
     })).toBe(false);
+  });
+
+  test("accepts a running cron occurrence while its parent Task remains pending", () => {
+    expect(isCurrentProtectedTaskRunForGrant({
+      ...fixture,
+      phase: "running",
+      occurrence: {
+        ...fixture.occurrence,
+        task: { ...fixture.occurrence.task, scheduleKind: "cron" },
+      },
+      task: { ...fixture.task, scheduleKind: "cron", status: "pending" },
+      run: { ...fixture.run, status: "running", jobId: "job" },
+    })).toBe(true);
+  });
+
+  test("rejects stale or substituted cron schedule facts", () => {
+    const cronOccurrence: Input = {
+      ...fixture,
+      phase: "running",
+      occurrence: {
+        ...fixture.occurrence,
+        task: { ...fixture.occurrence.task, scheduleKind: "cron" },
+      },
+      task: { ...fixture.task, scheduleKind: "cron", status: "pending" },
+      run: { ...fixture.run, status: "running", jobId: "job" },
+    };
+    expect(isCurrentProtectedTaskRunForGrant({
+      ...cronOccurrence,
+      task: { ...cronOccurrence.task, scheduleKind: "one_shot" },
+    })).toBe(false);
+    expect(isCurrentProtectedTaskRunForGrant({
+      ...cronOccurrence,
+      task: { ...cronOccurrence.task, status: "running" },
+    })).toBe(false);
+  });
+
+  test("does not give now or one-shot runs the cron pending-parent exception", () => {
+    for (const scheduleKind of ["now", "one_shot"] as const) {
+      expect(isCurrentProtectedTaskRunForGrant({
+        ...fixture,
+        phase: "running",
+        occurrence: {
+          ...fixture.occurrence,
+          task: { ...fixture.occurrence.task, scheduleKind },
+        },
+        task: { ...fixture.task, scheduleKind, status: "pending" },
+        run: { ...fixture.run, status: "running", jobId: "job" },
+      })).toBe(false);
+    }
   });
 });

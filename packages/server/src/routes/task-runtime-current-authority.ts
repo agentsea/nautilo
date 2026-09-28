@@ -35,7 +35,7 @@ import {
 
 type CurrentTask = Pick<Task,
   | "id" | "ownerId" | "requestorId" | "agentId" | "callingRoomId"
-  | "status" | "contentRepresentation" | "contentNamespaceId"
+  | "status" | "scheduleKind" | "contentRepresentation" | "contentNamespaceId"
   | "contentRevision" | "cryptoObjectId" | "cryptoAccessRevision"
   | "cryptoRequiredNamespaceFingerprint" | "cryptoMappingState"
 >;
@@ -192,6 +192,7 @@ async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
     agent_id: tasks.agentId,
     calling_room_id: tasks.callingRoomId,
     status: tasks.status,
+    schedule_kind: tasks.scheduleKind,
     content_representation: tasks.contentRepresentation,
     content_namespace_id: tasks.contentNamespaceId,
     content_revision: tasks.contentRevision,
@@ -211,6 +212,7 @@ async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
     agentId: taskRow.agent_id,
     callingRoomId: taskRow.calling_room_id,
     status: taskRow.status,
+    scheduleKind: taskRow.schedule_kind,
     contentRepresentation: taskRow.content_representation,
     contentNamespaceId: taskRow.content_namespace_id,
     contentRevision: taskRow.content_revision,
