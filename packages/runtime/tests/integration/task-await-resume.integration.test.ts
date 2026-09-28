@@ -75,6 +75,8 @@ let agentId: string;
 let agentActorId: string;
 let ownerActorId: string;
 let db: DirectDatabase;
+let priorTestMode: string | undefined;
+let priorModel: string | undefined;
 
 let peerUserId: string;
 let peerActorId: string;
@@ -87,6 +89,8 @@ const extraUserIds: string[] = [];
 
 beforeAll(async () => {
   setAgentEventSink({ emit: (e) => eventBus.emit(e) });
+  priorTestMode = process.env["NAUTILO_TEST_MODE"];
+  priorModel = process.env["NAUTILO_MODEL"];
   process.env["NAUTILO_TEST_MODE"] = "stub";
   process.env["NAUTILO_MODEL"] = "openai:gpt-5.5-2026-04-23";
   await setupTestDb();
@@ -130,7 +134,10 @@ beforeEach(() => {
 
 afterAll(async () => {
   __setStubModelForTests(null);
-  delete process.env["NAUTILO_TEST_MODE"];
+  if (priorTestMode === undefined) delete process.env["NAUTILO_TEST_MODE"];
+  else process.env["NAUTILO_TEST_MODE"] = priorTestMode;
+  if (priorModel === undefined) delete process.env["NAUTILO_MODEL"];
+  else process.env["NAUTILO_MODEL"] = priorModel;
   setAgentEventSink(null);
   setTaskRunJobManager(null);
   if (!db) return;
