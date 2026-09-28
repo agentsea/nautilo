@@ -537,6 +537,16 @@ export interface ServerProviderPolicyChangedAuditEvent extends CommonAuditFields
   readonly effective: boolean;
 }
 
+/** Credential lifecycle metadata only: no key, ciphertext, or provider response. */
+export interface PersonalProviderCredentialAuditEvent extends CommonAuditFields {
+  readonly kind: "personal_provider_credential_changed";
+  readonly provider: string;
+  readonly credentialId: string;
+  readonly revision: number;
+  readonly action: "created" | "replaced" | "validated" | "deleted";
+  readonly validationStatus?: "accepted" | "rejected" | "unavailable" | "unverified";
+}
+
 /** D537 — admin changed non-secret server identity or icon settings. */
 export interface ServerProfileChangedAuditEvent extends CommonAuditFields {
   readonly kind: "server_profile_changed";
@@ -872,6 +882,7 @@ export type SecurityAuditEvent =
   | UserDeletedAuditEvent
   | ServerModelConfigChangedAuditEvent
   | ServerProviderPolicyChangedAuditEvent
+  | PersonalProviderCredentialAuditEvent
   | EncryptionTransitionPolicyChangedAuditEvent
   | EncryptionTransitionPolicyChangeRequestedAuditEvent
   | ServerProfileChangedAuditEvent

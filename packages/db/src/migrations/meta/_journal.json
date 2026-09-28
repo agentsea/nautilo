@@ -2143,6 +2143,13 @@
       "when": 1790589516084,
       "tag": "0305_personal_provider_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1790604770905,
+      "tag": "0306_magenta_mathemanic",
+      "breakpoints": true
     }
   ]
 }

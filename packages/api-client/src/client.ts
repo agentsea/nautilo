@@ -2199,6 +2199,132 @@ export class ApiError extends Error {
   }
 }
 
+export type CredentialValidationStatus =
+  | "unverified"
+  | "accepted"
+  | "rejected"
+  | "unavailable";
+
+/** Secret-free account-scoped provider credential metadata. */
+export interface CredentialMetadata {
+  readonly provider: string;
+  readonly id: string;
+  readonly revision: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly validationStatus: CredentialValidationStatus;
+  readonly validatedAt: string | null;
+  readonly requiresReplacement: boolean;
+}
+
+export interface PutProviderCredentialInput {
+  readonly apiKey: string;
+  readonly expectedRevision?: number;
+}
+
+export interface ProviderCredentialRevisionInput {
+  readonly expectedRevision: number;
+}
+
+export interface PutProviderCredentialResponse {
+  readonly credential: CredentialMetadata;
+  readonly committed: true;
+}
+
+export interface ValidateProviderCredentialResponse {
+  readonly credential: CredentialMetadata;
+  readonly committed: false;
+}
+
+export interface DeleteProviderCredentialResponse {
+  readonly deleted: true;
+  readonly committed: true;
+}
+
+const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
+  provider: z.string().min(1),
+  id: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+  validationStatus: z.enum(["unverified", "accepted", "rejected", "unavailable"]),
+  validatedAt: z.string().min(1).nullable(),
+  requiresReplacement: z.boolean(),
+}).strict();
+
+const listProviderCredentialsResponseSchema = z.object({
+  credentials: z.array(credentialMetadataSchema),
+}).strict();
+
+const putProviderCredentialResponseSchema = z.object({
+  credential: credentialMetadataSchema,
+  committed: z.literal(true),
+}).strict();
+
+const validateProviderCredentialResponseSchema = z.object({
+  credential: credentialMetadataSchema,
+  committed: z.literal(false),
+}).strict();
+
+const deleteProviderCredentialResponseSchema = z.object({
+  deleted: z.literal(true),
+  committed: z.literal(true),
+}).strict();
+
+const providerCredentialErrorSchema = z.object({
+  error: z.enum([
+    "authentication_required", "personal_credentials_forbidden", "personal_credentials_disabled",
+    "personal_credentials_unavailable", "credential_custody_unavailable",
+    "credential_reenrollment_required", "invalid_provider", "invalid_credential_request",
+    "credential_conflict", "credential_not_found",
+  ]),
+  committed: z.boolean(),
+  retryable: z.boolean(),
+  repair: z.enum(["retry", "reread_metadata", "contact_operator", "retry_validation", "replace_credential"]).nullable(),
+}).strict();
+
+/** Structured provider-credential failure with safe recovery fields. */
+export class ProviderCredentialApiError extends ApiError {
+  constructor(
+    status: number,
+    readonly error: string,
+    readonly committed: boolean,
+    readonly retryable: boolean,
+    readonly repair: string | null,
+  ) {
+    super(status, error);
+    this.name = "ProviderCredentialApiError";
+  }
+}
+
+function providerCredentialApiError(
+  status: number,
+  body: Record<string, unknown> & { error?: unknown },
+): ApiError {
+  const parsed = providerCredentialErrorSchema.safeParse(body);
+  if (!parsed.success) {
+    return new ApiError(
+      status,
+      "Provider credential request failed",
+    );
+  }
+  return new ProviderCredentialApiError(
+    status,
+    parsed.data.error,
+    parsed.data.committed,
+    parsed.data.retryable,
+    parsed.data.repair,
+  );
+}
+
+const providerCredentialStatusErrors = Object.fromEntries(
+  Array.from({ length: 200 }, (_, index) => index + 400).map((status) => [
+    status,
+    (body: Record<string, unknown> & { error?: unknown }) =>
+      providerCredentialApiError(status, body),
+  ]),
+) as StatusErrorMap;
+
 /** Safe recovery text from the video preparation boundary, before any spend. */
 export class VideoGenerationPreparationError extends ApiError {
   constructor(readonly code: "request_invalid" | "quote_unavailable", recovery: string) {
@@ -5555,6 +5681,53 @@ export class NautiloApiClient {
       defaultErrorPrefix: "GET /api/health/keys",
     });
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
+  }
+
+  async listProviderCredentials(): Promise<{ credentials: CredentialMetadata[] }> {
+    return this.request({
+      path: "/api/account/provider-credentials",
+      schema: listProviderCredentialsResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  async putProviderCredential(
+    provider: string,
+    input: PutProviderCredentialInput,
+  ): Promise<PutProviderCredentialResponse> {
+    return this.request({
+      method: "PUT",
+      path: `/api/account/provider-credentials/${encodeURIComponent(provider)}`,
+      body: input,
+      schema: putProviderCredentialResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  async validateProviderCredential(
+    provider: string,
+    input: ProviderCredentialRevisionInput,
+  ): Promise<ValidateProviderCredentialResponse> {
+    return this.request({
+      method: "POST",
+      path: `/api/account/provider-credentials/${encodeURIComponent(provider)}/validate`,
+      body: input,
+      schema: validateProviderCredentialResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  async deleteProviderCredential(
+    provider: string,
+    input: ProviderCredentialRevisionInput,
+  ): Promise<DeleteProviderCredentialResponse> {
+    return this.request({
+      method: "DELETE",
+      path: `/api/account/provider-credentials/${encodeURIComponent(provider)}`,
+      body: input,
+      schema: deleteProviderCredentialResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
   }
 
   /** Read the administrator-visible Nautilo Gateway API root. */

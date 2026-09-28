@@ -4,6 +4,7 @@ import type { Database } from "../config/database";
 import {
   personalProviderCredentials,
   type PersonalProviderCredentialRow,
+  type PersonalProviderCredentialValidationStatus,
   type PersonalProviderId,
 } from "../schema/personal-provider-credentials";
 import { nautiloInstanceIdentity } from "../schema/instance-identity";
@@ -26,6 +27,8 @@ export interface PersonalProviderCredentialRecord {
   userId: string;
   provider: PersonalProviderId;
   revision: number;
+  validationStatus: PersonalProviderCredentialValidationStatus;
+  validatedAt: Date | null;
   envelope: PersonalProviderCredentialEnvelope;
   createdAt: Date;
   updatedAt: Date;
@@ -71,6 +74,10 @@ export type DeletePersonalProviderCredentialResult =
   | { status: "not_found" }
   | { status: "conflict"; currentRevision: number };
 
+export type SetPersonalProviderCredentialValidationResult =
+  | { status: "updated"; credential: PersonalProviderCredentialRecord }
+  | { status: "stale" };
+
 export function createPersonalProviderCredentialIdentity(): PersonalProviderCredentialIdentity {
   return { id: randomUUID(), revision: 1 };
 }
@@ -86,6 +93,8 @@ function projectCredential(
     userId: row.userId,
     provider: row.provider,
     revision: row.revision,
+    validationStatus: row.validationStatus,
+    validatedAt: row.validatedAt,
     envelope: {
       formatVersion: 1,
       keyId: row.keyId,
@@ -127,6 +136,8 @@ export async function insertPersonalProviderCredential(
       userId: input.userId,
       provider: input.provider,
       revision: input.identity.revision,
+      validationStatus: "unverified",
+      validatedAt: null,
       ...input.envelope,
     })
     .onConflictDoNothing({
@@ -186,6 +197,8 @@ export async function replacePersonalProviderCredential(
       .update(personalProviderCredentials)
       .set({
         revision: input.expectedRevision + 1,
+        validationStatus: "unverified",
+        validatedAt: null,
         ...input.envelope,
         updatedAt: new Date(),
       })
@@ -215,6 +228,38 @@ export async function replacePersonalProviderCredential(
       ? { status: "conflict", currentRevision: current.revision }
       : { status: "not_found" };
   });
+}
+
+export async function setPersonalProviderCredentialValidation(
+  db: PersonalProviderCredentialWriteDb,
+  input: {
+    userId: string;
+    provider: PersonalProviderId;
+    id: string;
+    expectedRevision: number;
+    status: PersonalProviderCredentialValidationStatus;
+    validatedAt: Date | null;
+  },
+): Promise<SetPersonalProviderCredentialValidationResult> {
+  const [row] = await db
+    .update(personalProviderCredentials)
+    .set({
+      validationStatus: input.status,
+      validatedAt: input.validatedAt,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(personalProviderCredentials.userId, input.userId),
+        eq(personalProviderCredentials.provider, input.provider),
+        eq(personalProviderCredentials.id, input.id),
+        eq(personalProviderCredentials.revision, input.expectedRevision),
+      ),
+    )
+    .returning();
+  return row
+    ? { status: "updated", credential: projectCredential(row) }
+    : { status: "stale" };
 }
 
 export async function deletePersonalProviderCredential(
