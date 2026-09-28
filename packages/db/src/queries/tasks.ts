@@ -1997,6 +1997,15 @@ export async function startProtectedTaskRun(
           || outputBinding.destinationNamespaceId === null)) {
       return { status: "stale" } as const;
     }
+    if (outputBinding.destinationRoomId !== null) {
+      const [destination] = await tx.select({ id: rooms.id })
+        .from(rooms).where(and(
+          eq(rooms.id, outputBinding.destinationRoomId),
+          eq(rooms.namespaceId, outputBinding.destinationNamespaceId!),
+          isNull(rooms.archivedAt),
+        )).limit(1).for("share");
+      if (!destination) return { status: "stale" } as const;
+    }
 
     const [job] = await tx
       .select()

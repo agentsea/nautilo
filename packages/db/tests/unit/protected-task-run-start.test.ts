@@ -9,6 +9,7 @@ import {
 import { protectedTaskRunResultObjectId } from
   "../../src/queries/protected-task-output-bindings";
 import { jobs, type Job } from "../../src/schema/jobs";
+import { rooms, type Room } from "../../src/schema/rooms";
 import {
   protectedTaskRunOutputBindings,
   type ProtectedTaskRunOutputBinding,
@@ -23,6 +24,7 @@ const ids = {
   owner: "40000000-0000-4000-8000-000000000004",
   agent: "50000000-0000-4000-8000-000000000005",
   namespace: "60000000-0000-4000-8000-000000000006",
+  room: "70000000-0000-4000-8000-000000000007",
 };
 const graphThreadId = `subagent:${ids.task}:${ids.run}`;
 const objectId = `task-definition:v1:${"a".repeat(64)}`;
@@ -158,6 +160,7 @@ type FixtureOptions = Readonly<{
   run?: TaskRun | undefined;
   job?: Job | undefined;
   binding?: ProtectedTaskRunOutputBinding | undefined;
+  room?: Room | undefined;
   loseRunUpdate?: boolean;
   loseTaskUpdate?: boolean;
 }>;
@@ -175,6 +178,7 @@ function harness(options: FixtureOptions = {}) {
   const bindingRow = Object.prototype.hasOwnProperty.call(options, "binding")
     ? options.binding
     : binding();
+  const roomRow = options.room;
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
@@ -185,6 +189,7 @@ function harness(options: FixtureOptions = {}) {
     if (table === protectedTaskRunOutputBindings) {
       return bindingRow ? [bindingRow] : [];
     }
+    if (table === rooms) return roomRow ? [roomRow] : [];
     throw new Error("unexpected table");
   };
   const tx = {
@@ -303,6 +308,24 @@ describe("protected TaskRun start transition", () => {
       });
       expect(fixture.writes).toEqual([]);
     }
+  });
+
+  test("rechecks the accepted delivery Room before starting execution", async () => {
+    const fixture = harness({
+      task: task({ callingRoomId: ids.room, resultDelivery: "raw" }),
+      binding: binding({
+        deliveryMode: "raw",
+        destinationRoomId: ids.room,
+        destinationNamespaceId: ids.namespace,
+        messageOperationId: `task-run-delivery-message:${ids.run}`,
+      }),
+      room: undefined,
+    });
+    expect(await startProtectedTaskRun(fixture.db, input())).toEqual({
+      status: "stale",
+    });
+    expect(fixture.locks.some((entry) => entry.table === rooms)).toBe(true);
+    expect(fixture.writes).toEqual([]);
   });
 
   test("rejects malformed bindings before opening a transaction", () => {
