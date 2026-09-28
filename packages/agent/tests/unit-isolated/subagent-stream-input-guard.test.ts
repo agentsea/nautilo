@@ -218,6 +218,55 @@ describe("runScopeSubagentUntilPause stream-entry invariants (M169 R3/R4)", () =
     })).rejects.toThrow("cannot inherit foreground checkpoint authority");
   });
 
+  test("trusted background Task run uses its independently acquired checkpoint saver", async () => {
+    const saver = encryptedSaver();
+
+    await runScopeSubagentUntilPause({
+      ...baseOpts,
+      taskRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      subagentThreadId: "subagent:parent-thread:protected",
+      taskRunCheckpointSaver: saver,
+    });
+
+    expect(capturedCheckpointSaver).toBe(saver);
+  });
+
+  test.each([
+    ["missing Task stamp", { taskRun: false, trustedExecutionEntrypoint: "background.task", currentTaskId: "task-1", currentTaskRunId: "task-run-1", subagentThreadId: "subagent:parent-thread:protected" }],
+    ["missing trusted entrypoint", { taskRun: true, currentTaskId: "task-1", currentTaskRunId: "task-run-1", subagentThreadId: "subagent:parent-thread:protected" }],
+    ["missing Task id", { taskRun: true, trustedExecutionEntrypoint: "background.task", currentTaskRunId: "task-run-1", subagentThreadId: "subagent:parent-thread:protected" }],
+    ["missing TaskRun id", { taskRun: true, trustedExecutionEntrypoint: "background.task", currentTaskId: "task-1", subagentThreadId: "subagent:parent-thread:protected" }],
+    ["missing graph thread", { taskRun: true, trustedExecutionEntrypoint: "background.task", currentTaskId: "task-1", currentTaskRunId: "task-run-1" }],
+  ] as const)("Task-run checkpoint saver rejects %s", (_label, identity) => {
+    return expect(runScopeSubagentUntilPause({
+      ...baseOpts,
+      ...identity,
+      taskRunCheckpointSaver: encryptedSaver(),
+    })).rejects.toThrow("requires an exact trusted background Task identity and graph thread");
+  });
+
+  test("forged Task-run saver fails before graph construction", () => {
+    return expect(runScopeSubagentUntilPause({
+      ...baseOpts,
+      taskRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      taskRunCheckpointSaver: {} as never,
+    })).rejects.toThrow("Task-run subagent requires an encrypted checkpoint saver");
+  });
+
+  test("supplying both protected saver channels fails before graph construction", () => {
+    return expect(runScopeSubagentUntilPause({
+      ...baseOpts,
+      invocationCheckpointSaver: encryptedSaver(),
+      taskRunCheckpointSaver: encryptedSaver(),
+    })).rejects.toThrow("cannot receive both invocation and Task-run checkpoint savers");
+  });
+
   test("forged protected child saver fails before graph construction", () => {
     return expect(runScopeSubagentUntilPause({
       ...baseOpts,

@@ -127,6 +127,100 @@ describe("Job", () => {
     )).toBeTrue();
   });
 
+  test("persists only a protected Task reference while executing transient content", async () => {
+    // This is deliberately a low-level Job sink test. Production protected
+    // Task execution must construct this transient input inside its authorized
+    // callback; passing plaintext to Job before authorization is not an
+    // execution-boundary contract and is not wired by this foundation.
+    const persisted: PersistJobPayload[] = [];
+    let executedMessage: unknown;
+    const durableInputReference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:request-1",
+      policyRevision: 11,
+    };
+    const job = new Job({
+      ownerId: "o1",
+      requestorId: "r1",
+      laneKey: "task:10000000-0000-4000-8000-000000000001",
+      type: "foreground",
+      input: {
+        message: "protected-task-input-sentinel",
+        expectedOutput: "protected-task-output-sentinel",
+        metadata: { private: "protected-task-metadata-sentinel" },
+      },
+      durableInputReference,
+      durableInputDisposition: "full",
+      executor: async function* (input) {
+        executedMessage = input["message"];
+        yield* yieldNothing();
+      },
+      persist: async (payload) => {
+        persisted.push(payload);
+        return "job-protected-task";
+      },
+      updateStatus: async () => {},
+    });
+
+    await job.persist();
+    expect(JSON.stringify(persisted[0]!.input)).not.toContain("sentinel");
+    expect(persisted[0]!.input).toEqual(durableInputReference);
+    expect(persisted[0]!.publicationPolicy).toEqual({
+      expectedRevision: 11,
+      representation: "protected_only",
+    });
+
+    await job.execute();
+    expect(executedMessage).toBe("protected-task-input-sentinel");
+  });
+
+  test("rejects malformed protected Task references before persistence", async () => {
+    const valid = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:request-1",
+      policyRevision: 11,
+    };
+    const malformed = [
+      { ...valid, taskId: "not-a-task-id" },
+      { ...valid, inputObjectId: valid.resultObjectId },
+      { ...valid, resultObjectId: valid.inputObjectId },
+      { ...valid, authorizationRequestId: "contains spaces" },
+      { ...valid, policyRevision: 0 },
+      { ...valid, prompt: "must-not-be-durable" },
+    ];
+
+    for (const durableInputReference of malformed) {
+      let persistCalls = 0;
+      const job = new Job({
+        ownerId: "o1",
+        requestorId: "r1",
+        laneKey: null,
+        type: "foreground",
+        input: { message: "must-not-persist" },
+        durableInputDisposition: "full",
+        durableInputReference: durableInputReference as typeof valid,
+        executor: yieldNothing,
+        persist: async () => {
+          persistCalls += 1;
+          return "unexpected";
+        },
+        updateStatus: async () => {},
+      });
+      expect(job.persist()).rejects.toThrow(
+        "Protected Task durable Job reference is invalid",
+      );
+      expect(persistCalls).toBe(0);
+    }
+  });
+
   test("Full cancellation never publishes or persists caller text", async () => {
     const sentinel = "FULL_CANCEL_SENTINEL_DO_NOT_DISCLOSE";
     const updates: unknown[] = [];
@@ -189,6 +283,65 @@ describe("Job", () => {
       });
       expect((events.at(-1) as { message?: string }).message)
         .toStartWith("Protected operation failed [");
+    } finally {
+      eventBus.off(listener);
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("protected Task executor failures collapse before every Job sink", async () => {
+    const sentinel = "PROTECTED_TASK_PROVIDER_ERROR_SENTINEL";
+    const persisted: PersistJobPayload[] = [];
+    const updates: unknown[] = [];
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    eventBus.on(listener);
+    try {
+      const job = new Job({
+        ownerId: "o1",
+        requestorId: "r1",
+        laneKey: "task:10000000-0000-4000-8000-000000000001",
+        type: "foreground",
+        input: {
+          taskId: "10000000-0000-4000-8000-000000000001",
+          taskRunId: "20000000-0000-4000-8000-000000000002",
+        },
+        durableInputDisposition: "full",
+        durableInputReference: {
+          kind: "protected_task_run_v1",
+          taskId: "10000000-0000-4000-8000-000000000001",
+          taskRunId: "20000000-0000-4000-8000-000000000002",
+          inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+          resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+          authorizationRequestId: "task-run-authorization:failure-test",
+          policyRevision: 9,
+        },
+        executor: async function* () {
+          yield* ([] as ServerEvent[]);
+          throw new Error(sentinel);
+        },
+        persist: async (payload) => {
+          persisted.push(payload);
+          return "protected-task-failure";
+        },
+        updateStatus: async (...args) => {
+          updates.push(args);
+        },
+      });
+      await job.persist();
+      await job.executeProtectedTask(
+        { message: sentinel },
+        new AbortController().signal,
+      );
+      expect(JSON.stringify({ persisted, updates, events, logs: errorSpy.mock.calls }))
+        .not.toContain(sentinel);
+      expect(events.at(-1)).toMatchObject({
+        type: "job.status",
+        status: "failed",
+        message: "Protected operation failed [MDL007]",
+      });
+      expect(updates.every((update) => (update as unknown[])[2] === undefined)).toBeTrue();
     } finally {
       eventBus.off(listener);
       errorSpy.mockRestore();

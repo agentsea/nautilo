@@ -26,6 +26,7 @@ const HUMAN_ID = "10000000-0000-4000-8000-000000000003";
 const NAMESPACE_ID = "10000000-0000-4000-8000-000000000004";
 const DOMAIN_ID = "10000000-0000-4000-8000-000000000005";
 const LEASE_ID = "10000000-0000-4000-8000-000000000006";
+const OWNER_ID = "10000000-0000-4000-8000-000000000007";
 const NOW = new Date("2026-09-22T12:00:00.000Z");
 
 const authority = Object.freeze({
@@ -162,6 +163,24 @@ const emptyOperations: readonly Step[] = [
   { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
 ];
 
+const requesterOwner: Step = {
+  contains: 'from "actors"',
+  rows: [{ owner_id: OWNER_ID }],
+  inspect(_parameters, statement) {
+    expect(statement).toContain('"actors"."kind"');
+    expect(statement).toContain('"actors"."id"');
+    expect(statement).toContain("for share");
+  },
+};
+
+const protectedPublicationPolicy: Step = {
+  contains: 'from "encryption_transition_policy"',
+  rows: [{ mode: "encrypted_only", revision: 1 }],
+  inspect(_parameters, statement) {
+    expect(statement).toContain("for share");
+  },
+};
+
 describe("PostgresTaskContentProductStore", () => {
   test("reserves definition creation before the product row exists", async () => {
     const coordinate = definition();
@@ -169,6 +188,7 @@ describe("PostgresTaskContentProductStore", () => {
     const { store, connection } = await setup([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [] },
       {
         contains: 'insert into "task_definition_crypto_revisions"',
@@ -198,8 +218,9 @@ describe("PostgresTaskContentProductStore", () => {
     const updateSetup = await setup([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        owner_id: HUMAN_ID, task_status: "pending", fire_lock_id: null,
+        owner_id: OWNER_ID, task_status: "pending", fire_lock_id: null,
         content_namespace_id: NAMESPACE_ID,
         content_revision: 1, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
@@ -208,7 +229,7 @@ describe("PostgresTaskContentProductStore", () => {
       }] },
       { contains: 'insert into "task_definition_crypto_revisions"', rows: [updateRow] },
       { contains: 'from "tasks"', rows: [{
-        task_id: TASK_ID, owner_id: HUMAN_ID, content_revision: 1,
+        task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 1,
         content_namespace_id: NAMESPACE_ID, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
         crypto_access_revision: 0,
@@ -222,12 +243,13 @@ describe("PostgresTaskContentProductStore", () => {
     const runSetup = await setup([
       ...emptyOperations,
       { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
+      requesterOwner,
       { contains: 'inner join "tasks"', rows: [{
         task_id: TASK_ID, result_revision: 0, result_content_namespace_id: null,
         result_representation: "ordinary", result_crypto_object_id: null,
         result_crypto_required_namespace_fingerprint: null,
         result_crypto_mapping_state: "unmapped",
-        run_status: "running", owner_id: HUMAN_ID,
+        run_status: "running", owner_id: OWNER_ID,
         task_status: "running", parent_namespace_id: NAMESPACE_ID,
       }] },
       { contains: 'insert into "task_run_result_crypto_revisions"', rows: [runRow] },
@@ -246,8 +268,9 @@ describe("PostgresTaskContentProductStore", () => {
     const { store } = await setup([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        owner_id: HUMAN_ID, task_status: "pending", fire_lock_id: RUN_ID,
+        owner_id: OWNER_ID, task_status: "pending", fire_lock_id: RUN_ID,
         content_namespace_id: NAMESPACE_ID,
         content_revision: 1, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
@@ -325,8 +348,8 @@ describe("PostgresTaskContentProductStore", () => {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
     const product = {
-      task_id: TASK_ID, owner_id: HUMAN_ID, content_revision: 0,
-      task_status: "pending",
+      task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 0,
+      task_status: "paused",
       prompt: "plaintext-canary", expected_output: "expected-canary",
       last_error: "error-canary", metadata_json: '{"mode":"update","secret":"metadata-canary"}',
       content_namespace_id: null, content_representation: "ordinary",
@@ -338,7 +361,9 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'for update', rows: [pending] },
       { contains: 'update "task_definition_crypto_revisions"', rows: [complete] },
       { contains: 'for update', rows: [complete] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [product] },
+      protectedPublicationPolicy,
       {
         contains: 'update "tasks"',
         rows: [{ task_id: TASK_ID }],
@@ -347,6 +372,7 @@ describe("PostgresTaskContentProductStore", () => {
           expect(statement).toContain('"expected_output"');
           expect(statement).toContain('"last_error"');
           expect(statement).toContain('"metadata"');
+          expect(statement).toContain('"status"');
           expect(statement).toContain("convert_from");
           expect(statement).toContain("::jsonb");
           const encoded = JSON.stringify(parameters);
@@ -356,6 +382,7 @@ describe("PostgresTaskContentProductStore", () => {
           expect(encoded).not.toContain("expected-canary");
           expect(encoded).not.toContain("error-canary");
           expect(encoded).not.toContain("metadata-canary");
+          expect(encoded).toContain("pending");
         },
       },
       { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
@@ -401,8 +428,9 @@ describe("PostgresTaskContentProductStore", () => {
     });
     const { store, connection } = await setup([
       { contains: 'for update', rows: [complete] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        owner_id: HUMAN_ID, namespace_id: NAMESPACE_ID,
+        owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
         task_status: "completed",
       }] },
       { contains: 'from "task_runs"', rows: [{
@@ -413,6 +441,7 @@ describe("PostgresTaskContentProductStore", () => {
         crypto_required_namespace_fingerprint: null,
         crypto_mapping_state: "unmapped",
       }] },
+      protectedPublicationPolicy,
       {
         contains: 'update "task_runs"',
         rows: [{ task_run_id: RUN_ID }],
@@ -443,8 +472,9 @@ describe("PostgresTaskContentProductStore", () => {
     });
     const { store, connection } = await setup([
       { contains: 'for update', rows: [complete] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        task_id: TASK_ID, owner_id: HUMAN_ID, task_status: "cancelled",
+        task_id: TASK_ID, owner_id: OWNER_ID, task_status: "cancelled",
         content_revision: 0, prompt: "cancelled", expected_output: null,
         last_error: null, metadata_json: '{}', content_namespace_id: null,
         content_representation: "ordinary", crypto_object_id: null,
@@ -452,6 +482,7 @@ describe("PostgresTaskContentProductStore", () => {
         crypto_required_namespace_fingerprint: null,
         crypto_mapping_state: "unmapped",
       }] },
+      protectedPublicationPolicy,
       { contains: 'update "tasks"', rows: [], inspect(_parameters, statement) {
         expect(statement).toContain('"tasks"."status" in');
       } },
@@ -469,6 +500,89 @@ describe("PostgresTaskContentProductStore", () => {
     expect(connection.steps).toHaveLength(0);
   });
 
+  test("fences definition mapping against policy revision and mode changes", async () => {
+    const coordinate = definition();
+    const complete = lifecycleRow(coordinate, {
+      completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
+    });
+    const product = {
+      task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 0,
+      task_status: "paused", prompt: "", expected_output: null,
+      last_error: null, metadata_json: '{}', content_namespace_id: null,
+      content_representation: "ordinary", crypto_object_id: null,
+      crypto_access_revision: 0, crypto_required_namespace_fingerprint: null,
+      crypto_mapping_state: "unmapped",
+    };
+    for (const policy of [
+      { mode: "encrypted_only", revision: 2 },
+      { mode: "shadow_encryption", revision: 1 },
+      { mode: "plaintext_only", revision: 1 },
+    ]) {
+      const { store, connection } = await setup([
+        { contains: 'for update', rows: [complete] },
+        requesterOwner,
+        { contains: 'from "tasks"', rows: [product] },
+        {
+          contains: 'from "encryption_transition_policy"',
+          rows: [policy],
+          inspect(_parameters, statement) {
+            expect(statement).toContain("for share");
+          },
+        },
+        { contains: 'update "task_definition_crypto_revisions"', rows: [{
+          ...complete, disposition: "stale_mapping", failure_code: "authority_stale",
+        }] },
+      ]);
+      expect(await store.compareAndSwapCryptoMapping({
+        coordinate,
+        cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+        expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+        expectedRepresentation: "protected",
+        leaseToken: null,
+      })).toBe("wrong_authority");
+      expect(connection.steps).toHaveLength(0);
+    }
+  });
+
+  test("allows dual mapping only while the exact Shadow policy is locked", async () => {
+    const coordinate = definition();
+    const complete = lifecycleRow(coordinate, {
+      representation: "dual", completion: "complete",
+      crypto_completed_at: NOW, lease_is_live: true,
+    });
+    const { store, connection } = await setup([
+      { contains: 'for update', rows: [complete] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [{
+        task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 0,
+        task_status: "paused", prompt: "ordinary", expected_output: null,
+        last_error: null, metadata_json: '{}', content_namespace_id: null,
+        content_representation: "ordinary", crypto_object_id: null,
+        crypto_access_revision: 0, crypto_required_namespace_fingerprint: null,
+        crypto_mapping_state: "unmapped",
+      }] },
+      {
+        contains: 'from "encryption_transition_policy"',
+        rows: [{ mode: "shadow_encryption", revision: 1 }],
+        inspect(_parameters, statement) {
+          expect(statement).toContain("for share");
+        },
+      },
+      { contains: 'update "tasks"', rows: [{ task_id: TASK_ID }] },
+      { contains: 'update "task_definition_crypto_revisions"', rows: [{
+        ...complete, disposition: "mapped",
+      }] },
+    ]);
+    expect(await store.compareAndSwapCryptoMapping({
+      coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "dual",
+      leaseToken: null,
+    })).toBe("applied");
+    expect(connection.steps).toHaveLength(0);
+  });
+
   test("refuses result mapping after the TaskRun is cancelled", async () => {
     const coordinate = result();
     const complete = lifecycleRow(coordinate, {
@@ -476,8 +590,9 @@ describe("PostgresTaskContentProductStore", () => {
     });
     const { store, connection } = await setup([
       { contains: 'for update', rows: [complete] },
+      requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        owner_id: HUMAN_ID, namespace_id: NAMESPACE_ID,
+        owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
         task_status: "running",
       }] },
       { contains: 'from "task_runs"', rows: [{

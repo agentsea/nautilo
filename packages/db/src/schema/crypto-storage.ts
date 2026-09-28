@@ -72,6 +72,7 @@ export const BACKGROUND_AUTHORIZATION_BYTE_LIMITS = Object.freeze({
   descriptor: 16_457_643,
   processorResponse: 35_669_931,
   agentResponse: 16 * 1_024 * 1_024 + 128 * 1_024 + 4 * 1_024,
+  runtimeResponse: 16 * 1_024 * 1_024,
   response: 35_669_931,
   recipientPublicKey: 65,
   signingPublicKey: 32,
@@ -1268,6 +1269,8 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
     agentAuthorizationRevision: bigint("agent_authorization_revision", {
       mode: "number",
     }),
+    runtimeKind: text("runtime_kind"),
+    runtimeVersion: smallint("runtime_version"),
     expectedDomainEpoch: bigint("expected_domain_epoch", {
       mode: "number",
     }),
@@ -1368,6 +1371,9 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
       ) or (
         ${table.formatVersion} in (2, 3)
         and ${table.credentialSubjectKind} = 'processor'
+      ) or (
+        ${table.formatVersion} = 3
+        and ${table.credentialSubjectKind} = 'runtime'
       )`,
     ),
     exactBytes(
@@ -1491,14 +1497,30 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         and ${table.agentId} is null
         and ${table.agentRuntimeGeneration} is null
         and ${table.agentAuthorizationRevision} is null
+        and ${table.runtimeKind} is null
+        and ${table.runtimeVersion} is null
       ) or (
         ${table.credentialSubjectKind} = 'agent'
+        and ${table.formatVersion} in (1, 2)
         and ${table.processorKind} is null
         and ${table.processorVersion} is null
         and ${table.processorAuthorizationRevision} is null
         and ${table.agentId} is not null
         and ${table.agentRuntimeGeneration} is not null
         and ${table.agentAuthorizationRevision} is not null
+        and ${table.runtimeKind} is null
+        and ${table.runtimeVersion} is null
+      ) or (
+        ${table.formatVersion} = 3
+        and ${table.credentialSubjectKind} = 'runtime'
+        and ${table.runtimeKind} = 'task'
+        and ${table.runtimeVersion} = 1
+        and ${table.processorKind} is null
+        and ${table.processorVersion} is null
+        and ${table.processorAuthorizationRevision} is null
+        and ${table.agentId} is null
+        and ${table.agentRuntimeGeneration} is null
+        and ${table.agentAuthorizationRevision} is null
       )`,
     ),
     check(
@@ -1510,7 +1532,14 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
       ) or (
         ${table.workKind} not like 'stenographer.%'
         and ${table.workKind} not like 'reflection.%'
+        and (${table.workKind} not like 'task.%'
+          or ${table.formatVersion} in (1, 2))
         and ${table.credentialSubjectKind} = 'agent'
+      ) or (
+        ${table.workKind} in ('task.dispatch', 'task.execute')
+        and ${table.purpose} = ${table.workKind}
+        and ${table.formatVersion} = 3
+        and ${table.credentialSubjectKind} = 'runtime'
       )`,
     ),
     portableId(
@@ -1533,6 +1562,10 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
       "background_crypto_authorization_requests_agent_revision_safe",
       table.agentAuthorizationRevision,
     ),
+    portableId(
+      "background_crypto_authorization_requests_runtime_kind_portable",
+      table.runtimeKind,
+    ),
     safeCounter(
       "background_crypto_authorization_requests_domain_epoch_safe",
       table.expectedDomainEpoch,
@@ -1546,6 +1579,10 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         ${table.formatVersion} in (2, 3)
         and ${table.credentialSubjectKind} = 'processor'
         and ${table.expectedDomainEpoch} is null
+      ) or (
+        ${table.formatVersion} = 3
+        and ${table.credentialSubjectKind} = 'runtime'
+        and ${table.expectedDomainEpoch} is not null
       )`,
     ),
     safeCounter(
@@ -1576,7 +1613,8 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
     ),
     check(
       "background_crypto_authorization_requests_legacy_carrier_bounds",
-      sql`${table.processorKind} is not distinct from 'reflection' or (
+      sql`${table.processorKind} is not distinct from 'reflection'
+        or ${table.credentialSubjectKind} = 'runtime' or (
         (${table.descriptorBytes} is null or octet_length(${table.descriptorBytes}) <= ${sql.raw(String(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyDescriptor))})
         and (${table.acceptedResponseKind} is distinct from 'processor'
           or ${table.acceptedResponseBytes} is null
@@ -1650,6 +1688,12 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
             and octet_length(${table.acceptedResponseBytes}) between 1
               and ${sql.raw(
                 String(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.agentResponse),
+              )}
+          ) or (
+            ${table.acceptedResponseKind} = 'runtime'
+            and octet_length(${table.acceptedResponseBytes}) between 1
+              and ${sql.raw(
+                String(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse),
               )}
           )
         )
@@ -1928,7 +1972,11 @@ export const backgroundCryptoAuthorizationDomainRequirements = pgTable(
     expectedAgentAuthorizationRevision: bigint(
       "expected_agent_authorization_revision",
       { mode: "number" },
-    ).notNull(),
+    ),
+    expectedAuthorizationRevision: bigint(
+      "expected_authorization_revision",
+      { mode: "number" },
+    ),
   },
   (table) => [
     primaryKey({
@@ -1941,11 +1989,24 @@ export const backgroundCryptoAuthorizationDomainRequirements = pgTable(
     ),
     portableId("bg_crypto_auth_domain_req_request_id_portable", table.requestId),
     portableId("bg_crypto_auth_domain_req_domain_id_portable", table.domainId),
-    boundedOrdinal("bg_crypto_auth_domain_req_ordinal_range", table.ordinal),
+    boundedOrdinal(
+      "bg_crypto_auth_domain_req_ordinal_range",
+      table.ordinal,
+      CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal,
+    ),
     safeCounter("bg_crypto_auth_domain_req_epoch_safe", table.expectedEpoch),
     safeCounter(
       "bg_crypto_auth_domain_req_agent_revision_safe",
       table.expectedAgentAuthorizationRevision,
+    ),
+    safeCounter(
+      "bg_crypto_auth_domain_req_revision_safe",
+      table.expectedAuthorizationRevision,
+    ),
+    check(
+      "bg_crypto_auth_domain_req_revision_coherent",
+      sql`(${table.expectedAgentAuthorizationRevision} is null)
+        <> (${table.expectedAuthorizationRevision} is null)`,
     ),
     ...prunableAppendOnlyPolicies("bg_crypto_auth_domain_req"),
   ],
@@ -1981,7 +2042,11 @@ export const backgroundCryptoAuthorizationNamespaceRequirements = pgTable(
     ),
     portableId("bg_crypto_auth_ns_req_request_id_portable", table.requestId),
     portableId("bg_crypto_auth_ns_req_namespace_id_portable", table.namespaceId),
-    boundedOrdinal("bg_crypto_auth_ns_req_ordinal_range", table.ordinal),
+    boundedOrdinal(
+      "bg_crypto_auth_ns_req_ordinal_range",
+      table.ordinal,
+      CRYPTO_STORAGE_COLLECTION_LIMITS.agentGrantMaximumOrdinal,
+    ),
     portableId("bg_crypto_auth_ns_req_domain_id_portable", table.domainId),
     check(
       "bg_crypto_auth_ns_req_operation_mask",

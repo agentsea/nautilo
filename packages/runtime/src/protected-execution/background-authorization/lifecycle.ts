@@ -1,5 +1,6 @@
 const BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V1 = 1 as const;
 export const BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2 = 2 as const;
+export const BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3 = 3 as const;
 /** Compatibility name retained for the shipped Wave 10 lifecycle. */
 export const BACKGROUND_AUTHORIZATION_FORMAT_VERSION =
   BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V1;
@@ -76,16 +77,23 @@ export type BackgroundAuthorizationAgentSubject = Readonly<{
   readonly authorizationRevision: number;
 }>;
 
+export type BackgroundAuthorizationTaskRuntimeSubject = Readonly<{
+  readonly kind: "runtime";
+  readonly runtimeKind: "task";
+  readonly runtimeVersion: 1;
+}>;
+
 export type BackgroundAuthorizationCredentialSubject =
   | BackgroundAuthorizationProcessorSubject
   | BackgroundAuthorizationAgentSubject;
 
 type BackgroundAuthorizationAnyCredentialSubject =
   | BackgroundAuthorizationCredentialSubject
-  | BackgroundAuthorizationProcessorSubjectV2;
+  | BackgroundAuthorizationProcessorSubjectV2
+  | BackgroundAuthorizationTaskRuntimeSubject;
 
 export type BackgroundAuthorizationAcceptedResponse = Readonly<{
-  readonly kind: "processor" | "agent";
+  readonly kind: "processor" | "agent" | "runtime";
   readonly responseDigest: string;
   readonly credentialDigest: string;
   readonly issuingHumanId: string;
@@ -101,7 +109,7 @@ export type BackgroundAuthorizationAcceptedResponse = Readonly<{
  * family-specific verification succeeds.
  */
 export type BackgroundAuthorizationVerifiedResponse = Readonly<{
-  readonly kind: "processor" | "agent";
+  readonly kind: "processor" | "agent" | "runtime";
   readonly requestId: string;
   readonly descriptorDigest: string;
   readonly recipientKeyId: string;
@@ -172,9 +180,28 @@ export type BackgroundAuthorizationRequestSnapshotV2 =
   | BackgroundAuthorizationAgentRequestSnapshotV2
   | BackgroundAuthorizationProcessorRequestSnapshotV2;
 
+export type BackgroundAuthorizationProcessorRequestSnapshotV3 = Readonly<
+  Omit<BackgroundAuthorizationRequestSnapshotFields, "credentialSubject"> & {
+    readonly formatVersion: typeof BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3;
+    readonly credentialSubject: BackgroundAuthorizationProcessorSubjectV2;
+  }
+>;
+
+export type BackgroundAuthorizationTaskRuntimeRequestSnapshotV3 = Readonly<
+  Omit<BackgroundAuthorizationRequestSnapshotFields, "credentialSubject"> & {
+    readonly formatVersion: typeof BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3;
+    readonly credentialSubject: BackgroundAuthorizationTaskRuntimeSubject;
+  }
+>;
+
+export type BackgroundAuthorizationRequestSnapshotV3 =
+  | BackgroundAuthorizationProcessorRequestSnapshotV3
+  | BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
+
 export type BackgroundAuthorizationRequestSnapshot =
   | BackgroundAuthorizationRequestSnapshotV1
-  | BackgroundAuthorizationRequestSnapshotV2;
+  | BackgroundAuthorizationRequestSnapshotV2
+  | BackgroundAuthorizationRequestSnapshotV3;
 
 export type BackgroundAuthorizationTransitionErrorReason =
   | "attempt_not_expired"
@@ -251,6 +278,11 @@ const AGENT_SUBJECT_FIELDS = Object.freeze([
   "kind",
   "runtimeGeneration",
 ] as const);
+const RUNTIME_SUBJECT_FIELDS = Object.freeze([
+  "kind",
+  "runtimeKind",
+  "runtimeVersion",
+] as const);
 const RECIPIENT_FIELDS = Object.freeze([
   "expiresAt",
   "recipientKeyId",
@@ -266,6 +298,8 @@ type UnknownSubjectFields = Record<string, unknown> & {
   authorizationRevision?: unknown;
   agentId?: unknown;
   runtimeGeneration?: unknown;
+  runtimeKind?: unknown;
+  runtimeVersion?: unknown;
 };
 
 type UnknownRecipientFields = Record<string, unknown> & {
@@ -365,7 +399,7 @@ function isCanonicalPublicKey(value: unknown): value is string {
 
 function parseSubject(
   value: unknown,
-  formatVersion: 1 | 2,
+  formatVersion: 1 | 2 | 3,
 ): BackgroundAuthorizationAnyCredentialSubject {
   if (!isRecord(value)) {
     throw new TypeError("Invalid background authorization subject");
@@ -375,7 +409,7 @@ function parseSubject(
     throw new TypeError("Invalid background authorization subject");
   }
   if (subject.kind === "processor") {
-    if (formatVersion === BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2) {
+    if (formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V1) {
       if (
         !exactFields(subject, PROCESSOR_SUBJECT_FIELDS_V2)
         || (subject.processorKind !== "stenographer" && subject.processorKind !== "reflection")
@@ -409,7 +443,8 @@ function parseSubject(
   }
   if (subject.kind === "agent") {
     if (
-      !exactFields(subject, AGENT_SUBJECT_FIELDS)
+      formatVersion === BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3
+      || !exactFields(subject, AGENT_SUBJECT_FIELDS)
       || !isIdentifier(subject.agentId)
       || !isBoundedCounter(
         subject.runtimeGeneration,
@@ -427,6 +462,21 @@ function parseSubject(
       agentId: subject.agentId,
       runtimeGeneration: subject.runtimeGeneration,
       authorizationRevision: subject.authorizationRevision,
+    });
+  }
+  if (subject.kind === "runtime") {
+    if (
+      formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3
+      || !exactFields(subject, RUNTIME_SUBJECT_FIELDS)
+      || subject.runtimeKind !== "task"
+      || subject.runtimeVersion !== 1
+    ) {
+      throw new TypeError("Invalid background authorization Runtime subject");
+    }
+    return Object.freeze({
+      kind: "runtime",
+      runtimeKind: "task",
+      runtimeVersion: 1,
     });
   }
   throw new TypeError("Unknown background authorization subject");
@@ -465,7 +515,11 @@ function parseAcceptedResponse(
   const response = value as UnknownAcceptedResponseFields;
   if (
     !exactFields(response, ACCEPTED_RESPONSE_FIELDS)
-    || (response.kind !== "processor" && response.kind !== "agent")
+    || (
+      response.kind !== "processor"
+      && response.kind !== "agent"
+      && response.kind !== "runtime"
+    )
     || !isDescriptorDigest(response.responseDigest)
     || !isDescriptorDigest(response.credentialDigest)
     || !isIdentifier(response.issuingHumanId)
@@ -625,6 +679,7 @@ export function parseBackgroundAuthorizationRequestSnapshot(
     || (
       request.formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V1
       && request.formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2
+      && request.formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3
     )
     || !isIdentifier(request.requestId)
     || !isIdentifier(request.workId)
@@ -706,7 +761,13 @@ export function parseBackgroundAuthorizationRequestSnapshot(
       request.terminalReason as BackgroundAuthorizationTerminalReason | null,
   };
   const snapshot: BackgroundAuthorizationRequestSnapshot =
-    request.formatVersion === BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2
+    request.formatVersion === BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3
+      ? Object.freeze({
+        ...snapshotFields,
+        formatVersion: BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3,
+        credentialSubject,
+      }) as BackgroundAuthorizationRequestSnapshotV3
+      : request.formatVersion === BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2
       ? Object.freeze({
         ...snapshotFields,
         formatVersion: BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2,
@@ -854,6 +915,42 @@ export function createBackgroundAuthorizationRequestV2(
     nextAttemptAt: null,
     terminalReason: null,
   }) as BackgroundAuthorizationRequestSnapshotV2;
+}
+
+export function createBackgroundAuthorizationTaskRuntimeRequestV3(
+  input: Readonly<{
+    readonly requestId: string;
+    /** Exact TaskRun id for this durable occurrence. */
+    readonly workId: string;
+    readonly namespaceId: string;
+    readonly now: number;
+  }>,
+): BackgroundAuthorizationTaskRuntimeRequestSnapshotV3 {
+  return parseBackgroundAuthorizationRequestSnapshot({
+    formatVersion: BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3,
+    requestId: input.requestId,
+    workId: input.workId,
+    namespaceId: input.namespaceId,
+    descriptorDigest: null,
+    credentialSubject: {
+      kind: "runtime",
+      runtimeKind: "task",
+      runtimeVersion: 1,
+    },
+    recipientGeneration: 0,
+    recipient: null,
+    acceptedResponse: null,
+    state: "awaiting_recipient",
+    claimId: null,
+    claimExpiresAt: null,
+    requestRevision: 0,
+    createdAt: input.now,
+    updatedAt: input.now,
+    retryCount: 0,
+    lastRetryReason: null,
+    nextAttemptAt: null,
+    terminalReason: null,
+  }) as BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
 }
 
 export function attachBackgroundAuthorizationRecipient(

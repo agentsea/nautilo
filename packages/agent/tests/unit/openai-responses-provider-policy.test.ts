@@ -17,10 +17,10 @@ import { activateModelCatalogForTests } from "../helpers/activate-model-catalog"
 import { projectPreparedMessagesForModelCache } from "../../src/utils/model-context-cache";
 
 beforeAll(async () => {
-  await activateModelCatalogForTests([{
-    id: "openai:test-non-reasoning",
-    reasoning: false,
-  }]);
+  await activateModelCatalogForTests([
+    { id: "openai:test-non-reasoning", reasoning: false },
+    "openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna",
+  ]);
 });
 
 afterAll(() => resetRuntimeModelCatalog());
@@ -144,20 +144,49 @@ describe("shouldUseOpenAIResponsesApi ( transport policy)", () => {
 });
 
 describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
-  it("uses max_completion_tokens for direct GPT-6 Chat Completions utility calls", async () => {
-    const llm = await createUniversalModel("openai:gpt-6-astra", {
-      apiKey: "test-key",
-      maxTokens: 8192,
-      reasoningOutput: false,
-    });
+  it("preserves GPT-6 Chat Completions token parameters without disabling reasoning for text utilities", async () => {
+    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+      const llm = await createUniversalModel(modelId, {
+        apiKey: "test-key",
+        maxTokens: 8192,
+        reasoningOutput: false,
+      });
 
-    const fields = openAIFields(llm);
-    expect(fields["useResponsesApi"]).toBe(false);
-    const params = (llm as unknown as {
-      invocationParams(options: object): Record<string, unknown>;
-    }).invocationParams({});
-    expect(params["max_completion_tokens"]).toBe(8192);
-    expect(params).not.toHaveProperty("max_tokens");
+      const fields = openAIFields(llm);
+      expect(fields["useResponsesApi"]).toBe(false);
+      const params = (llm as unknown as {
+        invocationParams(options: object): Record<string, unknown>;
+      }).invocationParams({});
+      expect(params["max_completion_tokens"]).toBe(8192);
+      expect(params["reasoning_effort"]).toBeUndefined();
+      expect(params).not.toHaveProperty("max_tokens");
+    }
+  });
+
+  it("honors direct GPT-6 opt-in independently of output and headroom", async () => {
+    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+      const options = { modelId, apiKey: "test-key", maxTokens: 128, reasoningOutput: false, useOpenAIResponsesApi: true };
+      expect(shouldUseOpenAIResponsesApi(options, 128)).toBe(true);
+      expect(shouldUseOpenAIResponsesApi({ ...options, useOpenAIResponsesApi: false }, 128)).toBe(false);
+      const llm = await createUniversalModel(modelId, options);
+      expect(openAIFields(llm)["useResponsesApi"]).toBe(true);
+      expect(openAIFields(llm)["reasoning"]).toEqual({ effort: "medium" });
+      expect(createUniversalModel(modelId, { ...options, reasoningEffort: "minimal" })).rejects.toThrow("not supported");
+    }
+  });
+
+  it("preserves explicit effort and validates deliberate disablement on direct GPT-6", async () => {
+    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+      const options = { apiKey: "test-key", reasoningOutput: false, useOpenAIResponsesApi: true };
+      const llm = await createUniversalModel(modelId, { ...options, reasoningEffort: "high" });
+      expect(openAIFields(llm)["reasoning"]).toEqual({ effort: "high" });
+      if (modelId === "openai:gpt-6-astra") {
+        expect(createUniversalModel(modelId, { ...options, reasoningEffort: "off" })).rejects.toThrow("not supported");
+      } else {
+        const disabled = await createUniversalModel(modelId, { ...options, reasoningEffort: "off" });
+        expect(openAIFields(disabled)["reasoning"]).toEqual({ effort: "none" });
+      }
+    }
   });
 
   it("threads useOpenAIResponsesApi only for direct openai:* models", async () => {
@@ -242,7 +271,7 @@ describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
 
   it("does not enable Responses for Fireworks when the flag is set", async () => {
     const llm = await createFireworks({
-      modelId: "fireworks:accounts/fireworks/models/glm-5p2",
+      modelId: "fireworks:accounts/fireworks/models/glm-5p3",
       apiKey: "test-key",
       maxTokens: 8192,
       reasoningOutput: true,

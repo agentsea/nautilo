@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 import type {
   ProtectedAgentBackgroundMemoryWorkInput,
@@ -12,6 +12,7 @@ import {
 import {
   createProtectedBackgroundMemoryStaging,
 } from "../../src/memory/protected-background-memory-staging.ts";
+import * as universal from "../../src/providers/universal.ts";
 
 const NAMESPACE_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const HUMAN_ID = "background-human";
@@ -133,6 +134,35 @@ function embedding(onCall?: (plaintext: string) => void): ProtectedAgentMemoryEm
 }
 
 describe("protected background Memory Agent staging", () => {
+  test("default model creator opts into the Responses transport", async () => {
+    const model = {
+      bindTools() { return this; },
+      async invoke() { return new AIMessage("Nothing to save"); },
+    };
+    const createModel = spyOn(universal, "createUniversalModel")
+      .mockResolvedValue(model as never);
+    try {
+      await runProtectedBackgroundMemoryReview({
+        kind: "memory.review",
+        authority,
+        inputs,
+        outputSlots: slots,
+        tierSlots: [],
+        embedding: embedding(),
+        modelId: "openai:gpt-6-sol",
+        roomId: "room-background-default-model",
+        maximumIterations: 1,
+        mutationRequestId: "background-request-default-model",
+      });
+
+      expect(createModel).toHaveBeenCalledWith("openai:gpt-6-sol", {
+        useOpenAIResponsesApi: true,
+      });
+    } finally {
+      createModel.mockRestore();
+    }
+  });
+
   test("derives stable per-tool replay identities from trusted tool calls", () => {
     const first = deriveProtectedBackgroundMemoryToolMutationRequestId(
       "background-request-1",

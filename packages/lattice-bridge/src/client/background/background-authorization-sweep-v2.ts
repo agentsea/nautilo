@@ -1,6 +1,8 @@
 import type { NautiloApiClient } from "@nautilo/api-client/browser";
-import { MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2 } from
-  "@nautilo/lattice-crypto/background";
+import {
+  MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+} from "@nautilo/lattice-crypto/background";
 
 import type { DeviceAuthorizationResponderResultV2 } from
   "./device-authorization-responder-v2.ts";
@@ -14,6 +16,11 @@ type Api = Pick<
   | "listBackgroundAuthorizationRequests"
   | "respondBackgroundAuthorizationRequest"
 >;
+
+const MAX_DISCOVERY_REQUEST_WIRE_BYTES = Math.max(
+  MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+);
 
 export type BackgroundAuthorizationSweepResultV2 = Readonly<{
   status: "complete" | "unavailable";
@@ -39,7 +46,7 @@ export type RespondToBackgroundAuthorizationRequestV2 = (
 function fromBase64url(value: string): Uint8Array {
   return decodeBackgroundAuthorizationBase64url(
     value,
-    MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
+    MAX_DISCOVERY_REQUEST_WIRE_BYTES,
   );
 }
 

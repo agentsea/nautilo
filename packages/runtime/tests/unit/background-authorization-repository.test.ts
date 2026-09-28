@@ -12,6 +12,7 @@ import {
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
+  createBackgroundAuthorizationTaskRuntimeRequestV3,
   markBackgroundAuthorizationGrantReady,
   markBackgroundAuthorizationRunning,
   markBackgroundAuthorizationPublicationReconciliation,
@@ -19,6 +20,8 @@ import {
   claimBackgroundAuthorizationRequest,
 } from "../../src/protected-execution/background-authorization/lifecycle";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import { DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2 } from
+  "@nautilo/lattice-crypto/wire";
 import { BACKGROUND_AUTHORIZATION_BYTE_LIMITS } from "@nautilo/db/schema";
 import {
   createBackgroundAuthorizationResponseV2,
@@ -39,6 +42,8 @@ import {
   parseBackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
+  type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationVerifiedRuntimeResponseV3,
 } from "../../src/protected-execution/background-authorization/repository";
 
 const START = 1_700_000_000_000;
@@ -47,6 +52,95 @@ const RECIPIENT_PUBLIC_KEY =
 
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function taskRuntimeRecordV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const descriptorBytes = new Uint8Array([0x31, 0x32, 0x33]);
+  const initial = createBackgroundAuthorizationTaskRuntimeRequestV3({
+    requestId: "task_runtime_request_v3",
+    workId: "10000000-0000-4000-8000-000000000907",
+    namespaceId: "task_runtime_namespace_a",
+    now: START,
+  });
+  const snapshot = attachBackgroundAuthorizationRecipient(initial, {
+    recipientGeneration: 0,
+    recipientKeyId: "task_runtime_recipient_key_v3",
+    recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+    descriptorDigest: digest(descriptorBytes),
+    expiresAt: START + 60_000,
+    now: START + 1,
+  });
+  return {
+    snapshot: snapshot as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    workIdentityHash: new Uint8Array(32).fill(0x75),
+    idempotencyKey: "task_runtime_idempotency_v3",
+    workKind: "task.execute",
+    purpose: "task.execute",
+    domainId: "task_runtime_domain_a",
+    processorAuthorizationRevision: null,
+    expectedDomainEpoch: 9,
+    expectedNamespaceAccessRevision: 4,
+    expectedPolicyRevision: 3,
+    descriptorBytes,
+    acceptedMaterial: null,
+    finishedAt: null,
+    authoritySet: {
+      namespaceRequirements: [{
+        ordinal: 0,
+        namespaceId: "task_runtime_namespace_a",
+        domainId: "task_runtime_domain_a",
+        operations: ["decrypt", "encrypt"],
+        expectedAccessRevision: 4,
+        expectedPolicyRevision: 3,
+      }],
+      domainRequirements: [{
+        ordinal: 0,
+        domainId: "task_runtime_domain_a",
+        expectedEpoch: 9,
+        expectedAuthorizationRevision: 7,
+      }],
+    },
+  };
+}
+
+function verifiedTaskRuntimeResponseV3(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): BackgroundAuthorizationVerifiedRuntimeResponseV3 {
+  const responseBytes = new Uint8Array([0x41, 0x42, 0x43]);
+  const responseHash = Uint8Array.from(Buffer.from(
+    digest(responseBytes),
+    "hex",
+  ));
+  return {
+    formatVersion: 3,
+    kind: "runtime",
+    requestId: record.snapshot.requestId,
+    descriptorHash: Uint8Array.from(Buffer.from(
+      record.snapshot.descriptorDigest!,
+      "hex",
+    )),
+    descriptorBytes: record.descriptorBytes!,
+    recipientGeneration: record.snapshot.recipientGeneration,
+    recipientKeyId: record.snapshot.recipient!.recipientKeyId,
+    recipientPublicKey: Uint8Array.from(Buffer.from(
+      record.snapshot.recipient!.recipientPublicKey,
+      "base64url",
+    )),
+    workId: record.snapshot.workId,
+    workKind: record.workKind,
+    purpose: record.purpose,
+    authoritySet: record.authoritySet,
+    responseBytes,
+    responseHash,
+    authorizationId: "task_runtime_authorization_v3",
+    authorizationHash: responseHash.slice(),
+    issuingHumanId: "task_runtime_human",
+    issuingDeviceId: "task_runtime_device",
+    issuingDeviceAuthorizationRevision: 11,
+    issuerSigningPublicKeyHash: new Uint8Array(32).fill(0x44),
+    issuedAt: START,
+    expiresAt: record.snapshot.recipient!.expiresAt,
+  };
 }
 
 function initialRecord(
@@ -394,6 +488,76 @@ function verifiedAgentResponseV2(
 }
 
 describe("background authorization repository contract", () => {
+  test("accepts only an exact verified v3 Task Runtime response", async () => {
+    const record = taskRuntimeRecordV3();
+    expect(parseBackgroundAuthorizationRecord({
+      ...record,
+      workKind: "task.dispatch",
+      purpose: "task.dispatch",
+    })).toMatchObject({
+      workKind: "task.dispatch",
+      purpose: "task.dispatch",
+    });
+    expect(() => parseBackgroundAuthorizationRecord({
+      ...record,
+      workKind: "task.approval_resume",
+      purpose: "task.approval_resume",
+    })).toThrow(
+      "Task Runtime authorization requires an exact Task work purpose",
+    );
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    expect((await repository.create(record)).status).toBe("created");
+
+    const response = verifiedTaskRuntimeResponseV3(record);
+    const accepted = await repository.acceptVerifiedResponse({
+      response,
+      acceptedAt: START + 2,
+    });
+    expect(accepted.status).toBe("accepted");
+    if (accepted.status !== "accepted") throw new Error("expected acceptance");
+    expect(accepted.record.snapshot).toMatchObject({
+      formatVersion: 3,
+      workId: record.snapshot.workId,
+      state: "grant_ready",
+      acceptedResponse: {
+        kind: "runtime",
+        recipientGeneration: 0,
+      },
+    });
+    expect(accepted.record.acceptedMaterial).toMatchObject({
+      credentialId: response.authorizationId,
+      authorizationExpiresAt: response.expiresAt,
+    });
+    expect((await repository.acceptVerifiedResponse({
+      response,
+      acceptedAt: START + 3,
+    })).status).toBe("duplicate");
+
+    const other = taskRuntimeRecordV3();
+    expect(() => buildAcceptedBackgroundAuthorizationResponse(
+      other,
+      {
+        ...verifiedTaskRuntimeResponseV3(other),
+        recipientGeneration: 1,
+      },
+      START + 2,
+    )).toThrow("does not match current durable authorization");
+    expect(() => buildAcceptedBackgroundAuthorizationResponse(
+      other,
+      {
+        ...verifiedTaskRuntimeResponseV3(other),
+        authoritySet: {
+          ...other.authoritySet,
+          domainRequirements: [{
+            ...other.authoritySet.domainRequirements[0]!,
+            expectedAuthorizationRevision: 8,
+          }],
+        },
+      },
+      START + 2,
+    )).toThrow("does not match current durable authorization");
+  });
+
   test("accepts only the exact semantic Reflection V2 work-purpose pairs", () => {
     const pairs = [
       ["reflection.search_projection", "record.search_projection"],
@@ -454,6 +618,12 @@ describe("background authorization repository contract", () => {
     );
     expect(Number(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.processor)).toBe(
       MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+    );
+    expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse).toBe(
+      DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
+    );
+    expect(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime).toBe(
+      DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
     );
     expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyDescriptor).toBe(
       MAX_BACKGROUND_WORK_DESCRIPTOR_WIRE_BYTES_V2,

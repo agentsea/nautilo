@@ -7,7 +7,7 @@ import { createResearchNoteDraft, resolveResearchNoteControls } from "../../src/
 import { localModelCatalog } from "../../src/config/model-catalog/catalog";
 import { researchNoteDraftNodes } from "../../src/tools/security/research-note-draft-nodes";
 
-const fw = "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
+const fw = "fireworks:accounts/fireworks/models/deepseek-v4p1-flash";
 const or = "openrouter:deepseek/deepseek-v4-flash-0731";
 function fixture(): NautiloState {
   const messages = [new AIMessage({ content: "Observed access guard", tool_calls: [{ id: "read", name: "file", args: { command: "read", path: "access.js" } }],
@@ -35,7 +35,7 @@ test("one asynchronous draft sees only prepared visible AI/tool inputs and prefe
   const requests: string[] = [];
   const helper = createResearchNoteDraft(undefined, { eligibleIds: () => [fw, or], invoke: (request) => {
     expect(request.modelId).toBe(fw);
-    expect(request.controls).toEqual({ canonicalModelId: fw, reasoningEffort: "off" });
+    expect(request.controls).toBeUndefined();
     expect(request.messages).toHaveLength(2);
     expect(SystemMessage.isInstance(request.messages[0])).toBe(true);
     expect(HumanMessage.isInstance(request.messages[1])).toBe(true);
@@ -73,13 +73,14 @@ test("helper purpose controls honor canonical capabilities and explicit server c
   const entries = localModelCatalog.entries;
   const original = JSON.stringify(entries);
   const glm = "openrouter:z-ai/glm-5.3";
-  for (const id of [or, fw]) expect(resolveResearchNoteControls(id, entries, null)).toEqual({ canonicalModelId: id, reasoningEffort: "off" });
+  expect(resolveResearchNoteControls(or, entries, null)).toEqual({ canonicalModelId: or, reasoningEffort: "off" });
+  expect(resolveResearchNoteControls(fw, entries, null)).toBeUndefined();
   expect(resolveResearchNoteControls(glm, entries, null)).toEqual({ canonicalModelId: glm, reasoningEffort: "low" });
   expect(resolveResearchNoteControls(glm, entries, { reasoningPolicy: { defaultEffort: "high", overrides: {} } })?.reasoningEffort).toBe("low");
   expect(resolveResearchNoteControls(or, entries, { reasoningPolicy: { defaultEffort: "low", overrides: { [or]: "max" } } })?.reasoningEffort).toBe("max");
   expect(resolveResearchNoteControls(or, entries, { reasoningOutput: { [or]: false }, reasoningPolicy: { defaultEffort: "high", overrides: { [or]: "max" } } })?.reasoningEffort).toBe("off");
   expect(() => resolveResearchNoteControls(glm, entries, { reasoningOutput: { [glm]: false } })).toThrow("unsupported-reasoning-effort");
-  expect(() => resolveResearchNoteControls(fw, entries, { reasoningPolicy: { defaultEffort: null, overrides: { [fw]: "low" } } })).toThrow("unsupported-reasoning-effort");
+  expect(() => resolveResearchNoteControls(fw, entries, { reasoningPolicy: { defaultEffort: null, overrides: { [fw]: "low" } } })).toThrow("reasoning-not-supported");
   expect(resolveResearchNoteControls(or, [{ id: or }], null)).toBeUndefined();
   expect(() => resolveResearchNoteControls(or, [{ id: or }], { reasoningOutput: { [or]: false } })).toThrow("reasoning-not-supported");
   expect(JSON.stringify(entries)).toBe(original);

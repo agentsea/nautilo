@@ -42,7 +42,7 @@ export interface ModelPrice {
 }
 
 /** Bump on any price change. Stored on each usage row for later reconciliation. */
-export const PRICING_VERSION = "2026-09-20.1";
+export const PRICING_VERSION = "2026-09-23.1";
 
 /** Baseline used to derive an estimate for models absent from the explicit table. */
 const SONNET_BASELINE: ModelPrice = { inputPerMtok: 3, outputPerMtok: 15 };
@@ -59,11 +59,36 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
   "anthropic:claude-sonnet-5": { inputPerMtok: 3, outputPerMtok: 15, cachedInputPerMtok: 0.3, cacheWritePerMtok: 3.75 },
   "anthropic:claude-fable-5": { inputPerMtok: 10, outputPerMtok: 50, cachedInputPerMtok: 1, cacheWritePerMtok: 12.5 },
   "anthropic:claude-opus-5": { inputPerMtok: 5, outputPerMtok: 25, cachedInputPerMtok: 0.5, cacheWritePerMtok: 6.25 },
+  // Anthropic Opus 5.5, published rates verified 2026-09-23; usage aggregates cache TTLs.
+  "anthropic:claude-opus-5-5": { inputPerMtok: 4, outputPerMtok: 20, cachedInputPerMtok: 0.2, cacheWritePerMtok: 5 },
   "anthropic:claude-opus-4-8": { inputPerMtok: 5, outputPerMtok: 25, cachedInputPerMtok: 0.5, cacheWritePerMtok: 6.25 },
   "anthropic:claude-opus-4-7": { inputPerMtok: 5, outputPerMtok: 25, cachedInputPerMtok: 0.5, cacheWritePerMtok: 6.25 },
-  // --- OpenAI (cache read ≈0.5× input, no separate write charge) ---
+  // --- OpenAI (rates are model-specific; cache writes and long-context tiers apply to GPT-6) ---
   "openai:gpt-5.5-2026-04-23": { inputPerMtok: 6, outputPerMtok: 30, cachedInputPerMtok: 3 },
   "openai:gpt-5.4-2026-03-05": { inputPerMtok: 3, outputPerMtok: 15, cachedInputPerMtok: 1.5 },
+  // GPT-6 Sol/Luna rates and whole-request long-context bands, verified 2026-09-23:
+  // https://developers.openai.com/api/docs/models/gpt-6-sol
+  // https://developers.openai.com/api/docs/models/gpt-6-luna
+  "openai:gpt-6-sol": {
+    inputPerMtok: 2,
+    outputPerMtok: 10,
+    cachedInputPerMtok: 0.2,
+    cacheWritePerMtok: 2.5,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 4, outputPerMtok: 15, cachedInputPerMtok: 0.4, cacheWritePerMtok: 5 },
+    },
+  },
+  "openai:gpt-6-luna": {
+    inputPerMtok: 0.1,
+    outputPerMtok: 0.5,
+    cachedInputPerMtok: 0.01,
+    cacheWritePerMtok: 0.125,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 0.2, outputPerMtok: 0.75, cachedInputPerMtok: 0.02, cacheWritePerMtok: 0.25 },
+    },
+  },
   // GPT-5.6 standard rates and whole-request long-context pricing, verified 2026-09-18:
   // https://developers.openai.com/api/docs/models/gpt-5.6-sol
   // https://developers.openai.com/api/docs/models/gpt-5.6-terra
@@ -117,8 +142,55 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
   // advertises scheduled override windows, so these remain dashboard estimates.
   "openrouter:deepseek/deepseek-v4.1-flash": { inputPerMtok: 0.15, cachedInputPerMtok: 0.003, outputPerMtok: 0.6 },
   "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": { inputPerMtok: 0.14, cachedInputPerMtok: 0.028, outputPerMtok: 0.28 },
+  // Fireworks DeepSeek V4.1 Flash serverless model page, verified 2026-09-23.
+  "fireworks:accounts/fireworks/models/deepseek-v4p1-flash": { inputPerMtok: 0.22, cachedInputPerMtok: 0.007, outputPerMtok: 0.66 },
   "fireworks:accounts/fireworks/models/minimax-m3": { inputPerMtok: 0.5, outputPerMtok: 2 },
+  // --- OpenRouter ---
+  // OpenRouter /api/v1/models route rates, verified 2026-09-23; standard 5m cache-write rate.
+  "openrouter:anthropic/claude-opus-5.5": { inputPerMtok: 4, outputPerMtok: 20, cachedInputPerMtok: 0.2, cacheWritePerMtok: 5 },
+  "openrouter:openai/gpt-6-sol": {
+    inputPerMtok: 2,
+    outputPerMtok: 10,
+    cachedInputPerMtok: 0.2,
+    cacheWritePerMtok: 2.5,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 4, outputPerMtok: 15, cachedInputPerMtok: 0.4, cacheWritePerMtok: 5 },
+    },
+  },
+  "openrouter:openai/gpt-6-luna": {
+    inputPerMtok: 0.1,
+    outputPerMtok: 0.5,
+    cachedInputPerMtok: 0.01,
+    cacheWritePerMtok: 0.125,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 0.2, outputPerMtok: 0.75, cachedInputPerMtok: 0.02, cacheWritePerMtok: 0.25 },
+    },
+  },
   // --- Venice ---
+  // Venice /api/v1/models rates, verified 2026-09-23; usage exposes aggregated cache writes.
+  "venice:claude-opus-5-5": { inputPerMtok: 4.8, outputPerMtok: 24, cachedInputPerMtok: 0.24, cacheWritePerMtok: 6 },
+  "venice:openai-gpt-6-sol": {
+    inputPerMtok: 2.5,
+    outputPerMtok: 12.5,
+    cachedInputPerMtok: 0.25,
+    cacheWritePerMtok: 3.125,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 5, outputPerMtok: 18.75, cachedInputPerMtok: 0.5, cacheWritePerMtok: 6.25 },
+    },
+  },
+  "venice:openai-gpt-6-luna": {
+    inputPerMtok: 0.125,
+    outputPerMtok: 0.625,
+    cachedInputPerMtok: 0.0125,
+    cacheWritePerMtok: 0.15625,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 0.25, outputPerMtok: 0.9375, cachedInputPerMtok: 0.025, cacheWritePerMtok: 0.3125 },
+    },
+  },
   "venice:deepseek-v4-flash": { inputPerMtok: 0.17, cachedInputPerMtok: 0.03, outputPerMtok: 0.35 },
   // --- Embeddings ---
   "openai:text-embedding-3-small": { inputPerMtok: 0.02, outputPerMtok: 0 },

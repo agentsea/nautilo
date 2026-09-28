@@ -459,6 +459,7 @@ import {
   InMemoryWorkstationDispatchPlanRegistry,
   jobManager,
   TaskObserver,
+  getTaskObserver,
   setTaskObserver,
   setTaskRunJobManager,
   createTask as runtimeCreateTask,
@@ -2984,7 +2985,9 @@ export async function createApp(options?: CreateAppOptions) {
   });
   personalEncryptionCoverageRoutes(app);
   messageBackfillRoutes(app);
-  backgroundAuthorizationRoutes(app, createProductionBackgroundAuthorizationComposition());
+  backgroundAuthorizationRoutes(app, createProductionBackgroundAuthorizationComposition({
+    wakeProtectedTask: () => getTaskObserver()?.kick(),
+  }));
   deviceAdmissionRoutes(app, {
     composition: deviceAdmissionComposition,
     requiresCryptoDevice: async () =>

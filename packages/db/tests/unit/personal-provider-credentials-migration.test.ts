@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 const migrationPath = join(
   import.meta.dir,
-  "../../src/migrations/0304_sharp_dracula.sql",
+  "../../src/migrations/0305_personal_provider_credentials.sql",
 );
 
 describe("personal provider credential migration", () => {

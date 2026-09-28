@@ -72,6 +72,7 @@ describe("M244 background Agent v2 authority-set schema", () => {
       "ordinal",
       "expected_epoch",
       "expected_agent_authorization_revision",
+      "expected_authorization_revision",
     ]);
     const table = config(backgroundCryptoAuthorizationDomainRequirements);
     expect(table.primaryKeys).toHaveLength(1);

@@ -1,7 +1,21 @@
 import {describe, expect, test} from "bun:test";
-import {LatticeCrypto} from "@nautilo/lattice-crypto";
+import {
+  LatticeCrypto,
+  authorizationRevision,
+  createDomainForegroundAuthorizationPlan,
+  cryptoDeviceId,
+  domainForegroundNamespaceBindingSetDigest,
+  humanId,
+  mintDomainForegroundAuthorization,
+  type DomainForegroundAuthorityEntry,
+} from "@nautilo/lattice-crypto";
 import {createBackgroundAuthorizationResponseV2, encodeBackgroundWorkDescriptorV2,
+  createTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   type BackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
+import {parseDomainForegroundAuthorizationPlanV2,
+  serializeDomainForegroundAuthorizationV2} from "@nautilo/lattice-crypto/wire";
 import {createProductionBackgroundAuthorizationComposition} from "../../src/routes/background-authorization-composition";
 import type {BackgroundAuthorizationDeviceSubject} from "../../src/routes/background-authorization";
 
@@ -103,4 +117,109 @@ describe("production background authorization composition", () => {
     expect(f.service.respond(f.subject, {responseBytes: changed})).rejects.toMatchObject({status: "malformed"});
     expect(f.accepted).toHaveLength(0);
   });
+});
+
+test("accepts an exact signed Task Runtime response and wakes awaiting work", async () => {
+  const crypto = new LatticeCrypto();
+  const signing = crypto.generateSigningKeyPair();
+  const recipient = await crypto.generateEncryptionKeyPair();
+  const now = 1_800_000_000_000;
+  const domain: DomainForegroundAuthorityEntry = {
+    domainId: "domain:task", sourceNamespaceId: "namespace:task",
+    participantDigest: new Uint8Array(32).fill(1), participantCount: 1,
+    keyClass: "ai", domainKeyGeneration: 2,
+    authorizationRevision: authorizationRevision(4),
+    headDigest: new Uint8Array(32).fill(2),
+    activeNamespaceBindingSetDigest: domainForegroundNamespaceBindingSetDigest(
+      crypto, [{namespaceId: "namespace:task", bindingDigest: new Uint8Array(32).fill(3)}],
+    ),
+    activeNamespaceBindingCount: 1,
+  };
+  const plan = createDomainForegroundAuthorizationPlan(crypto, {
+    authorizationId: "request:task", policyRevision: 8,
+    sessionId: "episode:task", roomId: "room:task",
+    subjectHumanId: humanId("human:task"),
+    committerDeviceId: cryptoDeviceId("device:task"),
+    committerDeviceSigningGeneration: 2,
+    hostAuthorizationRevision: authorizationRevision(5),
+    recipientKind: "runtime", recipientPrincipalId: "nautilo_task_runtime",
+    recipientAuthorizationRevision: authorizationRevision(0),
+    recipientRuntimeGeneration: 1, recipientKeyId: "recipient:task",
+    operations: ["decrypt", "encrypt"], issuedAt: now,
+    deadlineAt: now + 60_000, maximumSecretBytes: 4_096,
+    domains: [domain],
+  });
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
+    requestId: plan.authorizationId, workId: "run:task",
+    workKind: "task.dispatch", workPurpose: "task.dispatch",
+    recipientGeneration: 1, episodeId: plan.sessionId,
+    sourceRoomId: plan.roomId, recipientKeyId: plan.recipientKeyId,
+    recipientPublicKey: recipient.publicKey, authorizationPlan: plan,
+    issuedAt: plan.issuedAt, deadlineAt: plan.deadlineAt,
+  });
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  const expectedRequestBytes = Uint8Array.from(requestBytes);
+  const authorization = await mintDomainForegroundAuthorization(crypto, {
+    plan,
+    domains: [{...domain, domainKey: new Uint8Array(32).fill(7)}],
+    committerDeviceSigningPrivateKey: signing.privateKey,
+    recipientEncryptionPublicKey: recipient.publicKey,
+  });
+  const responseBytes = serializeDomainForegroundAuthorizationV2(authorization);
+  const device = {userId: "user:task", humanActorId: plan.subjectHumanId,
+    deviceId: plan.committerDeviceId, deviceGeneration: 2,
+    serverInstanceId: "d8c858cc-f359-48ad-8de6-341f61fb92a1",
+    lineageGeneration: 3, epoch: 4, securityRevision: 5,
+    headDigest: new Uint8Array(32).fill(8), signingPublicKey: signing.publicKey};
+  const subject: BackgroundAuthorizationDeviceSubject = {
+    userId: device.userId, humanActorId: device.humanActorId,
+    deviceId: device.deviceId, admission: {...device, expiresAt: now + 60_000},
+  };
+  const record = {
+    snapshot: {formatVersion: 3, credentialSubject: {kind: "runtime", runtimeKind: "task", runtimeVersion: 1},
+      requestId: request.requestId, updatedAt: now, recipientGeneration: 1,
+      workId: request.workId, recipient: {recipientKeyId: request.recipientKeyId,
+        recipientPublicKey: Buffer.from(recipient.publicKey).toString("base64url"),
+        expiresAt: request.deadlineAt}},
+    descriptorBytes: requestBytes, workKind: request.workKind,
+    purpose: request.workPurpose, expectedPolicyRevision: plan.policyRevision,
+    authoritySet: {namespaceRequirements: [{ordinal: 0,
+      namespaceId: "namespace:task", domainId: domain.domainId,
+      operations: ["decrypt", "encrypt"], expectedAccessRevision: 1,
+      expectedPolicyRevision: plan.policyRevision}],
+      domainRequirements: [{ordinal: 0, domainId: domain.domainId,
+        expectedEpoch: domain.domainKeyGeneration,
+        expectedAuthorizationRevision: domain.authorizationRevision}]},
+  };
+  let wakes = 0;
+  const accepted: unknown[] = [];
+  const connection = {query: async () => []};
+  const service = createProductionBackgroundAuthorizationComposition({
+    crypto, now: () => now,
+    context: (async () => ({canonicalRunner: {}})) as unknown as Dependencies["context"],
+    restricted: (() => connection) as unknown as Dependencies["restricted"],
+    currentDevice: async () => ({...device, signingPublicKey: signing.publicKey.slice()}),
+    repository: (async () => ({
+      get: async () => structuredClone(record),
+      listAwaitingDevicePage: async () => ({records: [structuredClone(record)], continuation: null}),
+      acceptVerifiedResponse: async (input: unknown) => {accepted.push(structuredClone(input)); return {status: "accepted"};},
+    })) as unknown as Dependencies["repository"],
+    withTaskAuthority: (async input => {
+      const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(record.descriptorBytes);
+      const currentPlan = parseDomainForegroundAuthorizationPlanV2(decoded!.authorizationPlanBytes);
+      return input.use(decoded!, currentPlan!, currentPlan!.domains,
+        device, connection as unknown as Parameters<typeof input.use>[4]);
+    }) as Dependencies["withTaskAuthority"],
+    wakeProtectedTask: () => {wakes++;},
+  });
+  expect((await service.list(subject, {})).requests[0]?.requestBytes).toEqual(expectedRequestBytes);
+  expect(await service.respond(subject, {responseBytes})).toEqual({status: "accepted"});
+  expect(accepted[0]).toMatchObject({response: {kind: "runtime", formatVersion: 3,
+    requestId: request.requestId, workId: request.workId}});
+  expect(wakes).toBe(1);
+  const tampered = Uint8Array.from(responseBytes);
+  tampered[tampered.length - 1] = tampered[tampered.length - 1]! ^ 1;
+  expect(service.respond(subject, {responseBytes: tampered}))
+    .rejects.toMatchObject({status: "malformed"});
+  expect(accepted).toHaveLength(1);
 });

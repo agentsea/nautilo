@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { ToolCatalog } from "@nautilo/catalog";
+import { ToolCatalog, clearToolCatalog, getToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { setConfigOverrides } from "@nautilo/config";
 import { buildGuestToolPolicy, type ToolAccess } from "@nautilo/trust";
 import { expandToolFamilies } from "../../src/tools/exposure/manifest";
@@ -12,9 +12,11 @@ import { activeComputerUseHostToolDefinitions } from "../../src/config/computer-
 import { registerAllTools } from "../../src/tools/register-all";
 
 let catalog: ToolCatalog;
+let previousCatalog: ToolCatalog | null = null;
 const ORIGINAL_TAVILY_API_KEY = process.env["TAVILY_API_KEY"];
 
 beforeAll(() => {
+  previousCatalog = getToolCatalog();
   setConfigOverrides({ nautilo_office_enabled: false });
   process.env["TAVILY_API_KEY"] = "test-key";
   catalog = new ToolCatalog();
@@ -24,9 +26,12 @@ beforeAll(() => {
     publicBrowserUseAvailable: () => true,
     decisionModelsAvailable: () => true,
   });
+  initToolCatalog(catalog);
 });
 
 afterAll(() => {
+  if (previousCatalog) initToolCatalog(previousCatalog);
+  else clearToolCatalog();
   if (ORIGINAL_TAVILY_API_KEY !== undefined) process.env["TAVILY_API_KEY"] = ORIGINAL_TAVILY_API_KEY;
   else delete process.env["TAVILY_API_KEY"];
 });

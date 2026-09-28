@@ -38,7 +38,7 @@ function registration(
       if (context !== undefined) onContext(context);
       return new DynamicStructuredTool({
         name,
-        description: `${name} D447 eligibility fixture`,
+        description: `${name} retained-tool eligibility fixture`,
         schema: z.object({}),
         func: async () => {
           onExecute();
@@ -160,7 +160,7 @@ afterEach(() => {
   setConfigOverrides({});
 });
 
-describe("D447 retained-tool eligibility transitions", () => {
+describe("retained-tool eligibility transitions", () => {
   test("policy loss withholds a retained schema and policy recovery restores it", async () => {
     installCatalog();
     await expectLossThenRecovery(
@@ -203,7 +203,7 @@ describe("D447 retained-tool eligibility transitions", () => {
   test("model-capability loss withholds a retained schema and model recovery restores it", async () => {
     installCatalog({ requiredModelCapabilities: ["image"] });
     await expectLossThenRecovery(
-      { model: "fireworks:accounts/fireworks/models/glm-5p2" },
+      { model: "fireworks:accounts/fireworks/models/glm-5p3" },
       { model: "fireworks:accounts/fireworks/models/minimax-m3" },
     );
   });

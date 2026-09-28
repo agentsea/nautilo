@@ -11,6 +11,7 @@ import {
   parseDomainForegroundAuthorizationV2,
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
+  verifyDomainForegroundAuthorizationV2,
   withOpenedDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorityEntryV2,
   type DomainForegroundAuthorizationCurrentAuthorityV2,
@@ -167,6 +168,30 @@ async function fixture(kind: "agent" | "runtime" = "agent") {
 }
 
 describe("M301 V2 Domain foreground authorization", () => {
+  test("verifies a signed Runtime grant without borrowing a recipient private key", async () => {
+    const value = await fixture("runtime");
+    const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+      value.authorization,
+    );
+    const { recipientEncryptionPrivateKey: _privateKey, ...current } = value.current;
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: NOW + 1,
+      current,
+    })).toEqual({ status: "verified" });
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: NOW + 1,
+      current: { ...current, recipientRuntimeGeneration: 1 },
+    })).toEqual({ status: "unavailable", reason: "authority_stale" });
+    const tampered = Uint8Array.from(authorizationBytes);
+    tampered[tampered.length - 1] = tampered[tampered.length - 1]! ^ 1;
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes: tampered,
+      now: NOW + 1,
+      current,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+  });
   test("roundtrips an exact decrypt-only plan while preserving existing two-operation bytes", async () => {
     const value = await fixture("runtime");
     const crypto = new LatticeCrypto();

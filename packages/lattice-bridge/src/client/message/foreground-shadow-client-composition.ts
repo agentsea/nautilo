@@ -115,6 +115,8 @@ import {
   respondToCurrentDeviceAuthorizationV2,
   type CurrentBackgroundAuthorizationSigningAuthorityV2,
 } from "../background/device-authorization-responder-v2.ts";
+import { tryRespondToCurrentTaskRuntimeAuthorizationV1 } from
+  "../background/task-runtime-authorization-responder-v1.ts";
 import {
   createAuthorizedHumanTaskClientV1,
 } from "../task/authorized-human-task-client.ts";
@@ -489,16 +491,7 @@ export function createForegroundBackgroundAuthorizationClientV2(
         });
       }
       try {
-        return await respondToCurrentDeviceAuthorizationV2({
-          descriptorBytes,
-          ...(signal === undefined ? {} : { signal }),
-          domainAuthority: authorities.domain,
-          namespaceAuthority: authorities.namespace,
-          crypto,
-          serverId: input.serverScope,
-          now,
-          createId,
-          withCurrentSigningAuthority: async <Value>(use: (
+        const withCurrentSigningAuthority = async <Value>(use: (
             authority: CurrentBackgroundAuthorizationSigningAuthorityV2,
           ) => Value | Promise<Value>): Promise<Value | null> => {
             signal?.throwIfAborted();
@@ -531,6 +524,8 @@ export function createForegroundBackgroundAuthorizationClientV2(
                       issuer: current.issuer,
                       signingPrivateKey: base.signingPrivateKey,
                       policyRevision: current.policyRevision,
+                      hostAuthorizationRevision:
+                        base.trustedHostAuthorizationRevision,
                     });
                   } finally {
                     publicKeyHash.fill(0);
@@ -540,7 +535,29 @@ export function createForegroundBackgroundAuthorizationClientV2(
                 }
               },
             );
-          },
+          };
+        const task = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+          requestBytes: descriptorBytes,
+          ...(signal === undefined ? {} : { signal }),
+          domainForegroundAuthority: createDomainForegroundAuthorityClientV2({
+            domainAuthority: authorities.domain,
+            namespaceAuthority: authorities.namespace,
+          }),
+          crypto,
+          now,
+          withCurrentSigningAuthority,
+        });
+        if (task.status !== "not_task_runtime") return task;
+        return await respondToCurrentDeviceAuthorizationV2({
+          descriptorBytes,
+          ...(signal === undefined ? {} : { signal }),
+          domainAuthority: authorities.domain,
+          namespaceAuthority: authorities.namespace,
+          crypto,
+          serverId: input.serverScope,
+          now,
+          createId,
+          withCurrentSigningAuthority,
         });
       } finally {
         destroyPublicSigningAuthority(current);

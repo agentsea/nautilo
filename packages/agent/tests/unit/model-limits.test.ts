@@ -198,9 +198,9 @@ describe("model token limits", () => {
     expect(modelSupportsInput("openrouter:anthropic/claude-sonnet-4.6", "image")).toBe(true);
   });
 
-  test("DeepSeek completion budget uses remaining context instead of a global ceiling", async () => {
+  test("DeepSeek V4.1 Flash completion budget uses remaining context instead of a global ceiling", async () => {
     const longInput = "x".repeat(102_381 * 4);
-    const budget = await resolveCompletionBudget("fireworks:accounts/fireworks/models/deepseek-v4-flash-0731", [
+    const budget = await resolveCompletionBudget("fireworks:accounts/fireworks/models/deepseek-v4p1-flash", [
       new HumanMessage(longInput),
     ]);
     expect(budget).toBeLessThan(1_048_576);

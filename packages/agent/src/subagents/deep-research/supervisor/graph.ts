@@ -14,6 +14,7 @@ import type { ChatModel } from "../../../providers/types";
 import { invokeWithRetry } from "../../../utils/invoke";
 import { messageContentToString } from "../shared/utils";
 import { warn } from "@nautilo/logger";
+import { ModelOutputLimitError, modelResponseReachedOutputLimit } from "../../../graph/model-output-limit";
 import {
   coerceString,
   getStringField,
@@ -51,13 +52,7 @@ function createSupervisorNode(cfg: Configuration) {
         max_concurrent_research_units: cfg.max_concurrent_research_units,
       });
 
-      const model: ChatModel = await createModel(cfg.supervisor_model, cfg, {
-        maxTokens: cfg.supervisor_model_max_tokens,
-      });
       const tools = [conductResearchTool, researchCompleteTool, thinkTool];
-
-      if (!model.bindTools) throw new Error("Model does not support tool binding");
-      const toolBoundModel: ChatModel<BaseMessageLike, unknown> = model.bindTools(tools);
 
       let messages: BaseMessageLike[];
 
@@ -74,6 +69,14 @@ function createSupervisorNode(cfg: Configuration) {
         return { supervisor_messages: supervisorMessages };
       }
 
+      const model: ChatModel = await createModel(cfg.supervisor_model, cfg, {
+        maxTokens: cfg.supervisor_model_max_tokens,
+        useOpenAIResponsesApi: true,
+        messages, tools,
+      });
+      if (!model.bindTools) throw new Error("Model does not support tool binding");
+      const toolBoundModel: ChatModel<BaseMessageLike, unknown> = model.bindTools(tools);
+
       const response = await invokeWithRetry<BaseMessageLike, unknown>(toolBoundModel, messages, {
         label: "supervisor.invoke",
         attempts: 3,
@@ -82,6 +85,7 @@ function createSupervisorNode(cfg: Configuration) {
       });
       return { supervisor_messages: [...supervisorMessages, response as BaseMessageLike] };
     } catch (e) {
+      if (config?.signal?.aborted) throw e;
       warn(`[supervisor] failed: ${getErrorMessage(e)}`);
       // Retries are exhausted. Returning unchanged messages lets the graph
       // proceed to final synthesis, even when no research was performed.
@@ -107,6 +111,10 @@ function createSupervisorToolsNode(cfg: Configuration, _checkpointSaver?: Postgr
   ): Promise<{ supervisor_messages: BaseMessageLike[]; raw_notes: string[]; notes: string[]; research_iterations: number }> {
     const supervisorMessages = Array.isArray(state.supervisor_messages) ? state.supervisor_messages : [];
     const mostRecentMessage = toAIMessage(supervisorMessages[supervisorMessages.length - 1]);
+    config?.signal?.throwIfAborted();
+    if (mostRecentMessage && modelResponseReachedOutputLimit(mostRecentMessage)) {
+      throw new ModelOutputLimitError();
+    }
 
     if (!mostRecentMessage) {
       return {

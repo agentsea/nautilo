@@ -1,3 +1,4 @@
+import { modelResponseReachedOutputLimit } from "../../../graph/model-output-limit";
 import { StateGraph, START, END } from "@langchain/langgraph";
 import type { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -10,9 +11,8 @@ import { buildFinalReportPrompt, buildClarifyWithUserPrompt } from "../tools/cor
 import { parseJsonSafely, messageContentToString, extractTextFromResponse } from "../shared/utils";
 import { toSupervisorState } from "../shared/transform";
 import type { AgentState as AgentStateShape } from "../shared/transform";
-import type { BaseMessageLike } from "@langchain/core/messages";
-import { classifyError, isTokenLimitError } from "../../../utils/errors";
-import { getModelTokenLimit } from "../../../providers/models";
+import { AIMessage, type BaseMessageLike } from "@langchain/core/messages";
+import { classifyError } from "../../../utils/errors";
 import { warn } from "@nautilo/logger";
 import { invokeWithRetry } from "../../../utils/invoke";
 import type { ClarifyWithUser } from "../shared/types";
@@ -27,13 +27,14 @@ function createClarifyWithUserNode(cfg: Configuration) {
   ): Promise<{ messages: BaseMessageLike[] }> {
     if (!cfg.allow_clarification) return { messages: state.messages ?? [] };
     try {
-      const model = await createModel(cfg.research_model, cfg, {
-        maxTokens: cfg.research_model_max_tokens,
-      });
       const transcript = Array.isArray(state.messages)
         ? state.messages.map((m) => messageContentToString(m)).join("\n\n")
         : "";
       const prompt = buildClarifyWithUserPrompt(transcript);
+      const model = await createModel(cfg.research_model, cfg, {
+        maxTokens: cfg.research_model_max_tokens,
+        messages: [{ role: "user", content: prompt }],
+      });
       const resp: unknown = await invokeWithRetry<BaseMessageLike, unknown>(model, [{ role: "user", content: prompt }] as BaseMessageLike[], {
         label: "clarify.invoke",
         attempts: 3,
@@ -113,7 +114,7 @@ export function createFinalReportGenerationNode(cfg: Configuration) {
     state: typeof AgentStateAnnotation.State,
     config?: RunnableConfig,
   ): Promise<{ final_report: string; messages: BaseMessageLike[] }> {
-    let findings = (state.notes ?? []).join("\n\n");
+    const findings = (state.notes ?? []).join("\n\n");
 
     try {
       await dispatchCustomEvent("job.progress", {
@@ -124,56 +125,32 @@ export function createFinalReportGenerationNode(cfg: Configuration) {
     } catch { /* ignore */ }
 
     try {
-      const model = await createModel(cfg.final_report_model, cfg, {
-        maxTokens: cfg.final_report_model_max_tokens,
+      const prompt = buildFinalReportPrompt({
+        research_brief: state.research_brief ?? "",
+        messages: JSON.stringify(state.messages ?? []),
+        findings,
+        report_language: state.report_language ?? "English",
       });
-      let attempts = 0;
-      const maxAttempts = 3;
-      let findingsCharLimit: number | null = null;
-
-      while (attempts < maxAttempts) {
-        attempts += 1;
-        const prompt = buildFinalReportPrompt({
-          research_brief: state.research_brief ?? "",
-          messages: JSON.stringify(state.messages ?? []),
-          findings,
-          report_language: state.report_language ?? "English",
-        });
-        try {
-          const runnableModel = model as unknown as {
-            invoke: (messages: BaseMessageLike[], config?: RunnableConfig) => Promise<unknown>;
-          };
-          const resp = await runnableModel.invoke(
-            [{ role: "user", content: prompt }] as BaseMessageLike[],
-            config,
-          );
-          const text: string = extractTextFromResponse(resp);
-          if (!text.trim()) throw new Error("Final report model returned an empty report");
-          return { final_report: text, messages: [resp as BaseMessageLike] };
-        } catch (e) {
-          if (isTokenLimitError(e) && attempts < maxAttempts) {
-            if (findingsCharLimit == null) {
-              const maxTokens = getModelTokenLimit(cfg.final_report_model, { anthropicLongContextBeta: cfg.anthropic_long_context_beta });
-              findingsCharLimit = Math.max(1000, maxTokens * 4);
-            } else {
-              findingsCharLimit = Math.floor(findingsCharLimit * 0.9);
-            }
-            const before = findings.length;
-            findings = findings.slice(0, findingsCharLimit);
-            warn(`[agent] Token limit during final report; truncating findings ${before} -> ${findings.length} and retrying (${attempts}/${maxAttempts})`);
-            continue;
-          }
-          throw e;
-        }
+      const messages: BaseMessageLike[] = [{ role: "user", content: prompt }];
+      const model = await createModel(cfg.final_report_model, cfg, {
+        maxTokens: cfg.final_report_model_max_tokens, messages,
+      });
+      const resp = await model.invoke(messages, { ...config });
+      config?.signal?.throwIfAborted();
+      if (AIMessage.isInstance(resp) && modelResponseReachedOutputLimit(resp)) {
+        throw new Error("The final report reached the model output limit before completion; synthesis failed.");
       }
+      const text = extractTextFromResponse(resp);
+      if (!text.trim()) throw new Error("Final report model returned an empty report");
+      return { final_report: text, messages: [resp as BaseMessageLike] };
     } catch (e) {
+      if (config?.signal?.aborted) throw e;
       warn(`[agent] final report failed: ${(e as Error).message}`);
       // A failed synthesis must fail the Task, not become a successful report.
       // Preserve the provider cause rather than inventing retry exhaustion.
       const detail = classifyError(e).category === "TIMEOUT" ? ": the report model timed out" : "";
       throw new Error(`Deep Research final report generation failed${detail}`, { cause: e });
     }
-    throw new Error("Deep Research final report generation did not produce a report");
   };
 }
 

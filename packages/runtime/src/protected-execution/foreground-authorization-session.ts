@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS,
+} from "@nautilo/db/schema";
+import { MAX_AGENT_GRANT_NAMESPACES_V2 } from
+  "@nautilo/lattice-crypto/wire-limits";
 
 import {
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS,
@@ -38,6 +43,8 @@ export const FOREGROUND_AUTHORIZATION_ABSOLUTE_LIMIT_MS =
   2 * 60 * 60 * 1_000;
 export const FOREGROUND_AUTHORIZATION_IDLE_LIMIT_MS =
   30 * 60 * 1_000;
+export const TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS =
+  BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS.productTtlSeconds * 1_000;
 export const FOREGROUND_AUTHORIZATION_MAX_SESSIONS = 256;
 export const FOREGROUND_AUTHORIZATION_MAX_CHILD_VIEWS = 16;
 export const MAX_FOREGROUND_AUTHORIZATION_OPERATIONS = 256;
@@ -58,9 +65,22 @@ export type RuntimeForegroundAuthorizationBinding = Readonly<{
   readonly topLevelRoomId: string;
 }>;
 
+export type TaskRuntimeAuthorizationBinding = Readonly<{
+  readonly humanId: string;
+  readonly issuingDeviceId: string;
+  readonly recipientKind: "nautilo_task_runtime";
+  readonly taskRunId: string;
+  readonly authorizationEpisodeId: string;
+  readonly sourceRoomId: string;
+}>;
+
 export type ForegroundAuthorizationBinding =
   | LegacyAgentForegroundAuthorizationBinding
   | RuntimeForegroundAuthorizationBinding;
+
+export type AuthorizationSessionBinding =
+  | ForegroundAuthorizationBinding
+  | TaskRuntimeAuthorizationBinding;
 
 export const FOREGROUND_AUTHORIZATION_ENTRYPOINT_IDS =
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS;
@@ -319,6 +339,12 @@ export type ForegroundAuthorizationCapabilityDescription =
       readonly browserSessionId: string;
       readonly topLevelRoomId: string;
     }>
+    | Readonly<{
+      readonly recipientKind: "nautilo_task_runtime";
+      readonly taskRunId: string;
+      readonly authorizationEpisodeId: string;
+      readonly sourceRoomId: string;
+    }>
   );
 
 export interface ForegroundAuthorizationCapabilityPort<
@@ -375,7 +401,7 @@ type SessionEntry<Capability extends object> = {
   readonly sessionId: string;
   readonly capability: Capability;
   readonly description: ForegroundAuthorizationCapabilityDescription;
-  readonly binding: ForegroundAuthorizationBinding;
+  readonly binding: AuthorizationSessionBinding;
   readonly absoluteExpiresAt: number;
   readonly rootView: ForegroundAuthorizationView;
   readonly views: Set<ForegroundAuthorizationView>;
@@ -462,6 +488,15 @@ function isForegroundEntrypoint(
   return protectedEntrypoints.has(value);
 }
 
+function isEntrypointAllowed(
+  binding: AuthorizationSessionBinding,
+  value: ProtectedExecutionEntrypointId,
+): value is ProtectedAgentRuntimeForegroundEntrypointId {
+  return (!("recipientKind" in binding)
+      || binding.recipientKind === "nautilo_foreground_runtime")
+    && isForegroundEntrypoint(value);
+}
+
 function portableText(value: unknown): value is string {
   return typeof value === "string"
     && value.length > 0
@@ -486,6 +521,15 @@ function canonicalIds(
   return Object.freeze([...value]);
 }
 
+function scopeMaximum(
+  binding: AuthorizationSessionBinding,
+): number {
+  return "recipientKind" in binding
+      && binding.recipientKind === "nautilo_task_runtime"
+    ? MAX_AGENT_GRANT_NAMESPACES_V2
+    : FOREGROUND_AUTHORIZATION_MAX_SESSIONS;
+}
+
 function canonicalOperations(
   value: unknown,
 ): readonly ProtectedExecutionOperation[] | null {
@@ -507,8 +551,9 @@ function canonicalOperations(
 
 function canonicalNamespaceRequirements(
   value: unknown,
+  maximum = FOREGROUND_AUTHORIZATION_MAX_SESSIONS,
 ): readonly ForegroundAuthorizationNamespaceRequirement[] | null {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maximum) {
     return null;
   }
   const entries: readonly unknown[] = value;
@@ -536,8 +581,8 @@ function canonicalNamespaceRequirements(
 }
 
 function snapshotBinding(
-  value: ForegroundAuthorizationBinding,
-): ForegroundAuthorizationBinding | null {
+  value: AuthorizationSessionBinding,
+): AuthorizationSessionBinding | null {
   if (
     typeof value !== "object"
     || value === null
@@ -554,17 +599,32 @@ function snapshotBinding(
       recipientAgentId: value.recipientAgentId,
     });
   }
+  if (value.recipientKind === "nautilo_foreground_runtime") {
+    if (
+      !portableText(value.browserSessionId)
+      || !portableText(value.topLevelRoomId)
+    ) return null;
+    return Object.freeze({
+      humanId: value.humanId,
+      issuingDeviceId: value.issuingDeviceId,
+      recipientKind: value.recipientKind,
+      browserSessionId: value.browserSessionId,
+      topLevelRoomId: value.topLevelRoomId,
+    });
+  }
   if (
-    value.recipientKind !== "nautilo_foreground_runtime"
-    || !portableText(value.browserSessionId)
-    || !portableText(value.topLevelRoomId)
+    value.recipientKind !== "nautilo_task_runtime"
+    || !portableText(value.taskRunId)
+    || !portableText(value.authorizationEpisodeId)
+    || !portableText(value.sourceRoomId)
   ) return null;
   return Object.freeze({
     humanId: value.humanId,
     issuingDeviceId: value.issuingDeviceId,
     recipientKind: value.recipientKind,
-    browserSessionId: value.browserSessionId,
-    topLevelRoomId: value.topLevelRoomId,
+    taskRunId: value.taskRunId,
+    authorizationEpisodeId: value.authorizationEpisodeId,
+    sourceRoomId: value.sourceRoomId,
   });
 }
 
@@ -594,8 +654,12 @@ function snapshotDescription(
   ) {
     return null;
   }
-  const namespaceIds = canonicalIds(value.namespaceIds);
-  const domainIds = canonicalIds(value.domainIds);
+  const maximum = "recipientKind" in value
+      && value.recipientKind === "nautilo_task_runtime"
+    ? MAX_AGENT_GRANT_NAMESPACES_V2
+    : FOREGROUND_AUTHORIZATION_MAX_SESSIONS;
+  const namespaceIds = canonicalIds(value.namespaceIds, maximum);
+  const domainIds = canonicalIds(value.domainIds, maximum);
   if (namespaceIds === null || domainIds === null) return null;
   const recipient = "recipientAgentId" in value
     ? (
@@ -603,9 +667,8 @@ function snapshotDescription(
         ? Object.freeze({ recipientAgentId: value.recipientAgentId })
         : null
     )
-    : (
-      value.recipientKind === "nautilo_foreground_runtime"
-        && portableText(value.browserSessionId)
+    : value.recipientKind === "nautilo_foreground_runtime"
+      ? portableText(value.browserSessionId)
         && portableText(value.topLevelRoomId)
         ? Object.freeze({
           recipientKind: value.recipientKind,
@@ -613,7 +676,17 @@ function snapshotDescription(
           topLevelRoomId: value.topLevelRoomId,
         })
         : null
-    );
+      : value.recipientKind === "nautilo_task_runtime"
+        && portableText(value.taskRunId)
+        && portableText(value.authorizationEpisodeId)
+        && portableText(value.sourceRoomId)
+        ? Object.freeze({
+          recipientKind: value.recipientKind,
+          taskRunId: value.taskRunId,
+          authorizationEpisodeId: value.authorizationEpisodeId,
+          sourceRoomId: value.sourceRoomId,
+        })
+        : null;
   if (recipient === null) return null;
   return Object.freeze({
     authorizationId,
@@ -629,27 +702,32 @@ function snapshotDescription(
 }
 
 function sameBinding(
-  left: ForegroundAuthorizationBinding,
-  right: ForegroundAuthorizationBinding,
+  left: AuthorizationSessionBinding,
+  right: AuthorizationSessionBinding,
 ): boolean {
   if (
     left.humanId !== right.humanId
     || left.issuingDeviceId !== right.issuingDeviceId
     || ("recipientAgentId" in left) !== ("recipientAgentId" in right)
   ) return false;
-  return "recipientAgentId" in left && "recipientAgentId" in right
-    ? left.recipientAgentId === right.recipientAgentId
-    : (
-      "recipientKind" in left
-      && "recipientKind" in right
-      && left.recipientKind === right.recipientKind
-      && left.browserSessionId === right.browserSessionId
+  if ("recipientAgentId" in left && "recipientAgentId" in right) {
+    return left.recipientAgentId === right.recipientAgentId;
+  }
+  if (!("recipientKind" in left) || !("recipientKind" in right)
+    || left.recipientKind !== right.recipientKind) return false;
+  return left.recipientKind === "nautilo_foreground_runtime"
+    && right.recipientKind === "nautilo_foreground_runtime"
+    ? left.browserSessionId === right.browserSessionId
       && left.topLevelRoomId === right.topLevelRoomId
-    );
+    : left.recipientKind === "nautilo_task_runtime"
+      && right.recipientKind === "nautilo_task_runtime"
+      && left.taskRunId === right.taskRunId
+      && left.authorizationEpisodeId === right.authorizationEpisodeId
+      && left.sourceRoomId === right.sourceRoomId;
 }
 
 function bindingMatchesDescription(
-  binding: ForegroundAuthorizationBinding,
+  binding: AuthorizationSessionBinding,
   description: ForegroundAuthorizationCapabilityDescription,
 ): boolean {
   if (
@@ -658,15 +736,20 @@ function bindingMatchesDescription(
     || ("recipientAgentId" in binding)
       !== ("recipientAgentId" in description)
   ) return false;
-  return "recipientAgentId" in binding && "recipientAgentId" in description
-    ? binding.recipientAgentId === description.recipientAgentId
-    : (
-      "recipientKind" in binding
-      && "recipientKind" in description
-      && binding.recipientKind === description.recipientKind
-      && binding.browserSessionId === description.browserSessionId
+  if ("recipientAgentId" in binding && "recipientAgentId" in description) {
+    return binding.recipientAgentId === description.recipientAgentId;
+  }
+  if (!("recipientKind" in binding) || !("recipientKind" in description)
+    || binding.recipientKind !== description.recipientKind) return false;
+  return binding.recipientKind === "nautilo_foreground_runtime"
+    && description.recipientKind === "nautilo_foreground_runtime"
+    ? binding.browserSessionId === description.browserSessionId
       && binding.topLevelRoomId === description.topLevelRoomId
-    );
+    : binding.recipientKind === "nautilo_task_runtime"
+      && description.recipientKind === "nautilo_task_runtime"
+      && binding.taskRunId === description.taskRunId
+      && binding.authorizationEpisodeId === description.authorizationEpisodeId
+      && binding.sourceRoomId === description.sourceRoomId;
 }
 
 function isSubset(
@@ -783,7 +866,7 @@ export class ForegroundAuthorizationSessionRegistry<
 
   register(input: Readonly<{
     readonly capability: Capability;
-    readonly authenticatedBinding: ForegroundAuthorizationBinding;
+    readonly authenticatedBinding: AuthorizationSessionBinding;
     readonly allowedOperations: readonly ProtectedExecutionOperation[];
     readonly sessionDeadline?: number;
   }>): ForegroundAuthorizationRegistration {
@@ -834,11 +917,14 @@ export class ForegroundAuthorizationSessionRegistry<
       this.#capabilityPort.destroy(input.capability);
       return unavailableRegistration("capability_invalid");
     }
-    const policyDeadline = Math.min(
-      Number.MAX_SAFE_INTEGER,
-      description.issuedAt
-        + FOREGROUND_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
-    );
+    const policyDeadline = "recipientKind" in description
+        && description.recipientKind === "nautilo_task_runtime"
+      ? description.issuedAt + TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS
+      : Math.min(
+        Number.MAX_SAFE_INTEGER,
+        description.issuedAt
+          + FOREGROUND_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
+      );
     const absoluteExpiresAt = Math.min(
       description.expiresAt,
       policyDeadline,
@@ -913,7 +999,7 @@ export class ForegroundAuthorizationSessionRegistry<
 
   resolve(input: Readonly<{
     readonly sessionId: string;
-    readonly authenticatedBinding: ForegroundAuthorizationBinding;
+    readonly authenticatedBinding: AuthorizationSessionBinding;
   }>): ForegroundAuthorizationResolveResult {
     if (this.#closed) return unavailableResolve("registry_closed");
     const entry = this.#sessions.get(input.sessionId);
@@ -944,8 +1030,9 @@ export class ForegroundAuthorizationSessionRegistry<
     if (parent === undefined) return unavailableChild("view_unavailable");
     const unavailable = this.#availability(parent.session);
     if (unavailable !== null) return unavailableChild(unavailable);
-    const namespaceIds = canonicalIds(input.namespaceIds);
-    const domainIds = canonicalIds(input.domainIds);
+    const maximum = scopeMaximum(parent.session.binding);
+    const namespaceIds = canonicalIds(input.namespaceIds, maximum);
+    const domainIds = canonicalIds(input.domainIds, maximum);
     const operations = canonicalOperations(input.operations);
     if (
       namespaceIds === null
@@ -1031,7 +1118,7 @@ export class ForegroundAuthorizationSessionRegistry<
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
     if (
-      !isForegroundEntrypoint(input.entrypointId)
+      !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || (
         input.operation !== "decrypt"
         && input.operation !== "encrypt"
@@ -1111,9 +1198,12 @@ export class ForegroundAuthorizationSessionRegistry<
     if (view === undefined) return unavailableLease("view_unavailable");
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
-    const namespaceIds = canonicalIds(input.namespaceIds);
+    const namespaceIds = canonicalIds(
+      input.namespaceIds,
+      scopeMaximum(view.session.binding),
+    );
     if (
-      !isForegroundEntrypoint(input.entrypointId)
+      !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || (
         input.operation !== "decrypt"
         && input.operation !== "encrypt"
@@ -1199,10 +1289,11 @@ export class ForegroundAuthorizationSessionRegistry<
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
     const operations = canonicalOperations(input.operations);
-    const namespaceIds = canonicalIds(input.namespaceIds);
-    const domainIds = canonicalIds(input.domainIds);
+    const maximum = scopeMaximum(view.session.binding);
+    const namespaceIds = canonicalIds(input.namespaceIds, maximum);
+    const domainIds = canonicalIds(input.domainIds, maximum);
     if (
-      !isForegroundEntrypoint(input.entrypointId)
+      !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || operations === null
       || namespaceIds === null
       || domainIds === null
@@ -1267,9 +1358,12 @@ export class ForegroundAuthorizationSessionRegistry<
     if (view === undefined) return unavailableLease("view_unavailable");
     const unavailable = this.#availability(view.session);
     if (unavailable !== null) return unavailableLease(unavailable);
-    const requirements = canonicalNamespaceRequirements(input.requirements);
+    const requirements = canonicalNamespaceRequirements(
+      input.requirements,
+      scopeMaximum(view.session.binding),
+    );
     if (
-      !isForegroundEntrypoint(input.entrypointId)
+      !isEntrypointAllowed(view.session.binding, input.entrypointId)
       || requirements === null
       || requirements.some((entry) =>
         !view.operations.includes(entry.operation)
@@ -1996,7 +2090,7 @@ export class ForegroundAuthorizationSessionRegistry<
 
   cancelSession(input: Readonly<{
     readonly sessionId: string;
-    readonly authenticatedBinding: ForegroundAuthorizationBinding;
+    readonly authenticatedBinding: AuthorizationSessionBinding;
   }>): boolean {
     if (this.#closed) return false;
     const entry = this.#sessions.get(input.sessionId);

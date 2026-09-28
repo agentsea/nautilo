@@ -23,7 +23,7 @@ function invocationParams(llm: unknown): Record<string, unknown> {
   return invocationParams.call(llm, {}) as Record<string, unknown>;
 }
 
-describe("D462 Phase 3.2 — closed Fireworks Kimi K3 serving resolution", () => {
+describe("closed Fireworks Kimi K3 serving resolution", () => {
   test.each([
     ["standard", FIREWORKS_KIMI_K3_MODEL_ID, undefined],
     ["priority", FIREWORKS_KIMI_K3_MODEL_ID, { service_tier: "priority" }],
@@ -40,7 +40,7 @@ describe("D462 Phase 3.2 — closed Fireworks Kimi K3 serving resolution", () =>
   test.each([
     ["malicious selector", FIREWORKS_KIMI_K3_MODEL_ID, "../../other-provider"],
     ["stale profile", FIREWORKS_KIMI_K3_MODEL_ID, "turbo"],
-    ["cross-model profile", "fireworks:accounts/fireworks/models/glm-5p2", "fast"],
+    ["cross-model profile", "fireworks:accounts/fireworks/models/glm-5p3", "fast"],
   ])("rejects %s before constructing a provider request", (_name, modelId, profileId) => {
     expect(() => resolveFireworksKimiK3ServingProfile(modelId, profileId)).toThrow();
   });
@@ -102,7 +102,7 @@ describe("D462 Phase 3.2 — closed Fireworks Kimi K3 serving resolution", () =>
   test("universal input rejects a stale or cross-model profile rather than forwarding raw serving state", async () => {
     for (const [modelId, servingProfileId, message] of [
       [FIREWORKS_KIMI_K3_MODEL_ID, "unreviewed-route", "Unsupported Fireworks Kimi K3 serving profile"],
-      ["fireworks:accounts/fireworks/models/glm-5p2", "fast", "Serving profiles are not available"],
+      ["fireworks:accounts/fireworks/models/glm-5p3", "fast", "Serving profiles are not available"],
     ] as const) {
       try {
         await createUniversalModel(modelId, { apiKey: "test-key", servingProfileId });

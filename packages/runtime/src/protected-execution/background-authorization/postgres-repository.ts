@@ -52,6 +52,7 @@ import {
   type BackgroundAuthorizationAcceptedMaterial,
   type BackgroundAuthorizationAcceptResponseResult,
   type BackgroundAuthorizationAuthoritySetV2,
+  type BackgroundAuthorizationAuthoritySetV3,
   type BackgroundAuthorizationCasResult,
   type BackgroundAuthorizationCreateResult,
   type BackgroundAuthorizationRecord,
@@ -142,7 +143,9 @@ function bytes(hexDigest: string | null): Uint8Array | null {
 
 function rowToRecord(
   row: Row,
-  authoritySet?: BackgroundAuthorizationAuthoritySetV2,
+  authoritySet?:
+    | BackgroundAuthorizationAuthoritySetV2
+    | BackgroundAuthorizationAuthoritySetV3,
 ): BackgroundAuthorizationRecord {
   const formatVersion = requiredCounter(row, "format_version");
   const subjectKind = requiredString(row, "credential_subject_kind");
@@ -178,7 +181,7 @@ function rowToRecord(
     namespaceId: requiredString(row, "namespace_id"),
     descriptorDigest: descriptorHash === null ? null : hex(descriptorHash),
     credentialSubject: subjectKind === "processor"
-      ? formatVersion === 2
+      ? formatVersion !== 1
         ? {
           kind: "processor",
           processorKind: requiredString(row, "processor_kind"),
@@ -192,6 +195,12 @@ function rowToRecord(
           row,
           "processor_authorization_revision",
         ),
+        }
+      : subjectKind === "runtime"
+        ? {
+          kind: "runtime",
+          runtimeKind: requiredString(row, "runtime_kind"),
+          runtimeVersion: requiredCounter(row, "runtime_version"),
         }
       : {
         kind: "agent",
@@ -261,8 +270,12 @@ function rowToRecord(
     acceptedMaterial,
     finishedAt: nullableTimestamp(row, "finished_at"),
   };
-  if (snapshot.formatVersion === 2
-    && snapshot.credentialSubject.kind === "agent") {
+  if (
+    (snapshot.formatVersion === 2
+      && snapshot.credentialSubject.kind === "agent")
+    || (snapshot.formatVersion === 3
+      && snapshot.credentialSubject.kind === "runtime")
+  ) {
     if (authoritySet === undefined) {
       throw new TypeError("Background v2 authority rows are missing");
     }
@@ -295,7 +308,8 @@ function rowsToAuthoritySet(
   requestId: string,
   domainRows: readonly Row[],
   namespaceRows: readonly Row[],
-): BackgroundAuthorizationAuthoritySetV2 {
+  subjectKind: "agent" | "runtime",
+): BackgroundAuthorizationAuthoritySetV2 | BackgroundAuthorizationAuthoritySetV3 {
   const domains = [...domainRows].sort(
     (left, right) => requiredCounter(left, "ordinal")
       - requiredCounter(right, "ordinal"),
@@ -304,22 +318,32 @@ function rowsToAuthoritySet(
     (left, right) => requiredCounter(left, "ordinal")
       - requiredCounter(right, "ordinal"),
   );
-  return {
-    domainRequirements: domains.map((row) => {
+  const domainRequirements = domains.map((row) => {
       if (requiredString(row, "request_id") !== requestId) {
         throw new TypeError("Background Domain requirement request mismatch");
       }
-      return {
+      const common = {
         ordinal: requiredCounter(row, "ordinal"),
         domainId: requiredString(row, "domain_id"),
         expectedEpoch: requiredCounter(row, "expected_epoch"),
-        expectedAgentAuthorizationRevision: requiredCounter(
-          row,
-          "expected_agent_authorization_revision",
-        ),
       };
-    }),
-    namespaceRequirements: namespaces.map((row) => {
+      return subjectKind === "runtime"
+        ? {
+          ...common,
+          expectedAuthorizationRevision: requiredCounter(
+            row,
+            "expected_authorization_revision",
+          ),
+        }
+        : {
+          ...common,
+          expectedAgentAuthorizationRevision: requiredCounter(
+            row,
+            "expected_agent_authorization_revision",
+          ),
+        };
+    });
+  const namespaceRequirements = namespaces.map((row) => {
       if (requiredString(row, "request_id") !== requestId) {
         throw new TypeError(
           "Background Namespace requirement request mismatch",
@@ -339,8 +363,10 @@ function rowsToAuthoritySet(
           "expected_policy_revision",
         ),
       };
-    }),
-  };
+    });
+  return subjectKind === "runtime"
+    ? { domainRequirements: domainRequirements as BackgroundAuthorizationAuthoritySetV3["domainRequirements"], namespaceRequirements }
+    : { domainRequirements: domainRequirements as BackgroundAuthorizationAuthoritySetV2["domainRequirements"], namespaceRequirements };
 }
 
 function requestValues(
@@ -373,6 +399,10 @@ function requestValues(
       ? snapshot.credentialSubject.runtimeGeneration : null,
     agentAuthorizationRevision: snapshot.credentialSubject.kind === "agent"
       ? snapshot.credentialSubject.authorizationRevision : null,
+    runtimeKind: snapshot.credentialSubject.kind === "runtime"
+      ? snapshot.credentialSubject.runtimeKind : null,
+    runtimeVersion: snapshot.credentialSubject.kind === "runtime"
+      ? snapshot.credentialSubject.runtimeVersion : null,
     expectedDomainEpoch: record.expectedDomainEpoch,
     expectedNamespaceAccessRevision: record.expectedNamespaceAccessRevision,
     expectedPolicyRevision: record.expectedPolicyRevision,
@@ -483,8 +513,12 @@ export class PostgresBackgroundAuthorizationRepository
     input: BackgroundAuthorizationRecord,
   ): Promise<BackgroundAuthorizationCreateResult> {
     const record = parseBackgroundAuthorizationRecord(input);
-    if (record.snapshot.formatVersion === 2
-      && record.snapshot.credentialSubject.kind === "agent") {
+    if (
+      (record.snapshot.formatVersion === 2
+        && record.snapshot.credentialSubject.kind === "agent")
+      || (record.snapshot.formatVersion === 3
+        && record.snapshot.credentialSubject.kind === "runtime")
+    ) {
       return withVerifiedCryptoPostgresTransaction(
         this.handle,
         async (transactionHandle) =>
@@ -510,8 +544,12 @@ export class PostgresBackgroundAuthorizationRepository
         .values(requestValues(record)).onConflictDoNothing().returning(),
     );
     if (inserted.length === 1) {
-      if (record.snapshot.formatVersion === 2
-        && record.snapshot.credentialSubject.kind === "agent") {
+      if (
+        (record.snapshot.formatVersion === 2
+          && record.snapshot.credentialSubject.kind === "agent")
+        || (record.snapshot.formatVersion === 3
+          && record.snapshot.credentialSubject.kind === "runtime")
+      ) {
         await this.#insertAuthoritySet(record);
       }
       return {
@@ -547,10 +585,15 @@ export class PostgresBackgroundAuthorizationRepository
   }
 
   async #insertAuthoritySet(record: BackgroundAuthorizationRecord): Promise<void> {
-    if (record.snapshot.formatVersion !== 2
-      || record.snapshot.credentialSubject.kind !== "agent"
+    if (
+      !(
+        (record.snapshot.formatVersion === 2
+          && record.snapshot.credentialSubject.kind === "agent")
+        || (record.snapshot.formatVersion === 3
+          && record.snapshot.credentialSubject.kind === "runtime")
+      )
       || record.authoritySet === undefined) {
-      throw new TypeError("Background v2 authority set is missing");
+      throw new TypeError("Background protected authority set is missing");
     }
     const domains = record.authoritySet.domainRequirements;
     await executeTypedCryptoQuery(
@@ -562,7 +605,13 @@ export class PostgresBackgroundAuthorizationRepository
           ordinal: requirement.ordinal,
           expectedEpoch: requirement.expectedEpoch,
           expectedAgentAuthorizationRevision:
-            requirement.expectedAgentAuthorizationRevision,
+            "expectedAgentAuthorizationRevision" in requirement
+              ? requirement.expectedAgentAuthorizationRevision
+              : null,
+          expectedAuthorizationRevision:
+            "expectedAuthorizationRevision" in requirement
+              ? requirement.expectedAuthorizationRevision
+              : null,
         }))),
     );
 
@@ -585,32 +634,79 @@ export class PostgresBackgroundAuthorizationRepository
   async #recordsFromRows(
     rows: readonly Row[],
   ): Promise<readonly BackgroundAuthorizationRecord[]> {
-    const agentV2RequestIds = rows
-      .filter((row) => requiredCounter(row, "format_version") === 2
-        && requiredString(row, "credential_subject_kind") === "agent")
+    const protectedRequestIds = rows
+      .filter((row) => (
+        requiredCounter(row, "format_version") === 2
+          && requiredString(row, "credential_subject_kind") === "agent"
+      ) || (
+        requiredCounter(row, "format_version") === 3
+          && requiredString(row, "credential_subject_kind") === "runtime"
+      ))
       .map((row) => requiredString(row, "request_id"));
-    if (agentV2RequestIds.length === 0) {
+    if (protectedRequestIds.length === 0) {
       return rows.map((row) => rowToRecord(row));
     }
-    const domains = await this.handle.query(
-      `SELECT request_id, domain_id, ordinal, expected_epoch,
-              expected_agent_authorization_revision
-         FROM background_crypto_authorization_domain_requirements
-        WHERE request_id = ANY($1::text[])
-        ORDER BY request_id, ordinal`,
-      [agentV2RequestIds] as never,
+    const domains = await executeTypedCryptoQuery(
+      this.handle,
+      cryptoTypedDb.select({
+        request_id: backgroundCryptoAuthorizationDomainRequirements.requestId,
+        domain_id: backgroundCryptoAuthorizationDomainRequirements.domainId,
+        ordinal: backgroundCryptoAuthorizationDomainRequirements.ordinal,
+        expected_epoch:
+          backgroundCryptoAuthorizationDomainRequirements.expectedEpoch,
+        expected_agent_authorization_revision:
+          backgroundCryptoAuthorizationDomainRequirements
+            .expectedAgentAuthorizationRevision,
+        expected_authorization_revision:
+          backgroundCryptoAuthorizationDomainRequirements
+            .expectedAuthorizationRevision,
+      })
+        .from(backgroundCryptoAuthorizationDomainRequirements)
+        .where(inArray(
+          backgroundCryptoAuthorizationDomainRequirements.requestId,
+          protectedRequestIds,
+        ))
+        .orderBy(
+          backgroundCryptoAuthorizationDomainRequirements.requestId,
+          backgroundCryptoAuthorizationDomainRequirements.ordinal,
+        ),
     );
-    const namespaces = await this.handle.query(
-      `SELECT request_id, namespace_id, ordinal, domain_id, operation_mask,
-              expected_access_revision, expected_policy_revision
-         FROM background_crypto_authorization_namespace_requirements
-        WHERE request_id = ANY($1::text[])
-        ORDER BY request_id, ordinal`,
-      [agentV2RequestIds] as never,
+    const namespaces = await executeTypedCryptoQuery(
+      this.handle,
+      cryptoTypedDb.select({
+        request_id:
+          backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+        namespace_id:
+          backgroundCryptoAuthorizationNamespaceRequirements.namespaceId,
+        ordinal: backgroundCryptoAuthorizationNamespaceRequirements.ordinal,
+        domain_id:
+          backgroundCryptoAuthorizationNamespaceRequirements.domainId,
+        operation_mask:
+          backgroundCryptoAuthorizationNamespaceRequirements.operationMask,
+        expected_access_revision:
+          backgroundCryptoAuthorizationNamespaceRequirements
+            .expectedAccessRevision,
+        expected_policy_revision:
+          backgroundCryptoAuthorizationNamespaceRequirements
+            .expectedPolicyRevision,
+      })
+        .from(backgroundCryptoAuthorizationNamespaceRequirements)
+        .where(inArray(
+          backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+          protectedRequestIds,
+        ))
+        .orderBy(
+          backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+          backgroundCryptoAuthorizationNamespaceRequirements.ordinal,
+        ),
     );
     return rows.map((row) => {
-      if (requiredCounter(row, "format_version") !== 2
-        || requiredString(row, "credential_subject_kind") !== "agent") {
+      const formatVersion = requiredCounter(row, "format_version");
+      const subjectKind = requiredString(row, "credential_subject_kind");
+      if (!(
+        (formatVersion === 2 && subjectKind === "agent")
+        || (formatVersion === 3 && subjectKind === "runtime")
+      )) {
         return rowToRecord(row);
       }
       const requestId = requiredString(row, "request_id");
@@ -622,6 +718,7 @@ export class PostgresBackgroundAuthorizationRepository
         (namespaces as readonly Row[]).filter(
           (entry) => requiredString(entry, "request_id") === requestId,
         ),
+        subjectKind,
       ));
     });
   }
@@ -901,7 +998,7 @@ export class PostgresBackgroundAuthorizationRepository
       this.handle,
       cryptoTypedDb.select().from(backgroundCryptoAuthorizationRequests)
         .where(and(
-          inArray(backgroundCryptoAuthorizationRequests.formatVersion, [1, 2]),
+          inArray(backgroundCryptoAuthorizationRequests.formatVersion, [1, 2, 3]),
           or(
           and(
             eq(backgroundCryptoAuthorizationRequests.state, "awaiting_recipient"),
@@ -978,7 +1075,7 @@ export class PostgresBackgroundAuthorizationRepository
       descriptorSize: sql<number>`octet_length(${table.descriptorBytes})`.as("descriptor_size"),
     }).from(table)
         .where(and(
-          inArray(backgroundCryptoAuthorizationRequests.formatVersion, [1, 2]),
+          inArray(backgroundCryptoAuthorizationRequests.formatVersion, [1, 2, 3]),
           eq(backgroundCryptoAuthorizationRequests.state, "awaiting_device"),
           isNotNull(backgroundCryptoAuthorizationRequests.descriptorHash),
           isNotNull(backgroundCryptoAuthorizationRequests.descriptorBytes),

@@ -12,7 +12,7 @@ import { wrapAnthropicModelForToolSchemas } from "./anthropic-schema";
 import { resolveFireworksKimiK3ServingProfile } from "./serving-profile";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
-import { OpenAIGpt6Completions, OpenAIUsageResponses } from "./openai-compat";
+import { isDirectGpt6Model, OpenAIGpt6Completions, OpenAIUsageResponses } from "./openai-compat";
 import {
   VeniceChatOpenAICompletions,
   wrapVeniceModelForToolSchemas,
@@ -28,7 +28,7 @@ const MIN_REASONING_HEADROOM_TOKENS = 2048;
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14" as const;
 
 /** Default reasoning effort when the operator hasn't set one. */
-const DEFAULT_REASONING_EFFORT = "medium" as const;
+export const DEFAULT_REASONING_EFFORT = "medium" as const;
 
 const OPAQUE_ROOM_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -48,14 +48,15 @@ type WireReasoningEffort = Exclude<ReasoningEffort, "off">;
  */
 const PROVIDER_WIRE_REASONING_EFFORTS = {
   anthropic: ["low", "medium", "high", "xhigh", "max"],
-  openrouter: ["minimal", "low", "medium", "high", "max"],
-  venice: ["low", "medium", "high"],
+  openrouter: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  venice: ["low", "medium", "high", "xhigh", "max"],
   fireworks: ["low", "medium", "high", "max"],
   "openai-responses": ["minimal", "low", "medium", "high", "xhigh", "max"],
 } as const satisfies Record<string, readonly WireReasoningEffort[]>;
 
 function requestedReasoningEffort(options: CreateModelOptions): ReasoningEffort {
-  return options.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
+  const entry = getActiveModelCatalogSync().catalog.entries.find((candidate) => candidate.id === options.modelId);
+  return options.reasoningEffort ?? (entry && "controls" in entry ? entry.controls?.reasoning?.defaultLevel : undefined) ?? DEFAULT_REASONING_EFFORT;
 }
 
 function assertProviderReasoningEffort(
@@ -73,10 +74,11 @@ function reasoningRequested(options: CreateModelOptions, maxTokens: number): boo
     (candidate) => candidate.id === options.modelId,
   );
   return (
-    options.reasoningOutput === true &&
     entry?.features?.reasoning === true &&
-    Number.isFinite(maxTokens) &&
-    maxTokens >= MIN_REASONING_HEADROOM_TOKENS
+    ((options.reasoningEffort !== undefined && options.reasoningEffort !== "off")
+      || ("controls" in entry && entry.controls?.reasoning?.mandatory === true)
+      || (options.reasoningOutput === true && Number.isFinite(maxTokens)
+        && maxTokens >= MIN_REASONING_HEADROOM_TOKENS))
   );
 }
 
@@ -97,6 +99,13 @@ function anthropicReasoningFields(
   options: CreateModelOptions,
   maxTokens: number,
 ): Record<string, unknown> {
+  if (options.modelId === "anthropic:claude-opus-5-5") {
+    const effort = requestedReasoningEffort(options);
+    assertProviderReasoningEffort("anthropic", effort);
+    // Opus 5.5 always thinks. Effort remains independent of whether the caller
+    // renders reasoning; legacy sampling parameters are rejected by this model.
+    return { thinking: { type: "adaptive" }, outputConfig: { effort } };
+  }
   if (reasoningRequested(options, maxTokens)) {
     assertProviderReasoningEffort("anthropic", requestedReasoningEffort(options));
   }
@@ -117,9 +126,8 @@ function providerFromModelId(modelId: string): string | undefined {
 /**
  * OpenAI-only transport policy: direct `openai:*` reasoning models use
  * the Responses API only when explicitly opted in. Timeout budgets for
- * model-attempt liveness policy is independent of this selection — both Chat
- * Completions and Responses paths share the same reasoning-capability gate for
- * effort/headroom.
+ * model-attempt liveness policy are independent of this selection. Direct
+ * GPT-6 opt-ins preserve reasoning independently of output visibility/headroom.
  */
 export function shouldUseOpenAIResponsesApi(
   options: CreateModelOptions,
@@ -133,7 +141,7 @@ export function shouldUseOpenAIResponsesApi(
     return true;
   }
   if (options.useOpenAIResponsesApi !== true) return false;
-  return reasoningRequested(options, maxTokens);
+  return isDirectGpt6Model(options.modelId) || reasoningRequested(options, maxTokens);
 }
 
 function openAICompatibleReasoningModelKwargs(
@@ -144,7 +152,7 @@ function openAICompatibleReasoningModelKwargs(
   // Normal invocation disables reasoning output for explicit off. Process that
   // control before the output/headroom gate; hiding output alone never disables
   // computation. Only a catalogued, optional reasoning control grants this.
-  if (options.reasoningEffort === "off" && (provider === "openrouter" || provider === "fireworks")) {
+  if (options.reasoningEffort === "off" && (provider === "openrouter" || provider === "fireworks" || provider === "venice")) {
     const entry = getActiveModelCatalogSync().catalog.entries.find((candidate) => candidate.id === options.modelId);
     const control = entry && "controls" in entry ? entry.controls?.reasoning : undefined;
     if (entry?.features?.reasoning !== true || control?.canDisable !== true || control.mandatory !== false) {
@@ -194,20 +202,20 @@ export function stripProviderPrefix(modelId: string): string {
 
 const FIREWORKS_DEEPSEEK_V4_FLASH_ALIAS =
   "accounts/fireworks/models/deepseek-v4-flash" as const;
-const FIREWORKS_DEEPSEEK_V4_FLASH_DEPLOYMENT =
-  "accounts/fireworks/models/deepseek-v4-flash-0731" as const;
+const FIREWORKS_DEEPSEEK_V4_FLASH_REPLACEMENT =
+  "accounts/fireworks/models/deepseek-v4p1-flash" as const;
 
 /**
  * Resolve catalog-facing Fireworks aliases to an actual deployed model path.
  *
- * Fireworks' authenticated model registry exposes DeepSeek V4 Flash only as
- * the dated `-0731` deployment. Older persisted selections may still carry
- * the shorter stable alias, so normalize it before both catalog-limit lookup
- * and provider dispatch.
+ * Older persisted selections may still carry the shorter DeepSeek V4 Flash
+ * alias. Route that alias to the available V4.1 Flash replacement before both
+ * catalog-limit lookup and provider dispatch. Exact retired IDs remain gated
+ * by signed catalog membership.
  */
 export function resolveFireworksWireModel(model: string): string {
   return model === FIREWORKS_DEEPSEEK_V4_FLASH_ALIAS
-    ? FIREWORKS_DEEPSEEK_V4_FLASH_DEPLOYMENT
+    ? FIREWORKS_DEEPSEEK_V4_FLASH_REPLACEMENT
     : model;
 }
 
@@ -260,8 +268,13 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   if (options.callbacks) base["callbacks"] = options.callbacks;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (useResponsesApi) {
-    if (reasoningRequested(options, maxTokens)) {
+    const directGpt6 = isDirectGpt6Model(options.modelId);
+    if (directGpt6 || reasoningRequested(options, maxTokens)) {
       const requestedEffort = requestedReasoningEffort(options);
+      if (directGpt6 && (requestedEffort === "minimal"
+        || (options.modelId === "openai:gpt-6-astra" && requestedEffort === "off"))) {
+        throw new Error(`Reasoning effort "${requestedEffort}" is not supported by ${options.modelId}.`);
+      }
       const effort = requestedEffort === "off" ? "none" : requestedEffort;
       if (requestedEffort !== "off") {
         assertProviderReasoningEffort("openai-responses", requestedEffort);
@@ -276,6 +289,15 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
       // final request. Only the cache mode is added here.
       base["modelKwargs"] = {
         prompt_cache_options: { mode: "implicit" },
+      };
+    }
+    if (directGpt6) {
+      // LangChain's installed reasoning-model classifier predates GPT-6 and
+      // drops its top-level reasoning field. The existing Responses serializer
+      // forwards modelKwargs unchanged, including after bindTools/withConfig.
+      base["modelKwargs"] = {
+        ...(base["modelKwargs"] as Record<string, unknown> | undefined),
+        reasoning: base["reasoning"],
       };
     }
   } else {
@@ -313,6 +335,9 @@ export async function createAnthropic(options: CreateModelOptions): Promise<Chat
     model: stripProviderPrefix(options.modelId),
     maxTokens,
     streamUsage: true,
+    // LangChain aggregates streamed chunks for invoke(). The full Opus output
+    // allowance exceeds the SDK's non-streaming request limit.
+    ...(options.modelId === "anthropic:claude-opus-5-5" ? { streaming: true } : {}),
     ...anthropicReasoningFields(options, maxTokens),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
@@ -339,6 +364,7 @@ export async function createAnthropicWithLongContext(options: CreateModelOptions
     maxTokens,
     betas,
     streamUsage: true,
+    ...(options.modelId === "anthropic:claude-opus-5-5" ? { streaming: true } : {}),
     ...Object.fromEntries(Object.entries(reasoning).filter(([k]) => k !== "betas")),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;

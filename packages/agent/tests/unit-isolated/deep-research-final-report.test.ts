@@ -35,10 +35,11 @@ test("empty synthesis rejects instead of completing the Task", async () => {
   expect((error as Error).message).toContain("final report generation failed");
 });
 
-test("context retries retain the final provider cause on exhaustion", async () => {
+test("context rejection retains the cause without retrying on shortened findings", async () => {
   const cause = new Error("context_length_exceeded");
   invoke = mock(async () => { throw cause; });
   const error = await createFinalReportGenerationNode(cfg)(state).catch((e: unknown) => e);
   expect((error as Error).cause).toBe(cause);
-  expect(invoke).toHaveBeenCalledTimes(3);
+  expect(invoke).toHaveBeenCalledTimes(1);
+  expect(state.notes).toEqual(["A sourced finding"]);
 });

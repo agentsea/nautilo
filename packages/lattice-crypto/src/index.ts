@@ -394,6 +394,16 @@ export {
   ProcessorTransformRecipientRegistryV1
     as ProcessorTransformRecipientRegistry,
 } from "./background/one-run-processor-transform-v1.ts";
+export {
+  TaskRuntimeRecipientRegistryV1 as TaskRuntimeRecipientRegistry,
+} from "./background/task-runtime-recipient-registry-v1.ts";
+export type {
+  TaskRuntimeRecipientAttemptV1 as TaskRuntimeRecipientAttempt,
+  TaskRuntimeRecipientCreationResultV1 as TaskRuntimeRecipientCreationResult,
+  TaskRuntimeRecipientDeadlineHandleV1 as TaskRuntimeRecipientDeadlineHandle,
+  TaskRuntimeRecipientDeadlineSchedulerV1 as TaskRuntimeRecipientDeadlineScheduler,
+  TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
+} from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
   OneRunProcessorTransformResultV1 as OneRunProcessorTransformResult,
   ProcessorCredentialClaimPortV1 as ProcessorCredentialClaimPort,

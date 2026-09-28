@@ -17,6 +17,10 @@ import {
 import { getCurrentLiveShadowTurnContext } from "./conversation/live-shadow-turn-context";
 import type { FullEncryptionDurableJobInputReferenceV1 } from
   "./foreground-turn-lifecycle";
+import {
+  assertProtectedTaskJobReferenceV1,
+  type ProtectedTaskJobReferenceV1,
+} from "./tasks/protected-task-job-reference";
 
 const FOREGROUND_CONTEXT_PREPARATION_FALLBACK_RETRY_WINDOW_MS = 30_000;
 const FOREGROUND_CONTEXT_PREPARATION_RETRY_MAX_DELAY_MS = 1_000;
@@ -26,9 +30,17 @@ const FULL_JOB_PROTECTED_HISTORY_UNAVAILABLE_MESSAGE =
   "Encrypted history is not available for this turn yet";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
+export type FullEncryptionDurableJobInputReference =
+  | FullEncryptionDurableJobInputReferenceV1
+  | ProtectedTaskJobReferenceV1;
+
 function assertFullEncryptionDurableJobInputReference(
-  value: FullEncryptionDurableJobInputReferenceV1,
+  value: FullEncryptionDurableJobInputReference,
 ): void {
+  if (value.kind === "protected_task_run_v1") {
+    assertProtectedTaskJobReferenceV1(value);
+    return;
+  }
   if (
     Object.keys(value).sort().join(",")
       !== "kind,operationId,policyRevision,roomId"
@@ -76,7 +88,7 @@ export interface JobConfig {
     authorAgentId: string;
   }>;
   /** Full-only durable projection; `input` remains transient executor state. */
-  durableInputReference?: FullEncryptionDurableJobInputReferenceV1;
+  durableInputReference?: FullEncryptionDurableJobInputReference;
   durableInputDisposition?: "full";
   /** Privacy-only sink policy for ephemeral work that has no durable input row. */
   ephemeralSinkDisposition?: "full";
@@ -162,8 +174,10 @@ export class Job {
     // M042B: extract roomId from input when present. Non-string /
     // absent values store NULL (guest, background, legacy callers).
     const durableInput = this.config.durableInputReference ?? this.config.input;
-    const rawRoomId = this.config.durableInputReference?.roomId
-      ?? this.config.input["roomId"];
+    const rawRoomId =
+      this.config.durableInputReference?.kind === "full_encryption_foreground_operation_v1"
+        ? this.config.durableInputReference.roomId
+        : this.config.input["roomId"];
     const roomId = typeof rawRoomId === "string" && rawRoomId ? rawRoomId : null;
 
     this._id = await this.config.persist({
@@ -185,6 +199,28 @@ export class Job {
   }
 
   async execute(authorizationSignal?: AbortSignal): Promise<void> {
+    return this.executeWithInput(this.config.input, authorizationSignal);
+  }
+
+  /**
+   * Execute one protected Task Job with content reconstructed inside its live
+   * authorization callback. The durable/in-memory scheduling input remains
+   * content-free; only the executor receives `input`.
+   */
+  async executeProtectedTask(
+    input: Record<string, unknown>,
+    authorizationSignal?: AbortSignal,
+  ): Promise<void> {
+    if (this.config.durableInputReference?.kind !== "protected_task_run_v1") {
+      throw new TypeError("Protected Task execution requires its durable Job reference");
+    }
+    return this.executeWithInput(input, authorizationSignal);
+  }
+
+  private async executeWithInput(
+    executorInput: Record<string, unknown>,
+    authorizationSignal?: AbortSignal,
+  ): Promise<void> {
     if (!this._id) throw new Error("Must call persist() before execute()");
     // A delayed foreground candidate must never revive a cancelled Job.
     if (this.isTerminal()) return;
@@ -221,14 +257,14 @@ export class Job {
       // jobs with a turnId but without their own wrap (future job
       // sources, internal tooling). Jobs without an inbound turnId
       // (legacy callers, background jobs) fall through unchanged.
-      const turnIdRaw = this.config.input["turnId"];
+      const turnIdRaw = executorInput["turnId"];
       const turnId =
         typeof turnIdRaw === "string" && turnIdRaw ? turnIdRaw : undefined;
 
       if (turnId) {
-        await runWithTurn(turnId, () => this.runExecutor());
+        await runWithTurn(turnId, () => this.runExecutor(executorInput));
       } else {
-        await this.runExecutor();
+        await this.runExecutor(executorInput);
       }
     } finally {
       this.abortController.signal.removeEventListener("abort", failProtectedCancellation);
@@ -248,7 +284,7 @@ export class Job {
    * Precondition: `execute()` has already assigned `_id` (via
    * `persist()`) and `abortController` (via the `new` above).
    */
-  private async runExecutor(): Promise<void> {
+  private async runExecutor(executorInput: Record<string, unknown>): Promise<void> {
     const id = this._id;
     const abortController = this.abortController;
     if (!id || !abortController) {
@@ -275,7 +311,7 @@ export class Job {
         try {
           abortController.signal.throwIfAborted();
           const events = this.config.executor(
-            this.config.input,
+            executorInput,
             id,
             this.config.laneKey,
             abortController.signal,
@@ -284,7 +320,12 @@ export class Job {
           for await (const event of events) {
             if (this._status === "cancelled") return;
             setContextPreparationNotice(false);
-            eventBus.emit(event);
+            // Protected Task provider/model output must enter its protected
+            // result publisher. Generic executor events are not a reviewed
+            // content sink, so this foundation drops them fail-closed.
+            if (this.config.durableInputReference?.kind !== "protected_task_run_v1") {
+              eventBus.emit(event);
+            }
           }
           setContextPreparationNotice(false);
           break;

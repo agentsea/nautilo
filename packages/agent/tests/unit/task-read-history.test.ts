@@ -3,8 +3,7 @@ import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langcha
 import { processHistory, taskReadResponseByteBudget, pendingTaskReadPages, type HistoryConfig } from "../../src/utils/history-manager";
 import { taskReadPageFingerprint } from "../../src/tools/tasks/read-projection";
 
-const config: HistoryConfig = { validationEnabled: true, pruningEnabled: false, tokenBudgetFraction: 0.02,
-  windowKeepRecent: 20, modelId: "anthropic:claude-sonnet-4-6" };
+const config: HistoryConfig = { validationEnabled: true, pruningEnabled: false, maxMessageTokens: 4_000 };
 function messageText(message: BaseMessage | undefined): string {
   if (typeof message?.content !== "string") throw new Error("Expected a text Task receipt");
   return message.content;
@@ -87,9 +86,8 @@ describe("task.read history recovery", () => {
   });
 
   test("response allocation uses actual remaining workspace and leaves room for the next model turn", () => {
-    const budgetConfig = { ...config, tokenBudgetFraction: 0.6 };
-    expect(taskReadResponseByteBudget(budgetConfig, 4_000, [new HumanMessage("x".repeat(2_000))])).toBe(7_000);
-    expect(taskReadResponseByteBudget(budgetConfig, 400, [new HumanMessage("x".repeat(2_000))])).toBe(0);
+    expect(taskReadResponseByteBudget(4_000, [new HumanMessage("x".repeat(2_000))])).toBe(7_000);
+    expect(taskReadResponseByteBudget(400, [new HumanMessage("x".repeat(2_000))])).toBe(0);
   });
 
   test("pending ranges survive ordinary history eviction and advance through smaller presented pieces", () => {

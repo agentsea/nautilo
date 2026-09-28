@@ -3,6 +3,8 @@ import {
   BACKGROUND_AUTHORIZATION_BYTE_LIMITS,
   BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS,
 } from "@nautilo/db/schema";
+import { MAX_AGENT_GRANT_DOMAINS_V2, MAX_AGENT_GRANT_NAMESPACES_V2 } from
+  "@nautilo/lattice-crypto/wire-limits";
 import type {
   VerifiedBackgroundAuthorizationDeviceResponse,
   VerifiedAgentBackgroundAuthorizationDeviceResponseV2,
@@ -28,6 +30,7 @@ import {
   type BackgroundAuthorizationRequestSnapshotV1,
   type BackgroundAuthorizationAgentRequestSnapshotV2,
   type BackgroundAuthorizationProcessorRequestSnapshotV2,
+  type BackgroundAuthorizationTaskRuntimeRequestSnapshotV3,
 } from "./lifecycle";
 
 export const BACKGROUND_AUTHORIZATION_WORK_KINDS = Object.freeze([
@@ -88,10 +91,40 @@ export type BackgroundAuthorizationVerifiedProcessorResponseV2 =
     readonly kind: "processor";
   }>;
 
+/**
+ * Facts emitted only after a caller verifies the signed Runtime authorization.
+ * This repository binds and persists those facts; it is not a wire verifier.
+ */
+export type BackgroundAuthorizationVerifiedRuntimeResponseV3 = Readonly<{
+  readonly formatVersion: 3;
+  readonly kind: "runtime";
+  readonly requestId: string;
+  readonly descriptorHash: Uint8Array;
+  readonly descriptorBytes: Uint8Array;
+  readonly recipientGeneration: number;
+  readonly recipientKeyId: string;
+  readonly recipientPublicKey: Uint8Array;
+  readonly workId: string;
+  readonly workKind: BackgroundAuthorizationWorkKind;
+  readonly purpose: BackgroundAuthorizationPurpose;
+  readonly authoritySet: BackgroundAuthorizationAuthoritySetV3;
+  readonly responseBytes: Uint8Array;
+  readonly responseHash: Uint8Array;
+  readonly authorizationId: string;
+  readonly authorizationHash: Uint8Array;
+  readonly issuingHumanId: string;
+  readonly issuingDeviceId: string;
+  readonly issuingDeviceAuthorizationRevision: number;
+  readonly issuerSigningPublicKeyHash: Uint8Array;
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+}>;
+
 export type BackgroundAuthorizationVerifiedDeviceResponse =
   | VerifiedBackgroundAuthorizationDeviceResponse
   | VerifiedAgentBackgroundAuthorizationDeviceResponseV2
-  | BackgroundAuthorizationVerifiedProcessorResponseV2;
+  | BackgroundAuthorizationVerifiedProcessorResponseV2
+  | BackgroundAuthorizationVerifiedRuntimeResponseV3;
 
 type BackgroundAuthorizationRecordFields = Readonly<{
   readonly workIdentityHash: Uint8Array;
@@ -132,11 +165,25 @@ export type BackgroundAuthorizationDomainRequirementV2 = Readonly<{
   readonly expectedAgentAuthorizationRevision: number;
 }>;
 
+export type BackgroundAuthorizationDomainRequirementV3 = Readonly<{
+  readonly ordinal: number;
+  readonly domainId: string;
+  readonly expectedEpoch: number;
+  readonly expectedAuthorizationRevision: number;
+}>;
+
 export type BackgroundAuthorizationAuthoritySetV2 = Readonly<{
   readonly namespaceRequirements:
     readonly BackgroundAuthorizationNamespaceRequirementV2[];
   readonly domainRequirements:
     readonly BackgroundAuthorizationDomainRequirementV2[];
+}>;
+
+export type BackgroundAuthorizationAuthoritySetV3 = Readonly<{
+  readonly namespaceRequirements:
+    readonly BackgroundAuthorizationNamespaceRequirementV2[];
+  readonly domainRequirements:
+    readonly BackgroundAuthorizationDomainRequirementV3[];
 }>;
 
 export type BackgroundAuthorizationRecordV1 = Readonly<
@@ -165,6 +212,14 @@ export type BackgroundAuthorizationProcessorRecordV2 = Readonly<
   }
 >;
 
+export type BackgroundAuthorizationTaskRuntimeRecordV3 = Readonly<
+  Omit<BackgroundAuthorizationRecordFields, "expectedDomainEpoch"> & {
+    readonly snapshot: BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
+    readonly expectedDomainEpoch: number;
+    readonly authoritySet: BackgroundAuthorizationAuthoritySetV3;
+  }
+>;
+
 /** V2 records are discriminated by the credential subject kind. */
 export type BackgroundAuthorizationRecordV2 =
   | BackgroundAuthorizationAgentRecordV2
@@ -174,7 +229,9 @@ export type BackgroundAuthorizationRecordV2 =
 export type BackgroundAuthorizationRecord = Readonly<
   BackgroundAuthorizationRecordFields & {
     readonly snapshot: BackgroundAuthorizationRequestSnapshot;
-    readonly authoritySet?: BackgroundAuthorizationAuthoritySetV2;
+    readonly authoritySet?:
+      | BackgroundAuthorizationAuthoritySetV2
+      | BackgroundAuthorizationAuthoritySetV3;
   }
 >;
 
@@ -388,6 +445,12 @@ const DOMAIN_REQUIREMENT_FIELDS = Object.freeze([
   "expectedEpoch",
   "ordinal",
 ] as const);
+const DOMAIN_REQUIREMENT_FIELDS_V3 = Object.freeze([
+  "domainId",
+  "expectedAuthorizationRevision",
+  "expectedEpoch",
+  "ordinal",
+] as const);
 const MAX_AUTHORITY_SET_SIZE = 256;
 const ACCEPTED_MATERIAL_FIELDS = Object.freeze([
   "authorizationExpiresAt",
@@ -461,6 +524,7 @@ export const BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS = Object.freeze({
   processor: BACKGROUND_AUTHORIZATION_BYTE_LIMITS.processorResponse,
   // lattice-crypto GrantV2 (2 MiB) + response framing (4 KiB)
   agent: 2 * 1_024 * 1_024 + 4 * 1_024,
+  runtime: BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse,
 });
 
 function cloneBytes(value: Uint8Array): Uint8Array {
@@ -548,11 +612,17 @@ export function isBackgroundAuthorizationResponseReplay(
   record: BackgroundAuthorizationRecord,
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): boolean {
+  const credentialHash = isRuntimeV3Response(response)
+    ? response.authorizationHash
+    : response.credentialHash;
+  const credentialId = isRuntimeV3Response(response)
+    ? response.authorizationId
+    : response.credentialId;
   return record.snapshot.acceptedResponse?.responseDigest
       === hexBytes(response.responseHash)
     && record.snapshot.acceptedResponse.credentialDigest
-      === hexBytes(response.credentialHash)
-    && record.acceptedMaterial?.credentialId === response.credentialId
+      === hexBytes(credentialHash)
+    && record.acceptedMaterial?.credentialId === credentialId
     && equalBytes(
       record.acceptedMaterial?.responseBytes ?? new Uint8Array(),
       response.responseBytes,
@@ -593,8 +663,10 @@ function digestMatches(bytes: Uint8Array, hexDigest: string): boolean {
   return digestHex(bytes) === hexDigest;
 }
 
-function parseAuthoritySetV2(
-  value: BackgroundAuthorizationAuthoritySetV2,
+function parseAuthoritySet(
+  value:
+    | BackgroundAuthorizationAuthoritySetV2
+    | BackgroundAuthorizationAuthoritySetV3,
   anchor: Readonly<{
     namespaceId: string;
     domainId: string;
@@ -602,15 +674,24 @@ function parseAuthoritySetV2(
     expectedNamespaceAccessRevision: number;
     expectedPolicyRevision: number;
   }>,
-): BackgroundAuthorizationAuthoritySetV2 {
+  subjectKind: "agent" | "runtime",
+): BackgroundAuthorizationAuthoritySetV2 | BackgroundAuthorizationAuthoritySetV3 {
   exactFields("Background authority set", value, AUTHORITY_SET_FIELDS);
   if (
     !Array.isArray(value.namespaceRequirements as unknown)
     || value.namespaceRequirements.length < 1
-    || value.namespaceRequirements.length > MAX_AUTHORITY_SET_SIZE
+    || value.namespaceRequirements.length > (
+      subjectKind === "runtime"
+        ? MAX_AGENT_GRANT_NAMESPACES_V2
+        : MAX_AUTHORITY_SET_SIZE
+    )
     || !Array.isArray(value.domainRequirements as unknown)
     || value.domainRequirements.length < 1
-    || value.domainRequirements.length > MAX_AUTHORITY_SET_SIZE
+    || value.domainRequirements.length > (
+      subjectKind === "runtime"
+        ? MAX_AGENT_GRANT_DOMAINS_V2
+        : MAX_AUTHORITY_SET_SIZE
+    )
   ) {
     throw new TypeError("Background authority set is empty or exceeds its bound");
   }
@@ -672,15 +753,26 @@ function parseAuthoritySetV2(
       exactFields(
         "Background Domain requirement",
         requirement,
-        DOMAIN_REQUIREMENT_FIELDS,
+        subjectKind === "runtime"
+          ? DOMAIN_REQUIREMENT_FIELDS_V3
+          : DOMAIN_REQUIREMENT_FIELDS,
       );
       counter("Background Domain ordinal", requirement.ordinal);
       portable("Background Domain id", requirement.domainId);
       counter("Background Domain epoch", requirement.expectedEpoch);
-      counter(
-        "Background Agent Domain authorization revision",
-        requirement.expectedAgentAuthorizationRevision,
-      );
+      if (subjectKind === "runtime") {
+        counter(
+          "Background Runtime Domain authorization revision",
+          (requirement as BackgroundAuthorizationDomainRequirementV3)
+            .expectedAuthorizationRevision,
+        );
+      } else {
+        counter(
+          "Background Agent Domain authorization revision",
+          (requirement as BackgroundAuthorizationDomainRequirementV2)
+            .expectedAgentAuthorizationRevision,
+        );
+      }
       if (
         requirement.ordinal !== index
         || (previousDomainId !== null && previousDomainId >= requirement.domainId)
@@ -729,7 +821,8 @@ function parseAuthoritySetV2(
   return Object.freeze({
     namespaceRequirements: Object.freeze(namespaceRequirements),
     domainRequirements: Object.freeze(domainRequirements),
-  });
+  }) as BackgroundAuthorizationAuthoritySetV2
+    | BackgroundAuthorizationAuthoritySetV3;
 }
 
 export function parseBackgroundAuthorizationRecord(
@@ -739,7 +832,7 @@ export function parseBackgroundAuthorizationRecord(
   exactFields(
     "Background authorization record",
     value,
-    snapshot.formatVersion === 2
+    snapshot.formatVersion === 2 || snapshot.formatVersion === 3
       ? snapshot.credentialSubject.kind === "processor"
         ? RECORD_FIELDS_PROCESSOR_V2
         : RECORD_FIELDS_AGENT_V2
@@ -761,7 +854,21 @@ export function parseBackgroundAuthorizationRecord(
   ) {
     throw new TypeError("Invalid background work kind/purpose");
   }
-  if (snapshot.formatVersion === 2 && snapshot.credentialSubject.kind === "processor") {
+  if (
+    snapshot.credentialSubject.kind === "runtime"
+    && (
+      (value.workKind !== "task.dispatch" && value.workKind !== "task.execute")
+      || value.purpose !== value.workKind
+    )
+  ) {
+    throw new TypeError(
+      "Task Runtime authorization requires an exact Task work purpose",
+    );
+  }
+  if (
+    snapshot.formatVersion !== 1
+    && snapshot.credentialSubject.kind === "processor"
+  ) {
     if (value.expectedDomainEpoch !== null) {
       throw new TypeError("Background processor v2 cannot carry a legacy Domain epoch");
     }
@@ -779,7 +886,7 @@ export function parseBackgroundAuthorizationRecord(
       || (snapshot.credentialSubject.processorKind === "reflection" && snapshot.formatVersion !== 2)) {
       throw new TypeError("Processor authorization requires its exact work purpose");
     }
-    if (snapshot.formatVersion === 2 && !("authorizationRevision" in snapshot.credentialSubject)) {
+    if (snapshot.formatVersion !== 1 && !("authorizationRevision" in snapshot.credentialSubject)) {
       if (value.processorAuthorizationRevision !== null) {
         throw new TypeError(
           "Background processor v2 cannot carry a processor authorization revision",
@@ -803,7 +910,7 @@ export function parseBackgroundAuthorizationRecord(
     || value.workKind.startsWith("stenographer.")
     || value.workKind.startsWith("reflection.")
   ) {
-    throw new TypeError("Agent authorization cannot carry processor authority");
+    throw new TypeError("Non-processor authorization cannot carry processor authority");
   }
 
   if (snapshot.descriptorDigest === null) {
@@ -814,8 +921,10 @@ export function parseBackgroundAuthorizationRecord(
     boundedBytes(
       "Background descriptor",
       value.descriptorBytes,
-      snapshot.formatVersion === 2 && snapshot.credentialSubject.kind === "processor"
-        && snapshot.credentialSubject.processorKind === "reflection"
+      (snapshot.formatVersion !== 1
+        && snapshot.credentialSubject.kind === "processor"
+        && snapshot.credentialSubject.processorKind === "reflection")
+        || snapshot.credentialSubject.kind === "runtime"
         ? BACKGROUND_AUTHORIZATION_BYTE_LIMITS.descriptor
         : BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyDescriptor,
     );
@@ -919,23 +1028,25 @@ export function parseBackgroundAuthorizationRecord(
   if (snapshot.formatVersion === 1) {
     return Object.freeze(common) as BackgroundAuthorizationRecordV1;
   }
-  if (snapshot.formatVersion === 2 && snapshot.credentialSubject.kind === "processor") {
+  if (snapshot.credentialSubject.kind === "processor") {
     return Object.freeze(common) as BackgroundAuthorizationProcessorRecordV2;
   }
   if (!("authoritySet" in value)) {
     throw new TypeError("Background v2 authority set is missing");
   }
-  return Object.freeze({
+  const protectedSubject = snapshot.credentialSubject;
+  const parsed = Object.freeze({
     ...common,
     snapshot,
-    authoritySet: parseAuthoritySetV2(value.authoritySet, {
+    authoritySet: parseAuthoritySet(value.authoritySet, {
       namespaceId: snapshot.namespaceId,
       domainId: value.domainId,
       expectedDomainEpoch: value.expectedDomainEpoch!,
       expectedNamespaceAccessRevision: value.expectedNamespaceAccessRevision,
       expectedPolicyRevision: value.expectedPolicyRevision,
-    }),
+    }, protectedSubject.kind),
   });
+  return parsed as BackgroundAuthorizationRecord;
 }
 
 export function parseProcessorSignerAuthorizationEvidence(
@@ -1078,6 +1189,13 @@ function isProcessorV2Response(
     && response.kind === "processor";
 }
 
+function isRuntimeV3Response(
+  response: BackgroundAuthorizationVerifiedDeviceResponse,
+): response is BackgroundAuthorizationVerifiedRuntimeResponseV3 {
+  return "formatVersion" in response && response.formatVersion === 3
+    && response.kind === "runtime";
+}
+
 function assertSupportedVerifiedResponse(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): void {
@@ -1087,8 +1205,15 @@ function assertSupportedVerifiedResponse(
   if (
     formatVersion !== undefined
     && (
-      formatVersion !== 2
-      || (!isAgentV2Response(response) && !isProcessorV2Response(response))
+      (
+        formatVersion !== 2
+        && formatVersion !== 3
+      )
+      || (
+        !isAgentV2Response(response)
+        && !isProcessorV2Response(response)
+        && !isRuntimeV3Response(response)
+      )
     )
   ) {
     throw new TypeError("Unsupported verified response format or subject kind");
@@ -1100,6 +1225,13 @@ function verifiedResponseAuthorityMatches(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): boolean {
   if (isProcessorV2Response(response)) return false;
+  if (isRuntimeV3Response(response)) {
+    return current.snapshot.formatVersion === 3
+      && current.snapshot.credentialSubject.kind === "runtime"
+      && current.authoritySet !== undefined
+      && JSON.stringify(response.authoritySet)
+        === JSON.stringify(current.authoritySet);
+  }
   if (isAgentV2Response(response)) {
     if (
       current.snapshot.formatVersion !== 2
@@ -1112,8 +1244,10 @@ function verifiedResponseAuthorityMatches(
       || response.domainRequirements.length
         !== current.authoritySet.domainRequirements.length
     ) return false;
+    const authoritySet = current.authoritySet as
+      BackgroundAuthorizationAuthoritySetV2;
     return response.namespaceRequirements.every((actual, index) => {
-      const expected = current.authoritySet!.namespaceRequirements[index]!;
+      const expected = authoritySet.namespaceRequirements[index]!;
       return actual.namespaceId === expected.namespaceId
         && actual.domainId === expected.domainId
         && JSON.stringify(actual.operations)
@@ -1121,7 +1255,7 @@ function verifiedResponseAuthorityMatches(
         && actual.expectedAccessRevision === expected.expectedAccessRevision
         && actual.expectedPolicyRevision === expected.expectedPolicyRevision;
     }) && response.domainRequirements.every((actual, index) => {
-      const expected = current.authoritySet!.domainRequirements[index]!;
+      const expected = authoritySet.domainRequirements[index]!;
       return actual.domainId === expected.domainId
         && actual.expectedEpoch === expected.expectedEpoch
         && actual.expectedAgentAuthorizationRevision
@@ -1144,6 +1278,100 @@ export function backgroundAuthorizationVerifiedResponseRequestId(
   return isProcessorV2Response(response)
     ? response.descriptor.requestId
     : response.requestId;
+}
+
+function buildAcceptedBackgroundRuntimeAuthorizationResponseV3(
+  current: BackgroundAuthorizationRecord,
+  response: BackgroundAuthorizationVerifiedRuntimeResponseV3,
+  acceptedAt: number,
+): Readonly<{
+  readonly next: BackgroundAuthorizationRecord;
+  readonly signerEvidence: null;
+}> {
+  const recipient = current.snapshot.recipient;
+  if (
+    current.snapshot.formatVersion !== 3
+    || current.snapshot.credentialSubject.kind !== "runtime"
+    || current.snapshot.credentialSubject.runtimeKind !== "task"
+    || current.snapshot.credentialSubject.runtimeVersion !== 1
+    || current.authoritySet === undefined
+    || current.descriptorBytes === null
+    || current.snapshot.descriptorDigest === null
+    || response.requestId !== current.snapshot.requestId
+    || response.recipientGeneration !== current.snapshot.recipientGeneration
+    || response.workId !== current.snapshot.workId
+    || response.workKind !== current.workKind
+    || response.purpose !== current.purpose
+    || !response.workKind.startsWith("task.")
+    || !verifiedResponseAuthorityMatches(current, response)
+    || response.recipientKeyId !== recipient?.recipientKeyId
+    || Buffer.from(response.recipientPublicKey).toString("base64url")
+      !== recipient.recipientPublicKey
+    || response.issuedAt > acceptedAt
+    || response.expiresAt !== recipient.expiresAt
+    || response.expiresAt <= acceptedAt
+    || response.expiresAt - response.issuedAt > PRODUCT_AUTHORIZATION_TTL_MS
+    || response.expiresAt - acceptedAt > PRODUCT_AUTHORIZATION_TTL_MS
+    || response.responseBytes.length
+      > BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime
+    || !equalBytes(response.descriptorBytes, current.descriptorBytes)
+    || hexBytes(response.descriptorHash) !== current.snapshot.descriptorDigest
+    || !digestMatches(response.descriptorBytes, current.snapshot.descriptorDigest)
+    || hexBytes(response.responseHash) !== digestHex(response.responseBytes)
+    || hexBytes(response.authorizationHash) !== digestHex(response.responseBytes)
+    || !equalBytes(response.responseHash, response.authorizationHash)
+  ) {
+    throw new TypeError(
+      "Verified Runtime response does not match current durable authorization",
+    );
+  }
+  portable("Runtime authorization id", response.authorizationId);
+  portable("Runtime authorization Human id", response.issuingHumanId);
+  portable("Runtime authorization device id", response.issuingDeviceId);
+  counter(
+    "Runtime authorization device revision",
+    response.issuingDeviceAuthorizationRevision,
+  );
+  exactBytes(
+    "Runtime authorization issuer key hash",
+    response.issuerSigningPublicKeyHash,
+    BACKGROUND_AUTHORIZATION_BYTE_LIMITS.hash,
+  );
+
+  const nextSnapshot = markBackgroundAuthorizationGrantReady(
+    current.snapshot,
+    {
+      kind: "runtime",
+      requestId: response.requestId,
+      descriptorDigest: hexBytes(response.descriptorHash),
+      recipientKeyId: response.recipientKeyId,
+      recipientPublicKey: Buffer.from(response.recipientPublicKey).toString(
+        "base64url",
+      ),
+      expiresAt: response.expiresAt,
+      responseDigest: hexBytes(response.responseHash),
+      credentialDigest: hexBytes(response.authorizationHash),
+      issuingHumanId: response.issuingHumanId,
+      issuingDeviceId: response.issuingDeviceId,
+      recipientGeneration: response.recipientGeneration,
+      now: acceptedAt,
+    },
+  );
+  return Object.freeze({
+    next: parseBackgroundAuthorizationRecord({
+      ...current,
+      snapshot: nextSnapshot,
+      acceptedMaterial: {
+        responseBytes: response.responseBytes,
+        credentialId: response.authorizationId,
+        issuingDeviceAuthorizationRevision:
+          response.issuingDeviceAuthorizationRevision,
+        issuerSigningPublicKeyHash: response.issuerSigningPublicKeyHash,
+        authorizationExpiresAt: response.expiresAt,
+      },
+    }),
+    signerEvidence: null,
+  });
 }
 
 function buildAcceptedBackgroundAuthorizationResponseV2(
@@ -1319,6 +1547,13 @@ export function buildAcceptedBackgroundAuthorizationResponse(
       acceptedAt,
     );
   }
+  if (isRuntimeV3Response(response)) {
+    return buildAcceptedBackgroundRuntimeAuthorizationResponseV3(
+      current,
+      response,
+      acceptedAt,
+    );
+  }
   const subjectMatches = response.kind === "processor"
     ? current.snapshot.credentialSubject.kind === "processor"
       && response.subject.kind === "processor"
@@ -1488,14 +1723,15 @@ function sameAuthoritySet(
   if (left.snapshot.formatVersion !== right.snapshot.formatVersion) {
     return false;
   }
-  if (left.snapshot.formatVersion !== 2) return true;
+  if (left.snapshot.formatVersion === 1) return true;
   if (
-    right.snapshot.formatVersion !== 2
+    right.snapshot.formatVersion === 1
     || left.snapshot.credentialSubject.kind
       !== right.snapshot.credentialSubject.kind
   ) return false;
   if (left.snapshot.credentialSubject.kind === "processor") return true;
-  return right.snapshot.credentialSubject.kind === "agent"
+  return right.snapshot.credentialSubject.kind
+      === left.snapshot.credentialSubject.kind
     && left.authoritySet !== undefined
     && right.authoritySet !== undefined
     && JSON.stringify(left.authoritySet) === JSON.stringify(right.authoritySet);

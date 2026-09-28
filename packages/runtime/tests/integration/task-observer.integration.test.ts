@@ -20,6 +20,7 @@ import {
   getTaskById,
   getTaskRuns,
   markTaskCancelled,
+  serverAdmission,
   type DirectDatabase,
 } from "@nautilo/db";
 import {
@@ -74,6 +75,8 @@ beforeAll(async () => {
   userId = env.userId;
   agentId = env.agentId;
   db = getDirectDb();
+  // The production JobManager rechecks current server admission before work.
+  await db.insert(serverAdmission).values({ userId, admitted: true });
   setTaskRunDb(db);
 });
 

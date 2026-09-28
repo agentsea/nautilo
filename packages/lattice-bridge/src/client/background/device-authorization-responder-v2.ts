@@ -26,6 +26,7 @@ export type CurrentBackgroundAuthorizationSigningAuthorityV2 = Readonly<{
   /** Borrowed for the callback lifetime. */
   signingPrivateKey: Uint8Array;
   policyRevision: number;
+  hostAuthorizationRevision: number;
 }>;
 
 export type WithCurrentBackgroundAuthorizationSigningAuthorityV2 = <Value>(
@@ -65,6 +66,7 @@ export type DeviceAuthorizationResponderResultV2 =
         | "expired"
         | "namespace_authority_changed"
         | "domain_authority_changed"
+        | "device_authority_changed"
         | "policy_changed";
     }>;
 

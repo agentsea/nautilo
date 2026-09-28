@@ -48,6 +48,9 @@ export const V2_LIMITS = Object.freeze({
   signatureBytes: 64,
 });
 
+export const MAX_AGENT_GRANT_DOMAINS_V2 = V2_LIMITS.agentGrantDomains;
+export const MAX_AGENT_GRANT_NAMESPACES_V2 = V2_LIMITS.agentGrantNamespaces;
+
 /** Complete retained generation history admitted by one V2 Namespace authority. */
 export const MAX_RETAINED_NAMESPACE_GENERATIONS_V2 =
   V2_LIMITS.retainedNamespaceGenerations;

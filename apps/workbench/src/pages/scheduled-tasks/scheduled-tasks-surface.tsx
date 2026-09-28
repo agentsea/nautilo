@@ -22,12 +22,12 @@ export function ScheduledTasksSurface(): ReactElement {
   const protectedVisible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return protectedTasks;
-    return protectedTasks.filter(({ task, prompt }) => [
-      prompt,
-      task.agentName ?? "",
-      task.cron ?? "",
-      task.scheduleKind,
-      task.status,
+    return protectedTasks.filter((row) => [
+      row.availability === "opened" ? row.prompt : "protected locked waiting authorization",
+      row.task.agentName ?? "",
+      row.task.cron ?? "",
+      row.task.scheduleKind,
+      row.task.status,
       "protected",
     ].join(" ").toLowerCase().includes(normalized));
   }, [protectedTasks, query]);
@@ -63,7 +63,8 @@ export function ScheduledTasksSurface(): ReactElement {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading || (protectedLoading && tasks.length === 0) ? (
+        {loading || (protectedLoading && tasks.length === 0
+          && protectedTasks.length === 0) ? (
           <p
             className="px-6 py-10 text-sm text-foreground-muted"
             data-testid="scheduled-tasks-loading"

@@ -83,7 +83,7 @@ suite("personal provider credential migration baselines", () => {
           await db`INSERT INTO users (id) VALUES (${existingUserId})`;
         }
         const migration = await readFile(
-          join(import.meta.dir, "../../src/migrations/0304_sharp_dracula.sql"),
+          join(import.meta.dir, "../../src/migrations/0305_personal_provider_credentials.sql"),
           "utf8",
         );
         await db.unsafe(migration.replaceAll("--> statement-breakpoint", ""));

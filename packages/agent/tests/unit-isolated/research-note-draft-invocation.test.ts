@@ -20,7 +20,7 @@ mock.module("@nautilo/trust", () => ({ ...actualTrust,
   }),
 }));
 
-const MODEL = "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
+const MODEL = "fireworks:accounts/fireworks/models/deepseek-v4p1-flash";
 const originalKey = process.env["FIREWORKS_API_KEY"];
 const oldFetch = globalThis.fetch;
 let perform: (messages: BaseMessage[], config: RunnableConfig) => Promise<AIMessage>;
@@ -127,7 +127,8 @@ test("real graph callbacks do not inherit into the helper; Task usage and exact 
     }
     expect(observedMainTokens).toHaveLength(0);
     expect(createdModels).toHaveLength(1);
-    expect(createdModels[0]).toMatchObject({ id: MODEL, options: { reasoningEffort: "off", reasoningOutput: false } });
+    expect(createdModels[0]).toMatchObject({ id: MODEL, options: { reasoningOutput: true } });
+    expect(createdModels[0]?.options.reasoningEffort).toBeUndefined();
   } finally { helper.dispose(); }
 });
 

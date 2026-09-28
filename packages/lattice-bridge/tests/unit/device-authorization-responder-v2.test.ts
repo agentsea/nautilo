@@ -538,6 +538,7 @@ function signingAuthority(input: Readonly<{
         signingPrivateKey: key,
         policyRevision: input.policyRevision
           ?? input.fixture.descriptor.policyRevision,
+        hostAuthorizationRevision: 1,
       });
     } finally {
       key.fill(0);
@@ -754,6 +755,7 @@ describe("portable current V2 device authorization responder", () => {
               issuer: f.issuer,
               signingPrivateKey: borrowedSigning,
               policyRevision: f.descriptor.policyRevision,
+              hostAuthorizationRevision: 1,
             });
           } finally {
             borrowedSigning.fill(0);

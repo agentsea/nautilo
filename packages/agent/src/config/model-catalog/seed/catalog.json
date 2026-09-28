@@ -1,7 +1,7 @@
 {
   "version": 6,
-  "catalogVersion": "2026.09.20.2",
-  "publishedAt": "2026-09-20T15:00:00Z",
+  "catalogVersion": "2026.09.23.1",
+  "publishedAt": "2026-09-23T09:27:38Z",
   "entries": [
     {
       "id": "anthropic:claude-sonnet-4-6",
@@ -226,7 +226,140 @@
         "contextTokens": 1050000,
         "outputTokens": 128000
       },
-      "capabilityProvenance": "override"
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "openai",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "openai:gpt-6-sol",
+      "displayName": "GPT-6 Sol (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 3,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.67
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "openai",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "openai:gpt-6-luna",
+      "displayName": "GPT-6 Luna (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 5,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.03
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "openai",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
     },
     {
       "id": "openai:gpt-5.6-sol",
@@ -672,76 +805,6 @@
       "taskPreferences": [
         "security_research"
       ],
-      "capabilityProvenance": "override"
-    },
-    {
-      "id": "fireworks:accounts/fireworks/models/glm-5p2",
-      "displayName": "GLM 5.2 (Fireworks)",
-      "provider": "fireworks",
-      "routing": "fireworks",
-      "priority": 11,
-      "defaultEnabled": true,
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "features": {
-        "tools": true,
-        "structuredOutputs": false,
-        "reasoning": true
-      },
-      "limits": {
-        "contextTokens": 1040000,
-        "outputTokens": 1040000
-      },
-      "cost": {
-        "coefficient": 0.3
-      },
-      "privacy": {
-        "grade": 4
-      },
-      "intelligence": {
-        "tier": "strong"
-      },
-      "capabilityProvenance": "override"
-    },
-    {
-      "id": "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813",
-      "displayName": "DeepSeek V4 Pro 0813 (Fireworks)",
-      "provider": "fireworks",
-      "routing": "fireworks",
-      "priority": 14,
-      "defaultEnabled": true,
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "features": {
-        "tools": true,
-        "structuredOutputs": false,
-        "reasoning": true
-      },
-      "limits": {
-        "contextTokens": 1040000,
-        "outputTokens": 1040000
-      },
-      "cost": {
-        "coefficient": 0.3
-      },
-      "privacy": {
-        "grade": 4
-      },
-      "intelligence": {
-        "tier": "strong"
-      },
       "capabilityProvenance": "override"
     },
     {
@@ -1222,6 +1285,62 @@
       "capabilityProvenance": "openrouter"
     },
     {
+      "id": "openrouter:anthropic/claude-opus-5.5",
+      "displayName": "Claude Opus 5.5 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1.33
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
       "id": "openrouter:openai/gpt-6-astra",
       "displayName": "GPT-6 Astra (OpenRouter)",
       "provider": "openrouter",
@@ -1257,7 +1376,138 @@
       "intelligence": {
         "tier": "frontier"
       },
-      "capabilityProvenance": "openrouter"
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "openrouter:openai/gpt-6-sol",
+      "displayName": "GPT-6 Sol (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 3,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.67
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "openrouter:openai/gpt-6-luna",
+      "displayName": "GPT-6 Luna (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 5,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.03
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
     },
     {
       "id": "openrouter:openai/gpt-5.6-sol",
@@ -1903,6 +2153,61 @@
       "capabilityProvenance": "override"
     },
     {
+      "id": "venice:claude-opus-5-5",
+      "displayName": "Claude Opus 5.5 (Venice → Anthropic)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 37,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1.6
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
       "id": "venice:openai-gpt-6-astra",
       "displayName": "GPT-6 Astra (Venice → OpenAI)",
       "provider": "venice",
@@ -1937,7 +2242,138 @@
       "intelligence": {
         "tier": "frontier"
       },
-      "capabilityProvenance": "override"
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "venice:openai-gpt-6-sol",
+      "displayName": "GPT-6 Sol (Venice → OpenAI)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 34,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.83
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "venice:openai-gpt-6-luna",
+      "displayName": "GPT-6 Luna (Venice → OpenAI)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 35,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.04
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "mid"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": true,
+          "mandatory": false,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
     },
     {
       "id": "venice:openai-gpt-56-sol",
@@ -2233,6 +2669,63 @@
       "capabilityProvenance": "override"
     },
     {
+      "id": "anthropic:claude-opus-5-5",
+      "displayName": "Claude Opus 5.5 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true,
+        "visualGrounding": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 1.33
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "anthropic",
+            "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
       "id": "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
       "displayName": "DeepSeek V4.1 Flash (Fireworks)",
       "provider": "fireworks",
@@ -2268,57 +2761,6 @@
         "tier": "strong"
       },
       "capabilityProvenance": "override"
-    },
-    {
-      "id": "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
-      "displayName": "DeepSeek V4 Flash 0731 (Fireworks)",
-      "provider": "fireworks",
-      "routing": "fireworks",
-      "priority": 15,
-      "defaultEnabled": true,
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "features": {
-        "tools": true,
-        "structuredOutputs": null,
-        "reasoning": true
-      },
-      "limits": {
-        "contextTokens": 1040000,
-        "outputTokens": 1040000
-      },
-      "cost": {
-        "coefficient": 0.02
-      },
-      "privacy": {
-        "grade": 4
-      },
-      "intelligence": {
-        "tier": "strong"
-      },
-      "capabilityProvenance": "override",
-      "controls": {
-        "reasoning": {
-          "levels": [
-            "high",
-            "max"
-          ],
-          "defaultLevel": "high",
-          "canDisable": true,
-          "mandatory": false,
-          "provenance": {
-            "kind": "provider-documentation",
-            "provider": "fireworks",
-            "verifiedAt": "2026-09-09T16:45:01Z"
-          }
-        }
-      }
     },
     {
       "id": "venice:deepseek-v4-pro-0813",

@@ -1,5 +1,7 @@
 import {
   and,
+  actors,
+  encryptionTransitionPolicy,
   eq,
   inArray,
   isNull,
@@ -328,7 +330,12 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       if (await this.#coordinateRow(transaction, input.coordinate, true) !== null) {
         return { status: "conflict" };
       }
-      if (!await this.#predecessorIsCurrent(transaction, input)) {
+      const requesterOwnerId = await this.#requesterOwnerId(
+        transaction,
+        input.requesterHumanId,
+      );
+      if (requesterOwnerId === null
+        || !await this.#predecessorIsCurrent(transaction, input, requesterOwnerId)) {
         return { status: "stale" };
       }
       const inserted = await this.#insertLifecycle(transaction, input);
@@ -432,9 +439,31 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         fingerprintTaskContentAuthorityV1(current),
         lifecycle.authorityFingerprint,
       );
+      const requesterOwnerId = await this.#requesterOwnerId(
+        transaction,
+        lifecycle.requesterHumanId,
+      );
+      if (requesterOwnerId === null) {
+        if (lifecycle.disposition === "active") {
+          await this.#persistAuthorityStale(transaction, lifecycle);
+        }
+        return "wrong_authority";
+      }
       const result = input.coordinate.kind === "definition"
-        ? await this.#mapDefinition(transaction, lifecycle, exactCurrentAuthority)
-        : await this.#mapResult(transaction, lifecycle, exactCurrentAuthority);
+        ? await this.#mapDefinition(
+          transaction,
+          lifecycle,
+          exactCurrentAuthority,
+          requesterOwnerId,
+          current.expectedPolicyRevision,
+        )
+        : await this.#mapResult(
+          transaction,
+          lifecycle,
+          exactCurrentAuthority,
+          requesterOwnerId,
+          current.expectedPolicyRevision,
+        );
       if (result === "wrong_authority") {
         if (lifecycle.disposition === "active") await this.#persistAuthorityStale(transaction, lifecycle);
         return result;
@@ -605,6 +634,22 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     }));
   }
 
+  async #requesterOwnerId(
+    transaction: ConversationProductPostgresTransaction,
+    requesterHumanId: string,
+  ): Promise<string | null> {
+    const rows = await executeTypedConversationProductQuery(
+      transaction,
+      conversationProductTypedDb.select({ owner_id: actors.ownerId })
+        .from(actors)
+        .where(and(eq(actors.id, requesterHumanId), eq(actors.kind, "user")))
+        .for("share", { of: actors })
+        .limit(2),
+    );
+    const row = oneOrNone(rows, "Task requester Human owner lookup");
+    return row === null ? null : text(row, "owner_id");
+  }
+
   #table(coordinate: TaskContentCoordinateV1) {
     return coordinate.kind === "definition" ? taskDefinitionCryptoRevisions : taskRunResultCryptoRevisions;
   }
@@ -678,7 +723,11 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     return oneOrNone(await executeTypedConversationProductQuery(transaction, query), "Task content reservation insert");
   }
 
-  async #predecessorIsCurrent(transaction: ConversationProductPostgresTransaction, input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0]): Promise<boolean> {
+  async #predecessorIsCurrent(
+    transaction: ConversationProductPostgresTransaction,
+    input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0],
+    requesterOwnerId: string,
+  ): Promise<boolean> {
     if (input.coordinate.kind === "definition") {
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
         owner_id: tasks.ownerId,
@@ -692,14 +741,14 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       }).from(tasks).where(eq(tasks.id, input.coordinate.taskId)).for("update").limit(2));
       const row = oneOrNone(rows, "Task predecessor lookup");
       if (input.coordinate.contentRevision === 1) {
-        return row === null || (text(row, "owner_id") === input.requesterHumanId
+        return row === null || (text(row, "owner_id") === requesterOwnerId
           && inAllowedDefinitionStatus(row)
           && nullableText(row, "fire_lock_id") === null
           && integer(row, "content_revision") === 0
           && nullableText(row, "content_namespace_id") === null
           && text(row, "content_representation") === "ordinary");
       }
-      return row !== null && text(row, "owner_id") === input.requesterHumanId
+      return row !== null && text(row, "owner_id") === requesterOwnerId
         && inAllowedDefinitionStatus(row)
         && nullableText(row, "fire_lock_id") === null
         && nullableText(row, "content_namespace_id") === input.namespaceId
@@ -723,7 +772,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     }).from(taskRuns).innerJoin(tasks, eq(tasks.id, taskRuns.taskId)).where(eq(taskRuns.id, input.coordinate.taskRunId)).for("update", { of: taskRuns }).limit(2));
     const row = oneOrNone(rows, "Task result predecessor lookup");
     if (row === null || text(row, "task_id") !== input.coordinate.taskId
-      || text(row, "owner_id") !== input.requesterHumanId
+      || text(row, "owner_id") !== requesterOwnerId
       || nullableText(row, "parent_namespace_id") !== input.namespaceId
       || text(row, "task_status") === "cancelled"
       || text(row, "run_status") === "cancelled") return false;
@@ -763,7 +812,13 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     return oneOrNone(await executeTypedConversationProductQuery(transaction, query), "Task content locked lifecycle");
   }
 
-  async #mapDefinition(transaction: ConversationProductPostgresTransaction, lifecycle: TaskContentRevisionLifecycleV1, exactCurrentAuthority: boolean): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
+  async #mapDefinition(
+    transaction: ConversationProductPostgresTransaction,
+    lifecycle: TaskContentRevisionLifecycleV1,
+    exactCurrentAuthority: boolean,
+    requesterOwnerId: string,
+    expectedPolicyRevision: number,
+  ): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
     const coordinate = lifecycle.coordinate;
     if (coordinate.kind !== "definition") throw new Error("Definition mapping kind mismatch");
     const row = await this.#productRow(transaction, coordinate, true);
@@ -781,6 +836,11 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       ))
       && sameBytes(nullableBytes(row, "crypto_required_namespace_fingerprint") ?? new Uint8Array(), lifecycle.requiredNamespaceFingerprint)) return "duplicate";
     if (!exactCurrentAuthority) return "wrong_authority";
+    if (!await this.#lockPublicationPolicy(
+      transaction,
+      expectedPolicyRevision,
+      lifecycle.representation,
+    )) return "wrong_authority";
     const expected = coordinate.contentRevision - 1;
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(tasks).set({
       contentRepresentation: lifecycle.representation, contentNamespaceId: lifecycle.namespaceId,
@@ -792,18 +852,25 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         lastError: null,
         metadata: sql`convert_from(${new TextEncoder().encode(JSON.stringify(lifecycle.operationalMetadata ?? {}))}::bytea, 'UTF8')::jsonb`,
       } : {}),
+      ...(expected === 0 ? { status: "pending" as const } : {}),
       updatedAt: sql`CURRENT_TIMESTAMP`,
-    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, lifecycle.requesterHumanId), inArray(tasks.status, ["pending", "paused"]), isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
+    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, requesterOwnerId), inArray(tasks.status, ["pending", "paused"]), isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
       ? and(isNull(tasks.contentNamespaceId), eq(tasks.contentRepresentation, "ordinary"))
       : and(eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
     return oneOrNone(updated, "Task definition mapping CAS") === null ? "stale" : "applied";
   }
 
-  async #mapResult(transaction: ConversationProductPostgresTransaction, lifecycle: TaskContentRevisionLifecycleV1, exactCurrentAuthority: boolean): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
+  async #mapResult(
+    transaction: ConversationProductPostgresTransaction,
+    lifecycle: TaskContentRevisionLifecycleV1,
+    exactCurrentAuthority: boolean,
+    requesterOwnerId: string,
+    expectedPolicyRevision: number,
+  ): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
     const coordinate = lifecycle.coordinate;
     if (coordinate.kind !== "run_result") throw new Error("Result mapping kind mismatch");
     const parent = oneOrNone(await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({ owner_id: tasks.ownerId, namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("namespace_id"), task_status: sql<string>`${tasks.status}`.as("task_status") }).from(tasks).where(eq(tasks.id, coordinate.taskId)).for("update").limit(2)), "Task result parent lookup");
-    if (parent === null || text(parent, "owner_id") !== lifecycle.requesterHumanId || nullableText(parent, "namespace_id") !== lifecycle.namespaceId) return "stale";
+    if (parent === null || text(parent, "owner_id") !== requesterOwnerId || nullableText(parent, "namespace_id") !== lifecycle.namespaceId) return "stale";
     const row = await this.#productRow(transaction, coordinate, true);
     if (row === null) return "missing";
     if (integer(row, "result_revision") === coordinate.contentRevision
@@ -815,6 +882,11 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (!exactCurrentAuthority) return "wrong_authority";
     if (text(parent, "task_status") === "cancelled"
       || text(row, "run_status") === "cancelled") return "stale";
+    if (!await this.#lockPublicationPolicy(
+      transaction,
+      expectedPolicyRevision,
+      lifecycle.representation,
+    )) return "wrong_authority";
     const expected = coordinate.contentRevision - 1;
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(taskRuns).set({
       resultRepresentation: lifecycle.representation, resultContentNamespaceId: lifecycle.namespaceId,
@@ -825,6 +897,29 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       ? and(isNull(taskRuns.resultContentNamespaceId), eq(taskRuns.resultRepresentation, "ordinary"))
       : and(eq(taskRuns.resultContentNamespaceId, lifecycle.namespaceId), inArray(taskRuns.resultRepresentation, ["protected", "dual"]), eq(taskRuns.resultCryptoMappingState, "verified")))).returning({ task_run_id: taskRuns.id }));
     return oneOrNone(updated, "Task result mapping CAS") === null ? "stale" : "applied";
+  }
+
+  async #lockPublicationPolicy(
+    transaction: ConversationProductPostgresTransaction,
+    expectedRevision: number,
+    representation: "protected" | "dual",
+  ): Promise<boolean> {
+    const rows = await executeTypedConversationProductQuery(
+      transaction,
+      conversationProductTypedDb.select({
+        mode: encryptionTransitionPolicy.mode,
+        revision: encryptionTransitionPolicy.revision,
+      }).from(encryptionTransitionPolicy)
+        .where(eq(encryptionTransitionPolicy.id, "server"))
+        .for("share", { of: encryptionTransitionPolicy })
+        .limit(2),
+    );
+    const row = oneOrNone(rows, "Task publication policy fence");
+    if (row === null || integer(row, "revision") !== expectedRevision) return false;
+    const mode = text(row, "mode");
+    return representation === "dual"
+      ? mode === "shadow_encryption"
+      : mode === "encrypted_only";
   }
 
   async #terminalTransition(coordinate: TaskContentCoordinateV1, leaseToken: string | null, disposition: "quarantined" | "stale_mapping", failureCode: TaskContentFailureCode): Promise<"applied" | "duplicate" | "missing" | "conflict"> {

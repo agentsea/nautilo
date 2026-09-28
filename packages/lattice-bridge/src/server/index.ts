@@ -917,6 +917,13 @@ export * from "./message/message-backfill-tool-context.ts";
 export {withCurrentStenographerAuthority, matchesCurrentStenographerAuthority, matchesStenographerRequestAdmission,
   type StenographerRequestAdmission} from "./journal/current-stenographer-authority.ts";
 export { matchesCurrentReflectionAuthority, withCurrentReflectionAuthority } from "./journal/current-reflection-authority.ts";
+export {
+  withCurrentTaskRuntimeAuthority,
+  type CurrentTaskRuntimeAuthority,
+  type TaskRuntimeAuthoritySubject,
+  type TaskRuntimeDomainAuthorityRequirement,
+  type TaskRuntimeNamespaceAuthorityRequirement,
+} from "./task/current-task-runtime-authority.ts";
 export { bindReflectionSemanticDataOperationPort,
   type ReflectionSemanticDataOperationPorts } from "./reflection/semantic-data-operation-port.ts";
 

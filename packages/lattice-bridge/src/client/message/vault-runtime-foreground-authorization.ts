@@ -54,8 +54,7 @@ function destroyHumanPlan(plan: ReturnType<
   plan.namespaceAudienceFingerprint.fill(0);
 }
 
-/** Mint exactly one device-approved, Agent-free Runtime authorization. */
-export async function prepareVaultRuntimeForegroundAuthorization(input: Readonly<{
+type VaultRuntimeAuthorizationInput = Readonly<{
   crypto: LatticeCrypto;
   vault: ClientProfileVault;
   coordinates: ClientProfileCoordinates;
@@ -63,9 +62,15 @@ export async function prepareVaultRuntimeForegroundAuthorization(input: Readonly
   authorizationPlanBytes: Uint8Array;
   sourceHumanPlanBytes?: Uint8Array;
   recipientPublicKey: Uint8Array;
-  browserSessionId: string;
+  expectedSessionId: string;
+  expectedSourceRoomId?: string;
+  expectedRecipientPrincipalId?: string;
   now: number;
-}>): Promise<PrepareVaultRuntimeForegroundAuthorizationResult> {
+}>;
+
+async function prepareVaultRuntimeAuthorization(
+  input: VaultRuntimeAuthorizationInput,
+): Promise<PrepareVaultRuntimeForegroundAuthorizationResult> {
   const plan = parseDomainForegroundAuthorizationPlanV2(
     input.authorizationPlanBytes,
   );
@@ -88,7 +93,15 @@ export async function prepareVaultRuntimeForegroundAuthorization(input: Readonly
       || input.now < plan.issuedAt
       || input.now >= plan.deadlineAt
       || plan.recipientKind !== "runtime"
-      || plan.sessionId !== input.browserSessionId
+      || plan.sessionId !== input.expectedSessionId
+      || (
+        input.expectedSourceRoomId !== undefined
+        && plan.roomId !== input.expectedSourceRoomId
+      )
+      || (
+        input.expectedRecipientPrincipalId !== undefined
+        && plan.recipientPrincipalId !== input.expectedRecipientPrincipalId
+      )
       || (humanPlan !== null && (
         plan.roomId !== humanPlan.roomId
         || plan.subjectHumanId !== humanPlan.subjectHumanId
@@ -165,4 +178,42 @@ export async function prepareVaultRuntimeForegroundAuthorization(input: Readonly
     destroyDomainForegroundAuthorizationPlanV2(plan);
     if (humanPlan !== null) destroyHumanPlan(humanPlan);
   }
+}
+
+/** Mint exactly one device-approved, Agent-free foreground Runtime authorization. */
+export function prepareVaultRuntimeForegroundAuthorization(input: Readonly<{
+  crypto: LatticeCrypto;
+  vault: ClientProfileVault;
+  coordinates: ClientProfileCoordinates;
+  domainForegroundAuthority: DomainForegroundAuthorityClientV2;
+  authorizationPlanBytes: Uint8Array;
+  sourceHumanPlanBytes?: Uint8Array;
+  recipientPublicKey: Uint8Array;
+  browserSessionId: string;
+  now: number;
+}>): Promise<PrepareVaultRuntimeForegroundAuthorizationResult> {
+  return prepareVaultRuntimeAuthorization({
+    ...input,
+    expectedSessionId: input.browserSessionId,
+  });
+}
+
+/** Mint one device-approved authorization for an exact Task Runtime episode. */
+export function prepareVaultTaskRuntimeAuthorization(input: Readonly<{
+  crypto: LatticeCrypto;
+  vault: ClientProfileVault;
+  coordinates: ClientProfileCoordinates;
+  domainForegroundAuthority: DomainForegroundAuthorityClientV2;
+  authorizationPlanBytes: Uint8Array;
+  recipientPublicKey: Uint8Array;
+  authorizationEpisodeId: string;
+  sourceRoomId: string;
+  now: number;
+}>): Promise<PrepareVaultRuntimeForegroundAuthorizationResult> {
+  return prepareVaultRuntimeAuthorization({
+    ...input,
+    expectedSessionId: input.authorizationEpisodeId,
+    expectedSourceRoomId: input.sourceRoomId,
+    expectedRecipientPrincipalId: "nautilo_task_runtime",
+  });
 }

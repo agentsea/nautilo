@@ -1,5 +1,5 @@
 /**
- * M152 — multi-axis model selection at the dispatch seam, against real Postgres
+ * Multi-axis model selection at the dispatch seam, against real Postgres
  * + a stub graph. The shared test bootstrap defaults to the disposable
  * `test-cruft` database:
  *
@@ -90,11 +90,11 @@ import {
 import { createStubProvider } from "./helpers/stub-provider";
 
 // With only ANTHROPIC + FIREWORKS credentials, the cheapest CONFIGURED model is
-// Fireworks DeepSeek V4 Flash. Keep this assertion explicit: the integration
+// Fireworks DeepSeek V4.1 Flash. Keep this assertion explicit: the integration
 // contract is that the dispatch seam persists the resolver's selected route,
 // not merely that it writes some Fireworks id.
 const CHEAPEST_FIREWORKS_MODEL =
-  "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731";
+  "fireworks:accounts/fireworks/models/deepseek-v4p1-flash";
 const WRITER_LIVE_TASK_TOOL_FIXTURES = [
   "edit-open-writer",
   "read-open-writer-range",
@@ -229,9 +229,9 @@ async function dispatchOne(taskId: string): Promise<string | null> {
   }
 }
 
-describe("M152 — dispatch-seam model selection (stub graph, isolated scratch PG)", () => {
+describe("dispatch-seam model selection (stub graph, isolated scratch PG)", () => {
   test("'cheapest' resolves + persists the lowest-cost configured model on task_runs.model_id", async () => {
-    stub("M152_CHEAPEST_STUB");
+    stub("MODEL-SELECTION_CHEAPEST_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       selectionProfile: "cheapest",
@@ -246,7 +246,7 @@ describe("M152 — dispatch-seam model selection (stub graph, isolated scratch P
   });
 
   test("'balanced' (default) runs on the agent default model, not a scanned model", async () => {
-    stub("M152_BALANCED_STUB");
+    stub("MODEL-SELECTION_BALANCED_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       // selectionProfile defaults to 'balanced'
@@ -262,7 +262,7 @@ describe("M152 — dispatch-seam model selection (stub graph, isolated scratch P
   });
 
   test("an omitted model ignores the Room override, then follows the server when the Agent follows default", async () => {
-    stub("M152_INHERITANCE_STUB", 8);
+    stub("MODEL-SELECTION_INHERITANCE_STUB", 8);
     const { roomId } = await createTestRoom(userId);
     await db.insert(profiles).values({
       userId,
@@ -325,8 +325,8 @@ describe("M152 — dispatch-seam model selection (stub graph, isolated scratch P
   });
 });
 
-describe("D429 Phase 3 — exact model_id at the dispatch seam (stub graph, isolated scratch PG)", () => {
-  // Capture the job input so we can assert the Phase-4 `exactModelSelection`
+describe("exact model_id at the dispatch seam (stub graph, isolated scratch PG)", () => {
+  // Capture the job input so we can assert the `exactModelSelection`
   // flag is set on an exact pin and absent on a profile/spec run.
   let capturedInput: Record<string, unknown> | null = null;
   const capturingJobManager: TaskJobManager = {
@@ -356,7 +356,7 @@ describe("D429 Phase 3 — exact model_id at the dispatch seam (stub graph, isol
   }
 
   test("an exact requestedModelId pins the run model + sets the exactModelSelection job flag", async () => {
-    stub("D429_EXACT_STUB");
+    stub("EXACT-MODEL_EXACT_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       requestedModelId: "anthropic:claude-sonnet-4-6",
@@ -377,7 +377,7 @@ describe("D429 Phase 3 — exact model_id at the dispatch seam (stub graph, isol
   });
 
   test("a profile/spec run does NOT set the exactModelSelection flag (regression guard)", async () => {
-    stub("D429_PROFILE_STUB");
+    stub("EXACT-MODEL_PROFILE_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       selectionProfile: "cheapest",
@@ -397,7 +397,7 @@ describe("D429 Phase 3 — exact model_id at the dispatch seam (stub graph, isol
   });
 
   test("revalidation failure: an exact id with no credentials at dispatch marks the task errored", async () => {
-    stub("D429_EXACT_MISSING_STUB");
+    stub("EXACT-MODEL_EXACT_MISSING_STUB");
     // openai:gpt-5.6-sol is curated but OPENAI_API_KEY is NOT pinned (only
     // ANTHROPIC + FIREWORKS are), so the dispatch-time revalidation throws
     // before inserting a run row — exactly the scheduled-task revalidation
@@ -420,9 +420,9 @@ describe("D429 Phase 3 — exact model_id at the dispatch seam (stub graph, isol
   });
 });
 
-describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode into the subagent runner", () => {
+describe("exactModelSelection threads strict modelFallbackMode into the subagent runner", () => {
   // Capture the job input (dispatch seam) AND the RunScopeSubagentOpts
-  // (executor → runner seam) so we can prove the Phase-3 `exactModelSelection`
+  // (executor → runner seam) so we can prove the `exactModelSelection`
   // job flag is converted to `modelFallbackMode: "none"` and threaded all the
   // way into `runScopeSubagentUntilPause` — without running the full graph.
   let capturedInput: Record<string, unknown> | null = null;
@@ -466,16 +466,16 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
       await runnerSideEffect?.(opts);
       return {
         status: "completed",
-        threadId: "stub-thread-d429",
-        finalText: "D429_STRICT_MODE_STUB",
-        finalResponseText: "D429_STRICT_MODE_STUB",
+        threadId: "stub-thread-exact-model",
+        finalText: "EXACT-MODEL_STRICT_MODE_STUB",
+        finalResponseText: "EXACT-MODEL_STRICT_MODE_STUB",
       };
     });
   });
 
   afterAll(() => {
     // Module-level state shared across the whole runtime integration bun
-    // process — MUST clear so m164 (which drives the real executor) is
+    // process — MUST clear so executor-test (which drives the real executor) is
     // unaffected.
     _setTaskRunExecutorRunnerForTests(null);
   });
@@ -544,7 +544,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   }
 
   test("an exact requestedModelId run threads modelFallbackMode='none' into the runner", async () => {
-    stub("D429_PHASE4_EXACT_STUB");
+    stub("EXACT-MODEL_PHASE4_EXACT_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       requestedModelId: "anthropic:claude-sonnet-4-6",
@@ -553,7 +553,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
     const err = await dispatchCapturing(taskId);
     expect(err).toBeNull();
 
-    // The dispatch seam set the Phase-3 job flag.
+    // The dispatch seam set the job flag.
     expect(capturedInput).toMatchObject({
       modelId: "anthropic:claude-sonnet-4-6",
       exactModelSelection: true,
@@ -561,13 +561,13 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
 
     await runExecutorOnce(taskId);
 
-    // Phase 4 — the executor converted the flag into the explicit strict
+    // The executor converted the flag into the explicit strict
     // mode and threaded it into runScopeSubagentUntilPause.
     expect(capturedRunnerOpts?.modelFallbackMode).toBe("none");
   });
 
   test("the executor injects its server-authored TaskRun id and ignores a job-input spoof", async () => {
-    stub("D560_TASK_RUN_IDENTITY_STUB");
+    stub("TASK-BINDING_TASK_RUN_IDENTITY_STUB");
     const taskId = await insertTask({ preset: "in_background" });
 
     expect(await dispatchCapturing(taskId)).toBeNull();
@@ -586,7 +586,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a live exact Task binding reaches the background run's host context", async () => {
-    stub("D560_TASK_BINDING_LIVE_STUB");
+    stub("TASK-BINDING_TASK_BINDING_LIVE_STUB");
     installExactTaskRelay();
     const taskId = await insertTask({ preset: "in_background" });
     const registry = getRelayRegistry();
@@ -632,7 +632,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("missing or replaced Task bindings leave the background host context unavailable", async () => {
-    stub("D560_TASK_BINDING_UNAVAILABLE_STUB");
+    stub("TASK-BINDING_TASK_BINDING_UNAVAILABLE_STUB");
     installExactTaskRelay();
     const replacedTaskId = await insertTask({ preset: "in_background" });
     const liveRegistry = getRelayRegistry();
@@ -671,7 +671,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a profile/spec run threads modelFallbackMode='agent_chain' (regression guard)", async () => {
-    stub("D429_PHASE4_PROFILE_STUB");
+    stub("EXACT-MODEL_PHASE4_PROFILE_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       selectionProfile: "cheapest",
@@ -691,7 +691,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a balanced-default run (no exact pin) defaults to agent_chain (backwards-compat)", async () => {
-    stub("D429_PHASE4_DEFAULT_STUB");
+    stub("EXACT-MODEL_PHASE4_DEFAULT_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       // balanced default — no requestedModelId, no selectionProfile/spec.
@@ -700,7 +700,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
     const err = await dispatchCapturing(taskId);
     expect(err).toBeNull();
 
-    // The dispatch seam writes the flag explicitly as `false` (Phase 3), so
+    // The dispatch seam writes the flag explicitly as `false`, so
     // the executor never sees `undefined` here — but the conversion still
     // maps false → agent_chain.
     expect(capturedInput).toMatchObject({ exactModelSelection: false });
@@ -711,7 +711,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a Writer live binding reaches runner opts but its token is absent from persisted Job input", async () => {
-    stub("D569_WRITER_LIVE_STUB");
+    stub("WRITER-SESSION_WRITER_LIVE_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       toolsMode: "whitelist",
@@ -723,25 +723,25 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
       activeMiniApp: { appId: "nautilo-writer", updatedAt: 1 },
       liveMiniAppSession: {
         appId: "nautilo-writer",
-        sessionToken: "D569_WRITER_TOKEN_MUST_NOT_PERSIST",
-        sessionId: "d569-writer-session",
+        sessionToken: "WRITER-SESSION_WRITER_TOKEN_MUST_NOT_PERSIST",
+        sessionId: "writer-session-writer-session",
         documentVersion: { kind: "artifact_revision" as const, revision: 1 },
         instructions: "Writer",
       },
     };
     expect(registerTaskLiveMiniAppBinding(taskId, context, () => context.liveMiniAppSession)).toBe(true);
     expect(await dispatchCapturing(taskId)).toBeNull();
-    expect(JSON.stringify(capturedInput)).not.toContain("D569_WRITER_TOKEN_MUST_NOT_PERSIST");
+    expect(JSON.stringify(capturedInput)).not.toContain("WRITER-SESSION_WRITER_TOKEN_MUST_NOT_PERSIST");
 
     await runExecutorOnce(taskId);
     expect(capturedRunnerOpts).toMatchObject({
       activeMiniApp: { appId: "nautilo-writer" },
-      liveMiniAppSession: { sessionToken: "D569_WRITER_TOKEN_MUST_NOT_PERSIST" },
+      liveMiniAppSession: { sessionToken: "WRITER-SESSION_WRITER_TOKEN_MUST_NOT_PERSIST" },
     });
   });
 
   test("an auto Writer binding seeds every admitted live schema without a whitelist", async () => {
-    stub("D569_WRITER_AUTO_STUB");
+    stub("WRITER-SESSION_WRITER_AUTO_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       toolsMode: "auto",
@@ -752,8 +752,8 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
       activeMiniApp: { appId: "nautilo-writer", updatedAt: 1 },
       liveMiniAppSession: {
         appId: "nautilo-writer",
-        sessionToken: "D569_WRITER_AUTO_TOKEN_MUST_NOT_PERSIST",
-        sessionId: "d569-writer-auto-session",
+        sessionToken: "WRITER-SESSION_WRITER_AUTO_TOKEN_MUST_NOT_PERSIST",
+        sessionId: "writer-session-writer-auto-session",
         documentVersion: { kind: "artifact_revision" as const, revision: 1 },
         instructions: "Writer",
       },
@@ -766,7 +766,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
     )).toBe(true);
     expect(await dispatchCapturing(taskId)).toBeNull();
     expect(capturedInput).not.toHaveProperty("toolWhitelist");
-    expect(JSON.stringify(capturedInput)).not.toContain("D569_WRITER_AUTO_TOKEN_MUST_NOT_PERSIST");
+    expect(JSON.stringify(capturedInput)).not.toContain("WRITER-SESSION_WRITER_AUTO_TOKEN_MUST_NOT_PERSIST");
 
     await runExecutorOnce(taskId);
     expect(capturedRunnerOpts?.toolWhitelist).toBeUndefined();
@@ -774,7 +774,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("an accepted Writer review dispatches a bounded overall-Task verification instruction without receipt details", async () => {
-    stub("D569_WRITER_VERIFY_STUB");
+    stub("WRITER-SESSION_WRITER_VERIFY_STUB");
     const taskId = await insertTask({
       prompt: "Correct every typo in the bound Writer document.",
       preset: "in_background",
@@ -796,10 +796,10 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
         writerReviewAcceptedReceipt: {
           version: 1,
           taskRunId: producingRun.id,
-          proposalId: "D569_PROPOSAL_RECEIPT_MUST_NOT_REACH_MODEL",
+          proposalId: "WRITER-SESSION_PROPOSAL_RECEIPT_MUST_NOT_REACH_MODEL",
           acceptedResultRevision: {
             kind: "sha256",
-            sha256: "D569_REVISION_RECEIPT_MUST_NOT_REACH_MODEL",
+            sha256: "WRITER-SESSION_REVISION_RECEIPT_MUST_NOT_REACH_MODEL",
           },
         },
       },
@@ -813,9 +813,9 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
     expect(message).toContain("Correct every typo in the bound Writer document.");
     expect(message).toContain("Human-accepted canonical Writer save");
     expect(message).toContain("report success for the overall Task");
-    expect(message).not.toContain("D569_RUN_RECEIPT_MUST_NOT_REACH_MODEL");
-    expect(message).not.toContain("D569_PROPOSAL_RECEIPT_MUST_NOT_REACH_MODEL");
-    expect(message).not.toContain("D569_REVISION_RECEIPT_MUST_NOT_REACH_MODEL");
+    expect(message).not.toContain("WRITER-SESSION_RUN_RECEIPT_MUST_NOT_REACH_MODEL");
+    expect(message).not.toContain("WRITER-SESSION_PROPOSAL_RECEIPT_MUST_NOT_REACH_MODEL");
+    expect(message).not.toContain("WRITER-SESSION_REVISION_RECEIPT_MUST_NOT_REACH_MODEL");
 
     const afterVerification = await getTaskById(db, taskId);
     const acceptedReceipt = afterVerification?.metadata["writerReviewAcceptedReceipt"] as { verificationRunId?: unknown } | undefined;
@@ -904,7 +904,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   }
 
   test("an initial Writer run without a canonical reread cannot report ordinary Task success", async () => {
-    stub("D569_WRITER_INITIAL_NO_REREAD_STUB");
+    stub("WRITER-SESSION_WRITER_INITIAL_NO_REREAD_STUB");
     const { taskId } = await seedInitialWriterRun();
     expect(await dispatchCapturing(taskId)).toBeNull();
     expect(capturedInput?.["writerReviewVerification"]).toBeUndefined();
@@ -919,7 +919,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a complete initial Writer reread may take the ordinary no-review success path", async () => {
-    stub("D569_WRITER_INITIAL_FULL_REREAD_STUB");
+    stub("WRITER-SESSION_WRITER_INITIAL_FULL_REREAD_STUB");
     const { taskId, documentVersion } = await seedInitialWriterRun();
     expect(await dispatchCapturing(taskId)).toBeNull();
     runnerSideEffect = (opts) => {
@@ -942,7 +942,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("an initial Writer proposal still parks for review rather than applying the no-review coverage gate", async () => {
-    stub("D569_WRITER_INITIAL_PROPOSAL_PARKS_STUB");
+    stub("WRITER-SESSION_WRITER_INITIAL_PROPOSAL_PARKS_STUB");
     const { taskId, documentVersion, sessionId } = await seedInitialWriterRun();
     expect(await dispatchCapturing(taskId)).toBeNull();
     runnerSideEffect = (opts) => {
@@ -963,7 +963,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("an accepted Writer verification without a reread cannot report ordinary Task success", async () => {
-    stub("D569_WRITER_NO_REREAD_STUB");
+    stub("WRITER-SESSION_WRITER_NO_REREAD_STUB");
     const { taskId } = await seedAcceptedWriterVerification();
     expect(await dispatchCapturing(taskId)).toBeNull();
     expect(capturedInput?.["writerReviewVerification"]).toBe(true);
@@ -978,7 +978,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("only a full reread of the accepted version lets the same Task verification complete", async () => {
-    stub("D569_WRITER_FULL_REREAD_STUB");
+    stub("WRITER-SESSION_WRITER_FULL_REREAD_STUB");
     const { taskId, documentVersion } = await seedAcceptedWriterVerification();
     expect(await dispatchCapturing(taskId)).toBeNull();
     runnerSideEffect = (opts) => {
@@ -1001,7 +1001,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a partial or wrong-version reread remains a truthful verification failure", async () => {
-    stub("D569_WRITER_PARTIAL_REREAD_STUB");
+    stub("WRITER-SESSION_WRITER_PARTIAL_REREAD_STUB");
     const { taskId, documentVersion } = await seedAcceptedWriterVerification();
     expect(await dispatchCapturing(taskId)).toBeNull();
     runnerSideEffect = (opts) => {
@@ -1031,7 +1031,7 @@ describe("D429 Phase 4 — exactModelSelection threads strict modelFallbackMode 
   });
 
   test("a closed Writer live binding reports safely without calling the runner", async () => {
-    stub("D569_WRITER_CLOSED_STUB");
+    stub("WRITER-SESSION_WRITER_CLOSED_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       toolsMode: "whitelist",
