@@ -56,7 +56,11 @@ const RUN = "60000000-0000-4000-8000-000000000006";
 const NAMESPACE = "task-runtime-namespace";
 const DOMAIN = "task-runtime-domain";
 const REQUEST = `task-run-authorization:${RUN}`;
-const INPUT_OBJECT = `task-definition:v1:${"a".repeat(64)}`;
+const INPUT_OBJECT = deriveTaskContentCryptoObjectIdV1({
+  kind: "definition",
+  taskId: TASK,
+  contentRevision: 1,
+});
 const RESULT_OBJECT = deriveTaskContentCryptoObjectIdV1({
   kind: "run_result",
   taskId: TASK,
@@ -114,7 +118,7 @@ function occurrence(callingRoomId: string | null = ROOM): ProtectedTaskOccurrenc
       contentNamespaceId: NAMESPACE,
       contentRevision: 1,
       cryptoObjectId: INPUT_OBJECT,
-      cryptoAccessRevision: 4,
+      cryptoAccessRevision: 0,
       cryptoRequiredNamespaceFingerprint: bytes(7),
     }),
     run: Object.freeze({
@@ -143,7 +147,7 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
     domainId: DOMAIN,
     processorAuthorizationRevision: null,
     expectedDomainEpoch: 2,
-    expectedNamespaceAccessRevision: 4,
+    expectedNamespaceAccessRevision: 3,
     expectedPolicyRevision: 7,
     descriptorBytes: null,
     acceptedMaterial: null,
@@ -154,7 +158,7 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
         namespaceId: NAMESPACE,
         domainId: DOMAIN,
         operations: Object.freeze(["decrypt", "encrypt"] as const),
-        expectedAccessRevision: 4,
+        expectedAccessRevision: 3,
         expectedPolicyRevision: 7,
       })]),
       domainRequirements: Object.freeze([Object.freeze({
@@ -632,7 +636,7 @@ describe("Task Runtime grant claim", () => {
       contentNamespaceId: NAMESPACE,
       contentRevision: 1,
       cryptoObjectId: INPUT_OBJECT,
-      cryptoAccessRevision: 4,
+      cryptoAccessRevision: 0,
       cryptoRequiredNamespaceFingerprint: bytes(7),
       jobReference: value.plan(occurrence()).reference,
     }]);
@@ -954,6 +958,24 @@ describe("Task Runtime grant claim", () => {
       expect(await value.repository.get(REQUEST)).toBeNull();
       expect(value.recipients.size).toBe(0);
     }
+  });
+
+  test("keeps the definition object revision separate from Namespace authority", async () => {
+    const value = await fixture();
+    expect(occurrence().task.cryptoAccessRevision).toBe(0);
+    expect(initialRecord().expectedNamespaceAccessRevision).toBe(3);
+    const substituted: ProtectedTaskOccurrence = Object.freeze({
+      ...occurrence(),
+      task: Object.freeze({
+        ...occurrence().task,
+        cryptoAccessRevision: 3,
+      }),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(substituted))
+      .rejects.toThrow("disagrees with its occurrence");
+    expect(await value.repository.get(REQUEST)).toBeNull();
   });
 
   test("rejects stale proven output Namespace facts before the durable claim", async () => {

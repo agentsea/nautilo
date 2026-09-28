@@ -243,19 +243,32 @@ function exactOccurrenceRecord(
   occurrence: ProtectedTaskOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
-  return record.snapshot.workId === occurrence.run.id
+  const contentRequirements = record.authoritySet.namespaceRequirements.filter(
+    (requirement) =>
+      requirement.namespaceId === occurrence.task.contentNamespaceId,
+  );
+  const content = contentRequirements[0];
+  return occurrence.task.cryptoAccessRevision === 0
+    && occurrence.task.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
+      kind: "definition",
+      taskId: occurrence.task.id,
+      contentRevision: occurrence.task.contentRevision,
+    })
+    && record.snapshot.workId === occurrence.run.id
     && record.snapshot.namespaceId === occurrence.task.contentNamespaceId
     && record.workKind === "task.execute"
     && record.purpose === "task.execute"
     && record.processorAuthorizationRevision === null
     && record.expectedDomainEpoch !== null
-    && record.authoritySet.namespaceRequirements.some((requirement) =>
-      requirement.namespaceId === occurrence.task.contentNamespaceId
-      && requirement.expectedAccessRevision
-        === occurrence.task.cryptoAccessRevision
-      && requirement.operations.length === 2
-      && requirement.operations[0] === "decrypt"
-      && requirement.operations[1] === "encrypt");
+    && contentRequirements.length === 1
+    && content !== undefined
+    && content.domainId === record.domainId
+    && content.expectedAccessRevision
+      === record.expectedNamespaceAccessRevision
+    && content.expectedPolicyRevision === record.expectedPolicyRevision
+    && content.operations.length === 2
+    && content.operations[0] === "decrypt"
+    && content.operations[1] === "encrypt";
 }
 
 function sameDurablePlan(
@@ -334,8 +347,6 @@ function assertPlan(
     || outputNamespace.operations.length !== 2
     || outputNamespace.operations[0] !== "decrypt"
     || outputNamespace.operations[1] !== "encrypt"
-    || outputNamespace.expectedAccessRevision
-      !== occurrence.task.cryptoAccessRevision
     || outputNamespace.expectedAccessRevision
       !== initial.expectedNamespaceAccessRevision
     || outputNamespace.expectedPolicyRevision !== initial.expectedPolicyRevision

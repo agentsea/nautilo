@@ -1084,10 +1084,12 @@ export {
   assertAuthenticPreparedTaskRuntimeResultObjectV1
     as assertAuthenticPreparedTaskRuntimeResultObject,
   prepareTaskRuntimeResultObjectV1 as prepareTaskRuntimeResultObject,
+  prepareNativeTaskRuntimeResultObjectV1 as prepareNativeTaskRuntimeResultObject,
 } from "./object/task-runtime-result-preparation-v1.ts";
 export type {
   PreparedTaskRuntimeResultObjectV1 as PreparedTaskRuntimeResultObject,
   PrepareTaskRuntimeResultObjectV1Input as PrepareTaskRuntimeResultObjectInput,
+  PrepareNativeTaskRuntimeResultObjectV1Input as PrepareNativeTaskRuntimeResultObjectInput,
   TaskRuntimeResultNamespaceSourceV1 as TaskRuntimeResultNamespaceSource,
   TaskRuntimeResultObjectAuthorityV1 as TaskRuntimeResultObjectAuthority,
 } from "./object/task-runtime-result-preparation-v1.ts";

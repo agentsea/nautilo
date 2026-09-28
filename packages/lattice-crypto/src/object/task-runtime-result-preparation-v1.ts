@@ -27,6 +27,7 @@ import {
 } from "../namespace/bindings.ts";
 import type { HistoricalCommitterResolverV2 } from
   "../namespace/authorization.ts";
+import { withOpenedDomainNamespaceBundleV2 } from "../format/domain-namespace-bundle-v2.ts";
 import { openNamespaceKeyring } from "../namespace/keyrings.ts";
 import type {
   NamespaceKeyringEnvelopeV2,
@@ -36,6 +37,7 @@ import {
   accessRevision,
   authorizationRevision,
   namespaceId,
+  namespaceGeneration,
   objectId,
   unixTimestamp,
 } from "../v2-types/ids.ts";
@@ -226,12 +228,6 @@ export function prepareTaskRuntimeResultObjectV1(
   const head = input.namespace.trustedHead;
   const binding = head.binding;
   const domain = matchingDomain(evidence);
-  const targetObjectId = objectId(evidence.result.objectId);
-  const targetNamespaceId = namespaceId(resultNamespace.namespaceId);
-  const targetAccessRevision = accessRevision(
-    resultNamespace.expectedAccessRevision,
-  );
-  const createdAt = unixTimestamp(input.createdAt);
   const envelopeHash = namespaceKeyringEnvelopeHash(
     input.namespace.aiKeyringEnvelope,
   );
@@ -285,11 +281,6 @@ export function prepareTaskRuntimeResultObjectV1(
     envelopeHash.fill(0);
     throw error;
   }
-  const plaintext = Uint8Array.from(input.plaintext);
-  let payloadBytes: Uint8Array | undefined;
-  let namespaceEnvelopeBytes: Uint8Array | undefined;
-  let payloadHash: Uint8Array | undefined;
-  let namespaceEnvelopeHash: Uint8Array | undefined;
   try {
     const current = keyring.generations.find((entry) =>
       entry.generation === keyring.currentGeneration
@@ -302,6 +293,33 @@ export function prepareTaskRuntimeResultObjectV1(
       || current === undefined
     ) throw new TypeError("Task result current Namespace key is unavailable");
 
+    return sealTaskRuntimeResultWithNamespaceKey(crypto, input, {
+      key: current.key, keyGeneration: current.generation, bindingHash: head.bindingHash,
+    });
+  } finally {
+    envelopeHash.fill(0);
+    for (const generation of keyring.generations) generation.key.fill(0);
+  }
+}
+
+function sealTaskRuntimeResultWithNamespaceKey(
+  crypto: LatticeCrypto,
+  input: Omit<PrepareTaskRuntimeResultObjectV1Input, "namespace">,
+  namespace: Readonly<{ key: Uint8Array; keyGeneration: number; bindingHash: Uint8Array }>,
+): PreparedTaskRuntimeResultObjectV1 {
+  const evidence = input.evidence;
+  const resultNamespace = evidence.result.namespace;
+  const domain = matchingDomain(evidence);
+  const targetObjectId = objectId(evidence.result.objectId);
+  const targetNamespaceId = namespaceId(resultNamespace.namespaceId);
+  const targetAccessRevision = accessRevision(resultNamespace.expectedAccessRevision);
+  const createdAt = unixTimestamp(input.createdAt);
+  const plaintext = Uint8Array.from(input.plaintext);
+  let payloadBytes: Uint8Array | undefined;
+  let namespaceEnvelopeBytes: Uint8Array | undefined;
+  let payloadHash: Uint8Array | undefined;
+  let namespaceEnvelopeHash: Uint8Array | undefined;
+  try {
     const encrypted = encryptObjectPayloadV2(crypto, {
       objectId: targetObjectId,
       keyClass: "ai",
@@ -312,12 +330,12 @@ export function prepareTaskRuntimeResultObjectV1(
       payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
       const namespaceEnvelope = wrapObjectDekForNamespaceV2(
         crypto,
-        current.key,
+        namespace.key,
         {
           objectId: targetObjectId,
           namespaceId: targetNamespaceId,
           keyClass: "ai",
-          keyGeneration: current.generation,
+          keyGeneration: namespaceGeneration(namespace.keyGeneration),
           bindingRevisionAtWrap: targetAccessRevision,
         },
         encrypted.dek,
@@ -368,8 +386,8 @@ export function prepareTaskRuntimeResultObjectV1(
         domainId: resultNamespace.domainId,
         expectedAccessRevision: resultNamespace.expectedAccessRevision,
         expectedPolicyRevision: resultNamespace.expectedPolicyRevision,
-        bindingHash: head.bindingHash,
-        keyGeneration: current.generation,
+        bindingHash: namespace.bindingHash,
+        keyGeneration: namespaceGeneration(namespace.keyGeneration),
         envelopeHash: namespaceEnvelopeHash,
       },
       domain,
@@ -400,13 +418,78 @@ export function prepareTaskRuntimeResultObjectV1(
     return prepared;
   } finally {
     plaintext.fill(0);
-    envelopeHash.fill(0);
     payloadHash?.fill(0);
     namespaceEnvelopeHash?.fill(0);
     payloadBytes?.fill(0);
     namespaceEnvelopeBytes?.fill(0);
-    for (const generation of keyring.generations) generation.key.fill(0);
   }
+}
+
+export type PrepareNativeTaskRuntimeResultObjectV1Input =
+  Omit<PrepareTaskRuntimeResultObjectV1Input, "namespace"> & Readonly<{
+    namespace: Omit<Parameters<typeof withOpenedDomainNamespaceBundleV2>[1], "operation" | "expectedBindingDigest"> & Readonly<{
+      expectedBindingDigest: Uint8Array;
+    }>;
+  }>;
+
+/** Native bundle entrypoint sharing the existing Task-result preparation brand. */
+export async function prepareNativeTaskRuntimeResultObjectV1(
+  crypto: LatticeCrypto,
+  input: PrepareNativeTaskRuntimeResultObjectV1Input,
+): Promise<PreparedTaskRuntimeResultObjectV1> {
+  assertAuthenticTaskRuntimeExecutionEvidenceV1(input.evidence);
+  if (!(input.plaintext instanceof Uint8Array)) throw new TypeError("Task result plaintext must be Uint8Array");
+  const evidence = input.evidence;
+  const target = evidence.result.namespace;
+  const domain = matchingDomain(evidence);
+  const current = input.namespace.current;
+  const requirements = evidence.namespaceRequirements.filter((entry) => entry.namespaceId === target.namespaceId);
+  const requirement = requirements[0];
+  if (evidence.result.taskRunId !== evidence.workId
+    || evidence.policyRevision !== target.expectedPolicyRevision
+    || target.operations.length !== 1 || target.operations[0] !== "encrypt"
+    || requirements.length !== 1 || requirement === undefined
+    || requirement.domainId !== target.domainId
+    || requirement.expectedAccessRevision !== target.expectedAccessRevision
+    || requirement.expectedPolicyRevision !== target.expectedPolicyRevision
+    || !requirement.operations.includes("encrypt")
+    || current.namespaceId !== target.namespaceId
+    || current.namespaceAccessRevision !== target.expectedAccessRevision
+    || current.cryptoDomainId !== target.domainId
+    || current.keyClass !== "ai"
+    || current.domainKeyGeneration !== domain.domainKeyGeneration
+    || current.domainAuthorizationRevision !== domain.authorizationRevision
+    || current.participantCount !== domain.participantCount
+    || !sameBytes(current.participantDigest, domain.participantDigest)
+    || !sameBytes(current.domainHeadDigest, domain.headDigest)
+    || input.runtime.agentId !== evidence.result.signerAgentId
+    || input.signerPublication.agentId !== evidence.result.signerAgentId
+    || input.signerPublication.authorizationRevision !== authorizationRevision(input.agentAuthorizationRevision)
+    || !agentRuntimeSignerPublicationMatchesRuntimeV1(crypto, input.runtime, input.signerPublication)
+    || !verifyHistoricalAgentRuntimeSignerPublicationV1({ crypto, publication: input.signerPublication,
+      resolveHistoricalManagerAuthority: input.resolveHistoricalSignerPublicationManager })) {
+    throw new TypeError("Native Task result preparation authority was substituted");
+  }
+  const plaintext = Uint8Array.from(input.plaintext);
+  try {
+    const opened = await withOpenedDomainNamespaceBundleV2(crypto, {
+      ...input.namespace,
+      operation: (retained) => {
+        assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+        const generation = retained.find((entry) => entry.generation === current.namespaceCurrentGeneration
+          && entry.accessRevision === current.namespaceAccessRevision);
+        if (generation === undefined) throw new TypeError("Native Task result current Namespace generation is unavailable");
+        return sealTaskRuntimeResultWithNamespaceKey(crypto, { ...input, plaintext }, {
+          key: generation.generationKey, keyGeneration: generation.generation,
+          // Native Task authority identifies the authenticated signed bundle binding.
+          bindingHash: input.namespace.expectedBindingDigest,
+        });
+      },
+    });
+    if (opened.status !== "opened") throw new TypeError("Native Task result Namespace bundle is unavailable");
+    assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+    return opened.value;
+  } finally { plaintext.fill(0); }
 }
 
 export function assertAuthenticPreparedTaskRuntimeResultObjectV1(

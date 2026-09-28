@@ -975,3 +975,13 @@ export {
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
 } from "./task/initial-task-runtime-namespace-authority.ts";
+
+export {
+  withNativeProtectedTaskDefinitionV1,
+  type NativeProtectedTaskDefinitionOccurrenceV1,
+} from "./task/native-protected-task-definition-opener.ts";
+
+export {
+  prepareNativeTaskRuntimeRunResult,
+  type PrepareNativeTaskRuntimeRunResultInput,
+} from "./task/native-task-run-result-preparation.ts";

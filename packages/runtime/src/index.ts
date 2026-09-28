@@ -355,6 +355,10 @@ export {
   completeProtectedTaskRunResultWithLiveAuthority,
   type CompleteProtectedTaskRunResultWithLiveAuthorityInput,
 } from "./tasks/protected-task-live-result-completion";
+export type {
+  DualTaskRunResultTerminalPort,
+  ProtectedTaskRunTerminalPort,
+} from "./tasks/protected-task-result-publication";
 export {
   withProtectedTaskCheckpointSaver,
 } from "./tasks/protected-task-checkpoint-saver";

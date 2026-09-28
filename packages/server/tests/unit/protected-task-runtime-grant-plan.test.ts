@@ -12,6 +12,7 @@ import {
 import {
   parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
+import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { ScopeMemoryEnvelopeWithOrigin } from "@nautilo/trust";
 import type {
   ProtectedTaskPredispatchPlan,
@@ -53,8 +54,12 @@ function occurrence(): ProtectedTaskOccurrence {
       contentRepresentation: "protected" as const,
       contentNamespaceId: CONTENT,
       contentRevision: 3,
-      cryptoObjectId: `task-definition:v1:${"a".repeat(64)}`,
-      cryptoAccessRevision: 4,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1({
+        kind: "definition",
+        taskId: TASK,
+        contentRevision: 3,
+      }),
+      cryptoAccessRevision: 0,
       cryptoRequiredNamespaceFingerprint: bytes(8),
     }),
     run: Object.freeze({
@@ -112,7 +117,7 @@ function facts(): readonly ProtectedTaskRuntimeNamespaceAuthorityFact[] {
     Object.freeze({
       namespaceId: CONTENT,
       domainId: DOMAIN_B,
-      expectedAccessRevision: 4,
+      expectedAccessRevision: 3,
       expectedPolicyRevision: 7,
       expectedDomainEpoch: 6,
       expectedAuthorizationRevision: 10,
@@ -184,7 +189,7 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
       ordinal: 0,
       namespaceId: CONTENT,
       operations: ["decrypt", "encrypt"],
-      expectedAccessRevision: 4,
+      expectedAccessRevision: 3,
     }),
     expect.objectContaining({
       ordinal: 1,
@@ -283,6 +288,22 @@ test("fails closed on incomplete authority and substituted current authority", a
       domains: [],
     },
   })).toThrow("request authority is not exact");
+});
+
+test("keeps object access revision independent from Namespace access revision", async () => {
+  const value = occurrence();
+  const plan = await builder()(value);
+  expect(value.task.cryptoAccessRevision).toBe(0);
+  expect(plan.initialRecord.expectedNamespaceAccessRevision).toBe(3);
+
+  const substituted: ProtectedTaskOccurrence = Object.freeze({
+    ...value,
+    task: Object.freeze({ ...value.task, cryptoAccessRevision: 3 }),
+  });
+  // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+  await expect(builder()(substituted)).rejects.toThrow(
+    "definition coordinates are invalid",
+  );
 });
 
 test("includes the exact Scope origin Namespace in the grant inventory", async () => {

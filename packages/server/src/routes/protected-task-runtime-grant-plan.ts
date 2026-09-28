@@ -170,8 +170,7 @@ function canonicalAuthority(input: Readonly<{
   }
   const content = ordered.find((fact) =>
     fact.namespaceId === occurrence.task.contentNamespaceId);
-  if (content === undefined
-    || content.expectedAccessRevision !== occurrence.task.cryptoAccessRevision) {
+  if (content === undefined) {
     throw new TypeError("Protected Task content authority is stale");
   }
   const namespaces = Object.freeze(ordered.map((fact, ordinal) => Object.freeze({
@@ -254,6 +253,14 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
   }
 
   return async occurrence => {
+    if (occurrence.task.cryptoAccessRevision !== 0
+      || occurrence.task.cryptoObjectId !== deriveTaskContentCryptoObjectIdV1({
+        kind: "definition",
+        taskId: occurrence.task.id,
+        contentRevision: occurrence.task.contentRevision,
+      })) {
+      throw new TypeError("Protected Task definition coordinates are invalid");
+    }
     const prepared = await dependencies.predispatch(occurrence);
     if (!sameOccurrence(occurrence, prepared.occurrence)) {
       throw new TypeError("Protected Task predispatch substituted its occurrence");
