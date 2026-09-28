@@ -35,6 +35,8 @@ export interface RailwayPortableMaintenanceBinding {
   readonly expectedSha256?: string | undefined;
   readonly storagePrefix?: string | undefined;
   readonly storageSessionToken?: string | undefined;
+  /** New-image restore proof; omitted when resuming a legacy checkpoint. */
+  readonly personalProviderCustodyEvidence?: "v1" | undefined;
 }
 
 export type RailwayPortableMaintenanceTargetCheckpoint =
@@ -241,6 +243,9 @@ export class RailwayPortableMaintenanceTarget implements PortableTransferTarget 
       ...(input.expectedSha256 === undefined ? {} : { expectedSha256: `${input.expectedSha256}` }),
       storagePrefix: input.storagePrefix === undefined ? "" : `${input.storagePrefix}`,
       storageSessionToken: input.storageSessionToken === undefined ? "" : `${input.storageSessionToken}`,
+      ...(input.personalProviderCustodyEvidence === undefined
+        ? {}
+        : { personalProviderCustodyEvidence: input.personalProviderCustodyEvidence }),
     });
     this.#authority = snapshotAuthority(options.authority);
     this.#executor = options.executor;
@@ -249,7 +254,10 @@ export class RailwayPortableMaintenanceTarget implements PortableTransferTarget 
     this.#persistCheckpoint = options.persistCheckpoint;
     this.#deploymentObservationAttempts = options.deploymentObservationAttempts ?? 3;
     this.#wait = options.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-    this.#command = `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${this.#binding.direction} ${this.#binding.operationId} ${this.#binding.objectId}`;
+    const action = this.#binding.direction === "restore" && this.#binding.personalProviderCustodyEvidence === "v1"
+      ? "restore-custody-v1"
+      : this.#binding.direction;
+    this.#command = `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${action} ${this.#binding.operationId} ${this.#binding.objectId}`;
     if ((this.#binding.direction !== "export" && this.#binding.direction !== "restore")
       || ![this.#binding.projectId, this.#binding.environmentId, this.#binding.serviceId, this.#binding.sourceReleaseId].every((value) => SAFE_PROVIDER_ID.test(value))
       || ![this.#binding.operationId, this.#binding.objectId].every((value) => SAFE_COMMAND_ID.test(value))

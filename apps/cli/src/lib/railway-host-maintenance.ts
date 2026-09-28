@@ -6,6 +6,7 @@ import { createMaintenanceReceipt } from "@nautilo/hosting";
 import {
   destroyRailwayDeployment,
   RailwayGraphqlReconcileExecutor,
+  RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX,
   RAILWAY_POSTGRES_PORT,
   type RailwayDestroyExecutor,
   type RailwayDestroyPollPolicy,
@@ -47,6 +48,7 @@ export interface RailwayHostMaintenanceInput {
   readonly wait?: ((milliseconds: number) => Promise<void>) | undefined;
   readonly interrupted?: (() => boolean) | undefined;
   readonly signal?: AbortSignal | undefined;
+  readonly provisionPersonalProviderCustody?: (() => Promise<string | undefined>) | undefined;
 }
 
 export type RailwayHostMaintenanceResult =
@@ -219,6 +221,7 @@ function candidateBinding(
   environmentId: string,
   operationId: string,
 ): RailwayWholeManifestUpgradeBinding {
+  const custodyEvidence = (topology.migrationSchemaVersion ?? 1) >= 2;
   return {
     releaseId: topology.releaseId, projectId, environmentId,
     services: topology.finalServices.map((service) => {
@@ -227,7 +230,12 @@ function candidateBinding(
       if (oldImage === undefined) throw new Error("Railway maintenance input is invalid");
       return { name: service.name, serviceId, oldImage, newImage: service.image, kind: service.kind };
     }),
-    migration: { migrationId: `migration-${operationId}`, executionId: `execution-${operationId}` },
+    migration: {
+      migrationId: custodyEvidence
+        ? `${RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX}${operationId}`
+        : `migration-${operationId}`,
+      executionId: `execution-${operationId}`,
+    },
   };
 }
 
@@ -338,7 +346,8 @@ export async function runRailwayHostMaintenance(input: RailwayHostMaintenanceInp
       sourceAppDatabaseUrl: urls.app, sourceLogtoDatabaseUrl: urls.logto, targetAppDatabaseUrl: urls.app, targetLogtoDatabaseUrl: urls.logto },
     candidate, targetLaunchId: `restore-${operationId}`, providers: input.source.providers, topology,
     projectionInputs: input.projectionInputs, target, now: input.now, fetch: input.fetch, wait: input.wait,
-    interrupted: input.interrupted, signal: input.signal });
+    interrupted: input.interrupted, signal: input.signal,
+    provisionPersonalProviderCustody: input.provisionPersonalProviderCustody });
   const result = await runRailwayUpgradeFromState({ stateRoot: input.stateRoot, statePath: path, operationId,
     authorityGenerationId: input.authorityGenerationId, adapters, now: input.now });
   return result.outcome === "complete" ? { outcome: "complete", active: (await readRailwayMaintenanceState(input.stateRoot, path))!.activeLaunch!.kind }

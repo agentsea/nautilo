@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import * as nodeFs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 import {
   ComposeDriver,
@@ -725,7 +726,10 @@ describe("D420 (3.1.2) releaseApply remote real-bundle rollback restores snapsho
 
   function writeBundle(bundlePath: string): void {
     mkdirSync(bundlePath, { recursive: true });
-    writeFileSync(join(bundlePath, "nautilo.sql.gz"), "");
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      gzipSync("-- PostgreSQL database dump\n"),
+    );
     writeFileSync(join(bundlePath, "logto_nautilo.sql.gz"), "");
     writeFileSync(join(bundlePath, "artifacts.tgz"), "");
     writeFileSync(join(bundlePath, "instance.env"), "LOGTO_ENDPOINT=http://localhost:3301\n");

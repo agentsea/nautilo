@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parsePersonalProviderCustody } from "@nautilo/operator-secrets";
 
 import {
   KeyringRailwayLaunchSecretStore,
@@ -47,14 +48,17 @@ describe("Railway launch secret custody", () => {
   test("stores exact template-generated values once and recovers a committed response loss", async () => {
     const entry = new MemoryEntry();
     const store = new KeyringRailwayLaunchSecretStore(entry);
-    const secrets = new Map(RAILWAY_GENERATED_SECRET_SLOTS.map((slot) => [slot, `template-${slot}`.padEnd(48, "x")]));
+    const templateSlots = RAILWAY_GENERATED_SECRET_SLOTS.filter((slot) => slot !== "nautilo-personal-provider-custody");
+    const secrets = new Map(templateSlots.map((slot) => [slot, `template-${slot}`.padEnd(48, "x")]));
     entry.failAfterNextWrite = true;
     expect(store.storeGeneratedSecrets({ launchId: "launch-1", releaseId: "release-1", secrets })).rejects.toThrow();
     const writes = entry.writes;
     await store.storeGeneratedSecrets({ launchId: "launch-1", releaseId: "release-1", secrets });
     expect(entry.writes).toBe(writes);
-    expect(await store.load({ launchId: "launch-1", releaseId: "release-1" })).toEqual(secrets);
-    const changed = new Map(secrets); changed.set(RAILWAY_GENERATED_SECRET_SLOTS[0], "different".padEnd(48, "x"));
+    const loaded = await store.load({ launchId: "launch-1", releaseId: "release-1" });
+    expect([...secrets].every(([slot, value]) => loaded?.get(slot) === value)).toBe(true);
+    expect(() => parsePersonalProviderCustody(loaded?.get("nautilo-personal-provider-custody"))).not.toThrow();
+    const changed = new Map(secrets); changed.set(templateSlots[0]!, "different".padEnd(48, "x"));
     expect(store.storeGeneratedSecrets({ launchId: "launch-1", releaseId: "release-1", secrets: changed })).rejects.toThrow();
     expect(Object.hasOwn(JSON.parse(entry.value!) as Record<string, unknown>, "bootstrap")).toBe(false);
   });
@@ -69,6 +73,19 @@ describe("Railway launch secret custody", () => {
     expect([...first.keys()]).toEqual([...RAILWAY_GENERATED_SECRET_SLOTS]);
     expect([...resumed]).toEqual([...first]);
     expect([...first.values()].every((value) => value.length >= 32)).toBe(true);
+  });
+
+  test("creates distinct personal-provider custody for independent launches", async () => {
+    const firstStore = new KeyringRailwayLaunchSecretStore(new MemoryEntry());
+    const secondStore = new KeyringRailwayLaunchSecretStore(new MemoryEntry());
+    const first = parsePersonalProviderCustody((await firstStore.getOrCreate({
+      launchId: "launch-1", releaseId: "release-1",
+    })).get("nautilo-personal-provider-custody"));
+    const second = parsePersonalProviderCustody((await secondStore.getOrCreate({
+      launchId: "launch-2", releaseId: "release-1",
+    })).get("nautilo-personal-provider-custody"));
+    expect(second.keyId).not.toBe(first.keyId);
+    expect(second.keyHex).not.toBe(first.keyHex);
   });
 
   test("refuses cross-launch reuse, malformed envelopes, and clears after teardown", async () => {
@@ -91,6 +108,7 @@ describe("Railway launch secret custody", () => {
     const entry = new MemoryEntry(); const store = new KeyringRailwayLaunchSecretStore(entry);
     await store.getOrCreate({ launchId: binding.launchId, releaseId: binding.releaseId });
     const v2 = JSON.parse(entry.value!) as Record<string, unknown>; v2["formatVersion"] = 1; delete v2["bootstrap"];
+    delete (v2["secrets"] as Record<string, unknown>)["nautilo-personal-provider-custody"];
     entry.value = JSON.stringify(v2); const before = entry.writes;
     expect(await store.loadBootstrapOutputs(binding)).toBeUndefined();
     await store.storeBootstrapOutputs(binding, output);
@@ -98,6 +116,86 @@ describe("Railway launch secret custody", () => {
     expect(await store.loadBootstrapOutputs(binding)).toEqual(output);
     await store.storeBootstrapOutputs(binding, output);
     expect(entry.writes).toBe(before + 1);
+  });
+
+  test("reads exact legacy V1/V2 envelopes and upgrades only through explicit live authority", async () => {
+    const entry = new MemoryEntry();
+    const legacySecrets = Object.fromEntries(RAILWAY_GENERATED_SECRET_SLOTS
+      .filter((slot) => slot !== "nautilo-personal-provider-custody")
+      .map((slot) => [slot, `legacy-${slot}`.padEnd(48, "x")]));
+    entry.value = JSON.stringify({ formatVersion: 2, launchId: "launch-1", releaseId: "release-1", secrets: legacySecrets });
+    const store = new KeyringRailwayLaunchSecretStore(entry);
+
+    const before = await store.load({ launchId: "launch-1", releaseId: "release-1" });
+    expect(before?.has("nautilo-personal-provider-custody")).toBe(false);
+    const canonical = JSON.stringify({
+      formatVersion: 1,
+      keyId: "00000000-0000-4000-8000-000000000001",
+      keyHex: "ab".repeat(32),
+    });
+    const upgraded = await store.upgradePersonalProviderCustody({
+      launchId: "launch-1",
+      releaseId: "release-1",
+      authority: { inspect: async () => ({ outcome: "canonical-custody", serializedCustody: canonical }) },
+    });
+    expect(upgraded.get("nautilo-personal-provider-custody")).toBe(canonical);
+    expect(entry.writes).toBe(1);
+    await store.upgradePersonalProviderCustody({
+      launchId: "launch-1",
+      releaseId: "release-1",
+      authority: { inspect: async () => { throw new Error("must not inspect after commit"); } },
+    });
+    expect(entry.writes).toBe(1);
+  });
+
+  test("fails closed when legacy upgrade evidence is blocked or canonical custody is malformed", async () => {
+    const legacy = () => JSON.stringify({
+      formatVersion: 1,
+      launchId: "launch-1",
+      releaseId: "release-1",
+      secrets: Object.fromEntries(RAILWAY_GENERATED_SECRET_SLOTS
+        .filter((slot) => slot !== "nautilo-personal-provider-custody")
+        .map((slot) => [slot, `legacy-${slot}`.padEnd(48, "x")])),
+    });
+    for (const inspection of [
+      { outcome: "blocked" as const },
+      { outcome: "canonical-custody" as const, serializedCustody: "malformed" },
+    ]) {
+      const entry = new MemoryEntry(); entry.value = legacy();
+      const store = new KeyringRailwayLaunchSecretStore(entry);
+      expect(store.upgradePersonalProviderCustody({
+        launchId: "launch-1", releaseId: "release-1",
+        authority: { inspect: async () => inspection },
+      })).rejects.toThrow("Railway launch secret custody failed");
+      expect(entry.writes).toBe(0);
+      expect(entry.value).toBe(legacy());
+    }
+  });
+
+  test("commits one generated custody after proven empty authority and recovers a lost response", async () => {
+    const entry = new MemoryEntry();
+    entry.value = JSON.stringify({
+      formatVersion: 1, launchId: "launch-1", releaseId: "release-1",
+      secrets: Object.fromEntries(RAILWAY_GENERATED_SECRET_SLOTS
+        .filter((slot) => slot !== "nautilo-personal-provider-custody")
+        .map((slot) => [slot, `legacy-${slot}`.padEnd(48, "x")])),
+    });
+    const store = new KeyringRailwayLaunchSecretStore(entry);
+    entry.failAfterNextWrite = true;
+    expect(store.upgradePersonalProviderCustody({
+      launchId: "launch-1", releaseId: "release-1",
+      authority: { inspect: async () => ({ outcome: "proven-no-existing-authority" }) },
+    })).rejects.toThrow("response lost");
+    const committed = JSON.parse(entry.value) as { secrets: Record<string, string> };
+    const custody = committed.secrets["nautilo-personal-provider-custody"];
+    expect(() => parsePersonalProviderCustody(custody)).not.toThrow();
+    const writes = entry.writes;
+    const resumed = await store.upgradePersonalProviderCustody({
+      launchId: "launch-1", releaseId: "release-1",
+      authority: { inspect: async () => { throw new Error("must not re-inspect"); } },
+    });
+    expect(resumed.get("nautilo-personal-provider-custody")).toBe(custody);
+    expect(entry.writes).toBe(writes);
   });
 
   test("rejects cross-target replay, output mismatch, extra keys, and failed replacement confirmation", async () => {
@@ -155,6 +253,8 @@ describe("Railway launch secret custody", () => {
     expect(targetEntry.writes).toBe(writes);
     expect(await target.loadBootstrapOutputs(targetBinding)).toEqual(output);
     expect(await source.loadBootstrapOutputs(binding)).toEqual(output);
+    expect(await target.load({ launchId: targetBinding.launchId, releaseId: targetBinding.releaseId }))
+      .toEqual(await source.load({ launchId: binding.launchId, releaseId: binding.releaseId }));
 
     const mismatchedEntry = new MemoryEntry(); const mismatched = new KeyringRailwayLaunchSecretStore(mismatchedEntry);
     await mismatched.getOrCreate({ launchId: targetBinding.launchId, releaseId: targetBinding.releaseId });

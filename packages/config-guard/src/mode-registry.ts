@@ -44,6 +44,8 @@ export interface ModeDefinition {
    * redaction; this flag exists solely for UI/CLI surfaces.
    */
   redact?: boolean;
+  /** Custody material must expose no prefix, suffix, or derived fingerprint. */
+  presenceOnly?: boolean;
   /**
    * When true, surfaces in `getModeReport()` for UI deprecation affordances.
    */
@@ -238,6 +240,30 @@ export const MODE_REGISTRY: ModeDefinition[] = [
         ? null
         : "must be a 32-byte hexadecimal value",
     redact: true,
+  },
+  {
+    id: "NAUTILO_PERSONAL_PROVIDER_CUSTODY",
+    envVar: "NAUTILO_PERSONAL_PROVIDER_CUSTODY",
+    description: "Instance custody for encrypted personal provider credentials.",
+    validator: (value) => {
+      try {
+        const parsed = JSON.parse(value) as Record<string, unknown>;
+        const keys = Object.keys(parsed).sort().join(",");
+        if ((keys === "formatVersion,keyHex,keyId" || keys === "formatVersion,keyHex,keyId,resetFromKeyId")
+          && parsed["formatVersion"] === 1
+          && typeof parsed["keyId"] === "string"
+          && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(parsed["keyId"])
+          && typeof parsed["keyHex"] === "string" && /^[a-f0-9]{64}$/i.test(parsed["keyHex"])
+          && (keys === "formatVersion,keyHex,keyId" || (
+            typeof parsed["resetFromKeyId"] === "string"
+            && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(parsed["resetFromKeyId"])
+            && parsed["resetFromKeyId"].toLowerCase() !== parsed["keyId"].toLowerCase()
+          ))) return null;
+      } catch { /* Never include the submitted value or parser error. */ }
+      return "invalid personal provider custody envelope";
+    },
+    redact: true,
+    presenceOnly: true,
   },
   {
     id: "NAUTILO_PASSWORD_RECOVERY_DRIVER",

@@ -8,6 +8,11 @@ export { markReady, resetReadyState, readyState, type ReadyState } from "./route
 // (rather than letting callers reach into ./lib/...) to keep cross-package
 // imports going through the workspace package boundary.
 export { getServerDirectDb } from "./lib/server-direct-db";
+export { bootstrapPersonalProviderCustody } from "./lib/personal-provider-custody";
+export {
+  assertPersonalProviderCustodyMaintenanceEvidence,
+  ensureRestoredPersonalProviderCustodyMaintenanceEvidence,
+} from "./lib/personal-provider-custody-maintenance";
 export {
   createExactVeniceMediaQuotePort,
   createMediaGenerationDbRepository,

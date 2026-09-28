@@ -11,7 +11,7 @@ import { FULL_LOGTO_PROCESS_ENV } from "../fixtures/full-logto-env";
 
 describe("MODE_REGISTRY", () => {
   test("contains 13 LOGTO_* entries, gateway, web research, OpenRouter, M071 instance env, protected recovery/push/pairing secrets, M116 DB passwords, and CloudConvert knobs (D120 A1.P1 retired the default-agent/default-owner pointers)", () => {
-    expect(MODE_REGISTRY.length).toBe(48);
+    expect(MODE_REGISTRY.length).toBe(49);
     expect(MODE_REGISTRY[0]?.envVar).toBe("LOGTO_ENDPOINT");
     const logtoCount = MODE_REGISTRY.filter((m) =>
       m.envVar.startsWith("LOGTO_"),
@@ -58,7 +58,7 @@ describe("MODE_REGISTRY", () => {
 
   test("M116 password keys, recovery/pairing secrets, and the push-token key are marked redact", () => {
     const redacted = MODE_REGISTRY.filter((m) => m.redact);
-    expect(redacted.length).toBe(10);
+    expect(redacted.length).toBe(11);
     expect(redacted.map((m) => m.envVar).sort()).toEqual(
       [
         "APP_DB_PASSWORD",
@@ -68,6 +68,7 @@ describe("MODE_REGISTRY", () => {
         "NAUTILO_AGENT_DB_PASSWORD",
         "NAUTILO_DB_PASSWORD",
         "NAUTILO_LOGTO_HTTP_EMAIL_WEBHOOK_SECRET",
+        "NAUTILO_PERSONAL_PROVIDER_CUSTODY",
         "NAUTILO_PUSH_TOKEN_ENCRYPTION_KEY",
         "NAUTILO_REMOTE_PAIRING_PEPPER",
         "POSTGRES_PASSWORD",

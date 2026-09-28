@@ -8,6 +8,7 @@
     "@nautilo/config": "workspace:*",
     "@nautilo/db": "workspace:*",
     "@nautilo/logger": "workspace:*",
+    "@nautilo/operator-secrets": "workspace:*",
     "@nautilo/server": "workspace:*",
     "@nautilo/catalog": "workspace:*",
     "@nautilo/runtime": "workspace:*",

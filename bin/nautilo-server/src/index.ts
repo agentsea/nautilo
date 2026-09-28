@@ -16,6 +16,10 @@ import {
   effectiveServerScheme,
 } from "@nautilo/config";
 import { resolveDotenvPath, subscribeEnvReload } from "@nautilo/config-guard";
+import {
+  PERSONAL_PROVIDER_CUSTODY_ENV,
+  captureInjectedPersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 import { setLogOutput, setLogLevel, log, debug, error } from "@nautilo/logger";
 
 // Apply --instance before resolving instance.env, otherwise a named launch
@@ -25,6 +29,9 @@ applyInstanceArgFromArgv(process.argv, process.env);
 // instance. Keep it authoritative over a restored source instance.env while
 // still loading all missing configuration keys from that file.
 const dotenvPath = resolveDotenvPath();
+const injectedPersonalProviderCustody = process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
+captureInjectedPersonalProviderCustody(injectedPersonalProviderCustody);
+delete process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
 loadDotenv({
   path: dotenvPath,
   // An explicit cloud file on the persistent Nautilo volume is the
@@ -32,6 +39,9 @@ loadDotenv({
   // after an add/change and across container replacement.
   override: isCloudMode() || !process.env["DB_DIRECT_CONNECTION"]?.trim(),
 });
+// Dotenv may load the source key, but only trusted custody code may read it
+// from the canonical file. No later child process inherits this master key.
+delete process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
 log(`[boot] hosting mode: ${isCloudMode() ? "cloud" : "local"}`);
 
 const wantDaemon = process.argv.includes("--daemon");
@@ -39,7 +49,13 @@ if (wantDaemon && !process.env["NAUTILO_DAEMON_CHILD"]) {
   const child = spawn(process.execPath, process.argv.slice(1).filter((a) => a !== "--daemon"), {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, NAUTILO_DAEMON_CHILD: "1" },
+    env: {
+      ...process.env,
+      // The daemon child is the trusted server. It captures this value before
+      // loading configuration and strips it before starting other children.
+      ...(injectedPersonalProviderCustody === undefined ? {} : { [PERSONAL_PROVIDER_CUSTODY_ENV]: injectedPersonalProviderCustody }),
+      NAUTILO_DAEMON_CHILD: "1",
+    },
   });
   child.unref();
   console.log(`[daemon] started, pid=${child.pid}`);
@@ -136,6 +152,7 @@ import {
 } from "@nautilo/db";
 import {
   createApp,
+  bootstrapPersonalProviderCustody,
   findAvailablePort,
   ensureCerts,
   startMdns,
@@ -448,6 +465,11 @@ async function start() {
   if (!TEST_MODE_ONLY) {
     await ensureDatabase((msg: string) => debug(`[db] ${msg}`));
     markReady("db");
+    try {
+      await bootstrapPersonalProviderCustody();
+    } catch {
+      warn("[server] Personal provider custody unavailable; inspect instance custody before enabling personal keys.");
+    }
 
     // D120 A1.P1 — DB-as-source-of-truth for ownership. Pre-D120 the
     // server reconciled NAUTILO_OWNER_ID from a config.env round-trip

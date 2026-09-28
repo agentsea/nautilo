@@ -30,6 +30,7 @@ const GENERATED_SECRET_SLOTS = new Set<RailwayGeneratedSecretSlotName>([
   "logto-bootstrap-handoff-token",
   "nautilo-bootstrap-token",
   "nautilo-logto-email-webhook-secret",
+  "nautilo-personal-provider-custody",
 ]);
 
 const GENERATED_PUBLIC_DOMAINS = new Set<RailwayGeneratedDomainName>([
@@ -157,6 +158,12 @@ function resolvePart(
     case "generated-secret-slot": {
       if (typeof value.slot !== "string" || !hasGeneratedSecretSlot(value.slot)) return blocker("railway.variable-projection.unknown-generated-secret-slot");
       const resolved = inputs.generatedSecrets.get(value.slot);
+      // Legacy Railway custody envelopes predate this optional feature. Keep
+      // ordinary server-funded operation deployable until explicit migration
+      // authority proves whether custody may be recovered or created.
+      if (resolved === undefined && value.slot === "nautilo-personal-provider-custody") {
+        return OMIT_OPTIONAL_VARIABLE;
+      }
       return typeof resolved === "string" ? resolved : blocker("railway.variable-projection.missing-generated-secret");
     }
     case "external-provider-secret-slot": {

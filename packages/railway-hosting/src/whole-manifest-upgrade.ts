@@ -2,6 +2,7 @@ import type { RailwayDeployment, RailwayServiceInstance } from "./operations";
 import type { RailwayFinalServiceName } from "./topology";
 
 export const RAILWAY_WHOLE_MANIFEST_UPGRADE_SCHEMA_VERSION = 1 as const;
+export const RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX = "custody-v1-migration-" as const;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_MIGRATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -492,7 +493,10 @@ export class RailwayWholeManifestUpgrade {
   }
 
   #migrationCommand(): string {
-    return `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts migrate ${this.#binding!.migration.migrationId} ${this.#binding!.migration.executionId}`;
+    const action = this.#binding!.migration.migrationId.startsWith(RAILWAY_PERSONAL_PROVIDER_CUSTODY_MIGRATION_PREFIX)
+      ? "migrate-custody-v1"
+      : "migrate";
+    return `bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts ${action} ${this.#binding!.migration.migrationId} ${this.#binding!.migration.executionId}`;
   }
 
   async run(): Promise<RailwayWholeManifestUpgradeResult> {

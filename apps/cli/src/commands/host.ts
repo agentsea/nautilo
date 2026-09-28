@@ -40,6 +40,7 @@ import {
   type RailwayTemplateAdoptionDiscovery,
   type RailwayTemplateAdoptionObservation,
   type RailwayOAuthFailure,
+  type RailwayGeneratedSecretSlotName,
   type RailwayVariableProjectionInputs,
 } from "@nautilo/railway-hosting";
 import {
@@ -61,6 +62,12 @@ import {
   RAILWAY_LAUNCH_SECRET_KEYRING_SERVICE,
   type RailwayBootstrapOutputBinding,
 } from "../lib/railway-launch-secret-store";
+import {
+  inspectRailwayPersonalProviderCredentialRecords,
+  RailwayPersonalProviderCustodyAuthority,
+  type RailwayPersonalProviderCredentialRecordEvidence,
+} from "../lib/railway-personal-provider-custody";
+import { createAuthenticatedAdminClient } from "../lib/authenticated-admin-client";
 import { discoverRailwayLaunchStates, RailwayLaunchStateStore } from "../lib/railway-launch-state-store";
 import {
   authorizeRailwayRestoreTargetDiscard,
@@ -193,6 +200,10 @@ export interface HostPlanDependencies {
   readonly createRailwayOwnerClaimStore?: (launchId: string) => Promise<KeyringRailwayOwnerClaimStore>;
   /** Test seam; production uses the per-launch generated-secret Keychain item. */
   readonly createRailwayLaunchSecretStore?: (launchId: string) => Promise<KeyringRailwayLaunchSecretStore>;
+  /** Authenticated read-only evidence used only when a legacy launch has no live custody variable. */
+  readonly inspectRailwayPersonalProviderCredentialRecords?: (
+    state: RailwayDeploymentDriverState,
+  ) => Promise<RailwayPersonalProviderCredentialRecordEvidence>;
   readonly createRailwayOwnerClaimBrowserHandoff?: (input: {
     readonly targetUrl: string;
     readonly claim: string;
@@ -1090,6 +1101,64 @@ function railwayBootstrapOutputBinding(state: RailwayDeploymentDriverState): Rai
     throw new Error("Railway bootstrap output custody failed");
   }
   return { launchId: state.launchId, releaseId: state.releaseId, projectId, environmentId, serviceId, domainId };
+}
+
+export async function upgradeRailwayPersonalProviderCustodyIfAuthorized(input: {
+  readonly state: RailwayDeploymentDriverState;
+  readonly binding: { readonly launchId: string; readonly releaseId: string };
+  readonly generatedSecrets: ReadonlyMap<RailwayGeneratedSecretSlotName, string>;
+  readonly store: KeyringRailwayLaunchSecretStore;
+  readonly transport: RailwayPlanTransport;
+  readonly dependencies: HostPlanDependencies;
+}): Promise<ReadonlyMap<RailwayGeneratedSecretSlotName, string>> {
+  if (input.generatedSecrets.has("nautilo-personal-provider-custody")) return input.generatedSecrets;
+  const receipt = input.state.reconcile.receipt;
+  const projectId = receipt.resources.find(({ kind }) => kind === "railway.project")?.id;
+  const environmentId = receipt.resources.find(({ kind }) => kind === "railway.environment")?.id;
+  const serviceId = receipt.resources.find((resource) => (
+    resource.kind === "railway.service" && resource.name === "nautilo-server"
+  ))?.id;
+  if (projectId === undefined || environmentId === undefined || serviceId === undefined) return input.generatedSecrets;
+  const records = input.dependencies.inspectRailwayPersonalProviderCredentialRecords === undefined
+    ? {
+        inspect: async (): Promise<RailwayPersonalProviderCredentialRecordEvidence> => {
+          const origin = await resolveRailwayNautiloTargetUrl({
+            state: input.state,
+            resources: new RailwayGraphqlReconcileExecutor({ transport: input.transport }),
+          });
+          if (origin === undefined) return "unavailable";
+          try {
+            const client = await createAuthenticatedAdminClient({ serverFlag: origin });
+            const bearer = client.api.getToken();
+            if (bearer === null || client.transport.baseUrl.replace(/\/$/, "") !== origin.replace(/\/$/, "")) {
+              return "unavailable";
+            }
+            return inspectRailwayPersonalProviderCredentialRecords({
+              origin,
+              bearer,
+              fetch: input.dependencies.fetch ?? fetch,
+            });
+          } catch {
+            return "unavailable";
+          }
+        },
+      }
+    : {
+        inspect: () => input.dependencies.inspectRailwayPersonalProviderCredentialRecords!(input.state),
+      };
+  const authority = new RailwayPersonalProviderCustodyAuthority({
+    transport: input.transport,
+    projectId,
+    environmentId,
+    serviceId,
+    records,
+  });
+  const inspection = await authority.inspect(input.binding);
+  if (inspection.outcome === "blocked") return input.generatedSecrets;
+  return input.store.upgradePersonalProviderCustody({
+    ...input.binding,
+    authority: { inspect: () => Promise.resolve(inspection) },
+  });
 }
 
 async function resolveRailwayNautiloTargetUrl(input: {
@@ -1992,9 +2061,25 @@ async function executeRailwayHostResume(
   let generatedSecrets; let launchSecrets: KeyringRailwayLaunchSecretStore;
   try {
     launchSecrets = await railwayLaunchSecretStore(dependencies, state.launchId);
-    generatedSecrets = await launchSecrets.getOrCreate({
+    const binding = {
       launchId: state.launchId,
       releaseId: state.releaseId,
+    };
+    generatedSecrets = await launchSecrets.load(binding);
+    if (generatedSecrets === undefined) {
+      const beforeAnyProviderEffect = state.reconcile.receipt.resources.length === 0
+        && state.reconcile.receipt.stage === "authorized"
+        && state.workflow === undefined;
+      if (!beforeAnyProviderEffect) throw new Error("missing generated custody");
+      generatedSecrets = await launchSecrets.getOrCreate(binding);
+    }
+    generatedSecrets = await upgradeRailwayPersonalProviderCustodyIfAuthorized({
+      state,
+      binding,
+      generatedSecrets,
+      store: launchSecrets,
+      transport: authorization.transport,
+      dependencies,
     });
   } catch {
     writeRailwayRecoverableFailure({
@@ -2334,7 +2419,8 @@ async function executeRailwayMaintenanceCommand(
   }
   const source = selected[0]!.state;
   let launchSecrets: KeyringRailwayLaunchSecretStore | undefined;
-  let generatedSecrets;
+  let generatedSecrets: ReadonlyMap<RailwayGeneratedSecretSlotName, string> | undefined;
+  let generatedSecretBinding = { launchId: source.launchId, releaseId: source.releaseId };
   let bootstrapOutput;
   const custodyProjection = railwayMaintenanceCustodyProjection(selectedMaintenance);
   try {
@@ -2344,6 +2430,7 @@ async function executeRailwayMaintenanceCommand(
       if (generatedSecrets !== undefined) bootstrapOutput = await launchSecrets.loadBootstrapOutputs(railwayBootstrapOutputBinding(source));
     } catch {
       if (custodyProjection?.launchId !== source.launchId) throw new Error("missing generated custody");
+      generatedSecretBinding = { launchId: source.launchId, releaseId: custodyProjection.releaseId };
       generatedSecrets = await launchSecrets.load({ launchId: source.launchId, releaseId: custodyProjection.releaseId });
       if (generatedSecrets !== undefined) bootstrapOutput = await launchSecrets.loadBootstrapOutputs(railwayBootstrapOutputBinding(custodyProjection));
     }
@@ -2390,6 +2477,15 @@ async function executeRailwayMaintenanceCommand(
     if (authorization.outcome !== "authorized" || authorization.authorization.mutationScope !== "qualified") {
       dependencies.writeStderr("Railway authorization must be restored before maintenance.\n"); process.exitCode = 2; return true;
     }
+    generatedSecrets = await upgradeRailwayPersonalProviderCustodyIfAuthorized({
+      state: source,
+      binding: generatedSecretBinding,
+      generatedSecrets,
+      store: launchSecrets,
+      transport: authorization.transport,
+      dependencies,
+    });
+    const maintenanceGeneratedSecrets = generatedSecrets;
     const interruption = dependencies.createHostInterruptController?.() ?? createScopedHostInterruptController(process);
     try {
       if (interruption.interrupted()) {
@@ -2400,10 +2496,17 @@ async function executeRailwayMaintenanceCommand(
       const advanced = await advanceRailwayMaintenanceUntilBlocked({
         initialState: observedState,
         run: () => runRailwayHostMaintenance({ stateRoot: maintenanceRoot, source, targetTopology,
-          projectionInputs: { generatedSecrets, generatedPublicDomains: new Map(), bootstrapOutputs, externalProviderSecrets },
+          projectionInputs: { generatedSecrets: maintenanceGeneratedSecrets, generatedPublicDomains: new Map(), bootstrapOutputs, externalProviderSecrets },
           recoveryConfig: recovery.config, authorityGenerationId: recovery.authorityGenerationId, transport: authorization.transport,
           backupNames: { "application-postgres": `${operationId} application database`, "logto-postgres": `${operationId} identity database`,
             "server-volume": `${operationId} server data` }, confirmed: true, operationId, now: () => new Date().toISOString(), fetch: dependencies.fetch,
+          provisionPersonalProviderCustody: async () => {
+            generatedSecrets = await launchSecrets.upgradePersonalProviderCustody({
+              ...generatedSecretBinding,
+              authority: { inspect: () => Promise.resolve({ outcome: "proven-no-existing-authority" }) },
+            });
+            return generatedSecrets.get("nautilo-personal-provider-custody");
+          },
           wait: async (milliseconds) => {
             if (interruption.interrupted()) throw new Error("Railway maintenance interrupted");
             await (dependencies.hostProgressScheduler ?? defaultHostProgressScheduler).sleep(milliseconds);

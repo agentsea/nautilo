@@ -46,6 +46,7 @@ import { serverStop } from "./commands/server-stop";
 import { serverStatus } from "./commands/server-status";
 import { serverRestart } from "./commands/server-restart";
 import { cloneDevInstance } from "./commands/clone";
+import { resetPersonalProviderCustody } from "./commands/reset-personal-provider-custody";
 import { compactCheckpointsCmd } from "./commands/compact-checkpoints";
 import { applyInstanceArgFromArgv, stripInstancePairFromArgv } from "@nautilo/config";
 
@@ -99,6 +100,8 @@ const VALUE_FLAGS = new Set([
   "--from",
   "--to",
   "--run-id",
+  "--lost-key-id",
+  "--confirm-server",
 ]);
 
 const USAGE = `
@@ -120,6 +123,9 @@ Commands:
                                            --i-know-what-i-am-doing
   restore <name> [flags]            Restore a named snapshot
                                     flags: --no-autosave
+  reset-personal-provider-custody  Explicit disaster reset; retain unreadable user records
+                                    flags: --instance <id> --lost-key-id <uuid>
+                                           --confirm-server <uuid> --confirm-reset
   preflight <name>                  Dry-run a restore; show what would / would not
                                     restore cleanly against the current schema
   inspect <name>                    Show per-table row counts + columns in a snapshot
@@ -480,6 +486,14 @@ async function main() {
         requireLogto: flags.requireLogto,
       });
       break;
+    case "reset-personal-provider-custody": {
+      const code = await resetPersonalProviderCustody({
+        lostKeyId: flagValue(args, "--lost-key-id"), confirmServer: flagValue(args, "--confirm-server"),
+        confirmReset: hasFlag(args, "--confirm-reset"),
+      });
+      process.exit(code);
+      break;
+    }
     case "clone": {
       if (flags.from === undefined || flags.to === undefined) {
         console.error("clone: --from and --to are both required");

@@ -120,11 +120,32 @@ describe("RailwayPortableMaintenanceTarget", () => {
     const fresh = fixture("restore", freshExecutor);
     await fresh.target.startRestore({ operationId: "operation-1", objectId: "object-1", expectedSha256: sha, authority });
     expect(freshExecutor.calls.some(({ name }) => name === "connect")).toBe(true);
+    expect(fresh.checkpoint()?.command).toBe(
+      "bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts restore operation-1 object-1",
+    );
     expect((freshExecutor.calls.find(({ name }) => name === "variables")!.input as { variables: Record<string, string> }).variables["NAUTILO_RECOVERY_EXPECTED_SHA256"]).toBe(sha);
     const existing = fixture();
     await existing.target.startExport({ operationId: "operation-1", objectId: "object-1", authority });
     expect(existing.executor.calls.some(({ name }) => name === "deploy")).toBe(true);
     expect(existing.executor.calls.some(({ name }) => name === "connect")).toBe(false);
+  });
+
+  test("binds restored custody evidence to an explicit new-image command", async () => {
+    const executor = new FixtureExecutor();
+    let checkpoint: RailwayPortableMaintenanceTargetCheckpoint | undefined;
+    const target = new RailwayPortableMaintenanceTarget({
+      binding: { ...binding("restore"), personalProviderCustodyEvidence: "v1" },
+      authority,
+      executor,
+      descriptorProbe: { observe: async () => ({ state: "complete", descriptor }) },
+      deploymentObservationAttempts: 1,
+      loadCheckpoint: async () => checkpoint,
+      persistCheckpoint: async (value) => { checkpoint = structuredClone(value); },
+    });
+    await target.startRestore({ operationId: "operation-1", objectId: "object-1", expectedSha256: sha, authority });
+    expect(checkpoint?.command).toBe(
+      "bun /srv/repo/bin/nautilo-server/src/maintenance-job.ts restore-custody-v1 operation-1 object-1",
+    );
   });
 
   test("recovers exactly one raw deployment after response loss", async () => {
