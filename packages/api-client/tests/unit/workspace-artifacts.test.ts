@@ -62,7 +62,7 @@ function sampleListPayload() {
 
 function chunkedResponse(
   chunks: readonly Uint8Array[],
-  options: { contentLength?: string; failAfterChunk?: number; onCancel?: () => void } = {},
+  options: { contentLength?: string; contentEncoding?: string; failAfterChunk?: number; onCancel?: () => void } = {},
 ): Response {
   let index = 0;
   return new Response(
@@ -85,13 +85,11 @@ function chunkedResponse(
     }),
     {
       status: 200,
-      headers:
-        options.contentLength === undefined
-          ? { "content-type": "application/octet-stream" }
-          : {
-              "content-type": "application/octet-stream",
-              "content-length": options.contentLength,
-            },
+      headers: {
+        "content-type": "application/octet-stream",
+        ...(options.contentLength === undefined ? {} : { "content-length": options.contentLength }),
+        ...(options.contentEncoding === undefined ? {} : { "content-encoding": options.contentEncoding }),
+      },
     },
   );
 }
@@ -446,6 +444,64 @@ describe("workspace artifacts client (mocked fetch)", () => {
     expect(bytes).toBeInstanceOf(ArrayBuffer);
     expect(bytes.byteLength).toBe(4);
     expect([...new Uint8Array(bytes)]).toEqual([1, 2, 3, 4]);
+  });
+
+  test("getWorkspaceArtifactBytesArrayBuffer — accepts decoded gzip and zstd bytes against authorized metadata", async () => {
+    for (const contentEncoding of ["gzip", "zstd"]) {
+      const mockFetch = async () => chunkedResponse(
+        [new Uint8Array([1, 2]), new Uint8Array([3, 4])],
+        { contentLength: "2", contentEncoding },
+      );
+      globalThis.fetch = Object.assign(mockFetch, {
+        preconnect: realFetch.preconnect.bind(realFetch),
+      }) as typeof fetch;
+
+      const client = new NautiloApiClient("http://127.0.0.1:9");
+      client.setToken("tok");
+      const bytes = await client.getWorkspaceArtifactBytesArrayBuffer("art-internal", {
+        expectedBytes: 4,
+        maxBytes: 4,
+      });
+      expect([...new Uint8Array(bytes)]).toEqual([1, 2, 3, 4]);
+    }
+  });
+
+  test("getWorkspaceArtifactBytesArrayBuffer — bounds decoded bytes without metadata", async () => {
+    const mockFetch = async () => chunkedResponse(
+      [new Uint8Array([1, 2]), new Uint8Array([3, 4])],
+      { contentLength: "2", contentEncoding: "gzip" },
+    );
+    globalThis.fetch = Object.assign(mockFetch, {
+      preconnect: realFetch.preconnect.bind(realFetch),
+    }) as typeof fetch;
+
+    const client = new NautiloApiClient("http://127.0.0.1:9");
+    client.setToken("tok");
+    const bytes = await client.getWorkspaceArtifactBytesArrayBuffer("art-internal", { maxBytes: 4 });
+    expect([...new Uint8Array(bytes)]).toEqual([1, 2, 3, 4]);
+  });
+
+  test("getWorkspaceArtifactBytesArrayBuffer — still rejects decoded size drift and oversize streams", async () => {
+    let request = 0;
+    const mockFetch = async () => {
+      request += 1;
+      return request === 1
+        ? chunkedResponse([new Uint8Array([1, 2, 3])], { contentLength: "2", contentEncoding: "gzip" })
+        : chunkedResponse([new Uint8Array([1, 2, 3, 4])], { contentLength: "2", contentEncoding: "gzip" });
+    };
+    globalThis.fetch = Object.assign(mockFetch, {
+      preconnect: realFetch.preconnect.bind(realFetch),
+    }) as typeof fetch;
+
+    const client = new NautiloApiClient("http://127.0.0.1:9");
+    client.setToken("tok");
+    expect(await rejected(client.getWorkspaceArtifactBytesArrayBuffer("art-internal", {
+      expectedBytes: 4,
+      maxBytes: 8,
+    }))).toMatchObject({ name: "WorkspaceArtifactStreamError", code: "truncated" });
+    expect(await rejected(client.getWorkspaceArtifactBytesArrayBuffer("art-internal", {
+      maxBytes: 3,
+    }))).toMatchObject({ name: "WorkspaceArtifactStreamError", code: "size" });
   });
 
   test("getWorkspaceArtifactBytesArrayBuffer — rejects oversize data during transfer", async () => {
