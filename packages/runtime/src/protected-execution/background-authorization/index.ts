@@ -19,6 +19,7 @@ export {
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
+  createBackgroundAuthorizationTaskRuntimeRequestV3,
   failBackgroundAuthorizationRequest,
   markBackgroundAuthorizationGrantReady,
   markBackgroundAuthorizationPublicationReconciliation,
@@ -124,3 +125,5 @@ export {
   type PlanDarkBackgroundSyntheticWorkInput,
   type RunDarkBackgroundSyntheticWorkInput,
 } from "./dark-background-family-adapter";
+
+export type { TaskRuntimeGrantClaimPlan } from "./task-runtime-grant-claim";

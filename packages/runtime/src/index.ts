@@ -324,6 +324,9 @@ export {
 export {
   isCurrentProtectedTaskRunForGrant,
 } from "./tasks/protected-task-current-run";
+export type {
+  ProtectedTaskPredispatchPlan,
+} from "./tasks/protected-task-predispatch";
 export {
   ProtectedTaskOccurrenceCoordinator,
   createProtectedTaskOccurrenceCoordinator,
@@ -347,6 +350,10 @@ export {
   type CompleteProtectedTaskRunResultDependencies,
   type CompleteProtectedTaskRunResultInput,
 } from "./tasks/protected-task-result-completion";
+export {
+  completeProtectedTaskRunResultWithLiveAuthority,
+  type CompleteProtectedTaskRunResultWithLiveAuthorityInput,
+} from "./tasks/protected-task-live-result-completion";
 export {
   withProtectedTaskCheckpointSaver,
 } from "./tasks/protected-task-checkpoint-saver";
