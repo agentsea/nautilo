@@ -992,3 +992,12 @@ export {
   createNativeTaskRuntimeCheckpointCellCrypto,
   type NativeTaskRuntimeCheckpointCellCryptoInput,
 } from "./task/native-task-runtime-checkpoint-cell-crypto.ts";
+export {
+  prepareNativeTaskMessage,
+  readPreparedNativeTaskMessage,
+  type NativeTaskMessageAuthority,
+  type NativeTaskMessageCoordinates,
+  type NativeTaskMessageSnapshot,
+  type PrepareNativeTaskMessageInput,
+  type PreparedNativeTaskMessage,
+} from "./task/native-task-message-preparation.ts";
