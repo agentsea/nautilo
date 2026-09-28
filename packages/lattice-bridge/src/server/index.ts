@@ -1001,3 +1001,9 @@ export {
   type PrepareNativeTaskMessageInput,
   type PreparedNativeTaskMessage,
 } from "./task/native-task-message-preparation.ts";
+export {
+  createPostgresNativeTaskMessageCryptoCompletion,
+  NativeTaskMessageCryptoCompletionConflictError,
+  type NativeTaskMessageCryptoCompletionDependencies,
+  type NativeTaskMessageCryptoCompletionPort,
+} from "./task/postgres-native-task-message-completion.ts";
