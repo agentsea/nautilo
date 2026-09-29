@@ -31,11 +31,28 @@ describe("validatePersonalProviderCredential", () => {
   });
 
   test("recognizes Google's documented invalid-key response without generalizing HTTP 400", async () => {
-    globalThis.fetch = (async () =>
-      new Response(null, { status: 400 })) as unknown as typeof fetch;
+    const invalidKeyBytes = new TextEncoder().encode(
+      '{"error":{"details":[{"reason" : "API_KEY_INVALID"}]}}',
+    );
+    const responses = [
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const byte of invalidKeyBytes) controller.enqueue(Uint8Array.of(byte));
+          controller.close();
+        },
+      }), { status: 400 }),
+      new Response('{"error":{"details":[{"reason":"FAILED_PRECONDITION"}]}}', { status: 400 }),
+      new Response(null, { status: 400 }),
+      new Response(null, { status: 400 }),
+    ];
+    globalThis.fetch = (async () => responses.shift()!) as unknown as typeof fetch;
 
     expect(await validatePersonalProviderCredential("google", "invalid-google-key"))
       .toEqual({ status: "rejected" });
+    expect(await validatePersonalProviderCredential("google", "valid-but-not-eligible-key"))
+      .toEqual({ status: "unavailable" });
+    expect(await validatePersonalProviderCredential("google", "submitted-key"))
+      .toEqual({ status: "unavailable" });
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
       .toEqual({ status: "unavailable" });
   });

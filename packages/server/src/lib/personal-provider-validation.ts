@@ -9,7 +9,48 @@ type ProviderValidationRequest = Readonly<{
   headers: Readonly<Record<string, string>>;
 }>;
 
-const PROVIDER_VALIDATION_TIMEOUT_MS = 5_000;
+const PROVIDER_VALIDATION_TIMEOUT_MS = 10_000;
+
+// Look for Google's documented ErrorInfo reason without retaining or logging
+// an untrusted provider response body. The request timeout also bounds reading.
+async function hasGoogleInvalidKeyReason(response: Response): Promise<boolean> {
+  if (!response.body) return false;
+  const field = '"reason"';
+  const value = '"API_KEY_INVALID"';
+  const reader = response.body.getReader();
+  let phase: "field" | "colon" | "value-start" | "value" = "field";
+  let matched = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) return false;
+      for (const byte of chunk.value as Uint8Array) {
+        const char = String.fromCharCode(byte);
+        if (phase === "field") {
+          matched = char === field[matched] ? matched + 1 : char === field[0] ? 1 : 0;
+          if (matched === field.length) {
+            phase = "colon";
+            matched = 0;
+          }
+        } else if (phase === "colon") {
+          if (char === ":") phase = "value-start";
+          else if (!/\s/.test(char)) phase = "field";
+        } else if (phase === "value-start") {
+          if (char === value[0]) {
+            phase = "value";
+            matched = 1;
+          } else if (!/\s/.test(char)) phase = "field";
+        } else {
+          matched = char === value[matched] ? matched + 1 : 0;
+          if (matched === value.length) return true;
+          if (matched === 0) phase = "field";
+        }
+      }
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+}
 
 function bearer(apiKey: string): Readonly<Record<string, string>> {
   return { Authorization: `Bearer ${apiKey}` };
@@ -87,7 +128,9 @@ export async function validatePersonalProviderCredential(
       signal: boundedSignal,
     });
     if (response.ok) return { status: "accepted" };
-    if (response.status === 401 || (provider === "google" && response.status === 400)) {
+    if (response.status === 401 || (
+      provider === "google" && response.status === 400 && await hasGoogleInvalidKeyReason(response)
+    )) {
       return { status: "rejected" };
     }
     return { status: "unavailable" };
