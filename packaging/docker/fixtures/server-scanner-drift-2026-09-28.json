@@ -1,0 +1,12 @@
+{
+  "architectures": {
+    "linux/amd64": [
+      ["grype", "CVE-2026-88372", "libsndfile1", "1.2.2-2+deb13u1", "high", false],
+      ["grype", "CVE-2026-93543", "libxi6", "2:1.8.2-1", "high", false]
+    ],
+    "linux/arm64": [
+      ["grype", "CVE-2026-88372", "libsndfile1", "1.2.2-2+deb13u1", "high", false],
+      ["grype", "CVE-2026-93543", "libxi6", "2:1.8.2-1", "high", false]
+    ]
+  }
+}

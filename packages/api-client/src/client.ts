@@ -12287,7 +12287,7 @@ export class NautiloApiClient {
    *
    * The route is deliberately fetched with redirects disabled. The response is
    * read incrementally, never handed to Blob, and only returned after its
-   * declared and observed sizes agree. No partial bytes escape on any failure.
+   * decoded and authorized sizes agree. No partial bytes escape on any failure.
    */
   async getWorkspaceArtifactBytesArrayBuffer(
     id: string,
@@ -12326,7 +12326,13 @@ export class NautiloApiClient {
       );
     }
 
-    const declaredBytes = contentLength(response);
+    const transferredBytes = contentLength(response);
+    const contentEncoding = response.headers.get("content-encoding")?.trim().toLowerCase();
+    // Fetch decodes compressed response bodies but retains the transfer's
+    // Content-Length, which cannot be compared with the decoded byte stream.
+    const declaredBytes = contentEncoding && contentEncoding !== "identity"
+      ? undefined
+      : transferredBytes;
     if (declaredBytes !== undefined && declaredBytes > maxBytes) {
       throw new WorkspaceArtifactStreamError("size", "Artifact is too large to preview.");
     }
@@ -12340,8 +12346,9 @@ export class NautiloApiClient {
         "Artifact response size does not match its authorized metadata.",
       );
     }
+    const decodedBytes = declaredBytes ?? expectedBytes;
     if (response.body === null) {
-      if ((declaredBytes ?? expectedBytes ?? 0) === 0) return new ArrayBuffer(0);
+      if ((decodedBytes ?? 0) === 0) return new ArrayBuffer(0);
       throw new WorkspaceArtifactStreamError("response", "Artifact response body was unavailable.");
     }
 
@@ -12352,7 +12359,7 @@ export class NautiloApiClient {
     opts?.signal?.addEventListener("abort", cancelReaderOnAbort, { once: true });
     let completed = false;
     let received = 0;
-    const knownLengthOutput = declaredBytes === undefined ? undefined : new Uint8Array(declaredBytes);
+    const knownLengthOutput = decodedBytes === undefined ? undefined : new Uint8Array(decodedBytes);
     const collector = knownLengthOutput === undefined ? new BoundedByteCollector(maxBytes) : undefined;
     try {
       while (true) {
@@ -12365,7 +12372,12 @@ export class NautiloApiClient {
         }
         if (knownLengthOutput !== undefined) {
           if (chunk.byteLength > knownLengthOutput.byteLength - received) {
-            throw new WorkspaceArtifactStreamError("truncated", "Artifact response exceeded its content length.");
+            throw new WorkspaceArtifactStreamError(
+              "truncated",
+              declaredBytes === undefined
+                ? "Artifact response exceeded its authorized size."
+                : "Artifact response exceeded its content length.",
+            );
           }
           knownLengthOutput.set(chunk, received);
         } else {
@@ -13022,27 +13034,35 @@ export class NautiloApiClient {
    * the real bytes — see `apps/mobile/src/lib/attachments.ts` for the rationale.
    * The server reads the first multipart file part (desktop convention: field
    * name `"audio"`); 400 non-audio, 502 provider error, 503 no provider.
+   * Refresh the session bearer before upload and forward cancellation from
+   * browser capture so the authenticated request can be stopped safely.
    */
   async transcribeAudio(
     file: Blob,
     filename: string,
+    options?: { signal?: AbortSignal },
   ): Promise<{ text: string; provider: string; model: string }> {
     const form = new FormData();
     form.append("audio", file, filename.length > 0 ? filename : "recording.m4a");
     const res = await this._fetch(`${this.baseUrl}/api/stt`, {
       method: "POST",
-      headers: this.authHeaders(),
+      headers: await this.authHeadersFresh(),
       body: form,
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
     if (!res.ok) {
       const errJson = (await res.json().catch(() => ({}))) as Record<string, unknown> & {
         error?: unknown;
+        detail?: unknown;
       };
+      const error = typeof errJson.error === "string" && errJson.error.trim().length > 0
+        ? errJson.error.trim()
+        : `Transcription failed (HTTP ${res.status}).`;
       throw new ApiError(
         res.status,
-        typeof errJson.error === "string" && errJson.error.length > 0
-          ? errJson.error
-          : `POST /api/stt failed: ${res.status}`,
+        typeof errJson.detail === "string" && errJson.detail.trim().length > 0
+          ? `${error} ${errJson.detail.trim()}`
+          : error,
       );
     }
     return (await res.json()) as { text: string; provider: string; model: string };
