@@ -24,6 +24,16 @@ export const PERSONAL_PROVIDER_IDS = [
 
 export type PersonalProviderId = (typeof PERSONAL_PROVIDER_IDS)[number];
 
+export const PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES = [
+  "unverified",
+  "accepted",
+  "rejected",
+  "unavailable",
+] as const;
+
+export type PersonalProviderCredentialValidationStatus =
+  (typeof PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES)[number];
+
 /**
  * One current encrypted provider credential per Human and direct provider.
  * Plaintext credentials and historical envelopes never belong in this table.
@@ -45,6 +55,13 @@ export const personalProviderCredentials = pgTable(
     nonceBase64: text("nonce_base64").notNull(),
     ciphertextBase64: text("ciphertext_base64").notNull(),
     authTagBase64: text("auth_tag_base64").notNull(),
+    validationStatus: varchar("validation_status", {
+      length: 16,
+      enum: PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES,
+    })
+      .notNull()
+      .default("unverified"),
+    validatedAt: timestamp("validated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -72,6 +89,10 @@ export const personalProviderCredentials = pgTable(
     check(
       "personal_provider_credentials_envelope_nonempty",
       sql`octet_length(${table.nonceBase64}) > 0 and octet_length(${table.ciphertextBase64}) > 0 and octet_length(${table.authTagBase64}) > 0`,
+    ),
+    check(
+      "personal_provider_credentials_validation_status_check",
+      sql`${table.validationStatus} in ('unverified', 'accepted', 'rejected', 'unavailable')`,
     ),
   ],
 );

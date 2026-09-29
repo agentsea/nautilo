@@ -1,0 +1,3 @@
+ALTER TABLE "personal_provider_credentials" ADD COLUMN "validation_status" varchar(16) DEFAULT 'unverified' NOT NULL;--> statement-breakpoint
+ALTER TABLE "personal_provider_credentials" ADD COLUMN "validated_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "personal_provider_credentials" ADD CONSTRAINT "personal_provider_credentials_validation_status_check" CHECK ("personal_provider_credentials"."validation_status" in ('unverified', 'accepted', 'rejected', 'unavailable'));

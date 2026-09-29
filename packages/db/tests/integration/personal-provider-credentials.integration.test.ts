@@ -13,6 +13,7 @@ import {
   listPersonalProviderCredentialsForCustody,
   personalProviderCredentials,
   replacePersonalProviderCredential,
+  setPersonalProviderCredentialValidation,
   sql,
   users,
   type DirectDatabase,
@@ -86,6 +87,8 @@ describe("personal provider credential storage", () => {
       userId: ownerId,
       provider: "openai",
       revision: 1,
+      validationStatus: "unverified",
+      validatedAt: null,
       envelope: sealed,
     });
   });
@@ -99,6 +102,31 @@ describe("personal provider credential storage", () => {
       userId: ownerId,
       provider: "anthropic",
       envelope: envelope(),
+    });
+
+    const validatedAt = new Date("2026-09-28T12:00:00.000Z");
+    expect(await setPersonalProviderCredentialValidation(db, {
+      userId: otherId,
+      provider: "anthropic",
+      id: identity.id,
+      expectedRevision: 1,
+      status: "accepted",
+      validatedAt,
+    })).toEqual({ status: "stale" });
+    expect(await setPersonalProviderCredentialValidation(db, {
+      userId: ownerId,
+      provider: "anthropic",
+      id: identity.id,
+      expectedRevision: 1,
+      status: "accepted",
+      validatedAt,
+    })).toMatchObject({
+      status: "updated",
+      credential: {
+        revision: 1,
+        validationStatus: "accepted",
+        validatedAt,
+      },
     });
 
     const replacement = envelope(randomUUID(), "replacement");
@@ -118,7 +146,30 @@ describe("personal provider credential storage", () => {
     });
     expect(replaced).toMatchObject({
       status: "replaced",
-      credential: { revision: 2, envelope: replacement },
+      credential: {
+        revision: 2,
+        validationStatus: "unverified",
+        validatedAt: null,
+        envelope: replacement,
+      },
+    });
+    expect(await setPersonalProviderCredentialValidation(db, {
+      userId: ownerId,
+      provider: "anthropic",
+      id: identity.id,
+      expectedRevision: 1,
+      status: "rejected",
+      validatedAt: new Date("2026-09-28T12:01:00.000Z"),
+    })).toEqual({ status: "stale" });
+    expect(await getPersonalProviderCredential(
+      db,
+      ownerId,
+      "anthropic",
+    )).toMatchObject({
+      revision: 2,
+      validationStatus: "unverified",
+      validatedAt: null,
+      envelope: replacement,
     });
     expect(await replacePersonalProviderCredential(db, {
       userId: ownerId,

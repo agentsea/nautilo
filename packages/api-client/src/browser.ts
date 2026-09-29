@@ -3,6 +3,7 @@ export * from "./schemas/memory-processor-transport";
 export {
   NautiloApiClient,
   ApiError,
+  ProviderCredentialApiError,
   VideoGenerationPreparationError,
   DirectHumanInteractionBlockedError,
   AgentInvocationRequiredError,
@@ -34,6 +35,15 @@ export {
   saveArtifactToDisk,
   pickHighestRoleSlug,
   isRoomPendingAttentionEventForViewer,
+} from "./client";
+
+export type {
+  CredentialMetadata,
+  PutProviderCredentialInput,
+  ProviderCredentialRevisionInput,
+  PutProviderCredentialResponse,
+  ValidateProviderCredentialResponse,
+  DeleteProviderCredentialResponse,
 } from "./client";
 
 export {

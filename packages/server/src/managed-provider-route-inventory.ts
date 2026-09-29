@@ -1,6 +1,9 @@
 import { isCloudManagedDeployment } from "@nautilo/config-guard";
 
 export const MANAGED_PROVIDER_CREDENTIAL_ROUTE_DECISIONS = {
+  "/api/account/provider-credentials": "personal-credential-self-service",
+  "/api/account/provider-credentials/:provider": "personal-credential-self-service",
+  "/api/account/provider-credentials/:provider/validate": "personal-credential-self-service",
   "/api/admin/users/:id/permanent-credentials": "owner-only-member-credential",
   "/api/health/keys": "blocked-provider-key-status",
   "/api/health/keys/validate": "blocked-provider-key-validation",

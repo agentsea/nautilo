@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PERSONAL_PROVIDER_IDS,
+  PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES,
   SENSITIVE_TABLES,
   clearPersonalProviderCredentialsForClone,
   createPersonalProviderCredentialIdentity,
@@ -48,6 +49,12 @@ describe("personal provider credential database contract", () => {
       "fireworks",
       "together",
       "venice",
+    ]);
+    expect(PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES).toEqual([
+      "unverified",
+      "accepted",
+      "rejected",
+      "unavailable",
     ]);
     expect(SENSITIVE_TABLES).toContain("personal_provider_credentials");
   });
