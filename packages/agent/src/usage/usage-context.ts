@@ -32,6 +32,22 @@ export interface UsageModelControlMetadata {
   servingSelector?: string;
 }
 
+/** Non-secret funding decision attached to the exact provider attempt. */
+export type UsageFundingProvenance =
+  | Readonly<{
+      kind: "personal";
+      humanUserId: string;
+      payerHumanId: string;
+      providerRoute: string;
+      credentialId: string;
+      credentialRevision: number;
+    }>
+  | Readonly<{
+      kind: "server" | "service";
+      humanUserId?: string;
+      providerRoute: string;
+    }>;
+
 /**
  * Ambient attribution for whatever LLM call runs inside the wrapped scope.
  * The usage callback handler reads this at `handleLLMEnd` so we know which
@@ -45,6 +61,8 @@ export interface UsageContext {
   /** Extra breadcrumbs stored on the usage row's metadata (agentId, turnId…). */
   metadata?: Record<string, unknown>;
   modelControl?: UsageModelControlMetadata;
+  /** Trusted, non-secret funding provenance for the exact attempt. */
+  funding?: UsageFundingProvenance;
 }
 
 const storage = new AsyncLocalStorage<UsageContext>();

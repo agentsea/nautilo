@@ -11,6 +11,18 @@ export interface ModelHealth {
   responseTimeMs?: number;
 }
 
+/**
+ * Account-isolated health scope for a decrypted personal provider credential.
+ * Personal health is deliberately not cached until probes can use that exact
+ * credential without crossing into the server-funded provider path.
+ */
+export type PersonalModelHealthScope = Readonly<{
+  kind: "personal";
+  humanUserId: string;
+  credentialId: string;
+  credentialRevision: number;
+}>;
+
 const healthCache = new Map<string, ModelHealth>();
 /** Positive probe results stay fresh briefly so we do not hammer the API. */
 const CACHE_TTL_MS = 60_000;
@@ -28,7 +40,9 @@ const HEALTH_CHECK_TIMEOUT_MS = 10_000;
 export function modelInvokeCooldownRemainingMs(
   modelId: string,
   nowMs = Date.now(),
+  scope?: PersonalModelHealthScope,
 ): number {
+  if (scope?.kind === "personal") return 0;
   const cached = healthCache.get(modelId);
   if (cached === undefined || cached.healthy) return 0;
   return Math.min(
@@ -40,7 +54,15 @@ export function modelInvokeCooldownRemainingMs(
   );
 }
 
-export async function checkModelHealth(modelId: string, forceFresh = false): Promise<boolean> {
+export async function checkModelHealth(
+  modelId: string,
+  forceFresh = false,
+  scope?: PersonalModelHealthScope,
+): Promise<boolean> {
+  // Never probe a personal lane through createUniversalModel without its
+  // exact decrypted credential. Until personal probes are explicitly wired,
+  // invocation remains the authority and no server-funded key is consulted.
+  if (scope?.kind === "personal") return true;
   if (!forceFresh) {
     const cached = healthCache.get(modelId);
     if (cached) {
@@ -73,14 +95,23 @@ export async function checkModelHealth(modelId: string, forceFresh = false): Pro
   }
 }
 
-export function isModelHealthy(modelId: string): boolean {
+export function isModelHealthy(
+  modelId: string,
+  scope?: PersonalModelHealthScope,
+): boolean {
+  if (scope?.kind === "personal") return true;
   const cached = healthCache.get(modelId);
   if (!cached) return true;
   return cached.healthy || modelInvokeCooldownRemainingMs(modelId) === 0;
 }
 
 /** Marks a model unhealthy for {@link INVOKE_FAILURE_COOLDOWN_MS} (e.g. after 429 or invoke timeout). */
-export function markModelInvokeFailure(modelId: string, reason?: string): void {
+export function markModelInvokeFailure(
+  modelId: string,
+  reason?: string,
+  scope?: PersonalModelHealthScope,
+): void {
+  if (scope?.kind === "personal") return;
   const entry: ModelHealth = {
     modelId,
     healthy: false,
@@ -91,10 +122,11 @@ export function markModelInvokeFailure(modelId: string, reason?: string): void {
   log(`[model-health] ${modelId} invoke cooldown (${INVOKE_FAILURE_COOLDOWN_MS}ms): ${reason ?? "unknown"}`);
 }
 
-export function getHealthyModels(): AssistantModelConfig[] {
-  return getEnabledModels().filter((m) => isModelHealthy(m.id));
+export function getHealthyModels(scope?: PersonalModelHealthScope): AssistantModelConfig[] {
+  return getEnabledModels().filter((m) => isModelHealthy(m.id, scope));
 }
 
-export function clearHealthCache(): void {
+export function clearHealthCache(scope?: PersonalModelHealthScope): void {
+  if (scope?.kind === "personal") return;
   healthCache.clear();
 }

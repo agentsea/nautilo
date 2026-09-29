@@ -249,6 +249,37 @@ describe("usage callback handler semantics (ISSUE-M217 phase 3)", () => {
     });
   });
 
+  it("carries the exact non-secret personal funding decision into the usage record", () => {
+    const calls: RecordUsageInput[] = [];
+    __setUsageRecorderForTests((input) => calls.push(input));
+    runWithUsageContext({
+      callType: "chat",
+      userId: "00000000-0000-0000-0000-000000000101",
+      funding: {
+        kind: "personal",
+        humanUserId: "00000000-0000-0000-0000-000000000101",
+        payerHumanId: "00000000-0000-0000-0000-000000000101",
+        providerRoute: "openrouter-direct",
+        credentialId: "00000000-0000-0000-0000-000000000202",
+        credentialRevision: 4,
+      },
+    }, () => invokeHandlerEnd(
+      createUsageCallbackHandler("openrouter:anthropic/claude-sonnet-4.6"),
+      metadataResult(),
+    ));
+
+    expect(calls[0]).toMatchObject({
+      userId: "00000000-0000-0000-0000-000000000101",
+      funding: {
+        kind: "personal",
+        providerRoute: "openrouter-direct",
+        credentialId: "00000000-0000-0000-0000-000000000202",
+        credentialRevision: 4,
+      },
+    });
+    expect(calls[0]?.metadata).toBeUndefined();
+  });
+
   it("swallows recorder failures without throwing from handleLLMEnd", () => {
     __setUsageRecorderForTests(() => {
       throw new Error("db down");

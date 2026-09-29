@@ -202,4 +202,18 @@ describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
     }
     expect(compiled[3]!.sql).toContain('left join "users"');
   });
+
+  test("administrator aggregates exclude only explicitly personal-funded usage", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const compiled = Object.values(buildCostsSummaryQueries(RANGE, offlineDb)).map(
+      (queryBuilder) => queryBuilder.toSQL(),
+    );
+
+    for (const generated of compiled) {
+      expect(generated.sql.toLowerCase()).toContain(
+        '("llm_usage_events"."funding_kind" is null or "llm_usage_events"."funding_kind" <>',
+      );
+      expect(generated.params).toContain("personal");
+    }
+  });
 });
