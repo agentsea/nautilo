@@ -10,6 +10,9 @@
     "jose",
     "qs"
   ],
+  "runtimeOnlyOverrides": {
+    "brace-expansion": "5.0.11"
+  },
   "reviewedExceptions": [
     {
       "kind": "root-override",
@@ -40,6 +43,11 @@
       "kind": "root-override",
       "name": "jose",
       "reason": "Keep server authentication on the repository-approved JOSE version."
+    },
+    {
+      "kind": "runtime-only-override",
+      "name": "brace-expansion",
+      "reason": "Pin the server-only dependency closure to patched brace-expansion 5.0.11 without changing older major versions used by Desktop and development tooling."
     },
     {
       "kind": "root-override",

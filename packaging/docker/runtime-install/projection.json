@@ -191,6 +191,11 @@
       "reason": "Keep the shipped Express request parser on the audited patched release."
     },
     {
+      "kind": "runtime-only-override",
+      "name": "brace-expansion",
+      "reason": "Pin the server-only dependency closure to patched brace-expansion 5.0.11 without changing older major versions used by Desktop and development tooling."
+    },
+    {
       "kind": "root-override",
       "name": "hono",
       "reason": "Keep the shipped MCP HTTP transport on the audited patched Hono release."
