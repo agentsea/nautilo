@@ -169,6 +169,28 @@ describe("D462 room model-control selection routes", () => {
     expect(getCalls).toEqual([]);
   });
 
+  test("rejects a write to another Genie before funding resolution or persistence", async () => {
+    await app.close();
+    const callerIds: string[] = [];
+    ({ app, setCalls } = buildApp(async (humanUserId, modelId) => {
+      callerIds.push(humanUserId);
+      return availableForServer(modelId);
+    }));
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/rooms/${ROOM_ID}/agents/not-owned-agent/model-control-selection`,
+      headers: {
+        "content-type": "application/json",
+        "x-test-user": USER_ID,
+        "x-test-actor": USER_ACTOR_ID,
+      },
+      payload: { selection: { modelId: MODEL_ID } },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(callerIds).toEqual([]);
+    expect(setCalls).toEqual([]);
+  });
+
   test("strictly writes provider-neutral selection ids", async () => {
     const response = await app.inject({
       method: "PUT",
@@ -299,7 +321,7 @@ describe("D462 room model-control selection routes", () => {
     expect(setCalls).toEqual([]);
   });
 
-  test("does not advertise an internally admitted personal candidate before foreground chat activation", async () => {
+  test("persists an admitted personal-funded foreground chat selection", async () => {
     await app.close();
     const callerIds: string[] = [];
     ({ app, setCalls } = buildApp(async (humanUserId, modelId) => {
@@ -316,7 +338,7 @@ describe("D462 room model-control selection routes", () => {
           providerRoute: "fireworks",
           workload: "foreground_text_chat",
         },
-        selectableInThisRelease: false,
+        selectableInThisRelease: true,
       };
     }));
 
@@ -331,12 +353,13 @@ describe("D462 room model-control selection routes", () => {
       payload: { selection: { modelId: MODEL_ID } },
     });
 
-    expect(response.statusCode).toBe(422);
+    expect(response.statusCode).toBe(200);
     expect(response.json<Record<string, unknown>>()).toEqual({
-      code: "model_unavailable",
-      error: "Personal-funded model selection is not available in this release.",
+      selection: { modelId: MODEL_ID },
     });
     expect(callerIds).toEqual([USER_ID]);
-    expect(setCalls).toEqual([]);
+    expect(setCalls).toEqual([
+      { roomId: ROOM_ID, agentId: AGENT_ID, selection: { modelId: MODEL_ID } },
+    ]);
   });
 });

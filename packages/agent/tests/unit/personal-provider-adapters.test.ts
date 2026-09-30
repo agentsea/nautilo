@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { HumanMessage } from "@langchain/core/messages";
 import { resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import {
   createUnmeteredEvaluationModel,
@@ -101,6 +102,71 @@ describe("personal provider chat adapters", () => {
 });
 
 describe("personal OpenRouter transport", () => {
+  test("sends the personal key through direct OpenRouter transport without leaking it into the request body", async () => {
+    const personalApiKey = "sk-personal-openrouter-transport";
+    const serverDirectApiKey = "sk-server-openrouter-must-not-be-used";
+    const serverGatewayKey = `ngw_${"d".repeat(43)}`;
+    process.env["OPENROUTER_API_KEY"] = serverDirectApiKey;
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = serverGatewayKey;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
+
+    const requests: Array<{ authorization: string | null; body: string; url: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = input instanceof Request ? input : undefined;
+      const headers = new Headers(init?.headers ?? request?.headers);
+      const body = typeof init?.body === "string"
+        ? init.body
+        : request
+          ? await request.clone().text()
+          : "";
+      requests.push({
+        authorization: headers.get("authorization"),
+        body,
+        url: typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      });
+      return Response.json({
+        id: "chatcmpl-personal-transport",
+        object: "chat.completion",
+        created: 1,
+        model: "moonshotai/kimi-k2.6",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "personal transport success" },
+          finish_reason: "stop",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof fetch;
+
+    try {
+      const model = await createUnmeteredEvaluationModel(
+        "openrouter:moonshotai/kimi-k2.6",
+        { personalCredential: { apiKey: personalApiKey } },
+      );
+      const response = await model.invoke([new HumanMessage("hello")]) as {
+        content: unknown;
+      };
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+      expect(requests[0]?.authorization).toBe(`Bearer ${personalApiKey}`);
+      expect(requests[0]?.authorization).not.toContain(serverDirectApiKey);
+      expect(requests[0]?.authorization).not.toContain(serverGatewayKey);
+      expect(requests[0]?.body).not.toContain(personalApiKey);
+      expect(requests[0]?.body).not.toContain(serverDirectApiKey);
+      expect(requests[0]?.body).not.toContain(serverGatewayKey);
+      expect(JSON.stringify(response)).not.toContain(personalApiKey);
+      expect(response.content).toBe("personal transport success");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("personal funding selects direct OpenRouter even when managed Gateway is configured", () => {
     const personalApiKey = "  exact-personal-openrouter-key  ";
     expect(resolveOpenRouterTransport({

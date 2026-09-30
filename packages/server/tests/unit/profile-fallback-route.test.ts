@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { profileRoutes } from "../../src/routes/profile";
+import type { CallerModelAvailability } from "../../src/routes/config";
 
 /**
  * D141 P2 / LD-1 — validation + auth gates for `PATCH /api/profile/fallback`.
@@ -58,7 +59,10 @@ describe("PATCH /api/profile/fallback — validation + auth gates", () => {
     userId?: string;
     agentId?: string;
     policy?: { enabled: boolean; chain: string[] };
-  }): FastifyInstance {
+  }, resolveCallerAvailability?: (
+    humanUserId: string,
+    modelId: string,
+  ) => Promise<CallerModelAvailability>): FastifyInstance {
     const app = Fastify({ logger: false });
     app.decorateRequest("policyContext", null);
     app.decorateRequest("memoryEnvelope", null);
@@ -74,6 +78,7 @@ describe("PATCH /api/profile/fallback — validation + auth gates", () => {
         capture.policy = policy;
         return { fallbackEnabled: policy.enabled, fallbackChain: policy.chain };
       },
+      ...(resolveCallerAvailability ? { resolveCallerAvailability } : {}),
     });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = "human-1";
@@ -114,6 +119,61 @@ describe("PATCH /api/profile/fallback — validation + auth gates", () => {
     });
   });
 
+  test("profile default validation uses the authenticated Human's funding projection", async () => {
+    const callers: Array<{ humanUserId: string; modelId: string }> = [];
+    const app = Fastify({ logger: false });
+    app.decorateRequest("policyContext", null);
+    app.decorateRequest("memoryEnvelope", null);
+    app.decorateRequest("sessionActorId", null);
+    app.decorateRequest("sessionUserId", null);
+    app.addHook("preHandler", async (request) => {
+      request.sessionUserId = "human-1";
+      request.policyContext = { actorRole: "contributor", actorId: "human-actor-1" } as typeof request.policyContext;
+    });
+    profileRoutes(app, {
+      findPersonalAgentsForUser: async () => [],
+      resolveCallerAvailability: async (humanUserId, modelId) => {
+        callers.push({ humanUserId, modelId });
+        return {
+          model: {
+            id: modelId,
+            displayName: modelId,
+            provider: "anthropic",
+            priority: 1,
+            costCoefficient: 1,
+            enabled: true,
+            capabilities: { tools: false, vision: false, reasoning: true, e2ee: false, webSearch: false },
+            availability: "selectable",
+          },
+          funding: {
+            kind: "personal",
+            humanUserId,
+            payerHumanId: humanUserId,
+            credentialId: "credential-1",
+            credentialRevision: 2,
+            modelId,
+            providerRoute: "anthropic",
+            workload: "foreground_text_chat",
+          },
+          selectableInThisRelease: true,
+        };
+      },
+    });
+    instances.push(app);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/profile",
+      payload: { defaultModel: "anthropic:claude-sonnet-4-6" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string }>()).toEqual({ error: "no_personal_agent" });
+    expect(callers).toEqual([
+      { humanUserId: "human-1", modelId: "anthropic:claude-sonnet-4-6" },
+    ]);
+  });
+
   test("fallback mutation rejects unavailable rows before DB access", async () => {
     const app = makeOwnerApp();
     const res = await app.inject({
@@ -151,6 +211,55 @@ describe("PATCH /api/profile/fallback — validation + auth gates", () => {
       userId: "human-1",
       agentId: "agent-1",
       policy: { enabled: true, chain: [] },
+    });
+  });
+
+  test("fallback selection accepts the authenticated Human's personally funded model", async () => {
+    const capture: {
+      userId?: string;
+      agentId?: string;
+      policy?: { enabled: boolean; chain: string[] };
+    } = {};
+    const callers: Array<{ humanUserId: string; modelId: string }> = [];
+    const app = makeAgentOwnedFallbackApp(capture, async (humanUserId, modelId) => {
+      callers.push({ humanUserId, modelId });
+      return {
+        model: {
+          id: modelId,
+          displayName: modelId,
+          provider: "anthropic",
+          priority: 1,
+          costCoefficient: 1,
+          enabled: true,
+          capabilities: { tools: false, vision: false, reasoning: true, e2ee: false, webSearch: false },
+          availability: "selectable",
+        },
+        funding: {
+          kind: "personal",
+          humanUserId,
+          payerHumanId: humanUserId,
+          credentialId: "credential-1",
+          credentialRevision: 2,
+          modelId,
+          providerRoute: "anthropic",
+          workload: "foreground_text_chat",
+        },
+        selectableInThisRelease: true,
+      };
+    });
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/profile/fallback",
+      payload: { enabled: true, chain: ["anthropic:claude-sonnet-4-6"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(callers).toEqual([
+      { humanUserId: "human-1", modelId: "anthropic:claude-sonnet-4-6" },
+    ]);
+    expect(capture.policy).toEqual({
+      enabled: true,
+      chain: ["anthropic:claude-sonnet-4-6"],
     });
   });
 

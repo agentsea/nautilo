@@ -36,6 +36,7 @@ import { modelOutputPreflightNode } from "../nodes/model-output-preflight";
 import { EmptyTerminalResponseError } from "../graph/empty-terminal-response";
 import { researchNoteDraftNodes } from "../tools/security/research-note-draft-nodes";
 import type { ResearchNoteDraft } from "../tools/security/research-note-draft";
+import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
 
 function hasVisibleTerminalContent(content: unknown): boolean {
   if (typeof content === "string") return content.trim().length > 0;
@@ -157,6 +158,8 @@ interface CompiledGraph {
 }
 
 export interface NautiloGraphDeps extends PostModelDeps {
+  /** Request-local foreground funding authority; never persisted in graph state. */
+  readonly foregroundChatFundingSession?: ForegroundChatFundingSession;
   readonly researchNoteDraft?: ResearchNoteDraft;
   readonly liveShadowToolBoundaryForState?:
     LiveShadowToolBoundaryForState;
@@ -200,6 +203,7 @@ export function createNautiloGraph(
       undefined,
       deps?.fullEncryptionOnlyForState?.(state) === true,
       deps?.ordinaryContentAccessForState,
+      deps?.foregroundChatFundingSession?.kind === "personal",
     ),
     agent: (state, config, draft) =>
     agentNode(
@@ -209,9 +213,11 @@ export function createNautiloGraph(
       deps?.fullEncryptionOnlyForState?.(state) === true,
       draft,
       deps?.ordinaryContentAccessForState,
+      deps?.foregroundChatFundingSession,
     ),
   });
   const graphToolsNode = createToolsNode({
+    personalFunding: deps?.foregroundChatFundingSession?.kind === "personal",
     ...(deps?.ordinaryContentAccessForState === undefined ? {} : { ordinaryContentAccessForState: deps.ordinaryContentAccessForState }),
     ...(recallRecordsPortForState === undefined ? {} : { recallRecordsPortForState }),
     ...(deps?.liveShadowToolBoundaryForState === undefined

@@ -101,7 +101,7 @@ describe("trusted model funding", () => {
     h.capabilities.set(BOB, ["use_personal_provider_credentials"]);
     expect((await resolveModelFunding(request(ALICE), h.deps)).kind).toBe("server");
     expect(await code(resolveModelFunding(request(BOB), h.deps)))
-      .toBe("server_credentials_forbidden");
+      .toBe("personal_credential_missing");
     h.setServerRoute(null);
     expect(await code(resolveModelFunding(request(ALICE), h.deps)))
       .toBe("provider_credentials_missing");
@@ -204,5 +204,22 @@ describe("trusted model funding", () => {
     expect(await code(resolveModelFunding({
       ...request(ALICE, "openai:synthetic/model"), priorDecision: admitted,
     }, h.deps))).toBe("personal_credential_stale");
+  });
+
+  test("fallback decryption rechecks the initially admitted credential after candidate selection", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    h.rows.set(`${ALICE}:openai`, row(ALICE, "openai"));
+    const initial = await resolveModelFunding(request(ALICE), h.deps);
+    if (initial.kind !== "personal") throw new Error("Expected personal funding");
+    const fallback = await resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/model"), priorDecision: initial,
+    }, h.deps);
+    if (fallback.kind !== "personal") throw new Error("Expected personal fallback");
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter", 2));
+    expect(await code(withAdmittedPersonalProviderKey(fallback, () => {
+      throw new Error("Provider must not receive the fallback key");
+    }, h.deps, initial))).toBe("personal_credential_stale");
   });
 });

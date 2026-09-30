@@ -128,6 +128,11 @@ import type {
 } from "@nautilo/lattice-bridge/server";
 import { loadForegroundAuthoredContext } from
   "./foreground-authored-context";
+import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import {
+  assertForegroundChatFundingWorkloadSupported,
+  openForegroundChatFundingSessionForInvocation,
+} from "../foreground-chat-funding-port";
 
 function parseStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -727,10 +732,27 @@ export async function* langgraphExecutor(
   );
   const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () =>
     configuredModel
-      ? resolveModelRole("chat", { configuredId: configuredModel })
+      ? configuredModel
       : getDefaultModel().id,
   );
-  const modelId = resolveModelRole("chat", { configuredId: foregroundModelPlan.initialModelId });
+  const fundingSession = await openForegroundChatFundingSessionForInvocation({
+    authority: getCurrentAcceptedInvocationAuthority(),
+    jobInput: input,
+    causalHumanUserId,
+    entrypoint: trustedExecutionEntrypoint === "foreground.main"
+      ? trustedExecutionEntrypoint
+      : null,
+    modelId: foregroundModelPlan.initialModelId,
+    roomId,
+    agentId,
+  });
+  const modelId = fundingSession?.kind === "personal"
+    ? foregroundModelPlan.initialModelId
+    : resolveModelRole("chat", { configuredId: foregroundModelPlan.initialModelId });
+  assertForegroundChatFundingWorkloadSupported(fundingSession, {
+    hasImages: multimodalImages.length > 0,
+    voiceRequested: input["voiceMode"] === true,
+  });
   if (perTurnModelRaw) {
     log(`[nautilo/executor] per-turn model override applied: ${perTurnModelRaw}`);
   }
@@ -1162,7 +1184,9 @@ export async function* langgraphExecutor(
     graph = createNautiloGraph(
       checkpointSaver,
       policyResolver,
-      postModelDeps,
+      fundingSession === null
+        ? postModelDeps
+        : { ...postModelDeps, foregroundChatFundingSession: fundingSession },
     );
   } catch (error) {
     if (encryptedCheckpointSaver !== null) {

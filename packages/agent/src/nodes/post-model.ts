@@ -106,6 +106,8 @@ import {
   prepareMediaGenerationApproval,
   verifyMediaGenerationPreparedApproval,
 } from "../tools/media/media-generation-approval-runtime";
+import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
+import { personalFundingToolDenialMessage } from "./tools";
 
 // ---------------------------------------------------------------------------
 // Interrupt payloads
@@ -151,6 +153,8 @@ interface IdentityChallengeEnrollPinPayload {
  * before. Production wires this from `createNautiloGraph`'s deps.
  */
 export interface PostModelDeps {
+  /** Request-local funding class. It is never copied into graph state. */
+  foregroundChatFundingSession?: ForegroundChatFundingSession;
   /** Server-verified redundant self-contact check for an existing scheduled Task. */
   isRedundantScheduledSelfContact?: (state: NautiloState, call: ToolCall) => Promise<boolean>;
   /** Live Server policy selection; never inferred from protected-port absence. */
@@ -473,6 +477,31 @@ export function createPostModelNode(
     const toolCalls: ToolCall[] = lastMessage.tool_calls.filter(
       (tc) => !rejectedProjectionCallIds.has(tc.id ?? ""),
     );
+
+    // Personal funding in this phase admits foreground text generation only.
+    // Refuse every still-live model-originated call before catalog resolution,
+    // policy checks, approval preparation, or any paid tool-specific side
+    // effect. Calls already paired by an earlier preflight stay paired once.
+    if (deps?.foregroundChatFundingSession?.kind === "personal") {
+      return {
+        ...(toolCalls.length > 0
+          ? {
+              messages: mergeMessagesPreservingInvariants(
+                state.messages,
+                toolCalls.map(personalFundingToolDenialMessage),
+              ),
+            }
+          : {}),
+        approvedToolCalls: [],
+        computerUseInvocationBindings: {},
+        requiredHostRelays: {},
+        pendingApproval: [],
+        approvalDenied: true,
+        identityEnrollmentToolCallIds: [],
+        ordinaryContentAccessBindings: {},
+      };
+    }
+
     log(`[post_model] Classifying ${toolCalls.length} tool call(s): ${toolCalls.map((tc) => tc.name).join(", ")}`);
 
     if (!policyResolver) {
