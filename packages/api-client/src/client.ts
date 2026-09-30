@@ -3627,6 +3627,11 @@ export class NautiloApiClient {
   /** bumps only when the normalized bearer value changes in {@link setToken}. */
   private credentialGeneration = 0;
   private readonly inFlightGets = new Map<string, Promise<unknown>>();
+  /** Bodies are private to this server/client and discarded on credential changes. */
+  private readonly miniAppRuntimeBodies = new Map<string, {
+    etag: string;
+    body: MiniAppRuntimeResponse;
+  }>();
   private readonly unixSocketPath: string | undefined;
   private readonly fetchImpl: NautiloApiFetch | undefined;
   private readonly workspaceArtifactObjectUrlCache = new Map<string, string>();
@@ -4788,6 +4793,7 @@ export class NautiloApiClient {
     if (normalized !== this.token) {
       this.token = normalized;
       this.credentialGeneration += 1;
+      this.miniAppRuntimeBodies.clear();
     }
   }
 
@@ -11542,10 +11548,55 @@ export class NautiloApiClient {
   }
 
   async getMiniAppRuntime(appId: string): Promise<MiniAppRuntimeResponse> {
+    await this.authHeadersFresh();
+    const generation = this.credentialGeneration;
+    const retained = this.miniAppRuntimeBodies.get(appId);
+    const assertCurrentSession = () => {
+      if (generation !== this.credentialGeneration) {
+        throw new ApiError(409, "Session changed while loading the app. Reopen the app.");
+      }
+    };
+    try {
+      let result = await this.getMiniAppRuntimeConditional(appId, retained?.etag);
+      assertCurrentSession();
+      if (result.status === 304) {
+        if (retained && result.etag === retained.etag) {
+          // Consumers must not be able to modify the body a later 304 reuses.
+          return structuredClone(retained.body);
+        }
+        // A validator without its matching body cannot initialize an iframe.
+        result = await this.getMiniAppRuntimeConditional(appId);
+        assertCurrentSession();
+      }
+      if (result.status === 304) {
+        throw new ApiError(304, "App runtime returned unchanged without a matching body");
+      }
+      if (result.etag) {
+        this.miniAppRuntimeBodies.set(appId, {
+          etag: result.etag,
+          body: structuredClone(result.body),
+        });
+      } else {
+        this.miniAppRuntimeBodies.delete(appId);
+      }
+      return result.body;
+    } catch (error) {
+      // Never serve stale executable content on denial or a failed revalidation.
+      // An old request must not evict a new session's retained body.
+      if (generation === this.credentialGeneration) this.miniAppRuntimeBodies.delete(appId);
+      throw error;
+    }
+  }
+
+  private async getMiniAppRuntimeConditional(
+    appId: string,
+    ifNoneMatch?: string,
+  ): Promise<ConditionalReadResult<MiniAppRuntimeResponse>> {
     const enc = encodeURIComponent(appId);
-    return this.request<MiniAppRuntimeResponse>({
+    const requestOptions: RequestOpts<MiniAppRuntimeResponse> = {
       path: `/api/apps/${enc}/runtime`,
       defaultErrorPrefix: `GET /api/apps/${appId}/runtime`,
+      ...(ifNoneMatch ? { headers: { "If-None-Match": ifNoneMatch } } : {}),
       statusErrors: {
         404: (b) =>
           new ApiError(
@@ -11569,7 +11620,10 @@ export class NautiloApiClient {
               : "App runtime build failed",
           ),
       },
-    });
+    };
+    return this.conditionalGet(requestOptions, (response) =>
+      this.parseConditionalJsonResponse(response, requestOptions),
+    );
   }
 
   async receiveLiveAppCommand(appId: string, sessionToken: string, signal: AbortSignal): Promise<{

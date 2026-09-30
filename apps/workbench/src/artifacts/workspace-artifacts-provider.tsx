@@ -57,14 +57,14 @@ export interface WorkspaceArtifactsValue {
 interface EventSubscriptionOptions {
   readonly artifactId?: string;
   readonly roomId?: string;
-  readonly onReconnect?: () => void | Promise<void>;
+  readonly onReconnect?: (reason?: "already-connected") => void | Promise<void>;
 }
 
 type ArtifactEventSubscriber = {
   readonly handler: (event: WorkspaceArtifactEvent) => void | Promise<void>;
   readonly artifactId?: string;
   readonly roomId?: string;
-  readonly onReconnect?: () => void | Promise<void>;
+  readonly onReconnect?: (reason?: "already-connected") => void | Promise<void>;
 };
 
 interface WorkspaceArtifactEventHub {
@@ -625,7 +625,7 @@ export function WorkspaceArtifactsProvider({ children }: { readonly children: Re
       if (desktopReady || workspaceReady) {
         queueMicrotask(() => {
           if (subscribersRef.current.has(subscriber)) {
-            void subscriber.onReconnect?.();
+            void subscriber.onReconnect?.("already-connected");
           }
         });
       }

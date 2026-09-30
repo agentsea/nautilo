@@ -62,7 +62,7 @@ import {
   appsDetailWeakETagFromProjection,
   appsListWeakETagFromProjection,
 } from "./apps-conditional-http";
-import { sendPrivateConditionalRead } from "../http/conditional-http";
+import { sendPrivateConditionalRead, weakETagFromDigestInput } from "../http/conditional-http";
 import type {
   ApplyAcceptedLiveProposalRequest,
   ApplyAcceptedLiveProposalResponse,
@@ -105,15 +105,15 @@ import {
 export interface PublicMiniAppDto {
   id: string;
   name: string | null;
-  /** D344 — optional one-line description from the manifest (Apps panel rows). */
+  /** Optional one-line description from the manifest (Apps panel rows). */
   description: string | null;
   display: MiniAppManifest["display"] | null;
   version: string | null;
   status: RegisteredMiniApp["status"];
-  /** D344 — ISO "installed at" (manifest mtime proxy) for Apps-page sorting. */
+  /** ISO "installed at" (manifest mtime proxy) for Apps-page sorting. */
   installedAt: string | null;
   sourceHash: string | null;
-  /** D343 — false when the operator has disabled this app. Disabled apps stay
+  /** False when the operator has disabled this app. Disabled apps stay
    *  installed (AI reference, file associations) but are hidden from the agent
    *  tool catalog and any user-facing "enabled" affordance reflects this. */
   enabled: boolean;
@@ -217,13 +217,13 @@ export interface LiveReviewLifecyclePort {
   /** Recheck the exact Task review immediately before bytes are written. */
   admitAcceptedProposal(input: LiveReviewLifecycleProposal): LiveReviewLifecycleAdmission;
   releaseAcceptanceClaim(input: LiveReviewLifecycleProposal): void;
-  /** Reserve one deterministic D448 operation before the canonical Artifact write. */
+  /** Reserve one deterministic document operation before the canonical Artifact write. */
   reserveAcceptedWorkspaceOperation?(input: LiveReviewLifecycleProposal & {
     operationId: string;
     clientMutationId: string;
     artifactInternalId: string;
   }, admissionBinding: unknown): Promise<{ status: "reserved" | "same" | "not_found" | "stale" | "conflict" }>;
-  /** Release only a definitely uncommitted D448 reservation. */
+  /** Release only a definitely uncommitted document-operation reservation. */
   releaseAcceptedWorkspaceOperation?(input: LiveReviewLifecycleProposal & {
     operationId: string;
     clientMutationId: string;
@@ -261,7 +261,7 @@ export type LiveArtifactProposalAcceptanceInput = {
   sessionId: string;
   proposalId: string;
   requestId: string;
-  /** Route-computed deterministic D448 correlation, never client supplied. */
+  /** Route-computed deterministic document-operation correlation, never client supplied. */
   clientMutationId?: string;
   documentVersion: Extract<LiveDocumentVersion, { kind: "artifact_revision" }>;
   acceptedContent: string;
@@ -377,7 +377,7 @@ function toRuntimeManifestDto(manifest: MiniAppManifest): MiniAppRuntimeDto["man
 }
 
 /**
- * M205 — derive a fallback conversion target path from the source path + the
+ * Derive a fallback conversion target path from the source path + the
  * manifest-declared target extension (source stem + extension, same folder).
  * The UI normally supplies an explicit target; this is the fallback when it
  * doesn't (e.g. the agent path or a bare request).
@@ -890,7 +890,10 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
       )(match, build);
       if (hostCapabilities) payload.hostCapabilities = { ...payload.hostCapabilities, ...hostCapabilities };
 
-      return payload;
+      // Revalidate only after current authority checks. Source identity alone
+      // does not cover generated runtime bytes, manifests or host privileges.
+      const etag = weakETagFromDigestInput(JSON.stringify(payload));
+      return sendPrivateConditionalRead(request, reply, etag, payload);
     },
   );
 
@@ -1511,7 +1514,7 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
           });
           if (!written.ok) {
             // A transport/recovery-required outcome is deliberately unknown:
-            // retain the reservation so retry/restart can prove the one D448
+            // retain the reservation so retry/restart can prove the one reserved
             // operation instead of risking a duplicate write.
             if (written.code !== "relay_unavailable") await releaseWorkspaceReservation();
             return written;
@@ -1882,7 +1885,7 @@ export function appRoutes(app: FastifyInstance, deps?: AppRoutesDeps): void {
     },
   );
 
-  // M205 — generic, format-agnostic conversion invocation. Both the UI and the
+  // Generic, format-agnostic conversion invocation. Both the UI and the
   // agent drive the SAME deployed conversion tool; this route is the UI's entry
   // point. Verified session only (no manage_server_settings). The referenced
   // tool + the office.run host primitive enforce capability + zone gates.

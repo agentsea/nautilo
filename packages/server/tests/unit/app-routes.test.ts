@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
+import { createFileMutationRequestId } from "@nautilo/agent";
 import { liveAppCommandBroker } from "../../src/apps/live-app-command-broker";
 import { createHash } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -1789,7 +1790,7 @@ describe("/api/apps/:appId/live-session", () => {
 });
 
 describe("/api/apps/:appId/live-session currentFile", () => {
-  const CURRENT = "/Users/alice/project";
+  const CURRENT = "/path/to/project";
   const RELAY_ID = "relay-desktop-1";
   const RELATIVE = "docs/report.html";
   const CONTENT = "<html>writer</html>";
@@ -1917,7 +1918,7 @@ describe("/api/apps/:appId/live-session currentFile", () => {
 });
 
 describe("/api/apps/:appId/live-session/apply-accepted", () => {
-  const CURRENT = "/Users/alice/project";
+  const CURRENT = "/path/to/project";
   const RELAY_ID = "relay-desktop-accept";
   const RELATIVE = "docs/report.html";
 
@@ -1978,10 +1979,15 @@ describe("/api/apps/:appId/live-session/apply-accepted", () => {
             },
           });
           const routing = req.operation.args["_routing"] as Record<string, unknown>;
-          expect(routing["mutationRequestId"]).toMatch(
-            /^d448:[a-f0-9]{64}:[a-f0-9]{64}$/,
-          );
           const bytes = Buffer.from(req.operation.args["content"] as string, "base64");
+          expect(routing["mutationRequestId"]).toBe(createFileMutationRequestId("agent-turn-1", {
+            operation: "live-review.accept",
+            appId: "nautilo-writer",
+            localTargetId: "opaque-local-target",
+            expectedSha256: sha256Hex(canonical),
+            acceptedSha256: sha256Hex(bytes.toString("utf8")),
+            clientMutationId: "request-1",
+          }));
           currentContent = bytes.toString("utf8");
           writeCount++;
           return {
@@ -3061,6 +3067,16 @@ describe("/api/apps/:appId/runtime", () => {
       });
       expect(JSON.stringify(body)).not.toContain(appsRoot);
       expect(JSON.stringify(body)).not.toContain(join(appsRoot, ".cache"));
+      const reopened = await runtimeApp.inject({
+        method: "GET",
+        url: "/api/apps/test-canvas/runtime",
+        headers: {
+          "x-test-user-id": USER_WITHOUT_MANAGE,
+          "if-none-match": res.headers.etag as string,
+        },
+      });
+      expect(reopened.statusCode).toBe(304);
+      expect(reopened.body).toBe("");
     } finally {
       await runtimeApp.close();
     }
