@@ -160,6 +160,12 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  {
+    source: "./background/task-runtime-execution-evidence-v1.ts",
+    imported: "assertAuthenticTaskRuntimeExecutionEvidenceV1",
+    exported: "assertAuthenticTaskRuntimeExecutionEvidence",
+    typeOnly: false,
+  },
   ...([
     [
       "assertAuthenticPreparedTaskRuntimeResultObjectV1",
@@ -168,6 +174,10 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     [
       "prepareTaskRuntimeResultObjectV1",
       "prepareTaskRuntimeResultObject",
+    ],
+    [
+      "prepareNativeTaskRuntimeResultObjectV1",
+      "prepareNativeTaskRuntimeResultObject",
     ],
   ] as const).map(([imported, exported]) => ({
     source: "./object/task-runtime-result-preparation-v1.ts",
@@ -189,6 +199,12 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     source: "./object/task-runtime-result-preparation-v1.ts",
     imported: "PrepareTaskRuntimeResultObjectV1Input",
     exported: "PrepareTaskRuntimeResultObjectInput",
+    typeOnly: true,
+  },
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "PrepareNativeTaskRuntimeResultObjectV1Input",
+    exported: "PrepareNativeTaskRuntimeResultObjectInput",
     typeOnly: true,
   },
   {
