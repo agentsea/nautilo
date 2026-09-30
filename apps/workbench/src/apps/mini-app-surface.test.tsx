@@ -2635,7 +2635,7 @@ describe("MiniAppSurface", () => {
     const target = {
       kind: "artifact" as const,
       id: "design-artifact-1",
-      path: "designs/D575 Design acceptance.design.html",
+      path: "designs/Sample design.design.html",
       mimeType: "text/html",
     };
     const rendered = render(<MiniAppSurface appId="nautilo-design" target={target} onClose={() => {}} />);
@@ -2676,8 +2676,8 @@ describe("MiniAppSurface", () => {
     expect(runMiniAppConversion.mock.calls[0]?.[1]).toMatchObject({
       actionId: "export-png",
       direction: "export",
-      source: { surface: "workspace", path: "designs/D575 Design acceptance.design.html" },
-      target: { surface: "workspace", path: "designs/D575 Design acceptance.design.png" },
+      source: { surface: "workspace", path: "designs/Sample design.design.html" },
+      target: { surface: "workspace", path: "designs/Sample design.design.png" },
       scope: { pageHandle: "page:page-1", nodeHandles: ["node:frame-1", "node:shape-2"] },
     });
   });
@@ -4531,6 +4531,37 @@ describe("MiniAppSurface", () => {
     expect(bridgeOpts?.target).toBeUndefined();
     expect(typeof bridgeOpts?.materialize).toBe("function");
     expect(bridgeOpts?.documentSession).toBeDefined();
+  });
+
+  test("joining an already-connected stream preserves initial loading; a real reconnect refreshes it", async () => {
+    const target = {
+      kind: "artifact" as const, id: "artifact-row-1", path: "budget.html",
+      mimeType: "text/html", roomId: "room-1",
+    };
+    const envelope = { content: "base\n", mimeType: "text/html", path: target.path, baseSha256: "base-sha", baseRevision: 1 };
+    let finishRead!: () => void;
+    const pendingRead = new Promise<void>((resolve) => { finishRead = resolve; });
+    readDocumentSession.mockImplementation(async (session: { envelope: unknown }) => {
+      await pendingRead;
+      session.envelope = envelope;
+      return envelope;
+    });
+    render(<MiniAppSurface appId="sample-app" target={target} onClose={() => {}} />);
+    await waitFor(() => expect(subscribeWorkspaceArtifactEventsMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(readDocumentSession).toHaveBeenCalled());
+    const reconnect = subscribeWorkspaceArtifactEventsMock.mock.calls[0]?.[1]?.onReconnect;
+    resetDocumentReadSession.mockClear();
+    let joined: void | Promise<void>;
+    await act(async () => {
+      joined = reconnect?.("already-connected");
+      expect(resetDocumentReadSession).not.toHaveBeenCalled();
+      finishRead();
+      await joined;
+    });
+    expect(postAppDocumentChanged).not.toHaveBeenCalled();
+    await act(async () => { await reconnect?.(); });
+    expect(resetDocumentReadSession).toHaveBeenCalledTimes(1);
+    expect(postAppDocumentChanged).toHaveBeenCalledWith(document.querySelector("iframe"), { type: "reconnected" });
   });
 
   test("forwards external patch events to iframe and ignores own clientMutationId", async () => {
