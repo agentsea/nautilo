@@ -430,8 +430,16 @@ test("keeps object access revision independent from Namespace access revision", 
   );
 });
 
-test("includes the exact Scope origin Namespace in the grant inventory", async () => {
+test("includes the exact Scope origin and distinct output Namespaces", async () => {
   const value = occurrence();
+  const outputFact = {
+    namespaceId: OUTPUT,
+    domainId: "c1000000-0000-4000-8000-00000000000c",
+    expectedAccessRevision: 4,
+    expectedPolicyRevision: 7,
+    expectedDomainEpoch: 3,
+    expectedAuthorizationRevision: 11,
+  };
   const scopeEnvelope: ScopeMemoryEnvelopeWithOrigin = {
     memoryMode: "scope",
     ownerId: REQUESTOR,
@@ -458,13 +466,13 @@ test("includes the exact Scope origin Namespace in the grant inventory", async (
     recipientTtlMs: 60_000,
     now: () => NOW,
     predispatch: async () => scoped,
-    ...outputPorts(),
+    ...outputPorts(OUTPUT),
     resolveNamespaceAuthority: async ({ namespaceIds }) => {
-      expect(namespaceIds).toEqual([CONTENT, READABLE].sort());
+      expect(namespaceIds).toEqual([CONTENT, READABLE, OUTPUT].sort());
       return {
         sourceRoomId: SOURCE_ROOM,
         sourceNamespaceId: CONTENT,
-        facts: facts(),
+        facts: [...facts(), outputFact],
       };
     },
     prepareExecution: async () => ({
@@ -478,10 +486,11 @@ test("includes the exact Scope origin Namespace in the grant inventory", async (
   expect(plan.initialRecord.authoritySet.namespaceRequirements).toEqual([
     expect.objectContaining({ namespaceId: CONTENT, operations: ["decrypt", "encrypt"] }),
     expect.objectContaining({ namespaceId: READABLE, operations: ["decrypt", "encrypt"] }),
+    expect.objectContaining({ namespaceId: OUTPUT, operations: ["decrypt", "encrypt"] }),
   ]);
 });
 
-test("includes a separate output Namespace with encrypt authority before granting", async () => {
+test("grants decrypt and encrypt only to the exact distinct output Namespace", async () => {
   const extra = {
     namespaceId: OUTPUT,
     domainId: "c1000000-0000-4000-8000-00000000000c",
@@ -515,7 +524,23 @@ test("includes a separate output Namespace with encrypt authority before grantin
   const output = plan.initialRecord.authoritySet.namespaceRequirements.find(
     entry => entry.namespaceId === OUTPUT,
   );
-  expect(output?.operations).toEqual(["encrypt"]);
+  const readable = plan.initialRecord.authoritySet.namespaceRequirements.find(
+    entry => entry.namespaceId === READABLE,
+  );
+  expect(output?.operations).toEqual(["decrypt", "encrypt"]);
+  expect(readable?.operations).toEqual(["decrypt"]);
+});
+
+test("keeps decrypt and encrypt on an output Namespace shared with Task content", async () => {
+  const plan = await builder()(occurrence());
+  const content = plan.initialRecord.authoritySet.namespaceRequirements.find(
+    entry => entry.namespaceId === CONTENT,
+  );
+  const readable = plan.initialRecord.authoritySet.namespaceRequirements.find(
+    entry => entry.namespaceId === READABLE,
+  );
+  expect(content?.operations).toEqual(["decrypt", "encrypt"]);
+  expect(readable?.operations).toEqual(["decrypt"]);
 });
 
 test("requires concrete execution and publication sinks", () => {

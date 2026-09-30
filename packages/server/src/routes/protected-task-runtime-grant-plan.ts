@@ -133,13 +133,10 @@ function namespaceInventory(
         originNamespaceId,
         ...(outputDestination === null ? [] : [outputDestination.namespaceId]),
       ])].sort()),
-      operations: (namespaceId: string) => Object.freeze(
-        namespaceId === outputDestination?.namespaceId
-          && namespaceId !== contentNamespaceId
-          && namespaceId !== originNamespaceId
-          ? ["encrypt" as const]
-          : ["decrypt" as const, "encrypt" as const],
-      ),
+      operations: () => Object.freeze([
+        "decrypt" as const,
+        "encrypt" as const,
+      ]),
     });
   }
   const readable = new Set(envelope.readableNamespaces);
@@ -149,7 +146,10 @@ function namespaceInventory(
   ]);
   readable.add(contentNamespaceId);
   encryptable.add(contentNamespaceId);
-  if (outputDestination !== null) encryptable.add(outputDestination.namespaceId);
+  if (outputDestination !== null) {
+    readable.add(outputDestination.namespaceId);
+    encryptable.add(outputDestination.namespaceId);
+  }
   const namespaceIds = Object.freeze([...new Set([
     ...readable,
     ...encryptable,
