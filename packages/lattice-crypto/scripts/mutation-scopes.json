@@ -84,7 +84,7 @@
         "src/object/task-runtime-result-preparation-v1.ts",
         "src/object/task-runtime-checkpoint-namespace-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/unit/task-runtime-object-v1.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts"
     },
     {
       "name": "background-work-manifest",
