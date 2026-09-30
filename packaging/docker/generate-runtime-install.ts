@@ -48,8 +48,9 @@ type RuntimeInstallPolicy = {
   schemaVersion: 1;
   entryWorkspace: string;
   rootOverrides: string[];
+  runtimeOnlyOverrides?: DependencyMap;
   reviewedExceptions: Array<{
-    kind: "root-override";
+    kind: "root-override" | "runtime-only-override";
     name: string;
     reason: string;
   }>;
@@ -180,8 +181,18 @@ function writeProjectionTree(outputDir: string): ProjectionSummary {
     if (!exceptionsByName.has(name)) throw new Error(`runtime override has no reviewed exception: ${name}`);
     rootOverrides[name] = value;
   }
+  for (const [name, version] of Object.entries(policy.runtimeOnlyOverrides ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    if (name in rootOverrides || name in (rootManifest.overrides ?? {})) {
+      throw new Error(`runtime-only override conflicts with root override: ${name}`);
+    }
+    if (!policy.reviewedExceptions.some((item) => item.kind === "runtime-only-override" && item.name === name)) {
+      throw new Error(`runtime-only override has no reviewed exception: ${name}`);
+    }
+    rootOverrides[name] = version;
+  }
   for (const exception of policy.reviewedExceptions) {
-    if (!policy.rootOverrides.includes(exception.name)) {
+    if (!(exception.kind === "root-override" && policy.rootOverrides.includes(exception.name)) &&
+        !(exception.kind === "runtime-only-override" && exception.name in (policy.runtimeOnlyOverrides ?? {}))) {
       throw new Error(`reviewed exception is not used by the runtime projection: ${exception.name}`);
     }
   }

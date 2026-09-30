@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Reopening a mini-app revalidates its runtime and reuses an unchanged response
+  instead of downloading the full executable again. Authentication and host
+  authority are checked on every request; session changes discard retained runtimes.
+  Editors also share their initial document read when attaching to an already
+  connected event stream, while actual reconnections still refresh canonical data.
+
 - Mobile now opens notifications for the active server without restarting the
   encryption check. Notifications for another server still check that server
   before opening the conversation.
