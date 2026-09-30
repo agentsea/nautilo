@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { GetEligibleModelsOptions } from "@nautilo/trust";
+import type { EligibleModel, GetEligibleModelsOptions } from "@nautilo/trust";
 import { z } from "zod";
 import {
   getEligibleModels,
@@ -11,10 +11,96 @@ import {
   resolveProviderKey,
 } from "@nautilo/agent";
 import { fromRuntimeConfig } from "@nautilo/config";
+import {
+  ModelFundingError,
+  resolveModelFunding,
+  type ModelFundingDecision,
+} from "../lib/model-funding";
 
 export interface ConfigRouteDeps {
   readonly getDefaultImageModel?: typeof getDefaultImageModel;
   readonly resolveProviderKey?: typeof resolveProviderKey;
+}
+
+export interface CallerModelAvailability {
+  /** Signed-catalog and capability projection after caller funding admission. */
+  readonly model: EligibleModel;
+  /** Non-secret funding identity. Never serialize this from the guest catalog route. */
+  readonly funding: ModelFundingDecision | null;
+  /** False for personal funding until foreground chat execution is wired in the next phase. */
+  readonly selectableInThisRelease: boolean;
+}
+
+export interface CallerModelAvailabilityDeps {
+  readonly resolveFunding?: typeof resolveModelFunding;
+}
+
+const FUNDING_UNAVAILABLE_REASON: Readonly<Record<ModelFundingError["code"], string>> = {
+  personal_credentials_disabled: "personal provider credentials are disabled",
+  personal_credentials_forbidden: "personal provider credentials are not permitted",
+  personal_credential_missing: "a provider credential is not available for this caller",
+  server_credentials_forbidden: "server provider credentials are not permitted for this caller",
+  provider_credentials_missing: "provider credentials are not configured",
+  personal_credential_stale: "the personal provider credential changed; retry selection",
+  personal_credential_unavailable: "the personal provider credential is temporarily unavailable",
+  funding_source_changed: "the admitted funding source changed; retry selection",
+  unsupported_workload: "personal funding is not supported for this workload",
+  unsupported_provider: "personal funding is not supported for this provider",
+};
+
+function unavailableForCaller(model: EligibleModel, reason: string): EligibleModel {
+  return {
+    ...model,
+    enabled: false,
+    availability: "missing-key",
+    unavailableReason: reason,
+  };
+}
+
+/**
+ * Internal caller-scoped projection for foreground text chat. It composes the
+ * signed catalog/capability/routing result with the server-owned funding
+ * resolver. Personal decisions are represented for the next execution phase,
+ * but deliberately remain non-selectable in this release.
+ */
+export async function resolveCallerModelAvailability(
+  humanUserId: string,
+  modelId: string,
+  options: Omit<GetEligibleModelsOptions, "includeUnavailable"> = {},
+  deps: CallerModelAvailabilityDeps = {},
+): Promise<CallerModelAvailability> {
+  const base = resolveRetainedModels([modelId], options)[0]!;
+  if (base.availability !== "selectable" && base.availability !== "missing-key") {
+    return { model: base, funding: null, selectableInThisRelease: false };
+  }
+
+  try {
+    const funding = await (deps.resolveFunding ?? resolveModelFunding)({
+      humanUserId,
+      modelId,
+      workload: "foreground_text_chat",
+    });
+    const model: EligibleModel = {
+      ...base,
+      enabled: true,
+      availability: "selectable",
+    };
+    delete model.unavailableReason;
+    return {
+      model,
+      funding,
+      selectableInThisRelease: funding.kind === "server",
+    };
+  } catch (error) {
+    const reason = error instanceof ModelFundingError
+      ? FUNDING_UNAVAILABLE_REASON[error.code]
+      : "model funding is temporarily unavailable";
+    return {
+      model: unavailableForCaller(base, reason),
+      funding: null,
+      selectableInThisRelease: false,
+    };
+  }
 }
 
 /**

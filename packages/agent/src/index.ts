@@ -621,6 +621,7 @@ export {
   getUsageContext,
   type UsageContext,
   type UsageCallType,
+  type UsageFundingProvenance,
 } from "./usage/usage-context";
 export { recordLlmUsage, type RecordUsageInput } from "./usage/record-usage";
 export { extractUsageFromLLMResult, createUsageCallbackHandler, countNautiloUsageCallbacks } from "./usage/usage-callback";

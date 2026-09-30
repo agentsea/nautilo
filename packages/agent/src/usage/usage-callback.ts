@@ -188,7 +188,7 @@ class UsageCallbackHandler extends BaseCallbackHandler {
       recordUsageImpl({
         model: this.modelId,
         callType: ctx?.callType ?? "other",
-        userId: ctx?.userId ?? null,
+        userId: ctx?.userId ?? ctx?.funding?.humanUserId ?? null,
         roomId: normalizeUsageRoomId(ctx?.roomId),
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
@@ -198,6 +198,7 @@ class UsageCallbackHandler extends BaseCallbackHandler {
         cacheCreationTokens: usage.cacheCreationTokens,
         actualCostUsd: usage.actualCostUsd,
         ...(ctx?.modelControl ? { modelControl: ctx.modelControl } : {}),
+        ...(ctx?.funding ? { funding: ctx.funding } : {}),
         ...(ctx?.metadata ? { metadata: ctx.metadata } : {}),
       });
     } catch {

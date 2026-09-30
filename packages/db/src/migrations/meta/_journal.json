@@ -2150,6 +2150,13 @@
       "when": 1790604770905,
       "tag": "0306_magenta_mathemanic",
       "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1790697329440,
+      "tag": "0307_goofy_puck",
+      "breakpoints": true
     }
   ]
 }

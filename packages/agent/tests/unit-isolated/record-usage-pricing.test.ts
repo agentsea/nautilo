@@ -122,6 +122,76 @@ describe("recordLlmUsage pricing provenance (ISSUE-M217)", () => {
     ]);
   });
 
+  test("persists personal payer and credential revision outside metadata", async () => {
+    recordLlmUsage({
+      model: "openrouter:anthropic/claude-sonnet-4.6",
+      callType: "chat",
+      inputTokens: 10,
+      outputTokens: 2,
+      funding: {
+        kind: "personal",
+        humanUserId: "00000000-0000-0000-0000-000000000101",
+        payerHumanId: "00000000-0000-0000-0000-000000000101",
+        providerRoute: "openrouter-direct",
+        credentialId: "00000000-0000-0000-0000-000000000202",
+        credentialRevision: 4,
+      },
+    });
+    await settleFireAndForget();
+
+    expect(insertCalls[0]).toMatchObject({
+      userId: "00000000-0000-0000-0000-000000000101",
+      fundingKind: "personal",
+      payerHumanId: "00000000-0000-0000-0000-000000000101",
+      providerRoute: "openrouter-direct",
+      credentialId: "00000000-0000-0000-0000-000000000202",
+      credentialRevision: 4,
+    });
+    expect(insertCalls[0]?.["metadata"]).toEqual({
+      usagePricingSource: "catalog_coefficient",
+    });
+  });
+
+  test("persists explicit memory-service provenance without a payer or credential", async () => {
+    recordLlmUsage({
+      model: "openai:gpt-5.6-luna",
+      callType: "memory_review",
+      inputTokens: 10,
+      outputTokens: 2,
+      funding: {
+        kind: "service",
+        providerRoute: "server-openai-direct",
+      },
+    });
+    await settleFireAndForget();
+
+    expect(insertCalls[0]).toMatchObject({
+      fundingKind: "service",
+      providerRoute: "server-openai-direct",
+      payerHumanId: null,
+      credentialId: null,
+      credentialRevision: null,
+    });
+  });
+
+  test("leaves legacy usage honestly unclassified", async () => {
+    recordLlmUsage({
+      model: "openai:gpt-5.6-luna",
+      callType: "other",
+      inputTokens: 10,
+      outputTokens: 2,
+    });
+    await settleFireAndForget();
+
+    expect(insertCalls[0]).toMatchObject({
+      fundingKind: null,
+      payerHumanId: null,
+      providerRoute: null,
+      credentialId: null,
+      credentialRevision: null,
+    });
+  });
+
   test("image rows persist image_default source and imageCount metadata", async () => {
     recordLlmUsage({
       model: "unknown:image-model",

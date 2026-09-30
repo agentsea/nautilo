@@ -25,6 +25,7 @@ import { modelRouteProvider } from "../providers/model-route";
 import {
   managedGatewayKeyIsPresent,
   markManagedGatewayOutcomeUnknown,
+  resolveOpenRouterTransport,
 } from "../providers/openrouter-transport";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
@@ -37,7 +38,11 @@ import { messagesContainImageInputs } from "./message-modalities";
 import { resolveFallbackPolicy, type ResolvedFallbackPolicy } from "./resolve-fallback-policy";
 import { mapCategory, type FriendlyErrorCategory } from "./friendly-errors";
 import { emitAgentEvent } from "../runtime-hooks";
-import { getUsageContext, runWithUsageContext } from "../usage/usage-context";
+import {
+  getUsageContext,
+  runWithUsageContext,
+  type UsageFundingProvenance,
+} from "../usage/usage-context";
 import {
   hasProjectableStableSystemPrefix,
   modelUsesOpenAIExplicitPromptCache,
@@ -98,6 +103,34 @@ async function assertModelFunding(humanUserId: string | undefined, service?: Mod
   const causalHumanUserId = causalHumanForExecution(humanUserId);
   if (!causalHumanUserId) throw new ServerProviderCredentialsDeniedError("", "chat_model");
   await assertCanUseServerProviderCredentials(causalHumanUserId, "chat_model");
+}
+
+function usageProviderRoute(modelId: string): string {
+  const provider = modelRouteProvider(modelId);
+  if (provider !== "openrouter") return provider;
+  const route = resolveOpenRouterTransport()?.kind;
+  if (!route) throw new Error("OpenRouter transport is not configured.");
+  return route;
+}
+
+function serverUsageFunding(
+  modelId: string,
+  humanUserId: string | undefined,
+  service: ModelFundingService | undefined,
+): UsageFundingProvenance {
+  const providerRoute = usageProviderRoute(modelId);
+  if (service === "shared_memory_maintenance") {
+    return { kind: "service", providerRoute };
+  }
+  const causalHumanUserId = causalHumanForExecution(humanUserId);
+  if (!causalHumanUserId) {
+    throw new ServerProviderCredentialsDeniedError("", "chat_model");
+  }
+  return {
+    kind: "server",
+    humanUserId: causalHumanUserId,
+    providerRoute,
+  };
 }
 
 /** @internal Tests may shorten the first-token budget without waiting 60s. */
@@ -406,6 +439,7 @@ async function invokeForegroundAttemptWithUsageContext(
   agentId: string | null,
   controls: ResolvedForegroundModelControls | undefined,
   serving: ResolvedFireworksKimiK3ServingProfile | undefined,
+  funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
@@ -422,7 +456,6 @@ async function invokeForegroundAttemptWithUsageContext(
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
   );
   const directGpt6Responses = useOpenAIResponsesApi && isDirectGpt6Model(modelId);
-  if (!controls && !directGpt6Responses) return invoke();
   const effectiveReasoningEffort = directGpt6Responses
     ? controls?.reasoningEffort ?? DEFAULT_REASONING_EFFORT
     : controls?.reasoningEffort;
@@ -432,14 +465,17 @@ async function invokeForegroundAttemptWithUsageContext(
     userId: parent?.userId ?? null,
     roomId: parent?.roomId ?? null,
     ...(parent?.metadata ? { metadata: parent.metadata } : {}),
-    modelControl: {
-      canonicalModelId: controls?.canonicalModelId ?? modelId,
-      effectiveModelId: serving?.effectiveModelId ?? modelId,
-      ...(controls?.reasoningEffort === undefined ? {} : { requestedReasoningEffort: controls.reasoningEffort }),
-      ...(effectiveReasoningEffort === undefined ? {} : { effectiveReasoningEffort }),
-      ...(serving === undefined ? {} : { servingProfileId: serving.profileId }),
-      ...(serving === undefined ? {} : { servingSelector: servingSelectorForUsage(serving) }),
-    },
+    funding,
+    ...(!controls && !directGpt6Responses ? {} : {
+      modelControl: {
+        canonicalModelId: controls?.canonicalModelId ?? modelId,
+        effectiveModelId: serving?.effectiveModelId ?? modelId,
+        ...(controls?.reasoningEffort === undefined ? {} : { requestedReasoningEffort: controls.reasoningEffort }),
+        ...(effectiveReasoningEffort === undefined ? {} : { effectiveReasoningEffort }),
+        ...(serving === undefined ? {} : { servingProfileId: serving.profileId }),
+        ...(serving === undefined ? {} : { servingSelector: servingSelectorForUsage(serving) }),
+      },
+    }),
   }, invoke);
 }
 
@@ -757,6 +793,11 @@ export async function invokeChatModelWithFallback(
     let hasSelectedReasoningEffort = false;
     try {
       log(`[nautilo/agent] Attempting model: ${currentModelId}`);
+      const usageFunding = serverUsageFunding(
+        currentModelId,
+        invokeOptions?.fundingHumanUserId,
+        invokeOptions?.serverFundedService,
+      );
       const controls = invokeOptions?.resolveForegroundControls?.(currentModelId);
       if (controls && controls.canonicalModelId !== currentModelId) {
         throw new Error(`Resolved foreground controls belong to "${controls.canonicalModelId}", not attempted model "${currentModelId}".`);
@@ -823,6 +864,7 @@ export async function invokeChatModelWithFallback(
         agentId,
         controls,
         serving,
+        usageFunding,
         invokeOptions?.useOpenAIResponsesApi === true,
         managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
         {

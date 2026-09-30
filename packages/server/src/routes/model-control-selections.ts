@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ModelControlSelection } from "@nautilo/types";
-import { assertModelRunnable, getActiveModelCatalogSync } from "@nautilo/agent";
+import { getActiveModelCatalogSync } from "@nautilo/agent";
 import {
   getRoomAgentModelControlSelection,
   InvalidModelControlSelectionError,
@@ -10,6 +10,10 @@ import {
 } from "@nautilo/db";
 import { findPersonalAgentsForUser, findRoomForUserAndAgentMembers } from "@nautilo/trust";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import {
+  resolveCallerModelAvailability,
+  type CallerModelAvailability,
+} from "./config";
 
 /**
  * D462's browser-facing selection scope is deliberately `(current user,
@@ -34,7 +38,10 @@ export interface ModelControlSelectionRoutesDeps {
   resetSelection?: (roomId: string, agentId: string) => Promise<void>;
   /** Active signed-catalog seam; injectable so route tests never need network/catalog boot. */
   getCatalogEntries?: () => readonly ModelControlCatalogEntry[];
-  assertRunnableSelection?: (modelId: string) => void;
+  resolveCallerAvailability?: (
+    humanUserId: string,
+    modelId: string,
+  ) => Promise<CallerModelAvailability>;
 }
 
 type RoomParams = { roomId: string; agentId: string };
@@ -163,9 +170,10 @@ export function modelControlSelectionRoutes(
   const getCatalogEntries =
     deps.getCatalogEntries ??
     (() => getActiveModelCatalogSync().catalog.entries);
-  const assertRunnableSelection =
-    deps.assertRunnableSelection ??
-    ((modelId: string) => assertModelRunnable(modelId, { purpose: "chat-tools" }));
+  const resolveSelectionAvailability =
+    deps.resolveCallerAvailability ??
+    ((humanUserId: string, modelId: string) =>
+      resolveCallerModelAvailability(humanUserId, modelId, { purpose: "chat-tools" }));
 
   app.get<{ Params: RoomParams }>(
     "/api/rooms/:roomId/agents/:agentId/model-control-selection",
@@ -199,12 +207,17 @@ export function modelControlSelectionRoutes(
         getCatalogEntries(),
       );
       if (catalogError) return reply.code(422).send({ error: catalogError });
-      try {
-        assertRunnableSelection(parsed.selection.modelId);
-      } catch (error) {
+      const availability = await resolveSelectionAvailability(
+        request.sessionUserId,
+        parsed.selection.modelId,
+      );
+      if (!availability.selectableInThisRelease) {
         return reply.code(422).send({
           code: "model_unavailable",
-          error: error instanceof Error ? error.message : "selection model is unavailable",
+          error:
+            availability.funding?.kind === "personal"
+              ? "Personal-funded model selection is not available in this release."
+              : availability.model.unavailableReason ?? "selection model is unavailable",
         });
       }
       return reply.send({
