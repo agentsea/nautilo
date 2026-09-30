@@ -5,6 +5,7 @@ import type {
   ConversationProductPostgresHandle,
   CryptoPostgresHandle,
   NativeTaskMessageAuthority,
+  NativeTaskMessageReadAuthorityV1,
   PreparedNativeTaskMessage,
 } from "@nautilo/lattice-bridge/server";
 
@@ -88,7 +89,13 @@ function input(
       record: {} as ProtectedTaskNativeMessagePublicationInput["authority"]["record"],
       request: {} as ProtectedTaskNativeMessagePublicationInput["authority"]["request"],
       subject: {} as ProtectedTaskNativeMessagePublicationInput["authority"]["subject"],
-      evidence: {} as ProtectedTaskNativeMessagePublicationInput["authority"]["evidence"],
+      evidence: {
+        namespaceRequirements: [{
+          namespaceId: ids.namespace,
+          expectedPolicyRevision: 4,
+          operations: ["decrypt", "encrypt"],
+        }],
+      } as unknown as ProtectedTaskNativeMessagePublicationInput["authority"]["evidence"],
       productAuthority,
       runner: {} as ConversationProductCanonicalTransactionRunner,
       restricted: {} as ProtectedTaskNativeMessagePublicationInput["authority"]["restricted"],
@@ -102,6 +109,7 @@ function input(
     humanTurnId: `task-segment-turn:${ids.run}:1`,
     productHandle: {} as ConversationProductPostgresHandle,
     cryptoHandle: {} as CryptoPostgresHandle,
+    domains: [],
     preparation: {} as ProtectedTaskNativeMessagePublicationInput["preparation"],
     resolveHistoricalAgentSignerAuthority: () => null,
     hasCurrentGrant: () => Promise.resolve(true),
@@ -133,6 +141,12 @@ function request(signal: AbortSignal): ProtectedTaskNativeMessagePublicationRequ
 function harness(
   representation: "dual" | "protected",
   replay: "pending" | "mapped" = "pending",
+  recovery: Readonly<{
+    completionError?: boolean;
+    openedContent?: string;
+    openerError?: boolean;
+    staleDuringRecovery?: boolean;
+  }> = {},
 ) {
   const controller = new AbortController();
   const source = input(representation, controller.signal);
@@ -141,6 +155,7 @@ function harness(
   let marked: Record<string, unknown> | null = null;
   let mapped: Record<string, unknown> | null = null;
   let authorityChecks = 0;
+  let readAuthority: Record<string, unknown> | null = null;
   const lifecycle = {
     sessionId: ids.session,
     messageId: 17,
@@ -196,6 +211,9 @@ function harness(
     createAuthorityResolver: () => expected => {
       authorityChecks += 1;
       calls.push("authority");
+      if (recovery.staleDuringRecovery && authorityChecks > 4) {
+        return Promise.resolve(null);
+      }
       return Promise.resolve({ ...expected });
     },
     prepare: async value => {
@@ -204,6 +222,11 @@ function harness(
         ...value.coordinates,
         mode: value.mode,
         createdAt: value.createdAt,
+        sourceRoomId: ids.room,
+        namespaceId: ids.namespace,
+        namespaceAccessRevision: 3,
+        domainId: ids.contentNamespace,
+        policyRevision: 4,
       } as unknown as NativeTaskMessageAuthority;
       await value.resolveCurrentAuthority(expected);
       await value.resolveCurrentAuthority(expected);
@@ -213,27 +236,50 @@ function harness(
       complete: async () => {
         calls.push("complete");
         const expected = {
+          ...request(controller.signal).identity,
           sessionId: ids.session,
           messageId: 17,
           revision: 0,
-          taskId: ids.task,
-          taskRunId: ids.run,
-          roomId: ids.room,
-          graphThreadId,
-          humanTurnId: `task-segment-turn:${ids.run}:1`,
-          agentId: ids.agent,
           objectId: lifecycle.cryptoObjectId,
           role: "assistant",
           mode: representation === "protected"
             ? "encrypted_only"
             : "shadow_encryption",
           createdAt: NOW,
+          sourceRoomId: ids.room,
+          namespaceId: ids.namespace,
+          namespaceAccessRevision: 3,
+          domainId: ids.contentNamespace,
+          policyRevision: 4,
         } as unknown as NativeTaskMessageAuthority;
         await value.resolveCurrentAuthority(expected);
         await value.resolveCurrentAuthority(expected);
+        if (recovery.completionError) throw new Error("ambiguous crypto commit");
         return "created";
       },
     }),
+    createReadTarget: value => {
+      calls.push("read-target");
+      readAuthority = value as unknown as Record<string, unknown>;
+      return {} as never;
+    },
+    openStored: async value => {
+      calls.push("open-stored");
+      if (recovery.openerError) throw new Error("stored bytes unavailable");
+      const target = readAuthority as NativeTaskMessageReadAuthorityV1;
+      if (await value.resolveCurrentAuthority(target) === null) {
+        throw new Error("current authority unavailable");
+      }
+      return value.execute({
+        ...request(controller.signal).payload,
+        content: recovery.openedContent ?? "confidential Task output",
+      }, async () => {
+        calls.push("open-authority");
+        if (await value.resolveCurrentAuthority(target) === null) {
+          throw new Error("current authority unavailable");
+        }
+      });
+    },
   });
   return {
     controller,
@@ -244,6 +290,7 @@ function harness(
     appended: () => appended,
     marked: () => marked,
     mapped: () => mapped,
+    readAuthority: () => readAuthority,
   };
 }
 
@@ -308,6 +355,72 @@ describe("protected Task native Message publication", () => {
     expect(value.authorityChecks()).toBe(0);
   });
 
+  test("recovers exact ciphertext after an ambiguous crypto commit in both modes", async () => {
+    for (const mode of ["protected", "dual"] as const) {
+      const value = harness(mode, "pending", { completionError: true });
+      await value.publisher(request(value.controller.signal));
+      expect(value.calls).toContain("open-stored");
+      expect(value.calls.indexOf("open-stored")).toBeLessThan(
+        value.calls.indexOf("mark"),
+      );
+      expect(value.readAuthority()).toMatchObject({
+        taskId: ids.task,
+        taskRunId: ids.run,
+        roomId: ids.room,
+        namespaceId: ids.namespace,
+        messageId: 17,
+        role: "assistant",
+        cryptoAccessRevision: 0,
+      });
+      expect(value.marked()).not.toBeNull();
+      expect(value.mapped()).not.toBeNull();
+      if (mode === "protected") expect(value.appended()).toMatchObject({
+        content: null,
+        toolCalls: null,
+        toolName: null,
+      });
+    }
+  });
+
+  test("does not publish differently encrypted content on retry", async () => {
+    const value = harness("protected", "pending", {
+      completionError: true,
+      openedContent: "different Task output",
+    });
+    expect(await value.publisher(request(value.controller.signal)).then(
+      () => null,
+      (error: unknown) => error,
+    )).toBeInstanceOf(TypeError);
+    expect(value.marked()).toBeNull();
+    expect(value.mapped()).toBeNull();
+  });
+
+  test("does not publish when stored ciphertext cannot be verified", async () => {
+    const value = harness("dual", "pending", {
+      completionError: true,
+      openerError: true,
+    });
+    expect(await value.publisher(request(value.controller.signal)).then(
+      () => null,
+      (error: unknown) => error,
+    )).toBeInstanceOf(Error);
+    expect(value.marked()).toBeNull();
+    expect(value.mapped()).toBeNull();
+  });
+
+  test("does not publish recovered bytes after current authority expires", async () => {
+    const value = harness("protected", "pending", {
+      completionError: true,
+      staleDuringRecovery: true,
+    });
+    expect(await value.publisher(request(value.controller.signal)).then(
+      () => null,
+      (error: unknown) => error,
+    )).toBeInstanceOf(Error);
+    expect(value.marked()).toBeNull();
+    expect(value.mapped()).toBeNull();
+  });
+
   test("does not allocate when the exact grant is already stale", async () => {
     const value = harness("protected");
     const publisher = createProtectedTaskNativeMessagePublication({
@@ -318,6 +431,33 @@ describe("protected Task native Message publication", () => {
         appendAllocated: () => {
           throw new Error("must not allocate");
         },
+        markCryptoComplete: () => Promise.resolve("applied"),
+        compareAndSwapCryptoMapping: () => Promise.resolve("applied"),
+      }),
+    });
+    expect(await publisher(request(value.controller.signal)).then(
+      () => null,
+      (error: unknown) => error,
+    )).toBeInstanceOf(TypeError);
+  });
+
+  test("refuses an encrypt-only Message grant before allocation", async () => {
+    const value = harness("protected");
+    const publisher = createProtectedTaskNativeMessagePublication({
+      ...value.source,
+      authority: {
+        ...value.source.authority,
+        evidence: {
+          ...value.source.authority.evidence,
+          namespaceRequirements: [{
+            ...value.source.authority.evidence.namespaceRequirements[0]!,
+            operations: ["encrypt"],
+          }],
+        },
+      },
+    }, {
+      createProduct: () => ({
+        appendAllocated: () => { throw new Error("must not allocate"); },
         markCryptoComplete: () => Promise.resolve("applied"),
         compareAndSwapCryptoMapping: () => Promise.resolve("applied"),
       }),

@@ -1,20 +1,26 @@
+import { timingSafeEqual } from "node:crypto";
 import {
   and,
   eq,
   sessionMessages,
 } from "@nautilo/db";
+import type { DomainForegroundSecretEntry } from "@nautilo/lattice-crypto";
 import {
+  decodeMessagePayloadV2,
   encodeMessagePayloadV2,
   type MessagePayloadV2,
 } from "@nautilo/lattice-bridge";
 import {
   PostgresConversationProductStore,
+  createNativeTaskMessageReadTargetV1,
   createPostgresNativeTaskMessageCryptoCompletion,
   prepareNativeTaskMessage,
+  withNativeTaskMessageV1,
   type ConversationProductCanonicalTransactionRunner,
   type ConversationProductPostgresHandle,
   type CryptoPostgresHandle,
   type NativeTaskMessageAuthority,
+  type NativeTaskMessageReadAuthorityV1,
   type PrepareNativeTaskMessageInput,
 } from "@nautilo/lattice-bridge/server";
 
@@ -46,6 +52,8 @@ type Dependencies = Readonly<{
     typeof createProtectedTaskNativeMessageAuthorityResolver;
   prepare: typeof prepareNativeTaskMessage;
   createCompletion: typeof createPostgresNativeTaskMessageCryptoCompletion;
+  createReadTarget: typeof createNativeTaskMessageReadTargetV1;
+  openStored: typeof withNativeTaskMessageV1;
   readCreatedAt(
     runner: ConversationProductCanonicalTransactionRunner,
     coordinates: Readonly<{
@@ -62,6 +70,8 @@ const productionDependencies: Dependencies = Object.freeze({
   createAuthorityResolver: createProtectedTaskNativeMessageAuthorityResolver,
   prepare: prepareNativeTaskMessage,
   createCompletion: createPostgresNativeTaskMessageCryptoCompletion,
+  createReadTarget: createNativeTaskMessageReadTargetV1,
+  openStored: withNativeTaskMessageV1,
   readCreatedAt: (runner, coordinates) => runner.transaction(async tx => {
     const rows = await tx.select({
       createdAt: sessionMessages.createdAt,
@@ -82,6 +92,8 @@ export type ProtectedTaskNativeMessagePublicationInput = Readonly<{
   humanTurnId: string;
   productHandle: ConversationProductPostgresHandle;
   cryptoHandle: CryptoPostgresHandle;
+  /** Borrowed secret entries from this execution segment's current grant. */
+  domains: readonly DomainForegroundSecretEntry[];
   preparation: Pick<
     PrepareNativeTaskMessageInput,
     | "namespace"
@@ -122,8 +134,42 @@ function sameAuthority(
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.length === right.length
-    && left.every((value, index) => value === right[index]);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function readAuthority(
+  expected: NativeTaskMessageAuthority,
+): NativeTaskMessageReadAuthorityV1 {
+  return Object.freeze({
+    mode: expected.mode,
+    taskId: expected.taskId,
+    taskRunId: expected.taskRunId,
+    sourceRoomId: expected.sourceRoomId,
+    roomId: expected.roomId,
+    sessionId: expected.sessionId,
+    messageId: expected.messageId,
+    revision: expected.revision,
+    graphThreadId: expected.graphThreadId,
+    humanTurnId: expected.humanTurnId,
+    agentId: expected.agentId,
+    role: expected.role,
+    createdAt: expected.createdAt,
+    objectId: expected.objectId,
+    cryptoAccessRevision: 0,
+    namespaceId: expected.namespaceId,
+    domainId: expected.domainId,
+    expectedAccessRevision: expected.namespaceAccessRevision,
+    expectedPolicyRevision: expected.policyRevision,
+  });
+}
+
+function sameReadAuthority(
+  left: NativeTaskMessageReadAuthorityV1,
+  right: NativeTaskMessageReadAuthorityV1,
+): boolean {
+  const fields = Object.keys(left) as (keyof NativeTaskMessageReadAuthorityV1)[];
+  return Object.keys(right).length === fields.length
+    && fields.every(field => left[field] === right[field]);
 }
 
 function reject(message: string): never {
@@ -184,27 +230,39 @@ export function createProtectedTaskNativeMessagePublication(
       reject("Protected Task Message grant is stale before allocation");
     }
     signal.throwIfAborted();
+    const messageRequirements = authority.evidence.namespaceRequirements.filter(
+      entry => entry.namespaceId === authority.productAuthority.namespaceId,
+    );
+    const messageRequirement = messageRequirements[0];
+    if (messageRequirements.length !== 1
+      || messageRequirement === undefined
+      || messageRequirement.expectedPolicyRevision
+        !== authority.productAuthority.policyRevision
+      || !messageRequirement.operations.includes("decrypt")
+      || !messageRequirement.operations.includes("encrypt")) {
+      reject("Protected Task Message recovery authority is unavailable");
+    }
 
     const encoded = encodeMessagePayloadV2(request.payload);
-    let digest: Uint8Array;
+    let digest: Uint8Array | null = null;
     try {
+      const payload = decodeMessagePayloadV2(encoded);
+      if (payload.role === "user") {
+        reject("Protected Task Message author role is invalid");
+      }
       digest = authority.crypto.hash(encoded);
-    } finally {
-      encoded.fill(0);
-    }
-    try {
       const full = authority.productAuthority.representation === "protected";
       const allocation = await product.appendAllocated({
         sessionId: authority.productAuthority.sessionId,
         idempotencyKey: request.idempotencyKey,
-        content: full ? null : request.payload.content,
+        content: full ? null : payload.content,
         publicationPolicy: policy,
         keyClass: "ai",
-        authorRole: request.payload.role,
-        toolCalls: full || request.payload.toolCalls === undefined
+        authorRole: payload.role,
+        toolCalls: full || payload.toolCalls === undefined
           ? null
-          : JSON.stringify(request.payload.toolCalls),
-        toolName: full ? null : request.payload.toolName ?? null,
+          : JSON.stringify(payload.toolCalls),
+        toolName: full ? null : payload.toolName ?? null,
         fingerprint: request.fingerprint,
         humanTurnId: null,
         transcriptOrigin: "subagent",
@@ -230,7 +288,7 @@ export function createProtectedTaskNativeMessagePublication(
         || allocation.lifecycle.namespaceIdAtAllocation
           !== authority.productAuthority.namespaceId
         || allocation.lifecycle.keyClass !== "ai"
-        || allocation.lifecycle.authorRole !== request.payload.role
+        || allocation.lifecycle.authorRole !== payload.role
         || allocation.lifecycle.objectIdScheme !== "message_v2"
         || allocation.lifecycle.representationMode !== (full
           ? "full_encryption"
@@ -254,7 +312,7 @@ export function createProtectedTaskNativeMessagePublication(
         humanTurnId: request.identity.humanTurnId,
         agentId: request.identity.agentId,
         objectId: allocation.lifecycle.cryptoObjectId,
-        role: request.payload.role,
+        role: payload.role,
       });
       const expectedParity = full
         ? "server_authenticated" as const
@@ -331,7 +389,7 @@ export function createProtectedTaskNativeMessagePublication(
         evidence: authority.evidence,
         coordinates,
         mode: full ? "encrypted_only" : "shadow_encryption",
-        payload: request.payload,
+        payload,
         createdAt,
         ...input.preparation,
         signal,
@@ -348,7 +406,44 @@ export function createProtectedTaskNativeMessagePublication(
         resolveHistoricalAgentSignerAuthority:
           input.resolveHistoricalAgentSignerAuthority,
       });
-      await completion.complete(prepared);
+      try {
+        await completion.complete(prepared);
+      } catch {
+        signal.throwIfAborted();
+        // A prior attempt may have committed randomized ciphertext before its
+        // product completion receipt. Only the verified opener can establish
+        // that those bytes decrypt to this exact retry payload.
+        const targetAuthority = readAuthority(expected);
+        await dependencies.openStored({
+          restricted: authority.restricted,
+          crypto: authority.crypto,
+          serverScope: authority.serverScope,
+          evidence: authority.evidence,
+          domains: input.domains,
+          signal,
+          target: dependencies.createReadTarget(targetAuthority),
+          resolveCurrentAuthority: async candidate => {
+            if (!sameReadAuthority(candidate, targetAuthority)) return null;
+            const current = await resolveCurrentAuthority(expected);
+            return current !== null && sameAuthority(current, expected)
+              ? targetAuthority
+              : null;
+          },
+          resolveHistoricalAgentSignerAuthority:
+            input.resolveHistoricalAgentSignerAuthority,
+          execute: async (opened, assertCurrentAuthority) => {
+            const openedBytes = encodeMessagePayloadV2(opened);
+            try {
+              if (!sameBytes(openedBytes, encoded)) {
+                reject("Protected Task Message recovered content disagrees");
+              }
+              await assertCurrentAuthority();
+            } finally {
+              openedBytes.fill(0);
+            }
+          },
+        });
+      }
 
       const assertCurrent = async (): Promise<void> => {
         signal.throwIfAborted();
@@ -369,7 +464,8 @@ export function createProtectedTaskNativeMessagePublication(
         reject("Protected Task Message crypto mapping was not accepted");
       }
     } finally {
-      digest.fill(0);
+      encoded.fill(0);
+      digest?.fill(0);
     }
   };
 }
