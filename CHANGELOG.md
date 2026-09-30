@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Document reads and authorization checks avoid resolving unrelated model
+  metadata when checking decision-tool availability. Model credentials and
+  document access are still checked against current state.
+
 - Reopening a mini-app revalidates its runtime and reuses an unchanged response
   instead of downloading the full executable again. Authentication and host
   authority are checked on every request; session changes discard retained runtimes.
