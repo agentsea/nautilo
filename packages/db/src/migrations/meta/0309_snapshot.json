@@ -1,6 +1,6 @@
 {
-  "id": "0d05d4e3-c93c-4531-9d43-63204053e6b1",
-  "prevId": "5ef82d92-b061-48ea-a48e-66e475c021fd",
+  "id": "d0034dfb-4edf-42f6-a482-9b4c799bcfe3",
+  "prevId": "812aa183-7906-4e35-8907-b1cd4cd2e211",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8669,6 +8669,36 @@
           "primaryKey": false,
           "notNull": false
         },
+        "funding_kind": {
+          "name": "funding_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payer_human_id": {
+          "name": "payer_human_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_route": {
+          "name": "provider_route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_revision": {
+          "name": "credential_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -8751,6 +8781,36 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_llm_usage_funding_kind": {
+          "name": "idx_llm_usage_funding_kind",
+          "columns": [
+            {
+              "expression": "funding_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_llm_usage_payer_human_id": {
+          "name": "idx_llm_usage_payer_human_id",
+          "columns": [
+            {
+              "expression": "payer_human_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -8784,7 +8844,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "llm_usage_events_funding_provenance_check": {
+          "name": "llm_usage_events_funding_provenance_check",
+          "value": "(\n        (\"llm_usage_events\".\"funding_kind\" IS NULL AND \"llm_usage_events\".\"payer_human_id\" IS NULL AND \"llm_usage_events\".\"provider_route\" IS NULL AND \"llm_usage_events\".\"credential_id\" IS NULL AND \"llm_usage_events\".\"credential_revision\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"funding_kind\" IS NOT NULL AND (\n          (\"llm_usage_events\".\"funding_kind\" = 'personal' AND \"llm_usage_events\".\"payer_human_id\" IS NOT NULL AND \"llm_usage_events\".\"provider_route\" IS NOT NULL AND length(\"llm_usage_events\".\"provider_route\") > 0 AND \"llm_usage_events\".\"credential_id\" IS NOT NULL AND \"llm_usage_events\".\"credential_revision\" IS NOT NULL AND \"llm_usage_events\".\"credential_revision\" >= 1)\n          OR\n          (\"llm_usage_events\".\"funding_kind\" IN ('server', 'service') AND \"llm_usage_events\".\"payer_human_id\" IS NULL AND \"llm_usage_events\".\"provider_route\" IS NOT NULL AND length(\"llm_usage_events\".\"provider_route\") > 0 AND \"llm_usage_events\".\"credential_id\" IS NULL AND \"llm_usage_events\".\"credential_revision\" IS NULL)\n        ))\n      )"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.provider_cost_events": {
@@ -28450,11 +28515,11 @@
         },
         "background_crypto_authorization_requests_work_kind": {
           "name": "background_crypto_authorization_requests_work_kind",
-          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.approval_resume'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_purpose": {
           "name": "background_crypto_authorization_requests_purpose",
-          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.approval_resume'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_work_purpose_coherent": {
           "name": "background_crypto_authorization_requests_work_purpose_coherent",
@@ -28474,7 +28539,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in ('task.dispatch', 'task.execute')\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -43113,6 +43178,256 @@
       },
       "checkConstraints": {},
       "isRLSEnabled": true
+    },
+    "public.protected_task_run_output_bindings": {
+      "name": "protected_task_run_output_bindings",
+      "schema": "",
+      "columns": {
+        "task_run_id": {
+          "name": "task_run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delivery_mode": {
+          "name": "delivery_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_room_id": {
+          "name": "destination_room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_namespace_id": {
+          "name": "destination_namespace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_operation_id": {
+          "name": "result_operation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_object_id": {
+          "name": "result_object_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_operation_id": {
+          "name": "message_operation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "wake_operation_id": {
+          "name": "wake_operation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepted_policy_revision": {
+          "name": "accepted_policy_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_terminal_at": {
+          "name": "result_terminal_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_attached_at": {
+          "name": "result_attached_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "message_published_at": {
+          "name": "message_published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "wake_job_id": {
+          "name": "wake_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "wake_scheduled_at": {
+          "name": "wake_scheduled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_protected_task_run_output_bindings_recovery": {
+          "name": "idx_protected_task_run_output_bindings_recovery",
+          "columns": [
+            {
+              "expression": "completed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "accepted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "protected_task_run_output_bindings_task_run_id_task_runs_id_fk": {
+          "name": "protected_task_run_output_bindings_task_run_id_task_runs_id_fk",
+          "tableFrom": "protected_task_run_output_bindings",
+          "tableTo": "task_runs",
+          "columnsFrom": [
+            "task_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "protected_task_run_output_bindings_destination_fk": {
+          "name": "protected_task_run_output_bindings_destination_fk",
+          "tableFrom": "protected_task_run_output_bindings",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "destination_room_id",
+            "destination_namespace_id"
+          ],
+          "columnsTo": [
+            "id",
+            "namespace_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "protected_task_run_output_bindings_binding_id_unique": {
+          "name": "protected_task_run_output_bindings_binding_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "binding_id"
+          ]
+        },
+        "protected_task_run_output_bindings_result_operation_id_unique": {
+          "name": "protected_task_run_output_bindings_result_operation_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "result_operation_id"
+          ]
+        },
+        "protected_task_run_output_bindings_result_object_id_unique": {
+          "name": "protected_task_run_output_bindings_result_object_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "result_object_id"
+          ]
+        },
+        "protected_task_run_output_bindings_message_operation_id_unique": {
+          "name": "protected_task_run_output_bindings_message_operation_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "message_operation_id"
+          ]
+        },
+        "protected_task_run_output_bindings_wake_operation_id_unique": {
+          "name": "protected_task_run_output_bindings_wake_operation_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "wake_operation_id"
+          ]
+        },
+        "protected_task_run_output_bindings_wake_job_id_unique": {
+          "name": "protected_task_run_output_bindings_wake_job_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "wake_job_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "protected_task_run_output_bindings_policy_revision_positive": {
+          "name": "protected_task_run_output_bindings_policy_revision_positive",
+          "value": "\"protected_task_run_output_bindings\".\"accepted_policy_revision\" > 0"
+        },
+        "protected_task_run_output_bindings_result_identity_shape": {
+          "name": "protected_task_run_output_bindings_result_identity_shape",
+          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
+        },
+        "protected_task_run_output_bindings_delivery_shape": {
+          "name": "protected_task_run_output_bindings_delivery_shape",
+          "value": "(\n        \"protected_task_run_output_bindings\".\"delivery_mode\" = 'none'\n        and \"protected_task_run_output_bindings\".\"destination_room_id\" is null\n        and \"protected_task_run_output_bindings\".\"destination_namespace_id\" is null\n        and \"protected_task_run_output_bindings\".\"message_operation_id\" is null\n        and \"protected_task_run_output_bindings\".\"wake_operation_id\" is null\n      ) or (\n        \"protected_task_run_output_bindings\".\"delivery_mode\" = 'raw'\n        and \"protected_task_run_output_bindings\".\"destination_room_id\" is not null\n        and \"protected_task_run_output_bindings\".\"destination_namespace_id\" is not null\n        and \"protected_task_run_output_bindings\".\"message_operation_id\" = 'task-run-delivery-message:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"wake_operation_id\" is null\n      ) or (\n        \"protected_task_run_output_bindings\".\"delivery_mode\" = 'wake'\n        and \"protected_task_run_output_bindings\".\"destination_room_id\" is not null\n        and \"protected_task_run_output_bindings\".\"destination_namespace_id\" is not null\n        and \"protected_task_run_output_bindings\".\"message_operation_id\" is null\n        and \"protected_task_run_output_bindings\".\"wake_operation_id\" = 'task-run-delivery-wake:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n      ) or (\n        \"protected_task_run_output_bindings\".\"delivery_mode\" = 'raw_and_wake'\n        and \"protected_task_run_output_bindings\".\"destination_room_id\" is not null\n        and \"protected_task_run_output_bindings\".\"destination_namespace_id\" is not null\n        and \"protected_task_run_output_bindings\".\"message_operation_id\" = 'task-run-delivery-message:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"wake_operation_id\" = 'task-run-delivery-wake:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n      )"
+        },
+        "protected_task_run_output_bindings_message_receipt_coherent": {
+          "name": "protected_task_run_output_bindings_message_receipt_coherent",
+          "value": "(\"protected_task_run_output_bindings\".\"message_id\" is null) = (\"protected_task_run_output_bindings\".\"message_published_at\" is null)\n        and (\"protected_task_run_output_bindings\".\"message_id\" is null or \"protected_task_run_output_bindings\".\"message_operation_id\" is not null)"
+        },
+        "protected_task_run_output_bindings_wake_receipt_coherent": {
+          "name": "protected_task_run_output_bindings_wake_receipt_coherent",
+          "value": "(\"protected_task_run_output_bindings\".\"wake_job_id\" is null) = (\"protected_task_run_output_bindings\".\"wake_scheduled_at\" is null)\n        and (\"protected_task_run_output_bindings\".\"wake_job_id\" is null or \"protected_task_run_output_bindings\".\"wake_operation_id\" is not null)"
+        },
+        "protected_task_run_output_bindings_result_receipt_coherent": {
+          "name": "protected_task_run_output_bindings_result_receipt_coherent",
+          "value": "\"protected_task_run_output_bindings\".\"result_attached_at\" is null\n        or (\"protected_task_run_output_bindings\".\"result_terminal_at\" is not null\n          and \"protected_task_run_output_bindings\".\"result_attached_at\" >= \"protected_task_run_output_bindings\".\"result_terminal_at\")"
+        },
+        "protected_task_run_output_bindings_completion_coherent": {
+          "name": "protected_task_run_output_bindings_completion_coherent",
+          "value": "\"protected_task_run_output_bindings\".\"completed_at\" is null or (\n        \"protected_task_run_output_bindings\".\"result_attached_at\" is not null\n        and (\"protected_task_run_output_bindings\".\"message_operation_id\" is null or \"protected_task_run_output_bindings\".\"message_published_at\" is not null)\n        and (\"protected_task_run_output_bindings\".\"wake_operation_id\" is null or \"protected_task_run_output_bindings\".\"wake_scheduled_at\" is not null)\n        and \"protected_task_run_output_bindings\".\"completed_at\" >= \"protected_task_run_output_bindings\".\"accepted_at\"\n      )"
+        }
+      },
+      "isRLSEnabled": false
     }
   },
   "enums": {

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -31,6 +31,11 @@ export interface InsertLlmUsageInput {
   estimatedCostUsd: number;
   actualCostUsd?: number | null;
   pricingVersion?: string | null;
+  fundingKind?: "personal" | "server" | "service" | null;
+  payerHumanId?: string | null;
+  providerRoute?: string | null;
+  credentialId?: string | null;
+  credentialRevision?: number | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -67,6 +72,11 @@ export async function insertLlmUsageEvent(input: InsertLlmUsageInput): Promise<v
           ? null
           : toNumeric(input.actualCostUsd),
       pricingVersion: input.pricingVersion ?? null,
+      fundingKind: input.fundingKind ?? null,
+      payerHumanId: input.payerHumanId ?? null,
+      providerRoute: input.providerRoute ?? null,
+      credentialId: input.credentialId ?? null,
+      credentialRevision: input.credentialRevision ?? null,
       metadata: input.metadata ?? null,
     });
 }
@@ -200,9 +210,14 @@ export function buildCostsSummaryQueries(
   range: CostsRange,
   handle: Pick<DirectDatabase, "select">,
 ) {
+  // The administrator dashboard represents server/service spend plus its
+  // pre-provenance history. Historical NULL rows stay visibly unclassified at
+  // the storage boundary and remain in totals for continuity; explicitly
+  // personal-funded calls are excluded.
   const inWindow = and(
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
+    or(isNull(llmUsageEvents.fundingKind), ne(llmUsageEvents.fundingKind, "personal")),
   );
 
   const totals = handle

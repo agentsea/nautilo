@@ -155,6 +155,7 @@ let invokeChatModelWithFallback: (
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
     fundingHumanUserId?: string;
+    serverFundedService?: "shared_memory_maintenance";
     reasoningOutput?: boolean;
     reasoningOverrides?: Record<string, boolean>;
     useOpenAIResponsesApi?: boolean;
@@ -253,6 +254,116 @@ describe("invokeChatModelWithFallback (chain)", () => {
     expect(error).toMatchObject({ code: "server_provider_credentials_required", humanUserId: "" });
     expect(fundingAdmission).not.toHaveBeenCalled();
     expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("binds explicit server provenance around a direct attempt without model controls", async () => {
+    const observed: Array<ReturnType<typeof getUsageContext>> = [];
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        observed.push(getUsageContext());
+        return new AIMessage("ok");
+      } }),
+    }) as unknown as AuraModel);
+
+    await invokeChatModelWithFallback(
+      messages,
+      tools,
+      A,
+      "agent-owner",
+      "agent-1",
+      null,
+      undefined,
+      { fundingHumanUserId: "causal-human", modelFallbackMode: "none" },
+    );
+
+    expect(observed[0]?.funding).toEqual({
+      kind: "server",
+      humanUserId: "causal-human",
+      providerRoute: "anthropic",
+    });
+    expect(observed[0]?.modelControl).toBeUndefined();
+  });
+
+  test("records the actual managed Gateway route for an OpenRouter attempt", async () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
+    let observed: ReturnType<typeof getUsageContext>;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        observed = getUsageContext();
+        return new AIMessage("ok");
+      } }),
+    }) as unknown as AuraModel);
+
+    await invokeChatModelWithFallback(
+      messages,
+      tools,
+      T1,
+      "agent-owner",
+      "agent-1",
+      null,
+      undefined,
+      { fundingHumanUserId: "causal-human", modelFallbackMode: "none" },
+    );
+
+    expect(observed?.funding).toEqual({
+      kind: "server",
+      humanUserId: "causal-human",
+      providerRoute: "managed-gateway",
+    });
+  });
+
+  test("records the direct OpenRouter route when no managed Gateway is active", async () => {
+    let observed: ReturnType<typeof getUsageContext>;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        observed = getUsageContext();
+        return new AIMessage("ok");
+      } }),
+    }) as unknown as AuraModel);
+
+    await invokeChatModelWithFallback(
+      messages,
+      tools,
+      T1,
+      "agent-owner",
+      "agent-1",
+      null,
+      undefined,
+      { fundingHumanUserId: "causal-human", modelFallbackMode: "none" },
+    );
+
+    expect(observed?.funding).toMatchObject({
+      kind: "server",
+      providerRoute: "openrouter",
+    });
+  });
+
+  test("marks only the trusted shared-memory bypass as service-funded", async () => {
+    let observed: ReturnType<typeof getUsageContext>;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        observed = getUsageContext();
+        return new AIMessage("ok");
+      } }),
+    }) as unknown as AuraModel);
+
+    await invokeChatModelWithFallback(
+      messages,
+      tools,
+      A,
+      "service-owner",
+      "agent-1",
+      null,
+      undefined,
+      { serverFundedService: "shared_memory_maintenance", modelFallbackMode: "none" },
+    );
+
+    expect(observed?.funding).toEqual({
+      kind: "service",
+      providerRoute: "anthropic",
+    });
+    expect(fundingAdmission).not.toHaveBeenCalled();
   });
 
   test.each([

@@ -9,6 +9,18 @@ export interface ProviderInitOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * Decrypted, request-scoped credential supplied by the trusted funding
+ * resolver. This value must remain transient at the provider boundary.
+ */
+export type PersonalProviderCredential = Readonly<{
+  apiKey: string;
+}>;
+
+export type UniversalModelOptions = Record<string, unknown> & Readonly<{
+  personalCredential?: PersonalProviderCredential;
+}>;
+
 export interface ModelInvokeOptions {
   [key: string]: unknown;
 }

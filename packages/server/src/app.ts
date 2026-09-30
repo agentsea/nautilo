@@ -268,6 +268,7 @@ import { serverIconRoutes } from "./routes/server-icon";
 import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
 import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
+import { personalProviderCredentialRoutes } from "./routes/personal-provider-credentials";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
 import { messageBackfillRoutes } from "./routes/message-backfill";
@@ -1218,6 +1219,18 @@ export async function createApp(options?: CreateAppOptions) {
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ConfigGuardError) {
       return replyForConfigGuardError(reply, error);
+    }
+    // Credential payloads must not enter the generic stack logger, including
+    // malformed JSON rejected by Fastify before the route handler can run.
+    if (request.url.startsWith("/api/account/provider-credentials")) {
+      const rawStatus = (error as { statusCode?: unknown }).statusCode;
+      const status = rawStatus === 400 || rawStatus === 413 ? rawStatus : 500;
+      return reply.code(status).send({
+        error: status === 500 ? "personal_credentials_unavailable" : "invalid_credential_request",
+        committed: false,
+        retryable: status === 500,
+        repair: status === 500 ? "retry" : null,
+      });
     }
     logError(
       "[server]",
@@ -2965,6 +2978,20 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   serverProviderPolicyRoutes(app);
+  personalProviderCredentialRoutes(app, {
+    auditEvent: (request, event) => {
+      try {
+        writeSecurityAuditEvent(securityAuditLogPath, {
+          ...event,
+          ts: new Date().toISOString(),
+          ip: request.ip,
+          userAgent: request.headers["user-agent"],
+        });
+      } catch {
+        warn("[personal-provider-credentials] audit write failed");
+      }
+    },
+  });
   encryptionTransitionRoutes(app, {
     publishPolicyChanged: publishEncryptionPolicyChanged,
     maintenanceController: publishingMaintenanceController,

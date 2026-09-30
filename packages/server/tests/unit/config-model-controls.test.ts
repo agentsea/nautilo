@@ -8,7 +8,11 @@ import {
   resetRuntimeModelCatalog,
 } from "@nautilo/agent";
 import { ModelCatalogSchema } from "@nautilo/types";
-import { configRoutes } from "../../src/routes/config";
+import {
+  configRoutes,
+  resolveCallerModelAvailability,
+} from "../../src/routes/config";
+import { ModelFundingError } from "../../src/lib/model-funding";
 
 describe("GET /api/config/models D462 controls", () => {
   afterEach(() => {
@@ -103,5 +107,84 @@ describe("GET /api/config/models D462 controls", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("caller-scoped model availability", () => {
+  afterEach(() => {
+    resetRuntimeModelCatalog();
+  });
+
+  test("represents personal funding internally without enabling selection in this release", async () => {
+    const modelId = "anthropic:claude-sonnet-4-6";
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      modelId,
+      { purpose: "chat-tools", env: {} },
+      {
+        resolveFunding: async (input) => ({
+          kind: "personal",
+          humanUserId: input.humanUserId,
+          payerHumanId: input.humanUserId,
+          credentialId: "credential-1",
+          credentialRevision: 4,
+          modelId: input.modelId,
+          providerRoute: "anthropic",
+          workload: input.workload,
+        }),
+      },
+    );
+
+    expect(result.model).toMatchObject({
+      id: modelId,
+      availability: "selectable",
+      enabled: true,
+    });
+    expect(result.model.unavailableReason).toBeUndefined();
+    expect(result.funding).toMatchObject({
+      kind: "personal",
+      humanUserId: "human-1",
+      credentialId: "credential-1",
+      credentialRevision: 4,
+    });
+    expect(result.selectableInThisRelease).toBe(false);
+  });
+
+  test("fails closed on caller funding denial and does not widen signed catalog restrictions", async () => {
+    const denied = await resolveCallerModelAvailability(
+      "human-1",
+      "anthropic:claude-sonnet-4-6",
+      { purpose: "chat-tools", env: { ANTHROPIC_API_KEY: "server-key" } },
+      {
+        resolveFunding: async () => {
+          throw new ModelFundingError("server_credentials_forbidden");
+        },
+      },
+    );
+    expect(denied).toMatchObject({
+      model: {
+        availability: "missing-key",
+        enabled: false,
+        unavailableReason: "server provider credentials are not permitted for this caller",
+      },
+      funding: null,
+      selectableInThisRelease: false,
+    });
+
+    let fundingCalls = 0;
+    const unknown = await resolveCallerModelAvailability(
+      "human-1",
+      "unknown:not-signed",
+      {},
+      {
+        resolveFunding: async () => {
+          fundingCalls += 1;
+          throw new Error("must not be called");
+        },
+      },
+    );
+    expect(unknown.model.availability).toBe("unknown-model");
+    expect(unknown.selectableInThisRelease).toBe(false);
+    expect(fundingCalls).toBe(0);
   });
 });

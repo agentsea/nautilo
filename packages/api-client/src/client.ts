@@ -2201,6 +2201,132 @@ export class ApiError extends Error {
   }
 }
 
+export type CredentialValidationStatus =
+  | "unverified"
+  | "accepted"
+  | "rejected"
+  | "unavailable";
+
+/** Secret-free account-scoped provider credential metadata. */
+export interface CredentialMetadata {
+  readonly provider: string;
+  readonly id: string;
+  readonly revision: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly validationStatus: CredentialValidationStatus;
+  readonly validatedAt: string | null;
+  readonly requiresReplacement: boolean;
+}
+
+export interface PutProviderCredentialInput {
+  readonly apiKey: string;
+  readonly expectedRevision?: number;
+}
+
+export interface ProviderCredentialRevisionInput {
+  readonly expectedRevision: number;
+}
+
+export interface PutProviderCredentialResponse {
+  readonly credential: CredentialMetadata;
+  readonly committed: true;
+}
+
+export interface ValidateProviderCredentialResponse {
+  readonly credential: CredentialMetadata;
+  readonly committed: false;
+}
+
+export interface DeleteProviderCredentialResponse {
+  readonly deleted: true;
+  readonly committed: true;
+}
+
+const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
+  provider: z.string().min(1),
+  id: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  createdAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+  validationStatus: z.enum(["unverified", "accepted", "rejected", "unavailable"]),
+  validatedAt: z.string().min(1).nullable(),
+  requiresReplacement: z.boolean(),
+}).strict();
+
+const listProviderCredentialsResponseSchema = z.object({
+  credentials: z.array(credentialMetadataSchema),
+}).strict();
+
+const putProviderCredentialResponseSchema = z.object({
+  credential: credentialMetadataSchema,
+  committed: z.literal(true),
+}).strict();
+
+const validateProviderCredentialResponseSchema = z.object({
+  credential: credentialMetadataSchema,
+  committed: z.literal(false),
+}).strict();
+
+const deleteProviderCredentialResponseSchema = z.object({
+  deleted: z.literal(true),
+  committed: z.literal(true),
+}).strict();
+
+const providerCredentialErrorSchema = z.object({
+  error: z.enum([
+    "authentication_required", "personal_credentials_forbidden", "personal_credentials_disabled",
+    "personal_credentials_unavailable", "credential_custody_unavailable",
+    "credential_reenrollment_required", "invalid_provider", "invalid_credential_request",
+    "credential_conflict", "credential_not_found",
+  ]),
+  committed: z.boolean(),
+  retryable: z.boolean(),
+  repair: z.enum(["retry", "reread_metadata", "contact_operator", "retry_validation", "replace_credential"]).nullable(),
+}).strict();
+
+/** Structured provider-credential failure with safe recovery fields. */
+export class ProviderCredentialApiError extends ApiError {
+  constructor(
+    status: number,
+    readonly error: string,
+    readonly committed: boolean,
+    readonly retryable: boolean,
+    readonly repair: string | null,
+  ) {
+    super(status, error);
+    this.name = "ProviderCredentialApiError";
+  }
+}
+
+function providerCredentialApiError(
+  status: number,
+  body: Record<string, unknown> & { error?: unknown },
+): ApiError {
+  const parsed = providerCredentialErrorSchema.safeParse(body);
+  if (!parsed.success) {
+    return new ApiError(
+      status,
+      "Provider credential request failed",
+    );
+  }
+  return new ProviderCredentialApiError(
+    status,
+    parsed.data.error,
+    parsed.data.committed,
+    parsed.data.retryable,
+    parsed.data.repair,
+  );
+}
+
+const providerCredentialStatusErrors = Object.fromEntries(
+  Array.from({ length: 200 }, (_, index) => index + 400).map((status) => [
+    status,
+    (body: Record<string, unknown> & { error?: unknown }) =>
+      providerCredentialApiError(status, body),
+  ]),
+) as StatusErrorMap;
+
 /** Safe recovery text from the video preparation boundary, before any spend. */
 export class VideoGenerationPreparationError extends ApiError {
   constructor(readonly code: "request_invalid" | "quote_unavailable", recovery: string) {
@@ -5557,6 +5683,53 @@ export class NautiloApiClient {
       defaultErrorPrefix: "GET /api/health/keys",
     });
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
+  }
+
+  async listProviderCredentials(): Promise<{ credentials: CredentialMetadata[] }> {
+    return this.request({
+      path: "/api/account/provider-credentials",
+      schema: listProviderCredentialsResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  async putProviderCredential(
+    provider: string,
+    input: PutProviderCredentialInput,
+  ): Promise<PutProviderCredentialResponse> {
+    return this.request({
+      method: "PUT",
+      path: `/api/account/provider-credentials/${encodeURIComponent(provider)}`,
+      body: input,
+      schema: putProviderCredentialResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  async validateProviderCredential(
+    provider: string,
+    input: ProviderCredentialRevisionInput,
+  ): Promise<ValidateProviderCredentialResponse> {
+    return this.request({
+      method: "POST",
+      path: `/api/account/provider-credentials/${encodeURIComponent(provider)}/validate`,
+      body: input,
+      schema: validateProviderCredentialResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  async deleteProviderCredential(
+    provider: string,
+    input: ProviderCredentialRevisionInput,
+  ): Promise<DeleteProviderCredentialResponse> {
+    return this.request({
+      method: "DELETE",
+      path: `/api/account/provider-credentials/${encodeURIComponent(provider)}`,
+      body: input,
+      schema: deleteProviderCredentialResponseSchema,
+      statusErrors: providerCredentialStatusErrors,
+    });
   }
 
   /** Read the administrator-visible Nautilo Gateway API root. */
@@ -12131,7 +12304,7 @@ export class NautiloApiClient {
    *
    * The route is deliberately fetched with redirects disabled. The response is
    * read incrementally, never handed to Blob, and only returned after its
-   * declared and observed sizes agree. No partial bytes escape on any failure.
+   * decoded and authorized sizes agree. No partial bytes escape on any failure.
    */
   async getWorkspaceArtifactBytesArrayBuffer(
     id: string,
@@ -12170,7 +12343,13 @@ export class NautiloApiClient {
       );
     }
 
-    const declaredBytes = contentLength(response);
+    const transferredBytes = contentLength(response);
+    const contentEncoding = response.headers.get("content-encoding")?.trim().toLowerCase();
+    // Fetch decodes compressed response bodies but retains the transfer's
+    // Content-Length, which cannot be compared with the decoded byte stream.
+    const declaredBytes = contentEncoding && contentEncoding !== "identity"
+      ? undefined
+      : transferredBytes;
     if (declaredBytes !== undefined && declaredBytes > maxBytes) {
       throw new WorkspaceArtifactStreamError("size", "Artifact is too large to preview.");
     }
@@ -12184,8 +12363,9 @@ export class NautiloApiClient {
         "Artifact response size does not match its authorized metadata.",
       );
     }
+    const decodedBytes = declaredBytes ?? expectedBytes;
     if (response.body === null) {
-      if ((declaredBytes ?? expectedBytes ?? 0) === 0) return new ArrayBuffer(0);
+      if ((decodedBytes ?? 0) === 0) return new ArrayBuffer(0);
       throw new WorkspaceArtifactStreamError("response", "Artifact response body was unavailable.");
     }
 
@@ -12196,7 +12376,7 @@ export class NautiloApiClient {
     opts?.signal?.addEventListener("abort", cancelReaderOnAbort, { once: true });
     let completed = false;
     let received = 0;
-    const knownLengthOutput = declaredBytes === undefined ? undefined : new Uint8Array(declaredBytes);
+    const knownLengthOutput = decodedBytes === undefined ? undefined : new Uint8Array(decodedBytes);
     const collector = knownLengthOutput === undefined ? new BoundedByteCollector(maxBytes) : undefined;
     try {
       while (true) {
@@ -12209,7 +12389,12 @@ export class NautiloApiClient {
         }
         if (knownLengthOutput !== undefined) {
           if (chunk.byteLength > knownLengthOutput.byteLength - received) {
-            throw new WorkspaceArtifactStreamError("truncated", "Artifact response exceeded its content length.");
+            throw new WorkspaceArtifactStreamError(
+              "truncated",
+              declaredBytes === undefined
+                ? "Artifact response exceeded its authorized size."
+                : "Artifact response exceeded its content length.",
+            );
           }
           knownLengthOutput.set(chunk, received);
         } else {
@@ -12866,27 +13051,35 @@ export class NautiloApiClient {
    * the real bytes — see `apps/mobile/src/lib/attachments.ts` for the rationale.
    * The server reads the first multipart file part (desktop convention: field
    * name `"audio"`); 400 non-audio, 502 provider error, 503 no provider.
+   * Refresh the session bearer before upload and forward cancellation from
+   * browser capture so the authenticated request can be stopped safely.
    */
   async transcribeAudio(
     file: Blob,
     filename: string,
+    options?: { signal?: AbortSignal },
   ): Promise<{ text: string; provider: string; model: string }> {
     const form = new FormData();
     form.append("audio", file, filename.length > 0 ? filename : "recording.m4a");
     const res = await this._fetch(`${this.baseUrl}/api/stt`, {
       method: "POST",
-      headers: this.authHeaders(),
+      headers: await this.authHeadersFresh(),
       body: form,
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
     if (!res.ok) {
       const errJson = (await res.json().catch(() => ({}))) as Record<string, unknown> & {
         error?: unknown;
+        detail?: unknown;
       };
+      const error = typeof errJson.error === "string" && errJson.error.trim().length > 0
+        ? errJson.error.trim()
+        : `Transcription failed (HTTP ${res.status}).`;
       throw new ApiError(
         res.status,
-        typeof errJson.error === "string" && errJson.error.length > 0
-          ? errJson.error
-          : `POST /api/stt failed: ${res.status}`,
+        typeof errJson.detail === "string" && errJson.detail.trim().length > 0
+          ? `${error} ${errJson.detail.trim()}`
+          : error,
       );
     }
     return (await res.json()) as { text: string; provider: string; model: string };

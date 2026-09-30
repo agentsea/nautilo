@@ -9,7 +9,12 @@ import {
   resolveModelPrice,
   type UsagePricingSource,
 } from "../config/model-pricing";
-import { normalizeUsageRoomId, type UsageCallType, type UsageModelControlMetadata } from "./usage-context";
+import {
+  normalizeUsageRoomId,
+  type UsageCallType,
+  type UsageFundingProvenance,
+  type UsageModelControlMetadata,
+} from "./usage-context";
 
 export interface RecordUsageInput {
   /** Full model id, e.g. `anthropic:claude-sonnet-4-6`. */
@@ -29,6 +34,7 @@ export interface RecordUsageInput {
   /** For image-gen calls: number of images produced (priced per-image). */
   imageCount?: number;
   modelControl?: UsageModelControlMetadata;
+  funding?: UsageFundingProvenance;
   metadata?: Record<string, unknown>;
 }
 
@@ -48,6 +54,7 @@ export function recordLlmUsage(input: RecordUsageInput): void {
 }
 
 async function recordLlmUsageAsync(input: RecordUsageInput): Promise<void> {
+  const funding = input.funding;
   const imageCount = input.imageCount ?? 0;
   const inputTokens = input.inputTokens ?? 0;
   const outputTokens = input.outputTokens ?? 0;
@@ -72,7 +79,7 @@ async function recordLlmUsageAsync(input: RecordUsageInput): Promise<void> {
         }, input.modelControl?.servingProfileId);
 
   await insertLlmUsageEvent({
-    userId: input.userId ?? null,
+    userId: input.userId ?? funding?.humanUserId ?? null,
     roomId: normalizeUsageRoomId(input.roomId),
     callType: input.callType,
     provider: getProviderFromModelId(input.model),
@@ -85,6 +92,12 @@ async function recordLlmUsageAsync(input: RecordUsageInput): Promise<void> {
     estimatedCostUsd,
     actualCostUsd: input.actualCostUsd ?? null,
     pricingVersion: PRICING_VERSION,
+    fundingKind: funding?.kind ?? null,
+    payerHumanId: funding?.kind === "personal" ? funding.payerHumanId : null,
+    providerRoute: funding?.providerRoute ?? null,
+    credentialId: funding?.kind === "personal" ? funding.credentialId : null,
+    credentialRevision:
+      funding?.kind === "personal" ? funding.credentialRevision : null,
     metadata: {
       ...(input.metadata ?? {}),
       usagePricingSource,

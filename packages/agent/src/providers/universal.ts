@@ -2,6 +2,8 @@ import {
   isReasoningEffort,
   type ChatModel,
   type CreateModelOptions,
+  type PersonalProviderCredential,
+  type UniversalModelOptions,
   type VeniceParameters,
 } from "./types";
 import {
@@ -65,6 +67,16 @@ export function __setStubModelForTests(model: ChatModel | null): void {
 
 const DEFAULT_GATEWAY_LABEL = "OpenAI-compatible gateway";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PERSONAL_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
+  "anthropic",
+  "openai",
+  "openrouter",
+  "google",
+  "xai",
+  "fireworks",
+  "together",
+  "venice",
+]);
 
 /**
  * Resolve the catalog `routing` for a `venice:*` id. Returns:
@@ -119,6 +131,25 @@ function nonEmptyString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function readPersonalCredential(
+  options: UniversalModelOptions | undefined,
+): PersonalProviderCredential | undefined {
+  if (!options || !Object.prototype.hasOwnProperty.call(options, "personalCredential")) {
+    return undefined;
+  }
+  const candidate: unknown = options.personalCredential;
+  if (
+    !candidate
+    || typeof candidate !== "object"
+    || Array.isArray(candidate)
+    || typeof (candidate as { apiKey?: unknown }).apiKey !== "string"
+    || !(candidate as { apiKey: string }).apiKey.trim()
+  ) {
+    throw new Error("A valid personal provider credential is required.");
+  }
+  return { apiKey: (candidate as { apiKey: string }).apiKey };
+}
+
 function readHeaders(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const headers: Record<string, string> = {};
@@ -157,9 +188,12 @@ export function buildOpenRouterCreateModelOptions(
   modelId: string,
   cleanOptions: Record<string, unknown>,
   callbacks?: Callbacks,
+  personalCredential?: PersonalProviderCredential,
 ): CreateModelOptions {
   const transport = resolveOpenRouterTransport({
-    directApiKey: cleanOptions["apiKey"],
+    ...(personalCredential
+      ? { personalApiKey: personalCredential.apiKey }
+      : { directApiKey: cleanOptions["apiKey"] }),
   });
   if (!transport) {
     throw new Error("The OpenRouter credential is not configured for this model route.");
@@ -338,7 +372,7 @@ function copyErrorStatus(source: Error, target: Error): void {
  */
 export async function createUniversalModel(
   modelId: string,
-  options?: Record<string, unknown>,
+  options?: UniversalModelOptions,
 ): Promise<ChatModel> {
   const stubModel = getStubModelForTests();
   if (stubModel) {
@@ -358,7 +392,7 @@ export async function createUniversalModel(
  */
 export async function createUnmeteredEvaluationModel(
   modelId: string,
-  options?: Record<string, unknown>,
+  options?: UniversalModelOptions,
 ): Promise<ChatModel> {
   const stubModel = getStubModelForTests();
   if (stubModel) return stubModel;
@@ -367,7 +401,7 @@ export async function createUnmeteredEvaluationModel(
 
 async function createUniversalModelInternal(
   modelId: string,
-  options?: Record<string, unknown>,
+  options?: UniversalModelOptions,
   usageCallbacks?: Callbacks,
 ): Promise<ChatModel> {
   const id = String(modelId || "");
@@ -375,6 +409,7 @@ async function createUniversalModelInternal(
     throw new Error(`Invalid modelId: ${modelId}`);
   }
 
+  const personalCredential = readPersonalCredential(options);
   const cleanOptions: Record<string, unknown> = {};
   if (options) {
     for (const [key, value] of Object.entries(options)) {
@@ -383,6 +418,8 @@ async function createUniversalModelInternal(
       }
     }
   }
+
+  delete cleanOptions["personalCredential"];
 
   const anthropicLongContext =
     typeof cleanOptions["anthropicLongContextBeta"] === "boolean"
@@ -399,12 +436,12 @@ async function createUniversalModelInternal(
 
   const factoryOpts: CreateModelOptions = { modelId: id };
   if (usageCallbacks) factoryOpts.callbacks = usageCallbacks;
-  const apiKey = cleanOptions["apiKey"] as string | undefined;
+  const apiKey = personalCredential?.apiKey ?? cleanOptions["apiKey"] as string | undefined;
   const baseUrl = (cleanOptions["baseUrl"] ?? cleanOptions["baseURL"]) as string | undefined;
   const headers = readHeaders(cleanOptions["headers"]);
   if (apiKey) factoryOpts.apiKey = apiKey;
-  if (baseUrl) factoryOpts.baseUrl = baseUrl;
-  if (headers) factoryOpts.headers = headers;
+  if (!personalCredential && baseUrl) factoryOpts.baseUrl = baseUrl;
+  if (!personalCredential && headers) factoryOpts.headers = headers;
 
   const resolvedMaxTokens =
     typeof cleanOptions["maxTokens"] === "number" &&
@@ -475,6 +512,10 @@ async function createUniversalModelInternal(
   const provider = id.includes(":") ? id.split(":")[0]!.toLowerCase() : undefined;
   const idLower = id.toLowerCase();
 
+  if (personalCredential && !PERSONAL_CHAT_PROVIDERS.has(provider ?? "")) {
+    throw new Error(`Personal credentials are not supported for model provider "${provider ?? "unknown"}".`);
+  }
+
   const servingProfileRaw = cleanOptions["servingProfileId"];
   delete cleanOptions["servingProfileId"];
   if (servingProfileRaw !== undefined) {
@@ -494,9 +535,16 @@ async function createUniversalModelInternal(
     case "openai":
       return createOpenAI(factoryOpts);
     case "openrouter": {
-      const orOpts = buildOpenRouterCreateModelOptions(id, cleanOptions, usageCallbacks);
+      const orOpts = buildOpenRouterCreateModelOptions(
+        id,
+        cleanOptions,
+        usageCallbacks,
+        personalCredential,
+      );
       const openRouterTransport = resolveOpenRouterTransport({
-        directApiKey: cleanOptions["apiKey"],
+        ...(personalCredential
+          ? { personalApiKey: personalCredential.apiKey }
+          : { directApiKey: cleanOptions["apiKey"] }),
       });
       if (resolvedMaxTokens !== undefined) orOpts.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) orOpts.timeoutMs = resolvedTimeoutMs;

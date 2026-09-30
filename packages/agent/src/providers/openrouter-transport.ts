@@ -84,8 +84,20 @@ export function managedGatewayKeyIsPresent(
 export function resolveOpenRouterTransport(options: Readonly<{
   env?: NodeJS.ProcessEnv;
   directApiKey?: unknown;
+  personalApiKey?: unknown;
 }> = {}): OpenRouterTransport | null {
   const env = options.env ?? process.env;
+  if (Object.prototype.hasOwnProperty.call(options, "personalApiKey")) {
+    const personalApiKey = nonEmpty(options.personalApiKey);
+    if (!personalApiKey) {
+      throw new Error("A valid personal OpenRouter credential is required.");
+    }
+    return {
+      kind: "openrouter",
+      apiKey: options.personalApiKey as string,
+      baseUrl: OPENROUTER_BASE_URL,
+    };
+  }
   const managedKey = nonEmpty(env[MANAGED_GATEWAY_API_KEY_ENV_VAR]);
   if (managedKey) {
     if (!isManagedGatewayKey(managedKey)) {

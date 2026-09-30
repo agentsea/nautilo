@@ -2,6 +2,7 @@ export { createRoomPresencePoller } from "./room-presence";
 export {
   NautiloApiClient,
   ApiError,
+  ProviderCredentialApiError,
   VideoGenerationPreparationError,
   EventFeedApiError,
   AgentInvocationRequiredError,
@@ -29,6 +30,14 @@ export {
   modelControlSelectionSchema,
   modelControlSelectionResponseSchema,
   isRoomPendingAttentionEventForViewer,
+} from "./client";
+export type {
+  CredentialMetadata,
+  PutProviderCredentialInput,
+  ProviderCredentialRevisionInput,
+  PutProviderCredentialResponse,
+  ValidateProviderCredentialResponse,
+  DeleteProviderCredentialResponse,
 } from "./client";
 export type {
   EventFeedErrorCode,

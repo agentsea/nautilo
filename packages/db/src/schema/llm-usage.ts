@@ -1,4 +1,5 @@
 import {
+  check,
   index,
   integer,
   jsonb,
@@ -7,7 +8,9 @@ import {
   text,
   timestamp,
   uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { users } from "./users";
 import { rooms } from "./rooms";
 
@@ -73,6 +76,22 @@ export const llmUsageEvents = pgTable(
     actualCostUsd: numeric("actual_cost_usd", { precision: 14, scale: 8 }),
     /** Version tag of the price table used, so we can audit/reprice later. */
     pricingVersion: text("pricing_version"),
+    /**
+     * Funding provenance is forward-only. NULL means a legacy/unclassified row;
+     * it must never be interpreted as server-funded.
+     */
+    fundingKind: varchar("funding_kind", {
+      length: 16,
+      enum: ["personal", "server", "service"],
+    }),
+    /** Human whose credential paid for a personal call. Kept after credential deletion. */
+    payerHumanId: uuid("payer_human_id"),
+    /** Actual funded transport route, distinct from the catalogue model id. */
+    providerRoute: text("provider_route"),
+    /** Non-secret personal credential row identity, retained as historical provenance. */
+    credentialId: uuid("credential_id"),
+    /** Credential revision admitted for this exact attempt. */
+    credentialRevision: integer("credential_revision"),
     /** Freeform: sessionId, threadId, agentId, imageCount, requestId, etc. */
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   },
@@ -82,6 +101,20 @@ export const llmUsageEvents = pgTable(
     index("idx_llm_usage_model").on(table.model),
     index("idx_llm_usage_call_type").on(table.callType),
     index("idx_llm_usage_provider").on(table.provider),
+    index("idx_llm_usage_funding_kind").on(table.fundingKind),
+    index("idx_llm_usage_payer_human_id").on(table.payerHumanId),
+    check(
+      "llm_usage_events_funding_provenance_check",
+      sql`(
+        (${table.fundingKind} IS NULL AND ${table.payerHumanId} IS NULL AND ${table.providerRoute} IS NULL AND ${table.credentialId} IS NULL AND ${table.credentialRevision} IS NULL)
+        OR
+        (${table.fundingKind} IS NOT NULL AND (
+          (${table.fundingKind} = 'personal' AND ${table.payerHumanId} IS NOT NULL AND ${table.providerRoute} IS NOT NULL AND length(${table.providerRoute}) > 0 AND ${table.credentialId} IS NOT NULL AND ${table.credentialRevision} IS NOT NULL AND ${table.credentialRevision} >= 1)
+          OR
+          (${table.fundingKind} IN ('server', 'service') AND ${table.payerHumanId} IS NULL AND ${table.providerRoute} IS NOT NULL AND length(${table.providerRoute}) > 0 AND ${table.credentialId} IS NULL AND ${table.credentialRevision} IS NULL)
+        ))
+      )`,
+    ),
   ],
 );
 

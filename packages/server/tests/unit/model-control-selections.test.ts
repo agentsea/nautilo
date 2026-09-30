@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { ModelControlSelection } from "@nautilo/types";
 import { modelControlSelectionRoutes } from "../../src/routes/model-control-selections";
+import type { CallerModelAvailability } from "../../src/routes/config";
 
 const USER_ID = "user-1";
 const USER_ACTOR_ID = "actor-1";
@@ -9,7 +10,37 @@ const AGENT_ID = "agent-1";
 const SECONDARY_AGENT_ID = "secondary-agent";
 const ROOM_ID = "room-1";
 
-function buildApp(assertRunnableSelection: (modelId: string) => void = () => {}): {
+const MODEL_ID = "fireworks:accounts/fireworks/models/kimi-k3";
+
+function availableForServer(modelId: string): CallerModelAvailability {
+  return {
+    model: {
+      id: modelId,
+      displayName: modelId,
+      provider: "fireworks",
+      priority: 1,
+      costCoefficient: 1,
+      enabled: true,
+      capabilities: { tools: true, vision: false, reasoning: true, e2ee: false, webSearch: false },
+      availability: "selectable",
+    },
+    funding: {
+      kind: "server",
+      humanUserId: USER_ID,
+      modelId,
+      providerRoute: "fireworks",
+      workload: "foreground_text_chat",
+    },
+    selectableInThisRelease: true,
+  };
+}
+
+function buildApp(
+  resolveCallerAvailability: (
+    humanUserId: string,
+    modelId: string,
+  ) => Promise<CallerModelAvailability> = async (_humanUserId, modelId) => availableForServer(modelId),
+): {
   app: FastifyInstance;
   getCalls: Array<{ roomId: string; agentId: string }>;
   setCalls: Array<{ roomId: string; agentId: string; selection: ModelControlSelection }>;
@@ -19,7 +50,7 @@ function buildApp(assertRunnableSelection: (modelId: string) => void = () => {})
   const setCalls: Array<{ roomId: string; agentId: string; selection: ModelControlSelection }> = [];
   const resetCalls: Array<{ roomId: string; agentId: string }> = [];
   const selection: ModelControlSelection = {
-    modelId: "fireworks:accounts/fireworks/models/kimi-k3",
+    modelId: MODEL_ID,
     servingProfileId: "fast",
   };
   const app = Fastify();
@@ -42,7 +73,7 @@ function buildApp(assertRunnableSelection: (modelId: string) => void = () => {})
       getCalls.push({ roomId, agentId });
       return agentId === AGENT_ID
         ? selection
-        : { modelId: "fireworks:accounts/fireworks/models/kimi-k3", reasoningEffort: "high" };
+        : { modelId: MODEL_ID, reasoningEffort: "high" };
     },
     setSelection: async (roomId, agentId, input) => {
       setCalls.push({ roomId, agentId, selection: input });
@@ -53,14 +84,14 @@ function buildApp(assertRunnableSelection: (modelId: string) => void = () => {})
     },
     getCatalogEntries: () => [
       {
-        id: "fireworks:accounts/fireworks/models/kimi-k3",
+        id: MODEL_ID,
         controls: {
           reasoning: { levels: ["low", "high"], canDisable: true, mandatory: false },
           serving: { profiles: [{ id: "priority" }, { id: "fast" }] },
         },
       },
     ],
-    assertRunnableSelection,
+    resolveCallerAvailability,
   });
   return { app, getCalls, setCalls, resetCalls };
 }
@@ -235,9 +266,17 @@ describe("D462 room model-control selection routes", () => {
 
   test("rejects a signed selection that became unavailable before persistence", async () => {
     await app.close();
-    ({ app, setCalls } = buildApp(() => {
-      throw new Error("Fireworks credential is not configured");
-    }));
+    ({ app, setCalls } = buildApp(async (_humanUserId, modelId) => ({
+      ...availableForServer(modelId),
+      model: {
+        ...availableForServer(modelId).model,
+        enabled: false,
+        availability: "missing-key",
+        unavailableReason: "Fireworks credential is not configured",
+      },
+      funding: null,
+      selectableInThisRelease: false,
+    })));
 
     const response = await app.inject({
       method: "PUT",
@@ -257,6 +296,47 @@ describe("D462 room model-control selection routes", () => {
       code: "model_unavailable",
       error: "Fireworks credential is not configured",
     });
+    expect(setCalls).toEqual([]);
+  });
+
+  test("does not advertise an internally admitted personal candidate before foreground chat activation", async () => {
+    await app.close();
+    const callerIds: string[] = [];
+    ({ app, setCalls } = buildApp(async (humanUserId, modelId) => {
+      callerIds.push(humanUserId);
+      return {
+        ...availableForServer(modelId),
+        funding: {
+          kind: "personal",
+          humanUserId,
+          payerHumanId: humanUserId,
+          credentialId: "credential-1",
+          credentialRevision: 3,
+          modelId,
+          providerRoute: "fireworks",
+          workload: "foreground_text_chat",
+        },
+        selectableInThisRelease: false,
+      };
+    }));
+
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/rooms/${ROOM_ID}/agents/${AGENT_ID}/model-control-selection`,
+      headers: {
+        "content-type": "application/json",
+        "x-test-user": USER_ID,
+        "x-test-actor": USER_ACTOR_ID,
+      },
+      payload: { selection: { modelId: MODEL_ID } },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json<Record<string, unknown>>()).toEqual({
+      code: "model_unavailable",
+      error: "Personal-funded model selection is not available in this release.",
+    });
+    expect(callerIds).toEqual([USER_ID]);
     expect(setCalls).toEqual([]);
   });
 });
