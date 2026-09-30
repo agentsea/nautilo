@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   listProtectedTaskRunOutputBindingsNeedingDelivery,
-  PROTECTED_TASK_OUTPUT_RECOVERY_BATCH_MAX,
   protectedTaskRunMessageOperationId,
   protectedTaskRunOutputBindingId,
   protectedTaskRunResultObjectId,
@@ -159,7 +158,7 @@ function harness(rows: Readonly<{
 }
 
 describe("protected TaskRun output receipts", () => {
-  test("bounds restart reconciliation and includes terminal unattached work", async () => {
+  test("uses the caller's restart reconciliation batch and includes terminal unattached work", async () => {
     const pending = binding();
     let limit: number | undefined;
     const query = {
@@ -177,10 +176,11 @@ describe("protected TaskRun output receipts", () => {
     expect(await listProtectedTaskRunOutputBindingsNeedingDelivery(db, 1))
       .toEqual([pending]);
     expect(limit).toBe(1);
-    expect(listProtectedTaskRunOutputBindingsNeedingDelivery(
-      db,
-      PROTECTED_TASK_OUTPUT_RECOVERY_BATCH_MAX + 1,
-    )).rejects.toThrow("recovery batch is malformed");
+    expect(await listProtectedTaskRunOutputBindingsNeedingDelivery(db, 33))
+      .toEqual([pending]);
+    expect(limit).toBe(33);
+    expect(listProtectedTaskRunOutputBindingsNeedingDelivery(db, -1))
+      .rejects.toThrow("recovery batch is malformed");
   });
 
   test("attaches only the verified mapped result and completes no-delivery", async () => {

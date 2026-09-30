@@ -32,8 +32,6 @@ import {
 const CANONICAL_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
-export const PROTECTED_TASK_OUTPUT_RECOVERY_BATCH_MAX = 32;
-
 export type ProtectedTaskRunOutputDestination = Readonly<{
   roomId: string;
   namespaceId: string;
@@ -546,7 +544,6 @@ export async function listProtectedTaskRunOutputBindingsNeedingDelivery(
   if (
     !Number.isSafeInteger(batch)
     || batch < 0
-    || batch > PROTECTED_TASK_OUTPUT_RECOVERY_BATCH_MAX
   ) {
     throw new TypeError("Protected Task output recovery batch is malformed");
   }
