@@ -84,7 +84,7 @@ import { createRunDeepResearchTool } from "./research/run-deep-research";
 import { createSecurityScanTool } from "./security/security-scan";
 import { createDiscoverToolsTool } from "./meta/discover-tools";
 import { createEvaluateDecisionsTool, decisionToolUnavailable } from "./meta/evaluate-decisions";
-import { listResolvedCatalogModels } from "../config/resolved-catalog";
+import { hasSelectableDecisionModel } from "../config/resolved-catalog";
 import { createDiscoverModelsTool } from "./meta/discover-models";
 import { createActivateToolsTool } from "./meta/activate-tools";
 import { createDeactivateToolsTool } from "./meta/deactivate-tools";
@@ -1575,7 +1575,7 @@ export function registerAllTools(
     exposure: "discoverable",
     requiredCapabilities: ["use_server_provider_credentials"],
     tags: ["classification", "scoring", "decisions", "models"],
-    isAvailable: options.decisionModelsAvailable ?? (() => listResolvedCatalogModels().some((row) => row.workload === "decision" && row.availability === "selectable")),
+    isAvailable: options.decisionModelsAvailable ?? hasSelectableDecisionModel,
     unavailableReason: "Configure a supported decision provider key and enable a decision model.",
     unavailableInContext: (ctx) => decisionToolUnavailable(ctx),
     resultScanPolicy: "always",
