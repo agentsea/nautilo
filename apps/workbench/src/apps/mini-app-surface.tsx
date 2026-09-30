@@ -231,7 +231,7 @@ export interface MiniAppSurfaceProps {
   /** Resolved Workbench presentation mode; omitted mini-apps retain OS fallback. */
   theme?: AppTheme;
   target?: OpenFileTarget;
-  /** D342 Phase 2 — launch with no bound doc: the app warms up against this
+  /** Launch with no bound doc: the app warms up against this
    *  draft and only materializes a workspace artifact on first edit. */
   draft?: MiniAppDraftSeed;
   sourceHash?: string;
@@ -241,7 +241,7 @@ export interface MiniAppSurfaceProps {
     sessionId: string;
     documentVersion: LiveDocumentVersion;
   } | null) => void;
-  /** D342 Phase 2 — notify the shell when a draft becomes a real artifact, so
+  /** Notify the shell when a draft becomes a real artifact, so
    *  the work surface re-binds (survives panel toggles / reloads). */
   onMaterialized?: (artifact: ArtifactTarget) => void;
   workspaceCopyDestination?: { roomId: string; label: string };
@@ -629,7 +629,7 @@ export function MiniAppSurface({
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const activeContextRef = useRef<ActiveMiniAppContext | null>(null);
 
-  // D342 Phase 2 — the bound document. Starts at `target` (open-existing) or
+  // The bound document. Starts at `target` (open-existing) or
   // undefined for a fresh draft launch; set when a draft materializes.
   const [boundTarget, setBoundTarget] = useState<OpenFileTarget | undefined>(target);
   useEffect(() => { workspaceMediaImportEpochRef.current += 1; workspaceMediaImportCancelRef.current?.(); closeWorkspaceMediaPicker(null); }, [appId, boundTarget, auth.viewer.isVerified, auth.viewer.sessionUserId, closeWorkspaceMediaPicker]);
@@ -829,7 +829,7 @@ export function MiniAppSurface({
   const conversionRunner = useConversionRunner();
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const focusRenameAfterMaterializeRef = useRef(false);
-  // D342 Phase 2 — surface-owned single-flight for materialize. The bridge also
+  // Surface-owned single-flight for materialize. The bridge also
   // guards its own closure, but it can be re-installed mid-session (effect deps
   // change); this ref makes the create idempotent across re-installs so a draft
   // can never spawn two artifacts.
@@ -948,7 +948,7 @@ export function MiniAppSurface({
     // appId/target/draft identity drives a fresh binding.
   }, [appId, target, draft, mode]);
 
-  // D342 Phase 2 — create the deferred artifact on first edit, using the live
+  // Create the deferred artifact on first edit, using the live
   // (possibly user-typed) name. Idempotent: at most one artifact per draft,
   // even if the bridge re-installs and calls this again.
   const materialize = useCallback(
@@ -1694,7 +1694,7 @@ export function MiniAppSurface({
         job: { ...coordinatorVideoJob(request), ...(job.referenceImages ? { referenceImages: [...job.referenceImages] } : {}), ...(job.referenceVideos ? { referenceVideos: [...job.referenceVideos] } : {}), ...(job.referenceAudios ? { referenceAudios: [...job.referenceAudios] } : {}) },
       }, session.token);
       if (videoGenerationSessionRef.current !== session || boundTargetRef.current !== target) return { kind: "expired" as const };
-      // The full prompt has already left the parent for D525; retain only the
+      // The full prompt has already left the parent for generation preparation; retain only the
       // safe approval projection in React state and its private handle in ref.
       return new Promise<
         { kind: "queued"; takeId: string } | { kind: "cancelled" } | { kind: "submission-unknown"; takeId: string } | { kind: "expired" } | { kind: "unavailable"; code: string }
@@ -2769,7 +2769,14 @@ export function MiniAppSurface({
         send();
       }, DOCUMENT_CHANGED_DEBOUNCE_MS);
     };
-    const reconcileCanonicalDocument = (logReconnect = false): Promise<void> => {
+    const reconcileCanonicalDocument = (logReconnect = false, alreadyConnected = false): Promise<void> => {
+      if (alreadyConnected && !documentSessionRef.current.envelope) {
+        // Subscribing to an established stream has no disconnected interval.
+        // Join initial loading instead of invalidating its in-flight read and
+        // then triggering another read through a document-changed notification.
+        // A real stream reconnect still takes the canonical refresh path below.
+        return readDocumentSession(documentSessionRef.current, artifactTarget).then(() => undefined);
+      }
       if (artifactReconnectPromise) return artifactReconnectPromise;
       artifactReconnectPromise = (async () => {
         try {
@@ -2923,7 +2930,7 @@ export function MiniAppSurface({
         ? {
             artifactId: artifactTarget.id,
             roomId: artifactTarget.roomId,
-            onReconnect: () => reconcileCanonicalDocument(true),
+            onReconnect: (reason) => reconcileCanonicalDocument(true, reason === "already-connected"),
           }
         : {
             onReconnect: async () => {

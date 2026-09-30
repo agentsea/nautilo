@@ -303,6 +303,7 @@ describe("WorkspaceArtifactsProvider", () => {
       </Provider>,
     );
     await waitFor(() => expect(onReconnect).toHaveBeenCalledTimes(1));
+    expect(onReconnect).toHaveBeenCalledWith("already-connected");
   });
 
   test("dedupes a Desktop batch after more than 1024 intervening batches", async () => {
