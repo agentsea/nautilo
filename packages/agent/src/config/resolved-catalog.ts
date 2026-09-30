@@ -545,3 +545,17 @@ export function listResolvedCatalogModels(
     return pa - pb || a.id.localeCompare(b.id);
   });
 }
+
+/**
+ * Tool-policy reads only need to know whether a decision model is runnable.
+ * Resolve decision entries through the same live admission checks as discovery,
+ * without projecting unrelated models or reading their provider caches.
+ */
+export function hasSelectableDecisionModel(
+  options: ResolveCatalogModelOptions = {},
+): boolean {
+  return getActiveModelCatalogSync().catalog.entries.some((entry) =>
+    "workload" in entry && entry.workload === "decision"
+    && resolveCatalogModel(entry.id, options).availability === "selectable",
+  );
+}
