@@ -129,6 +129,76 @@ export type AuditionVoicesToolResult = {
   error?: string;
 };
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === "object" && !Array.isArray(v);
+}
+
+function isBadge(v: unknown): v is VoiceDiscoveryBadge {
+  return v === "curated" || v === "provider_v3" || v === "provider_verified" || v === "unverified";
+}
+
+function parseCandidate(raw: unknown): VoiceDiscoveryCandidate | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw["voiceId"] !== "string" || raw["voiceId"].length === 0) return null;
+  if (typeof raw["name"] !== "string") return null;
+  if (typeof raw["language"] !== "string") return null;
+  if (typeof raw["languageLabel"] !== "string") return null;
+  if (typeof raw["accent"] !== "string") return null;
+  if (typeof raw["gender"] !== "string") return null;
+  if (typeof raw["age"] !== "string") return null;
+  if (!isBadge(raw["badge"])) return null;
+  if (typeof raw["matchReason"] !== "string") return null;
+  if (!Array.isArray(raw["verifiedLanguages"])) return null;
+  const honestyWarning = raw["honestyWarning"];
+  if (honestyWarning !== undefined && typeof honestyWarning !== "string") return null;
+  return raw as VoiceDiscoveryCandidate;
+}
+
+/** Parse a complete audition result for delivery and rendering; null on malformed. */
+export function parseAuditionVoicesToolResult(raw: string | undefined): AuditionVoicesToolResult | null {
+  if (!raw?.trim()) return null;
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (!isRecord(obj)) return null;
+    if (!Array.isArray(obj["slate"])) return null;
+    if (typeof obj["consideredCount"] !== "number" || !Number.isFinite(obj["consideredCount"])) {
+      return null;
+    }
+    const slate: VoiceDiscoveryCandidate[] = [];
+    for (const row of obj["slate"] as unknown[]) {
+      const c = parseCandidate(row);
+      if (!c) return null;
+      slate.push(c);
+    }
+    if (obj["suggestedSlate"] !== undefined && typeof obj["suggestedSlate"] !== "boolean") {
+      return null;
+    }
+    if (obj["role"] !== undefined && typeof obj["role"] !== "string") return null;
+    if (obj["sampleText"] !== undefined && typeof obj["sampleText"] !== "string") return null;
+    if (obj["warnings"] !== undefined) {
+      if (!Array.isArray(obj["warnings"]) || obj["warnings"].some((w) => typeof w !== "string")) {
+        return null;
+      }
+    }
+    if (obj["error"] !== undefined && typeof obj["error"] !== "string") return null;
+    return {
+      slate,
+      consideredCount: obj["consideredCount"],
+      ...(obj["suggestedSlate"] !== undefined ?
+        { suggestedSlate: obj["suggestedSlate"] }
+      : {}),
+      ...(obj["role"] !== undefined ? { role: obj["role"] } : {}),
+      ...(obj["sampleText"] !== undefined ? { sampleText: obj["sampleText"] } : {}),
+      ...(obj["warnings"] !== undefined ?
+        { warnings: obj["warnings"] as string[] }
+      : {}),
+      ...(obj["error"] !== undefined ? { error: obj["error"] } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Canonical Nautilo audition copy shared by desktop, mobile, and Agent tools.
  * Keep expressive cues intact: these samples introduce a person's Genie, not

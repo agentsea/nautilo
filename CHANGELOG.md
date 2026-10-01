@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Voice auditions preserve their complete playable slate and sample text in live
+  chat and reopened history, including voices with large language/model catalogs.
+
 - Imported full-size Agent photos remain available in the owned photo library.
   An unindexed previous photo no longer blocks browsing or selecting a
   replacement; undo still requires an owned, available previous photo.
