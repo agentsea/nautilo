@@ -4,6 +4,8 @@ import type {
   DualTaskPreparedCreateRequestV1,
   DualTaskPreparedUpdateRequestV1,
   ProtectedTaskDefinitionReadReadyEnvelopeV1,
+  ProtectedTaskRunResultReadEnvelopeV1,
+  ProtectedTaskRunResultReadReadyEnvelopeV1,
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedUpdateRequestV1,
   ProtectedTaskPublicationPlanRequestV1,
@@ -23,6 +25,9 @@ import {
   getTaskByIdWithMutationVersion,
   humanCryptoDevices,
   inArray,
+  taskRuns,
+  taskRunResultCryptoRevisions,
+  tasks,
   updateTaskIfCurrent,
   type DirectDatabase,
   type NewTask,
@@ -31,6 +36,7 @@ import {
 } from "@nautilo/db";
 import {
   ClassifiedDataOperationError,
+  deriveTaskContentCryptoObjectIdV1,
   type EncryptionDataOperationOwner,
   type TaskContentAuthorityV1,
   type TaskContentPayloadV1,
@@ -99,6 +105,11 @@ export interface ProtectedTaskRoutePorts {
     contentRevision: number;
     cryptoAccessRevision: 0;
   }>): Promise<ProtectedTaskDefinitionReadReadyEnvelopeV1>;
+  readRunResult(input: Readonly<{
+    authority: ProtectedTaskRouteAuthority;
+    taskId: string;
+    taskRunId: string;
+  }>): Promise<ProtectedTaskRunResultReadEnvelopeV1>;
   plan(input: Readonly<{
     authority: ProtectedTaskRouteAuthority;
     taskId: string | null;
@@ -1038,6 +1049,267 @@ export function createProductionProtectedTaskComposition(
           envelope.envelopeHash.fill(0);
         }
         destroyVerifiedStoredObjectAccessManifestChainV5(verified);
+      }
+    },
+
+    async readRunResult(input) {
+      const reference = Object.freeze({
+        readVersion: 1 as const,
+        taskId: input.taskId,
+        taskRunId: input.taskRunId,
+        objectId: deriveTaskContentCryptoObjectIdV1({
+          kind: "run_result",
+          taskId: input.taskId,
+          taskRunId: input.taskRunId,
+          contentRevision: 1,
+        }),
+        resultRevision: 1 as const,
+        cryptoAccessRevision: 0 as const,
+      });
+      const unavailable = (
+        reason: Extract<
+          ProtectedTaskRunResultReadEnvelopeV1,
+          { status: "unavailable" }
+        >["reason"],
+      ): ProtectedTaskRunResultReadEnvelopeV1 => Object.freeze({
+        ...reference,
+        status: "unavailable" as const,
+        reason,
+      });
+      const taskRows = await dependencies.db.select({
+        ownerId: tasks.ownerId,
+        requestorId: tasks.requestorId,
+        agentId: tasks.agentId,
+        contentRepresentation: tasks.contentRepresentation,
+        contentNamespaceId: tasks.contentNamespaceId,
+        cryptoMappingState: tasks.cryptoMappingState,
+      }).from(tasks).where(eq(tasks.id, input.taskId)).limit(2);
+      const task = taskRows[0];
+      if (taskRows.length !== 1 || task === undefined
+        || task.ownerId !== input.authority.userId
+        || task.requestorId !== input.authority.userId) {
+        throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
+      }
+      const taskAuthority = resolveOwnedProtectedTaskAuthority(
+        input.authority,
+        task,
+      );
+      if (taskAuthority === null) {
+        throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
+      }
+      const runRows = await dependencies.db.select({
+        taskId: taskRuns.taskId,
+        status: taskRuns.status,
+        resultRepresentation: taskRuns.resultRepresentation,
+        resultContentNamespaceId: taskRuns.resultContentNamespaceId,
+        resultRevision: taskRuns.resultRevision,
+        resultCryptoObjectId: taskRuns.resultCryptoObjectId,
+        resultCryptoAccessRevision: taskRuns.resultCryptoAccessRevision,
+        resultCryptoMappingState: taskRuns.resultCryptoMappingState,
+      }).from(taskRuns).where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, input.taskId),
+      )).limit(2);
+      const run = runRows[0];
+      if (runRows.length !== 1 || run === undefined) {
+        throw new ProtectedTaskRouteError(404, "task_run_not_found", "Task run not found");
+      }
+      if (
+        (task.contentRepresentation !== "protected"
+          && task.contentRepresentation !== "dual")
+        || task.cryptoMappingState !== "verified"
+        || task.contentNamespaceId === null
+      ) return unavailable("result_not_protected");
+      const ledgerRows = await dependencies.db.select({
+        taskId: taskRunResultCryptoRevisions.taskId,
+        taskRunId: taskRunResultCryptoRevisions.taskRunId,
+        requesterHumanId: taskRunResultCryptoRevisions.requesterHumanId,
+        contentNamespaceId: taskRunResultCryptoRevisions.contentNamespaceId,
+        anchorNamespaceId: taskRunResultCryptoRevisions.anchorNamespaceId,
+        resultRevision: taskRunResultCryptoRevisions.resultRevision,
+        cryptoObjectId: taskRunResultCryptoRevisions.cryptoObjectId,
+        representation: taskRunResultCryptoRevisions.representation,
+        cryptoAccessRevision:
+          taskRunResultCryptoRevisions.cryptoAccessRevision,
+        completion: taskRunResultCryptoRevisions.completion,
+        disposition: taskRunResultCryptoRevisions.disposition,
+        failureCode: taskRunResultCryptoRevisions.failureCode,
+      }).from(taskRunResultCryptoRevisions).where(and(
+        eq(taskRunResultCryptoRevisions.taskId, input.taskId),
+        eq(taskRunResultCryptoRevisions.taskRunId, input.taskRunId),
+        eq(taskRunResultCryptoRevisions.resultRevision, 1),
+      )).limit(2);
+      const ledger = ledgerRows[0];
+      if (ledgerRows.length > 1) return unavailable("integrity_failure");
+      const exactLedger = ledger !== undefined
+        && ledger.taskId === input.taskId
+        && ledger.taskRunId === input.taskRunId
+        && ledger.contentNamespaceId === task.contentNamespaceId
+        && ledger.anchorNamespaceId === task.contentNamespaceId
+        && ledger.resultRevision === reference.resultRevision
+        && ledger.cryptoObjectId === reference.objectId
+        && (ledger.representation === "protected"
+          || ledger.representation === "dual")
+        && ledger.cryptoAccessRevision === 0;
+      if (
+        run.resultRepresentation === "ordinary"
+        && run.resultRevision === 0
+        && run.resultContentNamespaceId === null
+        && run.resultCryptoObjectId === null
+        && run.resultCryptoAccessRevision === 0
+        && run.resultCryptoMappingState === "unmapped"
+      ) {
+        if (ledger === undefined) {
+          return run.status === "completed" || run.status === "errored"
+            || run.status === "cancelled"
+            ? unavailable("result_not_protected")
+            : Object.freeze({
+                ...reference,
+                status: "waiting" as const,
+                reason: "result_not_mapped" as const,
+              });
+        }
+        if (!exactLedger) return unavailable("integrity_failure");
+        if (ledger.disposition === "active"
+          && (ledger.completion === "pending"
+            || ledger.completion === "complete")) {
+          return Object.freeze({
+            ...reference,
+            status: "waiting" as const,
+            reason: "result_not_mapped" as const,
+          });
+        }
+        return unavailable(ledger.failureCode === "authority_stale"
+          ? "authority_changed" : "integrity_failure");
+      }
+      if (run.resultCryptoAccessRevision !== 0) {
+        return Object.freeze({
+          ...reference,
+          cryptoAccessRevision: run.resultCryptoAccessRevision,
+          status: "unavailable" as const,
+          reason: "unsupported_crypto_access_revision" as const,
+        });
+      }
+      if (
+        (run.resultRepresentation !== "protected"
+          && run.resultRepresentation !== "dual")
+        || run.resultRevision !== reference.resultRevision
+        || run.resultContentNamespaceId !== task.contentNamespaceId
+        || run.resultCryptoObjectId !== reference.objectId
+        || run.resultCryptoMappingState !== "verified"
+      ) return unavailable("integrity_failure");
+      if (!exactLedger || ledger === undefined
+        || ledger.completion !== "complete"
+        || ledger.disposition !== "mapped"
+        || ledger.representation !== run.resultRepresentation) {
+        return unavailable("integrity_failure");
+      }
+      const current = await currentPrivateAuthority(
+        taskAuthority,
+        run.resultContentNamespaceId,
+      );
+      if (current === null) return unavailable("authority_changed");
+      try {
+        if (current.content.requesterHumanId !== input.authority.subjectHumanId
+          || current.content.requesterHumanId !== ledger.requesterHumanId) {
+          return unavailable("authority_changed");
+        }
+      } finally {
+        current.bindingHash.fill(0);
+      }
+      const verifiedCryptoHandle = await cryptoHandle();
+      const storage = new PostgresLatticeStorage(verifiedCryptoHandle);
+      let object;
+      let access;
+      try {
+        [object, access] = await Promise.all([
+          storage.getObject(reference.objectId),
+          storage.getObjectAccessState(reference.objectId),
+        ]);
+      } catch (error) {
+        if (error instanceof ClassifiedDataOperationError
+          || error instanceof TypeError) {
+          return unavailable("integrity_failure");
+        }
+        throw error;
+      }
+      if (object === null || access === null
+        || access.head.accessRevision !== 0
+        || access.namespaceEnvelopes.length !== 1
+        || access.namespaceEnvelopes[0]?.namespaceId
+          !== run.resultContentNamespaceId) {
+        object?.payloadBytes.fill(0);
+        access?.head.manifestBytes.fill(0);
+        access?.head.manifestHash.fill(0);
+        access?.namespaceEnvelopes.forEach((envelope) => {
+          envelope.envelopeBytes.fill(0);
+          envelope.envelopeHash.fill(0);
+        });
+        return unavailable("integrity_failure");
+      }
+      const history = new PostgresHumanDeviceSignerHistory({
+        handle: verifiedCryptoHandle,
+        crypto: dependencies.crypto,
+      });
+      const payloadHash = dependencies.crypto.hash(object.payloadBytes);
+      let verified;
+      try {
+        try {
+          verified = await verifyStoredObjectAccessManifestChainV5({
+            executor: verifiedCryptoHandle,
+            crypto: dependencies.crypto,
+            objectId: reference.objectId,
+            headAccessRevision: 0,
+            expectedPayloadHash: payloadHash,
+            expectedHeadManifestHash: access.head.manifestHash,
+            resolveHistoricalAgentManagerAuthority:
+              history.resolveAgentRuntimeSignerManager,
+          });
+        } catch (error) {
+          if (error instanceof ClassifiedDataOperationError
+            || error instanceof TypeError) {
+            return unavailable("integrity_failure");
+          }
+          throw error;
+        }
+        if (
+          verified.headManifest.signer.kind !== "agent_runtime"
+          || verified.headManifest.signer.agentId !== task.agentId
+          || verified.genesisHumanId !== null
+          || verified.signerEvidence.length !== 1
+          || verified.signerEvidence[0]?.kind !== "agent_runtime_publication"
+        ) return unavailable("integrity_failure");
+        return Object.freeze({
+          ...reference,
+          status: "ready" as const,
+          namespaceId: run.resultContentNamespaceId,
+          encryptedPayloadBytesBase64url:
+            Buffer.from(object.payloadBytes).toString("base64url"),
+          accessManifestBytesBase64url:
+            Buffer.from(access.head.manifestBytes).toString("base64url"),
+          accessManifestProofBytesBase64url: [] as [],
+          namespaceEnvelopeBytesBase64url: Buffer.from(
+            access.namespaceEnvelopes[0].envelopeBytes,
+          ).toString("base64url"),
+          signerEvidence: [Object.freeze({
+            kind: "agent_runtime_publication" as const,
+            evidenceBytesBase64url: Buffer.from(
+              verified.signerEvidence[0].evidenceBytes,
+            ).toString("base64url"),
+          })],
+        }) satisfies ProtectedTaskRunResultReadReadyEnvelopeV1;
+      } finally {
+        payloadHash.fill(0);
+        object.payloadBytes.fill(0);
+        access.head.manifestBytes.fill(0);
+        access.head.manifestHash.fill(0);
+        for (const envelope of access.namespaceEnvelopes) {
+          envelope.envelopeBytes.fill(0);
+          envelope.envelopeHash.fill(0);
+        }
+        if (verified !== undefined) {
+          destroyVerifiedStoredObjectAccessManifestChainV5(verified);
+        }
       }
     },
 

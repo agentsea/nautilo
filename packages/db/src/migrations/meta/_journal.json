@@ -2157,6 +2157,20 @@
       "when": 1790697329440,
       "tag": "0307_goofy_puck",
       "breakpoints": true
+    },
+    {
+      "idx": 308,
+      "version": "7",
+      "when": 1790697329441,
+      "tag": "0308_lethal_angel",
+      "breakpoints": true
+    },
+    {
+      "idx": 309,
+      "version": "7",
+      "when": 1790697329442,
+      "tag": "0309_fearless_salo",
+      "breakpoints": true
     }
   ]
 }

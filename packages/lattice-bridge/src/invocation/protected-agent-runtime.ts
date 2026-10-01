@@ -2,12 +2,8 @@ import {
   agentId,
   agentRuntimeGeneration,
   authorizationRevision,
-  cryptoDeviceId,
-  cryptoDomainId,
   decryptObjectPayload,
-  domainEpoch,
   objectId,
-  openAgentRuntimeFromDomain,
   type AgentId,
   type AgentRuntimeKeyGeneration,
   type LatticeCrypto,
@@ -18,9 +14,11 @@ import {
 import {
   agentRuntimeConfigDekAadV2,
   decodeEncryptedPayloadV2,
-  parseAgentRuntimeDomainEnvelopeV1,
   type HistoricalAgentRuntimeCommitterResolverV1,
 } from "@nautilo/lattice-crypto/wire";
+import {
+  openProtectedAgentRuntimeFromDomainRoot,
+} from "./protected-agent-runtime-domain-root.ts";
 import {
   destroyProtectedInvocationCapability,
   executeProtectedGrantCapabilityOperation,
@@ -134,74 +132,25 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-type OpenedProtectedAgentRuntime = Readonly<{
-  runtime: AgentRuntimeKeyGeneration;
-  stored: NonNullable<Awaited<
-    ReturnType<LatticeStorage["getAgentRuntimeAtomicState"]>
-  >>;
-}>;
-
 async function openProtectedAgentRuntime(input: Readonly<{
   crypto: LatticeCrypto;
   storage: Pick<LatticeStorage, "getAgentRuntimeAtomicState">;
   opened: OpenedGrantDomain;
   agentId: AgentId;
   resolveHistoricalCommitter: HistoricalAgentRuntimeCommitterResolverV1;
-}>): Promise<OpenedProtectedAgentRuntime | null> {
-  let stored: Awaited<
-    ReturnType<LatticeStorage["getAgentRuntimeAtomicState"]>
-  >;
-  try {
-    stored = await input.storage.getAgentRuntimeAtomicState(input.agentId);
-  } catch {
-    return null;
-  }
-  if (stored === null || stored.runtime.agentId !== input.agentId) return null;
-  const envelopeRecords = stored.domainEnvelopes.filter((record) =>
-    record.agentId === input.agentId
-    && record.domainId === input.opened.domainId
-    && record.domainEpoch === input.opened.domainEpoch
-    && record.agentAuthorizationRevision
-      === input.opened.agentAuthorizationRevision
-    && record.runtimeGeneration === stored.runtime.runtimeGeneration
-  );
-  if (envelopeRecords.length !== 1) return null;
-  const envelopeRecord = envelopeRecords[0]!;
-  if (
-    !equalBytes(
-      input.crypto.hash(envelopeRecord.envelopeBytes),
-      envelopeRecord.envelopeHash,
-    )
-  ) return null;
-  try {
-    const envelope = parseAgentRuntimeDomainEnvelopeV1(
-      envelopeRecord.envelopeBytes,
-    );
-    return Object.freeze({
-      runtime: openAgentRuntimeFromDomain({
-        crypto: input.crypto,
-        domainRoot: input.opened.aiRoot,
-        envelope,
-        expected: {
-          agentId: agentId(envelopeRecord.agentId),
-          domainId: cryptoDomainId(envelopeRecord.domainId),
-          domainEpoch: domainEpoch(envelopeRecord.domainEpoch),
-          agentAuthorizationRevision:
-            authorizationRevision(
-              envelopeRecord.agentAuthorizationRevision,
-            ),
-          runtimeGeneration:
-            agentRuntimeGeneration(envelopeRecord.runtimeGeneration),
-          committerDeviceId:
-            cryptoDeviceId(envelopeRecord.committerDeviceId),
-        },
-        resolveHistoricalCommitter: input.resolveHistoricalCommitter,
-      }),
-      stored,
-    });
-  } catch {
-    return null;
-  }
+}>) {
+  return openProtectedAgentRuntimeFromDomainRoot({
+    crypto: input.crypto,
+    storage: input.storage,
+    domain: {
+      domainId: input.opened.domainId,
+      domainEpoch: input.opened.domainEpoch,
+      agentAuthorizationRevision: input.opened.agentAuthorizationRevision,
+      domainRoot: input.opened.aiRoot,
+    },
+    agentId: input.agentId,
+    resolveHistoricalCommitter: input.resolveHistoricalCommitter,
+  });
 }
 
 /**

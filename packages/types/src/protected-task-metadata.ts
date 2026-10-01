@@ -57,6 +57,14 @@ export type ProtectedTaskMetadataClassificationV1 =
       path: string;
     }>;
 
+export type ProtectedTaskMetadataReconstructionV1 =
+  | Readonly<{
+      status: "supported";
+      version: typeof PROTECTED_TASK_METADATA_VERSION;
+      metadata: ProtectedTaskMetadataProjectionV1;
+    }>
+  | Extract<ProtectedTaskMetadataClassificationV1, { status: "unsupported" }>;
+
 const TOP_LEVEL_KEYS = new Set([
   "execution",
   "preparation",
@@ -691,4 +699,202 @@ export function classifyProtectedTaskMetadataV1(
     protectedContent: deepFreeze(protectedContent),
   };
   return Object.freeze(result);
+}
+
+const OPERATIONAL_TOP_LEVEL_KEYS = new Set([
+  "execution",
+  "preparation",
+  "lastInterruption",
+  "deepResearch",
+  "mode",
+  "publish",
+  "bringBack",
+  "ordinaryArtifactPeer",
+  "expectedArtifactPeerActorId",
+  "artifactAwareAskPeer",
+  "source",
+  "liveMiniAppTaskDelegation",
+  "writerReviewAwaiting",
+  "writerReviewAcceptedReceipt",
+]);
+
+const PROTECTED_TOP_LEVEL_KEYS = new Set([
+  "execution",
+  "preparation",
+  "lastInterruption",
+  "deepResearch",
+  "target",
+  "instructions",
+  "artifactRefs",
+  "artifactOperationId",
+  "artifactId",
+  "topic",
+]);
+
+function jsonEquals(
+  left: ProtectedTaskMetadataJsonValueV1,
+  right: ProtectedTaskMetadataJsonValueV1,
+): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    const leftItems = left as readonly ProtectedTaskMetadataJsonValueV1[];
+    const rightItems = right as readonly ProtectedTaskMetadataJsonValueV1[];
+    return leftItems.length === rightItems.length
+      && leftItems.every((item, index) => jsonEquals(item, rightItems[index]!));
+  }
+  const leftRecord = record(left);
+  const rightRecord = record(right);
+  if (!leftRecord || !rightRecord) return false;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(rightRecord, key)
+      && jsonEquals(
+        leftRecord[key] as ProtectedTaskMetadataJsonValueV1,
+        rightRecord[key] as ProtectedTaskMetadataJsonValueV1,
+      ));
+}
+
+function mergeExactProtectedFields(
+  operationalValue: unknown,
+  protectedValue: unknown,
+  protectedKeys: readonly string[],
+  path: string,
+): MutableJsonRecord | Unsupported {
+  const operational = cloneRecord(operationalValue);
+  const protectedFields = cloneRecord(protectedValue);
+  if (!operational || !protectedFields) return unsupported("malformed_field", path);
+  if (!exactKeys(protectedFields, protectedKeys)) {
+    return unknownKeys(protectedFields, new Set(protectedKeys))
+      ? unsupported("unknown_field", path)
+      : unsupported("malformed_field", path);
+  }
+  if (protectedKeys.some((key) => Object.hasOwn(operational, key))) {
+    return unsupported("unsupported_shape", path);
+  }
+  return { ...operational, ...protectedFields };
+}
+
+/**
+ * Reconstruct canonical Task metadata for transient execution from its two
+ * stored projections. Every split field is joined explicitly, then classified
+ * again so neither projection can add, overwrite, or silently lose content.
+ */
+export function reconstructProtectedTaskMetadataV1(
+  operationalInput: unknown,
+  protectedContentInput: unknown,
+): ProtectedTaskMetadataReconstructionV1 {
+  const operational = cloneRecord(operationalInput);
+  if (!operational) return unsupported("unsupported_shape", "$.operational");
+  const protectedContent = cloneRecord(protectedContentInput);
+  if (!protectedContent) return unsupported("unsupported_shape", "$.protectedContent");
+  if (unknownKeys(operational, OPERATIONAL_TOP_LEVEL_KEYS)) {
+    return unsupported("unknown_field", "$.operational");
+  }
+  if (unknownKeys(protectedContent, PROTECTED_TOP_LEVEL_KEYS)) {
+    return unsupported("unknown_field", "$.protectedContent");
+  }
+
+  const metadata: MutableJsonRecord = {};
+  for (const key of [
+    "mode",
+    "publish",
+    "bringBack",
+    "ordinaryArtifactPeer",
+    "expectedArtifactPeerActorId",
+    "artifactAwareAskPeer",
+    "source",
+    "liveMiniAppTaskDelegation",
+    "writerReviewAwaiting",
+    "writerReviewAcceptedReceipt",
+  ]) {
+    if (Object.hasOwn(operational, key)) metadata[key] = operational[key]!;
+  }
+  for (const key of [
+    "target",
+    "instructions",
+    "artifactRefs",
+    "artifactOperationId",
+    "artifactId",
+    "topic",
+  ]) {
+    if (Object.hasOwn(protectedContent, key)) metadata[key] = protectedContent[key]!;
+  }
+
+  for (const [key, protectedKeys] of [
+    ["execution", ["workingDirectory"]],
+    ["lastInterruption", ["toolName", "operation"]],
+    ["deepResearch", ["reportLanguage"]],
+  ] as const) {
+    const hasOperational = Object.hasOwn(operational, key);
+    const hasProtected = Object.hasOwn(protectedContent, key);
+    if (!hasOperational && !hasProtected) continue;
+    if (!hasOperational) return unsupported("malformed_field", `$.operational.${key}`);
+    if (!hasProtected) {
+      metadata[key] = operational[key]!;
+      continue;
+    }
+    const merged = mergeExactProtectedFields(
+      operational[key],
+      protectedContent[key],
+      protectedKeys,
+      `$.protectedContent.${key}`,
+    );
+    if (isUnsupported(merged)) return merged;
+    metadata[key] = merged;
+  }
+
+  const hasOperationalPreparation = Object.hasOwn(operational, "preparation");
+  const hasProtectedPreparation = Object.hasOwn(protectedContent, "preparation");
+  if (hasOperationalPreparation || hasProtectedPreparation) {
+    if (!hasOperationalPreparation) {
+      return unsupported("malformed_field", "$.operational.preparation");
+    }
+    if (!hasProtectedPreparation) {
+      metadata["preparation"] = operational["preparation"]!;
+    } else {
+      const operationalPreparation = cloneRecord(operational["preparation"]);
+      const protectedPreparation = cloneRecord(protectedContent["preparation"]);
+      if (!operationalPreparation || !protectedPreparation) {
+        return unsupported("malformed_field", "$.protectedContent.preparation");
+      }
+      if (!exactKeys(protectedPreparation, ["researchWork"])
+        || !exactKeys(protectedPreparation["researchWork"], ["subject"])) {
+        const protectedWork = record(protectedPreparation["researchWork"]);
+        return unknownKeys(protectedPreparation, new Set(["researchWork"]))
+          || (protectedWork !== null && unknownKeys(protectedWork, new Set(["subject"])))
+          ? unsupported("unknown_field", "$.protectedContent.preparation")
+          : unsupported("malformed_field", "$.protectedContent.preparation");
+      }
+      const operationalWork = operationalPreparation["researchWork"] === undefined
+        ? {}
+        : cloneRecord(operationalPreparation["researchWork"]);
+      if (!operationalWork) {
+        return unsupported("malformed_field", "$.operational.preparation.researchWork");
+      }
+      if (Object.hasOwn(operationalWork, "subject")) {
+        return unsupported("unsupported_shape", "$.protectedContent.preparation.researchWork");
+      }
+      operationalPreparation["researchWork"] = {
+        ...operationalWork,
+        subject: protectedPreparation["researchWork"]["subject"] as ProtectedTaskMetadataJsonValueV1,
+      };
+      metadata["preparation"] = operationalPreparation;
+    }
+  }
+
+  const classified = classifyProtectedTaskMetadataV1(metadata);
+  if (classified.status === "unsupported") return classified;
+  if (!jsonEquals(classified.operational, operational)) {
+    return unsupported("unsupported_shape", "$.operational");
+  }
+  if (!jsonEquals(classified.protectedContent, protectedContent)) {
+    return unsupported("unsupported_shape", "$.protectedContent");
+  }
+  return Object.freeze({
+    status: "supported" as const,
+    version: PROTECTED_TASK_METADATA_VERSION,
+    metadata: deepFreeze(metadata),
+  });
 }

@@ -122,6 +122,9 @@ function createForegroundCheckpointAuthority(input: Readonly<{
       if (request.authorizationSession !== input.authorization) {
         throw unavailable("authorization_view_mismatch");
       }
+      if (request.entrypointId === "task.execute") {
+        throw unavailable("task_entrypoint_requires_task_authority");
+      }
       const leased = input.registry.leaseOperation({
         view: input.authorization,
         entrypointId: request.entrypointId,

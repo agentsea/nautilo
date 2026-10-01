@@ -228,6 +228,33 @@ export interface ConversationProductCanonicalTransactionRunner {
   ): Promise<Result>;
 }
 
+export type ConversationProductPublicationGuardAction =
+  | "appendAllocated"
+  | "markCryptoComplete"
+  | "compareAndSwapCryptoMapping";
+
+export type ConversationProductPublicationGuardInput =
+  | (ConversationRevisionCoordinates & Readonly<{
+    action: "appendAllocated";
+    idempotencyKey: string;
+    authorRole: ConversationProductAppendInput["authorRole"];
+    keyClass: ConversationProductAppendInput["keyClass"];
+    publicationPolicy: ConversationProductAppendInput["publicationPolicy"];
+  }>)
+  | (ConversationRevisionCoordinates & Readonly<{
+    action: Exclude<
+      ConversationProductPublicationGuardAction,
+      "appendAllocated"
+    >;
+  }>);
+
+export interface ConversationProductPublicationGuard {
+  assertPublicationAllowed(
+    transaction: CanonicalTranscriptTx,
+    input: ConversationProductPublicationGuardInput,
+  ): Promise<void>;
+}
+
 const verifiedProductHandles = new WeakSet<object>();
 const verifiedCanonicalRunners =
   new WeakMap<object, ConversationProductPostgresHandle>();
@@ -1585,6 +1612,7 @@ export class PostgresConversationProductStore
     private readonly handle: ConversationProductPostgresHandle,
     private readonly canonicalRunner:
       ConversationProductCanonicalTransactionRunner,
+    private readonly publicationGuard?: ConversationProductPublicationGuard,
   ) {
     assertVerifiedConversationProductPostgresHandle(handle);
     assertConversationProductCanonicalTransactionRunner(handle, canonicalRunner);
@@ -2464,6 +2492,19 @@ export class PostgresConversationProductStore
             roomId,
             messageId,
           }) => {
+            await this.publicationGuard?.assertPublicationAllowed(
+              transaction,
+              {
+                action: "appendAllocated",
+                sessionId,
+                messageId,
+                revision: 0,
+                idempotencyKey: input.idempotencyKey,
+                authorRole: input.authorRole,
+                keyClass: input.keyClass,
+                publicationPolicy: input.publicationPolicy,
+              },
+            );
             if (roomId === null) {
               throw new Error(
                 "Conversation Session/Room/Namespace is missing",
@@ -3734,6 +3775,12 @@ export class PostgresConversationProductStore
       throw new TypeError("nautilo_agent may mark only server-authenticated AI revisions complete or exact reserved device evidence");
     }
     return canonicalTransaction(this.canonicalRunner, async (transaction) => {
+      await this.publicationGuard?.assertPublicationAllowed(transaction, {
+        action: "markCryptoComplete",
+        sessionId: input.sessionId,
+        messageId: input.messageId,
+        revision: input.revision,
+      });
       if (input.publicationPolicy !== undefined) {
         await acquireEncryptionPublicationFence(transaction, input.publicationPolicy);
       }
@@ -3875,6 +3922,12 @@ export class PostgresConversationProductStore
       assertUuid("Conversation lease token", input.leaseToken);
     }
     return canonicalTransaction(this.canonicalRunner, async (transaction) => {
+      await this.publicationGuard?.assertPublicationAllowed(transaction, {
+        action: "compareAndSwapCryptoMapping",
+        sessionId: input.sessionId,
+        messageId: input.messageId,
+        revision: input.revision,
+      });
       if (input.publicationPolicy !== undefined) {
         await acquireEncryptionPublicationFence(transaction, input.publicationPolicy);
       }

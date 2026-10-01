@@ -9,6 +9,7 @@ import {
   protectedTaskPreparedUpdateRequestV1Schema,
   protectedTaskPublicationPlanRequestV1Schema,
   protectedTaskDefinitionReadEnvelopeV1Schema,
+  protectedTaskRunResultReadEnvelopeV1Schema,
   protectedTaskContentListV1Schema,
   type ProtectedTaskPreparedCreateRequestV1,
 } from "../../src/browser.ts";
@@ -120,6 +121,46 @@ describe("protected Task prepared publication schema", () => {
       expectedContentRevision: 1,
       nextContentRevision: 2,
       task: { expectedOutput: "plaintext must not cross" },
+    })).toThrow();
+  });
+
+  test("accepts only opaque Agent-signed TaskRun result envelopes", () => {
+    const ready = {
+      readVersion: 1 as const,
+      status: "ready" as const,
+      taskId: TASK_ID,
+      taskRunId: "91000000-0000-4000-8000-000000000003",
+      objectId: `task-run-result:v1:${"a".repeat(64)}`,
+      resultRevision: 1 as const,
+      cryptoAccessRevision: 0 as const,
+      namespaceId: NAMESPACE_ID,
+      encryptedPayloadBytesBase64url: "Y2lwaGVy",
+      accessManifestBytesBase64url: "bWFuaWZlc3Q",
+      accessManifestProofBytesBase64url: [] as [],
+      namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
+      signerEvidence: [{
+        kind: "agent_runtime_publication" as const,
+        evidenceBytesBase64url: "ZXZpZGVuY2U",
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(ready)).toEqual(ready);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      resultText: "plaintext must not cross",
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [],
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [{
+        kind: "human_device",
+        subjectHumanId: TASK_ID,
+        committerDeviceId: "device:one",
+        hostAuthorizationRevision: 1,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
     })).toThrow();
   });
 

@@ -316,7 +316,18 @@ export {
 } from "./workstation-dispatch-plan";
 export { botThreadId } from "./conductor/thread-id";
 // M142 — Task primitive async engine (Phase 2a).
-export { TaskObserver, type TaskObserverDeps } from "./tasks/task-observer";
+export {
+  TaskObserver,
+  type TaskObserverDeps,
+  type ProtectedTaskOccurrence,
+} from "./tasks/task-observer";
+export {
+  isCurrentProtectedTaskRunForGrant,
+} from "./tasks/protected-task-current-run";
+export {
+  planProtectedTaskPredispatch,
+  type ProtectedTaskPredispatchPlan,
+} from "./tasks/protected-task-predispatch";
 export {
   ProtectedTaskOccurrenceCoordinator,
   createProtectedTaskOccurrenceCoordinator,
@@ -326,6 +337,40 @@ export {
   type ProtectedTaskOccurrenceCoordinatorDeps,
   type ProtectedTaskOccurrenceJobManager,
 } from "./tasks/protected-task-occurrence-coordinator";
+export {
+  runProtectedTaskNativeSegment,
+  type ProtectedTaskNativeExecution,
+  type ProtectedTaskNativeResultPublicationPort,
+  type ProtectedTaskNativeRunnerDependencies,
+  type ProtectedTaskNativeSegmentMode,
+  type ProtectedTaskNativeSegmentResult,
+  type RunProtectedTaskNativeSegmentInput,
+} from "./tasks/protected-task-native-runner";
+export {
+  createProtectedTaskTranscriptPort,
+  type ProtectedTaskTranscriptIdentity,
+  type ProtectedTaskTranscriptMessagePublisher,
+} from "./tasks/protected-task-transcript-port";
+export {
+  completeProtectedTaskRunResult,
+  publishPreparedProtectedTaskRunResult,
+  type CompleteProtectedTaskRunResultDependencies,
+  type CompleteProtectedTaskRunResultInput,
+  type PublishPreparedProtectedTaskRunResultDependencies,
+  type PublishPreparedProtectedTaskRunResultInput,
+} from "./tasks/protected-task-result-completion";
+export {
+  completeProtectedTaskRunResultWithLiveAuthority,
+  type CompleteProtectedTaskRunResultWithLiveAuthorityInput,
+} from "./tasks/protected-task-live-result-completion";
+export type {
+  DualTaskRunResultTerminalPort,
+  ProtectedTaskRunTerminalPort,
+} from "./tasks/protected-task-result-publication";
+export {
+  withProtectedTaskCheckpointSaver,
+  withNativeProtectedTaskCheckpointSaver,
+} from "./tasks/protected-task-checkpoint-saver";
 export {
   dispatchTaskRun,
   type DispatchTaskRunDeps,
@@ -339,6 +384,7 @@ export {
   type ResolvedTargetRoom,
   type HumanRoomMember,
 } from "./tasks/resolve-target-room";
+export { resolveTaskMemoryEnvelope } from "./tasks/resolve-task-memory-envelope";
 export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps } from "./tasks/create-task";
 export {
   TaskCreationUnavailableError,

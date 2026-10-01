@@ -403,6 +403,9 @@ export type {
   ConversationProductCanonicalTransactionConnection,
   ConversationProductCanonicalTransactionRunner,
   ConversationProductDatabaseRow,
+  ConversationProductPublicationGuard,
+  ConversationProductPublicationGuardAction,
+  ConversationProductPublicationGuardInput,
   ConversationProductPostgresConnection,
   ConversationProductPostgresExecutor,
   ConversationProductPostgresHandle,
@@ -919,6 +922,8 @@ export {withCurrentStenographerAuthority, matchesCurrentStenographerAuthority, m
 export { matchesCurrentReflectionAuthority, withCurrentReflectionAuthority } from "./journal/current-reflection-authority.ts";
 export {
   withCurrentTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeAuthority,
+  type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
   type TaskRuntimeDomainAuthorityRequirement,
@@ -967,3 +972,47 @@ export {PostgresProtectedOrganizerMetadata, type ProtectedOrganizerRoomBindingPo
 
 
 export {PostgresProtectedReflectionMessageMetadata, type ProtectedReflectionMessageMetadata} from "./reflection/protected-message-metadata.ts";
+
+export {
+  inspectInitialTaskRuntimeNamespaceAuthority,
+  withInitialTaskRuntimeRecipientAuthority,
+  type InitialTaskRuntimeRecipientAuthority,
+  type InitialTaskRuntimeNamespaceAuthority,
+  type InitialTaskRuntimeNamespaceFact,
+} from "./task/initial-task-runtime-namespace-authority.ts";
+
+export {
+  withNativeProtectedTaskDefinitionV1,
+  type NativeProtectedTaskDefinitionOccurrenceV1,
+} from "./task/native-protected-task-definition-opener.ts";
+
+export {
+  prepareNativeTaskRuntimeRunResult,
+  type PrepareNativeTaskRuntimeRunResultInput,
+} from "./task/native-task-run-result-preparation.ts";
+
+export {
+  createNativeTaskRuntimeCheckpointCellCrypto,
+  type NativeTaskRuntimeCheckpointCellCryptoInput,
+} from "./task/native-task-runtime-checkpoint-cell-crypto.ts";
+export {
+  prepareNativeTaskMessage,
+  readPreparedNativeTaskMessage,
+  type NativeTaskMessageAuthority,
+  type NativeTaskMessageCoordinates,
+  type NativeTaskMessageSnapshot,
+  type PrepareNativeTaskMessageInput,
+  type PreparedNativeTaskMessage,
+} from "./task/native-task-message-preparation.ts";
+export {
+  createPostgresNativeTaskMessageCryptoCompletion,
+  NativeTaskMessageCryptoCompletionConflictError,
+  type NativeTaskMessageCryptoCompletionDependencies,
+  type NativeTaskMessageCryptoCompletionPort,
+} from "./task/postgres-native-task-message-completion.ts";
+export {
+  createNativeTaskMessageReadTargetV1,
+  withNativeTaskMessageV1,
+  type NativeTaskMessageReadAuthorityV1,
+  type NativeTaskMessageReadTargetV1,
+} from "./task/native-task-message-opener.ts";

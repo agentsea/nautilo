@@ -24,7 +24,8 @@ export const TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V1 =
   "task.runtime.background_authorization_request" as const;
 export type TaskRuntimeBackgroundAuthorizationWorkV1 =
   | "task.dispatch"
-  | "task.execute";
+  | "task.execute"
+  | "task.await_reply_resume";
 
 const REQUEST_DOMAIN =
   "nautilo/lattice-crypto/task-runtime-background-authorization-request/v1";
@@ -35,7 +36,7 @@ const REQUEST_DOMAIN_BYTES = utf8V2(REQUEST_DOMAIN).length;
 const REQUEST_PURPOSE_BYTES = utf8V2(
   TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V1,
 ).length;
-const MAX_TASK_WORK_BYTES = utf8V2("task.dispatch").length;
+const MAX_TASK_WORK_BYTES = utf8V2("task.await_reply_resume").length;
 const MAX_ID_FRAME_BYTES = 4 + V2_LIMITS.idBytes;
 const FIXED_AND_BOUNDED_REQUEST_BYTES =
   framedTextBytes(REQUEST_DOMAIN)
@@ -43,8 +44,8 @@ const FIXED_AND_BOUNDED_REQUEST_BYTES =
   + framedTextBytes(TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V1)
   + MAX_ID_FRAME_BYTES // requestId
   + MAX_ID_FRAME_BYTES // TaskRun workId
-  + framedTextBytes("task.dispatch")
-  + framedTextBytes("task.dispatch")
+  + 4 + MAX_TASK_WORK_BYTES
+  + 4 + MAX_TASK_WORK_BYTES
   + 8
   + MAX_ID_FRAME_BYTES // episodeId
   + MAX_ID_FRAME_BYTES // sourceRoomId
@@ -103,7 +104,11 @@ function taskWork(
   label: string,
   value: unknown,
 ): TaskRuntimeBackgroundAuthorizationWorkV1 {
-  if (value !== "task.dispatch" && value !== "task.execute") {
+  if (
+    value !== "task.dispatch"
+    && value !== "task.execute"
+    && value !== "task.await_reply_resume"
+  ) {
     throw new TypeError(`${label} is unsupported`);
   }
   return value;

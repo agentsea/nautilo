@@ -57,6 +57,7 @@ export type BackgroundWorkKindV1 =
   | "memory.exit_flush"
   | "task.dispatch"
   | "task.execute"
+  | "task.await_reply_resume"
   | "task.approval_resume";
 
 export type BackgroundWorkPurposeV1 =
@@ -67,6 +68,7 @@ export type BackgroundWorkPurposeV1 =
   | "memory.exit_flush"
   | "task.dispatch"
   | "task.execute"
+  | "task.await_reply_resume"
   | "task.approval_resume";
 
 export type BackgroundWorkOperationV1 = "decrypt" | "encrypt";
@@ -193,6 +195,7 @@ const WORK_PURPOSES: Readonly<
   "memory.exit_flush": "memory.exit_flush",
   "task.dispatch": "task.dispatch",
   "task.execute": "task.execute",
+  "task.await_reply_resume": "task.await_reply_resume",
   "task.approval_resume": "task.approval_resume",
 });
 

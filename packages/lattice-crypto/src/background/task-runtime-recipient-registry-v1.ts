@@ -11,6 +11,47 @@ import { V2_LIMITS } from "../v2-types/limits.ts";
 import {
   PROCESSOR_TRANSFORM_MAX_LIVE_RECIPIENTS_V1,
 } from "./one-run-processor-transform-v1.ts";
+import {
+  withTaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionEvidenceInputV1,
+  type TaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionNamespaceAuthorityV1,
+} from "./task-runtime-execution-evidence-v1.ts";
+
+type TaskRuntimeCurrentNamespaceAuthorityV1 =
+  TaskRuntimeExecutionNamespaceAuthorityV1;
+
+function resultAuthorityIsCurrent(input: Readonly<{
+  readonly workId: string;
+  readonly result: TaskRuntimeExecutionEvidenceInputV1["result"];
+  readonly namespaces: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+  readonly current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+}>): boolean {
+  const resultNamespace = input.result.namespace;
+  const matchingNamespaces = input.namespaces.filter((requirement) =>
+    requirement.namespaceId === resultNamespace.namespaceId
+  );
+  const matchingDomains = input.current.domains.filter((domain) =>
+    domain.domainId === resultNamespace.domainId
+  );
+  const currentNamespace = matchingNamespaces[0];
+  return input.result.taskRunId === input.workId
+    && input.result.contentRevision === 1
+    && resultNamespace.operations.length === 1
+    && resultNamespace.operations[0] === "encrypt"
+    && resultNamespace.expectedPolicyRevision === input.current.policyRevision
+    && matchingNamespaces.length === 1
+    && currentNamespace !== undefined
+    && currentNamespace.domainId === resultNamespace.domainId
+    && currentNamespace.operations.length === 2
+    && currentNamespace.operations[0] === "decrypt"
+    && currentNamespace.operations[1] === "encrypt"
+    && currentNamespace.expectedAccessRevision
+      === resultNamespace.expectedAccessRevision
+    && currentNamespace.expectedPolicyRevision
+      === resultNamespace.expectedPolicyRevision
+    && matchingDomains.length === 1;
+}
 
 export type TaskRuntimeRecipientAttemptV1 = Readonly<{
   requestId: string;
@@ -249,10 +290,14 @@ export class TaskRuntimeRecipientRegistryV1 {
     claimExpiresAt: number;
     authorizationBytes: Uint8Array;
     current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    currentNamespaceRequirements:
+      readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+    result: TaskRuntimeExecutionEvidenceInputV1["result"];
     signal?: AbortSignal;
     operation(
       domains: readonly DomainForegroundSecretEntryV2[],
       signal: AbortSignal,
+      evidence: TaskRuntimeExecutionEvidenceV1,
     ): Value | PromiseLike<Value>;
   }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
     assertPortableId("Task Runtime recipient request id", input.requestId);
@@ -276,6 +321,12 @@ export class TaskRuntimeRecipientRegistryV1 {
       || input.current.recipientRuntimeGeneration !== input.recipientGeneration
       || input.current.recipientKeyId !== input.recipientKeyId
     ) return unavailable("recipient_key_mismatch");
+    if (!resultAuthorityIsCurrent({
+      workId: input.workId,
+      result: input.result,
+      namespaces: input.currentNamespaceRequirements,
+      current: input.current,
+    })) return unavailable("authority_stale");
     const now = this.#now();
     const deadline = Math.min(entry.attempt.expiresAt, input.claimExpiresAt);
     if (deadline <= now) {
@@ -303,7 +354,36 @@ export class TaskRuntimeRecipientRegistryV1 {
         },
         operation: async (domains) => {
           controller.signal.throwIfAborted();
-          const value = await input.operation(domains, controller.signal);
+          const authorizationDigest = this.crypto.hash(input.authorizationBytes);
+          const value = await withTaskRuntimeExecutionEvidenceV1({
+            evidence: {
+              requestId: input.requestId,
+              workId: input.workId,
+              claimId: input.claimId,
+              claimExpiresAt: input.claimExpiresAt,
+              recipientExpiresAt: entry.attempt.expiresAt,
+              expiresAt: deadline,
+              recipientGeneration: input.recipientGeneration,
+              recipientKeyId: input.recipientKeyId,
+              authorizationDigest,
+              policyRevision: input.current.policyRevision,
+              episodeId: input.current.sessionId,
+              sourceRoomId: input.current.roomId,
+              hostAuthorizationRevision: input.current.hostAuthorizationRevision,
+              recipientAuthorizationRevision:
+                input.current.recipientAuthorizationRevision,
+              result: input.result,
+              domainRequirements: input.current.domains,
+              namespaceRequirements: input.currentNamespaceRequirements,
+            },
+            signal: controller.signal,
+            now: this.#now,
+            execute: (evidence) => input.operation(
+              domains,
+              controller.signal,
+              evidence,
+            ),
+          }).finally(() => authorizationDigest.fill(0));
           controller.signal.throwIfAborted();
           return value;
         },

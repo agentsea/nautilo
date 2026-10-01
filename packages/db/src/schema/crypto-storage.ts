@@ -1407,6 +1407,7 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         'memory.exit_flush',
         'task.dispatch',
         'task.execute',
+        'task.await_reply_resume',
         'task.approval_resume'
       )`,
     ),
@@ -1427,6 +1428,7 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         'memory.exit_flush',
         'task.dispatch',
         'task.execute',
+        'task.await_reply_resume',
         'task.approval_resume'
       )`,
     ),
@@ -1536,7 +1538,11 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
           or ${table.formatVersion} in (1, 2))
         and ${table.credentialSubjectKind} = 'agent'
       ) or (
-        ${table.workKind} in ('task.dispatch', 'task.execute')
+        ${table.workKind} in (
+          'task.dispatch',
+          'task.execute',
+          'task.await_reply_resume'
+        )
         and ${table.purpose} = ${table.workKind}
         and ${table.formatVersion} = 3
         and ${table.credentialSubjectKind} = 'runtime'

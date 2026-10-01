@@ -136,6 +136,78 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     typeOnly: true,
   })),
   {
+    source: "./object/task-runtime-checkpoint-namespace-v1.ts",
+    imported: "withTaskRuntimeCheckpointNamespaceV1",
+    exported: "withTaskRuntimeCheckpointNamespace",
+    typeOnly: false,
+  },
+  ...([
+    "TaskRuntimeCheckpointIdentity",
+    "TaskRuntimeCheckpointNamespaceMaterial",
+  ] as const).map((name) => ({
+    source: "./object/task-runtime-checkpoint-namespace-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
+  ...([
+    "TaskRuntimeExecutionDomainAuthority",
+    "TaskRuntimeExecutionEvidence",
+    "TaskRuntimeExecutionNamespaceAuthority",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-execution-evidence-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
+  {
+    source: "./background/task-runtime-execution-evidence-v1.ts",
+    imported: "assertAuthenticTaskRuntimeExecutionEvidenceV1",
+    exported: "assertAuthenticTaskRuntimeExecutionEvidence",
+    typeOnly: false,
+  },
+  ...([
+    [
+      "assertAuthenticPreparedTaskRuntimeResultObjectV1",
+      "assertAuthenticPreparedTaskRuntimeResultObject",
+    ],
+    [
+      "prepareTaskRuntimeResultObjectV1",
+      "prepareTaskRuntimeResultObject",
+    ],
+    [
+      "prepareNativeTaskRuntimeResultObjectV1",
+      "prepareNativeTaskRuntimeResultObject",
+    ],
+  ] as const).map(([imported, exported]) => ({
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported,
+    exported,
+    typeOnly: false,
+  })),
+  ...([
+    "PreparedTaskRuntimeResultObject",
+    "TaskRuntimeResultNamespaceSource",
+    "TaskRuntimeResultObjectAuthority",
+  ] as const).map((name) => ({
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "PrepareTaskRuntimeResultObjectV1Input",
+    exported: "PrepareTaskRuntimeResultObjectInput",
+    typeOnly: true,
+  },
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "PrepareNativeTaskRuntimeResultObjectV1Input",
+    exported: "PrepareNativeTaskRuntimeResultObjectInput",
+    typeOnly: true,
+  },
+  {
     source: "./format/domain-foreground-authorization-v2.ts",
     imported: "verifyDomainForegroundAuthorizationV2",
     exported: "verifyDomainForegroundAuthorizationV2",

@@ -5,13 +5,22 @@ import {
   type TaskContentPublicationPlanV1,
 } from "../../task/task-content-operation.ts";
 import {
+  decodeTaskPayloadV1,
+  decodeTaskRunResultPayloadV1,
+  encodeTaskPayloadV1,
+  encodeTaskRunResultPayloadV1,
+  type TaskPayloadV1,
+  type TaskRunResultPayloadV1,
+} from "../../task/task-payload-v1.ts";
+import {
   createDormantTaskContentShadowRepository,
 } from "../../task/task-content-shadow-saga.ts";
-import type {
-  PreparedTaskContentCryptoRevisionV1,
-  TaskContentCoordinateV1,
-  TaskContentPayloadV1,
-  TaskContentRepository,
+import {
+  sameTaskContentCoordinateV1,
+  type PreparedTaskContentCryptoRevisionV1,
+  type TaskContentCoordinateV1,
+  type TaskContentPayloadV1,
+  type TaskContentRepository,
 } from "../../task/task-content-repository.ts";
 import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../task/task-content-prepared-revision.ts";
 import {
@@ -92,6 +101,23 @@ export type PreparedTaskContentPublicationV1<ProductResult> =
   | ProtectedPreparedTaskContentPublicationV1<ProductResult>
   | DualPreparedTaskContentPublicationV1<ProductResult>;
 
+/**
+ * One authenticated prepared revision whose exact representation remains a
+ * policy decision. Plaintext is exposed only to the selected dual product
+ * callback; there is deliberately no ordinary-only callback.
+ */
+export type ProtectedOrDualPreparedTaskContentPublicationV1<ProductResult> =
+  PreparedTaskContentPublicationCommonV1 & Readonly<{
+    ordinaryContent: TaskContentPayloadV1;
+    publishProtectedProduct(
+      context: DataOperationPublicationContext,
+    ): Promise<ProductResult>;
+    publishDualProduct(
+      content: TaskContentPayloadV1,
+      context: DataOperationPublicationContext,
+    ): Promise<ProductResult>;
+  }>;
+
 export interface DurableTaskContentRepositoryV1<ProductResult> {
   lookupPreparedReplay: TaskContentRepository["lookupPreparedReplay"];
   mutate(input: Readonly<{
@@ -112,6 +138,10 @@ export interface DurableTaskContentRepositoryV1<ProductResult> {
   publishPrepared(
     input: PreparedTaskContentPublicationV1<ProductResult>,
   ): Promise<DurableTaskContentPublicationResult<ProductResult>>;
+  /** Select protected in Full or dual in Shadow; Plain fails unsupported. */
+  publishPreparedProtectedOrDual(
+    input: ProtectedOrDualPreparedTaskContentPublicationV1<ProductResult>,
+  ): Promise<DurableTaskContentPublicationResult<ProductResult>>;
   read(input: Readonly<{
     owner: EncryptionDataOperationOwner;
     coordinate: TaskContentCoordinateV1;
@@ -129,6 +159,26 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
   protectedRepository: TaskContentRepository;
   content: DurableTaskContentPortsV1<ProductResult>;
 }>): DurableTaskContentRepositoryV1<ProductResult> {
+  const canonicalOrdinarySibling = (
+    content: TaskContentPayloadV1,
+  ): TaskContentPayloadV1 => {
+    const coordinate = Object.freeze({ ...content.coordinate });
+    if (coordinate.kind === "definition") {
+      return Object.freeze({
+        coordinate,
+        payload: decodeTaskPayloadV1(encodeTaskPayloadV1(
+          content.payload as TaskPayloadV1,
+        )),
+      });
+    }
+    return Object.freeze({
+      coordinate,
+      payload: decodeTaskRunResultPayloadV1(encodeTaskRunResultPayloadV1(
+        content.payload as TaskRunResultPayloadV1,
+      )),
+    });
+  };
+
   const repository: DurableTaskContentRepositoryV1<ProductResult> = {
     lookupPreparedReplay: (
       request: Parameters<TaskContentRepository["lookupPreparedReplay"]>[0],
@@ -222,6 +272,60 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
       return request.owner.runMutation(request.representation === "dual"
         ? { dual: publish }
         : { protected: publish });
+    },
+
+    async publishPreparedProtectedOrDual(request: Parameters<DurableTaskContentRepositoryV1<ProductResult>["publishPreparedProtectedOrDual"]>[0]) {
+      readPreparedTaskContentCryptoRevisionSnapshotV1(request.prepared);
+      const ordinaryContent = canonicalOrdinarySibling(request.ordinaryContent);
+      if (!sameTaskContentCoordinateV1(
+        ordinaryContent.coordinate,
+        request.prepared.coordinate,
+      )) {
+        throw new TypeError(
+          "Prepared Task content and ordinary sibling coordinates disagree",
+        );
+      }
+      const publish = async (
+        representation: "protected" | "dual",
+        context: DataOperationPublicationContext,
+      ): Promise<DurableTaskContentPublicationResult<ProductResult>> => {
+        const reservation = await input.protectedRepository.reserveRevision({
+          operationId: request.operationId,
+          requestDigest: request.requestDigest,
+          representation,
+          authority: request.authority,
+          prepared: request.prepared,
+          operationalMetadata: request.operationalMetadata,
+        });
+        if (reservation.status === "stale") {
+          throw new ClassifiedDataOperationError(
+            "stale",
+            "Task content reservation is stale",
+          );
+        }
+        if (reservation.status === "conflict") {
+          throw new ClassifiedDataOperationError(
+            "integrity",
+            "Task content reservation conflicts with durable state",
+          );
+        }
+        const product = representation === "dual"
+          ? await request.publishDualProduct(ordinaryContent, context)
+          : await request.publishProtectedProduct(context);
+        const protectedRevision = await input.protectedRepository.completeRevision({
+          coordinate: request.prepared.coordinate,
+          prepared: request.prepared,
+        });
+        return Object.freeze({
+          product,
+          representation,
+          protectedRevision,
+        });
+      };
+      return request.owner.runMutation({
+        protected: (context) => publish("protected", context),
+        dual: (context) => publish("dual", context),
+      });
     },
 
     read(request: Parameters<DurableTaskContentRepositoryV1<ProductResult>["read"]>[0]) {

@@ -35,6 +35,10 @@ const textEncoder = new TextEncoder();
 const protectedCheckpointEntrypoints = new Set<string>(
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS,
 );
+/** Task execution uses the same encrypted cell format under its own grant. */
+export type ProtectedCheckpointEntrypointId =
+  | ProtectedAgentRuntimeForegroundEntrypointId
+  | "task.execute";
 const reservedCheckpointChannels = new Set<string>([
   // LangGraph's initial checkpoint versions its reserved input channel.
   "__start__",
@@ -149,7 +153,7 @@ export interface ProtectedCheckpointNamespaceSessionContentExecutor {
 export interface ProtectedCheckpointCellAuthorityPort {
   execute<Value>(input: Readonly<{
     authorizationSession: unknown;
-    entrypointId: ProtectedAgentRuntimeForegroundEntrypointId;
+    entrypointId: ProtectedCheckpointEntrypointId;
     operation: ProtectedGrantOperation;
     namespaceId: string;
     domainId: string;
@@ -509,7 +513,7 @@ export function createProtectedCheckpointCellCrypto(input: Readonly<{
   crypto: LatticeCrypto;
   authority: ProtectedCheckpointCellAuthorityPort;
   domainId: string;
-  entrypointId: ProtectedAgentRuntimeForegroundEntrypointId;
+  entrypointId: ProtectedCheckpointEntrypointId;
 }>): ProtectedCheckpointCellCrypto {
   if (!portableText(input.domainId)) {
     throw new ProtectedCheckpointCryptoError(

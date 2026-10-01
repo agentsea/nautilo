@@ -40,7 +40,8 @@ function plan(
     | "task.dispatch.retry"
     | "task.execute"
     | "task.resume.unpause"
-    | "task.resume.approval" = "task.execute",
+    | "task.resume.approval"
+    | "task.resume.await_reply" = "task.execute",
 ): DarkBackgroundSyntheticPlan {
   return planDarkBackgroundSyntheticWork({
     entrypointId,
@@ -128,7 +129,7 @@ describe("Wave 10 dark background-family adapters", () => {
     }
   });
 
-  test("grounds every supported real entrypoint and records unresolved Job/await-reply gaps without inventing actors", () => {
+  test("grounds every supported Task entrypoint and records unresolved Job actors", () => {
     expect(DARK_BACKGROUND_ENTRYPOINT_INVENTORY).toEqual([
       expect.objectContaining({
         entrypointId: "task.dispatch.now",
@@ -172,9 +173,10 @@ describe("Wave 10 dark background-family adapters", () => {
       }),
       expect.objectContaining({
         entrypointId: "task.resume.await_reply",
-        adapterStatus: "inventory_only",
+        adapterStatus: "synthetic_adapter",
         subjectKind: "agent",
-        workKind: null,
+        workKind: "task.await_reply_resume",
+        purpose: "task.await_reply_resume",
       }),
       expect.objectContaining({
         entrypointId: "job.background.generic",

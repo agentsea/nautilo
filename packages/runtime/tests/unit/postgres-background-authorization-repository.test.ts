@@ -240,6 +240,27 @@ function initialTaskRuntimeV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   };
 }
 
+function taskRuntimeRecipientCandidate(input: Readonly<{
+  requestId: string;
+  workId: string;
+  updatedAt: number;
+  nextAttemptAt?: number | null;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const record = initialTaskRuntimeV3();
+  return {
+    ...record,
+    snapshot: {
+      ...record.snapshot,
+      requestId: input.requestId,
+      workId: input.workId,
+      updatedAt: input.updatedAt,
+      nextAttemptAt: input.nextAttemptAt ?? null,
+    },
+    workIdentityHash: new Uint8Array(32).fill(input.updatedAt - START + 10),
+    idempotencyKey: `idempotency_${input.requestId}`,
+  };
+}
+
 function reflectionDescriptor(
   requestId = "reflection_request",
   workId = "reflection-work",
@@ -1061,6 +1082,98 @@ describe("Postgres background authorization repository", () => {
       now: START,
       throughUpdatedAt: START,
       limit: 257,
+    })).rejects.toThrow("must be bounded");
+  });
+
+  test("Task Runtime recipient discovery is V3-only, due, and cursor-paged", async () => {
+    const first = taskRuntimeRecipientCandidate({
+      requestId: "runtime_request_1",
+      workId: "10000000-0000-4000-8000-000000000911",
+      updatedAt: START + 1,
+    });
+    const postgres = await setup([[
+      recordRow(first),
+    ], taskRuntimeDomainRows(first), namespaceRows(first)]);
+    const page = await postgres.repository.listAwaitingTaskRuntimeRecipientPage({
+      now: START + 10,
+      throughUpdatedAt: START + 20,
+      after: { updatedAt: START, requestId: "runtime_request_0" },
+      limit: 1,
+    });
+
+    expect(page.records).toEqual([first]);
+    expect(page.continuation).toEqual({
+      updatedAt: START + 1,
+      requestId: "runtime_request_1",
+    });
+    const statement = normalizedSql(postgres.connection.statements[1]);
+    expect(statement).toContain("FORMAT_VERSION =");
+    expect(statement).toContain("CREDENTIAL_SUBJECT_KIND =");
+    expect(statement).toContain("RUNTIME_KIND =");
+    expect(statement).toContain("RUNTIME_VERSION =");
+    expect(statement).toContain("STATE =");
+    expect(statement).toContain("DESCRIPTOR_HASH IS NULL");
+    expect(statement).toContain("DESCRIPTOR_BYTES IS NULL");
+    expect(statement).toContain("RECIPIENT_KEY_ID IS NULL");
+    expect(statement).toContain("RECIPIENT_PUBLIC_KEY IS NULL");
+    expect(statement).toContain("RECIPIENT_EXPIRES_AT IS NULL");
+    expect(statement).toContain("NEXT_ATTEMPT_AT IS NULL");
+    expect(statement).toContain("NEXT_ATTEMPT_AT <=");
+    expect(statement).toContain("UPDATED_AT <=");
+    expect(statement).toContain("UPDATED_AT >");
+    expect(statement).toContain("REQUEST_ID >");
+    expect(statement).toContain(
+      "ORDER BY BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS.UPDATED_AT ASC, "
+        + "BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS.REQUEST_ID ASC",
+    );
+
+    const memory = new InMemoryBackgroundAuthorizationRepository();
+    const second = taskRuntimeRecipientCandidate({
+      requestId: "runtime_request_2",
+      workId: "10000000-0000-4000-8000-000000000912",
+      updatedAt: START + 2,
+    });
+    const future = taskRuntimeRecipientCandidate({
+      requestId: "runtime_request_3",
+      workId: "10000000-0000-4000-8000-000000000913",
+      updatedAt: START + 3,
+      nextAttemptAt: START + 100,
+    });
+    await memory.create(first);
+    await memory.create(second);
+    await memory.create(future);
+    await memory.create(initialProcessorV2());
+    const memoryFirst = await memory.listAwaitingTaskRuntimeRecipientPage({
+      now: START + 10,
+      throughUpdatedAt: START + 20,
+      limit: 1,
+    });
+    expect(memoryFirst.records.map((record) => record.snapshot.requestId))
+      .toEqual(["runtime_request_1"]);
+    expect(memoryFirst.continuation).toEqual({
+      updatedAt: START + 1,
+      requestId: "runtime_request_1",
+    });
+    expect((await memory.listAwaitingTaskRuntimeRecipientPage({
+      now: START + 10,
+      throughUpdatedAt: START + 20,
+      after: memoryFirst.continuation!,
+      limit: 2,
+    })).records.map((record) => record.snapshot.requestId))
+      .toEqual(["runtime_request_2"]);
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(memory.listAwaitingTaskRuntimeRecipientPage({
+      now: START,
+      throughUpdatedAt: START,
+      limit: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH + 1,
+    })).rejects.toThrow("bounded");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(postgres.repository.listAwaitingTaskRuntimeRecipientPage({
+      now: START,
+      throughUpdatedAt: START,
+      after: { updatedAt: START + 1, requestId: "runtime_request_1" },
+      limit: 1,
     })).rejects.toThrow("must be bounded");
   });
 

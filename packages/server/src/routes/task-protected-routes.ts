@@ -2,6 +2,7 @@ import {
   dualTaskPreparedCreateRequestV1Schema,
   dualTaskPreparedUpdateRequestV1Schema,
   protectedTaskDefinitionReadEnvelopeV1Schema,
+  protectedTaskRunResultReadEnvelopeV1Schema,
   protectedTaskPreparedCreateRequestV1Schema,
   protectedTaskPreparedUpdateRequestV1Schema,
   protectedTaskPublicationPlanRequestV1Schema,
@@ -151,6 +152,37 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
       throw new TypeError("Protected Task definition read is invalid");
     }
     return reply.send(projected.data);
+  });
+
+  app.get("/api/protected/tasks/:taskId/runs/:taskRunId/result", async (
+    request: FastifyRequest<{
+      Params: { taskId: string; taskRunId: string };
+      Querystring: Record<string, unknown>;
+    }>,
+    reply,
+  ) => {
+    privateRead(reply);
+    if (
+      !UUID.test(request.params.taskId)
+      || !UUID.test(request.params.taskRunId)
+      || Object.keys(request.query).length !== 0
+    ) return invalid(reply);
+    const authorized = await resolve(request);
+    if (authorized === null) return reply.code(403).send({ error: "Forbidden" });
+    const attempted = await protectedOperation(reply, () =>
+      authorized.ports.readRunResult({
+        authority: authorized.authority,
+        taskId: request.params.taskId,
+        taskRunId: request.params.taskRunId,
+      })
+    );
+    if (!attempted.ok) return;
+    const result = attempted.value;
+    if (
+      result.taskId !== request.params.taskId
+      || result.taskRunId !== request.params.taskRunId
+    ) throw new TypeError("Protected Task result read was substituted");
+    return reply.send(protectedTaskRunResultReadEnvelopeV1Schema.parse(result));
   });
 
   const plan = async (
