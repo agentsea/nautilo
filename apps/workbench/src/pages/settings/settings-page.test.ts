@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { WORKBENCH_APPLICATION_TARGETS } from "../../lib/genie-application-targets";
-import { visibleSettingsSections } from "./settings-page";
+import { activeSectionForHash, visibleSettingsSections } from "./settings-page";
 import { inviteRoleOptions } from "./sections/members-section";
 
 test("Desktop-only settings are reachable only in the Desktop shell", () => {
@@ -30,6 +30,10 @@ test("Invite people is hidden without self-service invitation authority", () => 
     isDesktopShell: true,
     canCreateInvites: false,
   }).some((section) => section.id === "invite-people")).toBeFalse();
+});
+
+test("personal provider key deep links scroll through the profile-owned settings area", () => {
+  expect(activeSectionForHash("personal-provider-keys")).toBe("profile");
 });
 
 test("self-service invitations expose only bounded ladder targets", () => {

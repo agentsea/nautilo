@@ -131,6 +131,9 @@ export function CompilingScreen({
   const handleRetry = useCallback(() => {
     dispatch({ type: "RESTART_COMPILE" });
   }, [dispatch]);
+  const handleSkip = useCallback(() => {
+    dispatch({ type: "NEXT" });
+  }, [dispatch]);
   const handleBack = useCallback(() => {
     if (state.compilingPhase === "error") {
       dispatch({ type: "RESTART_COMPILE" });
@@ -147,8 +150,8 @@ export function CompilingScreen({
       </h2>
       <p style={styles.subhead}>
         {state.compilingPhase === "error"
-          ? state.errors["compile.soul"] ?? "Try again?"
-          : "This usually takes a few seconds."}
+          ? state.errors["compile.soul"] ?? "Try again, or continue without a generated Soul."
+          : "Your Server provides this optional personalization. This usually takes a few seconds."}
       </p>
 
       {state.compilingPhase !== "error" && (
@@ -172,6 +175,9 @@ export function CompilingScreen({
           </button>
           <button type="button" onClick={handleRetry} style={styles.primary}>
             Try again →
+          </button>
+          <button type="button" onClick={handleSkip} style={styles.secondary}>
+            Continue without generated Soul
           </button>
         </div>
       )}

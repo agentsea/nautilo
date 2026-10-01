@@ -84,7 +84,38 @@ describe("NautiloApiClient", () => {
 
   test("has getModels method", () => {
     expect(typeof client.getModels).toBe("function");
+    expect(typeof client.getCallerModels).toBe("function");
     expect(typeof client.resolveRetainedModels).toBe("function");
+  });
+
+  test("caller-model client uses fresh session auth and caller query flags", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestUrl = "";
+    let authorization = "";
+    globalThis.fetch = (async (input, init) => {
+      requestUrl = input instanceof Request
+        ? input.url
+        : input instanceof URL
+          ? input.href
+          : input;
+      authorization = new Headers(init?.headers).get("authorization") ?? "";
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const callerClient = new NautiloApiClient("http://127.0.0.1:3001");
+    callerClient.setToken("stale-token");
+    callerClient.setTokenProvider(async () => "fresh-token");
+    try {
+      await callerClient.getCallerModels({ includeUnavailable: true, allowChinaUpstream: true });
+      expect(requestUrl).toBe(
+        "http://127.0.0.1:3001/api/config/models/caller?includeUnavailable=true&allowChinaUpstream=true",
+      );
+      expect(authorization).toBe("Bearer fresh-token");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("retained-model client posts only the requested ids and purpose", async () => {

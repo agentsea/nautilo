@@ -137,6 +137,27 @@ describe("wizard viewer gating", () => {
     expect(shouldStartSoulGenerationAtReveal(generated)).toBe(false);
   });
 
+  test("a failed optional Soul generation can continue without blocking setup", () => {
+    const running = baseState({
+      screen: 7,
+      viewer: { ...DEFAULT_VIEWER_STATE, genieCustomized: false },
+      compilingPhase: "running",
+      compilingGeneration: 2,
+      soulFile: null,
+    });
+    const failed = wizardReducerForTests(running, {
+      type: "ERROR_COMPILE",
+      generation: 2,
+      message: "Soul service unavailable",
+    });
+    const continued = wizardReducerForTests(failed, { type: "NEXT" });
+
+    expect(continued.screen).toBe(8);
+    expect(continued.compilingPhase).toBe("error");
+    expect(continued.soulFile).toBeNull();
+    expect(shouldStartSoulGenerationAtReveal(continued)).toBe(false);
+  });
+
   test("unchanged recustomize profile skips compile and keeps existing soul", () => {
     const snapshot = baseState({
       viewer: { ...DEFAULT_VIEWER_STATE, genieCustomized: true },

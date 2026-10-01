@@ -6,6 +6,7 @@ import * as soulModule from "../../src/soul/generate-soul-file";
 import { __setStubModelForTests } from "../../src/providers/universal";
 import type { ChatModel } from "../../src/providers/types";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import { getUsageContext } from "../../src/usage/usage-context";
 
 const SOUL_AUTHORIZATION = {
   humanUserId: "user-1",
@@ -334,5 +335,85 @@ describe("streaming soul generation safety", () => {
     }
     expect(caught).toBeInstanceOf(ServerProviderCredentialsDeniedError);
     expect(invoked).toBeFalse();
+  });
+
+  test("uses the narrow own-Soul setup admission and records service funding", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    const observedContexts: unknown[] = [];
+    const admissionInputs: unknown[] = [];
+    __setStubModelForTests({
+      async invoke() {
+        observedContexts.push(getUsageContext());
+        return {
+          content: "## Essence\nA precise and useful generated identity with enough detail.\n\n## Tone\nWarm and exact.",
+        };
+      },
+      async stream() {
+        observedContexts.push(getUsageContext());
+        return {
+          async *[Symbol.asyncIterator]() {
+            observedContexts.push(getUsageContext());
+            yield {
+              content: "## Essence\nA precise and useful streamed identity with enough detail.\n\n## Tone\nWarm and exact.",
+            };
+          },
+        };
+      },
+    });
+    const authorization = {
+      humanUserId: "user-1",
+      agentId: "agent-own",
+      admission: "own_soul_setup_service" as const,
+      assertOwnSoulSetupService: async (input: unknown) => {
+        admissionInputs.push(input);
+      },
+    };
+
+    await soulModule.generateSoulFile({ name: "Vex" }, undefined, authorization);
+    for await (const _event of soulModule.generateSoulFileStream(
+      { name: "Vex" }, undefined, authorization,
+    )) {
+      // Exhaust the stream so its usage callbacks observe the ambient context.
+    }
+
+    expect(admissionInputs).toEqual([
+      { humanUserId: "user-1", agentId: "agent-own", origin: "soul_generation" },
+      { humanUserId: "user-1", agentId: "agent-own", origin: "soul_generation" },
+    ]);
+    for (const context of observedContexts) {
+      expect(context).toMatchObject({
+        callType: "soul",
+        userId: "user-1",
+        funding: { kind: "service", humanUserId: "user-1" },
+        metadata: { agentId: "agent-own", service: "soul_generation" },
+      });
+    }
+  });
+
+  test("does not turn a revoked own-Soul setup admission into a stream fallback", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    let streamed = false;
+    __setStubModelForTests({
+      async invoke() {
+        return { content: "" };
+      },
+      async stream() {
+        streamed = true;
+        return { async *[Symbol.asyncIterator]() {} };
+      },
+    });
+    const stream = soulModule.generateSoulFileStream({ name: "Vex" }, undefined, {
+      humanUserId: "user-1",
+      agentId: "agent-own",
+      admission: "own_soul_setup_service",
+      assertOwnSoulSetupService: async ({ humanUserId, origin }) => {
+        throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+      },
+    });
+    expect((await stream.next()).value).toEqual({ type: "started" });
+    await Promise.resolve(expect(stream.next()).rejects.toBeInstanceOf(
+      ServerProviderCredentialsDeniedError,
+    ));
+    expect(streamed).toBeFalse();
   });
 });

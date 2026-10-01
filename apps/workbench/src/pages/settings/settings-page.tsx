@@ -10,11 +10,13 @@ import { AboutSection } from "./sections/about-section";
 import { YourAccessSection } from "./sections/your-access-section";
 import { NotificationsSection } from "./sections/notifications-section";
 import { ThisMacSection } from "./sections/this-mac-section";
+import { PersonalProviderKeysSection } from "./sections/personal-provider-keys-section";
 import type { SectionId } from "./ui";
 import type { UiTargetId } from "@nautilo/types";
 import { apiClient } from "../../lib/api";
 import { isDesktop } from "../../lib/desktop";
 import { useCan } from "../../hooks/use-can";
+import { useAuth } from "../../hooks/use-auth";
 
 /**
  * Settings nav items — all in-page scroll anchors. Connections is NOT here:
@@ -38,6 +40,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; ca
 
 const NESTED_SECTION_PARENT: Readonly<Record<string, SectionId>> = {
   members: "invite-people",
+  "personal-provider-keys": "profile",
   "profile-soul": "my-agents",
   model: "my-agents",
   fallback: "my-agents",
@@ -87,9 +90,17 @@ export function visibleSettingsSections({
  * a failure in one doesn't block the others.
  */
 export function SettingsPage() {
+  const auth = useAuth();
   const can = useCan();
   const canCreateInvites = can("create_invites");
+  const canUsePersonalProviderCredentials = can("use_personal_provider_credentials");
+  const canManageServerProviderCredentials =
+    can("manage_connection_providers") || can("manage_server_settings");
   const [managedByCloud, setManagedByCloud] = useState<boolean | null>(null);
+  const [personalProviderKeysVisible, setPersonalProviderKeysVisible] = useState(false);
+  useEffect(() => {
+    if (!canUsePersonalProviderCredentials) setPersonalProviderKeysVisible(false);
+  }, [canUsePersonalProviderCredentials]);
   useEffect(() => {
     let cancelled = false;
     void apiClient.getSetupStatus()
@@ -129,7 +140,7 @@ export function SettingsPage() {
       setActive(activeSection);
     }, 0);
     return () => clearTimeout(t);
-  }, [location.hash, visibleSections]);
+  }, [location.hash, personalProviderKeysVisible, visibleSections]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -211,6 +222,13 @@ export function SettingsPage() {
           <section id="profile" data-testid="settings-profile-panel" className="flex flex-col gap-6">
             <IdentitySection />
           </section>
+          {canUsePersonalProviderCredentials ? (
+            <PersonalProviderKeysSection
+              key={auth.viewerGeneration}
+              showServerAdminLink={canManageServerProviderCredentials}
+              onVisibilityChange={setPersonalProviderKeysVisible}
+            />
+          ) : null}
           <MyAgentsSection showProviderKeyStatus={managedByCloud === false} />
           <ThisMacSection />
           <NotificationsSection />

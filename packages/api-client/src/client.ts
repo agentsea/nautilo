@@ -10874,6 +10874,26 @@ export class NautiloApiClient {
     return z.array(assistantModelSummarySchema).parse(models);
   }
 
+  /**
+   * List text-chat models using the authenticated Human's server-resolved
+   * funding availability. The response contains display metadata only; route
+   * and credential authority remain on the server.
+   */
+  async getCallerModels(
+    query?: Pick<GetEligibleModelsQuery, "includeUnavailable" | "allowChinaUpstream">,
+  ): Promise<AssistantModelSummary[]> {
+    const params = new URLSearchParams();
+    if (query?.includeUnavailable === true) params.set("includeUnavailable", "true");
+    if (query?.allowChinaUpstream === true) params.set("allowChinaUpstream", "true");
+    const qs = params.toString();
+    const models = await this.request<unknown>({
+      path: `/api/config/models/caller${qs ? `?${qs}` : ""}`,
+      auth: "session-fresh",
+      defaultErrorPrefix: "GET /api/config/models/caller",
+    });
+    return z.array(assistantModelSummarySchema).parse(models);
+  }
+
   async resolveRetainedModels(
     ids: readonly string[],
     query?: Omit<GetEligibleModelsQuery, "includeUnavailable">,

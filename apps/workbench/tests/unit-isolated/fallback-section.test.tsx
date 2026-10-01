@@ -51,7 +51,7 @@ const harness: {
 };
 
 const apiStub = {
-  getModels: mock(async () => catalog),
+  getCallerModels: mock(async (_query?: { includeUnavailable?: boolean }) => catalog),
   resolveRetainedModels: mock(async (ids: readonly string[]) =>
     [...catalog, ...retainedRows].filter((model) => ids.includes(model.id)),
   ),
@@ -165,11 +165,11 @@ beforeAll(async () => {
 beforeEach(() => {
   harness.authRole = "owner";
   harness.profile = ownerResponse(baseAgent());
-  apiStub.getModels.mockClear();
+  apiStub.getCallerModels.mockClear();
   apiStub.resolveRetainedModels.mockClear();
   apiStub.updateFallbackPolicy.mockClear();
   retainedRows = [];
-  apiStub.getModels.mockImplementation(async () => catalog);
+  apiStub.getCallerModels.mockImplementation(async () => catalog);
   apiStub.updateFallbackPolicy.mockImplementation(async (p) => p);
 });
 

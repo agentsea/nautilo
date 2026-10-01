@@ -124,6 +124,26 @@ describe("caller-scoped model availability", () => {
     resetRuntimeModelCatalog();
   });
 
+  test("a personal key cannot make an image-output model selectable for chat", async () => {
+    let fundingCalls = 0;
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      "openrouter:openai/gpt-5.4-image-2",
+      { purpose: "chat", env: {} },
+      {
+        resolveFunding: async () => {
+          fundingCalls += 1;
+          throw new Error("image-only model must not ask for chat funding");
+        },
+      },
+    );
+    expect(result.model.availability).toBe("unsupported-capability");
+    expect(result.model.enabled).toBe(false);
+    expect(result.model.unavailableReason).toBe("model does not produce text");
+    expect(result.selectableInThisRelease).toBe(false);
+    expect(fundingCalls).toBe(0);
+  });
+
   test("admits personal funding for text chat without advertising unsupported paid features", async () => {
     const modelId = "anthropic:claude-sonnet-4-6";
     const result = await resolveCallerModelAvailability(

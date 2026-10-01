@@ -1,22 +1,24 @@
-import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { SoulFileInput, SoulGenerationStreamEvent } from "@nautilo/agent";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
-const realAgent = await import("@nautilo/agent");
+const generateSoulFileMock = mock(async (
+  _input: Partial<SoulFileInput>,
+  _signal?: AbortSignal,
+  _authorization?: unknown,
+) => "# Generated\n\n## Essence\nA usable generated Soul.\n\n## Tone\nExact.");
 const generateSoulFileStreamMock = mock(
-  (_input: Partial<SoulFileInput>, _signal?: AbortSignal): AsyncGenerator<SoulGenerationStreamEvent> =>
+  (
+    _input: Partial<SoulFileInput>,
+    _signal?: AbortSignal,
+    _authorization?: unknown,
+  ): AsyncGenerator<SoulGenerationStreamEvent> =>
     (async function* () {
       yield { type: "started" } as const;
     })(),
 );
-
-mock.module("@nautilo/agent", () => ({
-  ...realAgent,
-  generateSoulFileStream: (input: Partial<SoulFileInput>, signal?: AbortSignal) =>
-    generateSoulFileStreamMock(input, signal),
-}));
 
 const { bindSoulStreamCloseAbort, profileRoutes } = await import("../../src/routes/profile");
 
@@ -24,23 +26,31 @@ describe("POST /api/profile/generate-soul/stream", () => {
   const apps: FastifyInstance[] = [];
 
   afterEach(async () => {
+    generateSoulFileMock.mockClear();
     generateSoulFileStreamMock.mockReset();
     await Promise.all(apps.splice(0).map((app) => app.close()));
   });
 
-  afterAll(() => {
-    mock.module("@nautilo/agent", () => realAgent);
-  });
-
-  function makeApp(serverFunding = true): FastifyInstance {
+  function makeApp(
+    serverFunding = true,
+    generator: typeof generateSoulFileMock = generateSoulFileMock,
+  ): FastifyInstance {
     const app = Fastify({ logger: false });
     app.decorateRequest("sessionUserId", null);
     profileRoutes(app, {
-      assertCanUseServerProviderCredentials: async (humanUserId) => {
+      findPersonalAgentsForUser: async () => [{
+        agentId: "agent-own",
+        handle: "genie",
+        displayName: "Genie",
+      }],
+      assertCanUseServerFundedOwnSoul: async ({ humanUserId }) => {
         if (!serverFunding) {
           throw new ServerProviderCredentialsDeniedError(humanUserId, "soul_test");
         }
       },
+      generateSoulFile: generator,
+      generateSoulFileStream: generateSoulFileStreamMock,
+      upsertSoulProfile: async () => undefined,
     });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = "test-user";
@@ -74,6 +84,11 @@ describe("POST /api/profile/generate-soul/stream", () => {
     expect(response.body).toContain("# Safe fallback");
     expect(response.body).toContain("Unable to generate a soul file right now; using a fallback.");
     expect(response.body).not.toContain(secret);
+    expect(generateSoulFileStreamMock.mock.calls[0]?.[2]).toMatchObject({
+      humanUserId: "test-user",
+      agentId: "agent-own",
+      admission: "own_soul_setup_service",
+    });
   });
 
   test("normal completion removes close cleanup without aborting the generation signal", async () => {
@@ -110,6 +125,57 @@ describe("POST /api/profile/generate-soul/stream", () => {
       code: "server_provider_credentials_required",
       capability: "use_server_provider_credentials",
     });
+  });
+
+  test("uses the same own-Soul setup admission for the non-stream route", async () => {
+    const response = await makeApp().inject({
+      method: "POST",
+      url: "/api/profile/generate-soul",
+      payload: { name: "Vex" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(generateSoulFileMock).toHaveBeenCalledTimes(1);
+    expect(generateSoulFileMock.mock.calls[0]?.[2]).toMatchObject({
+      humanUserId: "test-user",
+      agentId: "agent-own",
+      admission: "own_soul_setup_service",
+    });
+  });
+
+  test("denies the non-stream route before provider work when setup admission fails", async () => {
+    const response = await makeApp(false).inject({
+      method: "POST",
+      url: "/api/profile/generate-soul",
+      payload: {},
+    });
+    expect(response.statusCode).toBe(403);
+    expect(generateSoulFileMock).not.toHaveBeenCalled();
+  });
+
+  test("one Human cannot start simultaneous server-paid Soul generations across endpoints", async () => {
+    let entered!: () => void;
+    let finish!: (value: string) => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const completed = new Promise<string>((resolve) => { finish = resolve; });
+    const generator = mock(async () => {
+      entered();
+      return completed;
+    }) as typeof generateSoulFileMock;
+    const app = makeApp(true, generator);
+    const first = app.inject({ method: "POST", url: "/api/profile/generate-soul", payload: {} });
+    await started;
+
+    const concurrent = await app.inject({
+      method: "POST", url: "/api/profile/generate-soul/stream", payload: {},
+    });
+    expect(concurrent.statusCode).toBe(409);
+    expect(JSON.parse(concurrent.body)).toEqual({ error: "soul_generation_in_progress" });
+    expect(generateSoulFileStreamMock).not.toHaveBeenCalled();
+
+    finish("# Generated\n\n## Essence\nDone.");
+    expect((await first).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/api/profile/generate-soul", payload: {} })).statusCode)
+      .toBe(200);
   });
 
   test("response/socket close aborts provider work and cleanup detaches listeners", () => {

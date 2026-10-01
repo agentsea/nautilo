@@ -34,7 +34,7 @@ import {
   type SoulFileInput,
 } from "@nautilo/agent";
 import {
-  assertCanUseServerProviderCredentials,
+  assertCanUseServerFundedOwnSoul,
   findAgentById,
   findPersonalAgentsForUser,
   persistUserTimezoneIfChanged,
@@ -117,13 +117,23 @@ export function profileRoutes(
       agentId: string,
       policy: { enabled: boolean; chain: string[] },
     ) => Promise<{ fallbackEnabled: boolean; fallbackChain: string[] }>;
-    assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+    assertCanUseServerFundedOwnSoul?: typeof assertCanUseServerFundedOwnSoul;
+    generateSoulFile?: typeof generateSoulFile;
+    generateSoulFileStream?: typeof generateSoulFileStream;
+    upsertSoulProfile?: (
+      ownerId: string,
+      agentId: string,
+      input: UpsertProfileInput,
+    ) => Promise<unknown>;
     resolveCallerAvailability?: (
       humanUserId: string,
       modelId: string,
     ) => Promise<CallerModelAvailability>;
   },
 ) {
+  // Keep one server-paid personalization request active per Human in this
+  // process. A durable repeat-spend quota is required before public rollout.
+  const activeSoulGeneration = new Set<string>();
   const resolveSubjectUserId = (request: FastifyRequest): string =>
     request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? deps?.ownerId ?? "";
   const resolveModelAvailability =
@@ -482,32 +492,42 @@ export function profileRoutes(
     },
   );
 
-  // M128 D4-A (2026-05-28) — multi-user has landed. Per the M040 TODO
-  // below, "every verified user generates THEIR OWN soul (no owner
-  // gate); only overwriting someone else's profile is owner-only."
-  // This route writes to `resolveSubjectUserId(request)` which always
-  // returns the session user's id, so the right gate is just
-  // "authenticated." If a future surface adds a `?userId=` target, that
-  // surface enforces the two-gate `agents.ownerId === sessionUserId ||
-  // caps.includes("manage_agents")` per permission-model.md §7 item 9.
+  // Both generation routes are self-scoped: they resolve the authenticated
+  // Human's exact personal Genie and never accept a caller-selected target.
+  // Server-funded dispatch still has its own live capability, policy, and
+  // ownership admission below and inside the generator.
   app.post<{ Body: Partial<SoulFileInput> }>("/api/profile/generate-soul", async (request, reply) => {
     if (!request.sessionUserId) {
       return reply.code(401).send({ error: "Authentication required" });
     }
+    const humanUserId = request.sessionUserId;
+    let acquired = false;
     try {
       const agentId = await resolveSubjectAgentId(request);
       if (!agentId) {
         return reply.code(409).send({ error: "no_personal_agent" });
       }
-      await (deps?.assertCanUseServerProviderCredentials
-        ?? assertCanUseServerProviderCredentials)(request.sessionUserId, "profile_soul_generation");
-      const soulFile = await generateSoulFile(request.body, undefined, {
-        humanUserId: request.sessionUserId,
-        ...(deps?.assertCanUseServerProviderCredentials
-          ? { assertServerProviderCredentials: deps.assertCanUseServerProviderCredentials }
+      const assertOwnSoulSetup = deps?.assertCanUseServerFundedOwnSoul
+        ?? assertCanUseServerFundedOwnSoul;
+      await assertOwnSoulSetup({
+        humanUserId,
+        agentId,
+        origin: "profile_soul_generation",
+      });
+      if (activeSoulGeneration.has(humanUserId)) {
+        return reply.code(409).send({ error: "soul_generation_in_progress" });
+      }
+      activeSoulGeneration.add(humanUserId);
+      acquired = true;
+      const soulFile = await (deps?.generateSoulFile ?? generateSoulFile)(request.body, undefined, {
+        humanUserId,
+        agentId,
+        admission: "own_soul_setup_service",
+        ...(deps?.assertCanUseServerFundedOwnSoul
+          ? { assertOwnSoulSetupService: deps.assertCanUseServerFundedOwnSoul }
           : {}),
       });
-      await upsertProfile(resolveSubjectUserId(request), agentId, { soulFile });
+      await (deps?.upsertSoulProfile ?? upsertProfile)(resolveSubjectUserId(request), agentId, { soulFile });
       return reply.send({ soulFile });
     } catch (e) {
       if (e instanceof ServerProviderCredentialsDeniedError) {
@@ -515,6 +535,8 @@ export function profileRoutes(
       }
       logError("[profile] generate-soul failed:", e instanceof Error ? e.stack ?? e.message : String(e));
       return reply.code(500).send({ error: "Failed to generate soul file." });
+    } finally {
+      if (acquired) activeSoulGeneration.delete(humanUserId);
     }
   });
 
@@ -524,9 +546,24 @@ export function profileRoutes(
       return reply.code(401).send({ error: "Authentication required" });
     }
 
+    const humanUserId = request.sessionUserId;
+    let agentId: string;
     try {
-      await (deps?.assertCanUseServerProviderCredentials
-        ?? assertCanUseServerProviderCredentials)(request.sessionUserId, "profile_soul_generation_stream");
+      const resolvedAgentId = await resolveSubjectAgentId(request);
+      if (!resolvedAgentId) {
+        return reply.code(409).send({ error: "no_personal_agent" });
+      }
+      agentId = resolvedAgentId;
+      await (deps?.assertCanUseServerFundedOwnSoul
+        ?? assertCanUseServerFundedOwnSoul)({
+          humanUserId,
+          agentId,
+          origin: "profile_soul_generation_stream",
+        });
+      if (activeSoulGeneration.has(humanUserId)) {
+        return reply.code(409).send({ error: "soul_generation_in_progress" });
+      }
+      activeSoulGeneration.add(humanUserId);
     } catch (error) {
       if (error instanceof ServerProviderCredentialsDeniedError) {
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
@@ -534,26 +571,35 @@ export function profileRoutes(
       throw error;
     }
 
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
+    let generationAbort: AbortController;
+    let closeGuard: ReturnType<typeof bindSoulStreamCloseAbort>;
+    try {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
 
-    const generationAbort = new AbortController();
-    const closeGuard = bindSoulStreamCloseAbort({
-      request: request.raw,
-      response: reply.raw,
-      socket: request.raw.socket,
-    }, generationAbort);
+      generationAbort = new AbortController();
+      closeGuard = bindSoulStreamCloseAbort({
+        request: request.raw,
+        response: reply.raw,
+        socket: request.raw.socket,
+      }, generationAbort);
+    } catch (error) {
+      activeSoulGeneration.delete(humanUserId);
+      throw error;
+    }
 
     try {
-      for await (const event of generateSoulFileStream(request.body, generationAbort.signal, {
-        humanUserId: request.sessionUserId,
-        ...(deps?.assertCanUseServerProviderCredentials
-          ? { assertServerProviderCredentials: deps.assertCanUseServerProviderCredentials }
+      for await (const event of (deps?.generateSoulFileStream ?? generateSoulFileStream)(request.body, generationAbort.signal, {
+        humanUserId,
+        agentId,
+        admission: "own_soul_setup_service",
+        ...(deps?.assertCanUseServerFundedOwnSoul
+          ? { assertOwnSoulSetupService: deps.assertCanUseServerFundedOwnSoul }
           : {}),
       })) {
         if (closeGuard.clientClosed() || isSseClosed(reply.raw)) break;
@@ -589,6 +635,7 @@ export function profileRoutes(
       // ending the stream; otherwise the server's own `end()` looks like a
       // client disconnect and can spuriously abort completed work.
       closeGuard.dispose();
+      activeSoulGeneration.delete(humanUserId);
       if (!isSseClosed(reply.raw)) {
         reply.raw.end();
       }
