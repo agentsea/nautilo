@@ -104,6 +104,9 @@ describe("backup restore target allowlists", () => {
     expect(indexOf("public.task_run_result_crypto_revisions")).toBeLessThan(
       indexOf("public.task_runs"),
     );
+    expect(indexOf("public.task_runs")).toBeLessThan(
+      indexOf("public.protected_task_run_output_bindings"),
+    );
   });
 
   test("advances Task crypto ledger sequences after COPY restore", () => {

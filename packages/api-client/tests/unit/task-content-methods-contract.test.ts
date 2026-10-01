@@ -6,6 +6,7 @@ import type {
 } from "../../src/schemas/protected-task.ts";
 
 const TASK_ID = "91000000-0000-4000-8000-000000000001";
+const TASK_RUN_ID = "91000000-0000-4000-8000-000000000003";
 const NAMESPACE_ID = "91000000-0000-4000-8000-000000000002";
 const protectedSummary = {
   id: TASK_ID,
@@ -74,6 +75,19 @@ describe("opt-in Task content API methods", () => {
           committerDeviceId: "device:one", hostAuthorizationRevision: 1,
           signingPublicKeyBase64url: "A".repeat(43) }],
       });
+      if (url.endsWith(`/runs/${TASK_RUN_ID}/result`)) return response({
+        readVersion: 1, status: "ready", taskId: TASK_ID,
+        taskRunId: TASK_RUN_ID,
+        objectId: `task-run-result:v1:${"a".repeat(64)}`,
+        resultRevision: 1, cryptoAccessRevision: 0,
+        namespaceId: NAMESPACE_ID,
+        encryptedPayloadBytesBase64url: "Y2lwaGVy",
+        accessManifestBytesBase64url: "bWFuaWZlc3Q",
+        accessManifestProofBytesBase64url: [],
+        namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
+        signerEvidence: [{ kind: "agent_runtime_publication",
+          evidenceBytesBase64url: "ZXZpZGVuY2U" }],
+      });
       if (url.endsWith("/publication-plan")) return response({
         planVersion: 1, operation: url.includes(`/${TASK_ID}/`) ? "update" : "create",
         operationId: "task:plan:one", taskId: TASK_ID,
@@ -120,6 +134,10 @@ describe("opt-in Task content API methods", () => {
     expect(definition.status).toBe("ready");
     if (definition.status !== "ready") throw new Error("Expected a ready Task envelope");
     expect(definition.signerEvidence[0]).toMatchObject({ kind: "human_device" });
+    expect((await client.getProtectedTaskRunResultEnvelopeV1(
+      TASK_ID,
+      TASK_RUN_ID,
+    )).status).toBe("ready");
     expect((await client.createPreparedTaskV1(prepared())).taskId).toBe(TASK_ID);
     const update: ProtectedTaskPreparedUpdateRequestV1 = {
       ...prepared(), operation: "update", expectedContentRevision: 1,
@@ -147,6 +165,7 @@ describe("opt-in Task content API methods", () => {
       { url: "https://nautilo.test/api/protected/tasks/publication-plan", method: "POST" },
       { url: `https://nautilo.test/api/protected/tasks/${TASK_ID}/publication-plan`, method: "POST" },
       { url: `https://nautilo.test/api/protected/tasks/${TASK_ID}/definition?objectId=${encodeURIComponent(protectedSummary.content.objectId)}&contentRevision=1&cryptoAccessRevision=0`, method: "GET" },
+      { url: `https://nautilo.test/api/protected/tasks/${TASK_ID}/runs/${TASK_RUN_ID}/result`, method: "GET" },
       { url: "https://nautilo.test/api/protected/tasks/publication", method: "POST" },
       { url: `https://nautilo.test/api/protected/tasks/${TASK_ID}/publication`, method: "PATCH" },
       { url: "https://nautilo.test/api/protected/tasks/publication", method: "POST" },

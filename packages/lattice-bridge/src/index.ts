@@ -176,6 +176,24 @@ export * from "./task/task-operational-fields-digest-v1.ts";
 export * from "./task/task-content-shadow-saga.ts";
 export * from "./task/task-content-operation.ts";
 export {
+  prepareTaskRuntimeRunResult,
+  taskRuntimePreparedResultDigestV1,
+  type PrepareTaskRuntimeRunResultInput,
+} from "./task/task-run-result-preparation.ts";
+export {
+  withProtectedTaskResultSigner,
+  type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskResultSignerResult,
+} from "./task/protected-task-result-signer.ts";
+export { withProtectedTaskResultNamespaceSource } from
+  "./task/protected-task-namespace-source.ts";
+export {
+  withProtectedTaskDefinitionV1,
+  type OpenProtectedTaskDefinitionInputV1,
+  type ProtectedTaskDefinitionNamespaceSourceV1,
+  type ProtectedTaskDefinitionOccurrenceV1,
+} from "./task/protected-task-definition-opener.ts";
+export {
   commitMemoryMutationV1,
   type MemoryMutationCommitmentInput,
 } from "./memory/memory-mutation-commitment.ts";
@@ -595,6 +613,7 @@ export type {
   ProtectedCheckpointCellAuthorityPort,
   ProtectedCheckpointCellCoordinate,
   ProtectedCheckpointCellCrypto,
+  ProtectedCheckpointEntrypointId,
   ProtectedCheckpointCryptoErrorCode,
   ProtectedCheckpointInvocationScope,
   ProtectedCheckpointNamespaceContentResult,
@@ -602,6 +621,11 @@ export type {
   ProtectedCheckpointNamespaceOperationContext,
   ProtectedCheckpointNamespaceSessionContentExecutor,
 } from "./checkpoint/protected-checkpoint-cell-crypto.ts";
+export {
+  createTaskRuntimeCheckpointCellCrypto,
+  type TaskRuntimeCheckpointCellCrypto,
+  type TaskRuntimeCheckpointCellIdentity,
+} from "./checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 export {
   PROTECTED_AGENT_RUNTIME_FOREGROUND_ENTRYPOINT_IDS,
   createProtectedAgentRuntimeContentExecutor,

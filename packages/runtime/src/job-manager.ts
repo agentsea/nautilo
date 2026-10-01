@@ -395,6 +395,8 @@ const PLANNED_SHUTDOWN_CANCELLATION_REASON =
   "Cancelled because the server is shutting down for planned maintenance";
 const ACCEPTANCE_LINK_FAILURE_CANCELLATION_REASON =
   "Cancelled before dispatch because durable acceptance linkage failed";
+const PROTECTED_TASK_START_FAILURE_CANCELLATION_REASON =
+  "Cancelled before dispatch because the protected Task lifecycle was no longer current";
 /**
  * D420 (Wave 2 task 2.2.3) — operator-visible reason stamped on every running
  * Job terminalized at the `--wait-for` deadline. Mirrors the acceptance
@@ -804,6 +806,7 @@ export class JobManager {
     if (
       typeof input.executor !== "function"
       || !input.candidate
+      || typeof input.candidate.start !== "function"
       || typeof input.candidate.run !== "function"
       || typeof input.candidate.onIneligible !== "function"
       || (input.modelAttribution !== undefined && input.modelAttribution !== "external")
@@ -1317,6 +1320,42 @@ export class JobManager {
       return;
     }
 
+    let armedProtectedTaskExecution: PendingProtectedTaskExecution | undefined;
+    if (protectedTaskExecution !== undefined) {
+      try {
+        const started = await protectedTaskExecution.candidate.start(job.id);
+        if (started.status !== "started") {
+          throw new Error("Protected Task lifecycle start was stale");
+        }
+        armedProtectedTaskExecution = this.armProtectedTaskExecution(virtualIds);
+        if (armedProtectedTaskExecution !== protectedTaskExecution) {
+          throw new Error("Protected Task execution candidate became ineligible during start");
+        }
+      } catch (err) {
+        this.invalidateProtectedTaskExecutions(virtualIds);
+        try {
+          await this.cancelUndispatchedJobForLedgerFailure(
+            job,
+            err,
+            PROTECTED_TASK_START_FAILURE_CANCELLATION_REASON,
+            "protected Task lifecycle start failed",
+          );
+        } catch (compensationErr) {
+          log(
+            `[maintenance] main job=${job.id} could not be fully compensated after protected Task lifecycle start failure: ${
+              compensationErr instanceof Error
+                ? compensationErr.message
+                : String(compensationErr)
+            }`,
+          );
+        } finally {
+          await tryRes.release();
+          void this.drainThread(threadId);
+        }
+        return;
+      }
+    }
+
     forkCoordinator.registerTurn(threadId, {
       sequence,
       jobId: job.id,
@@ -1325,19 +1364,32 @@ export class JobManager {
       mergedSlice: coalescedToSlice(merged),
     });
 
-    eventBus.emit({
-      type: "job.dispatched",
+    const dispatchedEvent = {
+      type: "job.dispatched" as const,
       virtualJobIds: [...virtualIds],
       jobId: job.id,
       laneKey: merged.laneKey,
-    });
+    };
+    if (armedProtectedTaskExecution !== undefined) {
+      try {
+        eventBus.emit(dispatchedEvent);
+      } catch (error) {
+        // Listener diagnostics must not strand an exact TaskRun after its
+        // protected lifecycle has durably entered running.
+        log(
+          `[lane] protected Task job=${job.id} dispatch event listener failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    } else {
+      eventBus.emit(dispatchedEvent);
+    }
 
     const foregroundCandidate = this.armForegroundCandidateForMain(
       virtualIds,
       merged.turnId,
     );
-    const armedProtectedTaskExecution = this.armProtectedTaskExecution(virtualIds);
-
     const authority = this.jobToAuthority.get(job.id)!;
     const invocationAuthority = this.jobToInvocationAuthority.get(job.id)!;
     const execute = (
@@ -1365,7 +1417,7 @@ export class JobManager {
           let acceptingWork = true;
           try {
             const result = await armedProtectedTaskExecution.candidate.run(
-              (transientInput, authorizationSignal) => {
+              (transientInput, authorizationSignal, publication) => {
                 if (!acceptingWork || workCalls !== 0) {
                   throw new Error("Protected Task execution candidate reused its one-shot work");
                 }
@@ -1384,6 +1436,7 @@ export class JobManager {
                   turnId: reference.taskRunId,
                   taskId: reference.taskId,
                   taskRunId: reference.taskRunId,
+                  protectedTaskResultPublication: publication,
                 };
                 return runWithAcceptedWorkAuthorities(
                   authority,
@@ -1393,6 +1446,7 @@ export class JobManager {
                     () => job.executeProtectedTask(
                       exactTransientInput,
                       authorizationSignal,
+                      publication,
                     ),
                   ),
                 );
@@ -2279,6 +2333,7 @@ export class JobManager {
     job: Job,
     cause: unknown,
     reason: string = ACCEPTANCE_LINK_FAILURE_CANCELLATION_REASON,
+    context = "durable acceptance linkage failed",
   ): Promise<void> {
     try {
       await job.cancel(reason);
@@ -2296,7 +2351,7 @@ export class JobManager {
       this.jobToInvocationAuthority.delete(job.id);
     }
     log(
-      `[maintenance] cancelled undispatched job=${job.id} because durable acceptance linkage failed: ${
+      `[maintenance] cancelled undispatched job=${job.id} because ${context}: ${
         cause instanceof Error ? cause.message : String(cause)
       }`,
     );

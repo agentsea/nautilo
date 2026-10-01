@@ -18,6 +18,7 @@ import {parseDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2} from "@nautilo/lattice-crypto/wire";
 import {createProductionBackgroundAuthorizationComposition} from "../../src/routes/background-authorization-composition";
 import type {BackgroundAuthorizationDeviceSubject} from "../../src/routes/background-authorization";
+import type {BackgroundAuthorizationRepository, BackgroundAuthorizationTaskRuntimeRecordV3} from "@nautilo/runtime";
 
 type Dependencies = Required<NonNullable<Parameters<typeof createProductionBackgroundAuthorizationComposition>[0]>>;
 async function fixture() {
@@ -66,6 +67,7 @@ async function fixture() {
         connection as unknown as Parameters<typeof input.use>[2]);
     }) as Dependencies["withAuthority"],
     repository: (async () => ({
+      listAwaitingTaskRuntimeRecipientPage: async () => {throw new Error("binder absent");},
       listAwaitingDevicePage: async (input: unknown) => {
         pages.push(input);
         return {records: [{snapshot: {formatVersion: 2, credentialSubject: {kind: "processor"}}, descriptorBytes: descriptorBytes.slice()}],
@@ -117,6 +119,136 @@ describe("production background authorization composition", () => {
     expect(f.service.respond(f.subject, {responseBytes: changed})).rejects.toMatchObject({status: "malformed"});
     expect(f.accepted).toHaveLength(0);
   });
+});
+
+function taskRecord(requestId: string, updatedAt: number, descriptorBytes: Uint8Array | null):
+BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return {
+    snapshot: {formatVersion: 3, credentialSubject: {kind: "runtime", runtimeKind: "task", runtimeVersion: 1},
+      requestId, updatedAt, recipientGeneration: 1, workId: `work:${requestId}`,
+      recipient: descriptorBytes === null ? null : {recipientKeyId: `key:${requestId}`,
+        recipientPublicKey: "public-key", expiresAt: updatedAt + 60_000}},
+    descriptorBytes, workKind: "task.execute", purpose: "task.execute",
+    expectedPolicyRevision: 1, expectedDomainEpoch: 1,
+    authoritySet: {namespaceRequirements: [], domainRequirements: []},
+  } as unknown as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
+test("only the authenticated device that wins Task recipient binding receives the request", async () => {
+  const crypto = new LatticeCrypto();
+  const signing = crypto.generateSigningKeyPair();
+  const now = 1_900_000_000_000;
+  const base = {humanActorId: "human:requestor", deviceGeneration: 1,
+    serverInstanceId: "d8c858cc-f359-48ad-8de6-341f61fb92a1", lineageGeneration: 1,
+    epoch: 1, securityRevision: 1, headDigest: new Uint8Array(32), signingPublicKey: signing.publicKey};
+  const subject = (userId: string, deviceId: string): BackgroundAuthorizationDeviceSubject => ({
+    userId, humanActorId: base.humanActorId, deviceId,
+    admission: {...base, deviceId, expiresAt: now + 60_000},
+  });
+  const unbound = taskRecord("request:unbound", now - 10, null);
+  const requestBytes = new Uint8Array([1, 2, 3]);
+  let winner: string | null = null;
+  const boundSubjects: string[] = [];
+  const connection = {query: async () => []};
+  const service = createProductionBackgroundAuthorizationComposition({
+    crypto, now: () => now,
+    context: (async () => ({canonicalRunner: {}})) as unknown as Dependencies["context"],
+    restricted: (() => connection) as unknown as Dependencies["restricted"],
+    currentDevice: async (_restricted, current) => ({...base, userId: current.userId,
+      humanActorId: current.humanActorId, deviceId: current.deviceId}),
+    repository: (async () => ({
+      listAwaitingDevicePage: async () => ({records: [], continuation: null}),
+      listAwaitingTaskRuntimeRecipientPage: async () => ({records: [unbound], continuation: null}),
+    })) as unknown as Dependencies["repository"],
+    bindTaskRecipient: async input => {
+      boundSubjects.push(`${input.subject.userId}/${input.device.deviceId}`);
+      if (input.subject.userId !== "user:requestor" || winner !== null) return null;
+      winner = input.device.deviceId;
+      return {record: taskRecord(unbound.snapshot.requestId, unbound.snapshot.updatedAt, requestBytes.slice()),
+        requestBytes: requestBytes.slice()};
+    },
+    withTaskAuthority: (async input => input.record.snapshot.recipient === null ? null : input.use(
+      {} as never, {} as never, [] as never, {} as never, connection as never,
+    )) as Dependencies["withTaskAuthority"],
+  });
+  const [first, second] = await Promise.all([
+    service.list(subject("user:requestor", "device:first"), {}),
+    service.list(subject("user:requestor", "device:second"), {}),
+  ]);
+  const outsider = await service.list(subject("user:other", "device:other"), {});
+  expect(first.requests.length + second.requests.length).toBe(1);
+  expect([...first.requests, ...second.requests]).toEqual([{requestBytes}]);
+  expect(outsider.requests).toEqual([]);
+  expect(["device:first", "device:second"]).toContain(String(winner));
+  expect(boundSubjects.sort()).toEqual([
+    "user:other/device:other", "user:requestor/device:first", "user:requestor/device:second",
+  ]);
+  signing.privateKey.fill(0);
+});
+
+test("mixed Task discovery advances only through the earliest source and never skips byte-deferred rows", async () => {
+  const crypto = new LatticeCrypto();
+  const signing = crypto.generateSigningKeyPair();
+  const now = 2_000_000_000_000;
+  const device = {userId: "user:paging", humanActorId: "human:paging", deviceId: "device:paging", deviceGeneration: 1,
+    serverInstanceId: "d8c858cc-f359-48ad-8de6-341f61fb92a1", lineageGeneration: 1, epoch: 1,
+    securityRevision: 1, headDigest: new Uint8Array(32), signingPublicKey: signing.publicKey};
+  const subject: BackgroundAuthorizationDeviceSubject = {...device, admission: {...device, expiresAt: now + 60_000}};
+  const connection = {query: async () => []};
+  let largeBytes = new Uint8Array();
+  const deviceRows = [taskRecord("request:20", now - 80, new Uint8Array()),
+    taskRecord("request:40", now - 60, new Uint8Array())];
+  const recipientRows = [taskRecord("request:10", now - 90, null), taskRecord("request:30", now - 70, null)];
+  const bytesFor = (requestId: string) => {
+    const bytes = largeBytes.slice();
+    bytes[0] = Number(requestId.slice(requestId.lastIndexOf(":") + 1));
+    return bytes;
+  };
+  const nextPage = (rows: readonly BackgroundAuthorizationTaskRuntimeRecordV3[], after?: Readonly<{updatedAt: number; requestId: string}>) => {
+    const remaining = rows.filter(row => after === undefined
+      || row.snapshot.updatedAt > after.updatedAt
+      || (row.snapshot.updatedAt === after.updatedAt && row.snapshot.requestId > after.requestId));
+    const record = remaining[0];
+    return {records: record === undefined ? [] : [record],
+      continuation: remaining.length > 1 && record !== undefined
+        ? {updatedAt: record.snapshot.updatedAt, requestId: record.snapshot.requestId} : null};
+  };
+  const service = createProductionBackgroundAuthorizationComposition({
+    crypto, now: () => now,
+    context: (async () => ({canonicalRunner: {}})) as unknown as Dependencies["context"],
+    restricted: (() => connection) as unknown as Dependencies["restricted"],
+    currentDevice: async () => ({...device, signingPublicKey: signing.publicKey.slice()}),
+    repository: (async () => ({
+      listAwaitingDevicePage: async (input: Parameters<BackgroundAuthorizationRepository["listAwaitingDevicePage"]>[0]) => {
+        const page = nextPage(deviceRows, input.after);
+        return {records: page.records.map(record => ({...record, descriptorBytes: bytesFor(record.snapshot.requestId)})),
+          continuation: page.continuation};
+      },
+      listAwaitingTaskRuntimeRecipientPage: async (input: Parameters<NonNullable<
+        BackgroundAuthorizationRepository["listAwaitingTaskRuntimeRecipientPage"]>>[0]) => nextPage(recipientRows, input.after),
+    })) as unknown as Dependencies["repository"],
+    bindTaskRecipient: async input => ({
+      record: {...input.record, descriptorBytes: bytesFor(input.record.snapshot.requestId),
+        snapshot: {...input.record.snapshot, recipient: {recipientKeyId: `key:${input.record.snapshot.requestId}`,
+          recipientPublicKey: "public-key", expiresAt: now + 60_000}}},
+      requestBytes: bytesFor(input.record.snapshot.requestId),
+    }),
+    withTaskAuthority: (async input => input.use(
+      {} as never, {} as never, [] as never, {} as never, connection as never,
+    )) as Dependencies["withTaskAuthority"],
+  });
+  largeBytes = new Uint8Array(Math.floor(service.limits.requestPageBytes * 0.6)).fill(7);
+  const returned: number[] = [];
+  let continuation: string | undefined;
+  for (let index = 0; index < 4; index++) {
+    const page = await service.list(subject, continuation === undefined ? {} : {continuation});
+    expect(page.requests).toHaveLength(1);
+    returned.push(page.requests[0]!.requestBytes[0]!);
+    continuation = page.continuation;
+  }
+  expect(returned).toEqual([10, 20, 30, 40]);
+  expect(continuation).toBeUndefined();
+  signing.privateKey.fill(0);
 });
 
 test("accepts an exact signed Task Runtime response and wakes awaiting work", async () => {

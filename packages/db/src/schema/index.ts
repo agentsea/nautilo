@@ -39,6 +39,7 @@ export * from "./rooms";
 export * from "./room-journal";
 export * from "./model-control-selection";
 export * from "./tasks";
+export * from "./protected-task-run-output-bindings";
 export * from "./task-runs";
 export * from "./task-definition-crypto-revisions";
 export * from "./task-run-result-crypto-revisions";

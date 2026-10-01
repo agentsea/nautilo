@@ -1,0 +1,765 @@
+import { describe, expect, test } from "bun:test";
+import {
+  LatticeCrypto,
+  accessRevision,
+  agentId,
+  authorizationRevision,
+  createInitialNamespaceKeyrings,
+  createNamespaceBinding,
+  cryptoDeviceId,
+  cryptoDomainId,
+  decryptObjectThroughNamespace,
+  domainEpoch,
+  humanId,
+  namespaceBindingHash,
+  namespaceId,
+  openNamespaceKeyring,
+  prepareAgentRuntimeInitialization,
+  sealNamespaceKeyring,
+  verifyNamespaceBindingProof,
+  withTaskRuntimeCheckpointNamespace,
+  type Rng,
+  type TrustedMinimumObjectAccessHead,
+} from "@nautilo/lattice-crypto";
+import {
+  decodeEncryptedPayloadV2,
+  decodeNamespaceObjectEnvelopeV2,
+  encodeAgentRuntimeSignerPublicationV1,
+} from "@nautilo/lattice-crypto/wire";
+import type { NautiloApiClient } from "@nautilo/api-client/browser";
+
+import {
+  encodeClientDeviceProfileV2,
+  type OpenedClientDeviceProfileV2,
+} from "../../src/client-vault/profile-v2.ts";
+import {
+  createClientDeviceProfileV3Candidate,
+  destroyOpenedClientDeviceProfileV3,
+  encodeClientDeviceProfileV3,
+} from "../../src/client-vault/profile-v3.ts";
+import {
+  createClientDeviceProfileV4Candidate,
+  destroyOpenedClientDeviceProfileV4,
+  encodeClientDeviceProfileV4,
+} from "../../src/client-vault/profile-v4.ts";
+import type { ClientProfileCoordinates } from
+  "../../src/client-vault/types.ts";
+import { MemoryClientProfileVault } from
+  "../../src/testing/client-profile-vault.ts";
+import { createAuthorizedHumanTaskRunResultReaderV1 } from
+  "../../src/client/task/authorized-human-task-run-result.ts";
+import {
+  createVaultHumanTaskRunResultReaderV1,
+  type VaultHumanTaskRunResultReaderInputV1,
+} from
+  "../../src/client/task/vault-human-task-run-result.ts";
+import { ClassifiedDataOperationError } from
+  "../../src/transition/encryption-data-operation-owner.ts";
+
+import {
+  withTaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionEvidenceInputV1,
+} from "../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts";
+import type { TaskContentAuthorityV1 } from
+  "../../src/task/task-content-authority-v1.ts";
+import {
+  readPreparedTaskContentCryptoRevisionSnapshotV1,
+} from "../../src/task/task-content-prepared-revision.ts";
+import {
+  deriveTaskContentCryptoObjectIdV1,
+} from "../../src/task/task-content-repository.ts";
+import {
+  decodeTaskRunResultPayloadV1,
+} from "../../src/task/task-payload-v1.ts";
+import {
+  createTaskRuntimeCheckpointCellCrypto,
+} from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
+import {
+  prepareTaskRuntimeRunResult,
+  taskRuntimePreparedResultDigestV1,
+} from "../../src/task/task-run-result-preparation.ts";
+
+const NOW = 1_820_000_000_000;
+const TASK_ID = "10000000-0000-4000-8000-000000000001";
+const RUN_ID = "20000000-0000-4000-8000-000000000001";
+const REQUESTER_ID = "30000000-0000-4000-8000-000000000001";
+const NAMESPACE_ID = "40000000-0000-4000-8000-000000000001";
+const DOMAIN_ID = "50000000-0000-4000-8000-000000000001";
+const AGENT_ID = "60000000-0000-4000-8000-000000000001";
+const ACCESS_REVISION = 0;
+const POLICY_REVISION = 3;
+const AGENT_AUTHORIZATION_REVISION = 7;
+
+function bytes(value: number): Uint8Array {
+  return new Uint8Array(32).fill(value);
+}
+
+function seededRng(seed: number): Rng {
+  let state = seed >>> 0;
+  return {
+    bytes(length: number): Uint8Array {
+      const result = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+        result[index] = state & 0xff;
+      }
+      return result;
+    },
+  };
+}
+
+async function setup(seed = 1, configuredNamespaceId = NAMESPACE_ID) {
+  const crypto = new LatticeCrypto(seededRng(seed), { now: () => NOW });
+  const namespaceCommitter = crypto.generateSigningKeyPair();
+  const manager = crypto.generateSigningKeyPair();
+  const targetNamespaceId = namespaceId(configuredNamespaceId);
+  const targetDomainId = cryptoDomainId(DOMAIN_ID);
+  const targetDomainEpoch = domainEpoch(4);
+  const targetAccessRevision = accessRevision(ACCESS_REVISION);
+  const committerDeviceId = cryptoDeviceId("task-result-committer");
+  const aiDomainRoot = bytes(0x41);
+  const humanDomainRoot = bytes(0x31);
+  const keyrings = createInitialNamespaceKeyrings(crypto, targetNamespaceId);
+  const metadata = {
+    domainId: targetDomainId,
+    domainEpoch: targetDomainEpoch,
+    accessRevision: targetAccessRevision,
+    previousBindingHash: null,
+    committerDeviceId,
+  };
+  const humanEnvelope = sealNamespaceKeyring({
+    crypto,
+    domainRoot: humanDomainRoot,
+    keyring: {
+      ...keyrings.human,
+      accessRevision: targetAccessRevision,
+    },
+    metadata,
+    committerSigningPrivateKey: namespaceCommitter.privateKey,
+    resolveCurrentCommitter: () => namespaceCommitter.publicKey,
+  });
+  const aiEnvelope = sealNamespaceKeyring({
+    crypto,
+    domainRoot: aiDomainRoot,
+    keyring: {
+      ...keyrings.ai,
+      accessRevision: targetAccessRevision,
+    },
+    metadata,
+    committerSigningPrivateKey: namespaceCommitter.privateKey,
+    resolveCurrentCommitter: () => namespaceCommitter.publicKey,
+  });
+  const binding = createNamespaceBinding({
+    crypto,
+    humanEnvelope,
+    aiEnvelope,
+    committerSigningPrivateKey: namespaceCommitter.privateKey,
+    resolveCurrentCommitter: () => namespaceCommitter.publicKey,
+  });
+  const trustedHead = verifyNamespaceBindingProof({
+    crypto,
+    anchor: {
+      namespaceId: targetNamespaceId,
+      accessRevision: targetAccessRevision,
+      bindingHash: namespaceBindingHash(binding),
+    },
+    proof: [binding],
+    resolveHistoricalCommitter: () => namespaceCommitter.publicKey,
+  });
+  const initialized = await prepareAgentRuntimeInitialization({
+    crypto,
+    operationId: "task-result-agent-initialization",
+    agentId: agentId(AGENT_ID),
+    authorizationRevision: authorizationRevision(
+      AGENT_AUTHORIZATION_REVISION,
+    ),
+    configObjects: [{
+      objectId: "task-result-agent-config",
+      configRevision: authorizationRevision(1),
+      plaintextDek: bytes(0x21),
+    }],
+    domains: [],
+    resolveCurrentDomainCommitterAuthority: () => null,
+    manager: {
+      managerHumanId: humanId(REQUESTER_ID),
+      managerAuthorizationRevision: authorizationRevision(2),
+      managerDeviceId: cryptoDeviceId("task-result-manager"),
+    },
+    managerSigningPrivateKey: manager.privateKey,
+    resolveCurrentManagerAuthority: () => manager.publicKey,
+  });
+  const coordinate = Object.freeze({
+    kind: "run_result" as const,
+    taskId: TASK_ID,
+    taskRunId: RUN_ID,
+    contentRevision: 1 as const,
+  });
+  const authority = Object.freeze({
+    authorityVersion: 1 as const,
+    kind: "requester_private_namespace" as const,
+    keyClass: "ai" as const,
+    requesterHumanId: REQUESTER_ID,
+    namespaceId: configuredNamespaceId,
+    domainId: DOMAIN_ID,
+    expectedAccessRevision: ACCESS_REVISION,
+    expectedPolicyRevision: POLICY_REVISION,
+  } satisfies TaskContentAuthorityV1);
+  const evidence = Object.freeze({
+    requestId: "task-result-request",
+    workId: RUN_ID,
+    claimId: "task-result-claim",
+    claimExpiresAt: NOW + 60_000,
+    recipientExpiresAt: NOW + 60_000,
+    expiresAt: NOW + 60_000,
+    recipientGeneration: 1,
+    recipientKeyId: "task-runtime-recipient.1",
+    authorizationDigest: bytes(0x51),
+    policyRevision: POLICY_REVISION,
+    episodeId: "task-result-episode",
+    sourceRoomId: "task-result-room",
+    hostAuthorizationRevision: 5,
+    recipientAuthorizationRevision: 6,
+    result: Object.freeze({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      contentRevision: 1 as const,
+      objectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      signerAgentId: AGENT_ID,
+      namespace: Object.freeze({
+        namespaceId: configuredNamespaceId,
+        domainId: DOMAIN_ID,
+        operations: Object.freeze(["encrypt"] as const),
+        expectedAccessRevision: ACCESS_REVISION,
+        expectedPolicyRevision: POLICY_REVISION,
+      }),
+    }),
+    domainRequirements: Object.freeze([Object.freeze({
+      domainId: DOMAIN_ID,
+      sourceNamespaceId: configuredNamespaceId,
+      participantDigest: bytes(0x61),
+      participantCount: 1,
+      keyClass: "ai" as const,
+      domainKeyGeneration: 4,
+      authorizationRevision: authorizationRevision(9),
+      headDigest: bytes(0x62),
+      activeNamespaceBindingSetDigest: bytes(0x63),
+      activeNamespaceBindingCount: 1,
+    })]),
+    namespaceRequirements: Object.freeze([Object.freeze({
+      ordinal: 0,
+      namespaceId: configuredNamespaceId,
+      domainId: DOMAIN_ID,
+      operations: Object.freeze(["decrypt", "encrypt"] as const),
+      expectedAccessRevision: ACCESS_REVISION,
+      expectedPolicyRevision: POLICY_REVISION,
+    })]),
+  } satisfies TaskRuntimeExecutionEvidenceInputV1);
+  return {
+    crypto,
+    aiDomainRoot,
+    aiEnvelope,
+    trustedHead,
+    namespaceCommitter,
+    manager,
+    initialized,
+    coordinate,
+    authority,
+    evidence,
+  };
+}
+
+function prepareInput(
+  scenario: Awaited<ReturnType<typeof setup>>,
+  evidence: Parameters<
+    Parameters<typeof withTaskRuntimeExecutionEvidenceV1>[0]["execute"]
+  >[0],
+) {
+  return {
+    crypto: scenario.crypto,
+    evidence,
+    payload: Object.freeze({
+      formatVersion: 1 as const,
+      resultText: "Protected Task result",
+      lastError: null,
+    }),
+    authority: scenario.authority,
+    createdAt: NOW,
+    namespace: {
+      trustedHead: scenario.trustedHead,
+      aiKeyringEnvelope: scenario.aiEnvelope,
+      currentDomainRoot: scenario.aiDomainRoot,
+      resolveHistoricalCommitter: () =>
+        scenario.namespaceCommitter.publicKey,
+    },
+    agentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+    runtime: scenario.initialized.runtime,
+    signerPublication: scenario.initialized.signerPublication,
+    resolveHistoricalSignerPublicationManager: () =>
+      scenario.manager.publicKey,
+  };
+}
+
+describe("Task Runtime result preparation", () => {
+  test("encrypts once under the current AI Namespace key and seals a V5 Agent result", async () => {
+    const scenario = await setup();
+    const controller = new AbortController();
+    const revision = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: controller.signal,
+      now: () => NOW,
+      execute: (evidence) =>
+        prepareTaskRuntimeRunResult(prepareInput(scenario, evidence)),
+    });
+    const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(
+      revision,
+    );
+    expect(taskRuntimePreparedResultDigestV1(revision)).toEqual(
+      scenario.crypto.hash(snapshot.access.manifestBytes),
+    );
+    expect(snapshot.coordinate).toEqual(scenario.coordinate);
+    expect(snapshot.signerKind).toBe("agent_runtime");
+    expect(snapshot.access.manifest.signer).toMatchObject({
+      kind: "agent_runtime",
+      agentId: AGENT_ID,
+      runtimeGeneration: scenario.initialized.runtime.generation,
+      signerKeyId: scenario.initialized.signerPublication.signerKeyId,
+    });
+    const keyring = openNamespaceKeyring({
+      crypto: scenario.crypto,
+      domainRoot: scenario.aiDomainRoot,
+      envelope: scenario.aiEnvelope,
+      resolveHistoricalCommitter: () =>
+        scenario.namespaceCommitter.publicKey,
+    });
+    const current = keyring.generations.find((entry) =>
+      entry.generation === keyring.currentGeneration
+    );
+    if (current === undefined) throw new Error("current AI key is missing");
+    const plaintext = decryptObjectThroughNamespace(
+      scenario.crypto,
+      current.key,
+      decodeNamespaceObjectEnvelopeV2(snapshot.access.envelopeBytes[0]),
+      decodeEncryptedPayloadV2(snapshot.object.payloadBytes.ciphertext),
+    );
+    if (plaintext === null) throw new Error("prepared result did not decrypt");
+    expect(decodeTaskRunResultPayloadV1(plaintext)).toEqual({
+      formatVersion: 1,
+      resultText: "Protected Task result",
+      lastError: null,
+    });
+    plaintext.fill(0);
+    for (const generation of keyring.generations) generation.key.fill(0);
+  });
+
+  test("a Browser-compatible Human vault opens the exact Agent result and rejects substitution", async () => {
+    const scenario = await setup(0x345);
+    const prepared = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) =>
+        prepareTaskRuntimeRunResult(prepareInput(scenario, evidence)),
+    });
+    const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared);
+    const deviceId = "task-result-manager";
+    const coordinates: ClientProfileCoordinates = Object.freeze({
+      serverScope: "https://nautilo.test",
+      userId: REQUESTER_ID,
+      humanActorId: REQUESTER_ID,
+      profileId: "profile:task-result-manager",
+      deviceId,
+      installationLineageDigest: "34".repeat(32),
+    });
+    const encryption = await scenario.crypto.generateEncryptionKeyPair();
+    const keyring = openNamespaceKeyring({
+      crypto: scenario.crypto,
+      domainRoot: scenario.aiDomainRoot,
+      envelope: scenario.aiEnvelope,
+      resolveHistoricalCommitter: () =>
+        scenario.namespaceCommitter.publicKey,
+    });
+    const profile: OpenedClientDeviceProfileV2 = Object.freeze({
+      formatVersion: 2,
+      deviceId,
+      signingPublicKey: scenario.manager.publicKey,
+      signingPrivateKey: scenario.manager.privateKey,
+      encryptionPublicKey: encryption.publicKey,
+      encryptionPrivateKey: encryption.privateKey,
+      trustedDeviceRevision: 2,
+      trustedHostAuthorizationRevision: 5,
+      deliveryHighWatermark: 1,
+      keyringDeliveries: Object.freeze([Object.freeze({
+        deliverySequence: 1,
+        operationId: "task-result-keyring",
+        namespaceId: NAMESPACE_ID,
+        keyClass: "ai" as const,
+        domainId: DOMAIN_ID,
+        domainEpoch: 4,
+        accessRevision: ACCESS_REVISION,
+        bindingHash: scenario.trustedHead.bindingHash,
+        currentGeneration: keyring.currentGeneration,
+        generations: keyring.generations,
+      })]),
+    });
+    const v2Bytes = encodeClientDeviceProfileV2(profile);
+    const v3 = await createClientDeviceProfileV3Candidate({
+      crypto: scenario.crypto,
+      currentProfileBytes: v2Bytes,
+      expectedDeviceId: deviceId,
+    });
+    const v3Bytes = encodeClientDeviceProfileV3(v3);
+    const v4 = await createClientDeviceProfileV4Candidate({
+      crypto: scenario.crypto,
+      currentProfileBytes: v3Bytes,
+      expectedDeviceId: deviceId,
+    });
+    const profileBytes = encodeClientDeviceProfileV4(v4);
+    destroyOpenedClientDeviceProfileV4(v4);
+    destroyOpenedClientDeviceProfileV3(v3);
+    v2Bytes.fill(0);
+    v3Bytes.fill(0);
+    for (const generation of keyring.generations) generation.key.fill(0);
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await vault.stageProfile({
+      coordinates,
+      stageId: "stage:result",
+      generation: 1,
+      profileBytes,
+      publicState: { clientKind: "browser", publicFingerprint: "34".repeat(32) },
+    });
+    await vault.activateProfile(coordinates, "stage:result");
+    profileBytes.fill(0);
+    const anchors = new Map<string, TrustedMinimumObjectAccessHead>();
+    const resultEnvelope = {
+      readVersion: 1 as const,
+      status: "ready" as const,
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      objectId: prepared.objectId,
+      resultRevision: 1 as const,
+      cryptoAccessRevision: 0 as const,
+      namespaceId: NAMESPACE_ID,
+      encryptedPayloadBytesBase64url: Buffer.from(
+        snapshot.object.payloadBytes.ciphertext,
+      ).toString("base64url"),
+      accessManifestBytesBase64url: Buffer.from(
+        snapshot.access.manifestBytes,
+      ).toString("base64url"),
+      accessManifestProofBytesBase64url: [] as [],
+      namespaceEnvelopeBytesBase64url: Buffer.from(
+        snapshot.access.envelopeBytes[0],
+      ).toString("base64url"),
+      signerEvidence: [{
+        kind: "agent_runtime_publication" as const,
+        evidenceBytesBase64url: Buffer.from(
+          encodeAgentRuntimeSignerPublicationV1(
+            scenario.initialized.signerPublication,
+          ),
+        ).toString("base64url"),
+      }],
+    };
+    let response = resultEnvelope;
+    const api = {
+      getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
+    } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">;
+    const deviceInput: VaultHumanTaskRunResultReaderInputV1 = {
+        crypto: scenario.crypto,
+        vault,
+        coordinates,
+        subjectHumanId: REQUESTER_ID,
+        now: () => NOW,
+        resolveDeviceAdmissionStatus: () => Promise.resolve({
+          responseVersion: 1,
+          required: true,
+          status: "admitted",
+          deviceId,
+          deviceGeneration: 1,
+          expiresAt: NOW + 60_000,
+        }),
+        resolveTrustedIssuingDevicePublicKey: () =>
+          Promise.resolve(scenario.manager.publicKey),
+        createStageId: () => "stage:signer",
+        accessAnchors: {
+          load: (id) => Promise.resolve(anchors.get(id) ?? null),
+          advance: ({ expected, next }) => {
+            if ((anchors.get(next.objectId) ?? null) !== expected) {
+              return Promise.resolve(false);
+            }
+            anchors.set(next.objectId, {
+              ...next,
+              payloadHash: next.payloadHash.slice(),
+              manifestHash: next.manifestHash.slice(),
+            });
+            return Promise.resolve(true);
+          },
+        },
+    };
+    const reader = createAuthorizedHumanTaskRunResultReaderV1({
+      api,
+      device: createVaultHumanTaskRunResultReaderV1(deviceInput),
+    });
+    const request = { taskId: TASK_ID, taskRunId: RUN_ID, agentId: AGENT_ID };
+    expect(await reader.read(request)).toEqual({
+      status: "ready",
+      payload: {
+        formatVersion: 1,
+        resultText: "Protected Task result",
+        lastError: null,
+      },
+    });
+    response = {
+      ...resultEnvelope,
+      namespaceId: "40000000-0000-4000-8000-000000000099",
+    };
+    for (const attempted of [
+      request,
+      { ...request, agentId: "60000000-0000-4000-8000-000000000099" },
+    ]) {
+      await reader.read(attempted).then(
+        () => { throw new Error("substituted result was accepted"); },
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+          if (!(error instanceof ClassifiedDataOperationError)) return;
+          expect(error.failureClass).toBe("integrity");
+        },
+      );
+      response = resultEnvelope;
+    }
+    const wrongSubject = createAuthorizedHumanTaskRunResultReaderV1({
+      api,
+      device: createVaultHumanTaskRunResultReaderV1({
+        ...deviceInput,
+        subjectHumanId: "30000000-0000-4000-8000-000000000099",
+      }),
+    });
+    await wrongSubject.read(request).then(
+      () => { throw new Error("wrong Human subject was accepted"); },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+        if (!(error instanceof ClassifiedDataOperationError)) return;
+        expect(error.failureClass).toBe("integrity");
+      },
+    );
+  });
+
+  test("rejects result, Namespace, and signer substitution before publication", async () => {
+    const scenario = await setup(2);
+    const wrongNamespace = await setup(
+      3,
+      "40000000-0000-4000-8000-000000000099",
+    );
+    expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: {
+        ...scenario.evidence,
+        result: {
+          ...scenario.evidence.result,
+          objectId: "substituted-result-object",
+        },
+      },
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) =>
+        prepareTaskRuntimeRunResult(prepareInput(scenario, evidence)),
+    })).rejects.toThrow("coordinate or authority disagrees");
+
+    expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) => prepareTaskRuntimeRunResult({
+        ...prepareInput(scenario, evidence),
+        namespace: {
+          trustedHead: wrongNamespace.trustedHead,
+          aiKeyringEnvelope: wrongNamespace.aiEnvelope,
+          currentDomainRoot: wrongNamespace.aiDomainRoot,
+          resolveHistoricalCommitter: () =>
+            wrongNamespace.namespaceCommitter.publicKey,
+        },
+      }),
+    })).rejects.toThrow("authority was substituted");
+
+    expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) => prepareTaskRuntimeRunResult({
+        ...prepareInput(scenario, evidence),
+        signerPublication: {
+          ...scenario.initialized.signerPublication,
+          signature: new Uint8Array(
+            scenario.initialized.signerPublication.signature.length,
+          ).fill(0x7f),
+        },
+      }),
+    })).rejects.toThrow("authority was substituted");
+  });
+
+  test("fails closed when Task execution evidence expires or is revoked", async () => {
+    const scenario = await setup(4);
+    let now = NOW;
+    expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: new AbortController().signal,
+      now: () => now,
+      execute: (evidence) => {
+        now = scenario.evidence.expiresAt;
+        return prepareTaskRuntimeRunResult(prepareInput(scenario, evidence));
+      },
+    })).rejects.toThrow("evidence is not active");
+
+    const controller = new AbortController();
+    expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: controller.signal,
+      now: () => NOW,
+      execute: (evidence) => {
+        controller.abort();
+        return prepareTaskRuntimeRunResult(prepareInput(scenario, evidence));
+      },
+    })).rejects.toThrow("evidence is not active");
+  });
+});
+
+describe("Task Runtime checkpoint Namespace authority", () => {
+  test("opens Task-owned retained keys only during a live grant and rechecks before commit", async () => {
+    const scenario = await setup();
+    const controller = new AbortController();
+    const identity = {
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      sourceRoomId: scenario.evidence.sourceRoomId,
+      namespaceId: NAMESPACE_ID,
+      domainId: DOMAIN_ID,
+      expectedAccessRevision: ACCESS_REVISION,
+      expectedPolicyRevision: POLICY_REVISION,
+    };
+    let authorityChecks = 0;
+    let retainedKey: Uint8Array | null = null;
+    const result = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: controller.signal,
+      now: () => NOW,
+      execute: evidence => withTaskRuntimeCheckpointNamespace({
+        crypto: scenario.crypto,
+        evidence,
+        identity,
+        namespace: prepareInput(scenario, evidence).namespace,
+        signal: controller.signal,
+        assertCurrentTaskAuthority: async () => { authorityChecks += 1; },
+        execute: async (material, assertCommitAllowed) => {
+          expect(material.namespaceId).toBe(NAMESPACE_ID);
+          expect(material.generations.length).toBeGreaterThan(0);
+          retainedKey = material.generations[0]!.key;
+          expect(retainedKey.some(value => value !== 0)).toBe(true);
+          await assertCommitAllowed();
+          return "checkpoint-written";
+        },
+      }),
+    });
+    expect(result).toBe("checkpoint-written");
+    expect(authorityChecks).toBe(2);
+    expect(retainedKey).not.toBeNull();
+    expect(retainedKey!.every(value => value === 0)).toBe(true);
+  });
+
+  test("rejects source-Room substitution before opening checkpoint keys", async () => {
+    const scenario = await setup();
+    const controller = new AbortController();
+    let opened = false;
+    const failure = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: controller.signal,
+      now: () => NOW,
+      execute: evidence => withTaskRuntimeCheckpointNamespace({
+        crypto: scenario.crypto,
+        evidence,
+        identity: {
+          taskId: TASK_ID,
+          taskRunId: RUN_ID,
+          sourceRoomId: "substituted-room",
+          namespaceId: NAMESPACE_ID,
+          domainId: DOMAIN_ID,
+          expectedAccessRevision: ACCESS_REVISION,
+          expectedPolicyRevision: POLICY_REVISION,
+        },
+        namespace: prepareInput(scenario, evidence).namespace,
+        signal: controller.signal,
+        assertCurrentTaskAuthority: async () => undefined,
+        execute: () => { opened = true; return "wrong"; },
+      }),
+    }).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(TypeError);
+    expect(opened).toBe(false);
+  });
+
+  test("seals and opens the exact Task graph cell through Task authority", async () => {
+    const scenario = await setup();
+    const controller = new AbortController();
+    const graphThreadId = `subagent:task:${TASK_ID}:${RUN_ID}`;
+    const coordinate = Object.freeze({
+      kind: "channel" as const,
+      threadId: graphThreadId,
+      checkpointNs: "root",
+      channel: "messages",
+      version: "1",
+    });
+    const plaintext = new TextEncoder().encode("private graph state");
+    let checks = 0;
+    const opened = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: scenario.evidence,
+      signal: controller.signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const cell = createTaskRuntimeCheckpointCellCrypto({
+          crypto: scenario.crypto,
+          evidence,
+          identity: {
+            taskId: TASK_ID,
+            taskRunId: RUN_ID,
+            graphThreadId,
+            sourceRoomId: scenario.evidence.sourceRoomId,
+            namespaceId: NAMESPACE_ID,
+            domainId: DOMAIN_ID,
+            expectedAccessRevision: ACCESS_REVISION,
+            expectedPolicyRevision: POLICY_REVISION,
+          },
+          namespace: prepareInput(scenario, evidence).namespace,
+          signal: controller.signal,
+          now: () => NOW,
+          assertCurrentTaskAuthority: async () => { checks += 1; },
+        });
+        const ciphertext = await cell.crypto.executeAuthorizedOperation({
+          operation: "write",
+          scope: cell.scope,
+          execute: async context => {
+            const sealed = await cell.crypto.seal({
+              scope: cell.scope,
+              coordinate,
+              plaintext,
+              signal: context.signal,
+            });
+            await context.assertCommitAllowed();
+            return sealed;
+          },
+        });
+        const result = await cell.crypto.executeAuthorizedOperation({
+          operation: "read",
+          scope: cell.scope,
+          execute: context => cell.crypto.open({
+            scope: cell.scope,
+            coordinate,
+            ciphertext,
+            signal: context.signal,
+          }),
+        });
+        expect(ciphertext).not.toEqual(plaintext);
+        return result;
+      },
+    });
+    expect(opened).toEqual(plaintext);
+    expect(checks).toBe(3);
+    opened.fill(0);
+    plaintext.fill(0);
+  });
+});

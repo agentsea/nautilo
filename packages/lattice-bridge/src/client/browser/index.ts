@@ -47,6 +47,7 @@ import {
   createForegroundLiveShadowMessageClient,
   createForegroundHumanMemoryClient,
   createForegroundHumanTaskClient,
+  createForegroundHumanTaskRunResultReader,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
@@ -58,6 +59,7 @@ import {
   type ForegroundMessageBackfillClientInput,
   type ForegroundHumanMemoryClientInput,
   type ForegroundHumanTaskClientInput,
+  type ForegroundHumanTaskRunResultReaderInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
   type ForegroundRoomHistoryShadowMessageReaderInput,
   type ForegroundRoomHistoryShadowMessageReader,
@@ -1016,6 +1018,19 @@ export function createBrowserHumanTaskClient(
   return createForegroundHumanTaskClient(browserForegroundShadowPlatform, input);
 }
 
+export type BrowserHumanTaskRunResultReaderInput =
+  ForegroundHumanTaskRunResultReaderInput;
+
+/** Exact protected TaskRun result reads through Browser device custody. */
+export function createBrowserHumanTaskRunResultReader(
+  input: BrowserHumanTaskRunResultReaderInput,
+) {
+  return createForegroundHumanTaskRunResultReader(
+    browserForegroundShadowPlatform,
+    input,
+  );
+}
+
 /** Public, secret-free coordinate used to bind browser resume approvals. */
 export function deriveBrowserCryptoDeviceId(input: Readonly<{
   serverScope: string;
@@ -1245,6 +1260,15 @@ export {
   createVaultHumanTaskDeviceContentPortV1,
   type VaultHumanTaskDeviceContentInputV1,
 } from "../task/vault-human-task-device-content.ts";
+export {
+  createAuthorizedHumanTaskRunResultReaderV1,
+  type HumanTaskRunResultDevicePortV1,
+  type HumanTaskRunResultReadV1,
+} from "../task/authorized-human-task-run-result.ts";
+export {
+  createVaultHumanTaskRunResultReaderV1,
+  type VaultHumanTaskRunResultReaderInputV1,
+} from "../task/vault-human-task-run-result.ts";
 export {
   createVaultHumanArtifactDeviceContentPort,
   type AuthorizedHumanArtifactContentIntentV1,

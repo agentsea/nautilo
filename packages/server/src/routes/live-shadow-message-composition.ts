@@ -131,7 +131,7 @@ import {
   admitAndPersistHumanAiReadableLiveShadowMessage,
 } from "@nautilo/lattice-bridge/server";
 import type { FastifyInstance } from "fastify";
-import { log } from "@nautilo/logger";
+import { log, warn } from "@nautilo/logger";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createProductionForegroundPendingAttention } from "./foreground-pending-attention";
@@ -547,10 +547,35 @@ function legacySharedAgentRecipientId(
 }
 
 /** Lazy construction keeps app registration and plaintext-only startup DB-free. */
+export async function notifyProtectedTaskReplyAfterSharedAgentPublication(
+  outcome: "published" | "replayed" | "conflict",
+  publication: Readonly<{ operationId: string; messageId: number }>,
+  onPublished?: (message: Readonly<{
+    operationId: string;
+    messageId: number;
+  }>) => Promise<void>,
+): Promise<void> {
+  if (outcome === "conflict" || onPublished === undefined) return;
+  try {
+    await onPublished({
+      operationId: publication.operationId,
+      messageId: publication.messageId,
+    });
+  } catch {
+    // The Human Message is already published; Task acceptance cannot turn
+    // this successful send into an HTTP failure.
+    warn("[protected-task-reply] published Message acceptance failed");
+  }
+}
+
 export function createProductionLiveShadowMessageComposition(input: Readonly<{
   wakeForegroundMemoryEffectRecovery: () => void;
   resolveReadableNamespaces?: ResolveLiveShadowReadableNamespaces;
   loadRuntimePolicy?: () => Promise<StrictShadowEnforcementPolicy>;
+  onSharedAgentHumanPublished?: (message: Readonly<{
+    operationId: string;
+    messageId: number;
+  }>) => Promise<void>;
 }>): ProductionLiveShadowMessageComposition {
   const wakeForegroundMemoryEffectRecovery =
     input.wakeForegroundMemoryEffectRecovery;
@@ -1985,7 +2010,15 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
 
   const recordSharedAgentPublished: NonNullable<
     ProductionLiveShadowMessageComposition["recordSharedAgentPublished"]
-  > = (input) => getSharedAgentPlanner().recordPublished(input);
+  > = async (publication) => {
+    const outcome = await getSharedAgentPlanner().recordPublished(publication);
+    await notifyProtectedTaskReplyAfterSharedAgentPublication(
+      outcome,
+      publication,
+      input.onSharedAgentHumanPublished,
+    );
+    return outcome;
+  };
 
   const recordSharedAgentFallback: NonNullable<
     ProductionLiveShadowMessageComposition["recordSharedAgentFallback"]

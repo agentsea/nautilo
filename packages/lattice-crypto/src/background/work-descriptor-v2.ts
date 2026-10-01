@@ -57,6 +57,7 @@ export type BackgroundWorkKindV2 =
   | "memory.exit_flush"
   | "task.dispatch"
   | "task.execute"
+  | "task.await_reply_resume"
   | "task.approval_resume";
 
 export type BackgroundWorkPurposeV2 = BackgroundWorkKindV2;
@@ -323,6 +324,7 @@ const WORK_KINDS = new Set<BackgroundWorkKindV2>([
   "memory.exit_flush",
   "task.dispatch",
   "task.execute",
+  "task.await_reply_resume",
   "task.approval_resume",
 ]);
 

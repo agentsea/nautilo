@@ -542,6 +542,7 @@ function productionFilesMatching(pattern: RegExp): string[] {
 test("M254 invocation admission and authority mint sites stay mechanically inventoried", () => {
   expect(productionFilesMatching(INVOCATION_ADMISSION_PATTERN)).toEqual([
     "packages/runtime/src/tasks/report-back.ts",
+    "packages/server/src/lib/foreground-chat-funding.ts",
     "packages/server/src/messaging/await-resume.ts",
     "packages/trust/src/action-capability-admission.ts",
   ]);
@@ -579,6 +580,8 @@ test("M254 invocation admission and authority mint sites stay mechanically inven
   ]);
 
   expect(productionFilesMatching(INVOCATION_AUTHORITY_CONTEXT_PATTERN)).toEqual([
+    "packages/runtime/src/executors/fork-langgraph-executor.ts",
+    "packages/runtime/src/executors/langgraph-executor.ts",
     "packages/runtime/src/index.ts",
     "packages/runtime/src/job-manager.ts",
     "packages/runtime/src/tasks/create-task.ts",

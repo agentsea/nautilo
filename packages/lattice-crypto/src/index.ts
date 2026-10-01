@@ -405,6 +405,12 @@ export type {
   TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
+  TaskRuntimeExecutionDomainAuthorityV1 as TaskRuntimeExecutionDomainAuthority,
+  TaskRuntimeExecutionEvidenceV1 as TaskRuntimeExecutionEvidence,
+  TaskRuntimeExecutionNamespaceAuthorityV1 as TaskRuntimeExecutionNamespaceAuthority,
+} from "./background/task-runtime-execution-evidence-v1.ts";
+export { assertAuthenticTaskRuntimeExecutionEvidenceV1 as assertAuthenticTaskRuntimeExecutionEvidence } from "./background/task-runtime-execution-evidence-v1.ts";
+export type {
   OneRunProcessorTransformResultV1 as OneRunProcessorTransformResult,
   ProcessorCredentialClaimPortV1 as ProcessorCredentialClaimPort,
   ProcessorCredentialClaimV1 as ProcessorCredentialClaim,
@@ -1074,6 +1080,26 @@ export type {
   EncryptedPayloadResultV2 as EncryptedPayloadResult,
   EncryptedPayloadV2 as EncryptedPayload,
 } from "./object/payload.ts";
+export {
+  assertAuthenticPreparedTaskRuntimeResultObjectV1
+    as assertAuthenticPreparedTaskRuntimeResultObject,
+  prepareTaskRuntimeResultObjectV1 as prepareTaskRuntimeResultObject,
+  prepareNativeTaskRuntimeResultObjectV1 as prepareNativeTaskRuntimeResultObject,
+} from "./object/task-runtime-result-preparation-v1.ts";
+export type {
+  PreparedTaskRuntimeResultObjectV1 as PreparedTaskRuntimeResultObject,
+  PrepareTaskRuntimeResultObjectV1Input as PrepareTaskRuntimeResultObjectInput,
+  PrepareNativeTaskRuntimeResultObjectV1Input as PrepareNativeTaskRuntimeResultObjectInput,
+  TaskRuntimeResultNamespaceSourceV1 as TaskRuntimeResultNamespaceSource,
+  TaskRuntimeResultObjectAuthorityV1 as TaskRuntimeResultObjectAuthority,
+} from "./object/task-runtime-result-preparation-v1.ts";
+export {
+  withTaskRuntimeCheckpointNamespaceV1 as withTaskRuntimeCheckpointNamespace,
+} from "./object/task-runtime-checkpoint-namespace-v1.ts";
+export type {
+  TaskRuntimeCheckpointIdentityV1 as TaskRuntimeCheckpointIdentity,
+  TaskRuntimeCheckpointNamespaceMaterialV1 as TaskRuntimeCheckpointNamespaceMaterial,
+} from "./object/task-runtime-checkpoint-namespace-v1.ts";
 export {
   ObjectAccessPersistenceOutcomeUnknownV2
     as ObjectAccessPersistenceOutcomeUnknown,

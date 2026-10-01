@@ -52,6 +52,10 @@ import {
   hydrateMessageArtifacts,
   recordMessageArtifacts,
 } from "@nautilo/db";
+import {
+  protectedTaskInterruptCoordinates,
+  type ProtectedTaskInterruptCoordinate,
+} from "../../graph/interrupt-mapping";
 
 function extractPersistedMessagesFromChainEnd(ev: unknown): BaseMessage[] {
   if (!ev || typeof ev !== "object") return [];
@@ -486,6 +490,23 @@ const SUBAGENT_TRANSCRIPT_HEADER =
   "[Subagent run — full transcript for parent model; not shown verbatim to the end user]";
 
 /**
+ * Process-local protected transcript boundary for one exact TaskRun. The port
+ * must publish the supplied messages without retaining plaintext after the
+ * call returns.
+ */
+export interface ProtectedTaskTranscriptPublicationPort {
+  publishBatch(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    graphThreadId: string;
+    roomId: string;
+    humanTurnId: string;
+    agentId: string;
+    messages: readonly BaseMessage[];
+  }>): Promise<void>;
+}
+
+/**
  * Serializes the subagent message list so the parent model receives tool
  * results and every assistant turn (including multimodal/string content),
  * not only the last string AIMessage.
@@ -613,6 +634,12 @@ export type RunScopeSubagentOpts = {
    * Task/TaskRun grant before supplying it here.
    */
   taskRunCheckpointSaver?: EncryptedCheckpointSaver;
+  /**
+   * Protected Message publication for an exact TaskRun transcript. Required
+   * with `taskRunCheckpointSaver`; ordinary transcript rows and Room events
+   * are bypassed while this port is present.
+   */
+  protectedTaskTranscriptPort?: ProtectedTaskTranscriptPublicationPort;
   /** Resume payload after a bridged interrupt (same shape as HTTP resume) */
   resume?: unknown;
   /** When resuming, reuse the same subagent thread */
@@ -701,7 +728,13 @@ export type RunScopeSubagentResult =
       securityReportState?: "completed" | "partial" | null;
       securityResearchAppendix?: string | null;
     }
-  | { status: "interrupted"; threadId: string; interrupt: Record<string, unknown> };
+  | {
+      status: "interrupted";
+      threadId: string;
+      interrupt: Record<string, unknown>;
+      /** Content-free durable resume coordinates; protected Task runs only. */
+      interruptCoordinates?: readonly ProtectedTaskInterruptCoordinate[];
+    };
 
 /** Missing or mismatched task provenance remains null rather than becoming main. */
 export function resolveScopeSubagentExecutionEntrypoint(
@@ -761,13 +794,32 @@ async function runScopeSubagentUntilPauseInternal(
       "Task-run subagent requires an encrypted checkpoint saver",
     );
   }
+  if (
+    opts.taskRunCheckpointSaver !== undefined
+    && opts.protectedTaskTranscriptPort === undefined
+  ) {
+    throw new TypeError(
+      "Task-run checkpoint authority requires protected transcript publication",
+    );
+  }
+  if (
+    opts.protectedTaskTranscriptPort !== undefined
+    && opts.taskRunCheckpointSaver === undefined
+  ) {
+    throw new TypeError(
+      "Protected transcript publication requires Task-run checkpoint authority",
+    );
+  }
   if (opts.taskRun && opts.invocationCheckpointSaver !== undefined) {
     throw new TypeError(
       "Background task subagent cannot inherit foreground checkpoint authority",
     );
   }
   if (
-    opts.taskRunCheckpointSaver !== undefined
+    (
+      opts.taskRunCheckpointSaver !== undefined
+      || opts.protectedTaskTranscriptPort !== undefined
+    )
     && (
       opts.taskRun !== true
       || opts.trustedExecutionEntrypoint !== "background.task"
@@ -780,7 +832,7 @@ async function runScopeSubagentUntilPauseInternal(
     )
   ) {
     throw new TypeError(
-      "Task-run checkpoint authority requires an exact trusted background Task identity and graph thread",
+      "Protected Task authority requires an exact trusted background Task identity and graph thread",
     );
   }
   const checkpointSaver = opts.taskRunCheckpointSaver
@@ -950,9 +1002,12 @@ async function runScopeSubagentUntilPauseInternal(
   }
 
   const savedFingerprints = new Set<string>();
-  const progressTap = createTaskProgressTap(opts);
+  const progressTap = opts.protectedTaskTranscriptPort === undefined
+    ? createTaskProgressTap(opts)
+    : null;
   const tokenStream =
-    opts.taskRun && !opts.deferAssistantOutputToReportBack
+    opts.protectedTaskTranscriptPort === undefined
+      && opts.taskRun && !opts.deferAssistantOutputToReportBack
       && opts.roomId && opts.subEnvelope.agentId && opts.parentTurnId
       ? new ScopeSubagentTokenStream({
           laneKey: `room:${opts.roomId}`,
@@ -982,26 +1037,42 @@ async function runScopeSubagentUntilPauseInternal(
       const batch = extractPersistedMessagesFromChainEnd(ev);
       if (batch.length === 0) continue;
       const assistantMessageKey = tokenStream?.completeMessage();
-      await persistSubagentBatch(
-        subThreadId,
-        opts.transcriptOwnerId ?? opts.parentOwnerId,
-        batch,
-        savedFingerprints,
-        {
-          agentId: opts.subEnvelope.agentId,
-          roomId: opts.roomId,
-          humanTurnId: opts.parentTurnId,
-          parentThreadId: opts.parentThreadId,
-          ...(opts.deferAssistantOutputToReportBack
-            ? { deferAssistantOutputToReportBack: true }
-            : {}),
-          ...(opts.scopeId !== undefined ? { scopeId: opts.scopeId } : {}),
-          ...(assistantMessageKey ? { assistantMessageKey } : {}),
-          ...(opts.assistantArtifactExternalIds?.length
-            ? { assistantArtifactExternalIds: opts.assistantArtifactExternalIds }
-            : {}),
-        },
-      );
+      if (opts.protectedTaskTranscriptPort !== undefined) {
+        await publishProtectedTaskTranscriptBatch(
+          opts.protectedTaskTranscriptPort,
+          {
+            taskId: opts.currentTaskId!,
+            taskRunId: opts.currentTaskRunId!,
+            graphThreadId: subThreadId,
+            roomId: opts.roomId,
+            humanTurnId: opts.parentTurnId,
+            agentId: opts.subEnvelope.agentId,
+          },
+          batch,
+          savedFingerprints,
+        );
+      } else {
+        await persistSubagentBatch(
+          subThreadId,
+          opts.transcriptOwnerId ?? opts.parentOwnerId,
+          batch,
+          savedFingerprints,
+          {
+            agentId: opts.subEnvelope.agentId,
+            roomId: opts.roomId,
+            humanTurnId: opts.parentTurnId,
+            parentThreadId: opts.parentThreadId,
+            ...(opts.deferAssistantOutputToReportBack
+              ? { deferAssistantOutputToReportBack: true }
+              : {}),
+            ...(opts.scopeId !== undefined ? { scopeId: opts.scopeId } : {}),
+            ...(assistantMessageKey ? { assistantMessageKey } : {}),
+            ...(opts.assistantArtifactExternalIds?.length
+              ? { assistantArtifactExternalIds: opts.assistantArtifactExternalIds }
+              : {}),
+          },
+        );
+      }
     }
     progressTap?.flush();
     log(`[scope-subagent] stream complete thread=${subThreadId} ${metrics.formatLogToken()}`);
@@ -1044,8 +1115,19 @@ async function runScopeSubagentUntilPauseInternal(
       }
     | undefined;
 
+  const interruptCoordinates = opts.protectedTaskTranscriptPort === undefined
+    ? undefined
+    : protectedTaskInterruptCoordinates(postState);
   const interrupt = extractPendingInterruptValue(postState);
   if (interrupt) {
+    if (interruptCoordinates !== undefined) {
+      return {
+        status: "interrupted",
+        threadId: subThreadId,
+        interrupt,
+        interruptCoordinates,
+      };
+    }
     return { status: "interrupted", threadId: subThreadId, interrupt };
   }
 
@@ -1062,6 +1144,37 @@ async function runScopeSubagentUntilPauseInternal(
     securityReportState: securityReportReadiness(messages),
     securityResearchAppendix: securityResearchAppendix(messages),
   };
+}
+
+async function publishProtectedTaskTranscriptBatch(
+  port: ProtectedTaskTranscriptPublicationPort,
+  identity: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    graphThreadId: string;
+    roomId: string;
+    humanTurnId: string;
+    agentId: string;
+  }>,
+  batch: BaseMessage[],
+  savedFingerprints: Set<string>,
+): Promise<void> {
+  const newPairs: Array<{ msg: BaseMessage; fp: string }> = [];
+  for (const msg of batch) {
+    const fp = computeMessageFingerprint(
+      msg,
+      identity.humanTurnId ? { humanTurnId: identity.humanTurnId } : {},
+    );
+    if (savedFingerprints.has(fp)) continue;
+    newPairs.push({ msg, fp });
+  }
+  if (newPairs.length === 0) return;
+
+  await port.publishBatch(Object.freeze({
+    ...identity,
+    messages: Object.freeze(newPairs.map(({ msg }) => msg)),
+  }));
+  for (const { fp } of newPairs) savedFingerprints.add(fp);
 }
 
 async function persistSubagentBatch(

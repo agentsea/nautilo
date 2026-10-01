@@ -62,6 +62,27 @@ function normalizedSql(value: string): string {
 }
 
 describe("M241 background authorization durable schema", () => {
+  test("admits await-reply resume only as an exact Runtime V3 Task pair", () => {
+    const workKindSql = checkSql(
+      backgroundCryptoAuthorizationRequests,
+      "background_crypto_authorization_requests_work_kind",
+    );
+    const purposeSql = checkSql(
+      backgroundCryptoAuthorizationRequests,
+      "background_crypto_authorization_requests_purpose",
+    );
+    const workSubjectSql = normalizedSql(checkSql(
+      backgroundCryptoAuthorizationRequests,
+      "background_crypto_authorization_requests_work_subject_coherent",
+    ));
+
+    expect(workKindSql).toContain("'task.await_reply_resume'");
+    expect(purposeSql).toContain("'task.await_reply_resume'");
+    expect(workSubjectSql).toContain(
+      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
+    );
+  });
+
   test("admits the exact semantic Reflection V2 work-purpose pairs", () => {
     const workKindSql = checkSql(
       backgroundCryptoAuthorizationRequests,

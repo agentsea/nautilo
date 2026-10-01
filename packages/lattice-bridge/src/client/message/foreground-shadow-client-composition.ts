@@ -101,6 +101,14 @@ import { createHumanMemoryProcessorTransport } from "../memory/human-memory-proc
 import {
   createVaultAuthorizedHumanMemoryDeviceContentPort,
 } from "../memory/vault-human-memory-device-content.ts";
+import {
+  createAuthorizedHumanTaskRunResultReaderV1,
+} from "../task/authorized-human-task-run-result.ts";
+import {
+  createVaultHumanTaskRunResultReaderV1,
+} from "../task/vault-human-task-run-result.ts";
+import type { ResolveTrustedObjectAccessEvidenceIssuerV4 } from
+  "../../client-vault/ingest-object-access-signer-evidence-v4.ts";
 import type { PreparedMutationJournalCustodyAvailability } from
   "../memory/file-prepared-mutation-journal-vault.ts";
 import {
@@ -926,6 +934,44 @@ export type ForegroundHumanTaskClientInput = Readonly<{
   createIdempotencyKey?: () => string;
   resolveDeviceAdmissionStatus: () => Promise<DeviceAdmissionStatus>;
 }>;
+
+export type ForegroundHumanTaskRunResultReaderInput =
+  ForegroundHumanTaskClientInput & Readonly<{
+    resolveTrustedIssuingDevicePublicKey:
+      ResolveTrustedObjectAccessEvidenceIssuerV4;
+  }>;
+
+/** Shared protected-only result read composition; live Task policy is separate. */
+export function createForegroundHumanTaskRunResultReader(
+  platform: ForegroundShadowClientPlatform,
+  input: ForegroundHumanTaskRunResultReaderInput,
+) {
+  const crypto = input.crypto ?? new LatticeCrypto();
+  const clientIdentity = identity(platform, crypto, input);
+  const vault = platform.createProfileVault();
+  const createStageId = input.createIdempotencyKey
+    ?? (() => platform.createId());
+  return createAuthorizedHumanTaskRunResultReaderV1({
+    api: input.api,
+    device: createVaultHumanTaskRunResultReaderV1({
+      crypto,
+      vault,
+      coordinates: clientIdentity.coordinates,
+      subjectHumanId: input.humanActorId,
+      now: input.now ?? Date.now,
+      resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
+      resolveTrustedIssuingDevicePublicKey:
+        input.resolveTrustedIssuingDevicePublicKey,
+      createStageId,
+      accessAnchors: createClientProfileObjectAccessAnchorPortV4({
+        crypto,
+        vault,
+        coordinates: clientIdentity.coordinates,
+        createStageId,
+      }),
+    }),
+  });
+}
 
 /** Shared protected Task composition. Plain callers keep their legacy adapter. */
 export function createForegroundHumanTaskClient(

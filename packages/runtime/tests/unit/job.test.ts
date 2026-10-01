@@ -1,5 +1,6 @@
 import { describe, test, expect, spyOn } from "bun:test";
 import { Job } from "../../src/job";
+import { assertProtectedTaskJobReferenceV1 } from "../../src/tasks/protected-task-job-reference";
 import type { ServerEvent, JobStatus } from "@nautilo/types";
 import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
 import { runWithLiveShadowTurnSession } from "../../src/conversation/live-shadow-turn-context";
@@ -142,6 +143,7 @@ describe("Job", () => {
       resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
       authorizationRequestId: "task-run-authorization:request-1",
       policyRevision: 11,
+      executionSegment: 1,
     };
     const job = new Job({
       ownerId: "o1",
@@ -174,8 +176,46 @@ describe("Job", () => {
       representation: "protected_only",
     });
 
-    await job.execute();
+    await job.executeProtectedTask(job.input, undefined, {
+      awaitPublished: async () => true,
+    });
     expect(executedMessage).toBe("protected-task-input-sentinel");
+  });
+
+  test("protected Task completion waits for a published result", async () => {
+    const reference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:result-barrier",
+      policyRevision: 11,
+      executionSegment: 1,
+    };
+    for (const published of [false, true]) {
+      const updates: JobStatus[] = [];
+      const job = new Job({
+        ownerId: "o1",
+        requestorId: "r1",
+        laneKey: `task:${reference.taskId}`,
+        type: "foreground",
+        input: {},
+        durableInputReference: reference,
+        durableInputDisposition: "full",
+        executor: yieldNothing,
+        persist: async () => `protected-result-${published}`,
+        updateStatus: async (_id, status) => { updates.push(status); },
+      });
+      await job.persist();
+      await job.executeProtectedTask({}, undefined, {
+        awaitPublished: async () => published,
+      });
+      expect(job.status).toBe(published ? "completed" : "running");
+      expect(updates).toEqual(published
+        ? ["running", "completed"]
+        : ["running"]);
+    }
   });
 
   test("rejects malformed protected Task references before persistence", async () => {
@@ -187,6 +227,7 @@ describe("Job", () => {
       resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
       authorizationRequestId: "task-run-authorization:request-1",
       policyRevision: 11,
+      executionSegment: 1,
     };
     const malformed = [
       { ...valid, taskId: "not-a-task-id" },
@@ -194,6 +235,9 @@ describe("Job", () => {
       { ...valid, resultObjectId: valid.inputObjectId },
       { ...valid, authorizationRequestId: "contains spaces" },
       { ...valid, policyRevision: 0 },
+      { ...valid, executionSegment: 0 },
+      { ...valid, executionSegment: 1.5 },
+      { ...valid, executionSegment: Number.MAX_SAFE_INTEGER + 1 },
       { ...valid, prompt: "must-not-be-durable" },
     ];
 
@@ -218,6 +262,34 @@ describe("Job", () => {
         "Protected Task durable Job reference is invalid",
       );
       expect(persistCalls).toBe(0);
+    }
+  });
+
+  test("resumed protected Task Jobs require one opaque acceptance binding", () => {
+    const initial = {
+      kind: "protected_task_run_v1",
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:request-1",
+      policyRevision: 11,
+      executionSegment: 1,
+    };
+    expect(() => assertProtectedTaskJobReferenceV1(initial)).not.toThrow();
+    expect(() => assertProtectedTaskJobReferenceV1({
+      ...initial,
+      executionSegment: 2,
+      resumeAcceptanceId: "await-reply-acceptance:1",
+    })).not.toThrow();
+    for (const invalid of [
+      { ...initial, executionSegment: 2 },
+      { ...initial, resumeAcceptanceId: "await-reply-acceptance:1" },
+      { ...initial, executionSegment: 2, resumeAcceptanceId: "contains spaces" },
+    ]) {
+      expect(() => assertProtectedTaskJobReferenceV1(invalid)).toThrow(
+        "Protected Task durable Job reference is invalid",
+      );
     }
   });
 
@@ -316,6 +388,7 @@ describe("Job", () => {
           resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
           authorizationRequestId: "task-run-authorization:failure-test",
           policyRevision: 9,
+          executionSegment: 1,
         },
         executor: async function* () {
           yield* ([] as ServerEvent[]);

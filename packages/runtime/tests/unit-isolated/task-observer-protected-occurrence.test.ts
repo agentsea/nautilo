@@ -240,6 +240,7 @@ test("protected occurrences preserve fire identity, skip downtime backlog, and r
       "id",
       "ownerId",
       "requestorId",
+      "scheduleKind",
     ]);
     expect(ordinaryDispatch).not.toHaveBeenCalled();
     expect(dispatchError).not.toHaveBeenCalled();

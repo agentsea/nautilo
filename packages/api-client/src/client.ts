@@ -426,6 +426,7 @@ import {
   dualTaskPreparedCreateRequestV1Schema,
   dualTaskPreparedUpdateRequestV1Schema,
   protectedTaskDefinitionReadEnvelopeV1Schema,
+  protectedTaskRunResultReadEnvelopeV1Schema,
   protectedTaskContentListV1Schema,
   protectedTaskPreparedCreateRequestV1Schema,
   protectedTaskPreparedUpdateRequestV1Schema,
@@ -435,6 +436,7 @@ import {
   taskContentListV1Schema,
   taskContentSummaryV1Schema,
   type ProtectedTaskDefinitionReadEnvelopeV1,
+  type ProtectedTaskRunResultReadEnvelopeV1,
   type ProtectedTaskPreparedCreateRequestV1,
   type ProtectedTaskPreparedUpdateRequestV1,
   type ProtectedTaskPublicationPlanV1,
@@ -7688,6 +7690,21 @@ export class NautiloApiClient {
       path: `/api/protected/tasks/${encodeURIComponent(id)}/definition?${params.toString()}`,
       schema: protectedTaskDefinitionReadEnvelopeV1Schema,
       defaultErrorPrefix: `GET /api/protected/tasks/${id}/definition`,
+    });
+  }
+
+  async getProtectedTaskRunResultEnvelopeV1(
+    taskId: string,
+    taskRunId: string,
+  ): Promise<ProtectedTaskRunResultReadEnvelopeV1> {
+    const id = z.string().uuid().parse(taskId);
+    const runId = z.string().uuid().parse(taskRunId);
+    return this.request<ProtectedTaskRunResultReadEnvelopeV1>({
+      method: "GET",
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/result`,
+      schema: protectedTaskRunResultReadEnvelopeV1Schema,
+      defaultErrorPrefix:
+        `GET /api/protected/tasks/${id}/runs/${runId}/result`,
     });
   }
 

@@ -524,6 +524,65 @@ export const protectedTaskDefinitionReadEnvelopeV1Schema = z.discriminatedUnion(
   ],
 );
 
+const protectedTaskRunResultReadReferenceV1Fields = {
+  readVersion: z.literal(1),
+  taskId: canonicalLowerUuid,
+  taskRunId: canonicalLowerUuid,
+  objectId: portableId,
+  resultRevision: z.literal(1),
+  cryptoAccessRevision: counter,
+};
+
+const protectedTaskRunResultReadReadyEnvelopeV1Schema = z.object({
+  ...protectedTaskRunResultReadReferenceV1Fields,
+  status: z.literal("ready"),
+  cryptoAccessRevision: z.literal(0),
+  namespaceId: canonicalLowerUuid,
+  encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
+  accessManifestBytesBase64url: accessManifestBase64url,
+  accessManifestProofBytesBase64url: z.tuple([]),
+  namespaceEnvelopeBytesBase64url: namespaceEnvelopeBase64url,
+  signerEvidence: z.array(taskAccessSignerEvidenceV1Schema).superRefine((entries, context) => {
+    if (
+      entries.length !== 1
+      || entries[0]?.kind !== "agent_runtime_publication"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Task result requires one Agent Runtime signer publication",
+      });
+    }
+  }),
+}).strict();
+
+const protectedTaskRunResultReadWaitingEnvelopeV1Schema = z.object({
+  ...protectedTaskRunResultReadReferenceV1Fields,
+  status: z.literal("waiting"),
+  cryptoAccessRevision: z.literal(0),
+  reason: z.literal("result_not_mapped"),
+}).strict();
+
+const protectedTaskRunResultReadUnavailableEnvelopeV1Schema = z.object({
+  ...protectedTaskRunResultReadReferenceV1Fields,
+  status: z.literal("unavailable"),
+  reason: z.enum([
+    "result_not_protected",
+    "authority_changed",
+    "unsupported_crypto_access_revision",
+    "integrity_failure",
+  ]),
+}).strict();
+
+/** Exact opaque TaskRun result transport. No ordinary result sibling is valid. */
+export const protectedTaskRunResultReadEnvelopeV1Schema = z.discriminatedUnion(
+  "status",
+  [
+    protectedTaskRunResultReadReadyEnvelopeV1Schema,
+    protectedTaskRunResultReadWaitingEnvelopeV1Schema,
+    protectedTaskRunResultReadUnavailableEnvelopeV1Schema,
+  ],
+);
+
 export type ProtectedTaskPreparedCreateRequestV1 = z.infer<
   typeof protectedTaskPreparedCreateRequestV1Schema
 >;
@@ -550,4 +609,10 @@ export type ProtectedTaskDefinitionReadEnvelopeV1 = z.infer<
 >;
 export type ProtectedTaskDefinitionReadReadyEnvelopeV1 = z.infer<
   typeof protectedTaskDefinitionReadReadyEnvelopeV1Schema
+>;
+export type ProtectedTaskRunResultReadEnvelopeV1 = z.infer<
+  typeof protectedTaskRunResultReadEnvelopeV1Schema
+>;
+export type ProtectedTaskRunResultReadReadyEnvelopeV1 = z.infer<
+  typeof protectedTaskRunResultReadReadyEnvelopeV1Schema
 >;

@@ -26,6 +26,7 @@ function occurrence(): ProtectedTaskOccurrence {
       requestorId: REQUESTOR_ID,
       agentId: AGENT_ID,
       callingRoomId: ROOM_ID,
+      scheduleKind: "now" as const,
       contentRepresentation: "protected" as const,
       contentNamespaceId: "namespace-1",
       contentRevision: 2,
@@ -57,6 +58,7 @@ function claimed(
       resultObjectId: RESULT_OBJECT_ID,
       authorizationRequestId: `task-run-authorization:${RUN_ID}`,
       policyRevision: 7,
+      executionSegment: 1,
     }),
     scheduling: Object.freeze({
       ownerId: OWNER_ID,
@@ -68,12 +70,18 @@ function claimed(
     }),
     executor,
     candidate: Object.freeze({
+      start: async () => ({ status: "started" as const }),
       run: async <T>(work: (
         input: Record<string, unknown>,
         signal: AbortSignal,
+        publication: Readonly<{
+          publish(payload: import("@nautilo/lattice-bridge").TaskRunResultPayloadV1): Promise<void>;
+          awaitPublished(): Promise<boolean>;
+        }>,
       ) => Promise<T>) => work(
         { message: "transient" },
         new AbortController().signal,
+        { publish: async () => {}, awaitPublished: async () => true },
       ),
       onIneligible,
     }),

@@ -42,7 +42,12 @@ function replaceFirst(
   throw new Error("test pattern not found");
 }
 
-async function fixture(work: "task.dispatch" | "task.execute" = "task.execute") {
+async function fixture(
+  work:
+    | "task.dispatch"
+    | "task.execute"
+    | "task.await_reply_resume" = "task.execute",
+) {
   const crypto = new LatticeCrypto(seededRng(807_503), { now: () => NOW });
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x51));
   const plan = createDomainForegroundAuthorizationPlanV2(crypto, {
@@ -96,7 +101,11 @@ async function fixture(work: "task.dispatch" | "task.execute" = "task.execute") 
 }
 
 describe("Task Runtime background authorization request v1", () => {
-  test.each(["task.dispatch", "task.execute"] as const)(
+  test.each([
+    "task.dispatch",
+    "task.execute",
+    "task.await_reply_resume",
+  ] as const)(
     "round-trips canonical %s requests",
     async (work) => {
       const value = await fixture(work);

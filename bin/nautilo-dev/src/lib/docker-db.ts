@@ -434,6 +434,7 @@ export const DATA_TABLES = [
   "public.task_run_result_crypto_revisions",
   "public.tasks",
   "public.task_runs",
+  "public.protected_task_run_output_bindings",
   // Pending/recoverable Plan input references the Task, run, Job,
   // Room, and Codex binding, so every parent must be restored first.
   "public.codex_user_input_requests",

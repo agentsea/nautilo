@@ -436,6 +436,92 @@ export interface PendingGraphInterrupt {
   readonly value: Record<string, unknown>;
 }
 
+export type ProtectedTaskInterruptKind =
+  | "approval"
+  | "prove_it"
+  | "identity"
+  | "await_reply";
+
+export type ProtectedTaskInterruptCoordinate = Readonly<{
+  id: string;
+  kind: ProtectedTaskInterruptKind;
+  requestId?: string;
+}>;
+
+function protectedInterruptRequestId(
+  value: Record<string, unknown>,
+  field: "approvalId" | "challengeId",
+): string | undefined {
+  const candidate = value[field];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "string" || candidate.trim().length === 0) {
+    throw new TypeError("Protected Task interrupt has an invalid request id");
+  }
+  return candidate;
+}
+
+/**
+ * Extract the content-free coordinates needed to resume a protected Task.
+ * The interrupt value stays in the live runner and must not be persisted.
+ */
+export function protectedTaskInterruptCoordinates(
+  graphState: { tasks?: Array<Record<string, unknown>> } | undefined,
+): readonly ProtectedTaskInterruptCoordinate[] {
+  const coordinates: ProtectedTaskInterruptCoordinate[] = [];
+  const seenIds = new Set<string>();
+
+  for (const task of graphState?.tasks ?? []) {
+    const interrupts = task["interrupts"];
+    if (interrupts === undefined) continue;
+    if (!Array.isArray(interrupts)) {
+      throw new TypeError("Protected Task interrupt collection is malformed");
+    }
+
+    for (const candidate of interrupts) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        throw new TypeError("Protected Task interrupt is malformed");
+      }
+      const interrupt = candidate as Record<string, unknown>;
+      const id = interrupt["id"];
+      if (typeof id !== "string" || id.trim().length === 0 || seenIds.has(id)) {
+        throw new TypeError("Protected Task interrupt requires one unique id");
+      }
+      const value = interrupt["value"];
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new TypeError("Protected Task interrupt value is malformed");
+      }
+      const record = value as Record<string, unknown>;
+      const type = record["type"];
+      let coordinate: ProtectedTaskInterruptCoordinate;
+      if (type === "approval_ask") {
+        const requestId = protectedInterruptRequestId(record, "approvalId");
+        if (requestId === undefined) {
+          throw new TypeError("Protected Task approval interrupt requires a request id");
+        }
+        coordinate = Object.freeze({ id, kind: "approval", requestId });
+      } else if (type === "prove_it_challenge") {
+        coordinate = Object.freeze({ id, kind: "prove_it" });
+      } else if (type === "identity_challenge") {
+        const requestId = protectedInterruptRequestId(record, "challengeId");
+        coordinate = Object.freeze({
+          id,
+          kind: "identity",
+          ...(requestId === undefined ? {} : { requestId }),
+        });
+      } else if (type === "await_human_reply") {
+        coordinate = Object.freeze({ id, kind: "await_reply" });
+      } else {
+        throw new TypeError("Protected Task interrupt type is unsupported");
+      }
+      seenIds.add(id);
+      coordinates.push(coordinate);
+    }
+  }
+
+  coordinates.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  return Object.freeze(coordinates);
+}
+
 function pendingGraphInterrupts(
   graphState: { tasks?: Array<Record<string, unknown>> } | undefined,
 ): PendingGraphInterrupt[] {

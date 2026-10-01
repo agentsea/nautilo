@@ -4,16 +4,31 @@ import {
   TaskRuntimeRecipientRegistry,
   type DomainForegroundSecretEntry,
   type TaskRuntimeRecipientAttempt,
+  type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
+import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
-import type {
-  DomainForegroundAuthorizationPublicCurrentAuthorityV2,
+import {
+  destroyDomainForegroundAuthorizationPlanV2,
+  parseDomainForegroundAuthorizationPlanV2,
+  type DomainForegroundAuthorizationPlanV2,
+  type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
+import type {
+  StartProtectedTaskRunInput,
+  StartProtectedTaskRunResult,
+} from "@nautilo/db";
+import {
+  deriveTaskContentCryptoObjectIdV1,
+} from "@nautilo/lattice-bridge";
+import type {
+  CurrentTaskRuntimeAuthority,
+} from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../job";
 import type {
@@ -30,8 +45,12 @@ import type {
 import type { ProtectedTaskOccurrence } from "../../tasks/task-observer";
 import {
   BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
   claimBackgroundAuthorizationRequest,
+  completeBackgroundAuthorizationRequest,
+  failBackgroundAuthorizationRequest,
+  markBackgroundAuthorizationRunning,
 } from "./lifecycle";
 import type {
   BackgroundAuthorizationRecord,
@@ -39,14 +58,62 @@ import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "./repository";
 
+type HeldTaskRuntimeAuthority = Readonly<{
+  foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+  namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+}>;
+
 type CurrentTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   occurrence: ProtectedTaskOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   use(
-    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2,
+    current: HeldTaskRuntimeAuthority,
   ): Value | Promise<Value>;
 }>) => Promise<Value | null>;
+
+export type TaskRuntimeRecipientDeviceBinding = Readonly<{
+  userId: string;
+  humanActorId: string;
+  deviceId: string;
+}>;
+
+export type TaskRuntimeRecipientCurrentAuthority = Readonly<{
+  device: CurrentTaskRuntimeAuthority["device"];
+  domains: CurrentTaskRuntimeAuthority["domains"];
+  namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+  policyRevision: number;
+  sourceRoomId: string;
+}>;
+
+export type TaskRuntimeRecipientAuthorityPort = <Value>(input: Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  binding: TaskRuntimeRecipientDeviceBinding;
+  use(
+    current: TaskRuntimeRecipientCurrentAuthority,
+  ): Value | Promise<Value>;
+}>) => Promise<Value | null>;
+
+export type BindTaskRuntimeRecipientResult = Readonly<{
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  requestBytes: Uint8Array;
+}> | null;
+
+type TaskRuntimeResultBinding = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  contentRevision: 1;
+  objectId: string;
+  signerAgentId: string;
+  namespace: Readonly<{
+    namespaceId: string;
+    domainId: string;
+    operations: readonly ["encrypt"];
+    expectedAccessRevision: number;
+    expectedPolicyRevision: number;
+  }>;
+}>;
 
 export type TaskRuntimeGrantClaimPlan = Readonly<{
   initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -54,6 +121,9 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   scheduling: ProtectedTaskJobSchedulingFacts;
   executor: JobExecutor;
   modelAttribution?: "external";
+  startProtectedTaskRun(
+    input: StartProtectedTaskRunInput,
+  ): Promise<StartProtectedTaskRunResult>;
   recipientAttempt(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
@@ -61,13 +131,24 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   buildRequest(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     attempt: TaskRuntimeRecipientAttempt;
+    binding: TaskRuntimeRecipientDeviceBinding;
+    authority: TaskRuntimeRecipientCurrentAuthority;
   }>): TaskRuntimeBackgroundAuthorizationRequestV1;
   openTransientInput(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     domains: readonly DomainForegroundSecretEntry[];
+    evidence: TaskRuntimeExecutionEvidence;
     signal: AbortSignal;
   }>): Promise<Record<string, unknown>>;
+  publishResult(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    payload: TaskRunResultPayloadV1;
+    domains: readonly DomainForegroundSecretEntry[];
+    evidence: TaskRuntimeExecutionEvidence;
+    signal: AbortSignal;
+  }>): Promise<void>;
 }>;
 
 export interface TaskRuntimeGrantClaimDependencies {
@@ -100,24 +181,94 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
+function sameDomainAuthority(
+  left: DomainForegroundAuthorizationPlanV2["domains"][number],
+  right: DomainForegroundAuthorizationPlanV2["domains"][number],
+): boolean {
+  return left.domainId === right.domainId
+    && left.sourceNamespaceId === right.sourceNamespaceId
+    && sameBytes(left.participantDigest, right.participantDigest)
+    && left.participantCount === right.participantCount
+    && left.keyClass === right.keyClass
+    && left.domainKeyGeneration === right.domainKeyGeneration
+    && left.authorizationRevision === right.authorizationRevision
+    && sameBytes(left.headDigest, right.headDigest)
+    && sameBytes(
+      left.activeNamespaceBindingSetDigest,
+      right.activeNamespaceBindingSetDigest,
+    )
+    && left.activeNamespaceBindingCount === right.activeNamespaceBindingCount;
+}
+
+function recipientAuthorityIsCurrent(input: Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  binding: TaskRuntimeRecipientDeviceBinding;
+  authority: TaskRuntimeRecipientCurrentAuthority;
+}>): boolean {
+  const { binding, authority, record } = input;
+  const namespaces = authority.namespaceRequirements;
+  const durableNamespaces = record.authoritySet.namespaceRequirements;
+  const durableDomains = record.authoritySet.domainRequirements;
+  return binding.userId === input.occurrence.task.requestorId
+    && authority.device.userId === binding.userId
+    && authority.device.humanActorId === binding.humanActorId
+    && authority.device.deviceId === binding.deviceId
+    && authority.policyRevision === record.expectedPolicyRevision
+    && namespaces.length === durableNamespaces.length
+    && namespaces.every((current, index) => {
+      const durable = durableNamespaces[index];
+      return durable !== undefined
+        && current.ordinal === durable.ordinal
+        && current.namespaceId === durable.namespaceId
+        && current.domainId === durable.domainId
+        && current.operations.length === durable.operations.length
+        && current.operations.every((operation, operationIndex) =>
+          operation === durable.operations[operationIndex])
+        && current.expectedAccessRevision === durable.expectedAccessRevision
+        && current.expectedPolicyRevision === durable.expectedPolicyRevision;
+    })
+    && authority.domains.length === durableDomains.length
+    && authority.domains.every((current, index) => {
+      const durable = durableDomains[index];
+      return durable !== undefined
+        && current.domainId === durable.domainId
+        && current.domainKeyGeneration === durable.expectedEpoch
+        && current.authorizationRevision
+          === durable.expectedAuthorizationRevision;
+    });
+}
+
 function exactOccurrenceRecord(
   occurrence: ProtectedTaskOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
-  return record.snapshot.workId === occurrence.run.id
+  const contentRequirements = record.authoritySet.namespaceRequirements.filter(
+    (requirement) =>
+      requirement.namespaceId === occurrence.task.contentNamespaceId,
+  );
+  const content = contentRequirements[0];
+  return occurrence.task.cryptoAccessRevision === 0
+    && occurrence.task.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
+      kind: "definition",
+      taskId: occurrence.task.id,
+      contentRevision: occurrence.task.contentRevision,
+    })
+    && record.snapshot.workId === occurrence.run.id
     && record.snapshot.namespaceId === occurrence.task.contentNamespaceId
     && record.workKind === "task.execute"
     && record.purpose === "task.execute"
     && record.processorAuthorizationRevision === null
     && record.expectedDomainEpoch !== null
-    && record.authoritySet.namespaceRequirements.some((requirement) =>
-      requirement.namespaceId === occurrence.task.contentNamespaceId
-      && requirement.expectedAccessRevision
-        === occurrence.task.cryptoAccessRevision)
-    && record.authoritySet.namespaceRequirements.every((requirement) =>
-      requirement.operations.length === 2
-      && requirement.operations[0] === "decrypt"
-      && requirement.operations[1] === "encrypt");
+    && contentRequirements.length === 1
+    && content !== undefined
+    && content.domainId === record.domainId
+    && content.expectedAccessRevision
+      === record.expectedNamespaceAccessRevision
+    && content.expectedPolicyRevision === record.expectedPolicyRevision
+    && content.operations.length === 2
+    && content.operations[0] === "decrypt"
+    && content.operations[1] === "encrypt";
 }
 
 function sameDurablePlan(
@@ -147,8 +298,25 @@ function sameDurablePlan(
 function assertPlan(
   occurrence: ProtectedTaskOccurrence,
   plan: TaskRuntimeGrantClaimPlan,
-): void {
+): TaskRuntimeResultBinding {
   const initial = plan.initialRecord;
+  const resultObjectId = deriveTaskContentCryptoObjectIdV1({
+    kind: "run_result",
+    taskId: occurrence.task.id,
+    taskRunId: occurrence.run.id,
+    contentRevision: 1,
+  });
+  const outputNamespaces = initial.authoritySet?.namespaceRequirements.filter(
+    (requirement) =>
+      requirement.namespaceId === occurrence.task.contentNamespaceId,
+  ) ?? [];
+  const outputNamespace = outputNamespaces[0];
+  const outputDomains = outputNamespace === undefined
+    ? []
+    : initial.authoritySet?.domainRequirements.filter((requirement) =>
+      requirement.domainId === outputNamespace.domainId
+    ) ?? [];
+  const outputDomain = outputDomains[0];
   if (
     !isTaskRuntimeRecord(initial)
     || !exactOccurrenceRecord(occurrence, initial)
@@ -164,6 +332,7 @@ function assertPlan(
     || initial.finishedAt !== null
     || plan.reference.taskId !== occurrence.task.id
     || plan.reference.taskRunId !== occurrence.run.id
+    || plan.reference.resultObjectId !== resultObjectId
     || plan.reference.inputObjectId !== occurrence.task.cryptoObjectId
     || plan.reference.authorizationRequestId !== initial.snapshot.requestId
     || plan.reference.policyRevision !== initial.expectedPolicyRevision
@@ -172,9 +341,116 @@ function assertPlan(
     || plan.scheduling.agentId !== occurrence.task.agentId
     || plan.scheduling.callingRoomId !== occurrence.task.callingRoomId
     || plan.scheduling.graphThreadId !== occurrence.run.graphThreadId
+    || outputNamespaces.length !== 1
+    || outputNamespace === undefined
+    || outputNamespace.domainId !== initial.domainId
+    || outputNamespace.operations.length !== 2
+    || outputNamespace.operations[0] !== "decrypt"
+    || outputNamespace.operations[1] !== "encrypt"
+    || outputNamespace.expectedAccessRevision
+      !== initial.expectedNamespaceAccessRevision
+    || outputNamespace.expectedPolicyRevision !== initial.expectedPolicyRevision
+    || outputDomains.length !== 1
+    || outputDomain === undefined
+    || outputDomain.expectedEpoch !== initial.expectedDomainEpoch
     || typeof plan.executor !== "function"
+    || typeof plan.startProtectedTaskRun !== "function"
     || typeof plan.openTransientInput !== "function"
+    || typeof plan.publishResult !== "function"
   ) throw new TypeError("Task Runtime grant plan disagrees with its occurrence");
+  return Object.freeze({
+    taskId: occurrence.task.id,
+    taskRunId: occurrence.run.id,
+    contentRevision: 1 as const,
+    objectId: resultObjectId,
+    signerAgentId: occurrence.task.agentId,
+    namespace: Object.freeze({
+      namespaceId: outputNamespace.namespaceId,
+      domainId: outputNamespace.domainId,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: outputNamespace.expectedAccessRevision,
+      expectedPolicyRevision: outputNamespace.expectedPolicyRevision,
+    }),
+  });
+}
+
+function resultBindingMatchesRecord(
+  result: TaskRuntimeResultBinding,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  const namespaces = record.authoritySet.namespaceRequirements.filter(
+    (requirement) => requirement.namespaceId === result.namespace.namespaceId,
+  );
+  const namespace = namespaces[0];
+  const domains = record.authoritySet.domainRequirements.filter(
+    (requirement) => requirement.domainId === result.namespace.domainId,
+  );
+  const domain = domains[0];
+  return record.snapshot.workId === result.taskRunId
+    && record.snapshot.namespaceId === result.namespace.namespaceId
+    && record.domainId === result.namespace.domainId
+    && record.expectedNamespaceAccessRevision
+      === result.namespace.expectedAccessRevision
+    && record.expectedPolicyRevision === result.namespace.expectedPolicyRevision
+    && namespaces.length === 1
+    && namespace !== undefined
+    && namespace.domainId === result.namespace.domainId
+    && namespace.operations.length === 2
+    && namespace.operations[0] === "decrypt"
+    && namespace.operations[1] === "encrypt"
+    && namespace.expectedAccessRevision
+      === result.namespace.expectedAccessRevision
+    && namespace.expectedPolicyRevision
+      === result.namespace.expectedPolicyRevision
+    && domains.length === 1
+    && domain !== undefined
+    && domain.expectedEpoch === record.expectedDomainEpoch;
+}
+
+function currentMatchesResult(
+  result: TaskRuntimeResultBinding,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  current: HeldTaskRuntimeAuthority,
+): boolean {
+  const namespaces = current.namespaceRequirements.filter((requirement) =>
+    requirement.namespaceId === result.namespace.namespaceId
+  );
+  const namespace = namespaces[0];
+  const domains = current.foreground.domains.filter((domain) =>
+    domain.domainId === result.namespace.domainId
+  );
+  const domain = domains[0];
+  const durableDomains = record.authoritySet.domainRequirements.filter(
+    (requirement) => requirement.domainId === result.namespace.domainId,
+  );
+  const durableNamespaces = record.authoritySet.namespaceRequirements.filter(
+    (requirement) => requirement.namespaceId === result.namespace.namespaceId,
+  );
+  const durableDomain = durableDomains[0];
+  const durableNamespace = durableNamespaces[0];
+  return resultBindingMatchesRecord(result, record)
+    && current.foreground.policyRevision
+      === result.namespace.expectedPolicyRevision
+    && namespaces.length === 1
+    && namespace !== undefined
+    && durableNamespaces.length === 1
+    && durableNamespace !== undefined
+    && namespace.ordinal === durableNamespace.ordinal
+    && namespace.domainId === result.namespace.domainId
+    && namespace.operations.length === 2
+    && namespace.operations[0] === "decrypt"
+    && namespace.operations[1] === "encrypt"
+    && namespace.expectedAccessRevision
+      === result.namespace.expectedAccessRevision
+    && namespace.expectedPolicyRevision
+      === result.namespace.expectedPolicyRevision
+    && domains.length === 1
+    && domain !== undefined
+    && durableDomains.length === 1
+    && durableDomain !== undefined
+    && domain.domainKeyGeneration === durableDomain.expectedEpoch
+    && domain.authorizationRevision
+      === durableDomain.expectedAuthorizationRevision;
 }
 
 function exactRequest(
@@ -192,6 +468,54 @@ function exactRequest(
     && sameBytes(request.recipientPublicKey, attempt.recipientPublicKey)
     && request.deadlineAt === attempt.expiresAt
     && request.issuedAt < request.deadlineAt;
+}
+
+function exactBoundRequest(input: Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  attempt: TaskRuntimeRecipientAttempt;
+  binding: TaskRuntimeRecipientDeviceBinding;
+  authority: TaskRuntimeRecipientCurrentAuthority;
+  request: TaskRuntimeBackgroundAuthorizationRequestV1;
+  now: number;
+}>): boolean {
+  if (!exactRequest(input.record, input.attempt, input.request)) return false;
+  const plan = parseDomainForegroundAuthorizationPlanV2(
+    input.request.authorizationPlanBytes,
+  );
+  if (plan === null) return false;
+  try {
+    return input.request.sourceRoomId === input.authority.sourceRoomId
+      && input.request.episodeId === plan.sessionId
+      && plan.roomId === input.authority.sourceRoomId
+      && input.request.issuedAt === plan.issuedAt
+      && input.request.deadlineAt === plan.deadlineAt
+      && input.request.issuedAt <= input.now
+      && plan.authorizationId === input.record.snapshot.requestId
+      && plan.policyRevision === input.record.expectedPolicyRevision
+      && plan.policyRevision === input.authority.policyRevision
+      && plan.subjectHumanId === input.binding.humanActorId
+      && plan.committerDeviceId === input.binding.deviceId
+      && plan.committerDeviceSigningGeneration
+        === input.authority.device.deviceGeneration
+      && plan.hostAuthorizationRevision
+        === input.authority.device.securityRevision
+      && plan.recipientKind === "runtime"
+      && plan.recipientPrincipalId === "nautilo_task_runtime"
+      && plan.recipientAuthorizationRevision === 0
+      && plan.recipientRuntimeGeneration === input.attempt.recipientGeneration
+      && plan.recipientKeyId === input.attempt.recipientKeyId
+      && plan.operations.length === 2
+      && plan.operations[0] === "decrypt"
+      && plan.operations[1] === "encrypt"
+      && plan.domains.length === input.authority.domains.length
+      && plan.domains.every((domain, index) => {
+        const current = input.authority.domains[index];
+        return current !== undefined && sameDomainAuthority(domain, current);
+      });
+  } finally {
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+  }
 }
 
 function activeRecipient(
@@ -291,20 +615,73 @@ function createCandidate(input: Readonly<{
   plan: TaskRuntimeGrantClaimPlan;
   dependencies: TaskRuntimeGrantClaimDependencies;
   claimId: string;
+  result: TaskRuntimeResultBinding;
 }>): ProtectedTaskExecutionCandidate {
-  let state: "ready" | "running" | "finished" = "ready";
+  let state: "ready" | "starting" | "started" | "running" | "finished" =
+    "ready";
+  let released = false;
   const release = (): void => {
+    if (released) return;
+    released = true;
     input.dependencies.recipients.delete(
       input.claimed.snapshot.requestId,
       input.claimed.snapshot.recipientGeneration,
     );
   };
   return Object.freeze({
+    async start(jobId: string): Promise<StartProtectedTaskRunResult> {
+      if (state !== "ready") {
+        throw new Error("Task Runtime execution candidate is one-use");
+      }
+      state = "starting";
+      try {
+        const result = await input.plan.startProtectedTaskRun({
+          taskId: input.occurrence.task.id,
+          taskRunId: input.occurrence.run.id,
+          graphThreadId: input.occurrence.run.graphThreadId,
+          jobId,
+          contentRepresentation:
+            input.occurrence.task.contentRepresentation,
+          contentNamespaceId: input.occurrence.task.contentNamespaceId,
+          contentRevision: input.occurrence.task.contentRevision,
+          cryptoObjectId: input.occurrence.task.cryptoObjectId,
+          cryptoAccessRevision: input.occurrence.task.cryptoAccessRevision,
+          cryptoRequiredNamespaceFingerprint:
+            input.occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
+          jobReference: input.plan.reference,
+        });
+        if (state !== "starting") {
+          release();
+          return Object.freeze({ status: "stale" as const });
+        }
+        if (result.status === "stale") {
+          state = "finished";
+          release();
+          return result;
+        }
+        if (result.status !== "started") {
+          throw new TypeError("Task Runtime start returned an invalid result");
+        }
+        state = "started";
+        return result;
+      } catch (error) {
+        state = "finished";
+        release();
+        throw error;
+      }
+    },
     async run<Value>(work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
+      publication: Readonly<{
+        publish(payload: TaskRunResultPayloadV1): Promise<void>;
+        awaitPublished(): Promise<boolean>;
+      }>,
     ) => Promise<Value>): Promise<Value> {
-      if (state !== "ready") {
+      if (state === "ready") {
+        throw new Error("Task Runtime execution candidate has not started");
+      }
+      if (state !== "started") {
         throw new Error("Task Runtime execution candidate is one-use");
       }
       state = "running";
@@ -320,6 +697,7 @@ function createCandidate(input: Readonly<{
           || current.snapshot.claimExpiresAt === null
           || current.acceptedMaterial === null
           || !exactOccurrenceRecord(input.occurrence, current)
+          || !resultBindingMatchesRecord(input.result, current)
         ) throw new Error("Task Runtime durable claim is no longer current");
         const request = requestFromRecord(current);
         if (request === null) {
@@ -330,8 +708,21 @@ function createCandidate(input: Readonly<{
             occurrence: input.occurrence,
             record: current,
             request,
-            use: (held) => currentMatchesRequest(held, request)
-              ? copyCurrentAuthority(held)
+            use: (held) => currentMatchesRequest(held.foreground, request)
+                && currentMatchesResult(input.result, current, held)
+              ? Object.freeze({
+                foreground: copyCurrentAuthority(held.foreground),
+                namespaceRequirements: Object.freeze(
+                  held.namespaceRequirements.map((requirement) => Object.freeze({
+                    ordinal: requirement.ordinal,
+                    namespaceId: requirement.namespaceId,
+                    domainId: requirement.domainId,
+                    operations: Object.freeze([...requirement.operations]),
+                    expectedAccessRevision: requirement.expectedAccessRevision,
+                    expectedPolicyRevision: requirement.expectedPolicyRevision,
+                  })),
+                ),
+              })
               : null,
           });
           if (authority === null) {
@@ -346,16 +737,105 @@ function createCandidate(input: Readonly<{
               claimId: input.claimId,
               claimExpiresAt: current.snapshot.claimExpiresAt,
               authorizationBytes: current.acceptedMaterial.responseBytes,
-              current: authority,
-              operation: async (domains, signal) => {
+              current: authority.foreground,
+              currentNamespaceRequirements: authority.namespaceRequirements,
+              result: input.result,
+              operation: async (domains, signal, evidence) => {
                 const transientInput = await input.plan.openTransientInput({
                   occurrence: input.occurrence,
                   record: current,
                   domains,
+                  evidence,
                   signal,
                 });
                 signal.throwIfAborted();
-                return work(transientInput, signal);
+                const runningAt = input.dependencies.now?.() ?? Date.now();
+                const runningRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+                  ...current,
+                  snapshot: markBackgroundAuthorizationRunning(
+                    current.snapshot,
+                    runningAt,
+                  ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+                };
+                const running = await input.dependencies.repository.compareAndSwap({
+                  expectedRequestRevision: current.snapshot.requestRevision,
+                  next: runningRecord,
+                });
+                const storedRunning = running.status === "updated"
+                  ? running.record
+                  : null;
+                if (
+                  storedRunning === null
+                  || !isTaskRuntimeRecord(storedRunning)
+                  || storedRunning.snapshot.state !== "running"
+                  || storedRunning.snapshot.claimId !== input.claimId
+                  || !exactOccurrenceRecord(input.occurrence, storedRunning)
+                ) {
+                  throw new Error("Task Runtime execution start could not be recorded");
+                }
+                let publicationCalls = 0;
+                let publicationCompleted = false;
+                let publicationOpen = true;
+                const pendingPublications: Promise<void>[] = [];
+                const publication = Object.freeze({
+                  publish: (payload: TaskRunResultPayloadV1): Promise<void> => {
+                    if (!publicationOpen || publicationCalls !== 0) {
+                      throw new Error("Task Runtime result publication is one-use");
+                    }
+                    publicationCalls += 1;
+                    signal.throwIfAborted();
+                    const pending = input.plan.publishResult({
+                      occurrence: input.occurrence,
+                      record: storedRunning,
+                      payload,
+                      domains,
+                      evidence,
+                      signal,
+                    }).then(() => {
+                      publicationCompleted = true;
+                    });
+                    pendingPublications.push(pending);
+                    return pending;
+                  },
+                  awaitPublished: async (): Promise<boolean> => {
+                    await Promise.all(pendingPublications);
+                    return publicationCalls === 1 && publicationCompleted;
+                  },
+                });
+                try {
+                  const result = await work(transientInput, signal, publication);
+                  await Promise.all(pendingPublications);
+                  signal.throwIfAborted();
+                  if (publicationCalls === 1) {
+                    const completedAt = input.dependencies.now?.() ?? Date.now();
+                    const completedRecord:
+                      BackgroundAuthorizationTaskRuntimeRecordV3 = {
+                        ...storedRunning,
+                        snapshot: completeBackgroundAuthorizationRequest(
+                          storedRunning.snapshot,
+                          completedAt,
+                        ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+                        finishedAt: completedAt,
+                      };
+                    const completed = await input.dependencies.repository
+                      .compareAndSwap({
+                        expectedRequestRevision:
+                          storedRunning.snapshot.requestRevision,
+                        next: completedRecord,
+                      });
+                    if (completed.status !== "updated") {
+                      throw new Error(
+                        "Task Runtime execution completion could not be recorded",
+                      );
+                    }
+                  }
+                  return result;
+                } catch (error) {
+                  await Promise.allSettled(pendingPublications);
+                  throw error;
+                } finally {
+                  publicationOpen = false;
+                }
               },
             });
             if (opened.status !== "opened") {
@@ -363,7 +843,7 @@ function createCandidate(input: Readonly<{
             }
             return opened.value;
           } finally {
-            destroyCurrentAuthority(authority);
+            destroyCurrentAuthority(authority.foreground);
           }
         } finally {
           destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
@@ -374,7 +854,7 @@ function createCandidate(input: Readonly<{
       }
     },
     onIneligible(): void {
-      if (state !== "ready") return;
+      if (state === "running" || state === "finished") return;
       state = "finished";
       release();
     },
@@ -394,11 +874,145 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
     this.#claimId = dependencies.claimId ?? randomUUID;
   }
 
+  async bindAwaitingRecipientForDevice(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    binding: TaskRuntimeRecipientDeviceBinding;
+    withCurrentAuthority: TaskRuntimeRecipientAuthorityPort;
+  }>): Promise<BindTaskRuntimeRecipientResult> {
+    if (input.binding.userId !== input.occurrence.task.requestorId) {
+      return null;
+    }
+    const plan = await this.dependencies.plan(input.occurrence);
+    assertPlan(input.occurrence, plan);
+    const durable = await this.dependencies.repository.get(
+      plan.initialRecord.snapshot.requestId,
+    );
+    if (
+      durable === null
+      || !isTaskRuntimeRecord(durable)
+      || !exactOccurrenceRecord(input.occurrence, durable)
+      || !sameDurablePlan(durable, plan.initialRecord)
+    ) throw new TypeError("Task Runtime durable record was substituted");
+    if (
+      durable.snapshot.state !== "awaiting_recipient"
+      || durable.snapshot.recipient !== null
+      || durable.snapshot.descriptorDigest !== null
+      || durable.descriptorBytes !== null
+    ) {
+      return null;
+    }
+    let used = false;
+    const bound = await input.withCurrentAuthority({
+      occurrence: input.occurrence,
+      record: durable,
+      binding: input.binding,
+      use: async (authority) => {
+        if (used) throw new TypeError("Task Runtime recipient binder is one-use");
+        used = true;
+        if (!recipientAuthorityIsCurrent({
+          occurrence: input.occurrence,
+          record: durable,
+          binding: input.binding,
+          authority,
+        })) return null;
+        const now = this.#now();
+        const recipient = plan.recipientAttempt({ record: durable, now });
+        const attempt = await this.dependencies.recipients.createAttempt({
+          requestId: durable.snapshot.requestId,
+          workId: durable.snapshot.workId,
+          recipientGeneration: durable.snapshot.recipientGeneration,
+          recipientKeyId: recipient.recipientKeyId,
+          expiresAt: recipient.expiresAt,
+        });
+        if (attempt.status !== "created") return null;
+        let retain = false;
+        let request: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
+        try {
+          request = plan.buildRequest({
+            record: durable,
+            attempt: attempt.attempt,
+            binding: input.binding,
+            authority,
+          });
+          if (!exactBoundRequest({
+            occurrence: input.occurrence,
+            record: durable,
+            attempt: attempt.attempt,
+            binding: input.binding,
+            authority,
+            request,
+            now,
+          })) throw new TypeError("Task Runtime request was substituted");
+          const descriptorBytes =
+            encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+          const descriptorDigest = createHash("sha256")
+            .update(descriptorBytes)
+            .digest("hex");
+          const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+            ...durable,
+            snapshot: attachBackgroundAuthorizationRecipient(
+              durable.snapshot,
+              {
+                recipientGeneration: durable.snapshot.recipientGeneration,
+                descriptorDigest,
+                recipientKeyId: attempt.attempt.recipientKeyId,
+                recipientPublicKey: Buffer.from(
+                  attempt.attempt.recipientPublicKey,
+                ).toString("base64url"),
+                expiresAt: attempt.attempt.expiresAt,
+                now,
+              },
+            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+            descriptorBytes,
+          };
+          const stored = await this.dependencies.repository.compareAndSwap({
+            expectedRequestRevision: durable.snapshot.requestRevision,
+            next,
+          });
+          if (stored.status !== "updated") return null;
+          const storedRecipient = stored.record.snapshot.recipient;
+          if (
+            !isTaskRuntimeRecord(stored.record)
+            || !exactOccurrenceRecord(input.occurrence, stored.record)
+            || !sameDurablePlan(stored.record, plan.initialRecord)
+            || stored.record.snapshot.state !== "awaiting_device"
+            || stored.record.snapshot.descriptorDigest !== descriptorDigest
+            || stored.record.descriptorBytes === null
+            || !sameBytes(stored.record.descriptorBytes, descriptorBytes)
+            || storedRecipient === null
+            || storedRecipient.recipientKeyId
+              !== attempt.attempt.recipientKeyId
+            || storedRecipient.recipientPublicKey !== Buffer.from(
+              attempt.attempt.recipientPublicKey,
+            ).toString("base64url")
+            || storedRecipient.expiresAt !== attempt.attempt.expiresAt
+          ) throw new TypeError("Task Runtime recipient binding was substituted");
+          retain = true;
+          return Object.freeze({
+            record: stored.record,
+            requestBytes: descriptorBytes.slice(),
+          });
+        } finally {
+          if (request !== null) {
+            destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+          }
+          if (!retain) {
+            this.dependencies.recipients.delete(
+              durable.snapshot.requestId,
+              durable.snapshot.recipientGeneration,
+            );
+          }
+        }
+      },
+    });
+    return bound;
+  }
+
   async prepareOrClaimExact(
     occurrence: ProtectedTaskOccurrence,
   ): Promise<ClaimProtectedTaskOccurrenceResult> {
     const plan = await this.dependencies.plan(occurrence);
-    assertPlan(occurrence, plan);
+    const result = assertPlan(occurrence, plan);
     const existing = await this.dependencies.repository.get(
       plan.initialRecord.snapshot.requestId,
     );
@@ -410,70 +1024,86 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       || !sameDurablePlan(durable, plan.initialRecord)) {
       throw new TypeError("Task Runtime durable record was substituted");
     }
-    let current = durable;
+    const current = durable;
 
     if (current.snapshot.state === "awaiting_recipient") {
+      return Object.freeze({ status: "awaiting_authorization" as const });
+    }
+
+    if (current.snapshot.state === "awaiting_device"
+      || current.snapshot.state === "grant_ready") {
       const now = this.#now();
-      const recipient = plan.recipientAttempt({ record: current, now });
-      const attempt = await this.dependencies.recipients.createAttempt({
-        requestId: current.snapshot.requestId,
-        workId: current.snapshot.workId,
-        recipientGeneration: current.snapshot.recipientGeneration,
-        recipientKeyId: recipient.recipientKeyId,
-        expiresAt: recipient.expiresAt,
-      });
-      if (attempt.status !== "created") {
-        return Object.freeze({ status: "awaiting_authorization" as const });
-      }
-      let retain = false;
-      const request = plan.buildRequest({ record: current, attempt: attempt.attempt });
-      try {
-        if (!exactRequest(current, attempt.attempt, request)) {
-          throw new TypeError("Task Runtime request was substituted");
-        }
-        const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-          request,
-        );
-        const descriptorDigest = createHash("sha256")
-          .update(descriptorBytes)
-          .digest("hex");
+      const recipient = current.snapshot.recipient;
+      if (recipient !== null && (now >= recipient.expiresAt
+        || !activeRecipient(this.dependencies.recipients, current))) {
         const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
           ...current,
-          snapshot: attachBackgroundAuthorizationRecipient(current.snapshot, {
-            recipientGeneration: current.snapshot.recipientGeneration,
-            descriptorDigest,
-            recipientKeyId: attempt.attempt.recipientKeyId,
-            recipientPublicKey: Buffer.from(attempt.attempt.recipientPublicKey)
-              .toString("base64url"),
-            expiresAt: attempt.attempt.expiresAt,
-            now,
-          }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
-          descriptorBytes,
+          snapshot: advanceBackgroundAuthorizationGeneration(
+            current.snapshot,
+            {
+              reason: now >= recipient.expiresAt
+                ? "attempt_expired" : "recipient_lost",
+              now,
+              nextAttemptAt: now,
+            },
+          ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          descriptorBytes: null,
+          acceptedMaterial: null,
         };
-        const stored = await this.dependencies.repository.compareAndSwap({
+        const rotated = await this.dependencies.repository.compareAndSwap({
           expectedRequestRevision: current.snapshot.requestRevision,
           next,
         });
-        if (stored.status !== "updated" || !isTaskRuntimeRecord(stored.record)) {
-          return Object.freeze({ status: "awaiting_authorization" as const });
-        }
-        current = stored.record;
-        retain = true;
-      } finally {
-        destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
-        if (!retain) {
+        if (rotated.status === "updated") {
           this.dependencies.recipients.delete(
             current.snapshot.requestId,
             current.snapshot.recipientGeneration,
           );
         }
+        return Object.freeze({ status: "awaiting_authorization" as const });
+      }
+      if (current.snapshot.state === "awaiting_device") {
+        return Object.freeze({ status: "awaiting_authorization" as const });
       }
     }
-
-    if (current.snapshot.state === "awaiting_device") {
-      return Object.freeze({ status: "awaiting_authorization" as const });
-    }
     if (current.snapshot.state === "claimed" || current.snapshot.state === "running") {
+      const now = this.#now();
+      if (
+        current.snapshot.claimExpiresAt !== null
+        && now >= current.snapshot.claimExpiresAt
+      ) {
+        const wasRunning = current.snapshot.state === "running";
+        const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+          ...current,
+          snapshot: (wasRunning
+            ? failBackgroundAuthorizationRequest(
+              current.snapshot,
+              "provider_outcome_unknown",
+              now,
+            )
+            : advanceBackgroundAuthorizationGeneration(
+              current.snapshot,
+              { reason: "claim_expired", now, nextAttemptAt: now },
+            )) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          ...(wasRunning
+            ? { finishedAt: now }
+            : { descriptorBytes: null, acceptedMaterial: null }),
+        };
+        const expired = await this.dependencies.repository.compareAndSwap({
+          expectedRequestRevision: current.snapshot.requestRevision,
+          next,
+        });
+        if (expired.status === "updated") {
+          this.dependencies.recipients.delete(
+            current.snapshot.requestId,
+            current.snapshot.recipientGeneration,
+          );
+          return Object.freeze({
+            status: wasRunning ? "inactive" as const : "awaiting_authorization" as const,
+          });
+        }
+        return staleClaimResult(expired.current);
+      }
       return Object.freeze({ status: "already_claimed" as const });
     }
     if (
@@ -505,7 +1135,10 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         record: current,
         request,
         use: async (authority) => {
-          if (!currentMatchesRequest(authority, request)) return null;
+          if (
+            !currentMatchesRequest(authority.foreground, request)
+            || !currentMatchesResult(result, current, authority)
+          ) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
             ...current,
             snapshot: claimBackgroundAuthorizationRequest(
@@ -532,6 +1165,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         plan,
         dependencies: this.dependencies,
         claimId,
+        result,
       });
       const dispatch: ClaimedProtectedTaskOccurrence = Object.freeze({
         reference: plan.reference,

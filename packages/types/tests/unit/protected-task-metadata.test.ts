@@ -11,6 +11,7 @@ import {
   assertProtectedTaskOperationalMetadataProjectionV1,
   classifyProtectedTaskMetadataV1,
   isProtectedTaskOperationalMetadataProjectionV1,
+  reconstructProtectedTaskMetadataV1,
   type ProtectedTaskMetadataClassificationV1,
   type ProtectedTaskMetadataProjectionV1,
 } from "../../src/protected-task-metadata";
@@ -80,6 +81,133 @@ function codexExecution(overrides: Record<string, unknown> = {}) {
 }
 
 describe("protected Task metadata v1", () => {
+  test("reconstructs every recognized split without mutating either projection", () => {
+    const input = {
+      preparation: {
+        stage: "using_tools",
+        researchWork: { role: "investigator", subject: "Review access checks" },
+        taskRunId: "run-1",
+        updatedAt: "2026-09-21T10:00:00.000Z",
+      },
+      lastInterruption: {
+        code: "no_progress",
+        cause: "repeated_tool_failure",
+        stoppedBy: "no_progress_guard",
+        outcome: "errored",
+        observedAt: "2026-09-21T10:01:00.000Z",
+        taskRunId: "run-1",
+        graphThreadId: "thread-1",
+        checkpointId: null,
+        toolName: "private_repository_lookup",
+        operation: "read",
+        resumeRequiresValidation: true,
+      },
+      deepResearch: {
+        version: 1,
+        reportLanguage: "Portuguese",
+        modelPlan: modelPlan(),
+        invokingModelId: null,
+      },
+      writerReviewAwaiting: {
+        version: 1,
+        taskRunId: "run-1",
+        proposalId: "proposal-1",
+      },
+    };
+    const classified = supported(input);
+    const operationalBefore = structuredClone(classified.operational);
+    const protectedBefore = structuredClone(classified.protectedContent);
+
+    const reconstructed = reconstructProtectedTaskMetadataV1(
+      classified.operational,
+      classified.protectedContent,
+    );
+
+    expect(reconstructed).toEqual({ status: "supported", version: 1, metadata: input });
+    expect(classified.operational).toEqual(operationalBefore);
+    expect(classified.protectedContent).toEqual(protectedBefore);
+    expect(reconstructed.status === "supported" && Object.isFrozen(reconstructed.metadata)).toBe(true);
+  });
+
+  test("reconstructs top-level and execution splits", () => {
+    for (const input of [
+      {
+        execution: codexExecution({ workingDirectory: "/work/private-project" }),
+      },
+      {
+        target: "/work/repository",
+        mode: "update",
+        publish: "branch",
+        instructions: "Preserve the existing voice.",
+      },
+      {
+        artifactAwareAskPeer: true,
+        artifactRefs: [artifactRef()],
+        artifactOperationId: "ask-peer-artifacts-v1:turn:peer:artifact-0",
+      },
+      {
+        artifactId: "board/events",
+        topic: "selection.changed",
+        source: "artifact_ping",
+      },
+      { bringBack: false },
+    ]) {
+      const classified = supported(input);
+      expect(reconstructProtectedTaskMetadataV1(
+        classified.operational,
+        classified.protectedContent,
+      )).toEqual({ status: "supported", version: 1, metadata: input });
+    }
+  });
+
+  test("rejects unknown projection fields, split-field collisions, and incomplete pairs", () => {
+    expect(reconstructProtectedTaskMetadataV1(
+      { bringBack: true, future: true },
+      {},
+    )).toEqual({ status: "unsupported", version: 1, reason: "unknown_field", path: "$.operational" });
+    expect(reconstructProtectedTaskMetadataV1(
+      {},
+      { future: true },
+    )).toEqual({ status: "unsupported", version: 1, reason: "unknown_field", path: "$.protectedContent" });
+    expect(reconstructProtectedTaskMetadataV1(
+      { execution: codexExecution({ workingDirectory: "/wrong" }) },
+      { execution: { workingDirectory: "/work" } },
+    )).toEqual({
+      status: "unsupported", version: 1, reason: "unsupported_shape", path: "$.protectedContent.execution",
+    });
+    expect(reconstructProtectedTaskMetadataV1(
+      {},
+      { execution: { workingDirectory: "/work" } },
+    )).toEqual({
+      status: "unsupported", version: 1, reason: "malformed_field", path: "$.operational.execution",
+    });
+    expect(reconstructProtectedTaskMetadataV1(
+      { preparation: {
+        stage: "using_tools",
+        researchWork: { role: "investigator", subject: "collision" },
+        taskRunId: "run-1",
+        updatedAt: "2026-09-21T10:00:00.000Z",
+      } },
+      { preparation: { researchWork: { subject: "protected" } } },
+    )).toEqual({
+      status: "unsupported",
+      version: 1,
+      reason: "unsupported_shape",
+      path: "$.protectedContent.preparation.researchWork",
+    });
+  });
+
+  test("rejects recognized fields placed in the wrong projection", () => {
+    expect(reconstructProtectedTaskMetadataV1(
+      { target: "/private", mode: "update", publish: "branch" },
+      {},
+    )).toEqual({ status: "unsupported", version: 1, reason: "unknown_field", path: "$.operational" });
+    expect(reconstructProtectedTaskMetadataV1(
+      {},
+      { bringBack: true },
+    )).toEqual({ status: "unsupported", version: 1, reason: "unknown_field", path: "$.protectedContent" });
+  });
+
   test("brands only canonical operational projections", () => {
     const classified = supported({
       target: "/work/repository",
