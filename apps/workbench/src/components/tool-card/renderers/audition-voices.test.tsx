@@ -15,6 +15,7 @@ import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { AuditionVoicesToolResult, VoiceDiscoveryCandidate } from "@nautilo/types";
+import { projectToolResultForEvent, TOOL_RESULT_MAX_BYTES } from "@nautilo/types";
 import type { ToolRendererProps } from "./types";
 
 const sampleCandidate = (
@@ -191,6 +192,34 @@ describe("AuditionVoicesExpanded", () => {
       expect(document.querySelector(`[data-testid="audition-voices-preview-load-${voiceId}"]`)).not.toBeNull();
     }
     expect(apiStub.previewVoice).not.toHaveBeenCalled();
+    await cleanupExpanded();
+  });
+
+  test("renders an oversized delivered audition and previews its exact trailing sample text", async () => {
+    const sampleText = "[confident] Preview the complete requested script.";
+    const raw = JSON.stringify(makeEnvelope({
+      sampleText,
+      slate: [sampleCandidate({
+        badge: "provider_verified",
+        verifiedLanguages: Array.from({ length: 49 }, (_, index) => ({
+          language: "es", modelId: `model-${index}`, accent: "peninsular",
+          locale: "es-ES", previewUrl: `https://example.com/audio/${"x".repeat(240)}-${index}`,
+        })),
+      })],
+    }));
+    expect(raw.length).toBeGreaterThan(TOOL_RESULT_MAX_BYTES);
+    const delivered = projectToolResultForEvent("audition_voices", raw);
+    await renderExpanded(delivered.result, { resultTruncated: delivered.truncated });
+    expect(document.querySelector('[data-testid="audition-voices-row-voice-a"]')).not.toBeNull();
+    expect(document.querySelector("pre")).toBeNull();
+    expect(apiStub.previewVoice).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-testid="audition-voices-preview-load-voice-a"]')!);
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="audition-voices-preview-ready-voice-a"]')).not.toBeNull();
+    });
+    expect(apiStub.previewVoice).toHaveBeenCalledWith("voice-a", { text: sampleText });
     await cleanupExpanded();
   });
 
