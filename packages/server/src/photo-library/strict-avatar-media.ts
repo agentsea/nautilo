@@ -16,6 +16,15 @@ const MAX_GENERATED_AVATAR_BYTES = 8 * 1024 * 1024;
 /** Thumbnails are rejected before allocation and image decoding. */
 const MAX_GENERATED_THUMBNAIL_BYTES = 5 * 1024 * 1024;
 
+/** Uploaded originals can retain a full-size PNG from a profile import. */
+export function hasOwnedAvatarOriginalDimensions(
+  kind: "generated" | "uploaded",
+  width: number | undefined,
+  height: number | undefined,
+): boolean {
+  return width === height && (width === 1024 || (kind === "uploaded" && width === 256));
+}
+
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -102,11 +111,9 @@ export async function readStrictOwnedAvatarMedia(input: {
     if (!generatedThumb) {
       if (sha256(bytes) !== input.mediaSha256) return { ok: false };
       const metadata = await sharp(bytes, { limitInputPixels: 1024 * 1024 }).metadata();
-      const expectedDimension = input.kind === "uploaded" ? 256 : 1024;
       if (
         metadata.format !== "png"
-        || metadata.width !== expectedDimension
-        || metadata.height !== expectedDimension
+        || !hasOwnedAvatarOriginalDimensions(input.kind, metadata.width, metadata.height)
         || (metadata.pages !== undefined && metadata.pages !== 1)
       ) return { ok: false };
       return {

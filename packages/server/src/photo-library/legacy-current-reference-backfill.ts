@@ -1,5 +1,5 @@
 /**
- * D487 Phase 1.3 — conservative, database-led adoption of legacy CURRENT
+ * conservative, database-led adoption of legacy CURRENT
  * avatar references.  This module intentionally never enumerates a media
  * directory: a byte is considered only after a canonical DB pointer names it.
  */
@@ -21,6 +21,7 @@ import {
 } from "@nautilo/db";
 import { getProfileAvatarsRoot } from "@nautilo/config";
 import type { AvatarRef } from "@nautilo/types";
+import { hasOwnedAvatarOriginalDimensions } from "./strict-avatar-media";
 
 type CustomAvatarRef = Extract<AvatarRef, { kind: "generated" | "uploaded" }>;
 type SubjectKind = "agent" | "human";
@@ -195,7 +196,7 @@ function stableOperationId(input: {
   readonly mediaByteSize: number;
 }): string {
   const digest = createHash("sha256")
-    .update(JSON.stringify(["d487-legacy-current-reference", input]))
+    .update(JSON.stringify(["nautilo/legacy-current-photo/v2", input]))
     .digest();
   // RFC 4122 variant + version 5-shaped stable UUID. It is an opaque durable
   // operation correlation, not an identity claim or user-visible identifier.
@@ -208,7 +209,7 @@ function stableOperationId(input: {
 function fingerprint(candidate: Candidate, media: Required<Pick<LegacyPhotoMediaInspection, "mediaByteSize" | "mediaSha256" | "mediaMimeType">>): string {
   return createHash("sha256")
     .update(JSON.stringify([
-      "d487-legacy-current-reference:v1",
+      "nautilo/legacy-current-photo-fingerprint/v2",
       candidate.subjectKind,
       candidate.ownerUserId,
       candidate.agentId,
@@ -342,8 +343,7 @@ export async function inspectLegacyAvatarMedia(ref: CustomAvatarRef): Promise<Le
   if (!image) return { exists: false };
   if (
     image.mimeType !== "image/png"
-    || (ref.kind === "uploaded" && (image.width !== 256 || image.height !== 256))
-    || (ref.kind === "generated" && (image.width !== 1024 || image.height !== 1024))
+    || !hasOwnedAvatarOriginalDimensions(ref.kind, image.width, image.height)
   ) {
     return { exists: false };
   }
@@ -444,7 +444,7 @@ async function applyCandidate(
       .where(eq(nautiloInstanceIdentity.id, "self"))
       .limit(1);
     if (transactionIdentity?.serverInstanceId !== serverInstanceId) {
-      throw new Error("D487 backfill Server identity changed before apply");
+      throw new Error("backfill Server identity changed before apply");
     }
     // Re-read the exact bytes while this candidate's DB work is pending. This
     // is the only honest response to a file that changed after dry-run.
@@ -642,17 +642,17 @@ export async function backfillLegacyCurrentPhotoReferences(
     .from(nautiloInstanceIdentity)
     .where(eq(nautiloInstanceIdentity.id, "self"))
     .limit(1);
-  if (!identity) throw new Error("D487 backfill requires the singleton server identity");
+  if (!identity) throw new Error("backfill requires the singleton server identity");
   const serverInstanceId = identity.serverInstanceId;
   if (!dryRun) {
     if (!options.expectedServerInstanceId || !UUID_PATTERN.test(options.expectedServerInstanceId)) {
-      throw new Error("D487 apply requires an explicit expected Server UUID");
+      throw new Error("apply requires an explicit expected Server UUID");
     }
     if (options.expectedServerInstanceId !== serverInstanceId) {
-      throw new Error("D487 apply refused because the expected Server UUID does not match");
+      throw new Error("apply refused because the expected Server UUID does not match");
     }
     if (options.exclusiveMaintenance !== true) {
-      throw new Error("D487 apply requires explicit exclusive maintenance admission");
+      throw new Error("apply requires explicit exclusive maintenance admission");
     }
   }
   const { candidates, invalid, ownerMismatches, ignoredPresetReferences } = await readLegacyCurrentPhotoCandidates(

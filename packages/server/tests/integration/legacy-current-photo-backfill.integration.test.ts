@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -23,6 +23,9 @@ import {
   type LegacyPhotoMediaInspection,
 } from "../../src/photo-library/legacy-current-reference-backfill";
 
+import { AgentPhotoLibraryReadService } from "../../src/lib/agent-photo-library-read-service";
+import { hasCompleteOwnedAvatarMedia, readStrictOwnedAvatarMedia } from "../../src/photo-library/strict-avatar-media";
+
 type Db = ReturnType<typeof createDirectDb>;
 
 const sha = (value: string) => value.repeat(64).slice(0, 64);
@@ -38,7 +41,7 @@ let nonce: string;
 const extraAgentIds: string[] = [];
 
 function blob(label: string): string {
-  return `d487-backfill-${nonce}-${label}`;
+  return `backfill-${nonce}-${label}`;
 }
 
 function inspection(ref: { kind: "generated" | "uploaded"; blobId: string }): LegacyPhotoMediaInspection {
@@ -67,12 +70,12 @@ beforeAll(async () => {
     .where(eq(nautiloInstanceIdentity.id, "self"));
   serverInstanceId = required(identity?.serverInstanceId, "server identity");
   [ownerId, otherOwnerId] = (await db.insert(users).values([
-    { name: "D487 backfill owner", email: `d487-backfill-owner-${nonce}@test.invalid` },
-    { name: "D487 backfill other", email: `d487-backfill-other-${nonce}@test.invalid` },
+    { name: "backfill owner", email: "user1@example.invalid".replace("user1", `user1${nonce}`) },
+    { name: "backfill other", email: "user2@example.invalid".replace("user2", `user2${nonce}`) },
   ]).returning({ id: users.id })).map((row) => row.id) as [string, string];
   [agentId, duplicateAgentId] = (await db.insert(agents).values([
-    { handle: `d487-backfill-agent-${nonce}` },
-    { handle: `d487-backfill-duplicate-${nonce}` },
+    { handle: `backfill-agent-${nonce}` },
+    { handle: `backfill-duplicate-${nonce}` },
   ]).returning({ id: agents.id })).map((row) => row.id) as [string, string];
   await db.insert(actors).values([
     { ownerId, displayName: "Agent", kind: "agent", agentId },
@@ -102,7 +105,7 @@ afterAll(async () => {
   await db.end();
 });
 
-describe("D487 legacy current-reference backfill", () => {
+describe("legacy current-reference backfill", () => {
   test("refuses apply without an exact explicit Server identity", async () => {
     let missingConfirmationRejected = false;
     try {
@@ -158,6 +161,47 @@ describe("D487 legacy current-reference backfill", () => {
     expect(reportedBlobIds.includes(blob("human"))).toBe(true);
     expect(inspected).not.toContain(blob("raw-test-debris"));
     expect(await db.select().from(ownedPhotoEntries).where(eq(ownedPhotoEntries.ownerUserId, ownerId))).toHaveLength(0);
+  });
+
+  test("migrates an unindexed full-size upload and reads the unchanged original through its owned entry", async () => {
+    const blobId = `legacy-upload-${randomUUID()}`;
+    const avatarRef = { kind: "uploaded" as const, blobId };
+    const original = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: "#446688" } }).png().toBuffer();
+    const root = join(getProfileAvatarsRoot(), "uploaded");
+    await mkdir(root, { recursive: true });
+    const path = join(root, `${blobId}.png`);
+    await writeFile(path, original);
+    const authority = { serverInstanceId, viewerUserId: ownerId, ownerUserId: ownerId, agentId: duplicateAgentId };
+    const service = new AgentPhotoLibraryReadService({ db, blobExists: hasCompleteOwnedAvatarMedia });
+    try {
+      await db.update(profiles).set({ avatarRef }).where(eq(profiles.id, duplicateProfileId));
+      await service.current(authority).then(
+        () => { throw new Error("Expected the unindexed current photo to be unavailable"); },
+        (error: unknown) => { expect(error).toBeInstanceOf(Error); expect((error as Error).message).toBe("The current custom Agent photo is unavailable"); },
+      );
+      const preview = await backfillLegacyCurrentPhotoReferences({ db }, { ownerUserIds: [ownerId] });
+      expect(preview.rows.find(row => row.blobId === blobId)?.outcome).toBe("would_adopt");
+      const adopted = await backfillLegacyCurrentPhotoReferences({ db }, { dryRun: false, exclusiveMaintenance: true, expectedServerInstanceId: serverInstanceId, ownerUserIds: [ownerId] });
+      expect(adopted.rows.find(row => row.blobId === blobId)?.outcome).toBe("adopted");
+      const current = await service.current(authority);
+      expect(current.avatarRef).toEqual(avatarRef);
+      expect(current.entryId).not.toBeNull();
+      expect(current.scope.selectionRevision).toBe("0");
+      const digest = createHash("sha256").update(original).digest("hex");
+      const media = await service.media(authority, current.entryId!, "full", async entry => {
+        const read = await readStrictOwnedAvatarMedia({ kind: "uploaded", entryId: entry.id, blobId: entry.blobId, variant: "full", mediaByteSize: entry.mediaByteSize, mediaSha256: entry.mediaSha256, mediaMimeType: entry.mediaMimeType });
+        return read.ok ? read.bytes : null;
+      });
+      expect(media.media).toEqual(original);
+      expect(createHash("sha256").update(media.media).digest("hex")).toBe(digest);
+      const replay = await backfillLegacyCurrentPhotoReferences({ db }, { dryRun: false, exclusiveMaintenance: true, expectedServerInstanceId: serverInstanceId, ownerUserIds: [ownerId] });
+      expect(replay.rows.find(row => row.blobId === blobId)?.outcome).toBe("already_adopted");
+      expect((await service.current(authority)).scope).toEqual(current.scope);
+    } finally {
+      await db.delete(ownedPhotoEntries).where(eq(ownedPhotoEntries.blobId, blobId));
+      await db.update(profiles).set({ avatarRef: null }).where(eq(profiles.id, duplicateProfileId));
+      await rm(path, { force: true });
+    }
   });
 
   test("rejects symlinks and oversized uploads and strictly derives a missing generated thumbnail before adoption", async () => {
@@ -268,11 +312,11 @@ describe("D487 legacy current-reference backfill", () => {
   });
 
   test("quarantines duplicate, owner-mismatched, missing, invalid, and changed current refs without rewriting them", async () => {
-    const missingAgentId = required((await db.insert(agents).values({ handle: `d487-backfill-missing-${nonce}` }).returning({ id: agents.id }))[0]?.id, "missing agent");
+    const missingAgentId = required((await db.insert(agents).values({ handle: `backfill-missing-${nonce}` }).returning({ id: agents.id }))[0]?.id, "missing agent");
     extraAgentIds.push(missingAgentId);
     await db.insert(actors).values({ ownerId, displayName: "Missing Agent", kind: "agent", agentId: missingAgentId });
     const missingProfileId = required((await db.insert(profiles).values({ userId: ownerId, agentId: missingAgentId, avatarRef: { kind: "uploaded", blobId: blob("missing") } }).returning({ id: profiles.id }))[0]?.id, "missing profile");
-    const mismatchAgentId = required((await db.insert(agents).values({ handle: `d487-backfill-mismatch-${nonce}` }).returning({ id: agents.id }))[0]?.id, "mismatch agent");
+    const mismatchAgentId = required((await db.insert(agents).values({ handle: `backfill-mismatch-${nonce}` }).returning({ id: agents.id }))[0]?.id, "mismatch agent");
     extraAgentIds.push(mismatchAgentId);
     const mismatchProfileId = required((await db.insert(profiles).values({ userId: ownerId, agentId: mismatchAgentId, avatarRef: { kind: "generated", blobId: blob("mismatch") } }).returning({ id: profiles.id }))[0]?.id, "mismatch profile");
     await db.insert(actors).values({ ownerId: otherOwnerId, displayName: "Wrong owner", kind: "agent", agentId: mismatchAgentId });
