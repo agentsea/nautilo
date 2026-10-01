@@ -1,6 +1,9 @@
 # Debian 13 security checkpoint reviewed 2026-10-01. Newer stable updates remain allowed.
-chromium-common 154.0.8037.92-1~deb13u1
-chromium-headless-shell 154.0.8037.92-1~deb13u1
+# ARM64 lacks the patched binary; fresh signed-index qualification must prove the gap.
+chromium-common 154.0.8037.92-1~deb13u1 amd64
+chromium-headless-shell 154.0.8037.92-1~deb13u1 amd64
+chromium-common 154.0.8037.57-1~deb13u1 arm64
+chromium-headless-shell 154.0.8037.57-1~deb13u1 arm64
 gzip 1.13-1+deb13u1
 libc-bin 2.41-12+deb13u4
 libc6 2.41-12+deb13u4
