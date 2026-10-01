@@ -1,4 +1,6 @@
-# Debian 13 security checkpoint reviewed 2026-09-13. Newer stable updates remain allowed.
+# Debian 13 security checkpoint reviewed 2026-10-01. Newer stable updates remain allowed.
+chromium-common 154.0.8037.92-1~deb13u1
+chromium-headless-shell 154.0.8037.92-1~deb13u1
 gzip 1.13-1+deb13u1
 libc-bin 2.41-12+deb13u4
 libc6 2.41-12+deb13u4
