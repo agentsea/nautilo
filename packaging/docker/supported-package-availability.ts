@@ -27,7 +27,7 @@ type Run = (command: string, args: readonly string[]) => Promise<{exitCode: numb
 
 // Probe only supported, authenticated Debian archives. Never start the server,
 // inherit its environment, mount production data, or install a package.
-export const SUPPORTED_PACKAGE_PROBE = `
+const SUPPORTED_PACKAGE_PROBE = `
 set -eu
 . /etc/os-release
 test "$ID:$VERSION_ID" = debian:13

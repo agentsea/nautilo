@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectSupportedPackageAvailability, SUPPORTED_PACKAGE_PROBE, type SupportedPackageAvailability } from "./supported-package-availability.ts";
+import { collectSupportedPackageAvailability, type SupportedPackageAvailability } from "./supported-package-availability.ts";
 import { evaluateVulnerabilityPolicy, parseVulnerabilityPolicy, type EvaluateVulnerabilityPolicyInput } from "./vulnerability-policy.ts";
 
 const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8"));
@@ -101,11 +101,12 @@ describe("architecture-specific supported binary availability", () => {
       expect(args[args.indexOf("--platform") + 1]).toBe("linux/arm64");
       expect(args).not.toContain("--env-file");
       expect(args).not.toContain("--volume");
-      expect(SUPPORTED_PACKAGE_PROBE).toContain("Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg");
-      expect(SUPPORTED_PACKAGE_PROBE).toContain("APT::Update::Error-Mode=any");
-      expect(SUPPORTED_PACKAGE_PROBE).toContain("AllowInsecureRepositories=false");
-      expect(SUPPORTED_PACKAGE_PROBE).not.toContain(" install ");
-      expect(SUPPORTED_PACKAGE_PROBE).toContain('${Version}');
+      const probe = args[args.indexOf("-ceu") + 1]!;
+      expect(probe).toContain("Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg");
+      expect(probe).toContain("APT::Update::Error-Mode=any");
+      expect(probe).toContain("AllowInsecureRepositories=false");
+      expect(probe).not.toContain(" install ");
+      expect(probe).toContain('${Version}');
       return {exitCode: 0, stdout: probeOutput(), stderr: ""};
     });
     expect(result.packages).toEqual(availability().packages);
